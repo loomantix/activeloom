@@ -825,11 +825,74 @@ verify_converged_review_outcomes() {
         "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" "before publication" || return 1
 }
 
+run_review_pass() {
+    local engine="$1" slug="$2" hook="$3" round="$4"
+    local hook_description="$5" hook_failure_description="$6"
+    local review_description="$7" validation_description="$8"
+    local before_sha after_sha status classification outcome_signature
+    local validated_classification validated_outcome_signature outcome_file
+
+    export AGENT_LOOP_REVIEW_ENGINE="$slug"
+    outcome_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.outcome"
+    export AGENT_LOOP_REVIEW_OUTCOME_FILE="$outcome_file"
+    rm -f -- "$outcome_file"
+    before_sha="$(git rev-parse HEAD)"
+    run_bounded_hook "$hook_description (round $round)" "$hook" \
+        "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" || {
+        recovery_message "$hook_failure_description failed in review round $round."
+        return 1
+    }
+    status="$(git status --porcelain)" || {
+        recovery_message "Could not inspect Git status after the $hook_description in round $round."
+        return 1
+    }
+    [ -z "$status" ] || {
+        recovery_message "$review_description left uncommitted findings/fixes in review round $round."
+        return 1
+    }
+    require_issue_branch_head || {
+        recovery_message "$review_description moved HEAD away from the issue branch in review round $round."
+        return 1
+    }
+    after_sha="$(git rev-parse HEAD)"
+    git merge-base --is-ancestor "$before_sha" "$after_sha" || {
+        recovery_message "$review_description rewrote or dropped previously reviewed commits in round $round."
+        return 1
+    }
+    classify_review_result "$engine" "$before_sha" "$after_sha" "$outcome_file" || return 1
+    classification="$REVIEW_FIX_CLASSIFICATION"
+    outcome_signature="$(review_outcome_signature "$outcome_file")" || {
+        recovery_message "Could not snapshot $engine review outcome in round $round."
+        return 1
+    }
+    run_validation "$slug-review-round-$round" || {
+        recovery_message "Validation after $validation_description failed in review round $round."
+        return 1
+    }
+    classify_review_result "$engine" "$before_sha" "$after_sha" "$outcome_file" || return 1
+    validated_classification="$REVIEW_FIX_CLASSIFICATION"
+    if [ "$validated_classification" != "$classification" ]; then
+        recovery_message "$engine review outcome classification changed during validation in round $round."
+        return 1
+    fi
+    validated_outcome_signature="$(review_outcome_signature "$outcome_file")" || {
+        recovery_message "Could not re-read $engine review outcome after validation in round $round."
+        return 1
+    }
+    if [ "$validated_outcome_signature" != "$outcome_signature" ]; then
+        recovery_message "$engine review outcome file changed during validation in round $round."
+        return 1
+    fi
+
+    REVIEW_PASS_CLASSIFICATION="$classification"
+    REVIEW_PASS_OUTCOME_FILE="$outcome_file"
+    REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
+}
+
 run_review_convergence() {
-    local round=1 codex_before codex_after claude_before claude_after
-    local codex_classification claude_classification validated_classification
-    local codex_outcome_signature claude_outcome_signature validated_outcome_signature
-    local codex_outcome_file claude_outcome_file codex_status claude_status
+    local round=1 codex_classification claude_classification
+    local codex_outcome_signature claude_outcome_signature
+    local codex_outcome_file claude_outcome_file
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
@@ -838,112 +901,20 @@ run_review_convergence() {
         fetch_base
         export AGENT_LOOP_REVIEW_BASE_SHA
         AGENT_LOOP_REVIEW_BASE_SHA="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")"
-        export AGENT_LOOP_REVIEW_ENGINE=codex
-        codex_outcome_file="$AGENT_LOOP_LOG_DIR/codex-review-round-$round.outcome"
-        export AGENT_LOOP_REVIEW_OUTCOME_FILE="$codex_outcome_file"
-        rm -f -- "$AGENT_LOOP_REVIEW_OUTCOME_FILE"
-        codex_before="$(git rev-parse HEAD)"
-        run_bounded_hook "configured Codex review hook (round $round)" "$CODEX_REVIEW_HOOK" \
-            "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/codex-review-round-$round.log" || {
-            recovery_message "Configured Codex review hook failed in review round $round."
-            return 1
-        }
-        codex_status="$(git status --porcelain)" || {
-            recovery_message "Could not inspect Git status after the configured Codex review hook in round $round."
-            return 1
-        }
-        [ -z "$codex_status" ] || {
-            recovery_message "Configured Codex review hook left uncommitted findings/fixes in review round $round."
-            return 1
-        }
-        require_issue_branch_head || {
-            recovery_message "Configured Codex review hook moved HEAD away from the issue branch in review round $round."
-            return 1
-        }
-        codex_after="$(git rev-parse HEAD)"
-        git merge-base --is-ancestor "$codex_before" "$codex_after" || {
-            recovery_message "Configured Codex review hook rewrote or dropped previously reviewed commits in round $round."
-            return 1
-        }
-        classify_review_result "Codex" "$codex_before" "$codex_after" \
-            "$codex_outcome_file" || return 1
-        codex_classification="$REVIEW_FIX_CLASSIFICATION"
-        codex_outcome_signature="$(review_outcome_signature "$codex_outcome_file")" || {
-            recovery_message "Could not snapshot Codex review outcome in round $round."
-            return 1
-        }
-        run_validation "codex-review-round-$round" || {
-            recovery_message "Validation after the configured Codex review hook failed in review round $round."
-            return 1
-        }
-        classify_review_result "Codex" "$codex_before" "$codex_after" \
-            "$codex_outcome_file" || return 1
-        validated_classification="$REVIEW_FIX_CLASSIFICATION"
-        if [ "$validated_classification" != "$codex_classification" ]; then
-            recovery_message "Codex review outcome classification changed during validation in round $round."
-            return 1
-        fi
-        validated_outcome_signature="$(review_outcome_signature "$codex_outcome_file")" || {
-            recovery_message "Could not re-read Codex review outcome after validation in round $round."
-            return 1
-        }
-        if [ "$validated_outcome_signature" != "$codex_outcome_signature" ]; then
-            recovery_message "Codex review outcome file changed during validation in round $round."
-            return 1
-        fi
-        export AGENT_LOOP_REVIEW_ENGINE=claude
-        claude_outcome_file="$AGENT_LOOP_LOG_DIR/claude-review-round-$round.outcome"
-        export AGENT_LOOP_REVIEW_OUTCOME_FILE="$claude_outcome_file"
-        rm -f -- "$AGENT_LOOP_REVIEW_OUTCOME_FILE"
-        claude_before="$(git rev-parse HEAD)"
-        run_bounded_hook "configured Claude review hook (round $round)" "$CLAUDE_REVIEW_HOOK" \
-            "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/claude-review-round-$round.log" || {
-            recovery_message "Claude review hook failed in review round $round."
-            return 1
-        }
-        claude_status="$(git status --porcelain)" || {
-            recovery_message "Could not inspect Git status after the configured Claude review hook in round $round."
-            return 1
-        }
-        [ -z "$claude_status" ] || {
-            recovery_message "Claude review left uncommitted findings/fixes in review round $round."
-            return 1
-        }
-        require_issue_branch_head || {
-            recovery_message "Claude review moved HEAD away from the issue branch in review round $round."
-            return 1
-        }
-        claude_after="$(git rev-parse HEAD)"
-        git merge-base --is-ancestor "$claude_before" "$claude_after" || {
-            recovery_message "Claude review rewrote or dropped previously reviewed commits in round $round."
-            return 1
-        }
-        classify_review_result "Claude" "$claude_before" "$claude_after" \
-            "$claude_outcome_file" || return 1
-        claude_classification="$REVIEW_FIX_CLASSIFICATION"
-        claude_outcome_signature="$(review_outcome_signature "$claude_outcome_file")" || {
-            recovery_message "Could not snapshot Claude review outcome in round $round."
-            return 1
-        }
-        run_validation "claude-review-round-$round" || {
-            recovery_message "Validation after Claude review failed in review round $round."
-            return 1
-        }
-        classify_review_result "Claude" "$claude_before" "$claude_after" \
-            "$claude_outcome_file" || return 1
-        validated_classification="$REVIEW_FIX_CLASSIFICATION"
-        if [ "$validated_classification" != "$claude_classification" ]; then
-            recovery_message "Claude review outcome classification changed during validation in round $round."
-            return 1
-        fi
-        validated_outcome_signature="$(review_outcome_signature "$claude_outcome_file")" || {
-            recovery_message "Could not re-read Claude review outcome after validation in round $round."
-            return 1
-        }
-        if [ "$validated_outcome_signature" != "$claude_outcome_signature" ]; then
-            recovery_message "Claude review outcome file changed during validation in round $round."
-            return 1
-        fi
+        run_review_pass Codex codex "$CODEX_REVIEW_HOOK" "$round" \
+            "configured Codex review hook" "Configured Codex review hook" \
+            "Configured Codex review hook" \
+            "the configured Codex review hook"
+        codex_classification="$REVIEW_PASS_CLASSIFICATION"
+        codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+        codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+
+        run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
+            "configured Claude review hook" "Claude review hook" "Claude review" \
+            "Claude review"
+        claude_classification="$REVIEW_PASS_CLASSIFICATION"
+        claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+        claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
         require_review_outcome_signature Codex "$codex_outcome_file" \
             "$codex_outcome_signature" "before the round decision" || return 1
         require_review_outcome_signature Claude "$claude_outcome_file" \
