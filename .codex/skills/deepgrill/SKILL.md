@@ -64,13 +64,19 @@ the hosted-path summary.
 When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
 return control without pushing:
 
+If `$AGENT_LOOP_REVIEW_OUTCOME_FILE` is set and this pass commits fixes, write
+exactly `material` when any fix is substantive or `minor` when every fix is
+low-risk and non-behavioral. Do not create the file when no fix commit is made.
+Missing classification for a commit defaults to material.
+
 ```text
 Codex deepgrill pass complete.
 Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
   Run a fresh local Claude review on this HEAD.
-  If either reviewer commits a fix, restart the convergence round at Codex.
-  Push only after one full Codex-then-Claude round produces no fixes.
+  Classify committed fixes as material or minor.
+  Restart at Codex only when either reviewer commits a material fix.
+  Push after one full Codex-then-Claude round produces no material fixes.
 ```
 
 Do not recommend or invoke `reviewit` on the local convergence path. The current

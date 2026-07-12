@@ -624,9 +624,44 @@ run_validation() {
     fi
 }
 
+classify_review_result() {
+    local engine="$1" before_sha="$2" after_sha="$3"
+    local outcome_file="$AGENT_LOOP_REVIEW_OUTCOME_FILE" classification=""
+
+    if [ "$before_sha" = "$after_sha" ]; then
+        if [ -e "$outcome_file" ] || [ -L "$outcome_file" ]; then
+            recovery_message "$engine review wrote a fix classification without committing a fix."
+            return 1
+        fi
+        REVIEW_FIX_CLASSIFICATION=clean
+        return 0
+    fi
+
+    # Backward-compatible fail-safe: an existing hook that commits without using
+    # the outcome file is material and therefore restarts at Codex.
+    if [ ! -e "$outcome_file" ] && [ ! -L "$outcome_file" ]; then
+        REVIEW_FIX_CLASSIFICATION=material
+        return 0
+    fi
+    if [ ! -f "$outcome_file" ] || [ -L "$outcome_file" ] || [ ! -r "$outcome_file" ]; then
+        recovery_message "$engine review outcome must be a readable regular file."
+        return 1
+    fi
+    classification="$(<"$outcome_file")"
+    classification="${classification#"${classification%%[![:space:]]*}"}"
+    classification="${classification%"${classification##*[![:space:]]}"}"
+    case "$classification" in
+        minor|material) REVIEW_FIX_CLASSIFICATION="$classification" ;;
+        *)
+            recovery_message "$engine review outcome must be exactly 'minor' or 'material'."
+            return 1
+            ;;
+    esac
+}
+
 run_review_convergence() {
     local round=1 codex_before codex_after claude_before claude_after
-    local codex_changed claude_changed
+    local codex_classification claude_classification
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
@@ -636,6 +671,8 @@ run_review_convergence() {
         export AGENT_LOOP_REVIEW_BASE_SHA
         AGENT_LOOP_REVIEW_BASE_SHA="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")"
         export AGENT_LOOP_REVIEW_ENGINE=codex
+        export AGENT_LOOP_REVIEW_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/codex-review-round-$round.outcome"
+        rm -f -- "$AGENT_LOOP_REVIEW_OUTCOME_FILE"
         codex_before="$(git rev-parse HEAD)"
         run_bounded_hook "configured Codex review hook (round $round)" "$CODEX_REVIEW_HOOK" \
             "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/codex-review-round-$round.log" || {
@@ -655,11 +692,15 @@ run_review_convergence() {
             recovery_message "Configured Codex review hook rewrote or dropped previously reviewed commits in round $round."
             return 1
         }
+        classify_review_result "Codex" "$codex_before" "$codex_after" || return 1
+        codex_classification="$REVIEW_FIX_CLASSIFICATION"
         run_validation "codex-review-round-$round" || {
             recovery_message "Validation after the configured Codex review hook failed in review round $round."
             return 1
         }
         export AGENT_LOOP_REVIEW_ENGINE=claude
+        export AGENT_LOOP_REVIEW_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/claude-review-round-$round.outcome"
+        rm -f -- "$AGENT_LOOP_REVIEW_OUTCOME_FILE"
         claude_before="$(git rev-parse HEAD)"
         run_bounded_hook "configured Claude review hook (round $round)" "$CLAUDE_REVIEW_HOOK" \
             "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/claude-review-round-$round.log" || {
@@ -679,28 +720,26 @@ run_review_convergence() {
             recovery_message "Claude review rewrote or dropped previously reviewed commits in round $round."
             return 1
         }
+        classify_review_result "Claude" "$claude_before" "$claude_after" || return 1
+        claude_classification="$REVIEW_FIX_CLASSIFICATION"
         run_validation "claude-review-round-$round" || {
             recovery_message "Validation after Claude review failed in review round $round."
             return 1
         }
-        codex_changed=false
-        claude_changed=false
-        [ "$codex_before" = "$codex_after" ] || codex_changed=true
-        [ "$claude_before" = "$claude_after" ] || claude_changed=true
         REVIEW_ROUNDS_USED="$round"
 
-        if [ "$codex_changed" = false ] && [ "$claude_changed" = false ]; then
+        if [ "$codex_classification" != material ] && [ "$claude_classification" != material ]; then
             REVIEWED_BASE_SHA="$AGENT_LOOP_REVIEW_BASE_SHA"
-            unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA
-            echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reached a same-HEAD no-commit round after $round round(s)"
+            unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE
+            echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reached a no-material-fix round after $round round(s)"
             return 0
         fi
 
-        echo "   Review fixes committed: Codex=$codex_changed Claude=$claude_changed; restarting from Codex"
+        echo "   Review outcomes: Codex=$codex_classification Claude=$claude_classification; material fixes restart at Codex"
         round=$((round + 1))
     done
 
-    unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA
+    unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE
     recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
     return 1
 }
@@ -733,17 +772,17 @@ publish_issue() {
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
     # Report what the wrapper can prove. Hook configuration attests which engines
     # run; the wrapper itself proves only successful commands, clean state, and a
-    # complete no-commit round. Setup remains optional; validation is required.
+    # complete no-material-fix round. Setup remains optional; validation is required.
     {
         echo "## Summary"
         echo
-        echo "Configured Codex and Claude review hooks reached a clean no-commit round after"
+        echo "Configured Codex and Claude review hooks reached a no-material-fix round after"
         echo "$REVIEW_ROUNDS_USED round(s) against fresh \`origin/$BASE_BRANCH\`, then passed fresh-base integration."
         echo
         echo "## Test plan"
         echo
         if [ -n "$SETUP_HOOK" ]; then echo "- [x] configured setup hook completed"; fi
-        echo "- [x] configured Codex and Claude hooks completed a clean no-commit round ($REVIEW_ROUNDS_USED round(s))"
+        echo "- [x] configured Codex and Claude hooks completed a no-material-fix round ($REVIEW_ROUNDS_USED round(s))"
         echo "- [x] fresh-base integration and publication-diff inspection"
         echo "- [x] configured non-mutating local validation hook"
         echo
@@ -796,7 +835,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     echo "   Worktree: $ACTIVE_WORKTREE"
     echo "   Branch: $branch"
     echo "   Setup hook: ${SETUP_HOOK:-<none>}"
-    echo "   Review order: configured Codex hook -> configured Claude hook -> repeat until a no-fix round"
+    echo "   Review order: configured Codex hook -> configured Claude hook -> repeat only after material fixes"
     echo "   Publication: push $branch; PR base $BASE_BRANCH"
 
     if [ "$DRY_RUN" = true ]; then

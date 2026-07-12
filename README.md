@@ -31,7 +31,8 @@ The synced review workflow supports two developer-selected cross-model paths:
 local Codex/Claude convergence when both CLIs are available, or `reviewit` as a
 hosted Gemini/Copilot fallback when local Claude Code is unavailable. Consumers
 can declare their default path in repository instructions without removing the
-other platform capability.
+other platform capability. Local convergence restarts only for material review
+fixes; validated minor-only polish does not keep the cycle running.
 
 ### Codex references (`.codex/references/`)
 

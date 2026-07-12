@@ -19,9 +19,10 @@ validation_hook =
 review_contract_version = 1
 
 # Both review hooks are required. The wrapper runs Codex first, then Claude, and
-# repeats whenever either hook commits a fix. Convergence requires a complete
-# Codex-then-Claude round with no commits on the same HEAD. The Codex hook must
-# run `deepgrill`; the Claude hook must perform a fresh adversarial review. Each
+# repeats only when either hook commits a material fix. Minor-only fixes are
+# validated and retained without restarting; convergence requires a complete
+# Codex-then-Claude round with no material fixes. The Codex hook must run
+# `deepgrill`; the Claude hook must perform a fresh adversarial review. Each
 # hook must fix confirmed findings, commit fixes, fail if valid findings remain,
 # and leave a clean tree without rewriting prior commits. Neither may push, open
 # a PR, or invoke hosted reviewers. The wrapper disables ordinary `git push`,
@@ -31,6 +32,9 @@ review_contract_version = 1
 # round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
 # ref. The wrapper validates exit status and Git state but cannot prove which
 # engine an arbitrary command launches; these commands own that guarantee.
+# When a hook commits, write exactly `material` or `minor` to
+# `$AGENT_LOOP_REVIEW_OUTCOME_FILE`. Missing classification defaults to material;
+# a no-commit pass is clean and must not write the file.
 claude_review_hook =
 codex_review_hook =
 review_max_rounds = 4

@@ -277,7 +277,7 @@ def test_dry_run_shows_plan_without_mutation(
     assert result.returncode == 0, result.stderr
     assert "Setup hook:" in result.stdout
     assert (
-        "Review order: configured Codex hook -> configured Claude hook -> repeat until a no-fix round"
+        "Review order: configured Codex hook -> configured Claude hook -> repeat only after material fixes"
         in result.stdout
     )
     assert "Publication:" in result.stdout
@@ -328,7 +328,7 @@ def test_per_issue_worktrees_and_hook_order(
         assert "isolated dependency bootstrap" not in body
 
 
-def test_review_restarts_at_codex_until_both_engines_are_clean_on_same_head(
+def test_unclassified_review_fix_defaults_material_and_restarts_at_codex(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     claude_hook = (
@@ -345,7 +345,7 @@ def test_review_restarts_at_codex_until_both_engines_are_clean_on_same_head(
         config=_config(tmp_path, claude_review_hook=claude_hook),
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "reached a same-HEAD no-commit round after 2 round(s)" in result.stdout
+    assert "reached a no-material-fix round after 2 round(s)" in result.stdout
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
     assert events == [
         "setup",
@@ -361,6 +361,82 @@ def test_review_restarts_at_codex_until_both_engines_are_clean_on_same_head(
         "validate",
         "validate",
     ]
+
+
+def test_minor_only_review_fixes_converge_without_restarting(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
+        "printf 'codex minor\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'docs: codex minor review polish'; "
+        "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+    )
+    claude_hook = (
+        "printf 'claude\\n' >> \"$EVENT_LOG\"; "
+        "printf 'claude minor\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'test: claude minor review polish'; "
+        "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "36"],
+        issues=[_issue(36)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            claude_review_hook=claude_hook,
+        ),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "reached a no-material-fix round after 1 round(s)" in result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
+    assert events == [
+        "setup",
+        "worker",
+        "validate",
+        "codex",
+        "validate",
+        "claude",
+        "validate",
+        "validate",
+    ]
+    branch = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout.strip()
+    published = _run_git("show", f"{branch}:result.txt", cwd=consumer[1]).stdout
+    assert "codex minor" in published
+    assert "claude minor" in published
+
+
+def test_committed_review_with_invalid_classification_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    claude_hook = (
+        "printf 'claude\\n' >> \"$EVENT_LOG\"; "
+        "printf 'fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'fix: classified incorrectly'; "
+        "printf 'clean\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "37"],
+        issues=[_issue(37)],
+        config=_config(tmp_path, claude_review_hook=claude_hook),
+    )
+    assert result.returncode != 0
+    assert "outcome must be exactly 'minor' or 'material'" in result.stderr
+    assert "Worktree preserved:" in result.stderr
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
+    assert "issue-37" not in remote_branches
 
 
 def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(

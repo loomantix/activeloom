@@ -28,10 +28,13 @@ Use this path when both local engines are available:
    fixes, and leave a clean tree. Do not push.
 4. On that resulting HEAD, run a fresh adversarial Claude review against the
    same base. Apply the same verify/fix/validate/commit/no-push contract.
-5. If either pass committed a fix, restart at Codex so both engines review the
-   new tree. Convergence requires one complete Codex-then-Claude round in which
-   neither reviewer commits a fix; both reviewers must therefore be clean on the
-   same HEAD.
+5. Classify committed review fixes as `material` or `minor`. A material fix
+   affects behavior, correctness, security/privacy, data safety, compatibility,
+   deployment/sync integrity, or another substantive contract; restart at Codex
+   when either pass makes one. Minor-only fixes (clarity, low-risk cleanup, or
+   non-behavioral test/docs polish) are validated and kept but do not restart the
+   cycle. Convergence requires one complete Codex-then-Claude round with no
+   material fixes.
 6. Cap the loop at four rounds unless the consumer explicitly configures a
    different positive bound. At cap exhaustion, stop, preserve the branch and
    worktree, and report non-convergence. Do not publish an unreviewed branch.
@@ -40,8 +43,9 @@ Use this path when both local engines are available:
 
 The `agent-loop` skill automates this path with a required non-mutating
 validation hook plus `review_max_rounds`, `codex_review_hook`, and
-`claude_review_hook`. It treats exit 0, clean Git state, an attached issue
-branch, an unchanged HEAD, and append-only history as a hook's no-fix signal.
+`claude_review_hook`. Review hooks classify committed fixes through
+`$AGENT_LOOP_REVIEW_OUTCOME_FILE`; a missing classification defaults to
+`material`, while a pass with no commit is clean.
 It disables ordinary `git push`, Git aliases, and `gh` invocations while hooks
 run, while preserving authenticated Git reads, and publishes only the final
 captured commit. The wrapper cannot prove that an

@@ -77,12 +77,21 @@ Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
 `AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY` rather than the API. Review
 hooks also receive `AGENT_LOOP_REVIEW_BASE`, the fully qualified fetched remote
 ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA` captured after the round's fresh
-fetch, plus `AGENT_LOOP_REVIEW_ROUND` and `AGENT_LOOP_REVIEW_ENGINE`. Both hooks
-must scope against the SHA so a mid-round remote update cannot give the engines
-different bases.
+fetch, `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_ENGINE`, and
+`AGENT_LOOP_REVIEW_OUTCOME_FILE`. Both hooks must scope against the SHA so a
+mid-round remote update cannot give the engines different bases.
 
-The wrapper treats exit 0, a clean tree, an unchanged attached issue branch,
-an unchanged HEAD, and append-only commit ancestry as a hook's no-fix signal.
+When a review hook commits fixes, it writes exactly `material` or `minor` to
+`$AGENT_LOOP_REVIEW_OUTCOME_FILE`. Material means any substantive behavior,
+correctness, security/privacy, data-safety, compatibility, deployment/sync, or
+review-integrity change. Minor means low-risk, non-behavioral cleanup, clarity,
+or test/docs polish. If a hook commits without writing the file, the wrapper
+defaults to `material`; a no-commit pass is clean and must not write an outcome.
+Only material fixes restart at Codex. Minor fixes are retained and validated but
+count toward convergence so low-severity polish cannot keep the loop running.
+
+The wrapper also requires exit 0, a clean tree, an attached issue branch, and
+append-only commit ancestry.
 It disables canonical `git push`, Git aliases, and `gh` invocations inside
 every hook; the wrapper alone publishes the final captured commit. Caller auth
 variables remain available so ordinary authenticated Git reads and credential
@@ -104,7 +113,8 @@ the current templates manually before the synced wrapper can run:
    a fresh adversarial review. Scope both to `$AGENT_LOOP_REVIEW_BASE_SHA`.
 2. Make both hooks fix and commit confirmed findings, leave the issue branch
    attached and clean, append fixes without rewriting prior commits, avoid
-   publication, and exit nonzero if findings remain.
+   publication, classify committed fixes through
+   `$AGENT_LOOP_REVIEW_OUTCOME_FILE`, and exit nonzero if findings remain.
 3. Configure a non-mutating `validation_hook`, add
    `review_contract_version = 1`, and optionally override
    `review_max_rounds = 4` with another positive cap.
@@ -129,8 +139,9 @@ and never copies issue bodies, model logs, or findings into GitHub.
 5. Run the worker and require a clean local commit.
 6. Validate, then run a fresh Codex `deepgrill` followed by a fresh Claude
    review, validating after each pass.
-7. If either reviewer commits a fix, restart at Codex. Convergence requires one
-   entire Codex-then-Claude round with no commits on the same HEAD. Exhausting
+7. If either reviewer commits a material fix, restart at Codex. Minor-only fixes
+   are validated and retained without restarting. Convergence requires one
+   entire Codex-then-Claude round with no material fixes. Exhausting
    `review_max_rounds` blocks publication and preserves the worktree.
 8. Fetch and merge the base again, inspect a bounded diff, and revalidate.
 9. Confirm no worker/hook pushed the branch; only then push and open the PR.
