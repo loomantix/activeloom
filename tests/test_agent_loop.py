@@ -133,6 +133,7 @@ def _config(tmp_path: Path, **overrides: str | int) -> str:
         "worker_retries": 1,
         "worker_timeout_seconds": 5,
         "hook_timeout_seconds": 10,
+        "review_contract_version": 1,
         "review_max_rounds": 3,
         "retry_on_timeout": "true",
         "retry_delay_seconds": 0,
@@ -249,7 +250,7 @@ def test_dry_run_shows_plan_without_mutation(
     assert result.returncode == 0, result.stderr
     assert "Setup hook:" in result.stdout
     assert (
-        "Review order: Codex deepgrill -> Claude review -> repeat until a no-fix round"
+        "Review order: configured Codex hook -> configured Claude hook -> repeat until a no-fix round"
         in result.stdout
     )
     assert "Publication:" in result.stdout
@@ -306,7 +307,7 @@ def test_review_restarts_at_codex_until_both_engines_are_clean_on_same_head(
         config=_config(tmp_path, claude_review_hook=claude_hook),
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "converged on the same HEAD after 2 round(s)" in result.stdout
+    assert "reached a same-HEAD no-commit round after 2 round(s)" in result.stdout
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
     assert events == [
         "setup",
@@ -354,6 +355,134 @@ def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
         cwd=consumer[1],
     ).stdout
     assert "issue-19" not in remote_branches
+
+
+def test_review_contract_version_is_required_before_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    legacy_config = _config(tmp_path).replace("review_contract_version = 1\n", "")
+    result = _run(
+        consumer,
+        ["--issues", "20"],
+        issues=[_issue(20)],
+        config=legacy_config,
+    )
+    assert result.returncode != 0
+    assert "review_contract_version = 1" in result.stderr
+    gh_log = consumer[3] / "gh.log"
+    assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+    assert not (tmp_path / "worktrees").exists()
+
+
+def test_validation_hook_is_required_before_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "21"],
+        issues=[_issue(21)],
+        config=_config(tmp_path, validation_hook=""),
+    )
+    assert result.returncode != 0
+    assert "validation_hook must be configured" in result.stderr
+    gh_log = consumer[3] / "gh.log"
+    assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+    assert not (tmp_path / "worktrees").exists()
+
+
+def test_validation_commit_after_claude_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    validation_hook = (
+        "printf 'validate\\n' >> \"$EVENT_LOG\"; "
+        "if [ \"${AGENT_LOOP_REVIEW_ENGINE:-}\" = claude ]; then "
+        "printf 'validation fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'fix: validation mutation'; fi"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "22"],
+        issues=[_issue(22)],
+        config=_config(tmp_path, validation_hook=validation_hook),
+    )
+    assert result.returncode != 0
+    assert "validation mutated the worktree or HEAD" in result.stderr
+    assert "Worktree preserved:" in result.stderr
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
+    assert "issue-22" not in remote_branches
+
+
+def test_detached_reviewer_commit_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
+        "if [ ! -e \"$AGENT_STATE_DIR/detached-reviewed\" ]; then "
+        "touch \"$AGENT_STATE_DIR/detached-reviewed\"; "
+        "git checkout --detach >/dev/null; "
+        "printf 'detached review fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'fix: detached review'; fi"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "23"],
+        issues=[_issue(23)],
+        config=_config(tmp_path, codex_review_hook=codex_hook),
+    )
+    assert result.returncode != 0
+    assert "moved HEAD away from the issue branch" in result.stderr
+    match = re.search(r"Worktree preserved: (.+)", result.stderr)
+    assert match
+    preserved = Path(match.group(1))
+    assert "detached review fix" in _run_git("show", "HEAD:result.txt", cwd=preserved).stdout
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
+    assert "issue-23" not in remote_branches
+
+
+def test_ambiguous_origin_tag_cannot_spoof_remote_base(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, remote, _, _ = consumer
+    stale_base = _run_git("rev-parse", "refs/remotes/origin/main", cwd=repo).stdout.strip()
+    clone = tmp_path / "advanced-base"
+    _run_git("clone", str(remote), str(clone))
+    _run_git("config", "user.name", "Test", cwd=clone)
+    _run_git("config", "user.email", "test@example.invalid", cwd=clone)
+    (clone / "fresh-base.txt").write_text("fresh\n", encoding="utf-8")
+    _run_git("add", "fresh-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: advance base", cwd=clone)
+    _run_git("push", "origin", "main", cwd=clone)
+    _run_git("update-ref", "refs/tags/origin/main", stale_base, cwd=repo)
+
+    worker_hook = (
+        "test -f fresh-base.txt; printf 'worker\\n' >> \"$EVENT_LOG\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker from remote base'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "24"],
+        issues=[_issue(24)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branch = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=remote,
+    ).stdout.strip()
+    assert _run_git("show", f"{branch}:fresh-base.txt", cwd=remote).stdout == "fresh\n"
 
 
 @pytest.mark.parametrize(

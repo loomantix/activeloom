@@ -38,10 +38,13 @@ Use this path when both local engines are available:
 7. After convergence, fetch and integrate the base again, inspect the final
    diff, revalidate, then push and open the PR.
 
-The `agent-loop` skill automates this path with `review_max_rounds`,
-`codex_review_hook`, and `claude_review_hook`. A successful hook with no commit
-means that reviewer found no confirmed fix on that HEAD. A hook must fail if it
-leaves a valid finding unresolved or cannot leave a clean tree.
+The `agent-loop` skill automates this path with a required non-mutating
+validation hook plus `review_max_rounds`, `codex_review_hook`, and
+`claude_review_hook`. It treats exit 0, clean Git state, an attached issue
+branch, and an unchanged HEAD as a hook's no-fix signal. The wrapper cannot
+prove that an arbitrary command launched the named engine, started fresh, used
+the required base SHA, or resolved every finding; consumer hook commands own
+those guarantees and must fail if a valid finding remains.
 
 Do not run `reviewit` after this path merely as an extra ritual. Use it only when
 the developer intentionally chooses the hosted fallback or explicitly requests

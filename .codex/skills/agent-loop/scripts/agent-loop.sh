@@ -114,6 +114,7 @@ WORKER_FALLBACK_MODEL=""
 WORKER_RETRIES=1
 WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
+REVIEW_CONTRACT_VERSION=""
 REVIEW_MAX_ROUNDS=4
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
@@ -138,6 +139,7 @@ assign_config() {
         worker_retries) WORKER_RETRIES="$value" ;;
         worker_timeout_seconds) WORKER_TIMEOUT_SECONDS="$value" ;;
         hook_timeout_seconds) HOOK_TIMEOUT_SECONDS="$value" ;;
+        review_contract_version) REVIEW_CONTRACT_VERSION="$value" ;;
         review_max_rounds) REVIEW_MAX_ROUNDS="$value" ;;
         retry_on_timeout) RETRY_ON_TIMEOUT="$value" ;;
         retry_delay_seconds) RETRY_DELAY_SECONDS="$value" ;;
@@ -175,6 +177,11 @@ if [ -e "$CONFIG_FILE" ]; then
     done < "$CONFIG_FILE"
 fi
 
+if [ "$REVIEW_CONTRACT_VERSION" != 1 ]; then
+    echo "agent-loop config must set review_contract_version = 1 after migrating the local review hooks" >&2
+    exit 1
+fi
+
 BASE_BRANCH="${AGENT_LOOP_BASE_BRANCH:-$BASE_BRANCH}"
 if [ -z "$BASE_BRANCH" ]; then
     BASE_BRANCH="$(git -C "$PROJECT_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
@@ -190,6 +197,8 @@ validate_ref_component() {
 }
 validate_ref_component "$BASE_BRANCH" "base branch"
 validate_ref_component "$BRANCH_PREFIX/example" "branch prefix"
+BASE_REMOTE_REF="refs/remotes/origin/$BASE_BRANCH"
+BASE_FETCH_REFSPEC="+refs/heads/$BASE_BRANCH:$BASE_REMOTE_REF"
 
 for value in "$WORKER_RETRIES" "$WORKER_TIMEOUT_SECONDS" "$HOOK_TIMEOUT_SECONDS" \
              "$REVIEW_MAX_ROUNDS" "$RETRY_DELAY_SECONDS" "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
@@ -212,6 +221,7 @@ if [ -z "$WORKER_HOOK" ]; then
 fi
 [ -x "$ISSUES_READY" ] || { echo "issues ready.py not found or not executable: $ISSUES_READY" >&2; exit 1; }
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
+[ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CODEX_REVIEW_HOOK" ] || { echo "codex_review_hook must be configured before running agent-loop" >&2; exit 1; }
 
@@ -224,9 +234,9 @@ fi
 
 cd "$PROJECT_DIR"
 if [ "$DRY_RUN" = false ]; then
-    git fetch origin "$BASE_BRANCH" --quiet
+    git fetch origin "$BASE_FETCH_REFSPEC" --quiet
 fi
-git rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH" >/dev/null || {
+git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
     echo "configured base branch does not exist locally: origin/$BASE_BRANCH" >&2
     [ "$DRY_RUN" = true ] && echo "Dry-run does not fetch; fetch the base branch once and retry." >&2
     exit 1
@@ -359,7 +369,7 @@ pr_merged_to_base() {
     data="$(gh pr view "$pr" --json state,baseRefName,mergeCommit --jq '[.state,.baseRefName,(.mergeCommit.oid // "")] | @tsv' 2>/dev/null)" || return 1
     IFS=$'\t' read -r state base oid <<< "$data"
     [ "$state" = MERGED ] && [ "$base" = "$BASE_BRANCH" ] && [ -n "$oid" ] || return 1
-    git merge-base --is-ancestor "$oid" "origin/$BASE_BRANCH" >/dev/null 2>&1
+    git merge-base --is-ancestor "$oid" "$BASE_REMOTE_REF" >/dev/null 2>&1
 }
 
 issue_dependency_merged() {
@@ -432,6 +442,15 @@ claim_issue() {
 worktree_has_work() {
     local start_sha="$1"
     [ -n "$(git status --porcelain)" ] || [ "$(git rev-parse HEAD)" != "$start_sha" ]
+}
+
+require_issue_branch_head() {
+    local current_branch head_sha branch_sha
+    current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" || return 1
+    [ "$current_branch" = "$AGENT_LOOP_BRANCH" ] || return 1
+    head_sha="$(git rev-parse HEAD)" || return 1
+    branch_sha="$(git rev-parse "refs/heads/$AGENT_LOOP_BRANCH")" || return 1
+    [ "$head_sha" = "$branch_sha" ]
 }
 
 run_bounded_hook() {
@@ -510,6 +529,10 @@ require_clean_committed_tree() {
         recovery_message "$phase left a dirty worktree."
         return 1
     fi
+    if ! require_issue_branch_head; then
+        recovery_message "$phase moved HEAD away from the issue branch."
+        return 1
+    fi
     if [ "$(git rev-parse HEAD)" = "$start_sha" ]; then
         recovery_message "$phase produced no local commit."
         return 1
@@ -517,10 +540,24 @@ require_clean_committed_tree() {
 }
 
 run_validation() {
-    local label="$1"
-    [ -z "$VALIDATION_HOOK" ] && return 0
+    local label="$1" before_sha after_sha status
+    if ! require_issue_branch_head; then
+        echo "$label validation did not start on the issue branch" >&2
+        return 1
+    fi
+    before_sha="$(git rev-parse HEAD)" || return 1
     run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$HOOK_TIMEOUT_SECONDS" \
-        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log"
+        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" || return 1
+    status="$(git status --porcelain)" || return 1
+    after_sha="$(git rev-parse HEAD)" || return 1
+    if [ -n "$status" ] || [ "$after_sha" != "$before_sha" ]; then
+        echo "$label validation mutated the worktree or HEAD; validation hooks must be non-mutating" >&2
+        return 1
+    fi
+    if ! require_issue_branch_head; then
+        echo "$label validation moved HEAD away from the issue branch" >&2
+        return 1
+    fi
 }
 
 run_review_convergence() {
@@ -531,33 +568,32 @@ run_review_convergence() {
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
         export AGENT_LOOP_REVIEW_ROUND="$round"
 
-        git fetch origin "$BASE_BRANCH" --quiet
+        git fetch origin "$BASE_FETCH_REFSPEC" --quiet
         export AGENT_LOOP_REVIEW_BASE_SHA
         AGENT_LOOP_REVIEW_BASE_SHA="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")"
         export AGENT_LOOP_REVIEW_ENGINE=codex
         codex_before="$(git rev-parse HEAD)"
-        run_bounded_hook "Codex deepgrill (round $round)" "$CODEX_REVIEW_HOOK" \
+        run_bounded_hook "configured Codex review hook (round $round)" "$CODEX_REVIEW_HOOK" \
             "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/codex-review-round-$round.log" || {
-            recovery_message "Codex deepgrill hook failed in review round $round."
+            recovery_message "Configured Codex review hook failed in review round $round."
             return 1
         }
         [ -z "$(git status --porcelain)" ] || {
-            recovery_message "Codex deepgrill left uncommitted findings/fixes in review round $round."
+            recovery_message "Configured Codex review hook left uncommitted findings/fixes in review round $round."
+            return 1
+        }
+        require_issue_branch_head || {
+            recovery_message "Configured Codex review hook moved HEAD away from the issue branch in review round $round."
             return 1
         }
         codex_after="$(git rev-parse HEAD)"
         run_validation "codex-review-round-$round" || {
-            recovery_message "Validation after Codex deepgrill failed in review round $round."
+            recovery_message "Validation after the configured Codex review hook failed in review round $round."
             return 1
         }
-        [ -z "$(git status --porcelain)" ] || {
-            recovery_message "Validation after Codex deepgrill dirtied the worktree in review round $round."
-            return 1
-        }
-
         export AGENT_LOOP_REVIEW_ENGINE=claude
         claude_before="$(git rev-parse HEAD)"
-        run_bounded_hook "fresh local Claude review (round $round)" "$CLAUDE_REVIEW_HOOK" \
+        run_bounded_hook "configured Claude review hook (round $round)" "$CLAUDE_REVIEW_HOOK" \
             "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/claude-review-round-$round.log" || {
             recovery_message "Claude review hook failed in review round $round."
             return 1
@@ -566,16 +602,15 @@ run_review_convergence() {
             recovery_message "Claude review left uncommitted findings/fixes in review round $round."
             return 1
         }
+        require_issue_branch_head || {
+            recovery_message "Claude review moved HEAD away from the issue branch in review round $round."
+            return 1
+        }
         claude_after="$(git rev-parse HEAD)"
         run_validation "claude-review-round-$round" || {
             recovery_message "Validation after Claude review failed in review round $round."
             return 1
         }
-        [ -z "$(git status --porcelain)" ] || {
-            recovery_message "Validation after Claude review dirtied the worktree in review round $round."
-            return 1
-        }
-
         codex_changed=false
         claude_changed=false
         [ "$codex_before" = "$codex_after" ] || codex_changed=true
@@ -584,7 +619,7 @@ run_review_convergence() {
 
         if [ "$codex_changed" = false ] && [ "$claude_changed" = false ]; then
             unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA
-            echo -e "${GREEN}✓${NC} Local Codex and Claude reviews converged on the same HEAD after $round round(s)"
+            echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reached a same-HEAD no-commit round after $round round(s)"
             return 0
         fi
 
@@ -593,7 +628,7 @@ run_review_convergence() {
     done
 
     unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA
-    recovery_message "Local reviews did not converge within $REVIEW_MAX_ROUNDS round(s)."
+    recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
     return 1
 }
 
@@ -603,36 +638,35 @@ inspect_publication_diff() {
     # body; check the gate explicitly or its non-zero exit (conflict markers left in
     # a committed file, whitespace errors) is silently ignored and publication
     # proceeds with a corrupt diff.
-    if ! git diff --check "origin/$BASE_BRANCH..HEAD"; then
+    if ! git diff --check "${BASE_REMOTE_REF}..HEAD"; then
         echo "publication diff contains conflict markers or whitespace errors" >&2
         return 1
     fi
-    file_count="$(git diff --name-only "origin/$BASE_BRANCH..HEAD" | wc -l | tr -d ' ')"
+    file_count="$(git diff --name-only "${BASE_REMOTE_REF}..HEAD" | wc -l | tr -d ' ')"
     [ "$file_count" -gt 0 ] || { echo "publication diff is empty" >&2; return 1; }
     echo "   Publication diff: $file_count file(s)"
-    git diff --stat "origin/$BASE_BRANCH..HEAD" | tail -n "$OUTPUT_MAX_LINES"
+    git diff --stat "${BASE_REMOTE_REF}..HEAD" | tail -n "$OUTPUT_MAX_LINES"
 }
 
 publish_issue() {
     local number="$1" branch="$2" body_file pr_url
-    git push --set-upstream origin "$branch"
+    git push --set-upstream origin "refs/heads/$branch:refs/heads/$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
-    # Report only the steps that actually ran. Claude review, Codex deepgrill, and
-    # fresh-base integration are unconditional; setup and validation are optional
-    # hooks (run_validation no-ops when unset), so claiming them unconditionally
-    # over-states verification exactly when a consumer hasn't wired them up.
+    # Report what the wrapper can prove. Hook configuration attests which engines
+    # run; the wrapper itself proves only successful commands, clean state, and a
+    # complete no-commit round. Setup remains optional; validation is required.
     {
         echo "## Summary"
         echo
-        echo "Local worker implementation reached Codex/Claude review convergence after"
+        echo "Configured Codex and Claude review hooks reached a clean no-commit round after"
         echo "$REVIEW_ROUNDS_USED round(s) against fresh \`origin/$BASE_BRANCH\`, then passed fresh-base integration."
         echo
         echo "## Test plan"
         echo
         if [ -n "$SETUP_HOOK" ]; then echo "- [x] isolated dependency bootstrap"; fi
-        echo "- [x] local Codex deepgrill and Claude review converged ($REVIEW_ROUNDS_USED round(s))"
+        echo "- [x] configured Codex and Claude hooks completed a clean no-commit round ($REVIEW_ROUNDS_USED round(s))"
         echo "- [x] fresh-base integration and publication-diff inspection"
-        if [ -n "$VALIDATION_HOOK" ]; then echo "- [x] configured local validation hook"; fi
+        echo "- [x] configured non-mutating local validation hook"
         echo
         echo "Closes #$number"
     } > "$body_file"
@@ -653,8 +687,8 @@ echo "   Dry run: $DRY_RUN"
 echo "   Hooks:"
 echo "     setup: ${SETUP_HOOK:-<none>}"
 echo "     validation: ${VALIDATION_HOOK:-<none>}"
-echo "     Claude review: $CLAUDE_REVIEW_HOOK"
-echo "     Codex deepgrill: $CODEX_REVIEW_HOOK"
+echo "     Claude review hook: $CLAUDE_REVIEW_HOOK"
+echo "     Codex review hook: $CODEX_REVIEW_HOOK"
 echo "     convergence cap: $REVIEW_MAX_ROUNDS round(s)"
 
 ITERATION=0
@@ -683,7 +717,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     echo "   Worktree: $ACTIVE_WORKTREE"
     echo "   Branch: $branch"
     echo "   Setup hook: ${SETUP_HOOK:-<none>}"
-    echo "   Review order: Codex deepgrill -> Claude review -> repeat until a no-fix round"
+    echo "   Review order: configured Codex hook -> configured Claude hook -> repeat until a no-fix round"
     echo "   Publication: push $branch; PR base $BASE_BRANCH"
 
     if [ "$DRY_RUN" = true ]; then
@@ -716,7 +750,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would
     # otherwise target the integration branch and bypass local review.
-    git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "origin/$BASE_BRANCH"
+    git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "$BASE_REMOTE_REF"
     cd "$ACTIVE_WORKTREE"
 
     export AGENT_LOOP_ISSUE_ID="$SELECTED_ID"
@@ -733,13 +767,14 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             exit 1
         }
         [ -z "$(git status --porcelain)" ] || { recovery_message "Setup hook dirtied tracked files."; exit 1; }
+        require_issue_branch_head || { recovery_message "Setup hook moved HEAD away from the issue branch."; exit 1; }
     fi
 
     run_worker "$start_sha" || exit 1
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
 
-    export AGENT_LOOP_REVIEW_BASE="origin/$BASE_BRANCH"
+    export AGENT_LOOP_REVIEW_BASE="$BASE_REMOTE_REF"
     REVIEW_ROUNDS_USED=0
     # Keep this as a simple command instead of placing the function in an `||`
     # context. Bash disables `errexit` throughout a function invoked from an
@@ -747,20 +782,21 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     run_review_convergence
 
     echo -e "${BLUE}▸${NC} Fresh-base integration"
-    git fetch origin "$BASE_BRANCH" --quiet
-    if ! git merge --no-edit "origin/$BASE_BRANCH"; then
+    git fetch origin "$BASE_FETCH_REFSPEC" --quiet
+    if ! git merge --no-edit "$BASE_REMOTE_REF"; then
         git merge --abort >/dev/null 2>&1 || true
         recovery_message "Fresh-base merge conflicted; original commits were preserved."
         exit 1
     fi
     inspect_publication_diff || { recovery_message "Fresh-base publication diff inspection failed."; exit 1; }
     run_validation "fresh-base" || { recovery_message "Fresh-base validation failed."; exit 1; }
-    [ -z "$(git status --porcelain)" ] || { recovery_message "Fresh-base validation dirtied the worktree."; exit 1; }
+    require_issue_branch_head || { recovery_message "Fresh-base integration moved HEAD away from the issue branch."; exit 1; }
 
     if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
         recovery_message "Remote branch existed before wrapper publication; a worker or hook may have pushed."
         exit 1
     fi
+    require_issue_branch_head || { recovery_message "Publication HEAD is not the issue branch."; exit 1; }
     publish_issue "$SELECTED_ID" "$branch"
 
     cd "$PROJECT_DIR"

@@ -56,9 +56,10 @@ with the issue worktree as the current directory.
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
 | `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                 |
 | `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                    |
-| `validation_hook`                                | Bounded validation after the worker, after every review pass, and after fresh-base integration.                                |
+| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                              |
 | `claude_review_hook`                             | Required fresh local Claude review. It must fix confirmed findings, commit fixes, fail on unresolved findings, and never push. |
 | `codex_review_hook`                              | Required fresh Codex `deepgrill` against `$AGENT_LOOP_REVIEW_BASE_SHA`. It has the same fix/commit/fail/no-push contract.      |
+| `review_contract_version`                        | Required opt-in to the current hook contract. Set to `1`; missing or unsupported versions fail before issue selection.         |
 | `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.           |
 | `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                     |
 | `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                   |
@@ -72,10 +73,33 @@ with the issue worktree as the current directory.
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_BASE_BRANCH`,
 `AGENT_LOOP_BRANCH`, `AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and
 `AGENT_LOOP_PROMPT`. Review hooks also receive `AGENT_LOOP_REVIEW_BASE`, the
-immutable `AGENT_LOOP_REVIEW_BASE_SHA` captured after the round's fresh fetch,
-plus `AGENT_LOOP_REVIEW_ROUND` and `AGENT_LOOP_REVIEW_ENGINE`. Both hooks must
-scope against the SHA so a mid-round remote update cannot give the engines
-different bases.
+fully qualified fetched remote ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA`
+captured after the round's fresh fetch, plus `AGENT_LOOP_REVIEW_ROUND` and
+`AGENT_LOOP_REVIEW_ENGINE`. Both hooks must scope against the SHA so a mid-round
+remote update cannot give the engines different bases.
+
+The wrapper treats exit 0, a clean tree, an unchanged attached issue branch,
+and an unchanged HEAD as a hook's no-fix signal. It cannot verify that an
+arbitrary hook command launched the named engine, started a fresh session,
+reviewed the required SHA, or resolved every valid finding. Consumer hook
+commands must provide those guarantees and exit nonzero otherwise. Validation
+hooks must not change HEAD, switch branches, or leave worktree changes.
+
+## Existing Consumer Migration
+
+The wrapper is upstream-owned, but config, worker instructions, and the prompt
+are `create_if_missing` consumer files. Existing consumers must therefore merge
+the current templates manually before the synced wrapper can run:
+
+1. Update the Codex hook to run a fresh `deepgrill`, then the Claude hook to run
+   a fresh adversarial review. Scope both to `$AGENT_LOOP_REVIEW_BASE_SHA`.
+2. Make both hooks fix and commit confirmed findings, leave the issue branch
+   attached and clean, avoid publication, and exit nonzero if findings remain.
+3. Configure a non-mutating `validation_hook`, add
+   `review_contract_version = 1`, and optionally override
+   `review_max_rounds = 4` with another positive cap.
+4. Merge the current local-only wording from the instruction and prompt
+   templates. Sync will not overwrite those consumer-owned files.
 
 For a non-mutating consumer smoke test from an upstream development worktree,
 set `AGENT_LOOP_PROJECT_DIR=/path/to/consumer` and pass `--dry-run`. Do not use
@@ -116,9 +140,9 @@ do not pass.
 On any non-zero worker exit, inspect whether the worktree is dirty or contains
 new commits. Preserve all changed or committed work and stop with recovery
 commands. Retry capacity/timeouts only when the worktree is unchanged. Review,
-setup, integration, validation, and review non-convergence failures also
-preserve the worktree. Never reset, reuse, clean, or delete a dirty recovery
-worktree.
+setup, integration, validation mutation, detached/wrong-branch state, and
+review non-convergence failures also preserve the worktree. Never reset, reuse,
+clean, or delete a dirty recovery worktree.
 
 Successful publication removes the clean linked worktree but retains the local
 branch. Interrupted runs preserve the active worktree.

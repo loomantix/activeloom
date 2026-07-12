@@ -73,9 +73,10 @@ Updates flow through `git pull` in this checkout. Existing symlinks pick up edit
 If a skill command is not found in a Codex session, run the dry-run check from this checkout. Use the normal installer for missing links; use `--force` only when the dry-run reports stale symlinks or regular files that should be replaced. Start a fresh Codex session after changing installed skills so discovery reloads.
 
 Consumer-owned `create_if_missing` targets are intentionally not upgraded by a
-sync. Existing `agent-loop` consumers adopting backlog RCA must manually merge
-the current bail-classification and base-branch guidance from the instruction
-and prompt templates; see the skill's **Existing consumer migration** section.
+sync. Existing `agent-loop` consumers must manually merge the current config,
+instruction, and prompt contracts—including `review_contract_version = 1`—
+before using the synced convergence wrapper; see the skill's **Existing
+Consumer Migration** section.
 
 ## Wire Up A Consumer Repo
 
