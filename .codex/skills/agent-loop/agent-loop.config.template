@@ -26,15 +26,17 @@ review_contract_version = 1
 # hook must fix confirmed findings, commit fixes, fail if valid findings remain,
 # and leave a clean tree without rewriting prior commits. Neither may push, open
 # a PR, or invoke hosted reviewers. The wrapper disables ordinary `git push`,
-# Git aliases, and `gh` commands during hooks while preserving authenticated
-# Git reads, and publishes only its captured SHA.
+# Git aliases, and ordinary `gh` commands during hooks while preserving the
+# narrow `gh auth git-credential get` helper used by authenticated Git reads.
+# It rejects origin URL changes and publishes only its captured SHA.
 # Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
 # round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
 # ref. The wrapper validates exit status and Git state but cannot prove which
 # engine an arbitrary command launches; these commands own that guarantee.
 # When a hook commits, write exactly `material` or `minor` to
 # `$AGENT_LOOP_REVIEW_OUTCOME_FILE`. Missing classification defaults to material;
-# a no-commit pass is clean and must not write the file.
+# a no-commit pass is clean and must not write the file. Validation must not
+# create, remove, or alter the accepted outcome.
 claude_review_hook =
 codex_review_hook =
 review_max_rounds = 4

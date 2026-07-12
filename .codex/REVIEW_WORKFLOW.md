@@ -46,9 +46,10 @@ validation hook plus `review_max_rounds`, `codex_review_hook`, and
 `claude_review_hook`. Review hooks classify committed fixes through
 `$AGENT_LOOP_REVIEW_OUTCOME_FILE`; a missing classification defaults to
 `material`, while a pass with no commit is clean.
-It disables ordinary `git push`, Git aliases, and `gh` invocations while hooks
-run, while preserving authenticated Git reads, and publishes only the final
-captured commit. The wrapper cannot prove that an
+It disables ordinary `git push`, Git aliases, and GitHub-facing `gh` invocations
+while hooks run, while preserving `gh auth git-credential get` for authenticated
+Git reads, attests unchanged origin URLs, and publishes only the final captured
+commit. The wrapper cannot prove that an
 arbitrary command launched the named engine, started fresh, used the required
 base SHA, or resolved every finding; consumer hook commands own those
 guarantees and must fail if a valid finding remains.

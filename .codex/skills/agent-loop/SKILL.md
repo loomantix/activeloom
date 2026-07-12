@@ -43,8 +43,9 @@ issue gets a unique `agent-loop/issue-<N>-<run>` branch and linked worktree.
 - `.codex/skills/agent-loop/agent-loop.config`: hook and base configuration.
 - `.codex/skills/issues/scripts/ready.py`: ready-queue provider.
 
-These consumer files are bootstrapped with `create_if_missing: true`; merge
-template changes manually into existing consumers.
+The config, instructions, and prompt are bootstrapped with
+`create_if_missing: true`; merge template changes manually into existing
+consumers. `ready.py` is upstream-owned and overwritten by sync.
 
 ## Config Interface
 
@@ -73,7 +74,7 @@ with the issue worktree as the current directory.
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
 `AGENT_LOOP_ISSUE_BODY`, `AGENT_LOOP_BASE_BRANCH`, `AGENT_LOOP_BRANCH`,
 `AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and `AGENT_LOOP_PROMPT`. Because
-`gh` is masked inside hooks, the worker reads its issue from
+ordinary `gh` commands are masked inside hooks, the worker reads its issue from
 `AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY` rather than the API. Review
 hooks also receive `AGENT_LOOP_REVIEW_BASE`, the fully qualified fetched remote
 ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA` captured after the round's fresh
@@ -89,13 +90,17 @@ or test/docs polish. If a hook commits without writing the file, the wrapper
 defaults to `material`; a no-commit pass is clean and must not write an outcome.
 Only material fixes restart at Codex. Minor fixes are retained and validated but
 count toward convergence so low-severity polish cannot keep the loop running.
+The outcome must remain unchanged through post-review validation; a validator
+that creates, removes, or changes the accepted classification blocks publication.
 
 The wrapper also requires exit 0, a clean tree, an attached issue branch, and
 append-only commit ancestry.
-It disables canonical `git push`, Git aliases, and `gh` invocations inside
-every hook; the wrapper alone publishes the final captured commit. Caller auth
-variables remain available so ordinary authenticated Git reads and credential
-helpers continue to work. This is an accidental-publication guard, not a
+It disables canonical `git push`, Git aliases, and ordinary `gh` invocations
+inside every hook; only `gh auth git-credential get` is forwarded for Git
+credential-helper reads. The wrapper also attests that origin fetch/push URLs
+remain unchanged and alone publishes the final captured commit. Caller auth
+variables remain available so ordinary authenticated Git reads continue to
+work. This is an accidental-publication guard, not a
 sandbox against a deliberately hostile shell command. The wrapper cannot verify
 that an arbitrary hook command
 launched the named engine, started a fresh session, reviewed the required SHA,

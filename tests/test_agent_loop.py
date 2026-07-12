@@ -67,8 +67,11 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write_executable(
         ready,
         "#!/usr/bin/env python3\n"
-        "import os\n"
-        "print(os.environ.get('AGENT_READY_JSON', '[]'))\n",
+        "import os, pathlib\n"
+        "state = pathlib.Path(os.environ['AGENT_STATE_DIR'])\n"
+        "key = ('AGENT_POST_CLAIM_READY_JSON' "
+        "if any(state.glob('claimed-*')) else 'AGENT_READY_JSON')\n"
+        "print(os.environ.get(key, os.environ.get('AGENT_READY_JSON', '[]')))\n",
     )
     (repo / "agent-loop-instructions.md").write_text(
         "# Local-only worker instructions\n", encoding="utf-8"
@@ -130,6 +133,8 @@ elif args[:2] == ['issue', 'edit']:
     if '--add-assignee' in args:
         claimed.touch()
     elif '--remove-assignee' in args:
+        if os.environ.get('AGENT_FAIL_REMOVE_ASSIGNEE') == 'true':
+            sys.exit(75)
         claimed.unlink(missing_ok=True)
 elif args[:2] == ['pr', 'view']:
     number = args[2]
@@ -279,6 +284,31 @@ def test_merged_dependency_gate_requires_commit_on_base(
     assert "merged into origin/main" in merged.stdout
 
 
+def test_dependency_parser_failure_blocks_the_run(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    real_python = shutil.which("python3")
+    assert real_python is not None
+    _write_executable(
+        consumer[2] / "python3",
+        """#!/usr/bin/env bash
+if [ "$1" = -c ]; then exit 74; fi
+exec "$AGENT_TEST_REAL_PYTHON" "$@"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "44"],
+        issues=[_issue(44, "Depends on PR #999")],
+        config=_config(tmp_path, dependency_gate="merged-to-base"),
+        extra_env={"AGENT_TEST_REAL_PYTHON": real_python},
+    )
+    assert result.returncode != 0
+    assert "could not parse issue dependencies" in result.stderr
+    assert "dependency gate failed" in result.stderr
+    assert not (consumer[3] / "events.log").exists()
+
+
 def test_dry_run_shows_plan_without_mutation(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -336,6 +366,33 @@ def test_per_issue_worktrees_and_hook_order(
         body = body_file.read_text(encoding="utf-8")
         assert "configured setup hook completed" in body
         assert "isolated dependency bootstrap" not in body
+        assert "Configured Codex and Claude review hooks reached" in body
+        assert "configured non-mutating local validation hook" in body
+        assert "local Claude deep grill" not in body
+
+
+def test_outer_review_environment_is_not_leaked_to_worker(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker_hook = (
+        "if env | grep -q '^AGENT_LOOP_REVIEW_'; then exit 71; fi; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: isolated worker state'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "39"],
+        issues=[_issue(39)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+        extra_env={
+            "AGENT_LOOP_REVIEW_BASE": "stale-base",
+            "AGENT_LOOP_REVIEW_BASE_SHA": "stale-sha",
+            "AGENT_LOOP_REVIEW_ENGINE": "stale-engine",
+            "AGENT_LOOP_REVIEW_OUTCOME_FILE": "/tmp/stale-outcome",
+            "AGENT_LOOP_REVIEW_ROUND": "99",
+        },
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
 
 
 def test_unclassified_review_fix_defaults_material_and_restarts_at_codex(
@@ -356,6 +413,40 @@ def test_unclassified_review_fix_defaults_material_and_restarts_at_codex(
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert "reached a no-material-fix round after 2 round(s)" in result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
+    assert events == [
+        "setup",
+        "worker",
+        "validate",
+        "codex",
+        "validate",
+        "claude",
+        "validate",
+        "codex",
+        "validate",
+        "claude",
+        "validate",
+        "validate",
+    ]
+
+
+def test_codex_material_fix_restarts_the_next_round_at_codex(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
+        "if [ ! -e \"$AGENT_STATE_DIR/codex-fixed\" ]; then "
+        "touch \"$AGENT_STATE_DIR/codex-fixed\"; "
+        "printf 'codex fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'fix: codex material review'; fi"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "46"],
+        issues=[_issue(46)],
+        config=_config(tmp_path, codex_review_hook=codex_hook),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
     assert events == [
         "setup",
@@ -417,14 +508,24 @@ def test_minor_only_review_fixes_converge_without_restarting(
     assert "claude minor" in published
 
 
+@pytest.mark.parametrize(
+    "classification_command",
+    [
+        "printf 'clean\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"",
+        "printf ' minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"",
+        "printf 'minor\\n\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"",
+    ],
+)
 def test_committed_review_with_invalid_classification_blocks_publication(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    classification_command: str,
 ) -> None:
     claude_hook = (
         "printf 'claude\\n' >> \"$EVENT_LOG\"; "
         "printf 'fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'fix: classified incorrectly'; "
-        "printf 'clean\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+        + classification_command
     )
     result = _run(
         consumer,
@@ -437,6 +538,63 @@ def test_committed_review_with_invalid_classification_blocks_publication(
     assert "Worktree preserved:" in result.stderr
     remote_branches = _agent_loop_branches(consumer[1])
     assert "issue-37" not in remote_branches
+
+
+def test_validation_cannot_change_accepted_review_classification(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        "touch \"$AGENT_STATE_DIR/codex-reviewed\"; "
+        "printf 'minor fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'docs: minor review fix'; "
+        "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+    )
+    validation_hook = (
+        "printf 'validate\\n' >> \"$EVENT_LOG\"; "
+        "if [ -e \"$AGENT_STATE_DIR/codex-reviewed\" ]; then "
+        "printf 'material\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; fi"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "38"],
+        issues=[_issue(38)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            validation_hook=validation_hook,
+        ),
+    )
+    assert result.returncode != 0
+    assert "classification changed during validation" in result.stderr
+    assert "issue-38" not in _agent_loop_branches(consumer[1])
+
+
+def test_validation_cannot_create_a_missing_material_outcome(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        "touch \"$AGENT_STATE_DIR/codex-reviewed\"; "
+        "printf 'material fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'fix: material review fix'"
+    )
+    validation_hook = (
+        "printf 'validate\\n' >> \"$EVENT_LOG\"; "
+        "if [ -e \"$AGENT_STATE_DIR/codex-reviewed\" ]; then "
+        "printf 'material\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; fi"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "47"],
+        issues=[_issue(47)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            validation_hook=validation_hook,
+        ),
+    )
+    assert result.returncode != 0
+    assert "outcome file changed during validation" in result.stderr
+    assert "issue-47" not in _agent_loop_branches(consumer[1])
 
 
 def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
@@ -525,6 +683,25 @@ exec "$AGENT_TEST_REAL_JQ" "$@"
     gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
     assert "issue edit" not in gh_log
     assert not (tmp_path / "worktrees").exists()
+
+
+def test_failed_claim_rollback_is_reported_and_stops(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "43"],
+        issues=[_issue(43)],
+        config=_config(tmp_path),
+        extra_env={
+            "AGENT_VERIFIED_ASSIGNEE": "someone-else",
+            "AGENT_FAIL_REMOVE_ASSIGNEE": "true",
+        },
+    )
+    assert result.returncode != 0
+    assert "operator action is required" in result.stderr
+    assert (consumer[3] / "claimed-43").exists()
+    assert "issue-43" not in _agent_loop_branches(consumer[1])
 
 
 def test_validation_commit_after_claude_blocks_publication(
@@ -630,6 +807,79 @@ def test_ambiguous_origin_tag_cannot_spoof_remote_base(
     assert _run_git("show", f"{branch}:fresh-base.txt", cwd=remote).stdout == "fresh\n"
 
 
+def test_hook_guard_installation_failure_stops_before_hook_execution(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, bin_dir, state_dir = consumer
+    base_before = _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+    _write_executable(bin_dir / "cp", "#!/usr/bin/env bash\nexit 73\n")
+    result = _run(
+        consumer,
+        ["--issues", "40"],
+        issues=[_issue(40)],
+        config=_config(tmp_path),
+    )
+    assert result.returncode != 0
+    assert "could not install hook Git guard" in result.stderr
+    assert not (state_dir / "events.log").exists()
+    assert _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip() == base_before
+    assert "issue-40" not in _agent_loop_branches(remote)
+
+
+def test_hook_origin_url_change_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, _, _ = consumer
+    redirected = tmp_path / "redirected.git"
+    _run_git("init", "--bare", str(redirected))
+    worker_hook = (
+        "git remote set-url --push origin \"$REDIRECTED_REMOTE\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker after redirect'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "41"],
+        issues=[_issue(41)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+        extra_env={"REDIRECTED_REMOTE": str(redirected)},
+    )
+    assert result.returncode != 0
+    assert "hook changed origin fetch/push identity" in result.stderr
+    assert "issue-41" not in _agent_loop_branches(remote)
+    assert "issue-41" not in _agent_loop_branches(redirected)
+
+
+def test_post_review_git_status_failure_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, bin_dir, _ = consumer
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+if [ "$1" = status ]; then
+    count_file="$AGENT_STATE_DIR/status-count"
+    count=$(($(cat "$count_file" 2>/dev/null || echo 0) + 1))
+    printf '%s\n' "$count" > "$count_file"
+    if [ "$count" -eq 4 ]; then exit 73; fi
+fi
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "42"],
+        issues=[_issue(42)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_TEST_REAL_GIT": real_git},
+    )
+    assert result.returncode != 0
+    assert "Could not inspect Git status after the configured Codex review hook" in result.stderr
+    assert "issue-42" not in _agent_loop_branches(remote)
+
+
 def test_hook_origin_push_is_disabled_until_wrapper_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -712,11 +962,11 @@ def test_git_alias_cannot_bypass_hook_publication_guard(
 def test_hook_preserves_auth_environment_for_git_credential_reads(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    repo, _, bin_dir, _ = consumer
+    repo, _, _, _ = consumer
     _run_git(
         "config",
         "credential.helper",
-        f"!{bin_dir / 'gh'} auth git-credential",
+        "!gh auth git-credential",
         cwd=repo,
     )
     worker_hook = (
@@ -1040,9 +1290,30 @@ def test_new_dependency_added_during_claim_blocks_worker_and_releases_claim(
         },
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "gained an unmet dependency" in result.stdout
+    assert "is no longer ready after claim verification" in result.stdout
     gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
     assert "issue edit 35 --remove-assignee @me" in gh_log
+    assert not (consumer[3] / "events.log").exists()
+
+
+def test_default_ready_gate_is_rechecked_after_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    updated = _issue(45, "Depends on #999")
+    result = _run(
+        consumer,
+        ["--issues", "45"],
+        issues=[_issue(45)],
+        config=_config(tmp_path),
+        extra_env={
+            "AGENT_POST_CLAIM_ISSUES_JSON": json.dumps({"45": updated}),
+            "AGENT_POST_CLAIM_READY_JSON": "[]",
+        },
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "is no longer ready after claim verification" in result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit 45 --remove-assignee @me" in gh_log
     assert not (consumer[3] / "events.log").exists()
 
 
