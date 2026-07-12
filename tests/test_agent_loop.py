@@ -656,6 +656,50 @@ git commit -m 'fix: shell-safe model worker'
     assert model in args
 
 
+def test_worker_receives_issue_body_without_gh(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # `gh` is masked inside every hook, so the worker cannot fetch its own issue
+    # over the API. The wrapper must hand the title and body to the worker
+    # through the environment, and the shipped prompt must not tell it to run
+    # `gh issue view`.
+    worker_hook = (
+        'if gh issue view "$AGENT_LOOP_ISSUE_ID" >/dev/null 2>&1; then exit 71; fi; '
+        'test -n "$AGENT_LOOP_ISSUE_BODY"; '
+        'printf "%s" "$AGENT_LOOP_ISSUE_TITLE" > title.txt; '
+        'printf "%s" "$AGENT_LOOP_ISSUE_BODY" > body.txt; '
+        "git add title.txt body.txt; git commit -m 'fix: worker from env context'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "29"],
+        issues=[_issue(29, "Implement the widget with a red border.")],
+        config=_config(tmp_path, worker_hook=worker_hook),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branch = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout.strip()
+    assert (
+        _run_git("show", f"{branch}:body.txt", cwd=consumer[1]).stdout
+        == "Implement the widget with a red border."
+    )
+    assert _run_git("show", f"{branch}:title.txt", cwd=consumer[1]).stdout == "Issue 29"
+
+
+def test_default_shipped_prompt_does_not_depend_on_gh() -> None:
+    # The shipped worker prompt runs inside the gh-masked hook, so it must not
+    # instruct the worker to call `gh`. Regression guard for the prompt template.
+    prompt = (
+        REPO_ROOT / ".codex/skills/agent-loop/prompt.txt.template"
+    ).read_text(encoding="utf-8")
+    assert "gh issue view" not in prompt
+    assert "AGENT_LOOP_ISSUE_BODY" in prompt
+
+
 @pytest.mark.parametrize(
     ("worker_hook", "expected"),
     [

@@ -233,7 +233,7 @@ fi
 if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
     PROMPT_TEMPLATE="$(<"$PROMPT_FILE")"
 else
-    PROMPT_TEMPLATE="Read @agent-loop-instructions.md. Implement issue #{ISSUE_ID}, validate it, and commit locally. Do not push or open a pull request."
+    PROMPT_TEMPLATE="Read @agent-loop-instructions.md. Implement issue #{ISSUE_ID} using its title in \$AGENT_LOOP_ISSUE_TITLE and description in \$AGENT_LOOP_ISSUE_BODY (gh is disabled inside the loop), validate it, and commit locally. Do not push or open a pull request."
 fi
 [[ "$PROMPT_TEMPLATE" == *"{ISSUE_ID}"* ]] || { echo "prompt template must contain {ISSUE_ID}: $PROMPT_FILE" >&2; exit 1; }
 
@@ -318,11 +318,13 @@ issue_is_selectable() {
 }
 
 SELECTED_ID=""
+SELECTED_TITLE=""
 SELECTED_BODY=""
 SELECTED_ASSIGNED=false
 
 select_next_issue() {
     SELECTED_ID=""
+    SELECTED_TITLE=""
     SELECTED_BODY=""
     SELECTED_ASSIGNED=false
     local json number
@@ -348,6 +350,7 @@ select_next_issue() {
                 continue
             fi
             SELECTED_ID="$number"
+            SELECTED_TITLE="$(jq -r '.title // ""' <<<"$json")"
             SELECTED_BODY="$(jq -r '.body // ""' <<<"$json")"
             [ "$(jq '.assignees | length' <<<"$json")" -gt 0 ] && SELECTED_ASSIGNED=true
             return 0
@@ -363,6 +366,7 @@ select_next_issue() {
         json="$(issue_json "$number")" || return 2
         issue_is_selectable "$number" "$json" || continue
         SELECTED_ID="$number"
+        SELECTED_TITLE="$(jq -r '.title // ""' <<<"$json")"
         SELECTED_BODY="$(jq -r '.body // ""' <<<"$json")"
         return 0
     done < <(jq -r '.[].number' <<<"$ready_json")
@@ -476,11 +480,13 @@ run_bounded_hook() {
     chmod 700 "$guard_bin/git" "$guard_bin/gh"
     (
         set +e
-        # The wrapper alone owns publication. Keep fetch/read access intact, but
-        # make the ordinary `git push origin ...` and `gh` write paths unavailable
-        # inside setup, worker, validation, and review commands. Configured hooks
-        # remain trusted shell commands, so this is a fail-safe against accidental
-        # publication rather than a sandbox against a deliberately hostile hook.
+        # The wrapper alone owns publication. Keep ordinary git fetch/read access
+        # intact, but make `git push origin ...` unavailable and disable `gh`
+        # entirely inside setup, worker, validation, and review commands. Because
+        # gh is masked, the worker gets its issue title/body from the environment
+        # rather than the API. Configured hooks remain trusted shell commands, so
+        # this is a fail-safe against accidental publication rather than a sandbox
+        # against a deliberately hostile hook.
         export AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN"
         export AGENT_LOOP_HOOK_COMMAND="$command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
@@ -798,6 +804,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     cd "$ACTIVE_WORKTREE"
 
     export AGENT_LOOP_ISSUE_ID="$SELECTED_ID"
+    # Hooks run with gh masked, so the worker cannot fetch its own issue over the
+    # API. Hand the title and body to it directly instead of relying on gh.
+    export AGENT_LOOP_ISSUE_TITLE="$SELECTED_TITLE"
+    export AGENT_LOOP_ISSUE_BODY="$SELECTED_BODY"
     export AGENT_LOOP_BASE_BRANCH="$BASE_BRANCH"
     export AGENT_LOOP_BRANCH="$branch"
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"

@@ -70,18 +70,21 @@ with the issue worktree as the current directory.
 | `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                    |
 | `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                               |
 
-Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_BASE_BRANCH`,
-`AGENT_LOOP_BRANCH`, `AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and
-`AGENT_LOOP_PROMPT`. Review hooks also receive `AGENT_LOOP_REVIEW_BASE`, the
-fully qualified fetched remote ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA`
-captured after the round's fresh fetch, plus `AGENT_LOOP_REVIEW_ROUND` and
-`AGENT_LOOP_REVIEW_ENGINE`. Both hooks must scope against the SHA so a mid-round
-remote update cannot give the engines different bases.
+Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
+`AGENT_LOOP_ISSUE_BODY`, `AGENT_LOOP_BASE_BRANCH`, `AGENT_LOOP_BRANCH`,
+`AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and `AGENT_LOOP_PROMPT`. Because
+`gh` is masked inside hooks, the worker reads its issue from
+`AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY` rather than the API. Review
+hooks also receive `AGENT_LOOP_REVIEW_BASE`, the fully qualified fetched remote
+ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA` captured after the round's fresh
+fetch, plus `AGENT_LOOP_REVIEW_ROUND` and `AGENT_LOOP_REVIEW_ENGINE`. Both hooks
+must scope against the SHA so a mid-round remote update cannot give the engines
+different bases.
 
 The wrapper treats exit 0, a clean tree, an unchanged attached issue branch,
 an unchanged HEAD, and append-only commit ancestry as a hook's no-fix signal.
-It masks the normal `git push origin` and authenticated `gh` paths inside every
-hook; the wrapper alone publishes the final captured commit. This is an
+It masks the normal `git push origin` path and disables `gh` entirely inside
+every hook; the wrapper alone publishes the final captured commit. This is an
 accidental-publication guard, not a sandbox against a deliberately hostile
 shell command. The wrapper cannot verify that an arbitrary hook command
 launched the named engine, started a fresh session, reviewed the required SHA,
