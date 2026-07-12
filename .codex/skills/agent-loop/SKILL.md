@@ -55,7 +55,7 @@ with the issue worktree as the current directory.
 | Key                                              | Purpose                                                                                                                        |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
 | `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                 |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                    |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.   |
 | `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                              |
 | `claude_review_hook`                             | Required fresh local Claude review. It must fix confirmed findings, commit fixes, fail on unresolved findings, and never push. |
 | `codex_review_hook`                              | Required fresh Codex `deepgrill` against `$AGENT_LOOP_REVIEW_BASE_SHA`. It has the same fix/commit/fail/no-push contract.      |
@@ -83,10 +83,12 @@ different bases.
 
 The wrapper treats exit 0, a clean tree, an unchanged attached issue branch,
 an unchanged HEAD, and append-only commit ancestry as a hook's no-fix signal.
-It masks the normal `git push origin` path and disables `gh` entirely inside
-every hook; the wrapper alone publishes the final captured commit. This is an
-accidental-publication guard, not a sandbox against a deliberately hostile
-shell command. The wrapper cannot verify that an arbitrary hook command
+It disables canonical `git push`, Git aliases, and `gh` invocations inside
+every hook; the wrapper alone publishes the final captured commit. Caller auth
+variables remain available so ordinary authenticated Git reads and credential
+helpers continue to work. This is an accidental-publication guard, not a
+sandbox against a deliberately hostile shell command. The wrapper cannot verify
+that an arbitrary hook command
 launched the named engine, started a fresh session, reviewed the required SHA,
 or resolved every valid finding. Consumer hook commands must provide those
 guarantees and exit nonzero otherwise. Validation hooks must not change HEAD,
@@ -107,7 +109,8 @@ the current templates manually before the synced wrapper can run:
    `review_contract_version = 1`, and optionally override
    `review_max_rounds = 4` with another positive cap.
 4. Merge the current local-only wording from the instruction and prompt
-   templates. Sync will not overwrite those consumer-owned files.
+   templates, including the local bail-record/operator-handoff contract. Sync
+   will not overwrite those consumer-owned files.
 
 For a non-mutating consumer smoke test from an upstream development worktree,
 set `AGENT_LOOP_PROJECT_DIR=/path/to/consumer` and pass `--dry-run`. Do not use
@@ -147,10 +150,12 @@ do not pass.
 
 On any non-zero worker exit, inspect whether the worktree is dirty or contains
 new commits. Preserve all changed or committed work and stop with recovery
-commands. Retry capacity/timeouts only when the worktree is unchanged. Review,
-setup, integration, validation mutation, detached/wrong-branch state, and
-review non-convergence failures also preserve the worktree. Never reset, reuse,
-clean, or delete a dirty recovery worktree.
+commands. A worker that bails writes the consumer-defined local classification
+record there; the operator applies any required GitHub labels/comments after
+the guarded run exits. Retry capacity/timeouts only when the worktree is
+unchanged. Review, setup, integration, validation mutation,
+detached/wrong-branch state, and review non-convergence failures also preserve
+the worktree. Never reset, reuse, clean, or delete a dirty recovery worktree.
 
 Successful publication removes the clean linked worktree but retains the local
 branch. Interrupted runs preserve the active worktree.

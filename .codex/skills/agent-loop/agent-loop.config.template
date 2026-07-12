@@ -5,7 +5,8 @@
 base_branch =
 
 # Run once inside each new issue worktree. Use an isolated frozen install; never
-# symlink mutable node_modules or equivalent dependency directories.
+# symlink mutable node_modules or equivalent dependency directories. It must not
+# commit, switch branches, or leave Git-visible worktree changes.
 setup_hook =
 
 # Required. Run after the worker, after every local review pass, and after the
@@ -23,8 +24,9 @@ review_contract_version = 1
 # run `deepgrill`; the Claude hook must perform a fresh adversarial review. Each
 # hook must fix confirmed findings, commit fixes, fail if valid findings remain,
 # and leave a clean tree without rewriting prior commits. Neither may push, open
-# a PR, or invoke hosted reviewers. The wrapper masks the ordinary origin-push
-# path and disables `gh` entirely during hooks, publishing only its captured SHA.
+# a PR, or invoke hosted reviewers. The wrapper disables ordinary `git push`,
+# Git aliases, and `gh` commands during hooks while preserving authenticated
+# Git reads, and publishes only its captured SHA.
 # Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
 # round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
 # ref. The wrapper validates exit status and Git state but cannot prove which

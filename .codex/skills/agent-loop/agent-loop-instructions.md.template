@@ -53,8 +53,10 @@ the consumer copy.
 
 ## Bail protocol
 
-TODO: Describe labels/comments required before exiting without a commit. Keep
-comments free of private identifiers and user data.
+TODO: Define a local-only bail record in the preserved worktree containing the
+classification and a public-safe rationale. The worker cannot call `gh`; after
+it exits nonzero, the operator must translate that record into any required
+GitHub labels/comments. Never include private identifiers or user data.
 
 ## Recovery
 

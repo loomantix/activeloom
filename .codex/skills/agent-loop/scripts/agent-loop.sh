@@ -304,6 +304,27 @@ issue_json() {
     gh issue view "$1" --json number,title,body,state,labels,assignees
 }
 
+set_selected_issue_context() {
+    local json="$1" title body
+    title="$(jq -er '
+        if ((.title | type) == "string" and (.title | length) > 0)
+        then .title else error("invalid issue title") end
+    ' <<<"$json")" || {
+        echo "could not extract a non-empty issue title" >&2
+        return 1
+    }
+    body="$(jq -er '
+        if .body == null then ""
+        elif (.body | type) == "string" then .body
+        else error("invalid issue body") end
+    ' <<<"$json")" || {
+        echo "could not extract the issue body" >&2
+        return 1
+    }
+    SELECTED_TITLE="$title"
+    SELECTED_BODY="$body"
+}
+
 issue_is_selectable() {
     local number="$1" json="$2"
     [ "$(jq -r '.state' <<<"$json")" = OPEN ] || return 1
@@ -350,8 +371,7 @@ select_next_issue() {
                 continue
             fi
             SELECTED_ID="$number"
-            SELECTED_TITLE="$(jq -r '.title // ""' <<<"$json")"
-            SELECTED_BODY="$(jq -r '.body // ""' <<<"$json")"
+            set_selected_issue_context "$json" || return 2
             [ "$(jq '.assignees | length' <<<"$json")" -gt 0 ] && SELECTED_ASSIGNED=true
             return 0
         done
@@ -366,8 +386,7 @@ select_next_issue() {
         json="$(issue_json "$number")" || return 2
         issue_is_selectable "$number" "$json" || continue
         SELECTED_ID="$number"
-        SELECTED_TITLE="$(jq -r '.title // ""' <<<"$json")"
-        SELECTED_BODY="$(jq -r '.body // ""' <<<"$json")"
+        set_selected_issue_context "$json" || return 2
         return 0
     done < <(jq -r '.[].number' <<<"$ready_json")
     return 1
@@ -430,17 +449,29 @@ claim_issue() {
         added=true
     fi
 
-    # Refetch after selection/claim and verify identity, not merely count. A
-    # concurrent reassignment can otherwise leave a different sole assignee and
-    # make this worker duplicate their work. Resumes need the same fresh check.
-    claim_json="$(gh issue view "$number" --json assignees)" || claim_json=""
+    # Refetch after selection/claim and verify identity, eligibility, and issue
+    # context. A concurrent reassignment can otherwise duplicate another user's
+    # work, while a concurrent edit can give the worker stale requirements.
+    # Resumes need the same fresh check.
+    claim_json="$(gh issue view "$number" --json number,title,body,state,labels,assignees)" || claim_json=""
     login="$(jq -r 'if (.assignees | length) == 1 then .assignees[0].login else "" end' \
         <<< "$claim_json" 2>/dev/null || true)"
-    if [ "$login" != "$CURRENT_LOGIN" ]; then
+    if [ "$login" != "$CURRENT_LOGIN" ] || ! jq -e '
+        .state == "OPEN" and
+        ((.labels | type) == "array") and
+        (.labels | any(.name == "dev: agent"))
+    ' <<<"$claim_json" >/dev/null 2>&1; then
         if [ "$added" = true ]; then
             gh issue edit "$number" --remove-assignee @me >/dev/null 2>&1 || true
         fi
-        echo "claim race or verification failure for issue #$number" >&2
+        echo "claim race, eligibility change, or verification failure for issue #$number" >&2
+        return 1
+    fi
+    if ! set_selected_issue_context "$claim_json"; then
+        if [ "$added" = true ]; then
+            gh issue edit "$number" --remove-assignee @me >/dev/null 2>&1 || true
+        fi
+        echo "could not refresh issue context after claiming issue #$number" >&2
         return 1
     fi
     if [ "$SELECTED_ASSIGNED" = true ]; then
@@ -480,9 +511,9 @@ run_bounded_hook() {
     chmod 700 "$guard_bin/git" "$guard_bin/gh"
     (
         set +e
-        # The wrapper alone owns publication. Keep ordinary git fetch/read access
-        # intact, but make `git push origin ...` unavailable and disable `gh`
-        # entirely inside setup, worker, validation, and review commands. Because
+        # The wrapper alone owns publication. Keep ordinary authenticated Git
+        # reads intact, but disable canonical `git push`, Git aliases, and `gh`
+        # commands inside setup, worker, validation, and review commands. Because
         # gh is masked, the worker gets its issue title/body from the environment
         # rather than the API. Configured hooks remain trusted shell commands, so
         # this is a fail-safe against accidental publication rather than a sandbox
@@ -490,10 +521,6 @@ run_bounded_hook() {
         export AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN"
         export AGENT_LOOP_HOOK_COMMAND="$command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
-        export GH_CONFIG_DIR="$AGENT_LOOP_LOG_DIR/gh-publication-disabled"
-        export GH_TOKEN=agent-loop-publication-disabled
-        export GITHUB_TOKEN=agent-loop-publication-disabled
-        mkdir -p "$GH_CONFIG_DIR"
         # shellcheck disable=SC2016 # expanded by the bounded login shell
         timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
             'export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
@@ -679,19 +706,19 @@ run_review_convergence() {
 }
 
 inspect_publication_diff() {
-    local file_count
+    local base_sha="$1" file_count
     # This function is called in an `||` context, so `set -e` is disabled in its
     # body; check the gate explicitly or its non-zero exit (conflict markers left in
     # a committed file, whitespace errors) is silently ignored and publication
     # proceeds with a corrupt diff.
-    if ! git diff --check "${BASE_REMOTE_REF}..HEAD"; then
+    if ! git diff --check "$base_sha..HEAD"; then
         echo "publication diff contains conflict markers or whitespace errors" >&2
         return 1
     fi
-    file_count="$(git diff --name-only "${BASE_REMOTE_REF}..HEAD" | wc -l | tr -d ' ')"
+    file_count="$(git diff --name-only "$base_sha..HEAD" | wc -l | tr -d ' ')"
     [ "$file_count" -gt 0 ] || { echo "publication diff is empty" >&2; return 1; }
     echo "   Publication diff: $file_count file(s)"
-    git diff --stat "${BASE_REMOTE_REF}..HEAD" | tail -n "$OUTPUT_MAX_LINES"
+    git diff --stat "$base_sha..HEAD" | tail -n "$OUTPUT_MAX_LINES"
 }
 
 publish_issue() {
@@ -700,7 +727,9 @@ publish_issue() {
         echo "issue branch changed after publication snapshot" >&2
         return 1
     }
-    git push --set-upstream origin "$publication_sha:refs/heads/$branch"
+    git push --force-with-lease="refs/heads/$branch:" origin \
+        "$publication_sha:refs/heads/$branch"
+    git branch --set-upstream-to="origin/$branch" "$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
     # Report what the wrapper can prove. Hook configuration attests which engines
     # run; the wrapper itself proves only successful commands, clean state, and a
@@ -713,7 +742,7 @@ publish_issue() {
         echo
         echo "## Test plan"
         echo
-        if [ -n "$SETUP_HOOK" ]; then echo "- [x] isolated dependency bootstrap"; fi
+        if [ -n "$SETUP_HOOK" ]; then echo "- [x] configured setup hook completed"; fi
         echo "- [x] configured Codex and Claude hooks completed a clean no-commit round ($REVIEW_ROUNDS_USED round(s))"
         echo "- [x] fresh-base integration and publication-diff inspection"
         echo "- [x] configured non-mutating local validation hook"
@@ -790,12 +819,26 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         exit 1
     fi
 
+    selected_body_before_claim="$SELECTED_BODY"
     claim_issue "$SELECTED_ID" || {
         echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID could not be claimed; skipping"
         rmdir "$proposed_log_dir" 2>/dev/null || true
         ACTIVE_WORKTREE=""
         continue
     }
+    if [ "$SELECTED_BODY" != "$selected_body_before_claim" ] && ! check_dependencies "$SELECTED_BODY"; then
+        echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID gained an unmet dependency while it was being claimed"
+        if [ "$SELECTED_ASSIGNED" = false ] && \
+           ! gh issue edit "$SELECTED_ID" --remove-assignee @me >/dev/null; then
+            echo "could not release issue #$SELECTED_ID after its requirements changed" >&2
+            rmdir "$proposed_log_dir" 2>/dev/null || true
+            ACTIVE_WORKTREE=""
+            exit 1
+        fi
+        rmdir "$proposed_log_dir" 2>/dev/null || true
+        ACTIVE_WORKTREE=""
+        continue
+    fi
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would
@@ -820,8 +863,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             recovery_message "Setup hook failed."
             exit 1
         }
-        [ -z "$(git status --porcelain)" ] || { recovery_message "Setup hook dirtied tracked files."; exit 1; }
+        [ -z "$(git status --porcelain)" ] || { recovery_message "Setup hook left Git-visible worktree changes."; exit 1; }
         require_issue_branch_head || { recovery_message "Setup hook moved HEAD away from the issue branch."; exit 1; }
+        setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup."; exit 1; }
+        [ "$setup_after_sha" = "$start_sha" ] || { recovery_message "Setup hook changed HEAD; setup hooks must not commit."; exit 1; }
     fi
 
     run_worker "$start_sha" || exit 1
@@ -843,12 +888,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         recovery_message "Base branch moved non-fast-forward after the final reviewed snapshot."
         exit 1
     fi
-    if ! git merge --no-edit "$BASE_REMOTE_REF"; then
+    if ! git merge --no-edit "$current_base_sha"; then
         git merge --abort >/dev/null 2>&1 || true
         recovery_message "Fresh-base merge conflicted; original commits were preserved."
         exit 1
     fi
-    inspect_publication_diff || { recovery_message "Fresh-base publication diff inspection failed."; exit 1; }
+    inspect_publication_diff "$current_base_sha" || { recovery_message "Fresh-base publication diff inspection failed."; exit 1; }
     run_validation "fresh-base" || { recovery_message "Fresh-base validation failed."; exit 1; }
     require_issue_branch_head || { recovery_message "Fresh-base integration moved HEAD away from the issue branch."; exit 1; }
 

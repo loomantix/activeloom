@@ -7,6 +7,7 @@ real_git="${AGENT_LOOP_REAL_GIT:?AGENT_LOOP_REAL_GIT is required}"
 args=("$@")
 index=0
 subcommand=""
+git_global_args=()
 
 # Find Git's subcommand after the global options that consume a following value.
 # This covers the documented global forms used by automation; unknown flags are
@@ -15,9 +16,14 @@ while [ "$index" -lt "${#args[@]}" ]; do
     argument="${args[$index]}"
     case "$argument" in
         -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+            git_global_args+=("$argument")
+            if [ $((index + 1)) -lt "${#args[@]}" ]; then
+                git_global_args+=("${args[$((index + 1))]}")
+            fi
             index=$((index + 2))
             ;;
         --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--config-env=*|--bare|--no-pager|--paginate|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-optional-locks)
+            git_global_args+=("$argument")
             index=$((index + 1))
             ;;
         --)
@@ -26,6 +32,7 @@ while [ "$index" -lt "${#args[@]}" ]; do
             break
             ;;
         -*)
+            git_global_args+=("$argument")
             index=$((index + 1))
             ;;
         *)
@@ -38,6 +45,19 @@ done
 if [ "$subcommand" = push ]; then
     echo "git push is disabled inside agent-loop hooks; the wrapper owns publication" >&2
     exit 1
+fi
+
+# Git expands configured aliases only after this wrapper has inspected the
+# literal subcommand. Reject aliases in the same config and -C context so a
+# normal `publish = push` (or shell/recursive alias) cannot bypass the guard.
+if [ -n "$subcommand" ]; then
+    alias_definition="$(
+        "$real_git" "${git_global_args[@]}" config --get "alias.$subcommand" 2>/dev/null || true
+    )"
+    if [ -n "$alias_definition" ]; then
+        echo "git aliases are disabled inside agent-loop hooks; use canonical git subcommands" >&2
+        exit 1
+    fi
 fi
 
 exec "$real_git" "$@"

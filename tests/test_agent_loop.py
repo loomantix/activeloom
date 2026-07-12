@@ -81,14 +81,26 @@ state = pathlib.Path(os.environ['AGENT_STATE_DIR'])
 with (state / 'gh.log').open('a') as handle:
     handle.write(' '.join(args) + '\n')
 issues = json.loads(os.environ.get('AGENT_ISSUES_JSON', '{}'))
-if args[:3] == ['api', 'user', '--jq']:
+if args[:2] == ['auth', 'git-credential']:
+    sys.stdin.read()
+    print('username=tester')
+    print('password=' + os.environ.get('GH_TOKEN', ''))
+elif args[:3] == ['api', 'user', '--jq']:
     print('tester')
 elif args[:2] == ['issue', 'view']:
     number = args[2]
     issue = issues.get(number, {'number': int(number), 'title': 'fixture', 'body': '', 'state': 'OPEN', 'labels': [{'name': 'dev: agent'}], 'assignees': []})
-    if args[3:] == ['--json', 'assignees']:
+    claimed = state / ('claimed-' + number)
+    view_counter = state / ('issue-views-' + number)
+    view_count = int(view_counter.read_text() if view_counter.exists() else '0') + 1
+    view_counter.write_text(str(view_count))
+    if claimed.exists() or view_count > 1:
+        issue = json.loads(os.environ.get('AGENT_POST_CLAIM_ISSUES_JSON', '{}')).get(number, issue)
+        issue = dict(issue)
         login = os.environ.get('AGENT_VERIFIED_ASSIGNEE', 'tester')
-        print(json.dumps({'assignees': ([{'login': login}] if login else [])}))
+        issue['assignees'] = ([{'login': login}] if login else [])
+    if args[3:] == ['--json', 'assignees']:
+        print(json.dumps({'assignees': issue['assignees']}))
     elif 'closedByPullRequestsReferences' in ' '.join(args):
         dep = json.loads(os.environ.get('AGENT_ISSUE_DEPENDENCIES', '{}')).get(number, [])
         for row in dep:
@@ -98,7 +110,12 @@ elif args[:2] == ['issue', 'view']:
     else:
         print(json.dumps(issue))
 elif args[:2] == ['issue', 'edit']:
-    pass
+    number = args[2]
+    claimed = state / ('claimed-' + number)
+    if '--add-assignee' in args:
+        claimed.touch()
+    elif '--remove-assignee' in args:
+        claimed.unlink(missing_ok=True)
 elif args[:2] == ['pr', 'view']:
     number = args[2]
     row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
@@ -163,6 +180,11 @@ def _run(
     timeout: int = 30,
 ) -> subprocess.CompletedProcess[str]:
     repo, _, bin_dir, state_dir = fixture
+    for state_file in [
+        *state_dir.glob("claimed-*"),
+        *state_dir.glob("issue-views-*"),
+    ]:
+        state_file.unlink()
     (repo / ".codex/skills/agent-loop/agent-loop.config").write_text(
         config, encoding="utf-8"
     )
@@ -298,6 +320,12 @@ def test_per_issue_worktrees_and_hook_order(
     ).stdout
     assert "issue-4" in remote_branches
     assert "issue-5" in remote_branches
+    pr_bodies = list((tmp_path / "logs").glob("*/pr-body.md"))
+    assert len(pr_bodies) == 2
+    for body_file in pr_bodies:
+        body = body_file.read_text(encoding="utf-8")
+        assert "configured setup hook completed" in body
+        assert "isolated dependency bootstrap" not in body
 
 
 def test_review_restarts_at_codex_until_both_engines_are_clean_on_same_head(
@@ -400,6 +428,34 @@ def test_validation_hook_is_required_before_claim(
     assert not (tmp_path / "worktrees").exists()
 
 
+def test_issue_context_extraction_failure_stops_before_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    real_jq = shutil.which("jq")
+    assert real_jq is not None
+    _write_executable(
+        consumer[2] / "jq",
+        """#!/usr/bin/env bash
+if [[ "$*" == *'.body'* ]]; then
+    exit 73
+fi
+exec "$AGENT_TEST_REAL_JQ" "$@"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "30"],
+        issues=[_issue(30, "Material issue requirements")],
+        config=_config(tmp_path),
+        extra_env={"AGENT_TEST_REAL_JQ": real_jq},
+    )
+    assert result.returncode != 0
+    assert "issue selection failed" in result.stderr
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit" not in gh_log
+    assert not (tmp_path / "worktrees").exists()
+
+
 def test_validation_commit_after_claude_blocks_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -425,6 +481,31 @@ def test_validation_commit_after_claude_blocks_publication(
         cwd=consumer[1],
     ).stdout
     assert "issue-22" not in remote_branches
+
+
+def test_setup_commit_cannot_satisfy_worker_commit_requirement(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    setup_hook = (
+        "printf 'setup-only\\n' > setup-only.txt; git add setup-only.txt; "
+        "git commit -m 'chore: setup must not commit'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "31"],
+        issues=[_issue(31)],
+        config=_config(tmp_path, setup_hook=setup_hook, worker_hook=":"),
+    )
+    assert result.returncode != 0
+    assert "Setup hook changed HEAD" in result.stderr
+    assert "Worktree preserved:" in result.stderr
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
+    assert "issue-31" not in remote_branches
 
 
 def test_detached_reviewer_commit_blocks_publication(
@@ -541,6 +622,80 @@ def test_hook_origin_push_is_disabled_until_wrapper_publication(
     assert "issue-25" in issue_branches
 
 
+@pytest.mark.parametrize(
+    ("alias_name", "alias_value", "alias_invocation"),
+    [
+        (
+            "publish",
+            "push",
+            "git publish origin HEAD:refs/heads/main",
+        ),
+        (
+            "ship",
+            "!git push origin HEAD:refs/heads/main",
+            "git ship",
+        ),
+    ],
+)
+def test_git_alias_cannot_bypass_hook_publication_guard(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    alias_name: str,
+    alias_value: str,
+    alias_invocation: str,
+) -> None:
+    repo, remote, _, _ = consumer
+    base_before = _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+    _run_git("config", f"alias.{alias_name}", alias_value, cwd=repo)
+    worker_hook = (
+        f"if {alias_invocation} >/dev/null 2>&1; then exit 47; fi; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker after blocked alias'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "32"],
+        issues=[_issue(32)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (
+        _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+        == base_before
+    )
+
+
+def test_hook_preserves_auth_environment_for_git_credential_reads(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, _, bin_dir, _ = consumer
+    _run_git(
+        "config",
+        "credential.helper",
+        f"!{bin_dir / 'gh'} auth git-credential",
+        cwd=repo,
+    )
+    worker_hook = (
+        "credential=\"$(printf 'protocol=https\\nhost=github.com\\n\\n' | "
+        'git credential fill)"; '
+        "grep -Fx 'password=caller-token' <<<\"$credential\" >/dev/null; "
+        'if gh issue view "$AGENT_LOOP_ISSUE_ID" >/dev/null 2>&1; then exit 48; fi; '
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: authenticated git read'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "33"],
+        issues=[_issue(33)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+        extra_env={
+            "GH_TOKEN": "caller-token",
+            "GITHUB_TOKEN": "caller-token",
+        },
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_reviewer_history_rewrite_blocks_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -628,6 +783,141 @@ def test_non_fast_forward_base_rewrite_after_review_blocks_publication(
     assert "issue-27" not in remote_branches
 
 
+def test_fresh_base_merge_uses_sha_validated_before_shared_ref_moves(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, remote, bin_dir, state_dir = consumer
+    original_base = _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+    clone = tmp_path / "base-race-builder"
+    _run_git("clone", str(remote), str(clone))
+    _run_git("config", "user.name", "Test", cwd=clone)
+    _run_git("config", "user.email", "test@example.invalid", cwd=clone)
+
+    (clone / "reviewed-base.txt").write_text("reviewed\n", encoding="utf-8")
+    _run_git("add", "reviewed-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: reviewed base", cwd=clone)
+    reviewed_base = _run_git("rev-parse", "HEAD", cwd=clone).stdout.strip()
+    _run_git("push", "origin", "main", cwd=clone)
+
+    _run_git("checkout", "--detach", original_base, cwd=clone)
+    (clone / "replacement-base.txt").write_text("replacement\n", encoding="utf-8")
+    _run_git("add", "replacement-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: unvalidated replacement", cwd=clone)
+    replacement_base = _run_git("rev-parse", "HEAD", cwd=clone).stdout.strip()
+    _run_git(
+        "push",
+        "origin",
+        f"{replacement_base}:refs/heads/replacement-candidate",
+        cwd=clone,
+    )
+    _run_git(
+        "fetch",
+        "origin",
+        "refs/heads/replacement-candidate:refs/test/replacement-candidate",
+        cwd=repo,
+    )
+    _run_git("push", "origin", ":refs/heads/replacement-candidate", cwd=clone)
+
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+"$AGENT_TEST_REAL_GIT" "$@"
+status=$?
+if [ "$status" -eq 0 ] && [ "${1:-}" = merge-base ] && \
+   [ "${2:-}" = --is-ancestor ] && \
+   [ "${3:-}" = "$AGENT_TEST_REVIEWED_BASE" ] && \
+   [ "${4:-}" = "$AGENT_TEST_REVIEWED_BASE" ] && \
+   [ ! -e "$AGENT_STATE_DIR/base-ref-moved" ]; then
+    "$AGENT_TEST_REAL_GIT" update-ref refs/remotes/origin/main \
+        "$AGENT_TEST_REPLACEMENT_BASE"
+    touch "$AGENT_STATE_DIR/base-ref-moved"
+fi
+exit "$status"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "36"],
+        issues=[_issue(36)],
+        config=_config(tmp_path),
+        extra_env={
+            "AGENT_TEST_REAL_GIT": real_git,
+            "AGENT_TEST_REVIEWED_BASE": reviewed_base,
+            "AGENT_TEST_REPLACEMENT_BASE": replacement_base,
+        },
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (state_dir / "base-ref-moved").exists()
+    branch = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=remote,
+    ).stdout.strip()
+    replacement_is_parent = subprocess.run(
+        [
+            "git",
+            f"--git-dir={remote}",
+            "merge-base",
+            "--is-ancestor",
+            replacement_base,
+            branch,
+        ],
+        check=False,
+    )
+    assert replacement_is_parent.returncode != 0
+
+
+def test_remote_branch_created_after_absence_check_is_not_overwritten(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, bin_dir, state_dir = consumer
+    base_sha = _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+if [ "${1:-}" = ls-remote ] && [ ! -e "$AGENT_STATE_DIR/remote-branch-raced" ]; then
+    "$AGENT_TEST_REAL_GIT" "$@"
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        "$AGENT_TEST_REAL_GIT" --git-dir="$AGENT_TEST_REMOTE" update-ref \
+            "refs/heads/$AGENT_LOOP_BRANCH" "$AGENT_TEST_BASE_SHA"
+        touch "$AGENT_STATE_DIR/remote-branch-raced"
+    fi
+    exit "$status"
+fi
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "37"],
+        issues=[_issue(37)],
+        config=_config(tmp_path),
+        extra_env={
+            "AGENT_TEST_REAL_GIT": real_git,
+            "AGENT_TEST_REMOTE": str(remote),
+            "AGENT_TEST_BASE_SHA": base_sha,
+        },
+    )
+    assert result.returncode != 0
+    assert (state_dir / "remote-branch-raced").exists()
+    branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=remote,
+    ).stdout.splitlines()
+    assert len(branches) == 1
+    assert _run_git("rev-parse", branches[0], cwd=remote).stdout.strip() == base_sha
+    gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
+    assert "pr create" not in gh_log
+
+
 def test_default_worker_model_is_passed_as_one_shell_safe_argument(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -690,14 +980,76 @@ def test_worker_receives_issue_body_without_gh(
     assert _run_git("show", f"{branch}:title.txt", cwd=consumer[1]).stdout == "Issue 29"
 
 
+def test_worker_receives_issue_context_refreshed_after_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    updated = _issue(34, "Updated requirements after selection")
+    updated["title"] = "Updated issue title"
+    worker_hook = (
+        'printf "%s" "$AGENT_LOOP_ISSUE_TITLE" > title.txt; '
+        'printf "%s" "$AGENT_LOOP_ISSUE_BODY" > body.txt; '
+        "git add title.txt body.txt; git commit -m 'fix: refreshed issue context'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "34"],
+        issues=[_issue(34, "Stale requirements from selection")],
+        config=_config(tmp_path, worker_hook=worker_hook),
+        extra_env={
+            "AGENT_POST_CLAIM_ISSUES_JSON": json.dumps({"34": updated}),
+        },
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branch = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout.strip()
+    assert (
+        _run_git("show", f"{branch}:body.txt", cwd=consumer[1]).stdout
+        == "Updated requirements after selection"
+    )
+    assert (
+        _run_git("show", f"{branch}:title.txt", cwd=consumer[1]).stdout
+        == "Updated issue title"
+    )
+
+
+def test_new_dependency_added_during_claim_blocks_worker_and_releases_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    updated = _issue(35, "Depends on PR #999")
+    result = _run(
+        consumer,
+        ["--issues", "35"],
+        issues=[_issue(35)],
+        config=_config(tmp_path, dependency_gate="merged-to-base"),
+        extra_env={
+            "AGENT_POST_CLAIM_ISSUES_JSON": json.dumps({"35": updated}),
+        },
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "gained an unmet dependency" in result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit 35 --remove-assignee @me" in gh_log
+    assert not (consumer[3] / "events.log").exists()
+
+
 def test_default_shipped_prompt_does_not_depend_on_gh() -> None:
     # The shipped worker prompt runs inside the gh-masked hook, so it must not
     # instruct the worker to call `gh`. Regression guard for the prompt template.
-    prompt = (
-        REPO_ROOT / ".codex/skills/agent-loop/prompt.txt.template"
-    ).read_text(encoding="utf-8")
+    prompt = (REPO_ROOT / ".codex/skills/agent-loop/prompt.txt.template").read_text(
+        encoding="utf-8"
+    )
     assert "gh issue view" not in prompt
     assert "AGENT_LOOP_ISSUE_BODY" in prompt
+    assert "local classification record" in prompt
+    instructions = (
+        REPO_ROOT / ".codex/skills/agent-loop/agent-loop-instructions.md.template"
+    ).read_text(encoding="utf-8")
+    assert "The worker cannot call `gh`" in instructions
+    assert "operator must translate that record" in instructions
 
 
 @pytest.mark.parametrize(
@@ -923,6 +1275,23 @@ def test_issue_branch_has_no_upstream_during_worker(
         config=_config(tmp_path, worker_hook=worker),
     )
     assert result.returncode == 0, result.stderr + result.stdout
+    branch = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[0],
+    ).stdout.strip()
+    upstream = _run_git(
+        "for-each-ref",
+        "--format=%(upstream:short)",
+        f"refs/heads/{branch}",
+        cwd=consumer[0],
+    ).stdout.strip()
+    assert upstream == f"origin/{branch}"
+    assert (
+        _run_git("rev-parse", branch, cwd=consumer[0]).stdout.strip()
+        == _run_git("rev-parse", branch, cwd=consumer[1]).stdout.strip()
+    )
 
 
 def test_missing_default_codex_fails_before_claim(
