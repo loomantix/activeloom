@@ -6,6 +6,13 @@ set -euo pipefail
 # test output. Default every path this wrapper creates to owner-only access.
 umask 077
 
+# Exported shell functions and login-shell aliases outrank PATH lookups. Remove
+# ambient GitHub command customizations before the wrapper resolves or invokes
+# its real binaries; the bounded login shell repeats this before evaluating a
+# configured hook because shell startup files can define them again.
+unset -f git gh 2>/dev/null || true
+unalias git gh 2>/dev/null || true
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -218,8 +225,10 @@ case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate mus
 for cmd in git gh jq python3 timeout; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
-REAL_GIT_BIN="$(command -v git)"
-REAL_GH_BIN="$(command -v gh)"
+REAL_GIT_BIN="$(type -P git)"
+REAL_GH_BIN="$(type -P gh)"
+[ -x "$REAL_GIT_BIN" ] || { echo "required Git executable not found" >&2; exit 1; }
+[ -x "$REAL_GH_BIN" ] || { echo "required gh executable not found" >&2; exit 1; }
 if [ -z "$WORKER_HOOK" ]; then
     DEFAULT_CODEX_BIN="$(command -v codex 2>/dev/null || true)"
     [ -n "$DEFAULT_CODEX_BIN" ] || {
@@ -621,7 +630,7 @@ run_bounded_hook() {
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         # shellcheck disable=SC2016 # expanded by the bounded login shell
         timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
-            'export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
+            'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
             | tail -c "$max_bytes"
         exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?
@@ -731,8 +740,8 @@ run_validation() {
 }
 
 classify_review_result() {
-    local engine="$1" before_sha="$2" after_sha="$3"
-    local outcome_file="$AGENT_LOOP_REVIEW_OUTCOME_FILE" classification=""
+    local engine="$1" before_sha="$2" after_sha="$3" outcome_file="$4"
+    local classification=""
 
     if [ "$before_sha" = "$after_sha" ]; then
         if [ -e "$outcome_file" ] || [ -L "$outcome_file" ]; then
@@ -771,6 +780,7 @@ sys.stdout.write(values[data])
 }
 
 review_outcome_signature() {
+    local outcome_file="$1"
     python3 -c '
 from hashlib import sha256
 import os
@@ -787,14 +797,39 @@ except FileNotFoundError:
 if not stat.S_ISREG(metadata.st_mode):
     raise SystemExit(2)
 sys.stdout.write("file:" + sha256(path.read_bytes()).hexdigest())
-' "$AGENT_LOOP_REVIEW_OUTCOME_FILE"
+' "$outcome_file"
+}
+
+require_review_outcome_signature() {
+    local engine="$1" outcome_file="$2" expected_signature="$3" phase="$4"
+    local actual_signature
+    actual_signature="$(review_outcome_signature "$outcome_file")" || {
+        recovery_message "Could not re-read $engine review outcome $phase."
+        return 1
+    }
+    if [ "$actual_signature" != "$expected_signature" ]; then
+        recovery_message "$engine review outcome file changed $phase."
+        return 1
+    fi
+}
+
+verify_converged_review_outcomes() {
+    if [ -z "${CONVERGED_CODEX_OUTCOME_FILE:-}" ] || \
+       [ -z "${CONVERGED_CLAUDE_OUTCOME_FILE:-}" ]; then
+        recovery_message "Converged review outcome attestations are missing."
+        return 1
+    fi
+    require_review_outcome_signature Codex "$CONVERGED_CODEX_OUTCOME_FILE" \
+        "$CONVERGED_CODEX_OUTCOME_SIGNATURE" "before publication" || return 1
+    require_review_outcome_signature Claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
+        "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" "before publication" || return 1
 }
 
 run_review_convergence() {
     local round=1 codex_before codex_after claude_before claude_after
     local codex_classification claude_classification validated_classification
     local codex_outcome_signature claude_outcome_signature validated_outcome_signature
-    local codex_status claude_status
+    local codex_outcome_file claude_outcome_file codex_status claude_status
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
@@ -804,7 +839,8 @@ run_review_convergence() {
         export AGENT_LOOP_REVIEW_BASE_SHA
         AGENT_LOOP_REVIEW_BASE_SHA="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")"
         export AGENT_LOOP_REVIEW_ENGINE=codex
-        export AGENT_LOOP_REVIEW_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/codex-review-round-$round.outcome"
+        codex_outcome_file="$AGENT_LOOP_LOG_DIR/codex-review-round-$round.outcome"
+        export AGENT_LOOP_REVIEW_OUTCOME_FILE="$codex_outcome_file"
         rm -f -- "$AGENT_LOOP_REVIEW_OUTCOME_FILE"
         codex_before="$(git rev-parse HEAD)"
         run_bounded_hook "configured Codex review hook (round $round)" "$CODEX_REVIEW_HOOK" \
@@ -829,9 +865,10 @@ run_review_convergence() {
             recovery_message "Configured Codex review hook rewrote or dropped previously reviewed commits in round $round."
             return 1
         }
-        classify_review_result "Codex" "$codex_before" "$codex_after" || return 1
+        classify_review_result "Codex" "$codex_before" "$codex_after" \
+            "$codex_outcome_file" || return 1
         codex_classification="$REVIEW_FIX_CLASSIFICATION"
-        codex_outcome_signature="$(review_outcome_signature)" || {
+        codex_outcome_signature="$(review_outcome_signature "$codex_outcome_file")" || {
             recovery_message "Could not snapshot Codex review outcome in round $round."
             return 1
         }
@@ -839,13 +876,14 @@ run_review_convergence() {
             recovery_message "Validation after the configured Codex review hook failed in review round $round."
             return 1
         }
-        classify_review_result "Codex" "$codex_before" "$codex_after" || return 1
+        classify_review_result "Codex" "$codex_before" "$codex_after" \
+            "$codex_outcome_file" || return 1
         validated_classification="$REVIEW_FIX_CLASSIFICATION"
         if [ "$validated_classification" != "$codex_classification" ]; then
             recovery_message "Codex review outcome classification changed during validation in round $round."
             return 1
         fi
-        validated_outcome_signature="$(review_outcome_signature)" || {
+        validated_outcome_signature="$(review_outcome_signature "$codex_outcome_file")" || {
             recovery_message "Could not re-read Codex review outcome after validation in round $round."
             return 1
         }
@@ -854,7 +892,8 @@ run_review_convergence() {
             return 1
         fi
         export AGENT_LOOP_REVIEW_ENGINE=claude
-        export AGENT_LOOP_REVIEW_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/claude-review-round-$round.outcome"
+        claude_outcome_file="$AGENT_LOOP_LOG_DIR/claude-review-round-$round.outcome"
+        export AGENT_LOOP_REVIEW_OUTCOME_FILE="$claude_outcome_file"
         rm -f -- "$AGENT_LOOP_REVIEW_OUTCOME_FILE"
         claude_before="$(git rev-parse HEAD)"
         run_bounded_hook "configured Claude review hook (round $round)" "$CLAUDE_REVIEW_HOOK" \
@@ -879,9 +918,10 @@ run_review_convergence() {
             recovery_message "Claude review rewrote or dropped previously reviewed commits in round $round."
             return 1
         }
-        classify_review_result "Claude" "$claude_before" "$claude_after" || return 1
+        classify_review_result "Claude" "$claude_before" "$claude_after" \
+            "$claude_outcome_file" || return 1
         claude_classification="$REVIEW_FIX_CLASSIFICATION"
-        claude_outcome_signature="$(review_outcome_signature)" || {
+        claude_outcome_signature="$(review_outcome_signature "$claude_outcome_file")" || {
             recovery_message "Could not snapshot Claude review outcome in round $round."
             return 1
         }
@@ -889,13 +929,14 @@ run_review_convergence() {
             recovery_message "Validation after Claude review failed in review round $round."
             return 1
         }
-        classify_review_result "Claude" "$claude_before" "$claude_after" || return 1
+        classify_review_result "Claude" "$claude_before" "$claude_after" \
+            "$claude_outcome_file" || return 1
         validated_classification="$REVIEW_FIX_CLASSIFICATION"
         if [ "$validated_classification" != "$claude_classification" ]; then
             recovery_message "Claude review outcome classification changed during validation in round $round."
             return 1
         fi
-        validated_outcome_signature="$(review_outcome_signature)" || {
+        validated_outcome_signature="$(review_outcome_signature "$claude_outcome_file")" || {
             recovery_message "Could not re-read Claude review outcome after validation in round $round."
             return 1
         }
@@ -903,12 +944,21 @@ run_review_convergence() {
             recovery_message "Claude review outcome file changed during validation in round $round."
             return 1
         fi
+        require_review_outcome_signature Codex "$codex_outcome_file" \
+            "$codex_outcome_signature" "before the round decision" || return 1
+        require_review_outcome_signature Claude "$claude_outcome_file" \
+            "$claude_outcome_signature" "before the round decision" || return 1
         REVIEW_ROUNDS_USED="$round"
 
         if [ "$codex_classification" != material ] && [ "$claude_classification" != material ]; then
             REVIEWED_BASE_SHA="$AGENT_LOOP_REVIEW_BASE_SHA"
-            unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE
-            echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reached a no-material-fix round after $round round(s)"
+            CONVERGED_CODEX_OUTCOME_FILE="$codex_outcome_file"
+            CONVERGED_CODEX_OUTCOME_SIGNATURE="$codex_outcome_signature"
+            CONVERGED_CLAUDE_OUTCOME_FILE="$claude_outcome_file"
+            CONVERGED_CLAUDE_OUTCOME_SIGNATURE="$claude_outcome_signature"
+            unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
+                AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE
+            echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reported no material fixes in a complete round after $round round(s)"
             return 0
         fi
 
@@ -916,7 +966,8 @@ run_review_convergence() {
         round=$((round + 1))
     done
 
-    unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE
+    unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
+        AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE
     recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
     return 1
 }
@@ -938,7 +989,8 @@ inspect_publication_diff() {
 }
 
 publish_issue() {
-    local number="$1" branch="$2" publication_sha="$3" body_file pr_url
+    local number="$1" branch="$2" publication_sha="$3"
+    local body_file pr_url remote_row remote_sha remote_ref
     require_origin_identity || {
         echo "origin identity changed before publication" >&2
         return 1
@@ -949,21 +1001,32 @@ publish_issue() {
     }
     git push --force-with-lease="refs/heads/$branch:" origin \
         "$publication_sha:refs/heads/$branch"
+    remote_row="$(git ls-remote --exit-code --heads origin "refs/heads/$branch")" || {
+        echo "could not attest remote issue branch after publication push" >&2
+        return 1
+    }
+    IFS=$'\t' read -r remote_sha remote_ref <<< "$remote_row"
+    if [ "$remote_sha" != "$publication_sha" ] || \
+       [ "$remote_ref" != "refs/heads/$branch" ]; then
+        echo "remote issue branch changed after publication push" >&2
+        return 1
+    fi
     git branch --set-upstream-to="origin/$branch" "$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
-    # Report what the wrapper can prove. Hook configuration attests which engines
-    # run; the wrapper itself proves only successful commands, clean state, and a
-    # complete no-material-fix round. Setup remains optional; validation is required.
+    # Report what the wrapper can prove. Hook configuration names the intended
+    # engines, while the hooks own semantic classification accuracy. The wrapper
+    # proves successful commands, clean state, stable classification records, and
+    # a complete round whose hooks reported no material fixes.
     {
         echo "## Summary"
         echo
-        echo "Configured Codex and Claude review hooks reached a no-material-fix round after"
+        echo "Configured Codex and Claude review hooks reported no material fixes in a complete round after"
         echo "$REVIEW_ROUNDS_USED round(s) against fresh \`origin/$BASE_BRANCH\`, then passed fresh-base integration."
         echo
         echo "## Test plan"
         echo
         if [ -n "$SETUP_HOOK" ]; then echo "- [x] configured setup hook completed"; fi
-        echo "- [x] configured Codex and Claude hooks completed a no-material-fix round ($REVIEW_ROUNDS_USED round(s))"
+        echo "- [x] configured Codex and Claude hooks reported no material fixes in a complete round ($REVIEW_ROUNDS_USED round(s))"
         echo "- [x] fresh-base integration and publication-diff inspection"
         echo "- [x] configured non-mutating local validation hook"
         echo
@@ -1115,6 +1178,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     export AGENT_LOOP_REVIEW_BASE="$BASE_REMOTE_REF"
     REVIEW_ROUNDS_USED=0
     REVIEWED_BASE_SHA=""
+    CONVERGED_CODEX_OUTCOME_FILE=""
+    CONVERGED_CODEX_OUTCOME_SIGNATURE=""
+    CONVERGED_CLAUDE_OUTCOME_FILE=""
+    CONVERGED_CLAUDE_OUTCOME_SIGNATURE=""
     # Keep this as a simple command instead of placing the function in an `||`
     # context. Bash disables `errexit` throughout a function invoked from an
     # AND/OR list, which would let an unguarded fetch or git query fail open.
@@ -1135,6 +1202,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     inspect_publication_diff "$current_base_sha" || { recovery_message "Fresh-base publication diff inspection failed."; exit 1; }
     run_validation "fresh-base" || { recovery_message "Fresh-base validation failed."; exit 1; }
     require_issue_branch_head || { recovery_message "Fresh-base integration moved HEAD away from the issue branch."; exit 1; }
+    verify_converged_review_outcomes || exit 1
 
     require_origin_identity || { recovery_message "Origin identity changed before publication checks."; exit 1; }
     if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then

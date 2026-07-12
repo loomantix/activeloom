@@ -366,7 +366,8 @@ def test_per_issue_worktrees_and_hook_order(
         body = body_file.read_text(encoding="utf-8")
         assert "configured setup hook completed" in body
         assert "isolated dependency bootstrap" not in body
-        assert "Configured Codex and Claude review hooks reached" in body
+        assert "reported no material fixes in a complete round" in body
+        assert "Configured Codex and Claude review hooks reported" in body
         assert "configured non-mutating local validation hook" in body
         assert "local Claude deep grill" not in body
 
@@ -412,7 +413,7 @@ def test_unclassified_review_fix_defaults_material_and_restarts_at_codex(
         config=_config(tmp_path, claude_review_hook=claude_hook),
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "reached a no-material-fix round after 2 round(s)" in result.stdout
+    assert "reported no material fixes in a complete round after 2 round(s)" in result.stdout
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
     assert events == [
         "setup",
@@ -490,7 +491,7 @@ def test_minor_only_review_fixes_converge_without_restarting(
         ),
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "reached a no-material-fix round after 1 round(s)" in result.stdout
+    assert "reported no material fixes in a complete round after 1 round(s)" in result.stdout
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
     assert events == [
         "setup",
@@ -514,6 +515,7 @@ def test_minor_only_review_fixes_converge_without_restarting(
         "printf 'clean\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"",
         "printf ' minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"",
         "printf 'minor\\n\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"",
+        "printf 'minor\\0' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"",
     ],
 )
 def test_committed_review_with_invalid_classification_blocks_publication(
@@ -538,6 +540,22 @@ def test_committed_review_with_invalid_classification_blocks_publication(
     assert "Worktree preserved:" in result.stderr
     remote_branches = _agent_loop_branches(consumer[1])
     assert "issue-37" not in remote_branches
+
+
+def test_review_classification_without_commit_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+    result = _run(
+        consumer,
+        ["--issues", "48"],
+        issues=[_issue(48)],
+        config=_config(tmp_path, codex_review_hook=codex_hook),
+    )
+    assert result.returncode != 0
+    assert "wrote a fix classification without committing a fix" in result.stderr
+    assert "Worktree preserved:" in result.stderr
+    assert "issue-48" not in _agent_loop_branches(consumer[1])
 
 
 def test_validation_cannot_change_accepted_review_classification(
@@ -595,6 +613,66 @@ def test_validation_cannot_create_a_missing_material_outcome(
     assert result.returncode != 0
     assert "outcome file changed during validation" in result.stderr
     assert "issue-47" not in _agent_loop_branches(consumer[1])
+
+
+def test_later_reviewer_cannot_change_an_accepted_outcome(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        "printf 'minor fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'docs: minor review fix'; "
+        "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+    )
+    claude_hook = (
+        "printf 'material\\n' > "
+        '"$AGENT_LOOP_LOG_DIR/codex-review-round-$AGENT_LOOP_REVIEW_ROUND.outcome"'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "49"],
+        issues=[_issue(49)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            claude_review_hook=claude_hook,
+        ),
+    )
+    assert result.returncode != 0
+    assert "Codex review outcome file changed" in result.stderr
+    assert "Worktree preserved:" in result.stderr
+    assert "issue-49" not in _agent_loop_branches(consumer[1])
+
+
+def test_final_validation_cannot_change_an_accepted_outcome(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        "touch \"$AGENT_STATE_DIR/codex-reviewed\"; "
+        "printf 'minor fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'docs: minor review fix'; "
+        "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+    )
+    validation_hook = (
+        "printf 'validate\\n' >> \"$EVENT_LOG\"; "
+        'if [ -z "${AGENT_LOOP_REVIEW_ENGINE:-}" ] && '
+        '[ -e "$AGENT_STATE_DIR/codex-reviewed" ]; then '
+        "printf 'material\\n' > "
+        '"$AGENT_LOOP_LOG_DIR/codex-review-round-1.outcome"; fi'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "50"],
+        issues=[_issue(50)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            validation_hook=validation_hook,
+        ),
+    )
+    assert result.returncode != 0
+    assert "Codex review outcome file changed" in result.stderr
+    assert "Worktree preserved:" in result.stderr
+    assert "issue-50" not in _agent_loop_branches(consumer[1])
 
 
 def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
@@ -959,6 +1037,35 @@ def test_git_alias_cannot_bypass_hook_publication_guard(
     )
 
 
+def test_exported_git_function_cannot_bypass_hook_publication_guard(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, _, _ = consumer
+    real_git = shutil.which("git")
+    assert real_git is not None
+    worker_hook = (
+        "if git push origin HEAD:refs/heads/function-bypass >/dev/null 2>&1; "
+        "then exit 49; fi; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker after blocked function'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "51"],
+        issues=[_issue(51)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+        extra_env={
+            "AGENT_TEST_REAL_GIT": real_git,
+            "BASH_FUNC_git%%": '() { "$AGENT_TEST_REAL_GIT" "$@"; }',
+        },
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branches = _run_git(
+        "for-each-ref", "--format=%(refname:short)", cwd=remote
+    ).stdout
+    assert "function-bypass" not in branches
+
+
 def test_hook_preserves_auth_environment_for_git_credential_reads(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1184,6 +1291,46 @@ exec "$AGENT_TEST_REAL_GIT" "$@"
     branches = _agent_loop_branches(remote).splitlines()
     assert len(branches) == 1
     assert _run_git("rev-parse", branches[0], cwd=remote).stdout.strip() == base_sha
+    gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
+    assert "pr create" not in gh_log
+
+
+def test_remote_branch_rewrite_after_push_blocks_pr_creation(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, bin_dir, state_dir = consumer
+    base_sha = _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+"$AGENT_TEST_REAL_GIT" "$@"
+status=$?
+if [ "$status" -eq 0 ] && [ "${1:-}" = push ] && \
+   [[ " $* " == *" --force-with-lease="* ]] && \
+   [ ! -e "$AGENT_STATE_DIR/remote-branch-rewritten" ]; then
+    "$AGENT_TEST_REAL_GIT" --git-dir="$AGENT_TEST_REMOTE" update-ref \
+        "refs/heads/$AGENT_LOOP_BRANCH" "$AGENT_TEST_BASE_SHA"
+    touch "$AGENT_STATE_DIR/remote-branch-rewritten"
+fi
+exit "$status"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "52"],
+        issues=[_issue(52)],
+        config=_config(tmp_path),
+        extra_env={
+            "AGENT_TEST_REAL_GIT": real_git,
+            "AGENT_TEST_REMOTE": str(remote),
+            "AGENT_TEST_BASE_SHA": base_sha,
+        },
+    )
+    assert result.returncode != 0
+    assert (state_dir / "remote-branch-rewritten").exists()
+    assert "remote issue branch changed after publication push" in result.stderr
     gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
     assert "pr create" not in gh_log
 
@@ -1419,6 +1566,51 @@ def test_timeout_retries_only_an_unchanged_worktree(
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Retrying worker" in result.stdout
+
+
+def test_worker_state_inspection_failure_preserves_partial_work_without_retry(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, _, bin_dir, state_dir = consumer
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+if [ "${1:-}" = status ] && [ -e "$AGENT_STATE_DIR/fail-next-status" ] && \
+   [ ! -e "$AGENT_STATE_DIR/status-failed" ]; then
+    touch "$AGENT_STATE_DIR/status-failed"
+    exit 72
+fi
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
+    worker = (
+        'if [ ! -e "$AGENT_STATE_DIR/first-attempt" ]; then '
+        'touch "$AGENT_STATE_DIR/first-attempt"; '
+        "printf 'partial\\n' > partial.txt; "
+        'touch "$AGENT_STATE_DIR/fail-next-status"; exit 124; fi; '
+        'touch "$AGENT_STATE_DIR/second-attempt"; rm -f partial.txt; exit 73'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "53"],
+        issues=[_issue(53)],
+        config=_config(
+            tmp_path,
+            worker_hook=worker,
+            worker_retries=1,
+            retry_delay_seconds=0,
+        ),
+        extra_env={"AGENT_TEST_REAL_GIT": real_git},
+    )
+    assert result.returncode != 0
+    assert not (state_dir / "second-attempt").exists()
+    match = re.search(r"Worktree preserved: (.+)", result.stderr)
+    assert match
+    assert (Path(match.group(1)) / "partial.txt").read_text(encoding="utf-8") == (
+        "partial\n"
+    )
 
 
 def test_fresh_base_is_integrated_and_validated_before_publication(

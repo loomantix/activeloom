@@ -35,8 +35,8 @@ review_contract_version = 1
 # engine an arbitrary command launches; these commands own that guarantee.
 # When a hook commits, write exactly `material` or `minor` to
 # `$AGENT_LOOP_REVIEW_OUTCOME_FILE`. Missing classification defaults to material;
-# a no-commit pass is clean and must not write the file. Validation must not
-# create, remove, or alter the accepted outcome.
+# a no-commit pass is clean and must not write the file. Later hooks and final
+# validation must not create, remove, or alter an accepted outcome.
 claude_review_hook =
 codex_review_hook =
 review_max_rounds = 4

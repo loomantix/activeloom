@@ -22,7 +22,9 @@ based on the developer's available tooling.
 Use this path when both local engines are available:
 
 1. Make the change, run focused validation, and create a clean local commit.
-2. Fetch the target base and give both reviewers the same explicit base ref.
+2. Fetch the target base, record its immutable commit SHA, and give that exact
+   SHA to both reviewers for the round. Neither reviewer may re-resolve a
+   mutable remote-tracking ref independently.
 3. In a fresh Codex session, run `deepgrill` against the branch diff. Verify
    every finding against source, fix every confirmed finding, validate, commit
    fixes, and leave a clean tree. Do not push.
@@ -51,8 +53,9 @@ while hooks run, while preserving `gh auth git-credential get` for authenticated
 Git reads, attests unchanged origin URLs, and publishes only the final captured
 commit. The wrapper cannot prove that an
 arbitrary command launched the named engine, started fresh, used the required
-base SHA, or resolved every finding; consumer hook commands own those
-guarantees and must fail if a valid finding remains.
+base SHA, resolved every finding, or classified a substantive change correctly;
+consumer hook commands own those guarantees and must fail if a valid finding
+remains.
 
 Do not run `reviewit` after this path merely as an extra ritual. Use it only when
 the developer intentionally chooses the hosted fallback or explicitly requests

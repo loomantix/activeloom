@@ -91,7 +91,8 @@ defaults to `material`; a no-commit pass is clean and must not write an outcome.
 Only material fixes restart at Codex. Minor fixes are retained and validated but
 count toward convergence so low-severity polish cannot keep the loop running.
 The outcome must remain unchanged through post-review validation; a validator
-that creates, removes, or changes the accepted classification blocks publication.
+or later reviewer that creates, removes, or changes an accepted classification
+blocks publication. The wrapper re-attests both records after final validation.
 
 The wrapper also requires exit 0, a clean tree, an attached issue branch, and
 append-only commit ancestry.
@@ -104,9 +105,10 @@ work. This is an accidental-publication guard, not a
 sandbox against a deliberately hostile shell command. The wrapper cannot verify
 that an arbitrary hook command
 launched the named engine, started a fresh session, reviewed the required SHA,
-or resolved every valid finding. Consumer hook commands must provide those
-guarantees and exit nonzero otherwise. Validation hooks must not change HEAD,
-switch branches, or leave worktree changes.
+resolved every valid finding, or assigned the semantically correct `material` or
+`minor` classification. Consumer hook commands must provide those guarantees
+and exit nonzero otherwise. Validation hooks must not change HEAD, switch
+branches, or leave worktree changes.
 
 ## Existing Consumer Migration
 
