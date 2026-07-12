@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Preserve ordinary Git access for local hooks while denying publication.
+
+set -euo pipefail
+
+real_git="${AGENT_LOOP_REAL_GIT:?AGENT_LOOP_REAL_GIT is required}"
+args=("$@")
+index=0
+subcommand=""
+
+# Find Git's subcommand after the global options that consume a following value.
+# This covers the documented global forms used by automation; unknown flags are
+# skipped until the first non-option token.
+while [ "$index" -lt "${#args[@]}" ]; do
+    argument="${args[$index]}"
+    case "$argument" in
+        -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+            index=$((index + 2))
+            ;;
+        --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--config-env=*|--bare|--no-pager|--paginate|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-optional-locks)
+            index=$((index + 1))
+            ;;
+        --)
+            index=$((index + 1))
+            [ "$index" -lt "${#args[@]}" ] && subcommand="${args[$index]}"
+            break
+            ;;
+        -*)
+            index=$((index + 1))
+            ;;
+        *)
+            subcommand="$argument"
+            break
+            ;;
+    esac
+done
+
+if [ "$subcommand" = push ]; then
+    echo "git push is disabled inside agent-loop hooks; the wrapper owns publication" >&2
+    exit 1
+fi
+
+exec "$real_git" "$@"

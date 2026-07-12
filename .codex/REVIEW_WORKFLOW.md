@@ -41,10 +41,12 @@ Use this path when both local engines are available:
 The `agent-loop` skill automates this path with a required non-mutating
 validation hook plus `review_max_rounds`, `codex_review_hook`, and
 `claude_review_hook`. It treats exit 0, clean Git state, an attached issue
-branch, and an unchanged HEAD as a hook's no-fix signal. The wrapper cannot
-prove that an arbitrary command launched the named engine, started fresh, used
-the required base SHA, or resolved every finding; consumer hook commands own
-those guarantees and must fail if a valid finding remains.
+branch, an unchanged HEAD, and append-only history as a hook's no-fix signal.
+It masks ordinary origin-push and authenticated `gh` paths while hooks run and
+publishes only the final captured commit. The wrapper cannot prove that an
+arbitrary command launched the named engine, started fresh, used the required
+base SHA, or resolved every finding; consumer hook commands own those
+guarantees and must fail if a valid finding remains.
 
 Do not run `reviewit` after this path merely as an extra ritual. Use it only when
 the developer intentionally chooses the hosted fallback or explicitly requests

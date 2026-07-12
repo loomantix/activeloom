@@ -102,6 +102,8 @@ CONFIG_FILE="$PROJECT_DIR/.codex/skills/agent-loop/agent-loop.config"
 PROMPT_FILE="$PROJECT_DIR/.codex/skills/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
 ISSUES_READY="$PROJECT_DIR/.codex/skills/issues/scripts/ready.py"
+HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
+HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
 
 BASE_BRANCH=""
 SETUP_HOOK=""
@@ -211,6 +213,7 @@ case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate mus
 for cmd in git gh jq python3 timeout; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
+REAL_GIT_BIN="$(command -v git)"
 DEFAULT_CODEX_BIN=""
 if [ -z "$WORKER_HOOK" ]; then
     DEFAULT_CODEX_BIN="$(command -v codex 2>/dev/null || true)"
@@ -219,6 +222,8 @@ if [ -z "$WORKER_HOOK" ]; then
         exit 1
     }
 fi
+[ -x "$HOOK_GIT_GUARD" ] || { echo "hook Git guard not found or not executable: $HOOK_GIT_GUARD" >&2; exit 1; }
+[ -x "$HOOK_GH_GUARD" ] || { echo "hook gh guard not found or not executable: $HOOK_GH_GUARD" >&2; exit 1; }
 [ -x "$ISSUES_READY" ] || { echo "issues ready.py not found or not executable: $ISSUES_READY" >&2; exit 1; }
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
 [ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
@@ -456,6 +461,7 @@ require_issue_branch_head() {
 run_bounded_hook() {
     local phase="$1" command="$2" timeout_seconds="$3" log_file="$4"
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0
+    local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
     echo -e "${BLUE}▸${NC} $phase"
     # Bound the captured log to its trailing LOG_MAX_KB with `tail -c`, NOT with a
     # process-wide `ulimit -f`: that rlimit is inherited by the worker and every hook
@@ -464,9 +470,27 @@ run_bounded_hook() {
     # hook is never signalled; keeping the tail preserves the failing output and any
     # capacity/overload marker the retry logic greps for; PIPESTATUS[0] keeps the
     # hook's real exit status.
+    mkdir -p "$guard_bin"
+    cp "$HOOK_GIT_GUARD" "$guard_bin/git"
+    cp "$HOOK_GH_GUARD" "$guard_bin/gh"
+    chmod 700 "$guard_bin/git" "$guard_bin/gh"
     (
         set +e
-        timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc "$command" 2>&1 \
+        # The wrapper alone owns publication. Keep fetch/read access intact, but
+        # make the ordinary `git push origin ...` and `gh` write paths unavailable
+        # inside setup, worker, validation, and review commands. Configured hooks
+        # remain trusted shell commands, so this is a fail-safe against accidental
+        # publication rather than a sandbox against a deliberately hostile hook.
+        export AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN"
+        export AGENT_LOOP_HOOK_COMMAND="$command"
+        export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
+        export GH_CONFIG_DIR="$AGENT_LOOP_LOG_DIR/gh-publication-disabled"
+        export GH_TOKEN=agent-loop-publication-disabled
+        export GITHUB_TOKEN=agent-loop-publication-disabled
+        mkdir -p "$GH_CONFIG_DIR"
+        # shellcheck disable=SC2016 # expanded by the bounded login shell
+        timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
+            'export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
             | tail -c "$max_bytes"
         exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?
@@ -480,14 +504,17 @@ run_bounded_hook() {
 }
 
 worker_command() {
-    local model="$1" codex_command
+    local model="$1" codex_command model_arg
     if [ -n "$WORKER_HOOK" ]; then
         printf '%s' "$WORKER_HOOK"
         return
     fi
     printf -v codex_command '%q' "$DEFAULT_CODEX_BIN"
     local command="$codex_command exec --dangerously-bypass-approvals-and-sandbox -C \"\$AGENT_LOOP_WORKTREE\""
-    [ -n "$model" ] && command+=" -m '$model'"
+    if [ -n "$model" ]; then
+        printf -v model_arg '%q' "$model"
+        command+=" -m $model_arg"
+    fi
     command+=" \"\$AGENT_LOOP_PROMPT\""
     printf '%s' "$command"
 }
@@ -535,6 +562,10 @@ require_clean_committed_tree() {
     fi
     if [ "$(git rev-parse HEAD)" = "$start_sha" ]; then
         recovery_message "$phase produced no local commit."
+        return 1
+    fi
+    if ! git merge-base --is-ancestor "$start_sha" HEAD; then
+        recovery_message "$phase rewrote or dropped the starting history."
         return 1
     fi
 }
@@ -587,6 +618,10 @@ run_review_convergence() {
             return 1
         }
         codex_after="$(git rev-parse HEAD)"
+        git merge-base --is-ancestor "$codex_before" "$codex_after" || {
+            recovery_message "Configured Codex review hook rewrote or dropped previously reviewed commits in round $round."
+            return 1
+        }
         run_validation "codex-review-round-$round" || {
             recovery_message "Validation after the configured Codex review hook failed in review round $round."
             return 1
@@ -607,6 +642,10 @@ run_review_convergence() {
             return 1
         }
         claude_after="$(git rev-parse HEAD)"
+        git merge-base --is-ancestor "$claude_before" "$claude_after" || {
+            recovery_message "Claude review rewrote or dropped previously reviewed commits in round $round."
+            return 1
+        }
         run_validation "claude-review-round-$round" || {
             recovery_message "Validation after Claude review failed in review round $round."
             return 1
@@ -618,6 +657,7 @@ run_review_convergence() {
         REVIEW_ROUNDS_USED="$round"
 
         if [ "$codex_changed" = false ] && [ "$claude_changed" = false ]; then
+            REVIEWED_BASE_SHA="$AGENT_LOOP_REVIEW_BASE_SHA"
             unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA
             echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reached a same-HEAD no-commit round after $round round(s)"
             return 0
@@ -649,8 +689,12 @@ inspect_publication_diff() {
 }
 
 publish_issue() {
-    local number="$1" branch="$2" body_file pr_url
-    git push --set-upstream origin "refs/heads/$branch:refs/heads/$branch"
+    local number="$1" branch="$2" publication_sha="$3" body_file pr_url
+    [ "$(git rev-parse "refs/heads/$branch")" = "$publication_sha" ] || {
+        echo "issue branch changed after publication snapshot" >&2
+        return 1
+    }
+    git push --set-upstream origin "$publication_sha:refs/heads/$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
     # Report what the wrapper can prove. Hook configuration attests which engines
     # run; the wrapper itself proves only successful commands, clean state, and a
@@ -776,6 +820,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     export AGENT_LOOP_REVIEW_BASE="$BASE_REMOTE_REF"
     REVIEW_ROUNDS_USED=0
+    REVIEWED_BASE_SHA=""
     # Keep this as a simple command instead of placing the function in an `||`
     # context. Bash disables `errexit` throughout a function invoked from an
     # AND/OR list, which would let an unguarded fetch or git query fail open.
@@ -783,6 +828,11 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     echo -e "${BLUE}▸${NC} Fresh-base integration"
     git fetch origin "$BASE_FETCH_REFSPEC" --quiet
+    current_base_sha="$(git rev-parse "$BASE_REMOTE_REF")"
+    if [ -z "$REVIEWED_BASE_SHA" ] || ! git merge-base --is-ancestor "$REVIEWED_BASE_SHA" "$current_base_sha"; then
+        recovery_message "Base branch moved non-fast-forward after the final reviewed snapshot."
+        exit 1
+    fi
     if ! git merge --no-edit "$BASE_REMOTE_REF"; then
         git merge --abort >/dev/null 2>&1 || true
         recovery_message "Fresh-base merge conflicted; original commits were preserved."
@@ -797,7 +847,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         exit 1
     fi
     require_issue_branch_head || { recovery_message "Publication HEAD is not the issue branch."; exit 1; }
-    publish_issue "$SELECTED_ID" "$branch"
+    publication_sha="$(git rev-parse HEAD)"
+    publish_issue "$SELECTED_ID" "$branch" "$publication_sha"
 
     cd "$PROJECT_DIR"
     git worktree remove "$ACTIVE_WORKTREE"

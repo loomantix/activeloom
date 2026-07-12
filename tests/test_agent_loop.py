@@ -1,4 +1,5 @@
 """Deterministic integration coverage for the agent-loop wrapper."""
+
 from __future__ import annotations
 
 import json
@@ -46,6 +47,8 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     script.parent.mkdir(parents=True)
     ready.parent.mkdir(parents=True)
     shutil.copy2(AGENT_LOOP, script)
+    for guard_name in ("hook-git-guard", "hook-gh-guard"):
+        shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     _write_executable(
         ready,
         "#!/usr/bin/env python3\n"
@@ -64,7 +67,9 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _run_git("commit", "-m", "test fixture", cwd=repo)
     _run_git("remote", "add", "origin", str(remote), cwd=repo)
     _run_git("push", "-u", "origin", "main", cwd=repo)
-    _run_git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=repo)
+    _run_git(
+        "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=repo
+    )
 
     gh = bin_dir / "gh"
     _write_executable(
@@ -285,7 +290,12 @@ def test_per_issue_worktrees_and_hook_order(
         "validate",
     ]
     assert events == expected * 2
-    remote_branches = _run_git("for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]).stdout
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
     assert "issue-4" in remote_branches
     assert "issue-5" in remote_branches
 
@@ -295,8 +305,8 @@ def test_review_restarts_at_codex_until_both_engines_are_clean_on_same_head(
 ) -> None:
     claude_hook = (
         "printf 'claude\\n' >> \"$EVENT_LOG\"; "
-        "if [ ! -e \"$AGENT_STATE_DIR/claude-fixed\" ]; then "
-        "touch \"$AGENT_STATE_DIR/claude-fixed\"; "
+        'if [ ! -e "$AGENT_STATE_DIR/claude-fixed" ]; then '
+        'touch "$AGENT_STATE_DIR/claude-fixed"; '
         "printf 'claude fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'fix: claude review'; fi"
     )
@@ -331,7 +341,7 @@ def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
     codex_hook = (
         "printf 'codex\\n' >> \"$EVENT_LOG\"; "
         "printf 'codex round %s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" >> result.txt; "
-        "git add result.txt; git commit -m \"fix: codex round $AGENT_LOOP_REVIEW_ROUND\""
+        'git add result.txt; git commit -m "fix: codex round $AGENT_LOOP_REVIEW_ROUND"'
     )
     result = _run(
         consumer,
@@ -395,7 +405,7 @@ def test_validation_commit_after_claude_blocks_publication(
 ) -> None:
     validation_hook = (
         "printf 'validate\\n' >> \"$EVENT_LOG\"; "
-        "if [ \"${AGENT_LOOP_REVIEW_ENGINE:-}\" = claude ]; then "
+        'if [ "${AGENT_LOOP_REVIEW_ENGINE:-}" = claude ]; then '
         "printf 'validation fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'fix: validation mutation'; fi"
     )
@@ -422,8 +432,8 @@ def test_detached_reviewer_commit_blocks_publication(
 ) -> None:
     codex_hook = (
         "printf 'codex\\n' >> \"$EVENT_LOG\"; "
-        "if [ ! -e \"$AGENT_STATE_DIR/detached-reviewed\" ]; then "
-        "touch \"$AGENT_STATE_DIR/detached-reviewed\"; "
+        'if [ ! -e "$AGENT_STATE_DIR/detached-reviewed" ]; then '
+        'touch "$AGENT_STATE_DIR/detached-reviewed"; '
         "git checkout --detach >/dev/null; "
         "printf 'detached review fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'fix: detached review'; fi"
@@ -439,7 +449,10 @@ def test_detached_reviewer_commit_blocks_publication(
     match = re.search(r"Worktree preserved: (.+)", result.stderr)
     assert match
     preserved = Path(match.group(1))
-    assert "detached review fix" in _run_git("show", "HEAD:result.txt", cwd=preserved).stdout
+    assert (
+        "detached review fix"
+        in _run_git("show", "HEAD:result.txt", cwd=preserved).stdout
+    )
     remote_branches = _run_git(
         "for-each-ref",
         "--format=%(refname:short)",
@@ -453,7 +466,9 @@ def test_ambiguous_origin_tag_cannot_spoof_remote_base(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     repo, remote, _, _ = consumer
-    stale_base = _run_git("rev-parse", "refs/remotes/origin/main", cwd=repo).stdout.strip()
+    stale_base = _run_git(
+        "rev-parse", "refs/remotes/origin/main", cwd=repo
+    ).stdout.strip()
     clone = tmp_path / "advanced-base"
     _run_git("clone", str(remote), str(clone))
     _run_git("config", "user.name", "Test", cwd=clone)
@@ -483,6 +498,162 @@ def test_ambiguous_origin_tag_cannot_spoof_remote_base(
         cwd=remote,
     ).stdout.strip()
     assert _run_git("show", f"{branch}:fresh-base.txt", cwd=remote).stdout == "fresh\n"
+
+
+def test_hook_origin_push_is_disabled_until_wrapper_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, remote, _, _ = consumer
+    base_before = _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+    # A configured pushurl is multi-valued, so merely appending a disabled URL
+    # would still push to this real destination before failing on the guard URL.
+    _run_git("config", "--add", "remote.origin.pushurl", str(remote), cwd=repo)
+    worker_hook = (
+        "if git push origin HEAD:refs/heads/main >/dev/null 2>&1; then exit 45; fi; "
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf 'done\\n' > result.txt; "
+        "git add result.txt; git commit -m 'fix: worker after blocked push'"
+    )
+    codex_hook = (
+        'if git -C "$PWD" push origin HEAD:refs/heads/main >/dev/null 2>&1; then exit 46; fi; '
+        "printf 'codex\\n' >> \"$EVENT_LOG\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "25"],
+        issues=[_issue(25)],
+        config=_config(
+            tmp_path,
+            worker_hook=worker_hook,
+            codex_review_hook=codex_hook,
+        ),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (
+        _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+        == base_before
+    )
+    issue_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=remote,
+    ).stdout
+    assert "issue-25" in issue_branches
+
+
+def test_reviewer_history_rewrite_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        'git reset --hard "$AGENT_LOOP_REVIEW_BASE_SHA" >/dev/null; '
+        "printf 'replacement\\n' > replacement.txt; git add replacement.txt; "
+        "git commit -m 'fix: replace reviewed history'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "26"],
+        issues=[_issue(26)],
+        config=_config(tmp_path, codex_review_hook=codex_hook),
+    )
+    assert result.returncode != 0
+    assert "rewrote or dropped previously reviewed commits" in result.stderr
+    assert "Worktree preserved:" in result.stderr
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
+    assert "issue-26" not in remote_branches
+
+
+def test_non_fast_forward_base_rewrite_after_review_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, _, _ = consumer
+    original_base = _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+    clone = tmp_path / "base-rewriter"
+    _run_git("clone", str(remote), str(clone))
+    _run_git("config", "user.name", "Test", cwd=clone)
+    _run_git("config", "user.email", "test@example.invalid", cwd=clone)
+
+    (clone / "reviewed-base.txt").write_text("reviewed\n", encoding="utf-8")
+    _run_git("add", "reviewed-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: reviewed base", cwd=clone)
+    reviewed_base = _run_git("rev-parse", "HEAD", cwd=clone).stdout.strip()
+    _run_git("push", "origin", "main", cwd=clone)
+
+    _run_git("checkout", "--detach", original_base, cwd=clone)
+    (clone / "replacement-base.txt").write_text("replacement\n", encoding="utf-8")
+    _run_git("add", "replacement-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: replacement base", cwd=clone)
+    replacement_base = _run_git("rev-parse", "HEAD", cwd=clone).stdout.strip()
+    _run_git(
+        "push", "origin", f"{replacement_base}:refs/heads/rewrite-candidate", cwd=clone
+    )
+    _run_git("push", "origin", ":refs/heads/rewrite-candidate", cwd=clone)
+
+    claude_hook = (
+        'git --git-dir="$REMOTE_PATH" update-ref refs/heads/main "$REPLACEMENT_BASE"; '
+        "printf 'claude\\n' >> \"$EVENT_LOG\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "27"],
+        issues=[_issue(27)],
+        config=_config(tmp_path, claude_review_hook=claude_hook),
+        extra_env={
+            "REMOTE_PATH": str(remote),
+            "REPLACEMENT_BASE": replacement_base,
+        },
+    )
+    assert result.returncode != 0
+    assert "moved non-fast-forward after the final reviewed snapshot" in result.stderr
+    assert (
+        _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+        == replacement_base
+    )
+    assert (
+        _run_git(
+            "merge-base", reviewed_base, replacement_base, cwd=remote
+        ).stdout.strip()
+        == original_base
+    )
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=remote,
+    ).stdout
+    assert "issue-27" not in remote_branches
+
+
+def test_default_worker_model_is_passed_as_one_shell_safe_argument(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex = consumer[2] / "codex"
+    _write_executable(
+        codex,
+        """#!/usr/bin/env bash
+printf '%s\\n' "$@" > "$AGENT_STATE_DIR/model-args.log"
+printf 'done\\n' > result.txt
+git add result.txt
+git commit -m 'fix: shell-safe model worker'
+""",
+    )
+    injected = tmp_path / "model-injection-ran"
+    model = 'model\'; touch "$INJECTED"; #'
+    result = _run(
+        consumer,
+        ["--issues", "28"],
+        issues=[_issue(28)],
+        config=_config(tmp_path, worker_hook="", worker_model=model),
+        extra_env={"INJECTED": str(injected)},
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not injected.exists()
+    args = (consumer[3] / "model-args.log").read_text(encoding="utf-8").splitlines()
+    assert model in args
 
 
 @pytest.mark.parametrize(
@@ -576,24 +747,31 @@ def test_timeout_retries_only_an_unchanged_worktree(
 def test_fresh_base_is_integrated_and_validated_before_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
+    remote = consumer[1]
+    clone = tmp_path / "advanced-base"
+    _run_git("clone", str(remote), str(clone))
+    _run_git("config", "user.name", "Test", cwd=clone)
+    _run_git("config", "user.email", "test@example.invalid", cwd=clone)
+    (clone / "fresh-base.txt").write_text("fresh\n", encoding="utf-8")
+    _run_git("add", "fresh-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: advance base", cwd=clone)
+    advanced_base = _run_git("rev-parse", "HEAD", cwd=clone).stdout.strip()
+    _run_git(
+        "push", "origin", f"{advanced_base}:refs/heads/advance-candidate", cwd=clone
+    )
+    _run_git("push", "origin", ":refs/heads/advance-candidate", cwd=clone)
+
     updater = tmp_path / "advance-base.sh"
     _write_executable(
         updater,
         """#!/usr/bin/env bash
 set -e
-clone="$AGENT_STATE_DIR/base-clone"
-git clone "$REMOTE_PATH" "$clone" >/dev/null 2>&1
-git -C "$clone" config user.name Test
-git -C "$clone" config user.email test@example.invalid
-printf 'fresh\n' > "$clone/fresh-base.txt"
-git -C "$clone" add fresh-base.txt
-git -C "$clone" commit -m 'chore: advance base' >/dev/null
-git -C "$clone" push origin main >/dev/null
+git --git-dir="$REMOTE_PATH" update-ref refs/heads/main "$ADVANCED_BASE"
 printf 'codex\n' >> "$EVENT_LOG"
 """,
     )
     claude = (
-        "if git cat-file -e \"$AGENT_LOOP_REVIEW_BASE_SHA:fresh-base.txt\" "
+        'if git cat-file -e "$AGENT_LOOP_REVIEW_BASE_SHA:fresh-base.txt" '
         ">/dev/null 2>&1; then exit 42; fi; "
         "printf 'claude\\n' >> \"$EVENT_LOG\""
     )
@@ -606,11 +784,14 @@ printf 'codex\n' >> "$EVENT_LOG"
             codex_review_hook=str(updater),
             claude_review_hook=claude,
         ),
-        extra_env={"REMOTE_PATH": str(consumer[1])},
+        extra_env={"REMOTE_PATH": str(remote), "ADVANCED_BASE": advanced_base},
     )
     assert result.returncode == 0, result.stderr + result.stdout
     branch = _run_git(
-        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
     ).stdout.strip()
     published = _run_git("show", f"{branch}:fresh-base.txt", cwd=consumer[1]).stdout
     assert published == "fresh\n"
@@ -640,9 +821,14 @@ def test_large_worker_writes_survive_and_log_is_bounded(
     )
     assert result.returncode == 0, result.stderr + result.stdout
     branch = _run_git(
-        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
     ).stdout.strip()
-    size = _run_git("cat-file", "-s", f"{branch}:big.bin", cwd=consumer[1]).stdout.strip()
+    size = _run_git(
+        "cat-file", "-s", f"{branch}:big.bin", cwd=consumer[1]
+    ).stdout.strip()
     assert int(size) == 2048 * 1024  # written in full, not truncated at the log cap
     logs = list((tmp_path / "logs").glob("*/worker-attempt-1.log"))
     assert logs, "worker log was not captured"
@@ -668,7 +854,10 @@ def test_committed_conflict_markers_block_publication(
     assert result.returncode != 0
     assert "conflict markers or whitespace errors" in result.stderr
     branches = _run_git(
-        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
     ).stdout
     assert "issue-12" not in branches  # never published
 

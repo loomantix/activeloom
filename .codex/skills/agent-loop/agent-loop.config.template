@@ -22,7 +22,9 @@ review_contract_version = 1
 # Codex-then-Claude round with no commits on the same HEAD. The Codex hook must
 # run `deepgrill`; the Claude hook must perform a fresh adversarial review. Each
 # hook must fix confirmed findings, commit fixes, fail if valid findings remain,
-# and leave a clean tree. Neither may push, open a PR, or invoke hosted reviewers.
+# and leave a clean tree without rewriting prior commits. Neither may push, open
+# a PR, or invoke hosted reviewers. The wrapper masks the ordinary origin-push
+# and authenticated-gh paths during hooks and publishes only its captured SHA.
 # Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
 # round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
 # ref. The wrapper validates exit status and Git state but cannot prove which

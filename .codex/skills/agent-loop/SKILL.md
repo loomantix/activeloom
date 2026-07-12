@@ -79,11 +79,15 @@ captured after the round's fresh fetch, plus `AGENT_LOOP_REVIEW_ROUND` and
 remote update cannot give the engines different bases.
 
 The wrapper treats exit 0, a clean tree, an unchanged attached issue branch,
-and an unchanged HEAD as a hook's no-fix signal. It cannot verify that an
-arbitrary hook command launched the named engine, started a fresh session,
-reviewed the required SHA, or resolved every valid finding. Consumer hook
-commands must provide those guarantees and exit nonzero otherwise. Validation
-hooks must not change HEAD, switch branches, or leave worktree changes.
+an unchanged HEAD, and append-only commit ancestry as a hook's no-fix signal.
+It masks the normal `git push origin` and authenticated `gh` paths inside every
+hook; the wrapper alone publishes the final captured commit. This is an
+accidental-publication guard, not a sandbox against a deliberately hostile
+shell command. The wrapper cannot verify that an arbitrary hook command
+launched the named engine, started a fresh session, reviewed the required SHA,
+or resolved every valid finding. Consumer hook commands must provide those
+guarantees and exit nonzero otherwise. Validation hooks must not change HEAD,
+switch branches, or leave worktree changes.
 
 ## Existing Consumer Migration
 
@@ -94,7 +98,8 @@ the current templates manually before the synced wrapper can run:
 1. Update the Codex hook to run a fresh `deepgrill`, then the Claude hook to run
    a fresh adversarial review. Scope both to `$AGENT_LOOP_REVIEW_BASE_SHA`.
 2. Make both hooks fix and commit confirmed findings, leave the issue branch
-   attached and clean, avoid publication, and exit nonzero if findings remain.
+   attached and clean, append fixes without rewriting prior commits, avoid
+   publication, and exit nonzero if findings remain.
 3. Configure a non-mutating `validation_hook`, add
    `review_contract_version = 1`, and optionally override
    `review_max_rounds = 4` with another positive cap.

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Hooks receive complete issue context locally and must not mutate GitHub state.
+
+echo "gh is disabled inside agent-loop hooks; the wrapper owns remote mutations" >&2
+exit 1
