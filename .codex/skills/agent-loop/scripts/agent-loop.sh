@@ -214,7 +214,6 @@ for cmd in git gh jq python3 timeout; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
 REAL_GIT_BIN="$(command -v git)"
-DEFAULT_CODEX_BIN=""
 if [ -z "$WORKER_HOOK" ]; then
     DEFAULT_CODEX_BIN="$(command -v codex 2>/dev/null || true)"
     [ -n "$DEFAULT_CODEX_BIN" ] || {
