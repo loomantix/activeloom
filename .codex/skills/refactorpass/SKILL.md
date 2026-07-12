@@ -60,6 +60,7 @@ Report:
 - whether changes were made
 - commit SHA if created
 - validation run
-- recommended next step from the selected path: `grill`/`deepgrill` followed by
-  local Codex/Claude convergence, or `reviewit <pr-number>` after PR creation on
-  the hosted fallback path
+- recommended next step from the selected path: on the local path, treat the
+  completed `deepgrill` as the Codex convergence pass and hand off to a fresh
+  Claude review; on the hosted fallback path, run `grill`/`deepgrill` before
+  publication and `reviewit <pr-number>` after PR creation

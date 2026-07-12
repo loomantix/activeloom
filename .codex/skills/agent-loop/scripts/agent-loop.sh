@@ -523,8 +523,6 @@ run_validation() {
         "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log"
 }
 
-REVIEW_ROUNDS_USED=0
-
 run_review_convergence() {
     local round=1 codex_before codex_after claude_before claude_after
     local codex_changed claude_changed
@@ -741,7 +739,6 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
 
-    git fetch origin "$BASE_BRANCH" --quiet
     export AGENT_LOOP_REVIEW_BASE="origin/$BASE_BRANCH"
     REVIEW_ROUNDS_USED=0
     # Keep this as a simple command instead of placing the function in an `||`

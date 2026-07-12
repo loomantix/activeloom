@@ -58,7 +58,7 @@ with the issue worktree as the current directory.
 | `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                    |
 | `validation_hook`                                | Bounded validation after the worker, after every review pass, and after fresh-base integration.                                |
 | `claude_review_hook`                             | Required fresh local Claude review. It must fix confirmed findings, commit fixes, fail on unresolved findings, and never push. |
-| `codex_review_hook`                              | Required fresh Codex `deepgrill` against `$AGENT_LOOP_REVIEW_BASE`. It has the same fix/commit/fail/no-push contract.          |
+| `codex_review_hook`                              | Required fresh Codex `deepgrill` against `$AGENT_LOOP_REVIEW_BASE_SHA`. It has the same fix/commit/fail/no-push contract.      |
 | `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.           |
 | `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                     |
 | `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                   |
