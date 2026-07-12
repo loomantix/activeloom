@@ -60,4 +60,6 @@ Report:
 - whether changes were made
 - commit SHA if created
 - validation run
-- recommended next step: `grill` before push, then `reviewit <pr-number>` after the PR opens
+- recommended next step from the selected path: `grill`/`deepgrill` followed by
+  local Codex/Claude convergence, or `reviewit <pr-number>` after PR creation on
+  the hosted fallback path

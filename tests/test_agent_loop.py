@@ -133,6 +133,7 @@ def _config(tmp_path: Path, **overrides: str | int) -> str:
         "worker_retries": 1,
         "worker_timeout_seconds": 5,
         "hook_timeout_seconds": 10,
+        "review_max_rounds": 3,
         "retry_on_timeout": "true",
         "retry_delay_seconds": 0,
         "dependency_gate": "ready",
@@ -247,7 +248,10 @@ def test_dry_run_shows_plan_without_mutation(
     )
     assert result.returncode == 0, result.stderr
     assert "Setup hook:" in result.stdout
-    assert "Review order: Claude deep review -> Codex review" in result.stdout
+    assert (
+        "Review order: Codex deepgrill -> Claude review -> repeat until a no-fix round"
+        in result.stdout
+    )
     assert "Publication:" in result.stdout
     assert "no claim, worktree, hook, push, or PR mutation" in result.stdout
     assert not worktrees.exists()
@@ -269,11 +273,87 @@ def test_per_issue_worktrees_and_hook_order(
     assert paths[0] != paths[1]
     assert all(not Path(path).exists() for path in paths)
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
-    expected = ["setup", "worker", "validate", "claude", "validate", "codex", "validate", "validate"]
+    expected = [
+        "setup",
+        "worker",
+        "validate",
+        "codex",
+        "validate",
+        "claude",
+        "validate",
+        "validate",
+    ]
     assert events == expected * 2
     remote_branches = _run_git("for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]).stdout
     assert "issue-4" in remote_branches
     assert "issue-5" in remote_branches
+
+
+def test_review_restarts_at_codex_until_both_engines_are_clean_on_same_head(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    claude_hook = (
+        "printf 'claude\\n' >> \"$EVENT_LOG\"; "
+        "if [ ! -e \"$AGENT_STATE_DIR/claude-fixed\" ]; then "
+        "touch \"$AGENT_STATE_DIR/claude-fixed\"; "
+        "printf 'claude fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'fix: claude review'; fi"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "18"],
+        issues=[_issue(18)],
+        config=_config(tmp_path, claude_review_hook=claude_hook),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "converged on the same HEAD after 2 round(s)" in result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
+    assert events == [
+        "setup",
+        "worker",
+        "validate",
+        "codex",
+        "validate",
+        "claude",
+        "validate",
+        "codex",
+        "validate",
+        "claude",
+        "validate",
+        "validate",
+    ]
+
+
+def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
+        "printf 'codex round %s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" >> result.txt; "
+        "git add result.txt; git commit -m \"fix: codex round $AGENT_LOOP_REVIEW_ROUND\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "19"],
+        issues=[_issue(19)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            review_max_rounds=2,
+        ),
+    )
+    assert result.returncode != 0
+    assert "did not converge within 2 round(s)" in result.stderr
+    match = re.search(r"Worktree preserved: (.+)", result.stderr)
+    assert match
+    assert Path(match.group(1)).exists()
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
+    assert "issue-19" not in remote_branches
 
 
 @pytest.mark.parametrize(
@@ -383,11 +463,20 @@ git -C "$clone" push origin main >/dev/null
 printf 'codex\n' >> "$EVENT_LOG"
 """,
     )
+    claude = (
+        "if git cat-file -e \"$AGENT_LOOP_REVIEW_BASE_SHA:fresh-base.txt\" "
+        ">/dev/null 2>&1; then exit 42; fi; "
+        "printf 'claude\\n' >> \"$EVENT_LOG\""
+    )
     result = _run(
         consumer,
         ["--issues", "9"],
         issues=[_issue(9)],
-        config=_config(tmp_path, codex_review_hook=str(updater)),
+        config=_config(
+            tmp_path,
+            codex_review_hook=str(updater),
+            claude_review_hook=claude,
+        ),
         extra_env={"REMOTE_PATH": str(consumer[1])},
     )
     assert result.returncode == 0, result.stderr + result.stdout

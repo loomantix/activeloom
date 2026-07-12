@@ -10,22 +10,28 @@ Reusable Codex skills, workflow prompts, and a sync engine for propagating agent
 
 Operational skills you can install globally or sync into any repo:
 
-| Skill                 | What it does                                                                                                                                                                                                                                                                     |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `refactorpass`        | Pre-push cleanup pass for local source changes; runs simplicity/DRY, correctness-preserving, and convention/API cleanup lanes.                                                                                                                                                   |
-| `grill`               | Pre-push adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass.                                                                                                                  |
-| `deepgrill`           | Orchestrates refactorpass plus `grill deep`; uses independent reviewers when the active Codex runtime permits delegation.                                                                                                                                                        |
-| `pr-grill <pr>`       | Cross-engine deep review of an existing PR; fixes findings and pushes a labeled relay commit back to the PR head.                                                                                                                                                                |
-| `reviewit <pr>`       | Post-push AI review orchestrator for Gemini Flash + Copilot. Lean default caps at 2 iterations. `deep` arg bumps the cap to 4, early-exits when an iteration produces no `fix` resolutions, and ends with a final `deepgrill` so fresh subagents look at the PR's current state. |
-| `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                                                                                                                                           |
-| `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                                                                                                                                                                                 |
-| `issues`              | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.                                                                                                                                                   |
-| `backlog-refinement`  | Curate and harden the autonomous queue: verify issues against the integration branch, rewrite agent-ready work, classify exclusions, and learn from loop bails.                                                                                                                  |
-| `agent-loop`          | Experimental Codex relay over the refined issue queue using `codex exec`, with a configurable integration/base branch.                                                                                                                                                           |
-| `actions-usage-audit` | Read-only GitHub Actions billing and workflow-usage analysis with month-over-month attribution.                                                                                                                                                                                  |
-| `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                                                                                                                                                                       |
-| `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                                                                                                                                        |
-| `ship-staging <pr>`   | Merge a ready staging PR, mark linked issues on-staging, refresh the local staging reference, and notify Google Chat.                                                                                                                                                            |
+| Skill                 | What it does                                                                                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refactorpass`        | Pre-push cleanup pass for local source changes; runs simplicity/DRY, correctness-preserving, and convention/API cleanup lanes.                                  |
+| `grill`               | Pre-push adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass. |
+| `deepgrill`           | Orchestrates refactorpass plus `grill deep`; serves as the Codex pass in local cross-model convergence and the deep pre-push pass in hosted-fallback review.    |
+| `pr-grill <pr>`       | Cross-engine deep review of an existing PR; fixes findings and pushes a labeled relay commit back to the PR head.                                               |
+| `reviewit <pr>`       | Optional hosted fallback for developers without local Claude Code. Orchestrates post-push Gemini Flash + Copilot review with bounded lean/deep modes.           |
+| `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                          |
+| `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                                                                |
+| `issues`              | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.                                  |
+| `backlog-refinement`  | Curate and harden the autonomous queue: verify issues against the integration branch, rewrite agent-ready work, classify exclusions, and learn from loop bails. |
+| `agent-loop`          | Experimental Codex relay over the refined issue queue, with bounded Codex-deepgrill/Claude convergence before fresh-base integration and publication.           |
+| `actions-usage-audit` | Read-only GitHub Actions billing and workflow-usage analysis with month-over-month attribution.                                                                 |
+| `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                                                      |
+| `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                       |
+| `ship-staging <pr>`   | Merge a ready staging PR, mark linked issues on-staging, refresh the local staging reference, and notify Google Chat.                                           |
+
+The synced review workflow supports two developer-selected cross-model paths:
+local Codex/Claude convergence when both CLIs are available, or `reviewit` as a
+hosted Gemini/Copilot fallback when local Claude Code is unavailable. Consumers
+can declare their default path in repository instructions without removing the
+other platform capability.
 
 ### Codex references (`.codex/references/`)
 
@@ -78,7 +84,8 @@ and prompt templates; see the skill's **Existing consumer migration** section.
 3. Fill in `UPSTREAM_REPO`, branch, and secret names.
 4. Set the GitHub App secrets on the consumer.
 5. Run `gh workflow run "Sync from upstream" --repo <owner>/<consumer>`.
-6. Reference `.codex/REVIEW_WORKFLOW.md` from the consumer `AGENTS.md` if you want every Codex session to follow the same review chain.
+6. Reference `.codex/REVIEW_WORKFLOW.md` from the consumer `AGENTS.md` and declare
+   whether that consumer defaults to local convergence or the hosted fallback.
 
 ## Design Notes
 

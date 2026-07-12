@@ -32,8 +32,9 @@ target a frontend test as `pnpm --filter frontend test:run TestName`. Do not add
 
 - Use the repository's commit convention and targeted staging.
 - Leave a clean worktree with at least one local commit.
-- Never push or create a PR. The wrapper will run fresh local Claude and Codex
-  reviews, integrate a fresh base, validate, push, and create the PR.
+- Never push or create a PR. The wrapper will alternate fresh local Codex
+  `deepgrill` and Claude review passes until a complete round produces no fixes,
+  then integrate a fresh base, validate, push, and create the PR.
 - Never bypass hooks with `--no-verify`.
 
 ## Security and privacy

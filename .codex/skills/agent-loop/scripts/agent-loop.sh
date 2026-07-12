@@ -114,6 +114,7 @@ WORKER_FALLBACK_MODEL=""
 WORKER_RETRIES=1
 WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
+REVIEW_MAX_ROUNDS=4
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
 DEPENDENCY_GATE=ready
@@ -137,6 +138,7 @@ assign_config() {
         worker_retries) WORKER_RETRIES="$value" ;;
         worker_timeout_seconds) WORKER_TIMEOUT_SECONDS="$value" ;;
         hook_timeout_seconds) HOOK_TIMEOUT_SECONDS="$value" ;;
+        review_max_rounds) REVIEW_MAX_ROUNDS="$value" ;;
         retry_on_timeout) RETRY_ON_TIMEOUT="$value" ;;
         retry_delay_seconds) RETRY_DELAY_SECONDS="$value" ;;
         dependency_gate) DEPENDENCY_GATE="$value" ;;
@@ -190,17 +192,20 @@ validate_ref_component "$BASE_BRANCH" "base branch"
 validate_ref_component "$BRANCH_PREFIX/example" "branch prefix"
 
 for value in "$WORKER_RETRIES" "$WORKER_TIMEOUT_SECONDS" "$HOOK_TIMEOUT_SECONDS" \
-             "$RETRY_DELAY_SECONDS" "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
+             "$REVIEW_MAX_ROUNDS" "$RETRY_DELAY_SECONDS" "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
     [[ "$value" =~ ^[0-9]+$ ]] || { echo "numeric agent-loop config value required: $value" >&2; exit 1; }
 done
+[ "$REVIEW_MAX_ROUNDS" -gt 0 ] || { echo "review_max_rounds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
 for cmd in git gh jq python3 timeout; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
+DEFAULT_CODEX_BIN=""
 if [ -z "$WORKER_HOOK" ]; then
-    command -v codex >/dev/null 2>&1 || {
+    DEFAULT_CODEX_BIN="$(command -v codex 2>/dev/null || true)"
+    [ -n "$DEFAULT_CODEX_BIN" ] || {
         echo "required command not found for default worker: codex" >&2
         exit 1
     }
@@ -456,12 +461,13 @@ run_bounded_hook() {
 }
 
 worker_command() {
-    local model="$1"
+    local model="$1" codex_command
     if [ -n "$WORKER_HOOK" ]; then
         printf '%s' "$WORKER_HOOK"
         return
     fi
-    local command="codex exec --dangerously-bypass-approvals-and-sandbox -C \"\$AGENT_LOOP_WORKTREE\""
+    printf -v codex_command '%q' "$DEFAULT_CODEX_BIN"
+    local command="$codex_command exec --dangerously-bypass-approvals-and-sandbox -C \"\$AGENT_LOOP_WORKTREE\""
     [ -n "$model" ] && command+=" -m '$model'"
     command+=" \"\$AGENT_LOOP_PROMPT\""
     printf '%s' "$command"
@@ -517,6 +523,82 @@ run_validation() {
         "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log"
 }
 
+REVIEW_ROUNDS_USED=0
+
+run_review_convergence() {
+    local round=1 codex_before codex_after claude_before claude_after
+    local codex_changed claude_changed
+
+    while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
+        echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
+        export AGENT_LOOP_REVIEW_ROUND="$round"
+
+        git fetch origin "$BASE_BRANCH" --quiet
+        export AGENT_LOOP_REVIEW_BASE_SHA
+        AGENT_LOOP_REVIEW_BASE_SHA="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")"
+        export AGENT_LOOP_REVIEW_ENGINE=codex
+        codex_before="$(git rev-parse HEAD)"
+        run_bounded_hook "Codex deepgrill (round $round)" "$CODEX_REVIEW_HOOK" \
+            "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/codex-review-round-$round.log" || {
+            recovery_message "Codex deepgrill hook failed in review round $round."
+            return 1
+        }
+        [ -z "$(git status --porcelain)" ] || {
+            recovery_message "Codex deepgrill left uncommitted findings/fixes in review round $round."
+            return 1
+        }
+        codex_after="$(git rev-parse HEAD)"
+        run_validation "codex-review-round-$round" || {
+            recovery_message "Validation after Codex deepgrill failed in review round $round."
+            return 1
+        }
+        [ -z "$(git status --porcelain)" ] || {
+            recovery_message "Validation after Codex deepgrill dirtied the worktree in review round $round."
+            return 1
+        }
+
+        export AGENT_LOOP_REVIEW_ENGINE=claude
+        claude_before="$(git rev-parse HEAD)"
+        run_bounded_hook "fresh local Claude review (round $round)" "$CLAUDE_REVIEW_HOOK" \
+            "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/claude-review-round-$round.log" || {
+            recovery_message "Claude review hook failed in review round $round."
+            return 1
+        }
+        [ -z "$(git status --porcelain)" ] || {
+            recovery_message "Claude review left uncommitted findings/fixes in review round $round."
+            return 1
+        }
+        claude_after="$(git rev-parse HEAD)"
+        run_validation "claude-review-round-$round" || {
+            recovery_message "Validation after Claude review failed in review round $round."
+            return 1
+        }
+        [ -z "$(git status --porcelain)" ] || {
+            recovery_message "Validation after Claude review dirtied the worktree in review round $round."
+            return 1
+        }
+
+        codex_changed=false
+        claude_changed=false
+        [ "$codex_before" = "$codex_after" ] || codex_changed=true
+        [ "$claude_before" = "$claude_after" ] || claude_changed=true
+        REVIEW_ROUNDS_USED="$round"
+
+        if [ "$codex_changed" = false ] && [ "$claude_changed" = false ]; then
+            unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA
+            echo -e "${GREEN}✓${NC} Local Codex and Claude reviews converged on the same HEAD after $round round(s)"
+            return 0
+        fi
+
+        echo "   Review fixes committed: Codex=$codex_changed Claude=$claude_changed; restarting from Codex"
+        round=$((round + 1))
+    done
+
+    unset AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_REVIEW_BASE_SHA
+    recovery_message "Local reviews did not converge within $REVIEW_MAX_ROUNDS round(s)."
+    return 1
+}
+
 inspect_publication_diff() {
     local file_count
     # This function is called in an `||` context, so `set -e` is disabled in its
@@ -537,21 +619,20 @@ publish_issue() {
     local number="$1" branch="$2" body_file pr_url
     git push --set-upstream origin "$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
-    # Report only the steps that actually ran. Claude review, Codex review, and
+    # Report only the steps that actually ran. Claude review, Codex deepgrill, and
     # fresh-base integration are unconditional; setup and validation are optional
     # hooks (run_validation no-ops when unset), so claiming them unconditionally
     # over-states verification exactly when a consumer hasn't wired them up.
     {
         echo "## Summary"
         echo
-        echo "Local worker implementation passed local Claude deep review, local Codex"
-        echo "review against fresh \`origin/$BASE_BRANCH\`, and fresh-base integration."
+        echo "Local worker implementation reached Codex/Claude review convergence after"
+        echo "$REVIEW_ROUNDS_USED round(s) against fresh \`origin/$BASE_BRANCH\`, then passed fresh-base integration."
         echo
         echo "## Test plan"
         echo
         if [ -n "$SETUP_HOOK" ]; then echo "- [x] isolated dependency bootstrap"; fi
-        echo "- [x] local Claude deep grill"
-        echo "- [x] local Codex review against fresh \`origin/$BASE_BRANCH\`"
+        echo "- [x] local Codex deepgrill and Claude review converged ($REVIEW_ROUNDS_USED round(s))"
         echo "- [x] fresh-base integration and publication-diff inspection"
         if [ -n "$VALIDATION_HOOK" ]; then echo "- [x] configured local validation hook"; fi
         echo
@@ -575,7 +656,8 @@ echo "   Hooks:"
 echo "     setup: ${SETUP_HOOK:-<none>}"
 echo "     validation: ${VALIDATION_HOOK:-<none>}"
 echo "     Claude review: $CLAUDE_REVIEW_HOOK"
-echo "     Codex review: $CODEX_REVIEW_HOOK"
+echo "     Codex deepgrill: $CODEX_REVIEW_HOOK"
+echo "     convergence cap: $REVIEW_MAX_ROUNDS round(s)"
 
 ITERATION=0
 while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
@@ -603,7 +685,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     echo "   Worktree: $ACTIVE_WORKTREE"
     echo "   Branch: $branch"
     echo "   Setup hook: ${SETUP_HOOK:-<none>}"
-    echo "   Review order: Claude deep review -> Codex review"
+    echo "   Review order: Codex deepgrill -> Claude review -> repeat until a no-fix round"
     echo "   Publication: push $branch; PR base $BASE_BRANCH"
 
     if [ "$DRY_RUN" = true ]; then
@@ -661,20 +743,11 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     git fetch origin "$BASE_BRANCH" --quiet
     export AGENT_LOOP_REVIEW_BASE="origin/$BASE_BRANCH"
-    run_bounded_hook "fresh local Claude deep grill" "$CLAUDE_REVIEW_HOOK" "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/claude-review.log" || {
-        recovery_message "Claude review hook failed."
-        exit 1
-    }
-    [ -z "$(git status --porcelain)" ] || { recovery_message "Claude review left uncommitted findings/fixes."; exit 1; }
-    run_validation "claude-review" || { recovery_message "Validation after Claude review failed."; exit 1; }
-
-    git fetch origin "$BASE_BRANCH" --quiet
-    run_bounded_hook "local Codex review against origin/$BASE_BRANCH" "$CODEX_REVIEW_HOOK" "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/codex-review.log" || {
-        recovery_message "Codex review hook failed."
-        exit 1
-    }
-    [ -z "$(git status --porcelain)" ] || { recovery_message "Codex review left uncommitted findings/fixes."; exit 1; }
-    run_validation "codex-review" || { recovery_message "Validation after Codex review failed."; exit 1; }
+    REVIEW_ROUNDS_USED=0
+    # Keep this as a simple command instead of placing the function in an `||`
+    # context. Bash disables `errexit` throughout a function invoked from an
+    # AND/OR list, which would let an unguarded fetch or git query fail open.
+    run_review_convergence
 
     echo -e "${BLUE}▸${NC} Fresh-base integration"
     git fetch origin "$BASE_BRANCH" --quiet

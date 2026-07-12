@@ -53,7 +53,30 @@ Use this path when the change touches:
 
 ## Handoff
 
-When complete, tell the user:
+Read `.codex/REVIEW_WORKFLOW.md` and the consumer's instructions to determine
+which cross-model path the developer selected.
+
+When invoked as the final sub-skill inside `reviewit`, return the deepgrill
+result directly to that orchestrator. Do not start local convergence, recommend
+another `reviewit`, push, or emit a terminal workflow summary; `reviewit` owns
+the hosted-path summary.
+
+When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
+return control without pushing:
+
+```text
+Codex deepgrill pass complete.
+Review depth: <deep with independent subagents | deep local multi-pass fallback>
+Next:
+  Run a fresh local Claude review on this HEAD.
+  If either reviewer commits a fix, restart the convergence round at Codex.
+  Push only after one full Codex-then-Claude round produces no fixes.
+```
+
+Do not recommend or invoke `reviewit` on the local convergence path. The current
+process or outer agent-loop wrapper owns the next pass and final summary.
+
+When the hosted fallback path is selected, tell the user:
 
 ```text
 Deep pre-push review complete.
@@ -70,3 +93,6 @@ up to four review iterations and a final deepgrill against the PR; each
 step needs cache headroom. A fresh session for `reviewit deep` makes the
 full chain materially cheaper.
 ```
+
+If no path is declared, present both choices and ask the developer to select
+based on whether local Claude Code is available. Do not assume a license.
