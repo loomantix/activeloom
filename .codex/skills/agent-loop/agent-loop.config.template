@@ -47,6 +47,7 @@ worker_hook =
 worker_model =
 worker_fallback_model =
 worker_retries = 1
+# Both timeout values must be positive; GNU `timeout 0` would disable the bound.
 worker_timeout_seconds = 3600
 hook_timeout_seconds = 3600
 retry_on_timeout = true

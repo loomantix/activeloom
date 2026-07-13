@@ -105,6 +105,8 @@ if args[:2] == ['auth', 'git-credential']:
     print('password=' + os.environ.get('GH_TOKEN', ''))
 elif args[:3] == ['api', 'user', '--jq']:
     print('tester')
+elif args[:2] == ['repo', 'view']:
+    print('fixture/consumer')
 elif args[:2] == ['issue', 'view']:
     number = args[2]
     issue = issues.get(number, {'number': int(number), 'title': 'fixture', 'body': '', 'state': 'OPEN', 'labels': [{'name': 'dev: agent'}], 'assignees': []})
@@ -112,7 +114,10 @@ elif args[:2] == ['issue', 'view']:
     view_counter = state / ('issue-views-' + number)
     view_count = int(view_counter.read_text() if view_counter.exists() else '0') + 1
     view_counter.write_text(str(view_count))
-    if claimed.exists() or view_count > 1:
+    final_issue = json.loads(os.environ.get('AGENT_FINAL_ISSUES_JSON', '{}')).get(number)
+    if view_count > 2 and final_issue is not None:
+        issue = final_issue
+    elif claimed.exists() or view_count > 1:
         issue = json.loads(os.environ.get('AGENT_POST_CLAIM_ISSUES_JSON', '{}')).get(number, issue)
         issue = dict(issue)
         login = os.environ.get('AGENT_VERIFIED_ASSIGNEE', 'tester')
@@ -137,14 +142,23 @@ elif args[:2] == ['issue', 'edit']:
             sys.exit(75)
         claimed.unlink(missing_ok=True)
 elif args[:2] == ['pr', 'view']:
-    number = args[2]
-    row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
-    if row:
-        print('\t'.join(str(value) for value in row))
+    if 'headRefOid' in ' '.join(args):
+        print(os.environ.get('AGENT_PR_HEAD_OID', (state / 'pr-head').read_text()))
     else:
-        sys.exit(1)
+        number = args[2]
+        row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
+        if row:
+            print('\t'.join(str(value) for value in row))
+        else:
+            sys.exit(1)
 elif args[:2] == ['pr', 'create']:
+    head = subprocess.run(
+        ['git', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (state / 'pr-head').write_text(head)
     print('https://example.invalid/pr/1')
+elif args[:2] == ['pr', 'close']:
+    (state / 'pr-closed').touch()
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
     sys.exit(2)
@@ -309,6 +323,38 @@ exec "$AGENT_TEST_REAL_PYTHON" "$@"
     assert not (consumer[3] / "events.log").exists()
 
 
+def test_dependency_lookup_failure_blocks_the_run(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "54", "--dry-run"],
+        issues=[_issue(54, "Depends on PR #999")],
+        config=_config(tmp_path, dependency_gate="merged-to-base"),
+    )
+    assert result.returncode != 0
+    assert "could not verify dependency pr #999" in result.stderr
+    assert "dependency gate failed" in result.stderr
+
+
+@pytest.mark.parametrize("ready_json", ["{}", "not-json"])
+def test_malformed_initial_ready_queue_fails_closed(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, ready_json: str
+) -> None:
+    result = _run(
+        consumer,
+        [],
+        issues=[_issue(55)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_READY_JSON": ready_json},
+    )
+    assert result.returncode != 0
+    assert "could not validate ready-queue data" in result.stderr
+    assert "issue selection failed" in result.stderr
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit" not in gh_log
+
+
 def test_dry_run_shows_plan_without_mutation(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -392,6 +438,24 @@ def test_outer_review_environment_is_not_leaked_to_worker(
             "AGENT_LOOP_REVIEW_OUTCOME_FILE": "/tmp/stale-outcome",
             "AGENT_LOOP_REVIEW_ROUND": "99",
         },
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_ambient_gh_repo_is_replaced_with_checkout_repository(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker_hook = (
+        'test "$GH_REPO" = fixture/consumer; '
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: pinned repository context'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "56"],
+        issues=[_issue(56)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+        extra_env={"GH_REPO": "other/repository"},
     )
     assert result.returncode == 0, result.stderr + result.stdout
 
@@ -643,11 +707,12 @@ def test_later_reviewer_cannot_change_an_accepted_outcome(
     assert "issue-49" not in _agent_loop_branches(consumer[1])
 
 
+@pytest.mark.parametrize("engine", ["codex", "claude"])
 def test_final_validation_cannot_change_an_accepted_outcome(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, engine: str
 ) -> None:
-    codex_hook = (
-        "touch \"$AGENT_STATE_DIR/codex-reviewed\"; "
+    review_hook = (
+        f'touch "$AGENT_STATE_DIR/{engine}-reviewed"; '
         "printf 'minor fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'docs: minor review fix'; "
         "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
@@ -655,9 +720,9 @@ def test_final_validation_cannot_change_an_accepted_outcome(
     validation_hook = (
         "printf 'validate\\n' >> \"$EVENT_LOG\"; "
         'if [ -z "${AGENT_LOOP_REVIEW_ENGINE:-}" ] && '
-        '[ -e "$AGENT_STATE_DIR/codex-reviewed" ]; then '
+        f'[ -e "$AGENT_STATE_DIR/{engine}-reviewed" ]; then '
         "printf 'material\\n' > "
-        '"$AGENT_LOOP_LOG_DIR/codex-review-round-1.outcome"; fi'
+        f'"$AGENT_LOOP_LOG_DIR/{engine}-review-round-1.outcome"; fi'
     )
     result = _run(
         consumer,
@@ -665,12 +730,12 @@ def test_final_validation_cannot_change_an_accepted_outcome(
         issues=[_issue(50)],
         config=_config(
             tmp_path,
-            codex_review_hook=codex_hook,
             validation_hook=validation_hook,
+            **{f"{engine}_review_hook": review_hook},
         ),
     )
     assert result.returncode != 0
-    assert "Codex review outcome file changed" in result.stderr
+    assert f"{engine.title()} review outcome file changed" in result.stderr
     assert "Worktree preserved:" in result.stderr
     assert "issue-50" not in _agent_loop_branches(consumer[1])
 
@@ -714,6 +779,23 @@ def test_review_contract_version_is_required_before_claim(
     )
     assert result.returncode != 0
     assert "review_contract_version = 1" in result.stderr
+    gh_log = consumer[3] / "gh.log"
+    assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+    assert not (tmp_path / "worktrees").exists()
+
+
+@pytest.mark.parametrize("timeout_key", ["worker_timeout_seconds", "hook_timeout_seconds"])
+def test_zero_timeout_is_rejected_before_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, timeout_key: str
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "57"],
+        issues=[_issue(57)],
+        config=_config(tmp_path, **{timeout_key: 0}),
+    )
+    assert result.returncode != 0
+    assert f"{timeout_key} must be a positive integer" in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
@@ -928,6 +1010,30 @@ def test_hook_origin_url_change_blocks_publication(
     assert "issue-41" not in _agent_loop_branches(redirected)
 
 
+def test_hook_origin_fetch_url_change_blocks_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, remote, _, _ = consumer
+    redirected = tmp_path / "redirected-fetch.git"
+    _run_git("init", "--bare", str(redirected))
+    _run_git("config", "remote.origin.pushurl", str(remote), cwd=repo)
+    worker_hook = (
+        'git remote set-url origin "$REDIRECTED_REMOTE"; '
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker after fetch redirect'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "58"],
+        issues=[_issue(58)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+        extra_env={"REDIRECTED_REMOTE": str(redirected)},
+    )
+    assert result.returncode != 0
+    assert "hook changed origin fetch/push identity" in result.stderr
+    assert "issue-58" not in _agent_loop_branches(remote)
+
+
 def test_post_review_git_status_failure_blocks_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1035,6 +1141,112 @@ def test_git_alias_cannot_bypass_hook_publication_guard(
         _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
         == base_before
     )
+
+
+@pytest.mark.parametrize(
+    "global_option",
+    ["--attr-source HEAD", "--shallow-file /dev/null"],
+)
+def test_value_taking_git_global_option_cannot_hide_push(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    global_option: str,
+) -> None:
+    _, remote, _, _ = consumer
+    worker_hook = (
+        f"if git {global_option} push origin HEAD:refs/heads/global-option-bypass "
+        ">/dev/null 2>&1; then exit 61; fi; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker after blocked global option'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "62"],
+        issues=[_issue(62)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branches = _run_git(
+        "for-each-ref", "--format=%(refname:short)", cwd=remote
+    ).stdout
+    assert "global-option-bypass" not in branches
+
+
+def test_command_scoped_git_alias_cannot_bypass_hook_guard(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, _, _ = consumer
+    worker_hook = (
+        "if git -c alias.publish=push publish origin "
+        "HEAD:refs/heads/scoped-alias-bypass >/dev/null 2>&1; then exit 62; fi; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker after blocked scoped alias'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "63"],
+        issues=[_issue(63)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branches = _run_git(
+        "for-each-ref", "--format=%(refname:short)", cwd=remote
+    ).stdout
+    assert "scoped-alias-bypass" not in branches
+
+
+def test_git_autocorrection_cannot_turn_typo_into_push(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, remote, _, _ = consumer
+    _run_git("config", "help.autocorrect", "immediate", cwd=repo)
+    worker_hook = (
+        "if git pus origin HEAD:refs/heads/autocorrect-bypass >/dev/null 2>&1; "
+        "then exit 63; fi; printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker after disabled autocorrect'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "64"],
+        issues=[_issue(64)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branches = _run_git(
+        "for-each-ref", "--format=%(refname:short)", cwd=remote
+    ).stdout
+    assert "autocorrect-bypass" not in branches
+
+
+def test_login_startup_git_function_cannot_bypass_hook_guard(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, _, _ = consumer
+    real_git = shutil.which("git")
+    assert real_git is not None
+    bash_env = tmp_path / "hook-bash-env"
+    bash_env.write_text(
+        'git() { "$AGENT_TEST_REAL_GIT" "$@"; }\nexport -f git\n',
+        encoding="utf-8",
+    )
+    worker_hook = (
+        "if git push origin HEAD:refs/heads/startup-function-bypass "
+        ">/dev/null 2>&1; then exit 64; fi; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker after cleared startup function'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "65"],
+        issues=[_issue(65)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_TEST_REAL_GIT": real_git, "BASH_ENV": str(bash_env)},
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branches = _run_git(
+        "for-each-ref", "--format=%(refname:short)", cwd=remote
+    ).stdout
+    assert "startup-function-bypass" not in branches
 
 
 def test_exported_git_function_cannot_bypass_hook_publication_guard(
@@ -1335,6 +1547,68 @@ exit "$status"
     assert "pr create" not in gh_log
 
 
+def test_remote_branch_rewrite_after_first_attestation_blocks_pr_creation(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, bin_dir, state_dir = consumer
+    base_sha = _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+"$AGENT_TEST_REAL_GIT" "$@"
+status=$?
+if [ "$status" -eq 0 ] && [ "${1:-}" = ls-remote ] && \
+   [[ " $* " == *" refs/heads/$AGENT_LOOP_BRANCH "* ]] && \
+   [ ! -e "$AGENT_STATE_DIR/first-attestation-rewritten" ]; then
+    "$AGENT_TEST_REAL_GIT" --git-dir="$AGENT_TEST_REMOTE" update-ref \
+        "refs/heads/$AGENT_LOOP_BRANCH" "$AGENT_TEST_BASE_SHA"
+    touch "$AGENT_STATE_DIR/first-attestation-rewritten"
+fi
+exit "$status"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "66"],
+        issues=[_issue(66)],
+        config=_config(tmp_path),
+        extra_env={
+            "AGENT_TEST_REAL_GIT": real_git,
+            "AGENT_TEST_REMOTE": str(remote),
+            "AGENT_TEST_BASE_SHA": base_sha,
+        },
+    )
+    assert result.returncode != 0
+    assert (state_dir / "first-attestation-rewritten").exists()
+    assert "remote issue branch changed before PR creation" in result.stderr
+    gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
+    assert "pr create" not in gh_log
+
+
+def test_created_pr_head_mismatch_closes_pr_and_preserves_worktree(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, _, state_dir = consumer
+    base_sha = _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
+    result = _run(
+        consumer,
+        ["--issues", "67"],
+        issues=[_issue(67)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_PR_HEAD_OID": base_sha},
+    )
+    assert result.returncode != 0
+    assert "created PR head does not match publication snapshot" in result.stderr
+    assert (state_dir / "pr-closed").exists()
+    gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
+    assert "pr create" in gh_log
+    assert "pr close https://example.invalid/pr/1" in gh_log
+    match = re.search(r"Worktree preserved: (.+)", result.stderr)
+    assert match and Path(match.group(1)).exists()
+
+
 def test_default_worker_model_is_passed_as_one_shell_safe_argument(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1434,6 +1708,7 @@ def test_new_dependency_added_during_claim_blocks_worker_and_releases_claim(
         config=_config(tmp_path, dependency_gate="merged-to-base"),
         extra_env={
             "AGENT_POST_CLAIM_ISSUES_JSON": json.dumps({"35": updated}),
+            "AGENT_PRS_JSON": json.dumps({"999": ["CLOSED", "main", ""]}),
         },
     )
     assert result.returncode == 0, result.stderr + result.stdout
@@ -1462,6 +1737,68 @@ def test_default_ready_gate_is_rechecked_after_claim(
     gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
     assert "issue edit 45 --remove-assignee @me" in gh_log
     assert not (consumer[3] / "events.log").exists()
+
+
+def test_malformed_ready_data_after_claim_releases_new_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "59"],
+        issues=[_issue(59)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_POST_CLAIM_READY_JSON": "{}"},
+    )
+    assert result.returncode != 0
+    assert "could not re-evaluate issue #59" in result.stderr
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit 59 --remove-assignee @me" in gh_log
+    assert not (consumer[3] / "events.log").exists()
+
+
+@pytest.mark.parametrize(
+    "invalid_field",
+    [{"title": ""}, {"body": []}],
+)
+def test_invalid_issue_context_after_claim_releases_new_claim(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    invalid_field: dict[str, object],
+) -> None:
+    updated = _issue(60)
+    updated.update(invalid_field)
+    result = _run(
+        consumer,
+        ["--issues", "60"],
+        issues=[_issue(60)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_POST_CLAIM_ISSUES_JSON": json.dumps({"60": updated})},
+    )
+    assert result.returncode != 0
+    assert "could not refresh issue context after claiming issue #60" in result.stderr
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit 60 --remove-assignee @me" in gh_log
+    assert not (consumer[3] / "events.log").exists()
+
+
+def test_issue_context_change_before_publication_preserves_work_and_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    final_issue = _issue(61, "Changed requirements", assigned=True)
+    result = _run(
+        consumer,
+        ["--issues", "61"],
+        issues=[_issue(61, "Original requirements")],
+        config=_config(tmp_path),
+        extra_env={"AGENT_FINAL_ISSUES_JSON": json.dumps({"61": final_issue})},
+    )
+    assert result.returncode != 0
+    assert "changed or is no longer eligible before publication" in result.stderr
+    assert "completed work was preserved and the claim was retained" in result.stderr
+    assert (consumer[3] / "claimed-61").exists()
+    assert "issue-61" not in _agent_loop_branches(consumer[1])
+    match = re.search(r"Worktree preserved: (.+)", result.stderr)
+    assert match and Path(match.group(1)).exists()
 
 
 def test_default_shipped_prompt_does_not_depend_on_gh() -> None:

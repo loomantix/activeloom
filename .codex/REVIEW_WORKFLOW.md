@@ -57,9 +57,10 @@ base SHA, resolved every finding, or classified a substantive change correctly;
 consumer hook commands own those guarantees and must fail if a valid finding
 remains.
 
-Do not run `reviewit` after this path merely as an extra ritual. Use it only when
-the developer intentionally chooses the hosted fallback or explicitly requests
-additional hosted review.
+Do not run `reviewit` after this path merely as an extra ritual. If the developer
+switches to hosted review and it creates or pushes a commit, the prior local
+convergence is stale: rerun a complete Codex-then-Claude round on the new HEAD
+before merge, or explicitly use the hosted fallback as the final review path.
 
 ## Hosted Fallback Path
 

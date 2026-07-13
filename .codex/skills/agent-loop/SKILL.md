@@ -65,7 +65,7 @@ with the issue worktree as the current directory.
 | `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                     |
 | `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                   |
 | `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                    |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                        |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                  |
 | `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                          |
 | `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                          |
 | `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                    |
@@ -94,12 +94,16 @@ The outcome must remain unchanged through post-review validation; a validator
 or later reviewer that creates, removes, or changes an accepted classification
 blocks publication. The wrapper re-attests both records after final validation.
 
-The wrapper also requires exit 0, a clean tree, an attached issue branch, and
-append-only commit ancestry.
+The wrapper pins `GH_REPO` from the current checkout before any repository-
+scoped GitHub operation. It also requires exit 0, a clean tree, an attached
+issue branch, and append-only commit ancestry.
 It disables canonical `git push`, Git aliases, and ordinary `gh` invocations
 inside every hook; only `gh auth git-credential get` is forwarded for Git
 credential-helper reads. The wrapper also attests that origin fetch/push URLs
-remain unchanged and alone publishes the final captured commit. Caller auth
+remain unchanged, disables executing Git command autocorrection, and alone
+publishes the final captured commit. It re-attests the remote branch immediately
+before PR creation and verifies the created PR's head SHA; an unverifiable PR is
+closed when possible and the worktree is preserved. Caller auth
 variables remain available so ordinary authenticated Git reads continue to
 work. This is an accidental-publication guard, not a
 sandbox against a deliberately hostile shell command. The wrapper cannot verify
@@ -140,7 +144,10 @@ and never copies issue bodies, model logs, or findings into GitHub.
 ## Deterministic Phase Order
 
 1. Select and dependency-gate an eligible issue.
-2. Claim it, detecting assignment races.
+2. Claim it, refetch title/body/eligibility, rerun ready/dependency gates, and
+   detect assignment races. If eligibility changes, roll back only the
+   assignment added by this run; a rollback failure stops before worktree
+   creation for operator recovery.
 3. Create a unique worktree and branch from `origin/<base>`.
 4. Run the isolated setup hook.
 5. Run the worker and require a clean local commit.
@@ -151,7 +158,9 @@ and never copies issue bodies, model logs, or findings into GitHub.
    entire Codex-then-Claude round with no material fixes. Exhausting
    `review_max_rounds` blocks publication and preserves the worktree.
 8. Fetch and merge the base again, inspect a bounded diff, and revalidate.
-9. Confirm no worker/hook pushed the branch; only then push and open the PR.
+9. Re-attest unchanged issue requirements/readiness, confirm no worker/hook
+   pushed the branch, then push the captured SHA, attest it around PR creation,
+   and verify the created PR head.
 
 Do not invoke Gemini, Copilot, `reviewit`, or any GitHub-hosted AI reviewer.
 
@@ -174,6 +183,14 @@ the guarded run exits. Retry capacity/timeouts only when the worktree is
 unchanged. Review, setup, integration, validation mutation,
 detached/wrong-branch state, and review non-convergence failures also preserve
 the worktree. Never reset, reuse, clean, or delete a dirty recovery worktree.
+
+If a newly added claim cannot be rolled back before worktree creation, stop and
+manually inspect/unassign it. Publication is not atomic: after a push succeeds,
+an attestation, upstream-setting, or PR-creation failure can leave the captured
+SHA on the remote issue branch, and a failed post-create attestation can leave
+an open PR when automatic close also fails. Preserve the worktree, inspect both
+remote branch and PR state, and retry or clean up only after explicit SHA
+verification; a blind rerun will reject the existing remote branch.
 
 Successful publication removes the clean linked worktree but retains the local
 branch. Interrupted runs preserve the active worktree.

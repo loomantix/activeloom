@@ -95,7 +95,9 @@ Run these lanes as independently as the active runtime permits:
 
 ## Process
 
-1. Verify there is a local diff or unpushed commits to review.
+1. Verify there is a local diff or unpushed commits to review. When the caller
+   supplies a pinned base SHA, give every lane the same literal
+   `<base-sha>..HEAD` range rather than a mutable ref.
 2. Skip docs/config-only changes unless the user explicitly wants review.
 3. Read `AGENTS.md`, relevant path-specific instructions, and changed files.
 4. In lean mode, execute every lane in the Lean Review Matrix. Load these role references for lane prompts:

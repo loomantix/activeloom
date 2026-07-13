@@ -218,6 +218,8 @@ for value in "$WORKER_RETRIES" "$WORKER_TIMEOUT_SECONDS" "$HOOK_TIMEOUT_SECONDS"
              "$REVIEW_MAX_ROUNDS" "$RETRY_DELAY_SECONDS" "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
     [[ "$value" =~ ^[0-9]+$ ]] || { echo "numeric agent-loop config value required: $value" >&2; exit 1; }
 done
+[ "$WORKER_TIMEOUT_SECONDS" -gt 0 ] || { echo "worker_timeout_seconds must be a positive integer" >&2; exit 1; }
+[ "$HOOK_TIMEOUT_SECONDS" -gt 0 ] || { echo "hook_timeout_seconds must be a positive integer" >&2; exit 1; }
 [ "$REVIEW_MAX_ROUNDS" -gt 0 ] || { echo "review_max_rounds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
@@ -252,6 +254,19 @@ fi
 [[ "$PROMPT_TEMPLATE" == *"{ISSUE_ID}"* ]] || { echo "prompt template must contain {ISSUE_ID}: $PROMPT_FILE" >&2; exit 1; }
 
 cd "$PROJECT_DIR"
+
+# Repository-scoped gh commands must resolve from this checkout, never from an
+# ambient GH_REPO that could point issue claims and PR creation at another repo.
+unset GH_REPO
+GH_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || {
+    echo "could not resolve the GitHub repository for $PROJECT_DIR" >&2
+    exit 1
+}
+[[ "$GH_REPO" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || {
+    echo "resolved GitHub repository is invalid: $GH_REPO" >&2
+    exit 1
+}
+export GH_REPO
 
 ORIGIN_FETCH_URLS="$(git remote get-url --all origin)" || {
     echo "could not capture origin fetch identity" >&2
@@ -377,6 +392,18 @@ issue_is_selectable() {
     [ "$RESUME_IN_PROGRESS" = true ] && [ "$mine" = true ] && [ "$count" -eq 1 ]
 }
 
+ready_queue_numbers() {
+    jq -r '
+        if type == "array" and all(.[];
+            ((.number | type) == "number") and
+            (.number > 0) and
+            (.number == (.number | floor)))
+        then .[].number
+        else error("ready queue must be an array of positive integer issue numbers")
+        end
+    '
+}
+
 SELECTED_ID=""
 SELECTED_TITLE=""
 SELECTED_BODY=""
@@ -394,6 +421,10 @@ select_next_issue() {
         # same hard excludes, open blockers, and addressed-PR checks as the normal
         # ready queue, while retaining assigned-but-ready rows for --resume.
         allowlist_ready_json="$("$ISSUES_READY" --agent --limit 1000 --json)" || return 2
+        ready_queue_numbers <<< "$allowlist_ready_json" >/dev/null || {
+            echo "could not validate ready-queue data" >&2
+            return 2
+        }
         IFS=',' read -r -a candidates <<< "$ISSUE_ALLOWLIST"
         for number in "${candidates[@]}"; do
             already_processed "$number" && continue
@@ -417,8 +448,12 @@ select_next_issue() {
         return 1
     fi
 
-    local ready_json
+    local ready_json ready_numbers
     ready_json="$("$ISSUES_READY" --unassigned --agent --limit 100 --json)" || return 2
+    ready_numbers="$(ready_queue_numbers <<< "$ready_json")" || {
+        echo "could not validate ready-queue data" >&2
+        return 2
+    }
     while IFS= read -r number; do
         [ -n "$number" ] || continue
         already_processed "$number" && continue
@@ -427,26 +462,46 @@ select_next_issue() {
         SELECTED_ID="$number"
         set_selected_issue_context "$json" || return 2
         return 0
-    done < <(jq -r '.[].number' <<<"$ready_json")
+    done <<< "$ready_numbers"
     return 1
 }
 
 pr_merged_to_base() {
-    local pr="$1" data state base oid
-    data="$(gh pr view "$pr" --json state,baseRefName,mergeCommit --jq '[.state,.baseRefName,(.mergeCommit.oid // "")] | @tsv' 2>/dev/null)" || return 1
+    local pr="$1" data state base oid merge_status=0
+    data="$(gh pr view "$pr" --json state,baseRefName,mergeCommit --jq '[.state,.baseRefName,(.mergeCommit.oid // "")] | @tsv' 2>/dev/null)" || return 2
     IFS=$'\t' read -r state base oid <<< "$data"
-    [ "$state" = MERGED ] && [ "$base" = "$BASE_BRANCH" ] && [ -n "$oid" ] || return 1
-    git merge-base --is-ancestor "$oid" "$BASE_REMOTE_REF" >/dev/null 2>&1
+    [ "$state" = MERGED ] || return 1
+    [ "$base" = "$BASE_BRANCH" ] || return 1
+    if [ -z "$oid" ]; then
+        echo "merged dependency PR #$pr has no merge commit" >&2
+        return 2
+    fi
+    git merge-base --is-ancestor "$oid" "$BASE_REMOTE_REF" >/dev/null 2>&1 || merge_status=$?
+    case "$merge_status" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *)
+            echo "could not compare dependency PR #$pr with origin/$BASE_BRANCH" >&2
+            return 2
+            ;;
+    esac
 }
 
 issue_dependency_merged() {
-    local issue="$1" rows pr
+    local issue="$1" rows pr dependency_status=0 had_error=false
     rows="$(gh issue view "$issue" --json closedByPullRequestsReferences \
-        --jq '.closedByPullRequestsReferences[]? | [.number,.state,.baseRefName,(.mergeCommit.oid // "")] | @tsv' 2>/dev/null)" || return 1
+        --jq '.closedByPullRequestsReferences[]? | [.number,.state,.baseRefName,(.mergeCommit.oid // "")] | @tsv' 2>/dev/null)" || return 2
     while IFS=$'\t' read -r pr _; do
         [ -n "$pr" ] || continue
-        pr_merged_to_base "$pr" && return 0
+        dependency_status=0
+        pr_merged_to_base "$pr" || dependency_status=$?
+        case "$dependency_status" in
+            0) return 0 ;;
+            1) ;;
+            *) had_error=true ;;
+        esac
     done <<< "$rows"
+    [ "$had_error" = false ] || return 2
     return 1
 }
 
@@ -459,7 +514,7 @@ for kind, number in pattern.findall(body):
 }
 
 check_dependencies() {
-    local body="$1" refs kind number found=false
+    local body="$1" refs kind number found=false dependency_status
     if [ "$DEPENDENCY_GATE" = ready ]; then
         echo "   Dependency gate: ready-queue semantics"
         return 0
@@ -471,13 +526,23 @@ check_dependencies() {
     while IFS=$'\t' read -r kind number; do
         [ -n "$number" ] || continue
         found=true
-        if { [ "$kind" = pr ] && pr_merged_to_base "$number"; } || \
-           { [ "$kind" = issue ] && issue_dependency_merged "$number"; }; then
-            echo "   Dependency $kind #$number: merged into origin/$BASE_BRANCH"
+        dependency_status=0
+        if [ "$kind" = pr ]; then
+            pr_merged_to_base "$number" || dependency_status=$?
         else
-            echo "   Dependency $kind #$number: NOT merged into origin/$BASE_BRANCH"
-            return 1
+            issue_dependency_merged "$number" || dependency_status=$?
         fi
+        case "$dependency_status" in
+            0) echo "   Dependency $kind #$number: merged into origin/$BASE_BRANCH" ;;
+            1)
+                echo "   Dependency $kind #$number: NOT merged into origin/$BASE_BRANCH"
+                return 1
+                ;;
+            *)
+                echo "could not verify dependency $kind #$number" >&2
+                return 2
+                ;;
+        esac
     done <<< "$refs"
     [ "$found" = true ] || echo "   Dependency gate: no declared dependencies"
 }
@@ -488,10 +553,12 @@ ready_queue_contains_issue() {
         echo "could not refresh ready-queue eligibility for issue #$number" >&2
         return 2
     }
-    jq -e --argjson number "$number" '
-        if type == "array" then any(.number == $number)
-        else error("ready queue is not an array") end
-    ' <<< "$ready_json" >/dev/null || status=$?
+    ready_queue_numbers <<< "$ready_json" >/dev/null || {
+        echo "could not validate refreshed ready-queue data for issue #$number" >&2
+        return 2
+    }
+    jq -e --argjson number "$number" 'any(.number == $number)' \
+        <<< "$ready_json" >/dev/null || status=$?
     case "$status" in
         0) return 0 ;;
         1) return 1 ;;
@@ -524,9 +591,25 @@ claim_issue() {
     # context. A concurrent reassignment can otherwise duplicate another user's
     # work, while a concurrent edit can give the worker stale requirements.
     # Resumes need the same fresh check.
-    claim_json="$(gh issue view "$number" --json number,title,body,state,labels,assignees)" || claim_json=""
-    login="$(jq -r 'if (.assignees | length) == 1 then .assignees[0].login else "" end' \
-        <<< "$claim_json" 2>/dev/null || true)"
+    claim_json="$(gh issue view "$number" --json number,title,body,state,labels,assignees)" || {
+        if [ "$added" = true ] && ! rollback_new_claim "$number"; then
+            return 2
+        fi
+        echo "could not refresh issue #$number after claiming it" >&2
+        return 2
+    }
+    login="$(jq -r '
+        if (.assignees | type) != "array" then error("invalid assignees")
+        elif (.assignees | length) == 1 and
+             ((.assignees[0].login | type) == "string")
+        then .assignees[0].login else "" end
+    ' <<< "$claim_json")" || {
+        if [ "$added" = true ] && ! rollback_new_claim "$number"; then
+            return 2
+        fi
+        echo "could not validate assignees after claiming issue #$number" >&2
+        return 2
+    }
     if [ "$login" != "$CURRENT_LOGIN" ] || ! jq -e '
         .state == "OPEN" and
         ((.labels | type) == "array") and
@@ -543,11 +626,58 @@ claim_issue() {
             return 2
         fi
         echo "could not refresh issue context after claiming issue #$number" >&2
-        return 1
+        return 2
     fi
     if [ "$SELECTED_ASSIGNED" = true ]; then
         echo -e "${YELLOW}›${NC} Resuming issue #$number"
     fi
+}
+
+verify_issue_for_publication() {
+    local number="$1" current_json issue_status=0 readiness_status=0
+    current_json="$(issue_json "$number")" || {
+        echo "could not refresh issue #$number before publication" >&2
+        return 2
+    }
+    jq -e --argjson number "$number" --arg login "$CURRENT_LOGIN" \
+        --arg title "$SELECTED_TITLE" --arg body "$SELECTED_BODY" '
+        (.number == $number) and
+        (.state == "OPEN") and
+        ((.labels | type) == "array") and
+        (.labels | any(.name == "dev: agent")) and
+        ((.assignees | type) == "array") and
+        ((.assignees | length) == 1) and
+        (.assignees[0].login == $login) and
+        (.title == $title) and
+        ((.body // "") == $body)
+    ' <<< "$current_json" >/dev/null || issue_status=$?
+    case "$issue_status" in
+        0) ;;
+        1)
+            echo "issue #$number changed or is no longer eligible before publication" >&2
+            return 1
+            ;;
+        *)
+            echo "could not validate issue #$number before publication" >&2
+            return 2
+            ;;
+    esac
+
+    ready_queue_contains_issue "$number" || readiness_status=$?
+    if [ "$readiness_status" -eq 0 ] && [ "$DEPENDENCY_GATE" = merged-to-base ]; then
+        check_dependencies "$SELECTED_BODY" || readiness_status=$?
+    fi
+    case "$readiness_status" in
+        0) return 0 ;;
+        1)
+            echo "issue #$number is no longer ready before publication" >&2
+            return 1
+            ;;
+        *)
+            echo "could not re-evaluate issue #$number before publication" >&2
+            return 2
+            ;;
+    esac
 }
 
 worktree_has_work() {
@@ -959,9 +1089,34 @@ inspect_publication_diff() {
     git diff --stat "$base_sha..HEAD" | tail -n "$OUTPUT_MAX_LINES"
 }
 
+attest_remote_branch() {
+    local branch="$1" expected_sha="$2" phase="$3"
+    local remote_row remote_sha remote_ref
+    remote_row="$(git ls-remote --exit-code --heads origin "refs/heads/$branch")" || {
+        echo "could not attest remote issue branch $phase" >&2
+        return 1
+    }
+    IFS=$'\t' read -r remote_sha remote_ref <<< "$remote_row"
+    if [ "$remote_sha" != "$expected_sha" ] || \
+       [ "$remote_ref" != "refs/heads/$branch" ]; then
+        echo "remote issue branch changed $phase" >&2
+        return 1
+    fi
+}
+
+close_unattested_pr() {
+    local pr_url="$1" reason="$2"
+    echo "$reason: $pr_url" >&2
+    if gh pr close "$pr_url" >/dev/null; then
+        echo "closed PR whose head could not be attested: $pr_url" >&2
+    else
+        echo "could not close unverified PR; operator action is required: $pr_url" >&2
+    fi
+}
+
 publish_issue() {
     local number="$1" branch="$2" publication_sha="$3"
-    local body_file pr_url remote_row remote_sha remote_ref
+    local body_file pr_url pr_head_oid
     require_origin_identity || {
         echo "origin identity changed before publication" >&2
         return 1
@@ -972,16 +1127,7 @@ publish_issue() {
     }
     git push --force-with-lease="refs/heads/$branch:" origin \
         "$publication_sha:refs/heads/$branch"
-    remote_row="$(git ls-remote --exit-code --heads origin "refs/heads/$branch")" || {
-        echo "could not attest remote issue branch after publication push" >&2
-        return 1
-    }
-    IFS=$'\t' read -r remote_sha remote_ref <<< "$remote_row"
-    if [ "$remote_sha" != "$publication_sha" ] || \
-       [ "$remote_ref" != "refs/heads/$branch" ]; then
-        echo "remote issue branch changed after publication push" >&2
-        return 1
-    fi
+    attest_remote_branch "$branch" "$publication_sha" "after publication push" || return 1
     git branch --set-upstream-to="origin/$branch" "$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
     # Report what the wrapper can prove. Hook configuration names the intended
@@ -1003,8 +1149,24 @@ publish_issue() {
         echo
         echo "Closes #$number"
     } > "$body_file"
+    attest_remote_branch "$branch" "$publication_sha" "before PR creation" || return 1
     pr_url="$(gh pr create --base "$BASE_BRANCH" --head "$branch" \
-        --title "agent-loop: resolve #$number" --body-file "$body_file")"
+        --title "agent-loop: resolve #$number" --body-file "$body_file")" || {
+        echo "could not create PR after publishing remote branch $branch" >&2
+        return 1
+    }
+    pr_head_oid="$(gh pr view "$pr_url" --json headRefOid --jq .headRefOid)" || {
+        close_unattested_pr "$pr_url" "could not attest created PR head"
+        return 1
+    }
+    if [ "$pr_head_oid" != "$publication_sha" ]; then
+        close_unattested_pr "$pr_url" "created PR head does not match publication snapshot"
+        return 1
+    fi
+    if ! attest_remote_branch "$branch" "$publication_sha" "after PR creation"; then
+        close_unattested_pr "$pr_url" "remote issue branch changed after PR creation"
+        return 1
+    fi
     echo -e "${GREEN}✓${NC} Published $pr_url"
 }
 
@@ -1175,6 +1337,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     require_issue_branch_head || { recovery_message "Fresh-base integration moved HEAD away from the issue branch."; exit 1; }
     verify_converged_review_outcomes || exit 1
 
+    publication_readiness_status=0
+    verify_issue_for_publication "$SELECTED_ID" || publication_readiness_status=$?
+    if [ "$publication_readiness_status" -ne 0 ]; then
+        recovery_message "Issue requirements or readiness changed before publication; completed work was preserved and the claim was retained."
+        exit 1
+    fi
     require_origin_identity || { recovery_message "Origin identity changed before publication checks."; exit 1; }
     if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
         recovery_message "Remote branch existed before wrapper publication; a worker or hook may have pushed."

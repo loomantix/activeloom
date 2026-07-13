@@ -126,6 +126,16 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     ]
     for path in consumer_owned:
         assert path.is_file()
+    for guard_name in ("hook-gh-guard", "hook-git-guard"):
+        relative = Path(".codex/skills/agent-loop/scripts") / guard_name
+        synced_guard = consumer / relative
+        upstream_guard = REPO_ROOT / relative
+        assert synced_guard.is_file()
+        assert synced_guard.read_bytes() == upstream_guard.read_bytes()
+        assert stat.S_IMODE(synced_guard.stat().st_mode) == 0o755
+    assert "review_contract_version = 1" in (
+        consumer / ".codex/skills/agent-loop/agent-loop.config"
+    ).read_text(encoding="utf-8")
     sentinel = "\nconsumer customization\n"
     for path in consumer_owned:
         path.write_text(path.read_text(encoding="utf-8") + sentinel, encoding="utf-8")

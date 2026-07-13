@@ -43,7 +43,10 @@ Run these lanes as independently as the active runtime permits:
 ## Process
 
 1. Verify the branch is not `main`, `master`, or `staging`.
-2. Determine the diff scope against `@{u}` when available, otherwise against the default branch.
+2. Use the exact base SHA supplied by an invoking `deepgrill` or caller. Only
+   when run standalone without a supplied base, resolve `@{u}` when available,
+   otherwise the default branch, once. Pass the literal `<base-sha>..HEAD` range
+   to every cleanup lane; never let lanes re-resolve a mutable ref.
 3. Skip if the changeset is docs/config-only. Treat source files such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash` as review-worthy.
 4. Read the changed source files and execute every lane in the Cleanup Matrix.
 5. Consolidate lane suggestions, deduplicate by root cause, and apply only cleanup that is behavior-preserving and clearly improves the fresh diff.
