@@ -17,6 +17,8 @@ Read `$ARGUMENTS`. If it equals `deep` (case-insensitive, ignore surrounding whi
 ## Core principles
 
 - **Adversarial stance.** Unlike `/simplify` (which is constructive — find consolidations and simplifications) and `/refactorpass` (the wrapper that runs `/simplify`), `/grill` is critical. Look for what's wrong, what's missing, what could break, what reviewers will catch.
+- **Agents report everything; this skill does the filtering.** Never ask a sub-agent to suppress low-severity or low-confidence findings. The current default model follows a suppression instruction literally and will report less, and its extra findings are mostly real — so a pre-filter at the agent costs real defects. Ask for every finding with a severity and confidence, then rank and cut in Phase 3. See [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §1.
+- **The agent matrix is a ceiling, not a floor.** Run only the lenses whose signals appear in the diff. Do not spawn extra agents to double-check another agent's findings, and do not add a verification agent — the model already self-verifies, so that spend buys nothing. See [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §2–§3.
 - **Fix-everything-valid bias.** The default for every valid finding is **fix now, in this PR**. Dismiss only what's invalid (wrong, false-positive, based on a misread of the diff, or would make the code worse). Defer only when the fix is a major architectural rework — roughly 300+ lines or a cross-cutting redesign — and in that case file a GitHub issue rather than letting it sit as an undocumented todo. The reason: every valid finding that ships becomes the floor for the next PR in this area. Letting them accrue as "deferred" turns the backlog into review noise and makes future grills more expensive.
 - **Skip on docs-only.** Same triviality heuristic as `/refactorpass` and `/reviewit`. Theatre is bad.
 - **User verification on outcomes, not on whether to act.** Findings are presented and the user confirms the proposed disposition (fix / dismiss-as-invalid / defer-as-architectural-issue). The default offered for each finding is the fix-everything-valid rule above, not a neutral "what do you want to do?"
@@ -27,18 +29,21 @@ Read `$ARGUMENTS`. If it equals `deep` (case-insensitive, ignore surrounding whi
 
 ### 0a. Context-window check (do this BEFORE anything else)
 
-`/grill` spawns adversarial sub-agents (Agent tool, `pr-review-toolkit:*`). Each sub-agent gets its own prompt-cache state derived from this session's context. If this session has been heavily used for feature implementation — long conversation, lots of file edits, dense planning — the cache is already spent on context the sub-agents don't need, and their effective working window shrinks accordingly. Deep grill is hit hardest: it spawns up to six agents in parallel.
+`/grill` spawns adversarial sub-agents (Agent tool, `pr-review-toolkit:*`). Each sub-agent gets its own prompt-cache state derived from this session's context, so a session already dense with implementation work makes the chain more expensive than a fresh one.
 
-Before proceeding, assess honestly:
+The current default model carries a 1M-token context window and holds its instruction-following and reasoning quality across it, so "this session has done a lot of work" is no longer on its own a reason to stop. Judge on **compaction proximity**, not on how busy the session has been:
 
-- Has this session been writing/editing the feature about to be grilled? Long conversation, many tool calls, dense edit history?
-- Is the conversation about to brush against auto-compaction territory?
+- Is this conversation actually close to auto-compaction? (A grill whose findings land after a compaction is a grill you partly paid for twice.)
 
-If **either is yes**, STOP and tell the user:
+If **yes**, STOP and tell the user:
 
-> Your context is heavy from the implementation work. Start a new Claude session and run `/grill` (or `/deepgrill`) there — sub-agents need cache headroom, and a fresh session makes the chain materially cheaper. This matters even more for `/deepgrill`, which spawns up to six agents.
+> This conversation is close to auto-compaction. Start a new Claude session and run `/grill` (or `/deepgrill`) there, so the findings and fix commits don't get summarized out from under the chain.
 
-Do not proceed in the current session unless the user explicitly overrides.
+Otherwise, if the session is merely heavy from implementation work, say so once and continue:
+
+> ℹ️ This session already holds the implementation context. Grilling here works, but a fresh session is cheaper — sub-agents inherit less cache. Say the word if you'd rather move.
+
+Do not stop for the merely-heavy case unless the user asks you to.
 
 ### 0b. Standard pre-flight + triviality
 
@@ -94,7 +99,7 @@ Run the full agent matrix:
 | New tests, modified test scope on a fix/feature PR                                                                                  | `pr-review-toolkit:pr-test-analyzer`                                 |
 | Customer/tenant-variable behavior: vendor/third-party integrations, per-tenant config, prompt/output generation, data normalization | `pr-review-toolkit:code-reviewer` (tenant-coupling pass — see below) |
 
-Pick the signals present in the diff — don't run every agent on every PR. Two to five agents is typical in deep mode.
+Pick the signals present in the diff — don't run every agent on every PR. Two to five agents is typical in deep mode, and that range is a budget rather than an observation: if the diff's signals suggest more, run the five that cover the most distinct failure classes rather than widening the fan-out.
 
 ### Tenant-coupling lens (deep mode)
 
@@ -106,7 +111,7 @@ The agent's test for each flagged literal: _would this code still be correct for
 Agent(
   description="grill: tenant-coupling scan",
   subagent_type="pr-review-toolkit:code-reviewer",
-  prompt="Scan this diff ONLY for tenant-coupling: literals or branches that encode one specific customer's data/config/vocabulary into shared logic — e.g. `tenantId === 'acme'`, a hardcoded list of one customer's category/term labels, per-customer special-cases. For each, ask: would this be correct for a SECOND customer with different values? If no, it belongs in config/data with a safe default, not in code. Ignore genuinely universal values (protocol constants, standard enums, framework keys). Report findings with severity (critical/suggestion/nitpick) + file:line and a one-line 'move to config' suggestion. Diff:\n\n<paste git diff @{u}...HEAD>\n\nUnder 250 words.",
+  prompt="Scan this diff ONLY for tenant-coupling: literals or branches that encode one specific customer's data/config/vocabulary into shared logic — e.g. `tenantId === 'acme'`, a hardcoded list of one customer's category/term labels, per-customer special-cases. For each, ask: would this be correct for a SECOND customer with different values? If no, it belongs in config/data with a safe default, not in code. Ignore genuinely universal values (protocol constants, standard enums, framework keys). Report every candidate you find — no severity cutoff, I filter downstream — with severity (critical/suggestion/nitpick) + file:line and a one-line 'move to config' suggestion. Diff:\n\n<paste git diff @{u}...HEAD>\n\nUnder 250 words.",
 )
 ```
 
@@ -116,18 +121,20 @@ Agent(
 
 Use the Agent tool with explicit `subagent_type`. Pass the diff as input so the agent doesn't have to discover scope. Run them in a single message (parallel execution).
 
+Every agent prompt must carry two things beyond its lens: an **explicit no-cutoff instruction** (per Core principles — the filtering happens in Phase 3, not in the agent) and an **output length ceiling** (the model's default output runs long, and effort settings don't shorten it).
+
 Example:
 
 ```
 Agent(
   description="grill: silent-failure scan",
   subagent_type="pr-review-toolkit:silent-failure-hunter",
-  prompt="Review the following committed-but-unpushed changes for silent failures, swallowed exceptions, fallback logic that masks bugs, missing error propagation. Diff:\n\n<paste git diff @{u}...HEAD>\n\nReport findings as a numbered list with severity (critical/suggestion/nitpick) and file:line references. Under 300 words.",
+  prompt="Review the following committed-but-unpushed changes for silent failures, swallowed exceptions, fallback logic that masks bugs, missing error propagation. Diff:\n\n<paste git diff @{u}...HEAD>\n\nReport EVERY finding you believe is real — do not apply a severity or confidence cutoff, I filter downstream. Numbered list, each with severity (critical/suggestion/nitpick) and file:line. Under 300 words.",
 )
 Agent(
   description="grill: code-quality scan",
   subagent_type="pr-review-toolkit:code-reviewer",
-  prompt="Review the following committed-but-unpushed changes against project conventions in CLAUDE.md. Diff:\n\n<paste>\n\nReport findings as a numbered list with severity and file:line references. Under 300 words.",
+  prompt="Review the following committed-but-unpushed changes against project conventions in CLAUDE.md. Diff:\n\n<paste>\n\nReport EVERY finding you believe is real, including ones you'd normally hold back as low-confidence — score each 0-100 instead of dropping it, I filter downstream. Numbered list, each with severity and file:line. Under 300 words.",
 )
 # (more agents as appropriate)
 ```
@@ -136,9 +143,19 @@ Agents will return their findings in their final result messages.
 
 ---
 
-## Phase 3: Aggregate findings
+## Phase 3: Aggregate and filter findings
+
+**This phase is the filter.** The agents deliberately reported everything (Phase 2), so it is this phase's job to cut the noise — not theirs. Do the cut here, where you can see all lenses at once and judge each finding against the actual diff.
 
 Combine outputs into a single deduplicated list. Two findings are duplicates if they reference the same file + line range (±5 lines) or describe the same issue semantically. Sort by severity (critical → suggestion → nitpick).
+
+Then drop, without presenting them:
+
+- findings that don't survive a look at the code (the agent misread the diff, or the case is already handled a few lines away);
+- pre-existing issues outside the diff's scope;
+- stylistic preferences no project guideline supports.
+
+Everything that survives goes to the user in the table below. Do **not** drop a finding merely because a low confidence score came back with it — verify it against the code and then either present it or record it as a dismissal. A low score is a reason to check, not a reason to hide.
 
 Present a compact table to the user:
 

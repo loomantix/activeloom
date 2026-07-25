@@ -57,6 +57,18 @@ The chain is recommended on every source-code PR but not enforced — there's no
 
 ---
 
+## Findings are unfiltered at the agent, filtered at the aggregator
+
+Worth stating separately because it is easy to get backwards, and getting it backwards silently loses defects.
+
+**No reviewer in this chain is asked to pre-filter by severity or confidence.** Not the `/grill` sub-agents, not `/codex-review`, not an inline `Agent(...)` prompt you write yourself. Each reports everything it believes is real, with a severity and a confidence score attached. The **filtering happens one level up** — `/grill`'s Phase 3 aggregation (and, for the bot reviewers, `/reviewit`'s dedup pass), where all lenses are visible at once and each claim can be checked against the actual diff.
+
+The reason is a property of the current default model: it follows a suppression instruction literally, so "only report high-severity issues" or "be conservative" makes it report less — while its precision is high enough that the findings such an instruction would have suppressed are mostly real. A cutoff at the agent is therefore a pure loss; a cutoff at the aggregator costs nothing, because a finding you can see is a finding you can dismiss.
+
+Full rationale and the rest of the model-specific prompt-authoring deltas: [`MODEL_NOTES.md`](MODEL_NOTES.md).
+
+---
+
 ## Why this shape
 
 - **`/simplify` is refactor-positive by design.** Pre-push, that's the intended stance — consolidate fresh code freely. Bot reviewers (Copilot, Gemini) post-push are scope-controlled by `copilot-instructions.md` precisely because expanding scope post-PR creates review burden. Different stages, different stances.
@@ -140,6 +152,7 @@ This decouples the committer (the App identity) from any human reviewer, so revi
 
 ## Cross-references
 
+- [`.claude/MODEL_NOTES.md`](MODEL_NOTES.md) — prompt-authoring deltas for the current default model; read before editing any skill or agent
 - [`.claude/skills/refactorpass/SKILL.md`](skills/refactorpass/SKILL.md) — pre-push refactor skill (single `/simplify` pass)
 - [`.claude/skills/grill/SKILL.md`](skills/grill/SKILL.md) — pre-push adversarial pass (lean 2-agent default, deep full matrix)
 - [`.claude/skills/deepgrill/SKILL.md`](skills/deepgrill/SKILL.md) — orchestrator for the deep pre-push chain

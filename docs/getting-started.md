@@ -105,17 +105,18 @@ The first run opens a sync PR with a large diff (it's bringing in the whole skil
 
 Subsequent daily runs only carry actual upstream changes — usually empty.
 
-## 6. (Optional) Reference `REVIEW_WORKFLOW.md` from the consumer's `CLAUDE.md`
+## 6. (Optional) Reference the synced `.claude/` docs from the consumer's `CLAUDE.md`
 
-The sync brings `.claude/REVIEW_WORKFLOW.md` into the consumer. For Claude sessions to actually follow that workflow, add a one-line reference in the consumer's `CLAUDE.md`:
+The sync brings `.claude/REVIEW_WORKFLOW.md` and `.claude/MODEL_NOTES.md` into the consumer. For Claude sessions to actually follow them, add references in the consumer's `CLAUDE.md`:
 
 ```markdown
 ## AI review workflow
 
 See [`.claude/REVIEW_WORKFLOW.md`](.claude/REVIEW_WORKFLOW.md) — canonical for the lean/deep chains.
+See [`.claude/MODEL_NOTES.md`](.claude/MODEL_NOTES.md) before editing anything under `.claude/skills/` or `.claude/agents/`.
 ```
 
-Without this reference, Claude Code only auto-loads `CLAUDE.md`; the synced workflow file would be dormant.
+Without these references, Claude Code only auto-loads `CLAUDE.md`; the synced docs would be dormant. Add them **after** the first sync PR merges, so the links resolve.
 
 ## Kill switch
 
