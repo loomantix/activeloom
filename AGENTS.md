@@ -21,6 +21,7 @@ If work needs non-public context, discuss that context outside this public repos
 - Do not revert user changes or unrelated dirty worktree state.
 - Keep changes scoped to the user's request and the existing repo architecture.
 - Run the smallest meaningful validation command after edits; report anything that could not be run.
+- Read [.claude/MODEL_NOTES.md](.claude/MODEL_NOTES.md) before editing anything under `.claude/skills/` or `.claude/agents/` — those files are prompts, and the notes record the model-generation deltas that make some plausible-looking phrasings harmful.
 
 ## Cross-References
 
@@ -28,3 +29,4 @@ If work needs non-public context, discuss that context outside this public repos
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, scope, branch / commit / DCO conventions.
 - [SECURITY.md](SECURITY.md) — responsible disclosure.
 - [.claude/REVIEW_WORKFLOW.md](.claude/REVIEW_WORKFLOW.md) — canonical AI review chain.
+- [.claude/MODEL_NOTES.md](.claude/MODEL_NOTES.md) — prompt-authoring deltas for the current default model.

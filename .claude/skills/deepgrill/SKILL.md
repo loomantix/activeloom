@@ -42,6 +42,8 @@ If **either is yes**, STOP and tell the user:
 
 Do not proceed in the current session unless the user explicitly overrides.
 
+**A larger context window is not a reason to relax this gate** — it is the strongest case for keeping it. `/deepgrill` is the longest chain here, so an authoring session that runs it drags the entire implementation history through every pass; that routinely reached 700–800k tokens of context that was almost never useful to the review and sometimes actively unhelpful. See [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
+
 ### 0b. Standard pre-flight
 
 1. **Verify on a feature branch** (not `main`/`master`/`staging`). If on a protected branch, refuse and ask the user to `git switch -c feat/...`.

@@ -210,6 +210,15 @@ targets:
     destination: .claude/REVIEW_WORKFLOW.md
     substitutions: []
 
+  # Prompt-authoring notes for the current default model. Synced because the
+  # skills above are prompts: a consumer that writes its own skills or inline
+  # `Agent(...)` prompts needs the same deltas (no severity cutoffs on review
+  # agents, no self-verification scaffolding, bounded delegation, explicit
+  # length ceilings) or it reintroduces the patterns this repo just removed.
+  - source: .claude/MODEL_NOTES.md
+    destination: .claude/MODEL_NOTES.md
+    substitutions: []
+
   - source: .claude/settings.json
     destination: .claude/settings.json
     substitutions: []

@@ -57,6 +57,20 @@ The chain is recommended on every source-code PR but not enforced — there's no
 
 ---
 
+## Findings are unfiltered at the agent, filtered at the aggregator
+
+Worth stating separately because it is easy to get backwards, and getting it backwards silently loses defects.
+
+**No reviewer in this chain is asked to pre-filter by severity or confidence.** Not the `/grill` sub-agents, not `/codex-review`, not an inline `Agent(...)` prompt you write yourself. Each reports everything it believes is real, with a severity and a confidence score attached. The **filtering happens one level up** — `/grill`'s Phase 3 aggregation (and, for the bot reviewers, `/reviewit`'s dedup pass), where all lenses are visible at once and each claim can be checked against the actual diff.
+
+The reason is an asymmetry that holds on any model: a finding suppressed inside the reviewer is unrecoverable — the aggregator never learns it existed — whereas a finding that arrives with a low score costs one line and can be dismissed in a moment. **A threshold is fine; a threshold inside the finder's own prompt is not.** Anthropic's official `code-review` plugin lands in the same place from the same reasoning: finder agents return everything, a separate agent scores each issue, and only the orchestrator applies its ≥ 80 cut.
+
+The current default model sharpens this: Opus 5 follows a suppression instruction literally, and its precision is high enough that what such an instruction suppresses is mostly real — so on Opus 5 a self-filter is close to a pure loss. That makes the rule urgent; the asymmetry above is what makes it correct.
+
+Full rationale and the rest of the model-specific prompt-authoring deltas: [`MODEL_NOTES.md`](MODEL_NOTES.md).
+
+---
+
 ## Why this shape
 
 - **`/simplify` is refactor-positive by design.** Pre-push, that's the intended stance — consolidate fresh code freely. Bot reviewers (Copilot, Gemini) post-push are scope-controlled by `copilot-instructions.md` precisely because expanding scope post-PR creates review burden. Different stages, different stances.
@@ -140,6 +154,7 @@ This decouples the committer (the App identity) from any human reviewer, so revi
 
 ## Cross-references
 
+- [`.claude/MODEL_NOTES.md`](MODEL_NOTES.md) — prompt-authoring deltas for the current default model; read before editing any skill or agent
 - [`.claude/skills/refactorpass/SKILL.md`](skills/refactorpass/SKILL.md) — pre-push refactor skill (single `/simplify` pass)
 - [`.claude/skills/grill/SKILL.md`](skills/grill/SKILL.md) — pre-push adversarial pass (lean 2-agent default, deep full matrix)
 - [`.claude/skills/deepgrill/SKILL.md`](skills/deepgrill/SKILL.md) — orchestrator for the deep pre-push chain
