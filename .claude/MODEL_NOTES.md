@@ -15,20 +15,24 @@ When a new default model ships, re-read those pages and update this file rather 
 
 ---
 
-## 1. Never cap review findings by severity or confidence
+## 1. A finder must not be its own filter
 
-**This is the highest-impact delta for this repo,** because the review chain is what most of these skills do.
+**This is the highest-impact item for this repo,** because the review chain is what most of these skills do. It is also **not primarily a model-version rule** — it is an architecture rule that holds on any model, with a model-specific reason stacked on top. Both are stated below, deliberately separated, because conflating them is how this ended up wrong once already.
 
-Opus 5 reviews code with high precision _and_ high recall: it finds more real bugs per pass, and its extra findings are mostly real rather than false positives. It also follows a suppression instruction literally. So a prompt that says "only report high-severity issues", "be conservative", or "only report issues with confidence ≥ 80" now costs you real defects — the model obeys and reports less, and it is no longer trading away much precision for that silence.
+**The architectural reason (model-independent).** A finding suppressed inside the finder's own prompt is unrecoverable — the caller never learns it existed, so it cannot be reviewed, dismissed, or logged. A finding that arrives with a low score costs one line and can be cut in a moment. The asymmetry is total, so the three jobs belong in three places:
 
-**Do this instead: ask for everything, and filter in a separate pass.**
+1. **Find** — report every issue you believe is real, with no cutoff of your own.
+2. **Score** — attach a confidence to each, ideally judged independently of whoever found it.
+3. **Cut** — apply the threshold at the orchestrator, where every lens is visible at once and each claim can be checked against the diff.
 
-- The reviewing agent reports every finding it believes is real, each with a severity and a confidence score.
-- The _caller_ (the skill's aggregation phase, or the human) decides what to act on.
+**A cutoff value is fine; a cutoff _inside the finder_ is not.** Anthropic's own official `code-review` plugin is the reference implementation and still filters at 80 — but it gets there by running finder agents that return everything, then a **separate** scorer agent per issue, and only then applying the ≥ 80 cut in the orchestrator. Same number, opposite placement. That is the distinction to preserve when you add a review lens.
 
-This is why [`skills/grill/SKILL.md`](skills/grill/SKILL.md) asks its sub-agents for unfiltered findings and does the ranking in its own aggregation phase. Keep that separation when you add a review lens: the scoring belongs in the agent, the cutoff belongs in the aggregator.
+**The model-specific reason (Opus 5, stacked on the above).** Opus 5 follows a suppression instruction literally, while reviewing with high precision _and_ high recall — its additional findings are mostly real rather than false positives. So on Opus 5 a self-suppression instruction is close to a pure loss: the model obeys, reports less, and gives up little false-positive noise in exchange. This makes the architecture rule urgent rather than merely tidy, but the architecture rule is what to cite when refactoring a prompt.
 
-This covers every **Claude-driven** reviewer: a `/grill` sub-agent, a custom agent under `.claude/agents/`, or an ad-hoc `Agent(...)` call you write inline. It does **not** automatically extend to reviewers from other model families. `/codex-review` deliberately asks Codex for "only high-confidence material findings", and that stays: the reasoning above is a measured property of the current Claude model, not a universal one, and Codex's job in the chain is a terse cross-check against a Claude pass that already reported everything. Don't retune another vendor's prompt from a Claude release note — measure first.
+**Scope carefully — the model-specific reason travels less far than the architecture.** The architecture applies to every reviewer in the chain. The Opus 5 empirical claim applies only where Opus 5 actually runs, which is not everywhere:
+
+- Agents pinned to another model (this repo's three `.claude/agents/` definitions pin `model: sonnet`, inherited verbatim from the official `feature-dev` plugin) are governed by the architecture, not by the Opus 5 measurement. Don't cite an Opus 5 release note as evidence about a Sonnet-pinned agent.
+- Other model families are governed by neither. `/codex-review` deliberately asks Codex for "only high-confidence material findings", and that stays: Codex's job is a terse cross-check against a Claude pass that already reported everything. Don't retune another vendor's prompt from a Claude release note — measure first.
 
 ## 2. Do not add verification scaffolding
 
@@ -110,7 +114,8 @@ Two separate reasons, and the second is the load-bearing one:
 
 ## Checklist when adding or editing a skill or agent here
 
-- [ ] No severity/confidence cutoff imposed on a reviewing agent — it reports everything, the caller filters (§1).
+- [ ] No cutoff inside a finder's own prompt — find, score, and cut are three separate places (§1).
+- [ ] Any model-specific claim used to justify an edit is scoped to agents that actually run that model — check the `model:` pin (§1).
 - [ ] No "double-check", "re-verify", or "verify with a subagent" scaffolding (§2).
 - [ ] Any external-state check kept is genuinely about the world, not about re-reading the model's own output (§2).
 - [ ] Agent spawning has a stated ceiling, and no agent exists only to check another agent's work (§3).

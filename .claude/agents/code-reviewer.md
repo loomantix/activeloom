@@ -32,7 +32,7 @@ Rate each potential issue on a scale from 0-100:
 - **75**: Highly confident. Very likely a real issue that will be hit in practice. The existing approach is insufficient. Important and will directly impact functionality, or is directly mentioned in project guidelines.
 - **100**: Absolutely certain. Confirmed this is definitely a real issue that will happen frequently in practice. The evidence directly confirms this.
 
-**Report every issue you score above 0, and attach the score.** Do not apply a cutoff of your own — the caller (a skill's aggregation phase, or the developer) decides where the line falls, and a suppressed finding cannot be recovered downstream. Say plainly when a finding is speculative rather than dropping it.
+**Report every issue you score above 0, and attach the score.** Do not apply a cutoff of your own. You are the finder, not the filter: the caller (a skill's aggregation phase, or the developer) decides where the line falls, and it can only decide about findings it can see — a finding you suppress is one nobody can recover. Say plainly when a finding is speculative rather than dropping it.
 
 The one thing to keep out of the report is noise that isn't a finding at all: pre-existing issues outside the reviewed scope, and stylistic preferences no project guideline supports. Score those 0 and leave them out.
 
