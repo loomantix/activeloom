@@ -29,21 +29,20 @@ If none of those apply, run the default chain instead — `/deepgrill` is ~3× t
 
 ### 0a. Context-window check (do this BEFORE anything else)
 
-`/deepgrill` is the most cache-hungry skill in the chain — it runs `/refactorpass` (`/simplify`) and then `/grill deep`, which spawns up to six adversarial sub-agents in parallel. Each sub-agent inherits a slice of this session's prompt-cache state, so a session already dense with implementation work runs the chain more expensively than a fresh one.
+`/deepgrill` is the most cache-hungry skill in the chain — it runs `/refactorpass` (`/simplify`) and then `/grill deep` which spawns up to six adversarial sub-agents in parallel. Each sub-agent inherits a slice of this session's prompt-cache state. If the current session has already been heavily used for feature implementation, the sub-agents start with sharply reduced working windows and the whole chain runs slower and more expensively.
 
-The current default model carries a 1M-token context window and holds its quality across it, so a busy session is a **cost** consideration now, not a correctness one. Stop only for compaction proximity:
+Before proceeding, assess honestly:
 
-- Is this conversation actually close to auto-compaction? `/deepgrill` is a long chain — a compaction partway through loses the refactor-pass rationale and the earlier findings.
+- Has this session been writing/editing the feature about to be reviewed? Long conversation, many tool calls, dense edit history?
+- Is the conversation about to brush against auto-compaction territory?
 
-If **yes**, STOP and tell the user:
+If **either is yes**, STOP and tell the user:
 
-> This conversation is close to auto-compaction, and `/deepgrill` is the longest chain here. Start a new Claude session and run it there so the findings and fix commits survive the whole run.
+> Your context is heavy from the implementation work. Start a new Claude session and run `/deepgrill` there — `/deepgrill` spawns up to six parallel sub-agents and is the chain that benefits most from cache headroom. A fresh session makes the chain materially cheaper.
 
-Otherwise, if the session is merely heavy from implementation work, say so once and continue:
+Do not proceed in the current session unless the user explicitly overrides.
 
-> ℹ️ This session already holds the implementation context. `/deepgrill` works here, but a fresh session is cheaper — six sub-agents each inherit less cache. Say the word if you'd rather move.
-
-Do not stop for the merely-heavy case unless the user asks you to.
+**A larger context window is not a reason to relax this gate** — it is the strongest case for keeping it. `/deepgrill` is the longest chain here, so an authoring session that runs it drags the entire implementation history through every pass; that routinely reached 700–800k tokens of context that was almost never useful to the review and sometimes actively unhelpful. See [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 
 ### 0b. Standard pre-flight
 

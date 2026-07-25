@@ -29,21 +29,20 @@ Read `$ARGUMENTS`. If it equals `deep` (case-insensitive, ignore surrounding whi
 
 ### 0a. Context-window check (do this BEFORE anything else)
 
-`/grill` spawns adversarial sub-agents (Agent tool, `pr-review-toolkit:*`). Each sub-agent gets its own prompt-cache state derived from this session's context, so a session already dense with implementation work makes the chain more expensive than a fresh one.
+`/grill` spawns adversarial sub-agents (Agent tool, `pr-review-toolkit:*`). Each sub-agent gets its own prompt-cache state derived from this session's context. If this session has been heavily used for feature implementation — long conversation, lots of file edits, dense planning — the cache is already spent on context the sub-agents don't need, and their effective working window shrinks accordingly. Deep grill is hit hardest: it spawns up to six agents in parallel.
 
-The current default model carries a 1M-token context window and holds its instruction-following and reasoning quality across it, so "this session has done a lot of work" is no longer on its own a reason to stop. Judge on **compaction proximity**, not on how busy the session has been:
+Before proceeding, assess honestly:
 
-- Is this conversation actually close to auto-compaction? (A grill whose findings land after a compaction is a grill you partly paid for twice.)
+- Has this session been writing/editing the feature about to be grilled? Long conversation, many tool calls, dense edit history?
+- Is the conversation about to brush against auto-compaction territory?
 
-If **yes**, STOP and tell the user:
+If **either is yes**, STOP and tell the user:
 
-> This conversation is close to auto-compaction. Start a new Claude session and run `/grill` (or `/deepgrill`) there, so the findings and fix commits don't get summarized out from under the chain.
+> Your context is heavy from the implementation work. Start a new Claude session and run `/grill` (or `/deepgrill`) there — sub-agents need cache headroom, and a fresh session makes the chain materially cheaper. This matters even more for `/deepgrill`, which spawns up to six agents.
 
-Otherwise, if the session is merely heavy from implementation work, say so once and continue:
+Do not proceed in the current session unless the user explicitly overrides.
 
-> ℹ️ This session already holds the implementation context. Grilling here works, but a fresh session is cheaper — sub-agents inherit less cache. Say the word if you'd rather move.
-
-Do not stop for the merely-heavy case unless the user asks you to.
+**A larger context window is not a reason to relax this gate.** Reviewing in the authoring session routinely pushed context to 700–800k tokens, and that history was almost never useful to the review and sometimes actively unhelpful: the session re-reads the diff already holding the rationale it just used to write it, which is the opposite of the fresh-eyes stance `/grill` exists to provide. Capacity to hold the history is not the same as the history being worth holding. See [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 
 ### 0b. Standard pre-flight + triviality
 

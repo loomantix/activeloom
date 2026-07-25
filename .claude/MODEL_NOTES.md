@@ -95,6 +95,17 @@ Thinking is on by default and cannot be disabled at `xhigh` or `max` effort. Pre
 
 Never write a rule telling the model not to think or not to reason. That phrasing measurably increases tag leakage.
 
+## 8. A bigger context window is not a reason to review in the authoring session
+
+Opus 5 carries a 1M-token context window as both default and maximum, and holds its instruction-following and reasoning quality across it. It is tempting to read that as retiring the pre-flight gates that send `/grill` and `/deepgrill` to a fresh session. **It does not, and this is the one delta in this file that runs the opposite way to "the new model needs less scaffolding".**
+
+Two separate reasons, and the second is the load-bearing one:
+
+- **Cost.** Reviewing in the authoring session drags the whole implementation history through every pass. In practice that reached 700–800k tokens, re-read on each turn of a multi-pass chain, and `/deepgrill` fans that inheritance out across up to six sub-agents.
+- **Review quality.** That history was almost never useful to the review, and sometimes actively unhelpful. A session that just wrote the code re-reads its own diff already holding the rationale that produced it — anchored on why the code is right rather than looking for why it is wrong. That is the opposite of the fresh-eyes stance the adversarial pass exists to provide. No context window fixes it, because the problem is what the context contains, not whether it fits.
+
+**The general lesson for this file: capacity to hold context is not evidence the context is worth holding.** When a new model relaxes a limit, check whether the guardrail was actually about the limit before removing it. Some guardrails were about relevance, and those get _stronger_ as the limit rises — a bigger window means more irrelevant history survives to pollute the pass.
+
 ---
 
 ## Checklist when adding or editing a skill or agent here
@@ -106,11 +117,10 @@ Never write a rule telling the model not to think or not to reason. That phrasin
 - [ ] Every `Agent(...)` prompt states an output length (§4).
 - [ ] No generic model-behavior boilerplate about scope, corrections, or task completion (§5).
 - [ ] Effort overrides, if any, are justified against Opus 5's scale rather than inherited from 4.x (§6).
+- [ ] No pre-flight fresh-session gate weakened on the grounds that the context window grew (§8).
 
 ## Cross-references
 
 - [REVIEW_WORKFLOW.md](REVIEW_WORKFLOW.md) — the canonical AI review chain these notes constrain.
 - [`skills/grill/SKILL.md`](skills/grill/SKILL.md) — the reference implementation of §1 and §3 (unfiltered agents, filtering aggregator, bounded matrix).
 - [`agents/code-reviewer.md`](agents/code-reviewer.md) — the reference implementation of §1 on the agent side.
-  </content>
-  </invoke>
