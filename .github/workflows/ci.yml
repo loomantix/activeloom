@@ -14,8 +14,8 @@ jobs:
     name: Python lint + syntax
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install pyyaml + ruff
@@ -36,8 +36,8 @@ jobs:
     name: Python types + tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           # Cache the resolved wheel cohort against the pinned-tool list
@@ -80,7 +80,7 @@ jobs:
     name: Shell syntax + shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: bash -n every shell script
         run: |
           set -euo pipefail
@@ -97,8 +97,8 @@ jobs:
     name: YAML syntax
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python3 -m pip install 'pyyaml==6.0.2'
@@ -116,7 +116,7 @@ jobs:
     name: Prettier check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7
         with:
           node-version: '20'
@@ -127,7 +127,7 @@ jobs:
     name: Accessibility asset sanitization
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7
         with:
           node-version: '20'
@@ -146,8 +146,8 @@ jobs:
     name: Rendered template prettier check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - uses: actions/setup-node@v7
@@ -176,10 +176,10 @@ jobs:
     name: Skill content policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Self-test the lint patterns
@@ -203,8 +203,8 @@ jobs:
     name: claude CLI invocation policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       # pyyaml is required by `_synced_shell_sources()` to derive scope
@@ -221,8 +221,8 @@ jobs:
     name: sync-targets.yml matches schema
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python3 -m pip install 'pyyaml==6.0.2'
