@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Hooks receive complete issue context locally and must not mutate GitHub state.
+# Preserve the narrow protocol used by `credential.helper = !gh auth
+# git-credential` so authenticated Git reads continue to work.
+
+set -euo pipefail
+
+if [ "$#" -eq 3 ] && [ "$1" = auth ] && [ "$2" = git-credential ] && [ "$3" = get ]; then
+    real_gh="${AGENT_LOOP_REAL_GH:?AGENT_LOOP_REAL_GH is required}"
+    exec "$real_gh" "$@"
+fi
+
+echo "gh is disabled inside agent-loop hooks; the wrapper owns remote mutations" >&2
+exit 1

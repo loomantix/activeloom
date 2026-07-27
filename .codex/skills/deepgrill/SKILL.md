@@ -28,6 +28,20 @@ Run the full high-fidelity pre-push chain:
 2. Execute the `grill` workflow in deep mode, including all six core independent review lanes from the `grill` skill and the conditional tenant-coupling lane when customer-variable behavior is present.
 3. Stop before pushing unless the user explicitly asked you to push.
 
+## Pinned Review Base
+
+Resolve the review base exactly once before `refactorpass`. When
+`$AGENT_LOOP_REVIEW_BASE_SHA` is set, use that value. Otherwise use the exact
+base SHA supplied by the caller, or resolve the requested base ref once after
+any explicitly requested fetch. Verify the value with
+`git rev-parse --verify '<sha>^{commit}'` and retain the resulting full object
+ID for the entire pass.
+
+Give `refactorpass` and every grill reviewer the literal
+`<review-base-sha>..HEAD` range. No lane may re-resolve `@{u}`, a default branch,
+or a remote-tracking ref independently. Report the pinned SHA in the handoff so
+the Claude reviewer receives the same base for the round.
+
 Deep grill is not a single generalized review. If the active Codex runtime permits subagents/delegation, use independent reviewers for every applicable lane. If subagents are unavailable or not permitted, run a separate local pass for every applicable lane and disclose the downgrade in the final output.
 
 Invoking `deepgrill` is an explicit request to use independent subagents for the
@@ -53,7 +67,36 @@ Use this path when the change touches:
 
 ## Handoff
 
-When complete, tell the user:
+Read `.codex/REVIEW_WORKFLOW.md` and the consumer's instructions to determine
+which cross-model path the developer selected.
+
+When invoked as the final sub-skill inside `reviewit`, return the deepgrill
+result directly to that orchestrator. Do not start local convergence, recommend
+another `reviewit`, push, or emit a terminal workflow summary; `reviewit` owns
+the hosted-path summary.
+
+When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
+return control without pushing:
+
+If `$AGENT_LOOP_REVIEW_OUTCOME_FILE` is set and this pass commits fixes, write
+exactly `material` when any fix is substantive or `minor` when every fix is
+low-risk and non-behavioral. Do not create the file when no fix commit is made.
+Missing classification for a commit defaults to material.
+
+```text
+Codex deepgrill pass complete.
+Review depth: <deep with independent subagents | deep local multi-pass fallback>
+Next:
+  Run a fresh local Claude review on this HEAD against <review-base-sha>.
+  Classify committed fixes as material or minor.
+  Restart at Codex only when either reviewer commits a material fix.
+  Push after one full Codex-then-Claude round produces no material fixes.
+```
+
+Do not recommend or invoke `reviewit` on the local convergence path. The current
+process or outer agent-loop wrapper owns the next pass and final summary.
+
+When the hosted fallback path is selected, tell the user:
 
 ```text
 Deep pre-push review complete.
@@ -70,3 +113,6 @@ up to four review iterations and a final deepgrill against the PR; each
 step needs cache headroom. A fresh session for `reviewit deep` makes the
 full chain materially cheaper.
 ```
+
+If no path is declared, present both choices and ask the developer to select
+based on whether local Claude Code is available. Do not assume a license.

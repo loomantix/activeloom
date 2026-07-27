@@ -89,6 +89,16 @@ targets:
     substitutions: []
     mode: '0755'
 
+  - source: .codex/skills/agent-loop/scripts/hook-git-guard
+    destination: .codex/skills/agent-loop/scripts/hook-git-guard
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/agent-loop/scripts/hook-gh-guard
+    destination: .codex/skills/agent-loop/scripts/hook-gh-guard
+    substitutions: []
+    mode: '0755'
+
   # Consumer-owned base-branch override for promotion-flow repositories.
   - source: .codex/skills/agent-loop/agent-loop.config.template
     destination: .codex/skills/agent-loop/agent-loop.config

@@ -95,7 +95,9 @@ Run these lanes as independently as the active runtime permits:
 
 ## Process
 
-1. Verify there is a local diff or unpushed commits to review.
+1. Verify there is a local diff or unpushed commits to review. When the caller
+   supplies a pinned base SHA, give every lane the same literal
+   `<base-sha>..HEAD` range rather than a mutable ref.
 2. Skip docs/config-only changes unless the user explicitly wants review.
 3. Read `AGENTS.md`, relevant path-specific instructions, and changed files.
 4. In lean mode, execute every lane in the Lean Review Matrix. Load these role references for lane prompts:
@@ -123,4 +125,9 @@ End with:
 - findings fixed
 - findings deferred (with linked GitHub issue) or dismissed (with one-line evidence)
 - validation run
-- whether the change should use `reviewit <pr>` or `reviewit <pr> deep` after PR creation, **and a recommendation to run `reviewit` in a fresh Codex session**. The current session has just absorbed grill findings, fix commits, and (in deep mode) the full review matrix; `reviewit` drives multiple Gemini/Copilot iterations and benefits from cache headroom. A fresh session for `reviewit` is materially cheaper.
+- the next step for the path selected in `.codex/REVIEW_WORKFLOW.md`: return to
+  the local Codex/Claude convergence loop without pushing, or use
+  `reviewit <pr>` / `reviewit <pr> deep` after PR creation on the hosted
+  fallback path. When recommending `reviewit`, recommend a fresh Codex session;
+  the current session has absorbed grill findings, fix commits, and (in deep
+  mode) the full review matrix.

@@ -34,6 +34,8 @@
 .codex/skills/actions-usage-audit/SKILL.md
 .codex/skills/agent-loop/SKILL.md
 .codex/skills/agent-loop/scripts/agent-loop.sh
+.codex/skills/agent-loop/scripts/hook-gh-guard
+.codex/skills/agent-loop/scripts/hook-git-guard
 .codex/skills/backlog-refinement/SKILL.md
 .codex/skills/backlog-refinement/scripts/bail-report.py
 .codex/skills/backlog-refinement/scripts/candidates.py

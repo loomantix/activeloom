@@ -141,7 +141,8 @@ validation run:    <commands + result>
 pushed:            <yes: SHA on <head-branch> | no fixes — nothing pushed>
 
 Hand back to the authoring engine for re-review of the new HEAD
-(e.g. `reviewit <pr-number>` or a fresh `grill` on the pushed commit).
+(e.g. the next local convergence pass, `reviewit <pr-number>` on the hosted
+fallback path, or a fresh `grill` on the pushed commit).
 ```
 
 Always surface the design tradeoffs explicitly — the round trip only works if
@@ -152,8 +153,9 @@ the engine reviewing next knows where to look.
 - **Does not run `refactorpass`.** No cleanup-churn on a PR under cross-review.
 - **Does not open or merge the PR**, and does not push to a base branch.
 - **Does not force-push or rebase.** A rejected push is reported, not forced.
-- **Does not replace `reviewit`.** Bot review (Gemini + Copilot) is a separate
-  post-push concern; `pr-grill` is the local cross-engine deep pass.
+- **Does not replace the selected review path.** `reviewit` remains the hosted
+  Gemini + Copilot fallback; local Codex/Claude convergence is the alternative.
+  `pr-grill` is an optional cross-engine relay, not a terminal review.
 
 ## Source of truth
 
