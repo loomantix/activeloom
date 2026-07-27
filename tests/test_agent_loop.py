@@ -196,6 +196,7 @@ elif args[:2] == ['pr', 'review']:
     reviews = json.loads(reviews_file.read_text()) if reviews_file.exists() else []
     reviews.append({
         'body': body,
+        'user': {'login': os.environ.get('AGENT_REVIEW_AUTHOR', 'tester')},
         'commit_id': subprocess.run(
             ['git', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True
         ).stdout.strip(),
@@ -265,7 +266,7 @@ def _config(
         command = str(values[key])
         clean_attestation = (
             'gh pr review "$AGENT_LOOP_PR_NUMBER" --comment --body '
-            '"<!-- local-review-clean:v1 engine=$AGENT_LOOP_REVIEW_ENGINE '
+            '"<!-- local-review-pass:v1 engine=$AGENT_LOOP_REVIEW_ENGINE '
             'round=$AGENT_LOOP_REVIEW_ROUND head=$AGENT_LOOP_PR_HEAD_SHA -->'
             '\\nno new material findings"'
             if auto_clean_attestation
@@ -860,26 +861,63 @@ def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def _thread_comment(
+    database_id: int, body: str, login: str | None = "tester"
+) -> dict[str, object]:
+    return {
+        "body": body,
+        "databaseId": database_id,
+        "author": None if login is None else {"login": login},
+    }
+
+
+def _finding(round_number: int, engine: str = "codex") -> str:
+    return (
+        f"<!-- local-review:v1 engine={engine} round={round_number} "
+        "head=a fingerprint=f -->"
+    )
+
+
 @pytest.mark.parametrize(
     ("resolved", "comments"),
     [
+        # Unresolved, even though the finding was answered.
         (
             False,
             [
-                {
-                    "body": "<!-- local-review:v1 engine=codex round=1 head=a fingerprint=f -->",
-                    "databaseId": 1,
-                },
-                {"body": "Fixed in abc123.", "databaseId": 2},
+                _thread_comment(1, _finding(1)),
+                _thread_comment(2, "Fixed in abc123."),
             ],
         ),
+        # Resolved, but the finding was never answered at all.
+        (True, [_thread_comment(1, _finding(1, "claude"))]),
+        # A reused thread: the ledger requires a recurring root cause to reply on
+        # its existing thread, so the round-2 finding lands after an already
+        # answered, already resolved round-1 pair. Thread length alone cannot see
+        # that the newest finding has no disposition.
         (
             True,
             [
-                {
-                    "body": "<!-- local-review:v1 engine=claude round=1 head=a fingerprint=f -->",
-                    "databaseId": 1,
-                }
+                _thread_comment(1, _finding(1)),
+                _thread_comment(2, "Fixed in abc123."),
+                _thread_comment(3, _finding(2)),
+            ],
+        ),
+        # The only reply after the finding was written by another account, which
+        # the ledger treats as context rather than a disposition.
+        (
+            True,
+            [
+                _thread_comment(1, _finding(1)),
+                _thread_comment(2, "Looks wrong to me too.", login="bystander"),
+            ],
+        ),
+        # A deleted author must not be credited with the disposition either.
+        (
+            True,
+            [
+                _thread_comment(1, _finding(1)),
+                _thread_comment(2, "Fixed in abc123.", login=None),
             ],
         ),
     ],
@@ -924,6 +962,51 @@ def test_clean_review_requires_current_head_ledger_attestation(
     assert result.returncode != 0
     assert "must attest its round, exact head, and no new material findings" in result.stderr
     assert "issue-70" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_clean_pass_attestation_from_another_account_is_not_review_evidence(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The marker text is derivable from public PR state, so a review posted by
+    # any other account must not stand in for the configured hook's own pass.
+    result = _run(
+        consumer,
+        ["--issues", "73"],
+        issues=[_issue(73)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_REVIEW_AUTHOR": "bystander"},
+    )
+    assert result.returncode != 0
+    assert "must attest its round, exact head, and no new material findings" in result.stderr
+    assert "issue-73" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_truncated_review_thread_cannot_hide_its_marker_behind_pagination(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The marker sits past the first comment page, so it is absent from
+    # `comments.nodes`. The pagination guard must run before the marker filter or
+    # this thread is silently excluded from the completeness check.
+    threads = [
+        {
+            "isResolved": True,
+            "comments": {
+                "nodes": [_thread_comment(1, "Unrelated discussion.")],
+                "pageInfo": {"hasNextPage": True},
+            },
+        }
+    ]
+    result = _run(
+        consumer,
+        ["--issues", "74"],
+        issues=[_issue(74)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps(threads)},
+    )
+    assert result.returncode != 0
+    assert "must contain a disposition reply and be resolved" in result.stderr
     assert not (consumer[3] / "pr-ready").exists()
 
 

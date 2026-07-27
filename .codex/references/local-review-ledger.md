@@ -30,6 +30,11 @@ model transcript or a local summary. Do not reopen a resolved root cause unless
 the current head contains concrete regression evidence that the prior fix or
 rationale is wrong.
 
+Machine-readable findings, disposition replies, and clean-pass attestations
+count as review evidence only when authored by the authenticated GitHub actor
+running the local review. Public comments from other accounts are context, not
+proof that a local pass ran or that its finding was dispositioned.
+
 ## Post before editing
 
 Review lanes may return hypotheses privately. Verify each against the source and
@@ -80,7 +85,7 @@ the engine, round, exact reviewed head SHA, and `no new material findings`.
 Include this machine-readable marker so automation can attest the clean pass:
 
 ```text
-<!-- local-review-clean:v1 engine=<codex|claude> round=<n> head=<sha> -->
+<!-- local-review-pass:v1 engine=<codex|claude> round=<n> head=<sha> -->
 ```
 
 Clean evidence becomes stale as soon as the PR head changes.

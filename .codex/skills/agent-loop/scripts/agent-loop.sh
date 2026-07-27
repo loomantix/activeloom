@@ -1235,7 +1235,7 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
         nodes {
           isResolved
           comments(first:100) {
-            nodes { body databaseId }
+            nodes { body databaseId author { login } }
             pageInfo { hasNextPage }
           }
         }
@@ -1250,16 +1250,31 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
         echo "could not load PR review threads" >&2
         return 1
     }
-    jq -e '
-      all(.[]; (.errors // []) | length == 0) and
-      ([.[].data.repository.pullRequest.reviewThreads.nodes[]
-        | select(any(.comments.nodes[];
-            (.body // "") | contains("<!-- local-review:v1 ")))
+    # Check comment pagination across every thread *before* filtering by marker.
+    # A thread whose marker sits past the first comment page carries no marker in
+    # `comments.nodes`, so filtering first would silently drop exactly the threads
+    # whose disposition cannot be established.
+    #
+    # Disposition is then anchored to the newest marker rather than to thread
+    # length: the ledger requires a recurring root cause to reuse its existing
+    # thread, so a resolved round-1 thread that gains an unanswered round-2
+    # finding still has two or more comments and would pass a length check.
+    jq -e --arg marker '<!-- local-review:v1 ' --arg reviewer "$CURRENT_LOGIN" '
+      def markers: [.comments.nodes | to_entries[]
         | select(
-            (.isResolved | not) or
-            (.comments.pageInfo.hasNextPage) or
-            ((.comments.nodes | length) < 2)
-          )] | length == 0)
+            (.value.author.login == $reviewer)
+            and ((.value.body // "") | contains($marker))
+          ) | .key];
+      def has_reviewer_reply_after_latest_marker:
+        (markers | max) as $latest
+        | any(.comments.nodes | to_entries[];
+            (.key > $latest) and (.value.author.login == $reviewer));
+      all(.[]; (.errors // []) | length == 0)
+      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
+        | ($threads | all(.comments.pageInfo.hasNextPage | not))
+        and ($threads
+          | map(select(markers | length > 0))
+          | all(.isResolved and has_reviewer_reply_after_latest_marker)))
     ' "$ledger_file" >/dev/null || {
         echo "local-review threads must contain a disposition reply and be resolved" >&2
         return 1
@@ -1270,15 +1285,20 @@ verify_clean_pass_attestation() {
     local engine="$1" round="$2" reviewed_head="$3"
     local reviews_file="$AGENT_LOOP_LOG_DIR/$engine-review-round-$round-reviews.json"
     local marker
-    marker="<!-- local-review-clean:v1 engine=$engine round=$round head=$reviewed_head -->"
+    marker="<!-- local-review-pass:v1 engine=$engine round=$round head=$reviewed_head -->"
     gh api --paginate --slurp \
         "repos/$GH_REPO/pulls/$AGENT_LOOP_PR_NUMBER/reviews?per_page=100" \
         > "$reviews_file" || {
         echo "could not load PR reviews for the $engine clean-pass attestation" >&2
         return 1
     }
-    jq -e --arg marker "$marker" --arg head "$reviewed_head" '
+    # Only the actor running this loop can attest its own pass. The marker text is
+    # fully derivable from public PR state, so a review posted by any other
+    # account is context, not evidence that the configured hook ran.
+    jq -e --arg marker "$marker" --arg head "$reviewed_head" \
+        --arg reviewer "$CURRENT_LOGIN" '
       any(.[][]?;
+        (.user.login == $reviewer) and
         (.commit_id == $head) and
         ((.body // "") | contains($marker)) and
         ((.body // "") | contains("no new material findings")))
