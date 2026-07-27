@@ -5,18 +5,46 @@
 base_branch =
 
 # Run once inside each new issue worktree. Use an isolated frozen install; never
-# symlink mutable node_modules or equivalent dependency directories.
+# symlink mutable node_modules or equivalent dependency directories. It must not
+# commit, switch branches, or leave Git-visible worktree changes.
 setup_hook =
 
-# Run after the worker, after each local review, and after fresh-base merge.
-# Prefer targeted checks and avoid unbounded full-suite output.
+# Required. Run after the worker, after every local review pass, and after the
+# fresh-base merge. It must not commit, switch branches, or leave worktree
+# changes. Prefer targeted checks and avoid unbounded full-suite output.
 validation_hook =
 
-# Both review hooks are required. Each must review locally, fix confirmed
-# findings, revalidate as needed, commit any fixes, and leave a clean tree.
-# They must not push, open a PR, or invoke hosted AI reviewers.
+# Required acknowledgement of the current review-hook contract. Existing
+# consumer configs must migrate the hooks below before adding this marker.
+review_contract_version = 2
+
+# Both review hooks are required. The wrapper runs Codex first, then Claude, and
+# repeats only when either hook commits a material fix. Minor-only fixes are
+# validated and retained without restarting; convergence requires a complete
+# Codex-then-Claude round with no material fixes. The Codex hook must run
+# `deepgrill`; the Claude hook must perform a fresh adversarial review. Each
+# wrapper opens a draft PR before either hook. Each hook must read all prior PR
+# review threads, post every confirmed finding inline before editing, fix and
+# commit it, push without force, reply with the fix and validation, resolve the
+# thread, and fail if any valid finding or local-review thread remains. Hooks
+# may use `git push` and `gh` only for that draft PR review contract; they must
+# not mutate the base branch, other issues/PRs, or invoke hosted reviewers.
+# Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
+# round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
+# ref. The wrapper validates exit status and Git state but cannot prove which
+# engine an arbitrary command launches; these commands own that guarantee.
+# Hooks also receive `$AGENT_LOOP_PR_NUMBER`, `$AGENT_LOOP_PR_URL`, and
+# `$AGENT_LOOP_PR_HEAD_SHA`. The last value is the exact head at pass start.
+# When a hook commits, write exactly `material` or `minor` to
+# `$AGENT_LOOP_REVIEW_OUTCOME_FILE`. Missing classification defaults to material;
+# a no-commit pass is clean, must not write the file, and must publish the
+# `local-review-pass:v1` marker required by the local review ledger. A committed
+# pass must publish a same-round `local-review-disposition:v1` reply tied to the
+# pushed SHA plus a final-lane `local-review-complete:v1` marker. Later hooks and
+# final validation must not create, remove, or alter an accepted outcome.
 claude_review_hook =
 codex_review_hook =
+review_max_rounds = 4
 
 # Optional worker override. When empty, the wrapper runs `codex exec` with the
 # prompt from prompt.txt. The default worker honors the model settings below.
@@ -24,6 +52,7 @@ worker_hook =
 worker_model =
 worker_fallback_model =
 worker_retries = 1
+# Both timeout values must be positive; GNU `timeout 0` would disable the bound.
 worker_timeout_seconds = 3600
 hook_timeout_seconds = 3600
 retry_on_timeout = true

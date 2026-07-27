@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Deny GitHub API access to non-review hooks. Review hooks currently receive
+# the broader PR-ledger capability described by the v2 contract.
+# These command shims are not credential isolation; that redesign is tracked at
+# https://github.com/loomantix/codex-platform/issues/37.
+# Preserve the narrow protocol used by `credential.helper = !gh auth
+# git-credential` until the credential-isolation redesign removes it.
+
+set -euo pipefail
+
+if [ "${AGENT_LOOP_ALLOW_REVIEW_MUTATIONS:-false}" = true ]; then
+    real_gh="${AGENT_LOOP_REAL_GH:?AGENT_LOOP_REAL_GH is required}"
+    exec "$real_gh" "$@"
+fi
+
+if [ "$#" -eq 3 ] && [ "$1" = auth ] && [ "$2" = git-credential ] && [ "$3" = get ]; then
+    real_gh="${AGENT_LOOP_REAL_GH:?AGENT_LOOP_REAL_GH is required}"
+    exec "$real_gh" "$@"
+fi
+
+echo "gh is disabled inside non-review agent-loop hooks; the wrapper owns remote mutations" >&2
+exit 1

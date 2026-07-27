@@ -1,40 +1,128 @@
 # Review Workflow
 
-This file is synced from `codex-platform` into consumer repos. Consumer-specific edits will be overwritten on the next sync.
+This file is synced from `codex-platform` into consumer repos. Consumer-specific
+edits will be overwritten on the next sync.
 
-## Lean Path
+## PR-First Rule
 
-Use this for most source-code PRs:
+Open a draft pull request before any structured review cleanup such as
+`refactorpass`, or adversarial review. Local Codex and Claude passes use GitHub
+review threads as durable shared context:
+post each verified finding inline before editing, push the correction, reply
+with the fix and validation, then resolve the thread. Every pass must read
+resolved as well as unresolved threads before reviewing the current head.
 
-1. Make the local change.
-2. Run the `refactorpass` skill if source files changed. It must execute the cleanup matrix: simplicity/DRY, correctness-preserving cleanup, and convention/API alignment. Use independent subagents when the active runtime permits them; otherwise run three separate local passes and disclose that downgrade.
-3. Run the `grill` skill before pushing. Lean `grill` must execute the two-lane review: code reviewer plus silent failure hunter. Use independent subagents when the active runtime permits them; otherwise run two separate local passes and disclose that downgrade.
-4. Push and open the PR.
-5. Run `reviewit <pr-number>` to trigger Gemini Flash + Copilot, fix Gemini findings first, then fold in Copilot findings when they finish, push, and reply.
+Load [the local review ledger](references/local-review-ledger.md) before running
+`refactorpass`, `grill`, `deepgrill`, `pr-grill`, or local review hooks.
 
-## Deep Path
+## Select One Cross-Model Path
 
-Use this for high-risk or complex changes:
+Choose the path before review starts. Do not combine them by default.
 
-1. Run `deepgrill` before pushing. This must execute `refactorpass` plus `grill deep`'s six core review lanes—code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, and security reviewer—and the conditional tenant-coupling lane when customer-variable behavior is present. Use independent subagents when the active runtime permits them; otherwise run a separate local pass for every applicable lane and disclose that downgrade.
-2. Push and open the PR.
-3. Run `reviewit <pr-number> deep`. Deep mode fires the same two bot reviewers as lean (Gemini Flash + Copilot) but with a 4-iteration cap, an early-exit when an iteration produces no `fix` resolutions (defer/dismiss-only doesn't justify another round), and a final `deepgrill` invocation after the loop exits so fresh subagents review the PR's current state in a separate session. The old in-loop `codex review` is gone — running it inside the polling loop routinely dropped the orchestrator out early.
+- **Local convergence** requires both Codex and a local Claude Code CLI. It
+  alternates fresh local reviewers on a draft PR and does not use `reviewit` or
+  hosted AI reviewers.
+- **Hosted fallback** is for developers without local Claude Code. It uses the
+  same PR-first local Codex chain, then `reviewit` for Gemini Flash and Copilot
+  coverage.
 
-Choose deep when the change touches auth, crypto, secret handling, schema/data shape, GitHub Actions, sync tooling, `.codex/skills/**`, a large refactor, or customer/tenant-variable behavior such as vendor integrations, per-tenant configuration, prompt/output generation, or data normalization. That last category adds the tenant-coupling lens that catches one customer's data or vocabulary hardcoded into shared logic.
+A consumer may declare one path as its repository default. Otherwise, select
+based on the developer's available tooling.
+
+## Local Convergence Path
+
+Use this path when both local engines are available:
+
+1. Make the change, run focused validation, and create a clean local commit.
+2. Push the feature branch and open or reuse its draft PR. Record the PR number,
+   head SHA, and all existing review threads before any reviewer runs.
+3. Fetch the target base, record its immutable commit SHA, and give that exact
+   SHA to both reviewers for the round. Neither reviewer may re-resolve a
+   mutable remote-tracking ref independently.
+4. In a fresh Codex session, run `deepgrill <pr-number>`. Read the PR ledger,
+   post every confirmed finding inline before editing, fix, validate, commit,
+   push, reply, and resolve.
+5. On that resulting HEAD, run a fresh adversarial Claude review against the
+   same base and PR ledger. Apply the same comment/fix/reply/resolve contract.
+6. Classify committed review fixes as `material` or `minor`. A material fix
+   affects behavior, correctness, security/privacy, data safety, compatibility,
+   deployment/sync integrity, or another substantive contract; restart at Codex
+   when either pass makes one. Minor-only fixes are validated and kept but do
+   not restart the cycle. Convergence requires one complete Codex-then-Claude
+   round with no material fixes.
+7. Cap the loop at four rounds unless the consumer explicitly configures a
+   different positive bound. At cap exhaustion, stop, preserve the branch,
+   worktree, and draft PR, and report non-convergence. Do not mark it ready.
+8. After convergence, require every local-review thread to contain a disposition
+   reply and be resolved, revalidate the exact PR head, and mark the PR ready.
+
+The `agent-loop` skill automates this path with a required non-mutating
+validation hook plus `review_max_rounds`, `codex_review_hook`, and
+`claude_review_hook`. Review hooks classify committed fixes through
+`$AGENT_LOOP_REVIEW_OUTCOME_FILE`; a missing classification defaults to
+`material`, while a pass with no commit is clean. The wrapper opens a draft PR
+before review, exports the PR identity to both hooks, and verifies that each hook
+leaves the local, remote, and PR heads aligned. Consumer hooks own semantic
+finding verification, inline posting, replies, resolution, and classification;
+they must fail if a valid finding or undisposed local-review thread remains.
+
+Do not run `reviewit` after this path merely as an extra ritual. If the developer
+switches to hosted review and it creates or pushes a commit, the prior local
+convergence is stale: rerun a complete Codex-then-Claude round on the new HEAD
+before merge, or explicitly use the hosted fallback as the final review path.
+
+## Hosted Fallback Path
+
+Use this path when local Claude Code is unavailable.
+
+### Lean
+
+1. Make the local change, create a clean commit, and open a draft PR.
+2. Run `refactorpass <pr-number>` for source changes.
+3. Run `grill <pr-number>`. Lean mode executes the code-reviewer and silent
+   failure-hunter lanes, using independent subagents when available.
+4. Run `reviewit <pr-number>`. It triggers Gemini Flash and Copilot, verifies and
+   deduplicates their findings, fixes confirmed issues, pushes, replies, and
+   loops within its configured cap.
+
+### Deep
+
+1. Open a draft PR, then run `deepgrill <pr-number>`. It executes
+   `refactorpass` plus `grill deep`'s six core lanes and the conditional
+   tenant-coupling lane.
+2. Run `reviewit <pr-number> deep`. Deep mode uses the same hosted reviewers
+   with its larger cap, early-exit rules, and final fresh Codex `deepgrill`.
+
+Choose deep when the change touches auth, crypto, secret handling, schema/data
+shape, GitHub Actions, sync tooling, `.codex/skills/**`, a large refactor, an
+area with recurring incidents, or customer/tenant-variable behavior.
 
 ## Skip Path
 
-For docs/config-only changes, skip expensive review automation unless the user explicitly wants it. Source-code changes include common implementation extensions such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash`.
+For docs/config-only changes, skip expensive review automation unless the user
+explicitly wants it. Source-code changes include common implementation
+extensions such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
+`.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash`.
 
-## Cross-Engine Relay (optional)
+## Cross-Engine Relay
 
-When you want a second engine's eyes on a PR another engine authored, run `pr-grill <pr-number>` on your own branch. It runs `grill`'s deep matrix against the PR diff, applies fixes, and pushes signed, labeled commits back to the PR head so the originating engine can re-review the new HEAD. The value is engine diversity — a different model catches design-level blind spots the authoring engine baked in. The hand-back is mandatory: `pr-grill` is one leg of a round trip, not a terminal review. It does not run `refactorpass`, push to a base branch, or force-push, and it refuses to run on `main`/`master`/`staging`.
+When a different engine reviews the PR, run `pr-grill <pr-number>` from its
+isolated worktree. It reads the existing ledger, runs the deep matrix, posts
+confirmed findings inline, applies fixes, and completes those same threads. The
+hand-back is mandatory: the originating engine reads the updated ledger and
+re-reviews the new head.
 
 ## Review Principles
 
-- Keep Gemini and Copilot manual-only; `reviewit` is the orchestrator. It should not block every iteration on Copilot before acting on Gemini Flash: fire both, fix Gemini findings first, then poll and handle Copilot before starting the next iteration.
-- In deep mode, fresh-agent local review (`deepgrill`) runs **once at the end** of the bot loop, not during it. Inline local review inside the polling loop is what historically broke `reviewit` deep — keep the loop bot-only.
-- Reply to every actionable AI review comment after fixes are pushed.
-- Do not treat generated AI comments as automatically correct; verify each finding against the code.
-- Fix every valid finding in the PR, including nits. Dismiss invalid findings or suggestions that would make the code worse. Defer only valid but extremely large follow-up refactors, roughly 300+ lines or cross-cutting rewrites, and track each deferral in a GitHub issue.
-- Stop at the iteration cap and hand back a clear summary if findings keep recurring.
+- Treat every generated finding as a hypothesis. Verify it against code, tests,
+  and documented constraints before posting or changing anything.
+- Fix every valid in-scope finding, including nits. Dismiss false positives with
+  a concrete rationale in the thread.
+- Defer only genuinely large follow-up work, roughly 300+ lines or a
+  cross-cutting rewrite, and track it explicitly.
+- A review fix without a preceding inline finding, a finding without a reply,
+  or a resolved thread without a visible disposition is a failed review pass.
+- Never copy sensitive source, credentials, private data, or model logs into PR
+  metadata. Only the concise verified finding and its disposition belong there.
+- Stop at the configured cap and preserve recovery state when reviewers do not
+  converge.

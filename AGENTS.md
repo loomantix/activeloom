@@ -24,7 +24,8 @@ This repo is public-facing. Keep all issues, PRs, comments, and docs suitable fo
 
 ## Review Workflow
 
-See [`.codex/REVIEW_WORKFLOW.md`](.codex/REVIEW_WORKFLOW.md) for the canonical lean/deep review chain.
+See [`.codex/REVIEW_WORKFLOW.md`](.codex/REVIEW_WORKFLOW.md) for the selectable
+local-convergence and hosted-fallback review paths.
 
 ## Cross-References
 

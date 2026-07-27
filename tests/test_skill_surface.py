@@ -126,6 +126,20 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     ]
     for path in consumer_owned:
         assert path.is_file()
+    for guard_name in ("hook-gh-guard", "hook-git-guard"):
+        relative = Path(".codex/skills/agent-loop/scripts") / guard_name
+        synced_guard = consumer / relative
+        upstream_guard = REPO_ROOT / relative
+        assert synced_guard.is_file()
+        assert synced_guard.read_bytes() == upstream_guard.read_bytes()
+        assert stat.S_IMODE(synced_guard.stat().st_mode) == 0o755
+    ledger_relative = Path(".codex/references/local-review-ledger.md")
+    synced_ledger = consumer / ledger_relative
+    assert synced_ledger.is_file()
+    assert synced_ledger.read_bytes() == (REPO_ROOT / ledger_relative).read_bytes()
+    assert "review_contract_version = 2" in (
+        consumer / ".codex/skills/agent-loop/agent-loop.config"
+    ).read_text(encoding="utf-8")
     sentinel = "\nconsumer customization\n"
     for path in consumer_owned:
         path.write_text(path.read_text(encoding="utf-8") + sentinel, encoding="utf-8")
@@ -141,6 +155,8 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
 def test_new_script_modes_are_executable() -> None:
     expected = {
         ".codex/skills/agent-loop/scripts/agent-loop.sh": 0o755,
+        ".codex/skills/agent-loop/scripts/hook-gh-guard": 0o755,
+        ".codex/skills/agent-loop/scripts/hook-git-guard": 0o755,
         ".codex/skills/backlog-refinement/scripts/bail-report.py": 0o755,
         ".codex/skills/backlog-refinement/scripts/candidates.py": 0o755,
         ".codex/skills/issues/scripts/ready.py": 0o755,

@@ -12,19 +12,22 @@ catches design-level blind spots the authoring engine baked in and would not
 question on its own. The hand-back is the point — `pr-grill` is one leg of a
 round trip, not a terminal review.
 
-This is **not** `deepgrill`. `deepgrill` reviews local pre-push work, runs
-`refactorpass`, and refuses to push. `pr-grill` targets an existing PR diff,
-skips `refactorpass` (do not churn a PR under cross-review), and pushes signed
-fix commits back to the PR head branch. It reuses `grill`'s deep matrix by
-reference — load the same role prompts, do not restate them here.
+Load `.codex/references/local-review-ledger.md`. The originating engine's
+resolved threads are required input to this pass, not optional background.
+
+This is **not** `deepgrill`. Both are PR-first and use the same thread ledger,
+but `deepgrill` runs `refactorpass` plus the current engine's deep matrix.
+`pr-grill` is the cross-engine relay leg: it skips `refactorpass`, scrutinizes
+the prior engine's design decisions, and pushes signed fix commits back to the
+PR head branch.
 
 ## Safety preconditions — verify before doing anything
 
 1. **Own-branch only.** This skill pushes. Refuse to run if the checked-out
    branch is `main`, `master`, or `staging`, or is the PR's **base** branch.
    You may only push to the PR's **head** branch.
-2. **Confirm the head branch is the current branch and tracks a remote.** If the
-   working tree is not on the PR head (e.g. the PR was not fetched into this
+2. **Confirm the head branch is the current branch at the exact PR head.** If
+   the working tree is not on the PR head (e.g. the PR was not fetched into this
    worktree), stop and print the fetch recipe in Phase 0 rather than guessing.
 3. **Never force-push.** A plain push only. If the push is rejected because the
    remote head moved, stop and report — do not `--force`.
@@ -39,19 +42,39 @@ If the PR is not already checked out in this worktree, stop and tell the user to
 fetch it in isolation (do not switch branches in a shared checkout):
 
 ```bash
-git fetch origin <base>                       # the PR's base branch, kept fresh
-git fetch origin pull/<pr-number>/head:pr-<pr-number>
-git worktree add ../review-pr-<pr-number> pr-<pr-number>
+HEAD_BRANCH=$(gh pr view <pr-number> --json headRefName --jq .headRefName)
+HEAD_REPO=$(gh pr view <pr-number> --json headRepository --jq .headRepository.nameWithOwner)
+HEAD_REPO_URL="https://github.com/$HEAD_REPO.git"
+git fetch "$HEAD_REPO_URL" \
+  "refs/heads/$HEAD_BRANCH:refs/remotes/pr-<pr-number>/head"
+git worktree add -b pr-<pr-number>-review ../review-pr-<pr-number> \
+  refs/remotes/pr-<pr-number>/head
 cd ../review-pr-<pr-number>
 # re-run pr-grill <pr-number> here
 ```
 
-Determine the review scope as the PR's net diff:
+Resolve the PR identity and review scope once. Prefer the immutable base SHA
+supplied by the convergence wrapper, then an explicit
+`$PR_GRILL_REVIEW_BASE_SHA`; only a standalone invocation may snapshot the PR's
+current `baseRefOid`. Never let individual lanes re-resolve a mutable ref:
 
 ```bash
-BASE=$(gh pr view <pr-number> --json baseRefName --jq .baseRefName)   # always read from the PR — some repos use a non-default base such as staging
-git fetch -q origin "$BASE"
-RANGE="$(git merge-base "origin/$BASE" HEAD)..HEAD"
+PR_DATA=$(gh pr view <pr-number> \
+  --json baseRefName,baseRefOid,headRefName,headRefOid,headRepository)
+BASE=$(jq -r .baseRefName <<<"$PR_DATA")
+PR_HEAD_SHA=$(jq -r .headRefOid <<<"$PR_DATA")
+HEAD_BRANCH=$(jq -r .headRefName <<<"$PR_DATA")
+HEAD_REPO=$(jq -r .headRepository.nameWithOwner <<<"$PR_DATA")
+HEAD_REPO_URL="https://github.com/$HEAD_REPO.git"
+test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+
+REVIEW_BASE_SHA=${AGENT_LOOP_REVIEW_BASE_SHA:-${PR_GRILL_REVIEW_BASE_SHA:-}}
+if [ -z "$REVIEW_BASE_SHA" ]; then
+  REVIEW_BASE_SHA=$(jq -r .baseRefOid <<<"$PR_DATA")
+  git fetch -q origin "$BASE"
+fi
+REVIEW_BASE_SHA=$(git rev-parse --verify "$REVIEW_BASE_SHA^{commit}")
+RANGE="$REVIEW_BASE_SHA..HEAD"
 ```
 
 Skip docs/config-only changesets (same heuristic as `grill`): if `git diff
@@ -88,9 +111,12 @@ cases, and whether a "fix" traded away a property the original code protected.
 These are the findings a same-engine grill misses and the reason this pass
 exists.
 
-## Phase 2: Apply fixes
+## Phase 2: Publish findings, then apply fixes
 
-Apply `grill`'s fix bias to `$RANGE`: fix every valid finding, including nits.
+Verify and deduplicate every finding against the full PR ledger. Post one inline
+comment per confirmed root cause before editing, using the local-review marker
+and an exact diff anchor. Apply `grill`'s fix bias to `$RANGE`: fix every valid
+finding, including nits.
 Dismiss invalid findings or suggestions that would make the code worse, with the
 evidence that disproves them. Defer only valid but extremely large follow-ups
 (roughly 300+ lines or cross-cutting rewrites) and open or link a GitHub issue
@@ -113,14 +139,22 @@ is for your own PR branches.
 
    Use the repo's normal signing config (do not disable it).
 
-2. **Push to the PR head branch** (plain push, no force):
+2. **Push explicitly to the PR head repository and branch** (plain push, no
+   force). Reuse the immutable `HEAD_REPO_URL` and `HEAD_BRANCH` resolved in
+   Phase 0:
 
    ```bash
-   git push
+   git push "$HEAD_REPO_URL" "HEAD:refs/heads/$HEAD_BRANCH"
    ```
 
    If the push is rejected, stop and report the rejection — do not force-push or
-   rebase silently.
+   rebase silently. After a successful push, require both `git ls-remote` for
+   that exact branch and `gh pr view --json headRefOid` to equal local `HEAD`.
+
+3. Reply to every posted thread with the fix commit and validation result, then
+   resolve it. For a dismissal or tracked deferral, reply with the evidence or
+   issue link before resolving. Stop if any thread cannot be replied to or
+   resolved.
 
 If no fixes were applied (clean, or everything deferred/dismissed), do not
 commit or push. Report the clean result.
@@ -137,11 +171,14 @@ findings fixed:    <count + one-line each>
 design tradeoffs flagged: <any decisions the re-review should adjudicate — e.g. a fix
                            that simplified logic but changed a latency/UX property>
 deferred / dismissed: <count + rationale>
+threads:            <posted/replied/resolved counts>
 validation run:    <commands + result>
 pushed:            <yes: SHA on <head-branch> | no fixes — nothing pushed>
+pinned review base: <full REVIEW_BASE_SHA>
 
 Hand back to the authoring engine for re-review of the new HEAD
-(e.g. `reviewit <pr-number>` or a fresh `grill` on the pushed commit).
+(e.g. the next local convergence pass, `reviewit <pr-number>` on the hosted
+fallback path, or a fresh `grill` on the pushed commit).
 ```
 
 Always surface the design tradeoffs explicitly — the round trip only works if
@@ -152,8 +189,9 @@ the engine reviewing next knows where to look.
 - **Does not run `refactorpass`.** No cleanup-churn on a PR under cross-review.
 - **Does not open or merge the PR**, and does not push to a base branch.
 - **Does not force-push or rebase.** A rejected push is reported, not forced.
-- **Does not replace `reviewit`.** Bot review (Gemini + Copilot) is a separate
-  post-push concern; `pr-grill` is the local cross-engine deep pass.
+- **Does not replace the selected review path.** `reviewit` remains the hosted
+  Gemini + Copilot fallback; local Codex/Claude convergence is the alternative.
+  `pr-grill` is an optional cross-engine relay, not a terminal review.
 
 ## Source of truth
 

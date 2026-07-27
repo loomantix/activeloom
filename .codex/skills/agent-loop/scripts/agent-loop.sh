@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Deterministic, per-issue agent loop with local reviews before publication.
+# Deterministic, per-issue agent loop with PR-first local review convergence.
 
 set -euo pipefail
 # Worktrees and persistent worker/reviewer logs can contain sensitive source or
 # test output. Default every path this wrapper creates to owner-only access.
 umask 077
+
+# Exported shell functions and login-shell aliases outrank PATH lookups. Remove
+# ambient GitHub command customizations before the wrapper resolves or invokes
+# its real binaries; the bounded login shell repeats this before evaluating a
+# configured hook because shell startup files can define them again.
+unset -f git gh 2>/dev/null || true
+unalias git gh 2>/dev/null || true
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -13,6 +20,12 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 DIM='\033[2m'
 NC='\033[0m'
+
+# Review context is owned by this wrapper. Do not leak state from an outer
+# agent-loop/deepgrill invocation into setup, worker, or worker validation.
+unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
+    AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER \
+    AGENT_LOOP_PR_URL AGENT_LOOP_PR_HEAD_SHA
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -102,6 +115,8 @@ CONFIG_FILE="$PROJECT_DIR/.codex/skills/agent-loop/agent-loop.config"
 PROMPT_FILE="$PROJECT_DIR/.codex/skills/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
 ISSUES_READY="$PROJECT_DIR/.codex/skills/issues/scripts/ready.py"
+HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
+HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
 
 BASE_BRANCH=""
 SETUP_HOOK=""
@@ -114,6 +129,8 @@ WORKER_FALLBACK_MODEL=""
 WORKER_RETRIES=1
 WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
+REVIEW_CONTRACT_VERSION=""
+REVIEW_MAX_ROUNDS=4
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
 DEPENDENCY_GATE=ready
@@ -137,6 +154,8 @@ assign_config() {
         worker_retries) WORKER_RETRIES="$value" ;;
         worker_timeout_seconds) WORKER_TIMEOUT_SECONDS="$value" ;;
         hook_timeout_seconds) HOOK_TIMEOUT_SECONDS="$value" ;;
+        review_contract_version) REVIEW_CONTRACT_VERSION="$value" ;;
+        review_max_rounds) REVIEW_MAX_ROUNDS="$value" ;;
         retry_on_timeout) RETRY_ON_TIMEOUT="$value" ;;
         retry_delay_seconds) RETRY_DELAY_SECONDS="$value" ;;
         dependency_gate) DEPENDENCY_GATE="$value" ;;
@@ -173,6 +192,11 @@ if [ -e "$CONFIG_FILE" ]; then
     done < "$CONFIG_FILE"
 fi
 
+if [ "$REVIEW_CONTRACT_VERSION" != 2 ]; then
+    echo "agent-loop config must set review_contract_version = 2 after migrating the PR-first local review hooks" >&2
+    exit 1
+fi
+
 BASE_BRANCH="${AGENT_LOOP_BASE_BRANCH:-$BASE_BRANCH}"
 if [ -z "$BASE_BRANCH" ]; then
     BASE_BRANCH="$(git -C "$PROJECT_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
@@ -188,40 +212,91 @@ validate_ref_component() {
 }
 validate_ref_component "$BASE_BRANCH" "base branch"
 validate_ref_component "$BRANCH_PREFIX/example" "branch prefix"
+BASE_REMOTE_REF="refs/remotes/origin/$BASE_BRANCH"
+BASE_FETCH_REFSPEC="+refs/heads/$BASE_BRANCH:$BASE_REMOTE_REF"
 
 for value in "$WORKER_RETRIES" "$WORKER_TIMEOUT_SECONDS" "$HOOK_TIMEOUT_SECONDS" \
-             "$RETRY_DELAY_SECONDS" "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
+             "$REVIEW_MAX_ROUNDS" "$RETRY_DELAY_SECONDS" "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
     [[ "$value" =~ ^[0-9]+$ ]] || { echo "numeric agent-loop config value required: $value" >&2; exit 1; }
 done
+[ "$WORKER_TIMEOUT_SECONDS" -gt 0 ] || { echo "worker_timeout_seconds must be a positive integer" >&2; exit 1; }
+[ "$HOOK_TIMEOUT_SECONDS" -gt 0 ] || { echo "hook_timeout_seconds must be a positive integer" >&2; exit 1; }
+[ "$REVIEW_MAX_ROUNDS" -gt 0 ] || { echo "review_max_rounds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
 for cmd in git gh jq python3 timeout; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
+REAL_GIT_BIN="$(type -P git)"
+REAL_GH_BIN="$(type -P gh)"
+[ -x "$REAL_GIT_BIN" ] || { echo "required Git executable not found" >&2; exit 1; }
+[ -x "$REAL_GH_BIN" ] || { echo "required gh executable not found" >&2; exit 1; }
 if [ -z "$WORKER_HOOK" ]; then
-    command -v codex >/dev/null 2>&1 || {
+    DEFAULT_CODEX_BIN="$(command -v codex 2>/dev/null || true)"
+    [ -n "$DEFAULT_CODEX_BIN" ] || {
         echo "required command not found for default worker: codex" >&2
         exit 1
     }
 fi
+[ -x "$HOOK_GIT_GUARD" ] || { echo "hook Git guard not found or not executable: $HOOK_GIT_GUARD" >&2; exit 1; }
+[ -x "$HOOK_GH_GUARD" ] || { echo "hook gh guard not found or not executable: $HOOK_GH_GUARD" >&2; exit 1; }
 [ -x "$ISSUES_READY" ] || { echo "issues ready.py not found or not executable: $ISSUES_READY" >&2; exit 1; }
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
+[ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CODEX_REVIEW_HOOK" ] || { echo "codex_review_hook must be configured before running agent-loop" >&2; exit 1; }
 
 if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
     PROMPT_TEMPLATE="$(<"$PROMPT_FILE")"
 else
-    PROMPT_TEMPLATE="Read @agent-loop-instructions.md. Implement issue #{ISSUE_ID}, validate it, and commit locally. Do not push or open a pull request."
+    PROMPT_TEMPLATE="Read @agent-loop-instructions.md. Implement issue #{ISSUE_ID} using its title in \$AGENT_LOOP_ISSUE_TITLE and description in \$AGENT_LOOP_ISSUE_BODY (GitHub-facing gh commands are disabled inside the loop), validate it, and commit locally. Do not push or open a pull request."
 fi
 [[ "$PROMPT_TEMPLATE" == *"{ISSUE_ID}"* ]] || { echo "prompt template must contain {ISSUE_ID}: $PROMPT_FILE" >&2; exit 1; }
 
 cd "$PROJECT_DIR"
+
+# Repository-scoped gh commands must resolve from this checkout, never from an
+# ambient GH_REPO that could point issue claims and PR creation at another repo.
+unset GH_REPO
+GH_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || {
+    echo "could not resolve the GitHub repository for $PROJECT_DIR" >&2
+    exit 1
+}
+[[ "$GH_REPO" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || {
+    echo "resolved GitHub repository is invalid: $GH_REPO" >&2
+    exit 1
+}
+export GH_REPO
+
+ORIGIN_FETCH_URLS="$(git remote get-url --all origin)" || {
+    echo "could not capture origin fetch identity" >&2
+    exit 1
+}
+ORIGIN_PUSH_URLS="$(git remote get-url --push --all origin)" || {
+    echo "could not capture origin push identity" >&2
+    exit 1
+}
+
+require_origin_identity() {
+    local fetch_urls push_urls
+    fetch_urls="$(git remote get-url --all origin)" || return 1
+    push_urls="$(git remote get-url --push --all origin)" || return 1
+    if [ "$fetch_urls" != "$ORIGIN_FETCH_URLS" ] || [ "$push_urls" != "$ORIGIN_PUSH_URLS" ]; then
+        echo "origin fetch/push identity changed during agent-loop" >&2
+        return 1
+    fi
+}
+
+fetch_base() {
+    require_origin_identity || return 1
+    git fetch origin "$BASE_FETCH_REFSPEC" --quiet
+}
+
 if [ "$DRY_RUN" = false ]; then
-    git fetch origin "$BASE_BRANCH" --quiet
+    fetch_base
 fi
-git rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH" >/dev/null || {
+git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
     echo "configured base branch does not exist locally: origin/$BASE_BRANCH" >&2
     [ "$DRY_RUN" = true ] && echo "Dry-run does not fetch; fetch the base branch once and retry." >&2
     exit 1
@@ -284,6 +359,27 @@ issue_json() {
     gh issue view "$1" --json number,title,body,state,labels,assignees
 }
 
+set_selected_issue_context() {
+    local json="$1" title body
+    title="$(jq -er '
+        if ((.title | type) == "string" and (.title | length) > 0)
+        then .title else error("invalid issue title") end
+    ' <<<"$json")" || {
+        echo "could not extract a non-empty issue title" >&2
+        return 1
+    }
+    body="$(jq -er '
+        if .body == null then ""
+        elif (.body | type) == "string" then .body
+        else error("invalid issue body") end
+    ' <<<"$json")" || {
+        echo "could not extract the issue body" >&2
+        return 1
+    }
+    SELECTED_TITLE="$title"
+    SELECTED_BODY="$body"
+}
+
 issue_is_selectable() {
     local number="$1" json="$2"
     [ "$(jq -r '.state' <<<"$json")" = OPEN ] || return 1
@@ -297,12 +393,26 @@ issue_is_selectable() {
     [ "$RESUME_IN_PROGRESS" = true ] && [ "$mine" = true ] && [ "$count" -eq 1 ]
 }
 
+ready_queue_numbers() {
+    jq -r '
+        if type == "array" and all(.[];
+            ((.number | type) == "number") and
+            (.number > 0) and
+            (.number == (.number | floor)))
+        then .[].number
+        else error("ready queue must be an array of positive integer issue numbers")
+        end
+    '
+}
+
 SELECTED_ID=""
+SELECTED_TITLE=""
 SELECTED_BODY=""
 SELECTED_ASSIGNED=false
 
 select_next_issue() {
     SELECTED_ID=""
+    SELECTED_TITLE=""
     SELECTED_BODY=""
     SELECTED_ASSIGNED=false
     local json number
@@ -312,6 +422,10 @@ select_next_issue() {
         # same hard excludes, open blockers, and addressed-PR checks as the normal
         # ready queue, while retaining assigned-but-ready rows for --resume.
         allowlist_ready_json="$("$ISSUES_READY" --agent --limit 1000 --json)" || return 2
+        ready_queue_numbers <<< "$allowlist_ready_json" >/dev/null || {
+            echo "could not validate ready-queue data" >&2
+            return 2
+        }
         IFS=',' read -r -a candidates <<< "$ISSUE_ALLOWLIST"
         for number in "${candidates[@]}"; do
             already_processed "$number" && continue
@@ -328,43 +442,67 @@ select_next_issue() {
                 continue
             fi
             SELECTED_ID="$number"
-            SELECTED_BODY="$(jq -r '.body // ""' <<<"$json")"
+            set_selected_issue_context "$json" || return 2
             [ "$(jq '.assignees | length' <<<"$json")" -gt 0 ] && SELECTED_ASSIGNED=true
             return 0
         done
         return 1
     fi
 
-    local ready_json
+    local ready_json ready_numbers
     ready_json="$("$ISSUES_READY" --unassigned --agent --limit 100 --json)" || return 2
+    ready_numbers="$(ready_queue_numbers <<< "$ready_json")" || {
+        echo "could not validate ready-queue data" >&2
+        return 2
+    }
     while IFS= read -r number; do
         [ -n "$number" ] || continue
         already_processed "$number" && continue
         json="$(issue_json "$number")" || return 2
         issue_is_selectable "$number" "$json" || continue
         SELECTED_ID="$number"
-        SELECTED_BODY="$(jq -r '.body // ""' <<<"$json")"
+        set_selected_issue_context "$json" || return 2
         return 0
-    done < <(jq -r '.[].number' <<<"$ready_json")
+    done <<< "$ready_numbers"
     return 1
 }
 
 pr_merged_to_base() {
-    local pr="$1" data state base oid
-    data="$(gh pr view "$pr" --json state,baseRefName,mergeCommit --jq '[.state,.baseRefName,(.mergeCommit.oid // "")] | @tsv' 2>/dev/null)" || return 1
+    local pr="$1" data state base oid merge_status=0
+    data="$(gh pr view "$pr" --json state,baseRefName,mergeCommit --jq '[.state,.baseRefName,(.mergeCommit.oid // "")] | @tsv' 2>/dev/null)" || return 2
     IFS=$'\t' read -r state base oid <<< "$data"
-    [ "$state" = MERGED ] && [ "$base" = "$BASE_BRANCH" ] && [ -n "$oid" ] || return 1
-    git merge-base --is-ancestor "$oid" "origin/$BASE_BRANCH" >/dev/null 2>&1
+    [ "$state" = MERGED ] || return 1
+    [ "$base" = "$BASE_BRANCH" ] || return 1
+    if [ -z "$oid" ]; then
+        echo "merged dependency PR #$pr has no merge commit" >&2
+        return 2
+    fi
+    git merge-base --is-ancestor "$oid" "$BASE_REMOTE_REF" >/dev/null 2>&1 || merge_status=$?
+    case "$merge_status" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *)
+            echo "could not compare dependency PR #$pr with origin/$BASE_BRANCH" >&2
+            return 2
+            ;;
+    esac
 }
 
 issue_dependency_merged() {
-    local issue="$1" rows pr
+    local issue="$1" rows pr dependency_status=0 had_error=false
     rows="$(gh issue view "$issue" --json closedByPullRequestsReferences \
-        --jq '.closedByPullRequestsReferences[]? | [.number,.state,.baseRefName,(.mergeCommit.oid // "")] | @tsv' 2>/dev/null)" || return 1
+        --jq '.closedByPullRequestsReferences[]? | [.number,.state,.baseRefName,(.mergeCommit.oid // "")] | @tsv' 2>/dev/null)" || return 2
     while IFS=$'\t' read -r pr _; do
         [ -n "$pr" ] || continue
-        pr_merged_to_base "$pr" && return 0
+        dependency_status=0
+        pr_merged_to_base "$pr" || dependency_status=$?
+        case "$dependency_status" in
+            0) return 0 ;;
+            1) ;;
+            *) had_error=true ;;
+        esac
     done <<< "$rows"
+    [ "$had_error" = false ] || return 2
     return 1
 }
 
@@ -377,23 +515,67 @@ for kind, number in pattern.findall(body):
 }
 
 check_dependencies() {
-    local body="$1" kind number found=false
+    local body="$1" refs kind number found=false dependency_status
     if [ "$DEPENDENCY_GATE" = ready ]; then
         echo "   Dependency gate: ready-queue semantics"
         return 0
     fi
+    refs="$(dependency_refs "$body")" || {
+        echo "could not parse issue dependencies" >&2
+        return 2
+    }
     while IFS=$'\t' read -r kind number; do
         [ -n "$number" ] || continue
         found=true
-        if { [ "$kind" = pr ] && pr_merged_to_base "$number"; } || \
-           { [ "$kind" = issue ] && issue_dependency_merged "$number"; }; then
-            echo "   Dependency $kind #$number: merged into origin/$BASE_BRANCH"
+        dependency_status=0
+        if [ "$kind" = pr ]; then
+            pr_merged_to_base "$number" || dependency_status=$?
         else
-            echo "   Dependency $kind #$number: NOT merged into origin/$BASE_BRANCH"
-            return 1
+            issue_dependency_merged "$number" || dependency_status=$?
         fi
-    done < <(dependency_refs "$body")
+        case "$dependency_status" in
+            0) echo "   Dependency $kind #$number: merged into origin/$BASE_BRANCH" ;;
+            1)
+                echo "   Dependency $kind #$number: NOT merged into origin/$BASE_BRANCH"
+                return 1
+                ;;
+            *)
+                echo "could not verify dependency $kind #$number" >&2
+                return 2
+                ;;
+        esac
+    done <<< "$refs"
     [ "$found" = true ] || echo "   Dependency gate: no declared dependencies"
+}
+
+ready_queue_contains_issue() {
+    local number="$1" ready_json status=0
+    ready_json="$("$ISSUES_READY" --agent --limit 1000 --json)" || {
+        echo "could not refresh ready-queue eligibility for issue #$number" >&2
+        return 2
+    }
+    ready_queue_numbers <<< "$ready_json" >/dev/null || {
+        echo "could not validate refreshed ready-queue data for issue #$number" >&2
+        return 2
+    }
+    jq -e --argjson number "$number" 'any(.number == $number)' \
+        <<< "$ready_json" >/dev/null || status=$?
+    case "$status" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *)
+            echo "could not validate refreshed ready-queue data for issue #$number" >&2
+            return 2
+            ;;
+    esac
+}
+
+rollback_new_claim() {
+    local number="$1"
+    if ! gh issue edit "$number" --remove-assignee @me >/dev/null; then
+        echo "could not release newly claimed issue #$number; operator action is required" >&2
+        return 1
+    fi
 }
 
 claim_issue() {
@@ -406,32 +588,126 @@ claim_issue() {
         added=true
     fi
 
-    # Refetch after selection/claim and verify identity, not merely count. A
-    # concurrent reassignment can otherwise leave a different sole assignee and
-    # make this worker duplicate their work. Resumes need the same fresh check.
-    claim_json="$(gh issue view "$number" --json assignees)" || claim_json=""
-    login="$(jq -r 'if (.assignees | length) == 1 then .assignees[0].login else "" end' \
-        <<< "$claim_json" 2>/dev/null || true)"
-    if [ "$login" != "$CURRENT_LOGIN" ]; then
-        if [ "$added" = true ]; then
-            gh issue edit "$number" --remove-assignee @me >/dev/null 2>&1 || true
+    # Refetch after selection/claim and verify identity, eligibility, and issue
+    # context. A concurrent reassignment can otherwise duplicate another user's
+    # work, while a concurrent edit can give the worker stale requirements.
+    # Resumes need the same fresh check.
+    claim_json="$(gh issue view "$number" --json number,title,body,state,labels,assignees)" || {
+        if [ "$added" = true ] && ! rollback_new_claim "$number"; then
+            return 2
         fi
-        echo "claim race or verification failure for issue #$number" >&2
+        echo "could not refresh issue #$number after claiming it" >&2
+        return 2
+    }
+    login="$(jq -r '
+        if (.assignees | type) != "array" then error("invalid assignees")
+        elif (.assignees | length) == 1 and
+             ((.assignees[0].login | type) == "string")
+        then .assignees[0].login else "" end
+    ' <<< "$claim_json")" || {
+        if [ "$added" = true ] && ! rollback_new_claim "$number"; then
+            return 2
+        fi
+        echo "could not validate assignees after claiming issue #$number" >&2
+        return 2
+    }
+    if [ "$login" != "$CURRENT_LOGIN" ] || ! jq -e '
+        .state == "OPEN" and
+        ((.labels | type) == "array") and
+        (.labels | any(.name == "dev: agent"))
+    ' <<<"$claim_json" >/dev/null 2>&1; then
+        if [ "$added" = true ] && ! rollback_new_claim "$number"; then
+            return 2
+        fi
+        echo "claim race, eligibility change, or verification failure for issue #$number" >&2
         return 1
+    fi
+    if ! set_selected_issue_context "$claim_json"; then
+        if [ "$added" = true ] && ! rollback_new_claim "$number"; then
+            return 2
+        fi
+        echo "could not refresh issue context after claiming issue #$number" >&2
+        return 2
     fi
     if [ "$SELECTED_ASSIGNED" = true ]; then
         echo -e "${YELLOW}›${NC} Resuming issue #$number"
     fi
 }
 
+verify_issue_for_publication() {
+    local number="$1" current_json issue_status=0 readiness_status=0
+    current_json="$(issue_json "$number")" || {
+        echo "could not refresh issue #$number before publication" >&2
+        return 2
+    }
+    jq -e --argjson number "$number" --arg login "$CURRENT_LOGIN" \
+        --arg title "$SELECTED_TITLE" --arg body "$SELECTED_BODY" '
+        (.number == $number) and
+        (.state == "OPEN") and
+        ((.labels | type) == "array") and
+        (.labels | any(.name == "dev: agent")) and
+        ((.assignees | type) == "array") and
+        ((.assignees | length) == 1) and
+        (.assignees[0].login == $login) and
+        (.title == $title) and
+        ((.body // "") == $body)
+    ' <<< "$current_json" >/dev/null || issue_status=$?
+    case "$issue_status" in
+        0) ;;
+        1)
+            echo "issue #$number changed or is no longer eligible before publication" >&2
+            return 1
+            ;;
+        *)
+            echo "could not validate issue #$number before publication" >&2
+            return 2
+            ;;
+    esac
+
+    ready_queue_contains_issue "$number" || readiness_status=$?
+    if [ "$readiness_status" -eq 0 ] && [ "$DEPENDENCY_GATE" = merged-to-base ]; then
+        check_dependencies "$SELECTED_BODY" || readiness_status=$?
+    fi
+    case "$readiness_status" in
+        0) return 0 ;;
+        1)
+            echo "issue #$number is no longer ready before publication" >&2
+            return 1
+            ;;
+        *)
+            echo "could not re-evaluate issue #$number before publication" >&2
+            return 2
+            ;;
+    esac
+}
+
 worktree_has_work() {
-    local start_sha="$1"
-    [ -n "$(git status --porcelain)" ] || [ "$(git rev-parse HEAD)" != "$start_sha" ]
+    local start_sha="$1" status head
+    status="$(git status --porcelain)" || {
+        echo "could not inspect worktree state after worker failure; preserving it" >&2
+        return 0
+    }
+    head="$(git rev-parse HEAD)" || {
+        echo "could not inspect HEAD after worker failure; preserving the worktree" >&2
+        return 0
+    }
+    [ -n "$status" ] || [ "$head" != "$start_sha" ]
+}
+
+require_issue_branch_head() {
+    local current_branch head_sha branch_sha
+    current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" || return 1
+    [ "$current_branch" = "$AGENT_LOOP_BRANCH" ] || return 1
+    head_sha="$(git rev-parse HEAD)" || return 1
+    branch_sha="$(git rev-parse "refs/heads/$AGENT_LOOP_BRANCH")" || return 1
+    [ "$head_sha" = "$branch_sha" ]
 }
 
 run_bounded_hook() {
     local phase="$1" command="$2" timeout_seconds="$3" log_file="$4"
+    local allow_review_mutations="${5:-false}"
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0
+    local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
     echo -e "${BLUE}▸${NC} $phase"
     # Bound the captured log to its trailing LOG_MAX_KB with `tail -c`, NOT with a
     # process-wide `ulimit -f`: that rlimit is inherited by the worker and every hook
@@ -440,12 +716,57 @@ run_bounded_hook() {
     # hook is never signalled; keeping the tail preserves the failing output and any
     # capacity/overload marker the retry logic greps for; PIPESTATUS[0] keeps the
     # hook's real exit status.
+    if [ -L "$guard_bin" ] || { [ -e "$guard_bin" ] && [ ! -d "$guard_bin" ]; }; then
+        echo "hook command guard path is not a real directory: $guard_bin" >&2
+        return 1
+    fi
+    mkdir -p "$guard_bin" || {
+        echo "could not create hook command guard directory" >&2
+        return 1
+    }
+    rm -f -- "$guard_bin/git" "$guard_bin/gh" || {
+        echo "could not clear prior hook command guards" >&2
+        return 1
+    }
+    cp "$HOOK_GIT_GUARD" "$guard_bin/git" || {
+        echo "could not install hook Git guard" >&2
+        return 1
+    }
+    cp "$HOOK_GH_GUARD" "$guard_bin/gh" || {
+        echo "could not install hook gh guard" >&2
+        return 1
+    }
+    chmod 700 "$guard_bin/git" "$guard_bin/gh" || {
+        echo "could not secure hook command guards" >&2
+        return 1
+    }
+    for guard in "$guard_bin/git" "$guard_bin/gh"; do
+        if [ ! -f "$guard" ] || [ -L "$guard" ] || [ ! -x "$guard" ]; then
+            echo "installed hook command guard is not a real executable file: $guard" >&2
+            return 1
+        fi
+    done
     (
         set +e
-        timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc "$command" 2>&1 \
+        # Setup, worker, and validation hooks remain local-only. Review hooks run
+        # after the wrapper opens a draft PR and must be able to post inline
+        # comments, push fixes, reply, and resolve; their remote mutations are
+        # attested by the wrapper after the hook returns.
+        export AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN"
+        export AGENT_LOOP_REAL_GH="$REAL_GH_BIN"
+        export AGENT_LOOP_HOOK_COMMAND="$command"
+        export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
+        export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
+        # shellcheck disable=SC2016 # expanded by the bounded login shell
+        timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
+            'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
             | tail -c "$max_bytes"
         exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?
+    if ! require_origin_identity; then
+        echo "hook changed origin fetch/push identity" >>"$log_file"
+        status=1
+    fi
     if [ "$status" -ne 0 ]; then
         echo -e "${RED}✗${NC} $phase failed (exit $status); bounded tail follows:" >&2
         tail -n "$OUTPUT_MAX_LINES" "$log_file" >&2 || true
@@ -456,13 +777,17 @@ run_bounded_hook() {
 }
 
 worker_command() {
-    local model="$1"
+    local model="$1" codex_command model_arg
     if [ -n "$WORKER_HOOK" ]; then
         printf '%s' "$WORKER_HOOK"
         return
     fi
-    local command="codex exec --dangerously-bypass-approvals-and-sandbox -C \"\$AGENT_LOOP_WORKTREE\""
-    [ -n "$model" ] && command+=" -m '$model'"
+    printf -v codex_command '%q' "$DEFAULT_CODEX_BIN"
+    local command="$codex_command exec --dangerously-bypass-approvals-and-sandbox -C \"\$AGENT_LOOP_WORKTREE\""
+    if [ -n "$model" ]; then
+        printf -v model_arg '%q' "$model"
+        command+=" -m $model_arg"
+    fi
     command+=" \"\$AGENT_LOOP_PROMPT\""
     printf '%s' "$command"
 }
@@ -499,67 +824,717 @@ run_worker() {
 }
 
 require_clean_committed_tree() {
-    local phase="$1" start_sha="$2"
-    if [ -n "$(git status --porcelain)" ]; then
+    local phase="$1" start_sha="$2" status
+    status="$(git status --porcelain)" || {
+        recovery_message "Could not inspect Git status after $phase."
+        return 1
+    }
+    if [ -n "$status" ]; then
         recovery_message "$phase left a dirty worktree."
+        return 1
+    fi
+    if ! require_issue_branch_head; then
+        recovery_message "$phase moved HEAD away from the issue branch."
         return 1
     fi
     if [ "$(git rev-parse HEAD)" = "$start_sha" ]; then
         recovery_message "$phase produced no local commit."
         return 1
     fi
+    if ! git merge-base --is-ancestor "$start_sha" HEAD; then
+        recovery_message "$phase rewrote or dropped the starting history."
+        return 1
+    fi
 }
 
 run_validation() {
-    local label="$1"
-    [ -z "$VALIDATION_HOOK" ] && return 0
+    local label="$1" before_sha after_sha status
+    if ! require_issue_branch_head; then
+        echo "$label validation did not start on the issue branch" >&2
+        return 1
+    fi
+    before_sha="$(git rev-parse HEAD)" || return 1
     run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$HOOK_TIMEOUT_SECONDS" \
-        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log"
+        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" || return 1
+    status="$(git status --porcelain)" || return 1
+    after_sha="$(git rev-parse HEAD)" || return 1
+    if [ -n "$status" ] || [ "$after_sha" != "$before_sha" ]; then
+        echo "$label validation mutated the worktree or HEAD; validation hooks must be non-mutating" >&2
+        return 1
+    fi
+    if ! require_issue_branch_head; then
+        echo "$label validation moved HEAD away from the issue branch" >&2
+        return 1
+    fi
+}
+
+classify_review_result() {
+    local engine="$1" before_sha="$2" after_sha="$3" outcome_file="$4"
+    local classification=""
+
+    if [ "$before_sha" = "$after_sha" ]; then
+        if [ -e "$outcome_file" ] || [ -L "$outcome_file" ]; then
+            recovery_message "$engine review wrote a fix classification without committing a fix."
+            return 1
+        fi
+        REVIEW_FIX_CLASSIFICATION=clean
+        return 0
+    fi
+
+    # Backward-compatible fail-safe: an existing hook that commits without using
+    # the outcome file is material and therefore restarts at Codex.
+    if [ ! -e "$outcome_file" ] && [ ! -L "$outcome_file" ]; then
+        REVIEW_FIX_CLASSIFICATION=material
+        return 0
+    fi
+    if [ ! -f "$outcome_file" ] || [ -L "$outcome_file" ] || [ ! -r "$outcome_file" ]; then
+        recovery_message "$engine review outcome must be a readable regular file."
+        return 1
+    fi
+    classification="$(python3 -c '
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+values = {b"minor": "minor", b"minor\n": "minor",
+          b"material": "material", b"material\n": "material"}
+if data not in values:
+    raise SystemExit(2)
+sys.stdout.write(values[data])
+' "$outcome_file")" || {
+        recovery_message "$engine review outcome must be exactly 'minor' or 'material'."
+        return 1
+    }
+    REVIEW_FIX_CLASSIFICATION="$classification"
+}
+
+review_outcome_signature() {
+    local outcome_file="$1"
+    python3 -c '
+from hashlib import sha256
+import os
+from pathlib import Path
+import stat
+import sys
+
+path = Path(sys.argv[1])
+try:
+    metadata = os.lstat(path)
+except FileNotFoundError:
+    sys.stdout.write("missing")
+    raise SystemExit(0)
+if not stat.S_ISREG(metadata.st_mode):
+    raise SystemExit(2)
+sys.stdout.write("file:" + sha256(path.read_bytes()).hexdigest())
+' "$outcome_file"
+}
+
+require_review_outcome_signature() {
+    local engine="$1" outcome_file="$2" expected_signature="$3" phase="$4"
+    local actual_signature
+    actual_signature="$(review_outcome_signature "$outcome_file")" || {
+        recovery_message "Could not re-read $engine review outcome $phase."
+        return 1
+    }
+    if [ "$actual_signature" != "$expected_signature" ]; then
+        recovery_message "$engine review outcome file changed $phase."
+        return 1
+    fi
+}
+
+verify_converged_review_outcomes() {
+    if [ -z "${CONVERGED_CODEX_OUTCOME_FILE:-}" ] || \
+       [ -z "${CONVERGED_CLAUDE_OUTCOME_FILE:-}" ]; then
+        recovery_message "Converged review outcome attestations are missing."
+        return 1
+    fi
+    require_review_outcome_signature Codex "$CONVERGED_CODEX_OUTCOME_FILE" \
+        "$CONVERGED_CODEX_OUTCOME_SIGNATURE" "before publication" || return 1
+    require_review_outcome_signature Claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
+        "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" "before publication" || return 1
+}
+
+run_review_pass() {
+    local engine="$1" slug="$2" hook="$3" round="$4"
+    local hook_description="$5" hook_failure_description="$6"
+    local review_description="$7" validation_description="$8"
+    local before_sha after_sha status classification outcome_signature outcome_file
+    local boundary_status
+
+    export AGENT_LOOP_REVIEW_ENGINE="$slug"
+    outcome_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.outcome"
+    export AGENT_LOOP_REVIEW_OUTCOME_FILE="$outcome_file"
+    rm -f -- "$outcome_file"
+    before_sha="$(git rev-parse HEAD)"
+    export AGENT_LOOP_PR_HEAD_SHA="$before_sha"
+    boundary_status=0
+    attest_review_head "before $engine review round $round" \
+        "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
+    if [ "$boundary_status" -eq 2 ]; then
+        return 2
+    elif [ "$boundary_status" -ne 0 ]; then
+        recovery_message "PR head attestation failed before $engine review round $round."
+        return 1
+    fi
+    run_bounded_hook "$hook_description (round $round)" "$hook" \
+        "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
+        recovery_message "$hook_failure_description failed in review round $round."
+        return 1
+    }
+    status="$(git status --porcelain)" || {
+        recovery_message "Could not inspect Git status after the $hook_description in round $round."
+        return 1
+    }
+    [ -z "$status" ] || {
+        recovery_message "$review_description left uncommitted findings/fixes in review round $round."
+        return 1
+    }
+    require_issue_branch_head || {
+        recovery_message "$review_description moved HEAD away from the issue branch in review round $round."
+        return 1
+    }
+    after_sha="$(git rev-parse HEAD)"
+    git merge-base --is-ancestor "$before_sha" "$after_sha" || {
+        recovery_message "$review_description rewrote or dropped previously reviewed commits in round $round."
+        return 1
+    }
+    boundary_status=0
+    attest_review_head "after $engine review round $round" \
+        "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
+    if [ "$boundary_status" -eq 2 ]; then
+        return 2
+    elif [ "$boundary_status" -ne 0 ]; then
+        recovery_message "$review_description did not leave local, remote, and PR heads aligned in round $round."
+        return 1
+    fi
+    export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
+    classify_review_result "$engine" "$before_sha" "$after_sha" "$outcome_file" || return 1
+    classification="$REVIEW_FIX_CLASSIFICATION"
+    if [ "$classification" = clean ]; then
+        verify_clean_pass_attestation "$slug" "$round" "$before_sha" || {
+            recovery_message "$engine review did not publish the required clean-pass attestation in round $round."
+            return 1
+        }
+    else
+        verify_review_completion_attestation "$slug" "$round" "$before_sha" "$after_sha" || {
+            recovery_message "$engine review committed but posted no final-lane completion attestation in round $round."
+            return 1
+        }
+        verify_committed_pass_evidence "$slug" "$round" "$after_sha" || {
+            recovery_message "$engine review committed without a resolved same-round finding and structured fix disposition in round $round."
+            return 1
+        }
+    fi
+    outcome_signature="$(review_outcome_signature "$outcome_file")" || {
+        recovery_message "Could not snapshot $engine review outcome in round $round."
+        return 1
+    }
+    run_validation "$slug-review-round-$round" || {
+        recovery_message "Validation after $validation_description failed in review round $round."
+        return 1
+    }
+    require_review_outcome_signature "$engine" "$outcome_file" \
+        "$outcome_signature" "during validation in round $round" || return 1
+    boundary_status=0
+    attest_review_head "after $engine review validation in round $round" \
+        "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
+    if [ "$boundary_status" -eq 2 ]; then
+        return 2
+    elif [ "$boundary_status" -ne 0 ]; then
+        recovery_message "PR head attestation failed after $engine review validation in round $round."
+        return 1
+    fi
+
+    REVIEW_PASS_CLASSIFICATION="$classification"
+    REVIEW_PASS_OUTCOME_FILE="$outcome_file"
+    REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
+}
+
+require_fast_forward_base_advance() {
+    local reviewed_base="$1" phase="$2" latest_base
+    fetch_base || return 1
+    latest_base="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" || return 1
+    if ! git merge-base --is-ancestor "$reviewed_base" "$latest_base"; then
+        recovery_message "Base branch moved non-fast-forward $phase."
+        return 1
+    fi
+}
+
+run_review_convergence() {
+    local round=1 codex_classification claude_classification
+    local codex_outcome_signature claude_outcome_signature
+    local codex_outcome_file claude_outcome_file
+    local round_base_sha latest_base_sha pass_status
+
+    while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
+        echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
+        export AGENT_LOOP_REVIEW_ROUND="$round"
+
+        fetch_base
+        round_base_sha="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")"
+        export AGENT_LOOP_REVIEW_BASE_SHA
+        AGENT_LOOP_REVIEW_BASE_SHA="$round_base_sha"
+        if ! git merge-base --is-ancestor "$round_base_sha" HEAD; then
+            echo -e "${BLUE}▸${NC} Integrating fresh base before review round $round"
+            if ! git merge --no-edit "$round_base_sha"; then
+                git merge --abort >/dev/null 2>&1 || true
+                recovery_message "Fresh-base merge conflicted before review round $round."
+                return 1
+            fi
+            inspect_publication_diff "$round_base_sha" || {
+                recovery_message "Publication diff inspection failed before review round $round."
+                return 1
+            }
+            run_validation "fresh-base-round-$round" || {
+                recovery_message "Fresh-base validation failed before review round $round."
+                return 1
+            }
+            push_review_head "after fresh-base integration for round $round" \
+                "$round_base_sha" || {
+                recovery_message "Could not publish fresh-base integration before review round $round."
+                return 1
+            }
+        fi
+        pass_status=0
+        run_review_pass Codex codex "$CODEX_REVIEW_HOOK" "$round" \
+            "configured Codex review hook" "Configured Codex review hook" \
+            "Configured Codex review hook" \
+            "the configured Codex review hook" || pass_status=$?
+        if [ "$pass_status" -eq 2 ]; then
+            require_fast_forward_base_advance "$round_base_sha" \
+                "during review round $round (Codex boundary)" || return 1
+            echo "   PR base advanced during Codex review; restart at Codex on the next round"
+            round=$((round + 1))
+            continue
+        elif [ "$pass_status" -ne 0 ]; then
+            return 1
+        fi
+        codex_classification="$REVIEW_PASS_CLASSIFICATION"
+        codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+        codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+
+        pass_status=0
+        run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
+            "configured Claude review hook" "Claude review hook" "Claude review" \
+            "Claude review" || pass_status=$?
+        if [ "$pass_status" -eq 2 ]; then
+            require_fast_forward_base_advance "$round_base_sha" \
+                "during review round $round (Claude boundary)" || return 1
+            echo "   PR base advanced during Claude review; restart at Codex on the next round"
+            round=$((round + 1))
+            continue
+        elif [ "$pass_status" -ne 0 ]; then
+            return 1
+        fi
+        claude_classification="$REVIEW_PASS_CLASSIFICATION"
+        claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+        claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+        require_review_outcome_signature Codex "$codex_outcome_file" \
+            "$codex_outcome_signature" "before the round decision" || return 1
+        require_review_outcome_signature Claude "$claude_outcome_file" \
+            "$claude_outcome_signature" "before the round decision" || return 1
+        REVIEW_ROUNDS_USED="$round"
+
+        fetch_base
+        latest_base_sha="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")"
+        if ! git merge-base --is-ancestor "$round_base_sha" "$latest_base_sha"; then
+            recovery_message "Base branch moved non-fast-forward during review round $round."
+            return 1
+        fi
+
+        if [ "$codex_classification" != material ] && \
+           [ "$claude_classification" != material ] && \
+           [ "$latest_base_sha" = "$round_base_sha" ]; then
+            verify_local_review_threads || {
+                recovery_message "Local review threads are incomplete after review round $round."
+                return 1
+            }
+            REVIEWED_BASE_SHA="$AGENT_LOOP_REVIEW_BASE_SHA"
+            CONVERGED_CODEX_OUTCOME_FILE="$codex_outcome_file"
+            CONVERGED_CODEX_OUTCOME_SIGNATURE="$codex_outcome_signature"
+            CONVERGED_CLAUDE_OUTCOME_FILE="$claude_outcome_file"
+            CONVERGED_CLAUDE_OUTCOME_SIGNATURE="$claude_outcome_signature"
+            unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
+                AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE
+            echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reported no material fixes in a complete round after $round round(s)"
+            return 0
+        fi
+
+        if [ "$latest_base_sha" != "$round_base_sha" ]; then
+            echo "   Base advanced during the round; integrate it on the draft PR and restart at Codex"
+        else
+            echo "   Review outcomes: Codex=$codex_classification Claude=$claude_classification; material fixes restart at Codex"
+        fi
+        round=$((round + 1))
+    done
+
+    unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
+        AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE
+    recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
+    return 1
 }
 
 inspect_publication_diff() {
-    local file_count
+    local base_sha="$1" file_count
     # This function is called in an `||` context, so `set -e` is disabled in its
     # body; check the gate explicitly or its non-zero exit (conflict markers left in
     # a committed file, whitespace errors) is silently ignored and publication
     # proceeds with a corrupt diff.
-    if ! git diff --check "origin/$BASE_BRANCH..HEAD"; then
+    if ! git diff --check "$base_sha..HEAD"; then
         echo "publication diff contains conflict markers or whitespace errors" >&2
         return 1
     fi
-    file_count="$(git diff --name-only "origin/$BASE_BRANCH..HEAD" | wc -l | tr -d ' ')"
+    file_count="$(git diff --name-only "$base_sha..HEAD" | wc -l | tr -d ' ')"
     [ "$file_count" -gt 0 ] || { echo "publication diff is empty" >&2; return 1; }
     echo "   Publication diff: $file_count file(s)"
-    git diff --stat "origin/$BASE_BRANCH..HEAD" | tail -n "$OUTPUT_MAX_LINES"
+    git diff --stat "$base_sha..HEAD" | tail -n "$OUTPUT_MAX_LINES"
 }
 
-publish_issue() {
-    local number="$1" branch="$2" body_file pr_url
-    git push --set-upstream origin "$branch"
+attest_remote_branch() {
+    local branch="$1" expected_sha="$2" phase="$3"
+    local remote_row remote_sha remote_ref
+    remote_row="$(git ls-remote --exit-code --heads origin "refs/heads/$branch")" || {
+        echo "could not attest remote issue branch $phase" >&2
+        return 1
+    }
+    IFS=$'\t' read -r remote_sha remote_ref <<< "$remote_row"
+    if [ "$remote_sha" != "$expected_sha" ] || \
+       [ "$remote_ref" != "refs/heads/$branch" ]; then
+        echo "remote issue branch changed $phase" >&2
+        return 1
+    fi
+}
+
+attest_pr_state() {
+    local expected_sha="$1" expected_base="$2" expected_draft="$3" phase="$4"
+    local row state draft head_branch head_sha base_branch base_sha
+    row="$(gh pr view "$AGENT_LOOP_PR_NUMBER" \
+        --json state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid \
+        --jq '[.state,(.isDraft|tostring),.headRefName,.headRefOid,.baseRefName,.baseRefOid] | @tsv')" || {
+        echo "could not attest PR boundary $phase" >&2
+        return 1
+    }
+    IFS=$'\t' read -r state draft head_branch head_sha base_branch base_sha <<< "$row"
+    if [ "$state" != OPEN ] || [ "$draft" != "$expected_draft" ] || \
+       [ "$head_branch" != "$AGENT_LOOP_BRANCH" ] || \
+       [ "$base_branch" != "$BASE_BRANCH" ] || \
+       { [ -n "$expected_sha" ] && [ "$head_sha" != "$expected_sha" ]; }; then
+        echo "PR identity, state, head, or base branch changed $phase" >&2
+        return 1
+    fi
+    if [ -n "$expected_base" ] && [ "$base_sha" != "$expected_base" ]; then
+        echo "PR base advanced or diverged $phase" >&2
+        return 2
+    fi
+}
+
+attest_pr_head() {
+    attest_pr_state "$1" "$2" true "$3"
+}
+
+attest_ready_pr_head() {
+    attest_pr_state "$1" "$2" false "$3"
+}
+
+attest_review_head() {
+    local phase="$1" expected_base="$2" local_sha status
+    status="$(git status --porcelain)" || return 1
+    [ -z "$status" ] || {
+        echo "review worktree is dirty $phase" >&2
+        return 1
+    }
+    require_issue_branch_head || {
+        echo "review HEAD is not attached to the issue branch $phase" >&2
+        return 1
+    }
+    local_sha="$(git rev-parse HEAD)" || return 1
+    attest_remote_branch "$AGENT_LOOP_BRANCH" "$local_sha" "$phase" || return 1
+    attest_pr_head "$local_sha" "$expected_base" "$phase"
+}
+
+push_review_head() {
+    local phase="$1" expected_base="$2" sha
+    require_issue_branch_head || return 1
+    sha="$(git rev-parse HEAD)" || return 1
+    git push origin "$sha:refs/heads/$AGENT_LOOP_BRANCH" || return 1
+    attest_remote_branch "$AGENT_LOOP_BRANCH" "$sha" "$phase" || return 1
+    attest_pr_head "$sha" "$expected_base" "$phase"
+}
+
+fetch_local_review_threads() {
+    local owner="${GH_REPO%%/*}" name="${GH_REPO#*/}"
+    local ledger_file="$AGENT_LOOP_LOG_DIR/local-review-threads.json"
+    local query
+    query='
+query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100, after:$endCursor) {
+        nodes {
+          isResolved
+          comments(first:100) {
+            nodes { body databaseId author { login } }
+            pageInfo { hasNextPage }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}'
+    gh api graphql --paginate --slurp -f query="$query" \
+        -f owner="$owner" -f name="$name" -F number="$AGENT_LOOP_PR_NUMBER" \
+        > "$ledger_file" || {
+        echo "could not load PR review threads" >&2
+        return 1
+    }
+    printf '%s\n' "$ledger_file"
+}
+
+fetch_review_attestation_bodies() {
+    local output_file="$1"
+    {
+        gh api --paginate "repos/$GH_REPO/issues/$AGENT_LOOP_PR_NUMBER/comments" |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty' &&
+        gh api --paginate "repos/$GH_REPO/pulls/$AGENT_LOOP_PR_NUMBER/comments" |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty' &&
+        gh api --paginate "repos/$GH_REPO/pulls/$AGENT_LOOP_PR_NUMBER/reviews" |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty'
+    } > "$output_file"
+}
+
+verify_review_completion_attestation() {
+    local engine="$1" round="$2" before_sha="$3" after_sha="$4"
+    local bodies_file="$AGENT_LOOP_LOG_DIR/$engine-review-round-$round-complete.txt"
+    local marker
+    marker="<!-- local-review-complete:v1 engine=$engine round=$round before=$before_sha head=$after_sha -->"
+    fetch_review_attestation_bodies "$bodies_file" || return 1
+    grep -Fq -- "$marker" "$bodies_file"
+}
+
+verify_committed_pass_evidence() {
+    local engine="$1" round="$2" after_sha="$3" ledger_file
+    ledger_file="$(fetch_local_review_threads)" || return 1
+    jq -e --arg reviewer "$CURRENT_LOGIN" --arg engine "$engine" \
+        --argjson round "$round" --arg after "$after_sha" '
+      def finding:
+        capture("<!-- local-review:v1 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) -->");
+      def disposition:
+        capture("<!-- local-review-disposition:v1 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) outcome=(?<outcome>fixed|dismissed|deferred) -->");
+      all(.[]; (.errors // []) | length == 0)
+      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
+        | ($threads | all(.comments.pageInfo.hasNextPage | not))
+        and any($threads[];
+          . as $thread
+          | $thread.isResolved
+          and any($thread.comments.nodes | to_entries[];
+            select(.value.author.login == $reviewer)
+            | (try (.value.body | finding) catch null) as $finding
+            | select(
+                $finding != null
+                and $finding.engine == $engine
+                and ($finding.round | tonumber) == $round
+              )
+            | .key as $finding_index
+            | any($thread.comments.nodes | to_entries[];
+                (.key > $finding_index)
+                and (.value.author.login == $reviewer)
+                and ((try (.value.body | disposition) catch null) as $reply
+                  | $reply != null
+                  and $reply.engine == $engine
+                  and ($reply.round | tonumber) == $round
+                  and $reply.head == $after
+                  and $reply.fingerprint == $finding.fingerprint
+                  and $reply.outcome == "fixed")
+              )
+          )))
+    ' "$ledger_file" >/dev/null
+}
+
+verify_local_review_threads() {
+    local ledger_file
+    ledger_file="$(fetch_local_review_threads)" || return 1
+    # Check comment pagination across every thread *before* filtering by marker.
+    # A thread whose marker sits past the first comment page carries no marker in
+    # `comments.nodes`, so filtering first would silently drop exactly the threads
+    # whose disposition cannot be established.
+    #
+    # Disposition is then anchored to the newest marker rather than to thread
+    # length: the ledger requires a recurring root cause to reuse its existing
+    # thread, so a resolved round-1 thread that gains an unanswered round-2
+    # finding still has two or more comments and would pass a length check.
+    jq -e --arg marker '<!-- local-review:v1 ' --arg reviewer "$CURRENT_LOGIN" '
+      def markers: [.comments.nodes | to_entries[]
+        | select(
+            (.value.author.login == $reviewer)
+            and ((.value.body // "") | contains($marker))
+          ) | .key];
+      def has_reviewer_reply_after_latest_marker:
+        (markers | max) as $latest
+        | any(.comments.nodes | to_entries[];
+            (.key > $latest) and (.value.author.login == $reviewer));
+      all(.[]; (.errors // []) | length == 0)
+      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
+        | ($threads | all(.comments.pageInfo.hasNextPage | not))
+        and ($threads
+          | map(select(markers | length > 0))
+          | all(.isResolved and has_reviewer_reply_after_latest_marker)))
+    ' "$ledger_file" >/dev/null || {
+        echo "local-review threads must contain a disposition reply and be resolved" >&2
+        return 1
+    }
+}
+
+verify_clean_pass_attestation() {
+    local engine="$1" round="$2" reviewed_head="$3"
+    local reviews_file="$AGENT_LOOP_LOG_DIR/$engine-review-round-$round-reviews.json"
+    local marker
+    marker="<!-- local-review-pass:v1 engine=$engine round=$round head=$reviewed_head -->"
+    gh api --paginate --slurp \
+        "repos/$GH_REPO/pulls/$AGENT_LOOP_PR_NUMBER/reviews?per_page=100" \
+        > "$reviews_file" || {
+        echo "could not load PR reviews for the $engine clean-pass attestation" >&2
+        return 1
+    }
+    # Only the actor running this loop can attest its own pass. The marker text is
+    # fully derivable from public PR state, so a review posted by any other
+    # account is context, not evidence that the configured hook ran.
+    jq -e --arg marker "$marker" --arg head "$reviewed_head" \
+        --arg reviewer "$CURRENT_LOGIN" '
+      any(.[][]?;
+        (.user.login == $reviewer) and
+        (.commit_id == $head) and
+        ((.body // "") | contains($marker)) and
+        ((.body // "") | contains("no new material findings")))
+    ' "$reviews_file" >/dev/null || {
+        echo "$engine review must attest its round, exact head, and no new material findings" >&2
+        return 1
+    }
+}
+
+close_unattested_pr() {
+    local pr_url="$1" reason="$2"
+    echo "$reason: $pr_url" >&2
+    if gh pr close "$pr_url" >/dev/null; then
+        echo "closed draft PR whose head could not be attested: $pr_url" >&2
+    else
+        echo "could not close unverified draft PR; operator action is required: $pr_url" >&2
+    fi
+}
+
+open_draft_pr() {
+    local number="$1" branch="$2" publication_sha="$3" publication_base_sha="$4"
+    local body_file pr_url pr_number
+    require_origin_identity || {
+        echo "origin identity changed before draft PR publication" >&2
+        return 1
+    }
+    [ "$(git rev-parse "refs/heads/$branch")" = "$publication_sha" ] || {
+        echo "issue branch changed after publication snapshot" >&2
+        return 1
+    }
+    # Create-only lease: fail if the branch appeared after the absence check.
+    # This never rewrites an existing remote ref.
+    git push --force-with-lease="refs/heads/$branch:" origin \
+        "$publication_sha:refs/heads/$branch"
+    attest_remote_branch "$branch" "$publication_sha" "after draft publication push" || return 1
+    git branch --set-upstream-to="origin/$branch" "$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
-    # Report only the steps that actually ran. Claude review, Codex review, and
-    # fresh-base integration are unconditional; setup and validation are optional
-    # hooks (run_validation no-ops when unset), so claiming them unconditionally
-    # over-states verification exactly when a consumer hasn't wired them up.
     {
         echo "## Summary"
         echo
-        echo "Local worker implementation passed local Claude deep review, local Codex"
-        echo "review against fresh \`origin/$BASE_BRANCH\`, and fresh-base integration."
+        echo "Implementation complete. Local Codex and Claude review is running on this draft PR."
         echo
         echo "## Test plan"
         echo
-        if [ -n "$SETUP_HOOK" ]; then echo "- [x] isolated dependency bootstrap"; fi
-        echo "- [x] local Claude deep grill"
-        echo "- [x] local Codex review against fresh \`origin/$BASE_BRANCH\`"
-        echo "- [x] fresh-base integration and publication-diff inspection"
-        if [ -n "$VALIDATION_HOOK" ]; then echo "- [x] configured local validation hook"; fi
+        if [ -n "$SETUP_HOOK" ]; then echo "- [x] configured setup hook completed"; fi
+        echo "- [ ] local Codex and Claude review ledger converged"
+        echo "- [ ] every local-review thread replied to and resolved"
+        echo "- [x] configured non-mutating local validation hook"
         echo
         echo "Closes #$number"
     } > "$body_file"
-    pr_url="$(gh pr create --base "$BASE_BRANCH" --head "$branch" \
-        --title "agent-loop: resolve #$number" --body-file "$body_file")"
-    echo -e "${GREEN}✓${NC} Published $pr_url"
+    pr_url="$(gh pr create --draft --base "$BASE_BRANCH" --head "$branch" \
+        --title "agent-loop: resolve #$number" --body-file "$body_file")" || {
+        echo "could not create draft PR after publishing remote branch $branch" >&2
+        return 1
+    }
+    pr_number="$(gh pr view "$pr_url" --json number --jq .number)" || return 1
+    export AGENT_LOOP_PR_NUMBER="$pr_number"
+    export AGENT_LOOP_PR_URL="$pr_url"
+    export AGENT_LOOP_PR_HEAD_SHA="$publication_sha"
+    if ! attest_pr_head "$publication_sha" "$publication_base_sha" \
+        "after draft PR creation"; then
+        close_unattested_pr "$pr_url" "created draft PR head could not be attested"
+        return 1
+    fi
+    echo -e "${GREEN}✓${NC} Opened draft review ledger $pr_url"
+}
+
+restore_draft_after_finalization_failure() {
+    local expected_sha="$1" expected_base="$2" reason="$3"
+    if ! gh pr ready "$AGENT_LOOP_PR_NUMBER" --undo >/dev/null 2>&1; then
+        echo "$reason; rollback to draft failed and operator action is required" >&2
+        return 1
+    fi
+    if ! attest_pr_state "" "" true "after finalization rollback"; then
+        echo "$reason; rollback could not be attested and operator action is required" >&2
+        return 1
+    fi
+    echo "$reason; PR was attested back in draft state" >&2
+    return 0
+}
+
+finalize_pr() {
+    local body_file="$AGENT_LOOP_LOG_DIR/pr-body-final.md"
+    local final_sha
+    final_sha="$(git rev-parse HEAD)" || return 1
+    attest_review_head "before marking ready" "$REVIEWED_BASE_SHA" || return 1
+    verify_local_review_threads || return 1
+    {
+        echo "## Summary"
+        echo
+        echo "Configured Codex and Claude review hooks reported no material fixes in a complete round after"
+        echo "$REVIEW_ROUNDS_USED round(s) against fresh \`origin/$BASE_BRANCH\`."
+        echo
+        echo "## Test plan"
+        echo
+        if [ -n "$SETUP_HOOK" ]; then echo "- [x] configured setup hook completed"; fi
+        echo "- [x] configured Codex and Claude hooks reported no material fixes in a complete round ($REVIEW_ROUNDS_USED round(s))"
+        echo "- [x] every local-review thread contains a disposition reply and is resolved"
+        echo "- [x] fresh-base integration and publication-diff inspection"
+        echo "- [x] configured non-mutating local validation hook"
+        echo
+        echo "Closes #$AGENT_LOOP_ISSUE_ID"
+    } > "$body_file"
+    gh pr edit "$AGENT_LOOP_PR_NUMBER" --body-file "$body_file" || return 1
+    attest_review_head "immediately before marking ready" "$REVIEWED_BASE_SHA" || return 1
+    verify_local_review_threads || return 1
+    if ! gh pr ready "$AGENT_LOOP_PR_NUMBER"; then
+        if attest_pr_head "$final_sha" "$REVIEWED_BASE_SHA" \
+            "after failed ready mutation"; then
+            echo "could not mark PR ready; it remains in the attested draft state" >&2
+            return 1
+        fi
+        restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
+            "ready mutation failed after changing or obscuring PR state" || return 1
+        return 1
+    fi
+    if ! attest_ready_pr_head "$final_sha" "$REVIEWED_BASE_SHA" \
+        "after marking ready"; then
+        restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
+            "ready PR boundary changed during finalization" || return 1
+        return 1
+    fi
+    if ! verify_local_review_threads; then
+        restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
+            "local-review ledger changed during finalization" || return 1
+        return 1
+    fi
+    echo -e "${GREEN}✓${NC} Review converged; PR ready: $AGENT_LOOP_PR_URL ($final_sha)"
 }
 
 echo -e "${CYAN}→${NC} agent-loop repository: $PROJECT_DIR"
@@ -574,8 +1549,9 @@ echo "   Dry run: $DRY_RUN"
 echo "   Hooks:"
 echo "     setup: ${SETUP_HOOK:-<none>}"
 echo "     validation: ${VALIDATION_HOOK:-<none>}"
-echo "     Claude review: $CLAUDE_REVIEW_HOOK"
-echo "     Codex review: $CODEX_REVIEW_HOOK"
+echo "     Claude review hook: $CLAUDE_REVIEW_HOOK"
+echo "     Codex review hook: $CODEX_REVIEW_HOOK"
+echo "     convergence cap: $REVIEW_MAX_ROUNDS round(s)"
 
 ITERATION=0
 while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
@@ -595,16 +1571,23 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     proposed_log_dir="$LOG_ROOT/$safe_repo-issue-$SELECTED_ID-$RUN_TAG"
 
     echo -e "${CYAN}▶${NC} Issue #$SELECTED_ID ($ITERATION/$MAX_ITERATIONS)"
-    if ! check_dependencies "$SELECTED_BODY"; then
-        echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID blocked by dependency gate"
+    dependency_status=0
+    check_dependencies "$SELECTED_BODY" || dependency_status=$?
+    if [ "$dependency_status" -ne 0 ]; then
+        if [ "$dependency_status" -eq 1 ]; then
+            echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID blocked by dependency gate"
+            ACTIVE_WORKTREE=""
+            continue
+        fi
+        echo "dependency gate failed for issue #$SELECTED_ID" >&2
         ACTIVE_WORKTREE=""
-        continue
+        exit 1
     fi
     echo "   Worktree: $ACTIVE_WORKTREE"
     echo "   Branch: $branch"
     echo "   Setup hook: ${SETUP_HOOK:-<none>}"
-    echo "   Review order: Claude deep review -> Codex review"
-    echo "   Publication: push $branch; PR base $BASE_BRANCH"
+    echo "   Publication: open draft PR before review; PR base $BASE_BRANCH"
+    echo "   Review order: configured Codex hook -> configured Claude hook -> repeat only after material fixes"
 
     if [ "$DRY_RUN" = true ]; then
         echo -e "${GREEN}✓${NC} Dry-run only: no claim, worktree, hook, push, or PR mutation"
@@ -626,20 +1609,49 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         exit 1
     fi
 
-    claim_issue "$SELECTED_ID" || {
+    claim_status=0
+    claim_issue "$SELECTED_ID" || claim_status=$?
+    if [ "$claim_status" -ne 0 ]; then
         echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID could not be claimed; skipping"
         rmdir "$proposed_log_dir" 2>/dev/null || true
         ACTIVE_WORKTREE=""
+        [ "$claim_status" -eq 2 ] && exit 1
         continue
-    }
+    fi
+
+    refreshed_status=0
+    ready_queue_contains_issue "$SELECTED_ID" || refreshed_status=$?
+    if [ "$refreshed_status" -eq 0 ] && [ "$DEPENDENCY_GATE" = merged-to-base ]; then
+        check_dependencies "$SELECTED_BODY" || refreshed_status=$?
+    fi
+    if [ "$refreshed_status" -ne 0 ]; then
+        if [ "$refreshed_status" -eq 1 ]; then
+            echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID is no longer ready after claim verification"
+        else
+            echo "could not re-evaluate issue #$SELECTED_ID after claim verification" >&2
+        fi
+        if [ "$SELECTED_ASSIGNED" = false ] && ! rollback_new_claim "$SELECTED_ID"; then
+            rmdir "$proposed_log_dir" 2>/dev/null || true
+            ACTIVE_WORKTREE=""
+            exit 1
+        fi
+        rmdir "$proposed_log_dir" 2>/dev/null || true
+        ACTIVE_WORKTREE=""
+        [ "$refreshed_status" -eq 2 ] && exit 1
+        continue
+    fi
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would
     # otherwise target the integration branch and bypass local review.
-    git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "origin/$BASE_BRANCH"
+    git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "$BASE_REMOTE_REF"
     cd "$ACTIVE_WORKTREE"
 
     export AGENT_LOOP_ISSUE_ID="$SELECTED_ID"
+    # Ordinary gh commands are masked, so the worker cannot fetch its own issue
+    # over the API. Hand the title and body to it directly instead.
+    export AGENT_LOOP_ISSUE_TITLE="$SELECTED_TITLE"
+    export AGENT_LOOP_ISSUE_BODY="$SELECTED_BODY"
     export AGENT_LOOP_BASE_BRANCH="$BASE_BRANCH"
     export AGENT_LOOP_BRANCH="$branch"
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"
@@ -652,46 +1664,81 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             recovery_message "Setup hook failed."
             exit 1
         }
-        [ -z "$(git status --porcelain)" ] || { recovery_message "Setup hook dirtied tracked files."; exit 1; }
+        setup_status="$(git status --porcelain)" || { recovery_message "Could not inspect Git status after setup."; exit 1; }
+        [ -z "$setup_status" ] || { recovery_message "Setup hook left Git-visible worktree changes."; exit 1; }
+        require_issue_branch_head || { recovery_message "Setup hook moved HEAD away from the issue branch."; exit 1; }
+        setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup."; exit 1; }
+        [ "$setup_after_sha" = "$start_sha" ] || { recovery_message "Setup hook changed HEAD; setup hooks must not commit."; exit 1; }
     fi
 
     run_worker "$start_sha" || exit 1
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
 
-    git fetch origin "$BASE_BRANCH" --quiet
-    export AGENT_LOOP_REVIEW_BASE="origin/$BASE_BRANCH"
-    run_bounded_hook "fresh local Claude deep grill" "$CLAUDE_REVIEW_HOOK" "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/claude-review.log" || {
-        recovery_message "Claude review hook failed."
-        exit 1
-    }
-    [ -z "$(git status --porcelain)" ] || { recovery_message "Claude review left uncommitted findings/fixes."; exit 1; }
-    run_validation "claude-review" || { recovery_message "Validation after Claude review failed."; exit 1; }
-
-    git fetch origin "$BASE_BRANCH" --quiet
-    run_bounded_hook "local Codex review against origin/$BASE_BRANCH" "$CODEX_REVIEW_HOOK" "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/codex-review.log" || {
-        recovery_message "Codex review hook failed."
-        exit 1
-    }
-    [ -z "$(git status --porcelain)" ] || { recovery_message "Codex review left uncommitted findings/fixes."; exit 1; }
-    run_validation "codex-review" || { recovery_message "Validation after Codex review failed."; exit 1; }
-
-    echo -e "${BLUE}▸${NC} Fresh-base integration"
-    git fetch origin "$BASE_BRANCH" --quiet
-    if ! git merge --no-edit "origin/$BASE_BRANCH"; then
+    echo -e "${BLUE}▸${NC} Initial fresh-base integration"
+    fetch_base
+    initial_base_sha="$(git rev-parse "$BASE_REMOTE_REF")"
+    if ! git merge --no-edit "$initial_base_sha"; then
         git merge --abort >/dev/null 2>&1 || true
-        recovery_message "Fresh-base merge conflicted; original commits were preserved."
+        recovery_message "Initial fresh-base merge conflicted; original commits were preserved."
         exit 1
     fi
-    inspect_publication_diff || { recovery_message "Fresh-base publication diff inspection failed."; exit 1; }
-    run_validation "fresh-base" || { recovery_message "Fresh-base validation failed."; exit 1; }
-    [ -z "$(git status --porcelain)" ] || { recovery_message "Fresh-base validation dirtied the worktree."; exit 1; }
+    inspect_publication_diff "$initial_base_sha" || {
+        recovery_message "Initial publication diff inspection failed."
+        exit 1
+    }
+    run_validation "initial-fresh-base" || {
+        recovery_message "Initial fresh-base validation failed."
+        exit 1
+    }
 
-    if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-        recovery_message "Remote branch existed before wrapper publication; a worker or hook may have pushed."
+    publication_readiness_status=0
+    verify_issue_for_publication "$SELECTED_ID" || publication_readiness_status=$?
+    if [ "$publication_readiness_status" -ne 0 ]; then
+        recovery_message "Issue requirements or readiness changed before draft PR creation; completed work was preserved and the claim was retained."
         exit 1
     fi
-    publish_issue "$SELECTED_ID" "$branch"
+    if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+        recovery_message "Remote branch existed before draft PR creation."
+        exit 1
+    fi
+    initial_pr_sha="$(git rev-parse HEAD)"
+    open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
+
+    export AGENT_LOOP_REVIEW_BASE="$BASE_REMOTE_REF"
+    REVIEW_ROUNDS_USED=0
+    REVIEWED_BASE_SHA=""
+    CONVERGED_CODEX_OUTCOME_FILE=""
+    CONVERGED_CODEX_OUTCOME_SIGNATURE=""
+    CONVERGED_CLAUDE_OUTCOME_FILE=""
+    CONVERGED_CLAUDE_OUTCOME_SIGNATURE=""
+    # Keep this as a simple command instead of placing the function in an `||`
+    # context. Bash disables `errexit` throughout a function invoked from an
+    # AND/OR list, which would let an unguarded fetch or git query fail open.
+    run_review_convergence
+
+    inspect_publication_diff "$REVIEWED_BASE_SHA" || {
+        recovery_message "Final reviewed diff inspection failed."
+        exit 1
+    }
+    run_validation "final-reviewed-head" || {
+        recovery_message "Final reviewed-head validation failed."
+        exit 1
+    }
+    attest_review_head "after final reviewed-head validation" "$REVIEWED_BASE_SHA" || {
+        recovery_message "Final reviewed-head attestation failed."
+        exit 1
+    }
+    verify_converged_review_outcomes || exit 1
+    verify_local_review_threads || exit 1
+
+    publication_readiness_status=0
+    verify_issue_for_publication "$SELECTED_ID" || publication_readiness_status=$?
+    if [ "$publication_readiness_status" -ne 0 ]; then
+        recovery_message "Issue requirements or readiness changed before publication; completed work was preserved and the claim was retained."
+        exit 1
+    fi
+    finalize_pr
 
     cd "$PROJECT_DIR"
     git worktree remove "$ACTIVE_WORKTREE"
