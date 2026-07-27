@@ -1,110 +1,88 @@
 ---
 name: deepgrill
-description: High-fidelity pre-push review chain — runs /refactorpass + /grill deep (full agent matrix). Use on complex or high-risk changes (auth/crypto, schema migrations, sync-propagating work, large refactors, anything that ships to consumers).
-argument-hint: (none — operates on current branch's working tree + unpushed commits)
+description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /refactorpass plus /grill deep. Use on complex or high-risk changes such as auth/crypto, schema migrations, sync-propagating work, and large refactors.
+argument-hint: (optional PR number)
 ---
 
-# /deepgrill — pre-push deep chain
+# /deepgrill — PR-first deep chain
 
-You are running the high-fidelity pre-push review chain for a change that warrants more than the lean default. This is the manual escape hatch for the cases where the trimmed defaults aren't enough: load-bearing changes, sync-propagating updates, anything in `auth/`, `crypto/`, schema migrations, large refactors (>20 files), or skills/scripts/workflows that ship to consumer repos.
+Run `/refactorpass` and `/grill deep` against an open draft PR and its durable
+local-review ledger.
 
-`/deepgrill` is a thin orchestrator — it runs the standard `/refactorpass` (single-pass) and `/grill deep` (full agent matrix), then emits the right post-push instruction so the developer follows up with `/reviewit <pr> deep`.
-
-## When to use this instead of the default chain
-
-The default (`/refactorpass` → `/grill` → push → `/reviewit <pr>`) is right for ~80% of PRs. Reach for `/deepgrill` when **any** of these apply:
-
-- Touches `.claude/skills/**`, `scripts/sync*`, `.github/workflows/**` (sync-propagating)
-- Touches authentication, crypto, secret handling, sensitive-data paths
-- Schema migration or data-shape change
-- Large refactor (>20 files modified or >500 lines net)
-- Bug fix where the prior incident report (or commit graph) shows recurrence in the same area
-- User explicitly asked "review this carefully" / "this is high-risk" / similar
-
-If none of those apply, run the default chain instead — `/deepgrill` is ~3× the token cost.
-
----
+Use this path for `.claude/skills/**`, sync scripts, GitHub Actions, auth,
+crypto, secrets, sensitive-data paths, schema/data-shape changes, large
+refactors, recurring defects, or an explicit high-risk review request.
 
 ## Phase 0: Pre-flight
 
-### 0a. Context-window check (do this BEFORE anything else)
+### Context-window check
 
-`/deepgrill` is the most cache-hungry skill in the chain — it runs `/refactorpass` (`/simplify`) and then `/grill deep` which spawns up to six adversarial sub-agents in parallel. Each sub-agent inherits a slice of this session's prompt-cache state. If the current session has already been heavily used for feature implementation, the sub-agents start with sharply reduced working windows and the whole chain runs slower and more expensively.
+This chain invokes `/simplify` and up to six adversarial sub-agents. If this
+session authored the change or carries dense implementation context, stop and
+recommend a fresh Claude session. A larger context window does not relax this
+gate: authoring rationale anchors the reviewer and is expensive to fan out. See
+[`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 
-Before proceeding, assess honestly:
+Proceed in the current session only after an explicit override.
 
-- Has this session been writing/editing the feature about to be reviewed? Long conversation, many tool calls, dense edit history?
-- Is the conversation about to brush against auto-compaction territory?
+### PR-first boundary
 
-If **either is yes**, STOP and tell the user:
-
-> Your context is heavy from the implementation work. Start a new Claude session and run `/deepgrill` there — `/deepgrill` spawns up to six parallel sub-agents and is the chain that benefits most from cache headroom. A fresh session makes the chain materially cheaper.
-
-Do not proceed in the current session unless the user explicitly overrides.
-
-**A larger context window is not a reason to relax this gate** — it is the strongest case for keeping it. `/deepgrill` is the longest chain here, so an authoring session that runs it drags the entire implementation history through every pass; that routinely reached 700–800k tokens of context that was almost never useful to the review and sometimes actively unhelpful. See [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
-
-### 0b. Standard pre-flight
-
-1. **Verify on a feature branch** (not `main`/`master`/`staging`). If on a protected branch, refuse and ask the user to `git switch -c feat/...`.
-
-2. **Verify there's something to grill** — `git rev-parse @{u}` matching HEAD with no working-tree diff means nothing local to review. Tell the user, exit cleanly.
-
-3. **Triviality detection**: same heuristic as the underlying skills. If the diff is docs/config-only, tell the user `/deepgrill` adds no value over the default skip path and exit.
-
----
+1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
+2. Require a clean, committed feature branch, not `main`, `master`, or
+   `staging`.
+3. Reuse the open PR whose head is the branch. If none exists, push normally
+   and open a draft PR before invoking a review lane.
+4. Require local HEAD, remote head, and PR head to match.
+5. Record the PR number and exact base SHA. Read every prior review thread,
+   including resolved and outdated threads.
+6. Apply the docs/config-only skip, per the ledger's changeset
+   classification.
 
 ## Phase 1: Refactor pass
 
-Invoke via the Skill tool: `Skill(skill="refactorpass")`.
-
-This runs `/simplify` once and commits the result. Wait for it to return.
-
-> ⚠️ **Do not stop after `/refactorpass` returns.** The sub-skill's prompt is self-contained; when control returns, immediately proceed to Phase 2. The chain is not done until Phase 3.
-
----
+Invoke `Skill(skill="refactorpass", args="<pr-number>")` and wait for it to
+return. Do not stop when the sub-skill returns.
 
 ## Phase 2: Deep grill
 
-Invoke via the Skill tool: `Skill(skill="grill", args="deep")`.
+Reload the PR head and ledger, then invoke
+`Skill(skill="grill", args="<pr-number> deep")`.
 
-This runs the full agent matrix (`code-reviewer`, `silent-failure-hunter`, `type-design-analyzer`, `comment-analyzer`, `pr-test-analyzer`, `security-review`) — picking the agents whose signals appear in the diff. The user verifies findings interactively per `/grill`'s standard Phase 4.
+The deep matrix uses the relevant lenses from code review, silent failures,
+type/API design, comments/docs, tests, security, and conditional
+tenant-coupling. Keep the matrix bounded per `MODEL_NOTES.md`.
 
-> ⚠️ **Do not stop after `/grill deep` returns.** Same orchestration trap. Proceed to Phase 3.
+Every confirmed finding must be posted inline before editing. A completed fix
+must be pushed, replied to with its SHA, validation, and structured disposition,
+then resolved. When the combined hook committed, the final `/grill` lane posts
+the completion marker for the enclosing before/final head pair.
 
----
-
-## Phase 3: Hand-off message
+## Phase 3: Handoff
 
 Print:
 
-```
-✅ /deepgrill complete (refactor pass + deep grill).
+```text
+✅ /deepgrill complete on PR #<pr-number>.
+- Reviewed head: <sha>
+- Findings: <posted/replied/resolved counts>
+- Review depth: <agents run>
+- Classification: <clean | minor | material>
 
-Next steps for the deep chain:
-  git push
-  gh pr create --title "..." --body "..."
-  /reviewit <pr-number> deep    # Gemini + Copilot 4-iter loop with early-exit, then a final /deepgrill on the PR
-
-ℹ️  Run /reviewit deep in a FRESH Claude session.
-   This session's context has absorbed refactorpass output, deep-grill sub-agent findings,
-   and any fix commits — cache pressure is high. /reviewit deep runs up to four review iterations
-   and a final /deepgrill against the PR; each step needs cache headroom. A fresh session for
-   /reviewit deep makes the full chain materially cheaper.
+Next local step:
+  If this pass made a material fix, restart at /codex-review <pr-number>.
+  Otherwise this completes the Claude half of the current local round.
 ```
 
-Do not push or open the PR — the developer takes the final action so they can compose the PR title/body deliberately.
+When the hosted fallback was explicitly selected, hand off to
+`/reviewit <pr-number> deep` instead.
 
----
+## Boundaries
 
-## What this skill does NOT do
-
-- **Does not push.** Same as `/grill` — the developer pushes after their own final review.
-- **Does not invoke `/reviewit`.** Post-push review is a separate concern; the deep variant is `/reviewit <pr> deep`.
-- **Does not silently override the user's verifications in `/grill`.** Each finding still requires fix/defer/ignore from the user.
-
----
+- Do not force-push or merge.
+- Do not invoke hosted reviewers on the local convergence path.
+- Do not silently override the user's finding dispositions.
 
 ## Source of truth
 
-This skill lives upstream at `.claude/skills/deepgrill/`. Synced to consumer repos via the sync mechanism. Edits in a consumer will be overwritten — make changes upstream.
+This skill lives upstream at `.claude/skills/deepgrill/` and is synced to
+consumer repos.

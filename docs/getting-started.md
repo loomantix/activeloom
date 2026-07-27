@@ -107,7 +107,7 @@ Subsequent daily runs only carry actual upstream changes — usually empty.
 
 ## 6. (Optional) Reference the synced `.claude/` docs from the consumer's `CLAUDE.md`
 
-The sync brings `.claude/REVIEW_WORKFLOW.md` and `.claude/MODEL_NOTES.md` into the consumer. For Claude sessions to actually follow them, add references in the consumer's `CLAUDE.md`:
+The sync brings `.claude/REVIEW_WORKFLOW.md`, `.claude/MODEL_NOTES.md`, and `.claude/references/local-review-ledger.md` into the consumer. The ledger is loaded by the review skills themselves, so it needs no `CLAUDE.md` entry — but the other two do. For Claude sessions to actually follow them, add references in the consumer's `CLAUDE.md`:
 
 ```markdown
 ## AI review workflow

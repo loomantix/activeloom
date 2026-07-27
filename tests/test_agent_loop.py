@@ -83,7 +83,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write_executable(
         gh,
         r"""#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 state = pathlib.Path(os.environ['AGENT_STATE_DIR'])
 with (state / 'gh.log').open('a') as handle:
@@ -107,18 +107,112 @@ elif args[:2] == ['issue', 'view']:
         print(json.dumps(issue))
 elif args[:2] == ['issue', 'edit']:
     pass
-elif args[:2] == ['pr', 'view']:
-    number = args[2]
-    row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
-    if row:
-        print('\t'.join(str(value) for value in row))
+elif args[:2] == ['repo', 'view']:
+    if 'owner' in ' '.join(args):
+        print('fixture')
+    elif 'name' in ' '.join(args):
+        print('consumer')
     else:
-        sys.exit(1)
+        print('fixture/consumer')
+elif args[:2] == ['pr', 'view']:
+    joined = ' '.join(args)
+    if '--json number' in joined:
+        print('1')
+    elif 'baseRefOid' in joined:
+        branch = (state / 'pr-branch').read_text()
+        remote_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        base_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        # A file overrides the env var so a hook can move the base mid-run.
+        base_oid_file = state / 'pr-base-oid'
+        if base_oid_file.exists():
+            base_head = base_oid_file.read_text().strip()
+        print('\t'.join([
+            os.environ.get('AGENT_PR_HEAD_OID', remote_head),
+            os.environ.get('AGENT_PR_HEAD_REF_NAME', branch),
+            os.environ.get('AGENT_PR_BASE_REF_NAME', 'main'),
+            os.environ.get('AGENT_PR_BASE_OID', base_head),
+            os.environ.get('AGENT_PR_STATE', 'OPEN'),
+            os.environ.get('AGENT_PR_IS_DRAFT', 'true'),
+        ]))
+    elif 'headRefOid' in joined:
+        branch = (state / 'pr-branch').read_text()
+        remote_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        print(os.environ.get('AGENT_PR_HEAD_OID', remote_head))
+    else:
+        number = args[2]
+        row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
+        if row:
+            print('\t'.join(str(value) for value in row))
+        else:
+            sys.exit(1)
 elif args[:2] == ['pr', 'create']:
     if os.environ.get('AGENT_PR_CREATE_FAIL'):
         print('pr create failed (stub)', file=sys.stderr)
         sys.exit(1)
+    branch = subprocess.run(
+        ['git', 'branch', '--show-current'], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (state / 'pr-branch').write_text(branch)
     print('https://example.invalid/pr/1')
+elif args[:2] == ['pr', 'edit']:
+    if os.environ.get('AGENT_PR_EDIT_FAIL'):
+        print('pr edit failed (stub)', file=sys.stderr)
+        sys.exit(1)
+    (state / 'pr-edited').touch()
+elif args[:2] == ['pr', 'ready']:
+    if os.environ.get('AGENT_PR_READY_FAIL'):
+        print('pr ready failed (stub)', file=sys.stderr)
+        sys.exit(1)
+    (state / 'pr-ready').touch()
+elif args[:2] == ['api', 'graphql']:
+    if os.environ.get('AGENT_GRAPHQL_PARTIAL'):
+        # A fetch that fails after emitting a parseable but incomplete page.
+        print(json.dumps([{'data': {'repository': {'pullRequest': {
+            'reviewThreads': {'nodes': [], 'pageInfo': {
+                'hasNextPage': True, 'endCursor': 'cursor'
+            }}
+        }}}}]))
+        sys.exit(1)
+    threads_file = state / 'review-threads.json'
+    if threads_file.exists():
+        nodes = json.loads(threads_file.read_text())
+    else:
+        nodes = json.loads(os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]'))
+    default_author = os.environ.get('AGENT_THREAD_AUTHOR', 'tester')
+    for node in nodes:
+        for comment in node.get('comments', {}).get('nodes', []):
+            comment.setdefault('author', {'login': default_author})
+    print(json.dumps([{'data': {'repository': {'pullRequest': {
+        'reviewThreads': {'nodes': nodes, 'pageInfo': {
+            'hasNextPage': False, 'endCursor': None
+        }}
+    }}}}]))
+elif args[:2] == ['api', 'repos/{owner}/{repo}/issues/1/comments'] and '-X' in args:
+    body = args[args.index('-f') + 1]
+    assert body.startswith('body='), body
+    with (state / 'pr-comments.log').open('a') as handle:
+        handle.write(body[len('body='):].replace('\n', ' ') + '\n')
+elif args[0] == 'api' and args[1].startswith('repos/{owner}/{repo}/'):
+    # Clean-pass attestation lookup: issue comments carry the markers this
+    # fixture's hooks post; the review-comment and review endpoints are empty.
+    if args[1].endswith('issues/1/comments'):
+        log = state / 'pr-comments.log'
+        if log.exists():
+            author = os.environ.get('AGENT_COMMENT_AUTHOR', 'tester')
+            comments = [
+                {'body': line, 'user': {'login': author}}
+                for line in log.read_text().splitlines()
+            ]
+            print(json.dumps(comments))
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
     sys.exit(2)
@@ -138,17 +232,56 @@ def _issue(number: int, body: str = "", *, assigned: bool = False) -> dict[str, 
     }
 
 
+def _clean_pass_hook(engine: str) -> str:
+    return (
+        f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
+        "printf '%s\\n' \"$AGENT_LOOP_REVIEW_BASE\" >> "
+        "\"$AGENT_STATE_DIR/review-bases.log\"; "
+        "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
+        f'-f body="<!-- local-review-pass:v1 engine={engine} '
+        'round=$AGENT_LOOP_REVIEW_ROUND head=$AGENT_LOOP_PR_HEAD_SHA -->"'
+    )
+
+
+def _committed_review_hook(engine: str, classification: str = "minor") -> str:
+    return (
+        f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
+        f"printf '{engine} fix\\n' > \"review-{engine}-$AGENT_LOOP_REVIEW_ROUND.txt\"; "
+        f"git add \"review-{engine}-$AGENT_LOOP_REVIEW_ROUND.txt\"; "
+        f"git commit -m 'fix: {engine} review'; "
+        "after=$(git rev-parse HEAD); "
+        'git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH"; '
+        f"printf '{classification}\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; "
+        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
+        "--arg round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg before \"$AGENT_LOOP_PR_HEAD_SHA\" --arg after \"$after\" "
+        '\'[{isResolved:true,comments:{nodes:['
+        '{body:("<!-- local-review:v1 engine="+$engine+" round="+$round+" head="+$before+" fingerprint=fixture-"+$engine+" -->\\nFinding"),databaseId:1,author:{login:"tester"}},'
+        '{body:("<!-- local-review-disposition:v1 engine="+$engine+" round="+$round+" head="+$after+" fingerprint=fixture-"+$engine+" outcome=fixed -->\\nFixed in `"+$after+"`.\\n\\nValidation: fixture passed."),databaseId:2,author:{login:"tester"}}'
+        '],pageInfo:{hasNextPage:false}}}]\' '
+        '> "$AGENT_STATE_DIR/review-threads.json"; '
+        "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
+        '-f body="<!-- local-review-complete:v1 engine='
+        f"{engine} round=$AGENT_LOOP_REVIEW_ROUND "
+        'before=$AGENT_LOOP_PR_HEAD_SHA head=$after -->"'
+    )
+
+
 def _config(tmp_path: Path, **overrides: str | int) -> str:
     values: dict[str, str | int] = {
         "base_branch": "main",
         "setup_hook": "printf 'setup\\n' >> \"$EVENT_LOG\"",
         "validation_hook": "printf 'validate\\n' >> \"$EVENT_LOG\"",
-        "claude_review_hook": "printf 'claude\\n' >> \"$EVENT_LOG\"",
-        "codex_review_hook": "printf 'codex\\n' >> \"$EVENT_LOG\"",
+        # A conforming no-fix review pass: it reviews, commits nothing, and
+        # attests the exact head it read.
+        "claude_review_hook": _clean_pass_hook("claude"),
+        "codex_review_hook": _clean_pass_hook("codex"),
         "worker_hook": "printf 'worker\\n' >> \"$EVENT_LOG\"; printf 'done\\n' > result.txt; git add result.txt; git commit -m 'fix: worker'",
         "worker_retries": 1,
         "worker_timeout_seconds": 5,
         "hook_timeout_seconds": 10,
+        "review_contract_version": 2,
+        "review_max_rounds": 4,
         "retry_on_timeout": "true",
         "retry_delay_seconds": 0,
         "dependency_gate": "ready",
@@ -272,7 +405,7 @@ def test_dry_run_shows_plan_without_mutation(
     )
     assert result.returncode == 0, result.stderr
     assert "Setup hook:" in result.stdout
-    assert "Review order: Claude deep review -> Codex review" in result.stdout
+    assert "Review order: draft PR -> Codex -> Claude" in result.stdout
     assert "Publication:" in result.stdout
     assert "no claim, worktree, hook, push, or PR mutation" in result.stdout
     assert not worktrees.exists()
@@ -294,11 +427,398 @@ def test_per_issue_worktrees_and_hook_order(
     assert paths[0] != paths[1]
     assert all(not Path(path).exists() for path in paths)
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
-    expected = ["setup", "worker", "validate", "claude", "validate", "codex", "validate", "validate"]
+    expected = [
+        "setup",
+        "worker",
+        "validate",
+        "validate",
+        "codex",
+        "validate",
+        "claude",
+        "validate",
+        "validate",
+    ]
     assert events == expected * 2
     remote_branches = _run_git("for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]).stdout
     assert "issue-4" in remote_branches
     assert "issue-5" in remote_branches
+
+
+def test_marked_review_thread_requires_reply_and_resolution(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    thread = {
+        "isResolved": False,
+        "comments": {
+            "nodes": [
+                {
+                    "body": (
+                        "<!-- local-review:v1 engine=codex round=1 "
+                        "head=abc fingerprint=fixture -->\nFinding"
+                    ),
+                    "databaseId": 1,
+                }
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    result = _run(
+        consumer,
+        ["--issues", "41"],
+        issues=[_issue(41)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps([thread])},
+    )
+    assert result.returncode != 0
+    assert "reply and explicit resolution" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
+    assert "issue-41" in remote_branches
+
+
+def test_silent_review_pass_without_attestation_is_not_convergence(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # A hook that exits 0 without committing or posting anything is exactly what a
+    # misconfigured or silently declining reviewer looks like. Convergence must
+    # not be satisfied by an empty thread list plus a successful exit code.
+    result = _run(
+        consumer,
+        ["--issues", "43"],
+        issues=[_issue(43)],
+        config=_config(tmp_path, codex_review_hook="printf 'codex\\n' >> \"$EVENT_LOG\""),
+    )
+    assert result.returncode != 0
+    assert "posted no clean-pass attestation" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    assert (consumer[3] / "pr-branch").exists()
+
+
+def test_attestation_must_match_the_reviewed_head(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    stale = (
+        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
+        "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
+        '-f body="<!-- local-review-pass:v1 engine=codex '
+        'round=$AGENT_LOOP_REVIEW_ROUND head=0000000000000000000000000000000000000000 -->"'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "44"],
+        issues=[_issue(44)],
+        config=_config(tmp_path, codex_review_hook=stale),
+    )
+    assert result.returncode != 0
+    assert "posted no clean-pass attestation" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_clean_pass_attestation_must_be_from_local_reviewer(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "49"],
+        issues=[_issue(49)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_COMMENT_AUTHOR": "untrusted-user"},
+    )
+    assert result.returncode != 0
+    assert "posted no clean-pass attestation" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_committed_review_requires_ledger_and_final_lane_evidence(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    hook = (
+        "printf changed > silent-fix.txt; git add silent-fix.txt; "
+        "git commit -m 'fix: silent review edit'; "
+        "after=$(git rev-parse HEAD); "
+        'git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH"; '
+        "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; "
+        "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
+        '-f body="<!-- local-review-complete:v1 engine=codex '
+        'round=$AGENT_LOOP_REVIEW_ROUND before=$AGENT_LOOP_PR_HEAD_SHA '
+        'head=$after -->"'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "52"],
+        issues=[_issue(52)],
+        config=_config(tmp_path, codex_review_hook=hook),
+    )
+    assert result.returncode != 0
+    assert "committed without a resolved same-round finding" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_committed_review_with_structured_evidence_can_converge(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "53"],
+        issues=[_issue(53)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=_committed_review_hook("codex"),
+        ),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (consumer[3] / "pr-ready").exists()
+
+
+@pytest.mark.parametrize(
+    ("extra_env", "issue"),
+    [
+        ({"AGENT_PR_BASE_REF_NAME": "release"}, 54),
+        ({"AGENT_PR_IS_DRAFT": "false"}, 55),
+    ],
+)
+def test_review_requires_immutable_open_draft_pr_boundary(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    extra_env: dict[str, str],
+    issue: int,
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", str(issue)],
+        issues=[_issue(issue)],
+        config=_config(tmp_path),
+        extra_env=extra_env,
+    )
+    assert result.returncode != 0
+    assert "draft PR review boundary diverged" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_review_hooks_receive_same_literal_base_sha(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "50"],
+        issues=[_issue(50)],
+        config=_config(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    bases = (consumer[3] / "review-bases.log").read_text(encoding="utf-8").splitlines()
+    assert len(bases) == 2
+    assert bases[0] == bases[1]
+    assert re.fullmatch(r"[0-9a-f]{40}", bases[0])
+
+
+def test_failed_ledger_fetch_is_not_a_verified_ledger(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The thread query exits nonzero after emitting a parseable but incomplete
+    # page. Without an explicit status check the jq predicate would accept it.
+    result = _run(
+        consumer,
+        ["--issues", "45"],
+        issues=[_issue(45)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_GRAPHQL_PARTIAL": "1"},
+    )
+    assert result.returncode != 0
+    assert "reply and explicit resolution" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_resolved_thread_needs_a_reply_after_its_latest_marker(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # A reused fingerprint thread already holding a finding and its reply; a new
+    # marker is appended last and the thread resolved with no disposition for it.
+    thread = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {"body": "<!-- local-review:v1 engine=codex round=1 head=abc fingerprint=fixture -->\nFirst", "databaseId": 1},
+                {"body": "Fixed in deadbeef; validation passed.", "databaseId": 2},
+                {"body": "<!-- local-review:v1 engine=codex round=2 head=def fingerprint=fixture -->\nSecond", "databaseId": 3},
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    result = _run(
+        consumer,
+        ["--issues", "46"],
+        issues=[_issue(46)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps([thread])},
+    )
+    assert result.returncode != 0
+    assert "reply and explicit resolution" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_resolved_thread_needs_reply_from_local_reviewer(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    thread = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {
+                    "body": "<!-- local-review:v1 engine=codex round=1 head=abc fingerprint=fixture -->\nFinding",
+                    "databaseId": 1,
+                    "author": {"login": "tester"},
+                },
+                {
+                    "body": "Not a local-review disposition.",
+                    "databaseId": 2,
+                    "author": {"login": "untrusted-user"},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    result = _run(
+        consumer,
+        ["--issues", "51"],
+        issues=[_issue(51)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps([thread])},
+    )
+    assert result.returncode != 0
+    assert "reply and explicit resolution" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_unpaginated_thread_comments_fail_closed(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The marker may sit past the first comment page, so a thread whose comments
+    # are truncated cannot be cleared — even though no marker is visible on it.
+    thread = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [{"body": "unrelated discussion", "databaseId": 1}],
+            "pageInfo": {"hasNextPage": True},
+        },
+    }
+    result = _run(
+        consumer,
+        ["--issues", "47"],
+        issues=[_issue(47)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps([thread])},
+    )
+    assert result.returncode != 0
+    assert "reply and explicit resolution" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_validation_hook_dirt_blocks_ready_and_preserves_the_worktree(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Head attestation compares SHAs only, so an uncommitted validation write
+    # would otherwise be published-as-absent and then force-removed.
+    validation = (
+        "printf 'validate\\n' >> \"$EVENT_LOG\"; "
+        '[ ! -e "$AGENT_LOOP_PR_URL_MARK" ] || printf regenerated > seed.txt'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "48"],
+        issues=[_issue(48)],
+        config=_config(tmp_path, validation_hook=validation),
+        extra_env={"AGENT_LOOP_PR_URL_MARK": str(consumer[3] / "pr-branch")},
+    )
+    assert result.returncode != 0
+    assert "left uncommitted changes" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    worktrees = list((tmp_path / "worktrees").glob("*"))
+    assert worktrees, "the worktree holding the uncommitted work must be preserved"
+
+
+def test_base_movement_after_convergence_is_named_not_a_bare_abort(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Convergence proves base ancestry, not that the base tip is unchanged, and
+    # the final reviewed-head validation runs between the two checks. A base
+    # commit landing in that window must say so — an unexplained abort on a
+    # converged PR invites a manual `gh pr ready`.
+    validation = (
+        "printf 'validate\\n' >> \"$EVENT_LOG\"; "
+        '[ ! -e "$AGENT_LOOP_LOG_DIR/final-reviewed-head-validation.log" ] || '
+        "printf '%s\\n' \"$AGENT_MOVED_BASE_OID\" > \"$AGENT_STATE_DIR/pr-base-oid\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "51"],
+        issues=[_issue(51)],
+        config=_config(tmp_path, validation_hook=validation),
+        extra_env={"AGENT_MOVED_BASE_OID": "b" * 40},
+    )
+    assert result.returncode != 0
+    assert "base advanced after review converged" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    assert (consumer[3] / "pr-branch").exists(), "the draft PR must be preserved"
+    assert list((tmp_path / "worktrees").glob("*")), "the worktree must be preserved"
+
+
+def test_pr_body_rewrite_failure_still_marks_the_converged_pr_ready(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The final body rewrite is reporting; every claim in it was already proven
+    # by the convergence gates. Aborting on it would strand a fully reviewed PR
+    # in draft — the state an operator "fixes" with a manual `gh pr ready` that
+    # skips the boundary check.
+    result = _run(
+        consumer,
+        ["--issues", "52"],
+        issues=[_issue(52)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_PR_EDIT_FAIL": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert (consumer[3] / "pr-ready").exists()
+    assert "Could not update the PR body" in result.stderr
+
+
+def test_pr_ready_failure_is_named_so_it_is_not_silently_left_draft(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "53"],
+        issues=[_issue(53)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_PR_READY_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    assert "'gh pr ready' failed" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_review_round_cap_preserves_draft_without_marking_ready(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = _committed_review_hook("codex", "material")
+    result = _run(
+        consumer,
+        ["--issues", "42"],
+        issues=[_issue(42)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            review_max_rounds=2,
+        ),
+    )
+    assert result.returncode != 0
+    assert "did not converge within 2 round(s)" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    assert (consumer[3] / "pr-branch").exists()
 
 
 @pytest.mark.parametrize(
@@ -399,7 +919,16 @@ def test_fresh_base_is_integrated_and_validated_before_publication(
         updater,
         """#!/usr/bin/env bash
 set -e
+attest() {
+  gh api repos/{owner}/{repo}/issues/1/comments -X POST \
+    -f body="<!-- local-review-pass:v1 engine=codex round=$AGENT_LOOP_REVIEW_ROUND head=$AGENT_LOOP_PR_HEAD_SHA -->"
+}
 clone="$AGENT_STATE_DIR/base-clone"
+if [ -d "$clone/.git" ]; then
+  printf 'codex\\n' >> "$EVENT_LOG"
+  attest
+  exit 0
+fi
 git clone "$REMOTE_PATH" "$clone" >/dev/null 2>&1
 git -C "$clone" config user.name Test
 git -C "$clone" config user.email test@example.invalid
@@ -408,6 +937,7 @@ git -C "$clone" add fresh-base.txt
 git -C "$clone" commit -m 'chore: advance base' >/dev/null
 git -C "$clone" push origin main >/dev/null
 printf 'codex\\n' >> "$EVENT_LOG"
+attest
 """,
     )
     result = _run(
@@ -423,6 +953,11 @@ printf 'codex\\n' >> "$EVENT_LOG"
     ).stdout.strip()
     published = _run_git("show", f"{branch}:fresh-base.txt", cwd=consumer[1]).stdout
     assert published == "fresh\n"
+    # The base advanced during round 1, so round 2 merges it before either engine
+    # runs and both then review that merged head. That is a complete pass over the
+    # final tree, so it must converge in round 2 rather than spending a third.
+    assert "convergence round 2/4" in result.stdout
+    assert "convergence round 3/4" not in result.stdout
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
     assert events[-1] == "validate"
 

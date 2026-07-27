@@ -14,9 +14,10 @@ You are orchestrating the post-push AI review cycle for an open pull request.
 
 1. **4-iter cap with early-exit on no-fix iters.** If an iteration produced no `fix` resolutions across either the Gemini fast pass or the Copilot delayed pass (everything was deferred or dismissed, or there were no findings), exit the loop — re-firing reviewers on an unchanged HEAD just re-posts the same findings.
 2. **Mid-loop cost-shift checkpoint** between iter 2 → 3 and iter 3 → 4. If the iteration that just completed produced fixes but findings still aren't converging (any critical, or critical+suggestion+nitpick ≥ 5 post-dedup), pause and ask the user before spending another iteration's worth of paid-reviewer budget. Three exits: continue the chain, bail early to the final `/deepgrill` (skipping the remaining paid iters), or stop and merge as-is (skipping `/deepgrill` too). The trigger only fires when fix-resolutions are still being produced — the no-fix early-exit above already handles the other non-convergence mode.
-3. **Final `/deepgrill` on the PR.** After the loop exits for any reason except merge-as-is (clean, early-exit, cost-shift bail-out, OR iter cap), invoke `Skill(skill="deepgrill")`. This runs `/refactorpass` + `/grill deep` (the full Claude-side agent matrix) as a separate sub-skill — fresh agents looking at the PR's current state. This replaces the older deep-mode `/review` fire that ran _inside_ Phase 1 and routinely caused the orchestrator to drop out of the polling loop early.
+3. **Final `/deepgrill` on the PR.** After the loop exits for any reason except merge-as-is, invoke `Skill(skill="deepgrill", args="<pr-number>")`. It reads the complete PR ledger and runs `/refactorpass` + `/grill deep` on the current exact head.
 
-In both modes, the `/grill` pre-push pass already covered Claude-side adversarial agents on the pre-push tree — so post-push the orchestrator delegates Claude-side review to a single post-loop `/deepgrill` (deep mode only) rather than re-running anything inline.
+`/reviewit` is the explicit hosted-review fallback. The default local path uses
+the draft PR ledger with `/deepgrill <pr>` and `/codex-review <pr>`.
 
 This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilot is intentionally disabled — `/reviewit` is the only path that fires AI review.
 
@@ -32,7 +33,9 @@ This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilo
 - **Reply to every comment** _after_ the push has produced the real commit SHA: for fixes, post the commit SHA; for deferrals, link the tracking issue; for dismissals, record the rationale. Replies happen in Phase 4 step 4, not in Phase 3 — Phase 3 only records resolutions to `/tmp`. The reply step is the most-skipped step in this skill; do not fold it into "commit + push" or treat it as optional.
 - **Cap at `MAX_ITERS` review iterations**: each iteration is `(fire reviewers → handle Gemini fast pass → push/reply → handle Copilot → push/reply → loop check)`. After `MAX_ITERS`, stop the loop and proceed to Phase 5.5 (deep) or Phase 6 (lean). The reply step is part of an iteration's completion criteria — an iteration that pushes fixes but doesn't post replies is incomplete. If a PR needs more than the cap, it's signaling something deeper (scope too large, or repeated regressions).
 - **Deep-mode cost-shift checkpoint**: in deep mode, after iterations 2 and 3, if findings still aren't converging (any critical, or critical+suggestion+nitpick ≥ 5 post-dedup), Phase 5 pauses and asks the user before firing the next iteration. Before pausing, Phase 5 scans the branch's pre-push commit history for `/refactorpass` and `/grill` signatures and adapts the prompt: pre-push detected → frame as genuine non-convergence and recommend the final `/deepgrill` as the deep-variant escalation; no signatures visible → frame as "pre-push appears skipped" and recommend running `/deepgrill` to catch up. Either way the user chooses: continue, bail to the final `/deepgrill` early, or merge as-is. Lean mode is unaffected (cap=2 means it stops at the same point anyway).
-- **No per-iter `/refactorpass`**: review-fix commits push directly. The base was refactor-passed pre-push, and re-running `/simplify` on small surgical fixes has been validated to add negligible value.
+- **No per-iter `/refactorpass`**: review-fix commits push directly. Re-running
+  `/simplify` on every small fix adds churn; the final PR-aware `/deepgrill`
+  owns that local pass.
 
 ---
 
@@ -48,7 +51,9 @@ This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilo
    gh pr view <pr-number> --json number,title,headRefName,baseRefName,state,files,mergeable
    ```
 
-3. **Check PR is open**. If closed/merged/draft-without-explicit-confirmation, notify and exit.
+3. **Check PR is open**. If closed or merged, notify and exit. An explicit
+   `/reviewit <pr-number>` invocation is sufficient authorization to review an
+   open draft; keep it draft throughout this skill.
 
 4. **Confirm the head ref is checked out locally** (`git rev-parse --abbrev-ref HEAD` matches `headRefName`). If not, the skill cannot push fixes — surface and exit.
 
@@ -579,13 +584,17 @@ After each iteration (both the Gemini fast pass and the Copilot delayed pass com
 
 **Also skip** when the user picked **[M] merge as-is** at the Phase 5 cost-shift checkpoint — that exit means "stop everything, merge with current state", which includes skipping the final fresh-agent pass. Set the Phase 6 deepgrill status to `skipped (cost-shift merge-as-is)` and proceed directly to Phase 6. All other Phase 5 exits (clean, no-fix early-exit, `[C]` continue-then-cap-hit, `[L]` cost-shift bail-out, plain cap-hit) run this phase normally.
 
-Invoke via the Skill tool: `Skill(skill="deepgrill")`.
+Invoke via the Skill tool: `Skill(skill="deepgrill", args="<pr-number>")`.
 
 `/deepgrill` runs `/refactorpass` + `/grill deep` — the full agent matrix (`code-reviewer`, `silent-failure-hunter`, `type-design-analyzer`, `comment-analyzer`, `pr-test-analyzer`, `security-review`). Fresh agents in a separate sub-skill context look at the PR's current state on top of whatever the Gemini+Copilot loop landed. This is the deep-mode replacement for the older Phase 1 `/review` fire — moving the fresh-agent pass _outside_ the polling loop avoids the orchestration trap where `/review`'s self-contained prompt caused control to exit the polling loop early.
 
 > ⚠️ **Do not stop after `/deepgrill` returns.** When control returns from the Skill tool, treat the output as **Phase 5.5's deliverable** and immediately proceed to Phase 6. Do not summarize, do not hand back to the user mid-skill, do not assume the workflow is done. `/reviewit` owns the final summary.
 
-If `/deepgrill` surfaces findings the developer wants to act on, they're handled interactively per `/grill`'s standard Phase 4 verification flow — fix locally, then push. Those follow-up commits are **not** automatically re-routed back through Gemini+Copilot; the developer can re-run `/reviewit <pr>` (lean) on the follow-up commits if they want bot eyes on them.
+Before invoking `/deepgrill`, load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md)
+and require it to read every prior thread. Findings are posted inline before
+editing, then pushed, replied to with the fix SHA and validation, and resolved.
+Those follow-up commits are **not** automatically re-routed through
+Gemini+Copilot; the developer can re-run `/reviewit <pr>` if desired.
 
 Capture for the Phase 6 summary:
 

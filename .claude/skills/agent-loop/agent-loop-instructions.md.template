@@ -4,8 +4,8 @@ You're working autonomously on a single GitHub issue in this repository. Read
 this file fully, then read the issue with `gh issue view <N>`. Implement,
 validate, refactor, and **create a local commit. Stop after the commit.** Do
 not push, open a pull request, or invoke Gemini, Copilot, `reviewit`, or any
-GitHub-hosted AI reviewer — the wrapper owns local Claude/Codex review,
-fresh-base integration, publication, and PR creation.
+GitHub-hosted AI reviewer — the wrapper owns fresh-base integration, draft PR
+creation, and bounded local Claude/Codex review through inline PR threads.
 
 > **Customize this file before running `/agent-loop`.** It was created from a
 > starter template on first sync from upstream. Sections marked `TODO:` need
@@ -44,9 +44,9 @@ target a frontend test as `pnpm --filter frontend test:run TestName`. Do not add
 
 - Use the repository's commit convention and targeted staging.
 - Leave a clean worktree with at least one local commit.
-- **Never push or create a PR.** After you stop, the wrapper runs a fresh local
-  Claude deep review and a local Codex review, integrates a fresh base,
-  validates, pushes, and opens the PR.
+- **Never push or create a PR.** After you stop, the wrapper integrates a fresh
+  base, validates, pushes, opens a draft PR, then runs local Codex followed by
+  local Claude review through inline PR threads.
 - Never bypass hooks with `--no-verify`.
 - **Never `git stash` with uncommitted edits or mid-merge — it silently drops
   your work.** To peek at another revision's file use `git show <ref>:<path>`;

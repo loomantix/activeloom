@@ -1,134 +1,91 @@
 ---
 name: refactorpass
-description: Pre-push refactor pass — runs /simplify once on local changes and commits the result
-argument-hint: (none — always single-pass)
+description: PR-first refactor pass that runs /simplify once against an open draft PR, verifies and commits the surviving cleanups, pushes, and records them in the PR ledger.
+argument-hint: (optional PR number; always single-pass)
 ---
 
-# Refactor pass — pre-push refactor wrapper
+# Refactor pass — PR-first wrapper
 
-You are running a refactor pass on the current branch's local changes BEFORE the developer pushes to origin. This is the right time to refactor: the code is fresh, nothing is public, scope-creep concerns don't apply, and consolidation/simplification opportunities are cheapest to act on.
+Run one behavior-preserving cleanup pass on an open draft PR before adversarial
+review.
 
-The skill wraps Claude Code's built-in `/simplify` and adds two things `/simplify` doesn't do on its own: triviality skip on docs/config-only changesets, and a single commit with a clear refactor-pass message.
+## Context-window check
 
-## Core principles
+`/simplify` reads and edits the full changeset. If this session authored the
+change or carries dense implementation context, recommend a fresh Claude
+session. Continue only after an explicit override.
 
-- **Refactor freely.** Unlike post-PR review where scope creep is a real cost, here every consolidation lands as a normal commit in the eventual PR's history. Three similar lines → helper. Repeated 5-line block → extracted function. Dead code → deleted.
-- **Fix-everything-valid bias.** Apply every valid simplification `/simplify` surfaces in this pass. Only skip suggestions that are wrong (would change behavior, would make the code worse, are based on a misread of the diff). Do not defer valid cleanups to "a follow-up PR" — the only legitimate defer is a major architectural rework (300+ lines or a cross-cutting redesign), which should be filed as a GitHub issue rather than left as an unwritten todo. Backlog hygiene compounds: a valid nit not fixed now becomes review noise on every future PR in this area.
-- **One pass only.** A second `/simplify` pass on the same changeset has been validated empirically to add negligible value over the first; dropped to keep token cost honest.
-- **Commit the result.** A single `refactor: /simplify pass — ...` commit. Skipped cleanly if `/simplify` made no changes.
+## PR-first pre-flight
 
----
+1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
+2. Require a clean, committed feature branch, not `main`, `master`, or
+   `staging`.
+3. Reuse its open PR. If none exists, push normally and open a draft PR before
+   cleanup starts.
+4. Require local HEAD, remote head, and PR head to match. Read all prior review
+   threads.
+5. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
+6. Skip docs/config-only changesets, per the ledger's changeset
+   classification.
 
-## Phase 0: Pre-flight
+## Single `/simplify` pass
 
-### 0a. Context-window check (do this BEFORE anything else)
+Record the exact HEAD and clean worktree status. Invoke
+`Skill(skill="simplify", args="Analyze the PR diff and propose
+behavior-preserving cleanups. Do not commit.")` once. Do not run a second pass.
 
-`/refactorpass` invokes `/simplify`, which reads diffs and proposes (and applies) edits across the changeset. That work needs cache headroom. If the current session has already been heavily used for feature implementation (lots of file reads, edits, long planning conversations), the prompt cache is mostly spent on context that `/simplify` does not need — and worse, `/grill` afterwards spawns sub-agents whose effective working window is what's left.
+`/simplify` applies the cleanups it finds — that is its contract, and asking it
+for a proposal-only run is not reliable. Handle whichever outcome you get:
 
-Before proceeding, assess the session honestly:
+- **It left the tree clean and HEAD unmoved.** It found nothing, or it only
+  reported. Nothing to commit.
+- **It edited the worktree.** Normal. Review every edit before keeping it.
+- **It committed.** Verify the commit is behavior-preserving and in scope; keep
+  it rather than rewriting history. Never resolve this by force-push or
+  `git stash`.
 
-- Has this session been writing/editing the feature you're about to refactor? Long conversation, many tool calls, dense edit history?
-- Is the conversation about to brush against auto-compaction territory?
+Verify each cleanup against the source and drop any that:
 
-If **either is yes**, STOP and tell the user:
+1. changes behavior, or reaches outside the changed code apart from a tiny
+   adjacent edit required to complete it safely;
+2. is a broad rewrite, unrelated style churn, or speculative abstraction.
 
-> Your context is heavy from the implementation work. Start a new Claude session and run `/refactorpass` (and `/grill` / `/deepgrill`) there — the sub-agents need cache headroom, and a fresh session makes the chain materially cheaper.
+Revert what you drop (`git checkout -- <path>` for uncommitted edits, a follow-up
+edit for committed ones) before validating.
 
-Do not proceed in the current session unless the user explicitly overrides. The "but I want to keep going" override is fine — just surface the recommendation first.
+Cleanups are not adversarial findings, so the ledger's post-before-editing rule
+does not apply here: there is no defect to disposition and no thread to resolve,
+and `/simplify` has already edited by the time you could post one.
 
-### 0b. Standard pre-flight
+If anything survived: run the smallest relevant formatter or test, stage the
+remaining edits, create one `refactor: /simplify pass — <summary>` commit, and
+push normally. Then post **one** informational PR comment naming the cleanup
+lane, the exact reviewed head, the resulting commit SHA, and a one-line list of
+what was consolidated. Stop if any step fails.
 
-1. **Check git state**:
+If nothing survived, the branch is unchanged: post the same informational
+comment with no commit SHA and move on. Do not push.
 
-   ```bash
-   git rev-parse --abbrev-ref HEAD              # branch name
-   git rev-parse HEAD                            # current HEAD SHA
-   git status --porcelain                        # any uncommitted changes
-   ```
+Do not use the `local-review-pass:v1` engine attestation and do not open
+`local-review:v1` threads for cleanups: only the final adversarial `grill` lane
+may certify the enclosing Claude review hook, and it owns the completion marker.
 
-2. **If there are uncommitted changes**: ask the user whether to commit them first or include them in the refactor pass. Don't silently sweep them into a refactor commit — the user may have intended them to be a separate logical commit.
+## Output
 
-3. **If branch is `main` / `master` / `staging`**: refuse. Refactor passes belong on feature branches. Ask the user to `git switch -c feat/...` first.
+Report:
 
-4. **If HEAD is identical to upstream** (`git rev-parse @{u}` matches HEAD when an upstream exists): the branch has nothing local to refactor. Tell the user, exit cleanly.
+- PR number and reviewed head;
+- whether cleanup changed the branch and the commit SHA;
+- cleanups kept and cleanups dropped on verification;
+- validation run;
+- next step: `/grill <pr-number>` or return to `/deepgrill <pr-number>`.
 
-5. **Triviality detection — skip /simplify if there's no code to refactor.** Compute the changed-file list against the base branch (or `@{u}` if upstream is set) and classify:
+## Boundaries
 
-   ```bash
-   git diff --name-only "$(git merge-base @{u} HEAD)..HEAD" 2>/dev/null \
-     || git diff --name-only HEAD     # fallback when no upstream is set
-   ```
-
-   Classify each file as:
-   - **Source code**: `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`
-   - **Docs / config / fixtures**: `.md`, `.txt`, `.yml`, `.yaml`, `.json`, `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`, `.env.example`, files under `docs/`, `*.fixture.*`, snapshot files
-   - **Other**: anything not in either bucket (treat as source for safety)
-
-   **If the changeset contains zero source-code files**, skip Phase 1 entirely. /simplify on docs/config-only changes is theatre — there's nothing to refactor. Jump straight to Phase 2 (summary).
-
-   For mixed changesets (some source, some docs), proceed to Phase 1 — /simplify will only act on the source files anyway.
-
----
-
-## Phase 1: Single `/simplify` pass
-
-1. **Capture pre-snapshot**:
-
-   ```bash
-   git rev-parse HEAD > /tmp/refactorpass-pre-sha
-   git diff HEAD > /tmp/refactorpass-pre-diff
-   ```
-
-2. **Invoke `/simplify`** via the Skill tool: `Skill(skill="simplify")`. Let it run — it operates on recently-modified code by default.
-
-3. **Capture post-snapshot**:
-
-   ```bash
-   git rev-parse HEAD > /tmp/refactorpass-post-sha
-   git diff HEAD > /tmp/refactorpass-post-diff
-   ```
-
-4. **Decide**:
-   - If `pre-diff` and `post-diff` are byte-identical AND HEAD SHA is unchanged: `/simplify` made no changes. Nothing to commit.
-   - If HEAD moved (`/simplify` committed on its own): nothing more to do — `/simplify` already committed.
-   - If working tree diff differs but HEAD did NOT move: stage and commit. **Check for staged changes first** — `git diff --cached --quiet` returns non-zero only if there are staged changes. If there's nothing to commit (e.g., `/simplify` reverted its own changes during the run), skip the commit step.
-
-     ```bash
-     git add -A
-     if ! git diff --cached --quiet; then
-       git commit -m "refactor: /simplify pass — <one-line summary>"
-     fi
-     ```
-
-     Write the one-line summary based on the files touched. Examples: `"consolidate config-loader error paths into helper"`, `"remove unused imports across api worker module"`, `"extract repeated input-validation block into shared util"`. If the changes touched many unrelated areas, use `"multiple cleanup spots — see diff"`.
-
----
-
-## Phase 2: Summary
-
-Tell the user:
-
-```
-✅ Refactor pass complete.
-- Changes made: <yes/no>
-- New commit: <"refactor: /simplify pass — ..." or "(none)">
-- HEAD: <SHA>
-
-Next: `git push`.
-After push and PR creation: invoke `/reviewit <pr-number>` (or `/reviewit <pr> deep` for the 4-iter chain that ends with a final `/deepgrill`) to orchestrate AI review.
-```
-
----
-
-## What this skill does NOT do
-
-- **Does not push.** That's the developer's call (or the parent Claude session's call).
-- **Does not open the PR.** Same reason.
-- **Does not run `/review`, `/security-review`, Gemini, or Copilot.** Those are post-push concerns handled by `/reviewit`.
-- **Does not respect `copilot-instructions.md`.** `/simplify` has its own prompt that's refactor-positive — that's the whole point of running it pre-push, before the bot reviewers' scope-control rules kick in.
-
----
+- Do not force-push or merge.
+- Do not invoke adversarial or hosted reviewers.
 
 ## Source of truth
 
-This skill lives upstream at `.claude/skills/refactorpass/`. Synced to consumer repos via the sync mechanism. Edits in a consumer will be overwritten on the next sync — make all changes upstream.
+This skill lives upstream at `.claude/skills/refactorpass/` and is synced to
+consumer repos.

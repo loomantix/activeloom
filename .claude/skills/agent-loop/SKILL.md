@@ -1,14 +1,14 @@
 ---
 name: agent-loop
-description: Autonomous issue implementation loop with strict issue allowlisting, one linked worktree per issue, configurable setup and local review hooks, fresh-base validation, and publication only after deterministic local Claude and Codex reviews. Use when Claude should implement a bounded GitHub issue queue without hosted AI reviewers.
+description: Autonomous issue implementation loop with strict issue allowlisting, one linked worktree and draft PR per issue, bounded local Codex/Claude review rounds, inline thread traceability, and fresh-base validation. Use for a bounded GitHub issue queue without hosted AI reviewers.
 argument-hint: '[iterations] [--iterations N] [--issues N,N,...] [--resume] [--dry-run]'
 ---
 
 # Agent Loop
 
 Run isolated issue workers and publish one reviewed pull request per issue. The
-wrapper owns selection, claiming, worktrees, local reviews, base integration,
-push, and PR creation. A worker only implements, validates, refactors, and
+wrapper owns selection, claiming, worktrees, base integration, draft PR
+creation, local review convergence, and final readiness. A worker only implements, validates, refactors, and
 commits locally — by default it is the Claude CLI, but any command can be
 substituted via `worker_hook`.
 
@@ -51,26 +51,42 @@ The config is parsed as literal `key = value` lines and is never sourced.
 Unknown or duplicate keys fail closed. Hook values are shell commands executed
 with the issue worktree as the current directory.
 
-| Key                                              | Purpose                                                                                                                                |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                         |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                            |
-| `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                              |
-| `claude_review_hook`                             | Required fresh local Claude deep review. It must fix confirmed findings, validate, commit fixes, and never push.                       |
-| `codex_review_hook`                              | Required local Codex review against `$AGENT_LOOP_REVIEW_BASE`. It must fix confirmed findings, validate, commit fixes, and never push. |
-| `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                          |
-| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                           |
-| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                            |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                |
-| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                  |
-| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                  |
-| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                            |
-| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                       |
+| Key                                              | Purpose                                                                                                     |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                              |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories. |
+| `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                   |
+| `review_contract_version`                        | Required value `2`; prevents old pre-PR/no-push hooks from running under the PR-first wrapper.              |
+| `review_max_rounds`                              | Maximum complete Codex→Claude rounds. Default `4`; cap exhaustion preserves the draft PR.                   |
+| `claude_review_hook`                             | Required local Claude PR review. Reads the ledger, comments before fixes, pushes, replies, and resolves.    |
+| `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                               |
+| `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.               |
+| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                |
+| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                 |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                     |
+| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                       |
+| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                       |
+| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                 |
+| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                            |
 
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_BASE_BRANCH`,
 `AGENT_LOOP_BRANCH`, `AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and
 `AGENT_LOOP_PROMPT`. Review hooks also receive `AGENT_LOOP_REVIEW_BASE` after a
-fresh fetch.
+fresh fetch plus `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
+`AGENT_LOOP_PR_HEAD_SHA`, `AGENT_LOOP_REVIEW_ENGINE`, and
+`AGENT_LOOP_REVIEW_ROUND`. A hook that commits may write exactly `minor` or
+`material` to `AGENT_LOOP_REVIEW_OUTCOME_FILE`; a missing classification
+defaults to material. A hook that commits must post a structured
+`outcome=fixed` disposition tied to the pushed SHA and a final-lane completion
+marker. A hook that commits nothing must instead post the ledger's clean-pass
+comment for its own engine, round, and `AGENT_LOOP_PR_HEAD_SHA` — the wrapper
+treats a silent no-op pass as unverified rather than clean. Validation hooks
+must leave a clean tree; work they write but do not commit is not in the
+reviewed head and would be discarded with the worktree.
+
+The wrapper accepts machine-readable findings, replies, and clean-pass evidence
+only from the authenticated GitHub actor resolved at startup. Review hooks must
+post ledger evidence with that same identity.
 
 For a non-mutating consumer smoke test from an upstream development worktree,
 set `AGENT_LOOP_PROJECT_DIR=/path/to/consumer` and pass `--dry-run`. Do not use
@@ -101,10 +117,14 @@ is not required on `PATH`.
 3. Create a unique worktree and branch from `origin/<base>`.
 4. Run the isolated setup hook.
 5. Run the worker and require a clean local commit.
-6. Validate, then run the fresh Claude deep-review hook and validate again.
-7. Fetch the base, run the Codex-review hook against that fresh ref, and validate.
-8. Fetch and merge the base again, inspect a bounded diff, and revalidate.
-9. Confirm no worker/hook pushed the branch; only then push and open the PR.
+6. Fetch and merge the base, inspect the diff, validate, push, and open a draft PR.
+7. Run a Codex pass and then a Claude pass against the PR ledger. Each hook
+   comments before fixes, pushes normally, posts structured fix and final-lane
+   completion evidence, then resolves.
+8. If either engine made material fixes, restart from Codex. Stop after
+   `review_max_rounds` and preserve the draft.
+9. Require a complete clean round plus replies and resolutions on every marked
+   thread, then mark the PR ready.
 
 Do not invoke Gemini, Copilot, `reviewit`, or any GitHub-hosted AI reviewer.
 
@@ -140,10 +160,11 @@ opened one summary PR at the end. That model is gone:
 - Each issue now gets its own branch, worktree, and PR — there is no summary PR.
 - `agent-loop.config`, `prompt.txt`, and `agent-loop-instructions.md` are
   `create_if_missing` targets, so existing consumers keep their old copies. They
-  must be migrated by hand: add the `setup_hook`, `validation_hook`,
-  `claude_review_hook`, and `codex_review_hook` keys (both review hooks are
-  required for a mutating run), and rewrite the prompt/instructions so the worker
-  commits locally and never pushes or opens a PR.
+  must be migrated by hand: set `review_contract_version = 2`, add
+  `review_max_rounds`, and update both review hooks to the PR-ledger contract.
+  Old hooks that prohibit all pushes will fail closed because each fix must be
+  pushed normally to the exact draft-PR branch, and a hook that reviews without
+  posting a clean-pass attestation fails closed for the same reason.
 
 ## Test Guidance
 
