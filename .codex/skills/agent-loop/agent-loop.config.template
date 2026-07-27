@@ -16,23 +16,25 @@ validation_hook =
 
 # Required acknowledgement of the current review-hook contract. Existing
 # consumer configs must migrate the hooks below before adding this marker.
-review_contract_version = 1
+review_contract_version = 2
 
 # Both review hooks are required. The wrapper runs Codex first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
 # Codex-then-Claude round with no material fixes. The Codex hook must run
 # `deepgrill`; the Claude hook must perform a fresh adversarial review. Each
-# hook must fix confirmed findings, commit fixes, fail if valid findings remain,
-# and leave a clean tree without rewriting prior commits. Neither may push, open
-# a PR, or invoke hosted reviewers. The wrapper disables ordinary `git push`,
-# Git aliases, and ordinary `gh` commands during hooks while preserving the
-# narrow `gh auth git-credential get` helper used by authenticated Git reads.
-# It rejects origin URL changes and publishes only its captured SHA.
+# wrapper opens a draft PR before either hook. Each hook must read all prior PR
+# review threads, post every confirmed finding inline before editing, fix and
+# commit it, push without force, reply with the fix and validation, resolve the
+# thread, and fail if any valid finding or local-review thread remains. Hooks
+# may use `git push` and `gh` only for that draft PR review contract; they must
+# not mutate the base branch, other issues/PRs, or invoke hosted reviewers.
 # Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
 # round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
 # ref. The wrapper validates exit status and Git state but cannot prove which
 # engine an arbitrary command launches; these commands own that guarantee.
+# Hooks also receive `$AGENT_LOOP_PR_NUMBER`, `$AGENT_LOOP_PR_URL`, and
+# `$AGENT_LOOP_PR_HEAD_SHA`. The last value is the exact head at pass start.
 # When a hook commits, write exactly `material` or `minor` to
 # `$AGENT_LOOP_REVIEW_OUTCOME_FILE`. Missing classification defaults to material;
 # a no-commit pass is clean and must not write the file. Later hooks and final

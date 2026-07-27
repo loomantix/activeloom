@@ -1,14 +1,14 @@
 ---
 name: agent-loop
-description: Autonomous issue implementation loop with strict issue allowlisting, one linked worktree per issue, configurable setup and local review hooks, fresh-base validation, and publication only after convergent local Codex deepgrill and Claude reviews. Use when Codex should implement a bounded GitHub issue queue without hosted AI reviewers.
+description: Autonomous issue implementation loop with strict issue allowlisting, one linked worktree per issue, draft-PR-first local Codex and Claude review hooks, inline finding traceability, bounded convergence, and fresh-base validation. Use when Codex should implement a bounded GitHub issue queue without hosted AI reviewers.
 ---
 
 # Agent Loop
 
-Run isolated issue workers and publish one reviewed pull request per issue. The
-wrapper owns selection, claiming, worktrees, local reviews, base integration,
-push, and PR creation. A worker only implements, validates, refactors, and
-commits locally.
+Run isolated issue workers and open one draft pull request per issue before
+local review starts. The wrapper owns selection, claiming, worktrees, base
+integration, initial publication, review-head attestation, and readiness. A
+worker only implements, validates, refactors, and commits locally.
 
 ## Usage
 
@@ -53,30 +53,31 @@ The config is parsed as literal `key = value` lines and is never sourced.
 Unknown or duplicate keys fail closed. Hook values are shell commands executed
 with the issue worktree as the current directory.
 
-| Key                                              | Purpose                                                                                                                        |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                 |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.   |
-| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                              |
-| `claude_review_hook`                             | Required fresh local Claude review. It must fix confirmed findings, commit fixes, fail on unresolved findings, and never push. |
-| `codex_review_hook`                              | Required fresh Codex `deepgrill` against `$AGENT_LOOP_REVIEW_BASE_SHA`. It has the same fix/commit/fail/no-push contract.      |
-| `review_contract_version`                        | Required opt-in to the current hook contract. Set to `1`; missing or unsupported versions fail before issue selection.         |
-| `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.           |
-| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                     |
-| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                   |
-| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                    |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                  |
-| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                          |
-| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                          |
-| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                    |
-| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                               |
+| Key                                              | Purpose                                                                                                                                                         |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                                  |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.                                    |
+| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                                               |
+| `claude_review_hook`                             | Required fresh local Claude review on the draft PR. It must post confirmed findings inline before fixes, push, reply, resolve, and fail on undisposed findings. |
+| `codex_review_hook`                              | Required fresh Codex `deepgrill` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                          |
+| `review_contract_version`                        | Required opt-in to the current hook contract. Set to `2`; missing or unsupported versions fail before issue selection.                                          |
+| `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.                                            |
+| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                                                      |
+| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                    |
+| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                     |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                                                   |
+| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                           |
+| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                                           |
+| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                     |
+| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                |
 
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
 `AGENT_LOOP_ISSUE_BODY`, `AGENT_LOOP_BASE_BRANCH`, `AGENT_LOOP_BRANCH`,
 `AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and `AGENT_LOOP_PROMPT`. Because
 ordinary `gh` commands are masked inside hooks, the worker reads its issue from
 `AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY` rather than the API. Review
-hooks also receive `AGENT_LOOP_REVIEW_BASE`, the fully qualified fetched remote
+hooks also receive `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
+`AGENT_LOOP_PR_HEAD_SHA`, `AGENT_LOOP_REVIEW_BASE`, the fully qualified fetched remote
 ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA` captured after the round's fresh
 fetch, `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_ENGINE`, and
 `AGENT_LOOP_REVIEW_OUTCOME_FILE`. Both hooks must scope against the SHA so a
@@ -94,25 +95,14 @@ The outcome must remain unchanged through post-review validation; a validator
 or later reviewer that creates, removes, or changes an accepted classification
 blocks publication. The wrapper re-attests both records after final validation.
 
-The wrapper pins `GH_REPO` from the current checkout before any repository-
-scoped GitHub operation. It also requires exit 0, a clean tree, an attached
-issue branch, and append-only commit ancestry.
-It disables canonical `git push`, Git aliases, and ordinary `gh` invocations
-inside every hook; only `gh auth git-credential get` is forwarded for Git
-credential-helper reads. The wrapper also attests that origin fetch/push URLs
-remain unchanged, disables executing Git command autocorrection, and alone
-publishes the final captured commit. It re-attests the remote branch immediately
-before PR creation and verifies the created PR's head SHA; an unverifiable PR is
-closed when possible and the worktree is preserved. Caller auth
-variables remain available so ordinary authenticated Git reads continue to
-work. This is an accidental-publication guard, not a
-sandbox against a deliberately hostile shell command. The wrapper cannot verify
-that an arbitrary hook command
-launched the named engine, started a fresh session, reviewed the required SHA,
-resolved every valid finding, or assigned the semantically correct `material` or
-`minor` classification. Consumer hook commands must provide those guarantees
-and exit nonzero otherwise. Validation hooks must not change HEAD, switch
-branches, or leave worktree changes.
+The wrapper pins `GH_REPO` from the current checkout before any
+repository-scoped GitHub operation. Setup, worker, and validation hooks cannot
+push or call ordinary `gh`; review hooks run only after draft PR creation and
+may mutate that PR and its head branch. After each review hook, the wrapper
+requires exit 0, a clean attached issue branch, append-only ancestry, unchanged
+origin identity, and identical local, remote, and PR head SHAs. At convergence
+it queries GitHub review threads and fails if any thread bearing the
+`local-review:v1` marker lacks a reply or remains unresolved.
 
 ## Existing Consumer Migration
 
@@ -120,14 +110,15 @@ The wrapper is upstream-owned, but config, worker instructions, and the prompt
 are `create_if_missing` consumer files. Existing consumers must therefore merge
 the current templates manually before the synced wrapper can run:
 
-1. Update the Codex hook to run a fresh `deepgrill`, then the Claude hook to run
-   a fresh adversarial review. Scope both to `$AGENT_LOOP_REVIEW_BASE_SHA`.
-2. Make both hooks fix and commit confirmed findings, leave the issue branch
-   attached and clean, append fixes without rewriting prior commits, avoid
-   publication, classify committed fixes through
-   `$AGENT_LOOP_REVIEW_OUTCOME_FILE`, and exit nonzero if findings remain.
+1. Update the Codex hook to run a fresh `deepgrill
+$AGENT_LOOP_PR_NUMBER`, then the Claude hook to run a fresh adversarial review
+   on the same PR. Scope both to `$AGENT_LOOP_REVIEW_BASE_SHA`.
+2. Make both hooks load `.codex/references/local-review-ledger.md`, read all
+   prior threads, post confirmed findings inline before editing, commit and push
+   fixes, reply with the fix and validation, resolve the threads, leave the
+   issue branch attached and clean, and exit nonzero if findings remain.
 3. Configure a non-mutating `validation_hook`, add
-   `review_contract_version = 1`, and optionally override
+   `review_contract_version = 2`, and optionally override
    `review_max_rounds = 4` with another positive cap.
 4. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync
@@ -151,16 +142,17 @@ and never copies issue bodies, model logs, or findings into GitHub.
 3. Create a unique worktree and branch from `origin/<base>`.
 4. Run the isolated setup hook.
 5. Run the worker and require a clean local commit.
-6. Validate, then run a fresh Codex `deepgrill` followed by a fresh Claude
-   review, validating after each pass.
-7. If either reviewer commits a material fix, restart at Codex. Minor-only fixes
+6. Integrate the fresh base, validate, push, and open a draft PR.
+7. Run a fresh Codex `deepgrill` followed by a fresh Claude review on that PR,
+   validating and attesting the PR head after each pass.
+8. If either reviewer commits a material fix, restart at Codex. Minor-only fixes
    are validated and retained without restarting. Convergence requires one
    entire Codex-then-Claude round with no material fixes. Exhausting
    `review_max_rounds` blocks publication and preserves the worktree.
-8. Fetch and merge the base again, inspect a bounded diff, and revalidate.
-9. Re-attest unchanged issue requirements/readiness, confirm no worker/hook
-   pushed the branch, then push the captured SHA, attest it around PR creation,
-   and verify the created PR head.
+9. If the base advances, integrate and push it on the draft PR before restarting
+   at Codex. A non-fast-forward base move stops the loop.
+10. Re-attest unchanged issue requirements/readiness, require every marked
+    review thread to contain a reply and be resolved, then mark the PR ready.
 
 Do not invoke Gemini, Copilot, `reviewit`, or any GitHub-hosted AI reviewer.
 
@@ -181,8 +173,9 @@ commands. A worker that bails writes the consumer-defined local classification
 record there; the operator applies any required GitHub labels/comments after
 the guarded run exits. Retry capacity/timeouts only when the worktree is
 unchanged. Review, setup, integration, validation mutation,
-detached/wrong-branch state, and review non-convergence failures also preserve
-the worktree. Never reset, reuse, clean, or delete a dirty recovery worktree.
+detached/wrong-branch state, review-thread failures, and review
+non-convergence failures also preserve the worktree and draft PR. Never reset,
+reuse, clean, or delete a dirty recovery worktree.
 
 If a newly added claim cannot be rolled back before worktree creation, stop and
 manually inspect/unassign it. Publication is not atomic: after a push succeeds,

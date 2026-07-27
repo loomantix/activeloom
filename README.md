@@ -12,16 +12,16 @@ Operational skills you can install globally or sync into any repo:
 
 | Skill                 | What it does                                                                                                                                                    |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `refactorpass`        | Pre-push cleanup pass for local source changes; runs simplicity/DRY, correctness-preserving, and convention/API cleanup lanes.                                  |
-| `grill`               | Pre-push adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass. |
-| `deepgrill`           | Orchestrates refactorpass plus `grill deep`; serves as the Codex pass in local cross-model convergence and the deep pre-push pass in hosted-fallback review.    |
-| `pr-grill <pr>`       | Cross-engine deep review of an existing PR; fixes findings and pushes a labeled relay commit back to the PR head.                                               |
+| `refactorpass`        | PR-first cleanup pass; posts verified cleanup suggestions inline before applying, pushing, replying, and resolving.                                             |
+| `grill`               | PR-first adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass. |
+| `deepgrill`           | Opens or reuses a draft PR and orchestrates refactorpass plus `grill deep` with an inline finding ledger.                                                       |
+| `pr-grill <pr>`       | Cross-engine deep review of an existing PR using the same inline finding, fix-reply, and resolution ledger.                                                     |
 | `reviewit <pr>`       | Optional hosted fallback for developers without local Claude Code. Orchestrates post-push Gemini Flash + Copilot review with bounded lean/deep modes.           |
 | `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                          |
 | `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                                                                |
 | `issues`              | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.                                  |
 | `backlog-refinement`  | Curate and harden the autonomous queue: verify issues against the integration branch, rewrite agent-ready work, classify exclusions, and learn from loop bails. |
-| `agent-loop`          | Experimental Codex relay over the refined issue queue, with bounded Codex-deepgrill/Claude convergence before fresh-base integration and publication.           |
+| `agent-loop`          | Experimental Codex relay that opens a draft PR before bounded Codex/Claude convergence and records every finding, reply, and resolution there.                  |
 | `actions-usage-audit` | Read-only GitHub Actions billing and workflow-usage analysis with month-over-month attribution.                                                                 |
 | `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                                                      |
 | `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                       |
@@ -32,7 +32,9 @@ local Codex/Claude convergence when both CLIs are available, or `reviewit` as a
 hosted Gemini/Copilot fallback when local Claude Code is unavailable. Consumers
 can declare their default path in repository instructions without removing the
 other platform capability. Local convergence restarts only for material review
-fixes; validated minor-only polish does not keep the cycle running.
+fixes; validated minor-only polish does not keep the cycle running. Every local
+finding is recorded before its fix, then replied to with the fix SHA and
+validation before resolution.
 
 ### Codex references (`.codex/references/`)
 
@@ -75,7 +77,7 @@ If a skill command is not found in a Codex session, run the dry-run check from t
 
 Consumer-owned `create_if_missing` targets are intentionally not upgraded by a
 sync. Existing `agent-loop` consumers must manually merge the current config,
-instruction, and prompt contracts—including `review_contract_version = 1`—
+instruction, and prompt contracts—including `review_contract_version = 2`—
 before using the synced convergence wrapper; see the skill's **Existing
 Consumer Migration** section.
 

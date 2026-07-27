@@ -12,11 +12,14 @@ catches design-level blind spots the authoring engine baked in and would not
 question on its own. The hand-back is the point — `pr-grill` is one leg of a
 round trip, not a terminal review.
 
-This is **not** `deepgrill`. `deepgrill` reviews local pre-push work, runs
-`refactorpass`, and refuses to push. `pr-grill` targets an existing PR diff,
-skips `refactorpass` (do not churn a PR under cross-review), and pushes signed
-fix commits back to the PR head branch. It reuses `grill`'s deep matrix by
-reference — load the same role prompts, do not restate them here.
+Load `.codex/references/local-review-ledger.md`. The originating engine's
+resolved threads are required input to this pass, not optional background.
+
+This is **not** `deepgrill`. Both are PR-first and use the same thread ledger,
+but `deepgrill` runs `refactorpass` plus the current engine's deep matrix.
+`pr-grill` is the cross-engine relay leg: it skips `refactorpass`, scrutinizes
+the prior engine's design decisions, and pushes signed fix commits back to the
+PR head branch.
 
 ## Safety preconditions — verify before doing anything
 
@@ -88,9 +91,12 @@ cases, and whether a "fix" traded away a property the original code protected.
 These are the findings a same-engine grill misses and the reason this pass
 exists.
 
-## Phase 2: Apply fixes
+## Phase 2: Publish findings, then apply fixes
 
-Apply `grill`'s fix bias to `$RANGE`: fix every valid finding, including nits.
+Verify and deduplicate every finding against the full PR ledger. Post one inline
+comment per confirmed root cause before editing, using the local-review marker
+and an exact diff anchor. Apply `grill`'s fix bias to `$RANGE`: fix every valid
+finding, including nits.
 Dismiss invalid findings or suggestions that would make the code worse, with the
 evidence that disproves them. Defer only valid but extremely large follow-ups
 (roughly 300+ lines or cross-cutting rewrites) and open or link a GitHub issue
@@ -122,6 +128,11 @@ is for your own PR branches.
    If the push is rejected, stop and report the rejection — do not force-push or
    rebase silently.
 
+3. Reply to every posted thread with the fix commit and validation result, then
+   resolve it. For a dismissal or tracked deferral, reply with the evidence or
+   issue link before resolving. Stop if any thread cannot be replied to or
+   resolved.
+
 If no fixes were applied (clean, or everything deferred/dismissed), do not
 commit or push. Report the clean result.
 
@@ -137,6 +148,7 @@ findings fixed:    <count + one-line each>
 design tradeoffs flagged: <any decisions the re-review should adjudicate — e.g. a fix
                            that simplified logic but changed a latency/UX property>
 deferred / dismissed: <count + rationale>
+threads:            <posted/replied/resolved counts>
 validation run:    <commands + result>
 pushed:            <yes: SHA on <head-branch> | no fixes — nothing pushed>
 

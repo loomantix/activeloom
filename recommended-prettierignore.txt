@@ -23,6 +23,7 @@
 
 # >>> platform-synced paths <<<
 .codex/REVIEW_WORKFLOW.md
+.codex/references/local-review-ledger.md
 .codex/references/roles/code-architect.md
 .codex/references/roles/code-explorer.md
 .codex/references/roles/code-reviewer.md

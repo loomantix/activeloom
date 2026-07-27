@@ -1,6 +1,6 @@
 ---
 name: deepgrill
-description: High-fidelity pre-push Codex review chain. Use for complex or high-risk changes such as auth, crypto, secrets, data migrations, GitHub Actions, sync tooling, .codex/skills, large refactors, or when the user asks for a deep review.
+description: High-fidelity PR-first Codex review chain. Opens or reuses a draft PR, records verified findings inline before fixes, and runs refactorpass plus grill deep. Use for complex or high-risk changes such as auth, crypto, secrets, data migrations, GitHub Actions, sync tooling, .codex/skills, large refactors, or when the user asks for a deep review.
 ---
 
 # Deep Grill
@@ -20,13 +20,28 @@ If either is yes, stop and tell the user:
 
 Do not proceed in the current session unless the user explicitly overrides.
 
+## PR-First Preflight
+
+Load `.codex/references/local-review-ledger.md` and follow it throughout this
+pass. Take an optional PR number from the invocation.
+
+Require a clean, committed feature branch. Reuse the open PR whose head is the
+current branch. If none exists, push the branch with a normal push and open a
+draft PR before invoking any review lane. Verify the local HEAD, remote branch,
+and PR head SHA match. Record the PR number and load all prior review threads,
+including resolved and outdated threads.
+
 ## Chain
 
-Run the full high-fidelity pre-push chain:
+Run the full high-fidelity PR review chain:
 
-1. Execute the `refactorpass` workflow.
-2. Execute the `grill` workflow in deep mode, including all six core independent review lanes from the `grill` skill and the conditional tenant-coupling lane when customer-variable behavior is present.
-3. Stop before pushing unless the user explicitly asked you to push.
+1. Execute `refactorpass <pr-number>` against the draft PR.
+2. Reload the PR head and review ledger.
+3. Execute `grill <pr-number> deep`, including all six core independent review
+   lanes and the conditional tenant-coupling lane when customer-variable
+   behavior is present.
+4. Require every confirmed finding to have been posted inline before its fix,
+   replied to after push, and resolved.
 
 ## Pinned Review Base
 
@@ -76,7 +91,7 @@ another `reviewit`, push, or emit a terminal workflow summary; `reviewit` owns
 the hosted-path summary.
 
 When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
-return control without pushing:
+return control after pushing reviewed fixes and completing their PR threads:
 
 If `$AGENT_LOOP_REVIEW_OUTCOME_FILE` is set and this pass commits fixes, write
 exactly `material` when any fix is substantive or `minor` when every fix is
@@ -85,12 +100,16 @@ Missing classification for a commit defaults to material.
 
 ```text
 Codex deepgrill pass complete.
+PR: #<pr-number>
+Reviewed head: <sha>
 Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
-  Run a fresh local Claude review on this HEAD against <review-base-sha>.
+  Run a fresh local Claude review on this PR head against <review-base-sha>.
+  Read all prior local-review threads before reviewing.
   Classify committed fixes as material or minor.
   Restart at Codex only when either reviewer commits a material fix.
-  Push after one full Codex-then-Claude round produces no material fixes.
+  Mark ready only after one full Codex-then-Claude round produces no material
+  fixes and every local-review thread is resolved.
 ```
 
 Do not recommend or invoke `reviewit` on the local convergence path. The current
@@ -99,11 +118,10 @@ process or outer agent-loop wrapper owns the next pass and final summary.
 When the hosted fallback path is selected, tell the user:
 
 ```text
-Deep pre-push review complete.
+Deep PR review complete.
+PR: #<pr-number>
 Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
-  git push
-  gh pr create --title "..." --body "..."
   reviewit <pr-number> deep
 
 Run `reviewit <pr-number> deep` in a FRESH Codex session.

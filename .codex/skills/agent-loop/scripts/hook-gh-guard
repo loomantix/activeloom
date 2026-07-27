@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+if [ "${AGENT_LOOP_ALLOW_REVIEW_MUTATIONS:-false}" = true ]; then
+    real_gh="${AGENT_LOOP_REAL_GH:?AGENT_LOOP_REAL_GH is required}"
+    exec "$real_gh" "$@"
+fi
+
 if [ "$#" -eq 3 ] && [ "$1" = auth ] && [ "$2" = git-credential ] && [ "$3" = get ]; then
     real_gh="${AGENT_LOOP_REAL_GH:?AGENT_LOOP_REAL_GH is required}"
     exec "$real_gh" "$@"

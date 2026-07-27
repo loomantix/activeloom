@@ -133,7 +133,7 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
         assert synced_guard.is_file()
         assert synced_guard.read_bytes() == upstream_guard.read_bytes()
         assert stat.S_IMODE(synced_guard.stat().st_mode) == 0o755
-    assert "review_contract_version = 1" in (
+    assert "review_contract_version = 2" in (
         consumer / ".codex/skills/agent-loop/agent-loop.config"
     ).read_text(encoding="utf-8")
     sentinel = "\nconsumer customization\n"

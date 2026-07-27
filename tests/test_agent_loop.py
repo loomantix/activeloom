@@ -142,7 +142,18 @@ elif args[:2] == ['issue', 'edit']:
             sys.exit(75)
         claimed.unlink(missing_ok=True)
 elif args[:2] == ['pr', 'view']:
-    if 'headRefOid' in ' '.join(args):
+    joined = ' '.join(args)
+    if 'state,isDraft,headRefName,headRefOid' in joined:
+        branch = (state / 'pr-branch').read_text()
+        remote_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        head = os.environ.get('AGENT_PR_HEAD_OID', remote_head)
+        print('\t'.join(['OPEN', 'true', branch, head]))
+    elif '--json number' in joined:
+        print('1')
+    elif 'headRefOid' in joined:
         print(os.environ.get('AGENT_PR_HEAD_OID', (state / 'pr-head').read_text()))
     else:
         number = args[2]
@@ -156,9 +167,24 @@ elif args[:2] == ['pr', 'create']:
         ['git', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True
     ).stdout.strip()
     (state / 'pr-head').write_text(head)
+    branch = subprocess.run(
+        ['git', 'branch', '--show-current'], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (state / 'pr-branch').write_text(branch)
     print('https://example.invalid/pr/1')
+elif args[:2] == ['pr', 'edit']:
+    (state / 'pr-edited').touch()
+elif args[:2] == ['pr', 'ready']:
+    (state / 'pr-ready').touch()
 elif args[:2] == ['pr', 'close']:
     (state / 'pr-closed').touch()
+elif args[:2] == ['api', 'graphql']:
+    nodes = json.loads(os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]'))
+    print(json.dumps([{'data': {'repository': {'pullRequest': {
+        'reviewThreads': {'nodes': nodes, 'pageInfo': {
+            'hasNextPage': False, 'endCursor': None
+        }}
+    }}}}]))
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
     sys.exit(2)
@@ -189,7 +215,7 @@ def _config(tmp_path: Path, **overrides: str | int) -> str:
         "worker_retries": 1,
         "worker_timeout_seconds": 5,
         "hook_timeout_seconds": 10,
-        "review_contract_version": 1,
+        "review_contract_version": 2,
         "review_max_rounds": 3,
         "retry_on_timeout": "true",
         "retry_delay_seconds": 0,
@@ -201,6 +227,14 @@ def _config(tmp_path: Path, **overrides: str | int) -> str:
         "output_max_lines": 10,
     }
     values.update(overrides)
+    for key in ("codex_review_hook", "claude_review_hook"):
+        command = str(values[key])
+        values[key] = (
+            f"{command}; hook_status=$?; "
+            '[ "$hook_status" -eq 0 ] || exit "$hook_status"; '
+            'if [ "$(git rev-parse HEAD)" != "$AGENT_LOOP_PR_HEAD_SHA" ]; then '
+            'git push origin HEAD:"refs/heads/$AGENT_LOOP_BRANCH"; fi'
+        )
     return "\n".join(f"{key} = {value}" for key, value in values.items()) + "\n"
 
 
@@ -396,6 +430,7 @@ def test_per_issue_worktrees_and_hook_order(
         "setup",
         "worker",
         "validate",
+        "validate",
         "codex",
         "validate",
         "claude",
@@ -412,6 +447,11 @@ def test_per_issue_worktrees_and_hook_order(
         body = body_file.read_text(encoding="utf-8")
         assert "configured setup hook completed" in body
         assert "isolated dependency bootstrap" not in body
+        assert "Local Codex and Claude review is running" in body
+    final_bodies = list((tmp_path / "logs").glob("*/pr-body-final.md"))
+    assert len(final_bodies) == 2
+    for body_file in final_bodies:
+        body = body_file.read_text(encoding="utf-8")
         assert "reported no material fixes in a complete round" in body
         assert "Configured Codex and Claude review hooks reported" in body
         assert "configured non-mutating local validation hook" in body
@@ -483,6 +523,7 @@ def test_unclassified_review_fix_defaults_material_and_restarts_at_codex(
         "setup",
         "worker",
         "validate",
+        "validate",
         "codex",
         "validate",
         "claude",
@@ -516,6 +557,7 @@ def test_codex_material_fix_restarts_the_next_round_at_codex(
     assert events == [
         "setup",
         "worker",
+        "validate",
         "validate",
         "codex",
         "validate",
@@ -561,6 +603,7 @@ def test_minor_only_review_fixes_converge_without_restarting(
         "setup",
         "worker",
         "validate",
+        "validate",
         "codex",
         "validate",
         "claude",
@@ -603,7 +646,8 @@ def test_committed_review_with_invalid_classification_blocks_publication(
     assert "outcome must be exactly 'minor' or 'material'" in result.stderr
     assert "Worktree preserved:" in result.stderr
     remote_branches = _agent_loop_branches(consumer[1])
-    assert "issue-37" not in remote_branches
+    assert "issue-37" in remote_branches
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_review_classification_without_commit_blocks_publication(
@@ -619,7 +663,8 @@ def test_review_classification_without_commit_blocks_publication(
     assert result.returncode != 0
     assert "wrote a fix classification without committing a fix" in result.stderr
     assert "Worktree preserved:" in result.stderr
-    assert "issue-48" not in _agent_loop_branches(consumer[1])
+    assert "issue-48" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_validation_cannot_change_accepted_review_classification(
@@ -648,7 +693,8 @@ def test_validation_cannot_change_accepted_review_classification(
     )
     assert result.returncode != 0
     assert "classification changed during validation" in result.stderr
-    assert "issue-38" not in _agent_loop_branches(consumer[1])
+    assert "issue-38" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_validation_cannot_create_a_missing_material_outcome(
@@ -676,7 +722,8 @@ def test_validation_cannot_create_a_missing_material_outcome(
     )
     assert result.returncode != 0
     assert "outcome file changed during validation" in result.stderr
-    assert "issue-47" not in _agent_loop_branches(consumer[1])
+    assert "issue-47" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_later_reviewer_cannot_change_an_accepted_outcome(
@@ -704,7 +751,8 @@ def test_later_reviewer_cannot_change_an_accepted_outcome(
     assert result.returncode != 0
     assert "Codex review outcome file changed" in result.stderr
     assert "Worktree preserved:" in result.stderr
-    assert "issue-49" not in _agent_loop_branches(consumer[1])
+    assert "issue-49" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 @pytest.mark.parametrize("engine", ["codex", "claude"])
@@ -737,7 +785,8 @@ def test_final_validation_cannot_change_an_accepted_outcome(
     assert result.returncode != 0
     assert f"{engine.title()} review outcome file changed" in result.stderr
     assert "Worktree preserved:" in result.stderr
-    assert "issue-50" not in _agent_loop_branches(consumer[1])
+    assert "issue-50" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
@@ -764,13 +813,66 @@ def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
     assert match
     assert Path(match.group(1)).exists()
     remote_branches = _agent_loop_branches(consumer[1])
-    assert "issue-19" not in remote_branches
+    assert "issue-19" in remote_branches
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+@pytest.mark.parametrize(
+    ("resolved", "comments"),
+    [
+        (
+            False,
+            [
+                {
+                    "body": "<!-- local-review:v1 engine=codex round=1 head=a fingerprint=f -->",
+                    "databaseId": 1,
+                },
+                {"body": "Fixed in abc123.", "databaseId": 2},
+            ],
+        ),
+        (
+            True,
+            [
+                {
+                    "body": "<!-- local-review:v1 engine=claude round=1 head=a fingerprint=f -->",
+                    "databaseId": 1,
+                }
+            ],
+        ),
+    ],
+)
+def test_local_review_thread_requires_reply_and_resolution_before_ready(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    resolved: bool,
+    comments: list[dict[str, object]],
+) -> None:
+    threads = [
+        {
+            "isResolved": resolved,
+            "comments": {
+                "nodes": comments,
+                "pageInfo": {"hasNextPage": False},
+            },
+        }
+    ]
+    result = _run(
+        consumer,
+        ["--issues", "69"],
+        issues=[_issue(69)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps(threads)},
+    )
+    assert result.returncode != 0
+    assert "must contain a disposition reply and be resolved" in result.stderr
+    assert "issue-69" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_review_contract_version_is_required_before_claim(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    legacy_config = _config(tmp_path).replace("review_contract_version = 1\n", "")
+    legacy_config = _config(tmp_path).replace("review_contract_version = 2\n", "")
     result = _run(
         consumer,
         ["--issues", "20"],
@@ -778,7 +880,7 @@ def test_review_contract_version_is_required_before_claim(
         config=legacy_config,
     )
     assert result.returncode != 0
-    assert "review_contract_version = 1" in result.stderr
+    assert "review_contract_version = 2" in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
@@ -883,7 +985,8 @@ def test_validation_commit_after_claude_blocks_publication(
     assert "validation mutated the worktree or HEAD" in result.stderr
     assert "Worktree preserved:" in result.stderr
     remote_branches = _agent_loop_branches(consumer[1])
-    assert "issue-22" not in remote_branches
+    assert "issue-22" in remote_branches
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_setup_commit_cannot_satisfy_worker_commit_requirement(
@@ -933,7 +1036,8 @@ def test_detached_reviewer_commit_blocks_publication(
         in _run_git("show", "HEAD:result.txt", cwd=preserved).stdout
     )
     remote_branches = _agent_loop_branches(consumer[1])
-    assert "issue-23" not in remote_branches
+    assert "issue-23" in remote_branches
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_ambiguous_origin_tag_cannot_spoof_remote_base(
@@ -1047,7 +1151,7 @@ if [ "$1" = status ]; then
     count_file="$AGENT_STATE_DIR/status-count"
     count=$(($(cat "$count_file" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$count" > "$count_file"
-    if [ "$count" -eq 4 ]; then exit 73; fi
+    if [ "$count" -eq 6 ]; then exit 73; fi
 fi
 exec "$AGENT_TEST_REAL_GIT" "$@"
 """,
@@ -1061,7 +1165,8 @@ exec "$AGENT_TEST_REAL_GIT" "$@"
     )
     assert result.returncode != 0
     assert "Could not inspect Git status after the configured Codex review hook" in result.stderr
-    assert "issue-42" not in _agent_loop_branches(remote)
+    assert "issue-42" in _agent_loop_branches(remote)
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_hook_origin_push_is_disabled_until_wrapper_publication(
@@ -1324,10 +1429,11 @@ def test_reviewer_history_rewrite_blocks_publication(
         config=_config(tmp_path, codex_review_hook=codex_hook),
     )
     assert result.returncode != 0
-    assert "rewrote or dropped previously reviewed commits" in result.stderr
+    assert "Configured Codex review hook failed" in result.stderr
     assert "Worktree preserved:" in result.stderr
     remote_branches = _agent_loop_branches(consumer[1])
-    assert "issue-26" not in remote_branches
+    assert "issue-26" in remote_branches
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_non_fast_forward_base_rewrite_after_review_blocks_publication(
@@ -1369,7 +1475,7 @@ def test_non_fast_forward_base_rewrite_after_review_blocks_publication(
         },
     )
     assert result.returncode != 0
-    assert "moved non-fast-forward after the final reviewed snapshot" in result.stderr
+    assert "moved non-fast-forward during review round" in result.stderr
     assert (
         _run_git("rev-parse", "refs/heads/main", cwd=remote).stdout.strip()
         == replacement_base
@@ -1381,7 +1487,8 @@ def test_non_fast_forward_base_rewrite_after_review_blocks_publication(
         == original_base
     )
     remote_branches = _agent_loop_branches(remote)
-    assert "issue-27" not in remote_branches
+    assert "issue-27" in remote_branches
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_fresh_base_merge_uses_sha_validated_before_shared_ref_moves(
@@ -1542,7 +1649,7 @@ exit "$status"
     )
     assert result.returncode != 0
     assert (state_dir / "remote-branch-rewritten").exists()
-    assert "remote issue branch changed after publication push" in result.stderr
+    assert "remote issue branch changed after draft publication push" in result.stderr
     gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
     assert "pr create" not in gh_log
 
@@ -1582,9 +1689,10 @@ exit "$status"
     )
     assert result.returncode != 0
     assert (state_dir / "first-attestation-rewritten").exists()
-    assert "remote issue branch changed before PR creation" in result.stderr
+    assert "created draft PR head could not be attested" in result.stderr
     gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
-    assert "pr create" not in gh_log
+    assert "pr create --draft" in gh_log
+    assert "pr close https://example.invalid/pr/1" in gh_log
 
 
 def test_created_pr_head_mismatch_closes_pr_and_preserves_worktree(
@@ -1600,7 +1708,7 @@ def test_created_pr_head_mismatch_closes_pr_and_preserves_worktree(
         extra_env={"AGENT_PR_HEAD_OID": base_sha},
     )
     assert result.returncode != 0
-    assert "created PR head does not match publication snapshot" in result.stderr
+    assert "created draft PR head could not be attested" in result.stderr
     assert (state_dir / "pr-closed").exists()
     gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
     assert "pr create" in gh_log

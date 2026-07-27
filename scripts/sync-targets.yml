@@ -183,6 +183,10 @@ targets:
     destination: .codex/references/roles/security-reviewer.md
     substitutions: []
 
+  - source: .codex/references/local-review-ledger.md
+    destination: .codex/references/local-review-ledger.md
+    substitutions: []
+
   # Canonical workflow doc — referenced from each consumer's AGENTS.md as
   # the source of truth for the AI review flow.
   - source: .codex/REVIEW_WORKFLOW.md

@@ -1,11 +1,13 @@
 ---
 name: grill
-description: Pre-push adversarial code review for Codex. Use after implementation or refactorpass and before pushing a PR, especially when the user asks to grill, review hard, find bugs, or run the platform pre-push review chain. Supports lean and deep modes.
+description: PR-first adversarial code review for Codex. Use after implementation or refactorpass on an open draft PR, especially when the user asks to grill, review hard, find bugs, or run the platform review chain. Posts verified findings inline before fixing, then replies and resolves. Supports lean and deep modes.
 ---
 
 # Grill
 
-Review the local diff adversarially before push. The goal is to catch bugs, missing tests, security issues, and convention violations while fixes are still local.
+Review an open draft PR adversarially. The goal is to catch bugs, missing tests,
+security issues, and convention violations while preserving every verified
+finding and disposition in the PR.
 
 ## Context Window Check
 
@@ -52,7 +54,7 @@ noise and makes future grills more expensive.
 
 ## Mode
 
-- **Lean**: default. Run the lean two-lane review: code reviewer plus silent failure hunter. This is still an adversarial pre-push review, not a casual skim.
+- **Lean**: default. Run the lean two-lane review: code reviewer plus silent failure hunter. This is still an adversarial PR review, not a casual skim.
 - **Deep**: if the user passes `deep` or the change is high-risk. Run the full independent review matrix below. Deep mode is intentionally much heavier than lean mode; do not collapse it into one general review pass.
 
 If the diff touches customer/tenant-variable behavior—vendor integrations, per-tenant configuration, prompt/output generation, or data normalization—recommend deep mode. The tenant-coupling lens that catches one customer's values hardcoded into shared logic is intentionally not part of the lean two-lane set.
@@ -95,16 +97,20 @@ Run these lanes as independently as the active runtime permits:
 
 ## Process
 
-1. Verify there is a local diff or unpushed commits to review. When the caller
-   supplies a pinned base SHA, give every lane the same literal
-   `<base-sha>..HEAD` range rather than a mutable ref.
-2. Skip docs/config-only changes unless the user explicitly wants review.
-3. Read `AGENTS.md`, relevant path-specific instructions, and changed files.
-4. In lean mode, execute every lane in the Lean Review Matrix. Load these role references for lane prompts:
+1. Load `.codex/references/local-review-ledger.md`.
+2. Resolve the PR number, verify it is open and its head is the current branch,
+   and require local HEAD, remote head, and PR head to match. If the branch has
+   no PR, push it and open a draft PR before reviewing.
+3. Read every prior review thread, including resolved and outdated threads,
+   before inspecting the current PR diff. When the caller supplies a pinned base
+   SHA, give every lane the same literal `<base-sha>..HEAD` range.
+4. Skip docs/config-only changes unless the user explicitly wants review.
+5. Read `AGENTS.md`, relevant path-specific instructions, and changed files.
+6. In lean mode, execute every lane in the Lean Review Matrix. Load these role references for lane prompts:
    - `.codex/references/roles/code-reviewer.md`
    - `.codex/references/roles/silent-failure-hunter.md`
      Keep lane findings separated until both lanes complete, then deduplicate by root cause.
-5. In deep mode, execute every lane in the Deep Review Matrix. Load these role references for lane prompts:
+7. In deep mode, execute every lane in the Deep Review Matrix. Load these role references for lane prompts:
    - `.codex/references/roles/code-reviewer.md`
    - `.codex/references/roles/silent-failure-hunter.md`
    - `.codex/references/roles/type-design-analyzer.md`
@@ -112,10 +118,18 @@ Run these lanes as independently as the active runtime permits:
    - `.codex/references/roles/pr-test-analyzer.md`
    - `.codex/references/roles/security-reviewer.md`
      When the tenant-coupling signal is present, load `.codex/references/roles/code-reviewer.md` again for the dedicated conditional pass. Keep lane findings separated until all lanes complete, then deduplicate by root cause.
-6. Report only findings that are specific, actionable, and supported by file/line evidence.
-7. For each finding, fix it unless it is invalid or a valid major architectural rework. Dismiss invalid findings with evidence. Defer only 300+ line or cross-cutting refactors, and track each deferral in a GitHub issue at deferral time — undocumented deferrals are not allowed.
-8. Critical correctness/security findings must not be silently ignored.
-9. Run targeted validation for any fixes.
+8. Verify and deduplicate lane findings against the source and complete PR
+   ledger. For each confirmed root cause, post one inline comment on an exact
+   diff anchor before editing.
+9. Fix it unless it is invalid or a valid major architectural rework. Dismiss
+   invalid findings with evidence. Defer only 300+ line or cross-cutting
+   refactors, and track each deferral in a GitHub issue.
+10. Run targeted validation, commit, and push with no force.
+11. Reply to every posted thread with the fix SHA and validation or disposition
+    rationale, then resolve it. Stop on any posting, push, reply, or resolution
+    failure.
+12. If the pass has no new confirmed findings, leave a clean-pass PR review
+    comment naming the engine and exact reviewed head.
 
 ## Output
 
@@ -125,9 +139,10 @@ End with:
 - findings fixed
 - findings deferred (with linked GitHub issue) or dismissed (with one-line evidence)
 - validation run
+- PR number, reviewed head, comments posted, replies posted, and threads resolved
 - the next step for the path selected in `.codex/REVIEW_WORKFLOW.md`: return to
-  the local Codex/Claude convergence loop without pushing, or use
-  `reviewit <pr>` / `reviewit <pr> deep` after PR creation on the hosted
+  the local Codex/Claude convergence loop after completing the PR ledger, or use
+  `reviewit <pr>` / `reviewit <pr> deep` on the hosted
   fallback path. When recommending `reviewit`, recommend a fresh Codex session;
   the current session has absorbed grill findings, fix commits, and (in deep
   mode) the full review matrix.
