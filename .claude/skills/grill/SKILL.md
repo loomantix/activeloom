@@ -1,244 +1,135 @@
 ---
 name: grill
-description: Pre-push critical pass — invokes adversarial sub-agents on local changes. Lean default runs code-reviewer + silent-failure-hunter; `deep` arg restores the full agent matrix (type-design, comments, tests, security).
-argument-hint: (optional "deep" — runs full agent matrix; default is the 2 highest-signal agents)
+description: PR-first adversarial review. Lean mode runs the highest-signal local Claude lenses; `deep` selects the full relevant matrix. Verified findings are posted inline before fixes, then replied to and resolved after a pushed fix.
+argument-hint: (optional PR number and/or "deep")
 ---
 
-# /grill — pre-push critical review
+# /grill — PR-first adversarial review
 
-You are running a deliberately adversarial pass on the developer's local changes after `/refactorpass` has cleaned them up but **before** the push and PR creation. The goal: catch issues that bot reviewers (`/reviewit` post-push) and human reviewers will flag, fix them now while it's still local, and require explicit user verification before the push.
-
-This skill is the deliberate adversarial pass between "I think this is ready" and `git push` — every push to origin should have been grilled.
+Run a bounded local Claude review against an open draft PR. GitHub review
+threads are the durable context ledger: later reviewers must see what earlier
+reviewers found, how it was fixed, and why a thread was resolved.
 
 ## Mode resolution
 
-Read `$ARGUMENTS`. If it equals `deep` (case-insensitive, ignore surrounding whitespace), run in **deep mode** (full agent matrix per Phase 1's table). Otherwise run in **lean mode** (default — only the two highest-signal agents). Deep mode is normally invoked by `/deepgrill`, not directly.
+Parse `$ARGUMENTS` for an optional PR number and the word `deep`.
+
+- Lean mode runs `code-reviewer` and, when the diff contains error/async
+  signals, `silent-failure-hunter`.
+- Deep mode selects only the relevant lenses from `code-reviewer`,
+  `silent-failure-hunter`, `type-design-analyzer`, `comment-analyzer`,
+  `pr-test-analyzer`, `security-review`, and the tenant-coupling pass.
+- Five agents is the maximum for one pass. The matrix is a ceiling, not a
+  target.
+
+## Phase 0: Fresh context and PR boundary
 
-## Core principles
+### Context-window check
 
-- **Adversarial stance.** Unlike `/simplify` (which is constructive — find consolidations and simplifications) and `/refactorpass` (the wrapper that runs `/simplify`), `/grill` is critical. Look for what's wrong, what's missing, what could break, what reviewers will catch.
-- **A finder is not its own filter.** Never ask a sub-agent to suppress low-severity or low-confidence findings. A finding suppressed inside the agent is unrecoverable — this skill never learns it existed; a finding that arrives with a low score costs one line and can be cut in a moment. So the agents find and score, and **Phase 3 cuts**. A threshold is fine, at the orchestrator; a threshold inside the agent's prompt is not. See [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §1.
-- **The agent matrix is a ceiling, not a floor.** Run only the lenses whose signals appear in the diff. Do not spawn extra agents to double-check another agent's findings, and do not add a verification agent — the model already self-verifies, so that spend buys nothing. See [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §2–§3.
-- **Fix-everything-valid bias.** The default for every valid finding is **fix now, in this PR**. Dismiss only what's invalid (wrong, false-positive, based on a misread of the diff, or would make the code worse). Defer only when the fix is a major architectural rework — roughly 300+ lines or a cross-cutting redesign — and in that case file a GitHub issue rather than letting it sit as an undocumented todo. The reason: every valid finding that ships becomes the floor for the next PR in this area. Letting them accrue as "deferred" turns the backlog into review noise and makes future grills more expensive.
-- **Skip on docs-only.** Same triviality heuristic as `/refactorpass` and `/reviewit`. Theatre is bad.
-- **User verification on outcomes, not on whether to act.** Findings are presented and the user confirms the proposed disposition (fix / dismiss-as-invalid / defer-as-architectural-issue). The default offered for each finding is the fix-everything-valid rule above, not a neutral "what do you want to do?"
+If this session authored the change or carries dense implementation context,
+stop and recommend a fresh Claude session. Continue only after an explicit
+override. Fresh eyes and prompt-cache headroom are part of the review quality
+contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 
----
+### PR-first pre-flight
 
-## Phase 0: Pre-flight + triviality
+1. Load `.claude/references/local-review-ledger.md`.
+2. Require a clean, committed feature branch, not `main`, `master`, or
+   `staging`.
+3. Reuse the branch's open PR. If none exists, push normally and open a draft
+   PR before starting a reviewer.
+4. Require local HEAD, remote head, and PR head to match.
+5. Record the exact PR base and head SHAs. Read every prior review thread,
+   including resolved and outdated threads.
+6. Skip docs/config-only changesets.
 
-### 0a. Context-window check (do this BEFORE anything else)
+Do not begin a reviewer until the PR ledger is available. Do not use a
+force-push to establish or update the review branch.
 
-`/grill` spawns adversarial sub-agents (Agent tool, `pr-review-toolkit:*`). Each sub-agent gets its own prompt-cache state derived from this session's context. If this session has been heavily used for feature implementation — long conversation, lots of file edits, dense planning — the cache is already spent on context the sub-agents don't need, and their effective working window shrinks accordingly. Deep grill is hit hardest: it spawns up to six agents in parallel.
+## Phase 1: Select the review lenses
 
-Before proceeding, assess honestly:
+Always include `pr-review-toolkit:code-reviewer` when source code changed.
+Add only lenses whose signal exists:
 
-- Has this session been writing/editing the feature about to be grilled? Long conversation, many tool calls, dense edit history?
-- Is the conversation about to brush against auto-compaction territory?
+| Diff signal                                                    | Lens                                           |
+| -------------------------------------------------------------- | ---------------------------------------------- |
+| try/catch, fallback, async, error propagation                  | `silent-failure-hunter`                        |
+| new or changed public types/generics                           | `type-design-analyzer`                         |
+| substantial comments or docstrings                             | `comment-analyzer`                             |
+| new/changed tests                                              | `pr-test-analyzer`                             |
+| auth, crypto, secrets, sensitive data, input or SQL boundaries | `security-review`                              |
+| tenant/customer-variable behaviour or data normalization       | dedicated `code-reviewer` tenant-coupling pass |
 
-If **either is yes**, STOP and tell the user:
+Every finder prompt must identify the exact head and diff, ask the agent to
+read the source, request every plausible finding with severity and `file:line`,
+and impose a concise output ceiling. Do not ask finders to suppress findings by
+confidence. Run selected agents in parallel; the orchestrator verifies them.
 
-> Your context is heavy from the implementation work. Start a new Claude session and run `/grill` (or `/deepgrill`) there — sub-agents need cache headroom, and a fresh session makes the chain materially cheaper. This matters even more for `/deepgrill`, which spawns up to six agents.
+## Phase 2: Verify and deduplicate
 
-Do not proceed in the current session unless the user explicitly overrides.
+Combine the outputs, inspect the code, and reject false positives,
+pre-existing issues outside the diff, and unsupported style preferences.
 
-**A larger context window is not a reason to relax this gate.** Reviewing in the authoring session routinely pushed context to 700–800k tokens, and that history was almost never useful to the review and sometimes actively unhelpful: the session re-reads the diff already holding the rationale it just used to write it, which is the opposite of the fresh-eyes stance `/grill` exists to provide. Capacity to hold the history is not the same as the history being worth holding. See [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
+Before presenting or editing a surviving finding:
 
-### 0b. Standard pre-flight + triviality
+1. derive its stable fingerprint;
+2. search all prior local-review threads for that fingerprint or defect;
+3. reuse the existing thread when present;
+4. otherwise post one inline comment on the right-side diff line using the
+   marker and content contract from the ledger.
 
-1. **Triviality detection** (same heuristic as `/refactorpass` Phase 0 step 5):
+The inline comment must exist before the corresponding edit. If no defensible
+diff anchor exists, keep it out of the automated fix loop or track a genuinely
+architectural follow-up as the ledger requires.
 
-   ```bash
-   git diff --name-only "$(git merge-base @{u} HEAD)..HEAD" 2>/dev/null \
-     || git diff --name-only HEAD
-   ```
+If no new material finding survives, post a clean-pass PR review attestation
+with `engine=claude` and the exact reviewed head SHA.
 
-   Classify by extension. If only docs/config files changed (`.md`, `.txt`, `.yml`, `.yaml`, `.json`, `.toml`, `.gitignore`, `LICENSE`, `CHANGELOG`, `README`, `docs/**`, `*.fixture.*`):
+## Phase 3: Disposition and fixes
 
-   ```
-   🟢 Skipping grill — docs/config-only changeset. Nothing for adversarial sub-agents to find.
-   ```
+Apply the fix-everything-valid bias:
 
-   Exit cleanly. The user can push directly.
+- Fix a confirmed finding in this PR.
+- Dismiss only a false positive or a change that would make the code worse.
+  Reply with evidence and resolve the thread without editing.
+- Defer only a genuinely architectural change. File an issue, reply with its
+  link and rationale, then resolve the thread.
 
-2. **Snapshot HEAD**:
+For confirmed fixes:
 
-   ```bash
-   GRILL_HEAD=$(git rev-parse HEAD)
-   ```
+1. make the smallest safe edit;
+2. run focused validation;
+3. commit conventionally and push normally;
+4. require local HEAD, remote head, and PR head to match;
+5. reply to each thread with the fix SHA and validation result;
+6. resolve each replied thread.
 
----
+Never resolve a finding merely because code changed. A marked thread requires
+both a response and an explicit resolution. Never batch unrelated findings
+into one ambiguous thread.
 
-## Phase 1: Pick relevant adversarial sub-agents
+Material fixes invalidate prior clean-pass attestations and require the next
+local engine to review the new exact head. Minor-only fixes do not by
+themselves start an unbounded new round.
 
-### Lean mode (default)
+## Phase 4: Output
 
-Run **at most two** agents:
+Report the PR and reviewed head, mode and lenses, disposition/thread counts,
+validation, fix SHAs, and whether material fixes require another local-engine
+pass.
 
-| Signal in diff                                                               | Agent                                     |
-| ---------------------------------------------------------------------------- | ----------------------------------------- |
-| Always (source code present)                                                 | `pr-review-toolkit:code-reviewer`         |
-| Try/catch, error-handling, fallback logic, async paths, swallowed exceptions | `pr-review-toolkit:silent-failure-hunter` |
+If this Claude pass made a material fix, restart the bounded round at
+`/codex-review <pr-number>` in a fresh session. Otherwise it completes the
+Claude half of the current round.
 
-Skip the others — they're available on `/deepgrill`. If the diff has none of the silent-failure signals, run only `code-reviewer`. If you're tempted to run more agents because the change "feels load-bearing," that's the signal to suggest `/deepgrill` to the user instead and exit.
+## Boundaries
 
-If the diff touches **customer/tenant-variable behavior** (vendor/third-party integrations, per-tenant config, prompt/output generation, data normalization), recommend `/deepgrill` — the **tenant-coupling lens** that catches one customer's data/config hardcoded into shared logic lives in deep mode (see below), not in the lean two-agent set.
-
-### Deep mode (`/deepgrill` invocation)
-
-Run the full agent matrix:
-
-| Signal in diff                                                                                                                      | Agent                                                                |
-| ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Always (source code present)                                                                                                        | `pr-review-toolkit:code-reviewer`                                    |
-| Try/catch, error-handling, fallback logic, async paths                                                                              | `pr-review-toolkit:silent-failure-hunter`                            |
-| New types, modified type definitions, generics changes                                                                              | `pr-review-toolkit:type-design-analyzer`                             |
-| New large doc comments / docstrings, JSDoc on exports                                                                               | `pr-review-toolkit:comment-analyzer`                                 |
-| Auth, crypto, regulated-data handling (PHI/PII/PCI/secrets), input validation, SQL composition                                      | Built-in `/security-review` skill                                    |
-| New tests, modified test scope on a fix/feature PR                                                                                  | `pr-review-toolkit:pr-test-analyzer`                                 |
-| Customer/tenant-variable behavior: vendor/third-party integrations, per-tenant config, prompt/output generation, data normalization | `pr-review-toolkit:code-reviewer` (tenant-coupling pass — see below) |
-
-Pick the signals present in the diff — don't run every agent on every PR. Two to five agents is typical in deep mode, and that range is a budget rather than an observation: if the diff's signals suggest more, run the five that cover the most distinct failure classes rather than widening the fan-out.
-
-### Tenant-coupling lens (deep mode)
-
-When the diff touches behavior that varies by customer, run a dedicated `code-reviewer` pass whose only job is to catch **_hardcoding the instance instead of the class_** — a value that varies by customer (one tenant's vocabulary, a customer's config, a specific user-reported string) frozen into shared logic as a literal or special-case branch. This is the defect class the other lenses structurally miss: such a hardcode is correct, type-safe, regulated-data-clean, and testable, yet ships the wrong feature. With only one live customer it is indistinguishable from a working fix in production.
-
-The agent's test for each flagged literal: _would this code still be correct for a second customer with different values?_ If no, the value belongs in config/data with a safe default, not in `src/`. (Illustrative shape: a fix that special-cases one customer by name — `if (tenantId === 'acme')` — or hardcodes a list of one customer's category labels to handle how that customer happens to name things. It generalizes to nothing and patches the symptom instead of the cause.)
-
-```
-Agent(
-  description="grill: tenant-coupling scan",
-  subagent_type="pr-review-toolkit:code-reviewer",
-  prompt="Scan this diff ONLY for tenant-coupling: literals or branches that encode one specific customer's data/config/vocabulary into shared logic — e.g. `tenantId === 'acme'`, a hardcoded list of one customer's category/term labels, per-customer special-cases. For each, ask: would this be correct for a SECOND customer with different values? If no, it belongs in config/data with a safe default, not in code. Ignore genuinely universal values (protocol constants, standard enums, framework keys). Report every candidate you find — no severity cutoff, I filter downstream — with severity (critical/suggestion/nitpick) + file:line and a one-line 'move to config' suggestion. Diff:\n\n<paste git diff @{u}...HEAD>\n\nUnder 250 words.",
-)
-```
-
----
-
-## Phase 2: Run agents in parallel
-
-Use the Agent tool with explicit `subagent_type`. Pass the diff as input so the agent doesn't have to discover scope. Run them in a single message (parallel execution).
-
-Every agent prompt must carry two things beyond its lens: an **explicit no-cutoff instruction** (per Core principles — the filtering happens in Phase 3, not in the agent) and an **output length ceiling** (the model's default output runs long, and effort settings don't shorten it).
-
-Example:
-
-```
-Agent(
-  description="grill: silent-failure scan",
-  subagent_type="pr-review-toolkit:silent-failure-hunter",
-  prompt="Review the following committed-but-unpushed changes for silent failures, swallowed exceptions, fallback logic that masks bugs, missing error propagation. Diff:\n\n<paste git diff @{u}...HEAD>\n\nReport EVERY finding you believe is real — do not apply a severity or confidence cutoff, I filter downstream. Numbered list, each with severity (critical/suggestion/nitpick) and file:line. Under 300 words.",
-)
-Agent(
-  description="grill: code-quality scan",
-  subagent_type="pr-review-toolkit:code-reviewer",
-  prompt="Review the following committed-but-unpushed changes against project conventions in CLAUDE.md. Diff:\n\n<paste>\n\nReport EVERY finding you believe is real, including ones you'd normally hold back as low-confidence — score each 0-100 instead of dropping it, I filter downstream. Numbered list, each with severity and file:line. Under 300 words.",
-)
-# (more agents as appropriate)
-```
-
-Agents will return their findings in their final result messages.
-
----
-
-## Phase 3: Aggregate and filter findings
-
-**This phase is the filter.** The agents deliberately reported everything (Phase 2), so it is this phase's job to cut the noise — not theirs. Do the cut here, where you can see all lenses at once and judge each finding against the actual diff.
-
-Combine outputs into a single deduplicated list. Two findings are duplicates if they reference the same file + line range (±5 lines) or describe the same issue semantically. Sort by severity (critical → suggestion → nitpick).
-
-Then drop, without presenting them:
-
-- findings that don't survive a look at the code (the agent misread the diff, or the case is already handled a few lines away);
-- pre-existing issues outside the diff's scope;
-- stylistic preferences no project guideline supports.
-
-Everything that survives goes to the user in the table below. Do **not** drop a finding merely because a low confidence score came back with it — verify it against the code and then either present it or record it as a dismissal. A low score is a reason to check, not a reason to hide.
-
-Present a compact table to the user:
-
-```
-## /grill findings — N critical, M suggestion, P nitpick
-
-| # | Severity   | File:line              | Agent              | Finding                          |
-|---|------------|------------------------|--------------------|----------------------------------|
-| 1 | critical   | apps/foo/bar.ts:42    | silent-failure     | Catch swallows error w/o logging |
-| 2 | suggestion | apps/foo/bar.ts:88    | code-reviewer      | Missing return type on export    |
-| 3 | nitpick    | docs/X.md:12          | comment-analyzer   | Stale code reference             |
-```
-
-If zero findings: skip to Phase 5. The user can push.
-
----
-
-## Phase 4: User verification (interactive)
-
-Apply the **fix-everything-valid bias** from Core principles. For each finding, propose a disposition and ask the user to confirm or override:
-
-- **Default disposition for valid findings: fix now.** Claude applies the fix in this PR as a new commit (`fix: address /grill finding N — <summary>`). This is the default — do not present "defer" as an equally weighted option for ordinary findings.
-- **Dismiss-as-invalid**: propose this only when the finding is wrong, a false positive, based on a misread of the diff, or would make the code worse. Record the dismissal rationale in one line so it's not re-raised in `/reviewit`.
-- **Defer-as-architectural-issue**: propose this only when the fix is a major architectural rework (roughly 300+ lines or a cross-cutting redesign). In that case file a GitHub issue **now** (`gh issue create`) capturing the finding + file/line evidence + rationale, and reference the issue number in the PR body. A "deferred" finding without a filed issue is not allowed — the whole point is to keep the implicit todo backlog from growing.
-
-For each finding, present it like:
-
-```
-Finding N (severity: …) — apps/foo/bar.ts:42 — silent-failure
-  Proposed: FIX (default for valid findings)
-  [Enter] confirm  ·  [d] dismiss-as-invalid (requires rationale)  ·  [i] defer-as-architectural (requires issue)
-```
-
-Process findings one at a time, lowest-numbered first. Do not batch — the user is verifying each. Override is one keypress; the bias is built into which option is the default, not into removing the user's choice.
-
-After all findings handled, ask:
-
-> "Ready to push? After push and PR creation, run `/reviewit <pr-number>` (preferably in a fresh Claude session — see Phase 5 handoff). [Y/n]"
-
-If N: stop here. The user takes over (maybe wants to keep iterating manually).
-
----
-
-## Phase 5: Summary
-
-```
-✅ /grill complete (mode: <lean | deep>).
-- Agents run: <list>
-- Findings: <total> (<critical>/<suggestion>/<nitpick>)
-- Fixed: <count>  ·  Deferred: <count>  ·  Ignored: <count>
-- New commits: <list>
-- HEAD: <SHA>
-
-Next:
-  git push
-  gh pr create --title "..." --body "..."
-  /reviewit <pr-number>          # lean (Gemini + Copilot, 2 iters)
-  /reviewit <pr-number> deep     # deep (Gemini + Copilot, 4 iters w/ early-exit + final /deepgrill)
-
-ℹ️  Run /reviewit in a FRESH Claude session.
-   This session's context has just absorbed the grill output + any fix commits.
-   /reviewit (especially `deep`) drives multiple Gemini/Copilot iterations and a final /deepgrill,
-   each of which benefits from cache headroom. A fresh session for /reviewit is materially cheaper.
-```
-
-If lean mode was used and the changeset touches load-bearing surfaces (auth, crypto, schema migrations, sync mechanism, sync-propagating files under `.claude/skills/**` or `scripts/sync*`), append:
-
-```
-ℹ️  This change touches load-bearing surfaces. Consider re-running via /deepgrill
-    for the full agent matrix (type-design, comments, tests, security) before push.
-```
-
-If any findings were ignored without rationale, refuse to print the "ready to push" line — surface what's missing.
-
----
-
-## What this skill does NOT do
-
-- **Does not push.** That's the developer's call after they've verified.
-- **Does not invoke `/reviewit`.** Three reviewers post-push is a separate concern.
-- **Does not silently apply fixes.** Every "fix now" requires the user choice.
-
----
+- Do not force-push or merge.
+- Do not invoke hosted reviewers on the local convergence path.
+- Do not print raw model logs in the PR.
+- Do not mark the PR ready while marked threads are unanswered or unresolved.
 
 ## Source of truth
 
-This skill lives upstream at `.claude/skills/grill/`. Synced to consumer repos via the sync mechanism. Edits in a consumer will be overwritten — make changes upstream.
+This skill lives upstream at `.claude/skills/grill/` and is synced to consumer
+repositories.

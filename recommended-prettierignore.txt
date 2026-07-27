@@ -31,6 +31,7 @@
 
 # >>> platform-synced paths <<<
 .claude/REVIEW_WORKFLOW.md
+.claude/references/local-review-ledger.md
 .claude/agents/code-architect.md
 .claude/agents/code-explorer.md
 .claude/agents/code-reviewer.md

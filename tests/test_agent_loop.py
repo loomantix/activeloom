@@ -83,7 +83,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write_executable(
         gh,
         r"""#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 state = pathlib.Path(os.environ['AGENT_STATE_DIR'])
 with (state / 'gh.log').open('a') as handle:
@@ -107,18 +107,51 @@ elif args[:2] == ['issue', 'view']:
         print(json.dumps(issue))
 elif args[:2] == ['issue', 'edit']:
     pass
-elif args[:2] == ['pr', 'view']:
-    number = args[2]
-    row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
-    if row:
-        print('\t'.join(str(value) for value in row))
+elif args[:2] == ['repo', 'view']:
+    if 'owner' in ' '.join(args):
+        print('fixture')
+    elif 'name' in ' '.join(args):
+        print('consumer')
     else:
-        sys.exit(1)
+        print('fixture/consumer')
+elif args[:2] == ['pr', 'view']:
+    joined = ' '.join(args)
+    if '--json number' in joined:
+        print('1')
+    elif 'headRefOid' in joined:
+        branch = (state / 'pr-branch').read_text()
+        remote_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        print(os.environ.get('AGENT_PR_HEAD_OID', remote_head))
+    else:
+        number = args[2]
+        row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
+        if row:
+            print('\t'.join(str(value) for value in row))
+        else:
+            sys.exit(1)
 elif args[:2] == ['pr', 'create']:
     if os.environ.get('AGENT_PR_CREATE_FAIL'):
         print('pr create failed (stub)', file=sys.stderr)
         sys.exit(1)
+    branch = subprocess.run(
+        ['git', 'branch', '--show-current'], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (state / 'pr-branch').write_text(branch)
     print('https://example.invalid/pr/1')
+elif args[:2] == ['pr', 'edit']:
+    (state / 'pr-edited').touch()
+elif args[:2] == ['pr', 'ready']:
+    (state / 'pr-ready').touch()
+elif args[:2] == ['api', 'graphql']:
+    nodes = json.loads(os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]'))
+    print(json.dumps([{'data': {'repository': {'pullRequest': {
+        'reviewThreads': {'nodes': nodes, 'pageInfo': {
+            'hasNextPage': False, 'endCursor': None
+        }}
+    }}}}]))
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
     sys.exit(2)
@@ -149,6 +182,8 @@ def _config(tmp_path: Path, **overrides: str | int) -> str:
         "worker_retries": 1,
         "worker_timeout_seconds": 5,
         "hook_timeout_seconds": 10,
+        "review_contract_version": 2,
+        "review_max_rounds": 4,
         "retry_on_timeout": "true",
         "retry_delay_seconds": 0,
         "dependency_gate": "ready",
@@ -272,7 +307,7 @@ def test_dry_run_shows_plan_without_mutation(
     )
     assert result.returncode == 0, result.stderr
     assert "Setup hook:" in result.stdout
-    assert "Review order: Claude deep review -> Codex review" in result.stdout
+    assert "Review order: draft PR -> Codex -> Claude" in result.stdout
     assert "Publication:" in result.stdout
     assert "no claim, worktree, hook, push, or PR mutation" in result.stdout
     assert not worktrees.exists()
@@ -294,11 +329,84 @@ def test_per_issue_worktrees_and_hook_order(
     assert paths[0] != paths[1]
     assert all(not Path(path).exists() for path in paths)
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
-    expected = ["setup", "worker", "validate", "claude", "validate", "codex", "validate", "validate"]
+    expected = [
+        "setup",
+        "worker",
+        "validate",
+        "validate",
+        "codex",
+        "validate",
+        "claude",
+        "validate",
+        "validate",
+    ]
     assert events == expected * 2
     remote_branches = _run_git("for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]).stdout
     assert "issue-4" in remote_branches
     assert "issue-5" in remote_branches
+
+
+def test_marked_review_thread_requires_reply_and_resolution(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    thread = {
+        "isResolved": False,
+        "comments": {
+            "nodes": [
+                {
+                    "body": (
+                        "<!-- local-review:v1 engine=codex round=1 "
+                        "head=abc fingerprint=fixture -->\nFinding"
+                    ),
+                    "databaseId": 1,
+                }
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    result = _run(
+        consumer,
+        ["--issues", "41"],
+        issues=[_issue(41)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps([thread])},
+    )
+    assert result.returncode != 0
+    assert "reply and explicit resolution" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
+    assert "issue-41" in remote_branches
+
+
+def test_review_round_cap_preserves_draft_without_marking_ready(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    codex_hook = (
+        'printf "%s\\n" "$AGENT_LOOP_REVIEW_ROUND" > '
+        '"review-$AGENT_LOOP_REVIEW_ROUND.txt"; '
+        'git add "review-$AGENT_LOOP_REVIEW_ROUND.txt"; '
+        'git commit -m "fix: review round $AGENT_LOOP_REVIEW_ROUND"; '
+        'git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH"'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "42"],
+        issues=[_issue(42)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            review_max_rounds=2,
+        ),
+    )
+    assert result.returncode != 0
+    assert "did not converge within 2 round(s)" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    assert (consumer[3] / "pr-branch").exists()
 
 
 @pytest.mark.parametrize(
@@ -400,6 +508,10 @@ def test_fresh_base_is_integrated_and_validated_before_publication(
         """#!/usr/bin/env bash
 set -e
 clone="$AGENT_STATE_DIR/base-clone"
+if [ -d "$clone/.git" ]; then
+  printf 'codex\\n' >> "$EVENT_LOG"
+  exit 0
+fi
 git clone "$REMOTE_PATH" "$clone" >/dev/null 2>&1
 git -C "$clone" config user.name Test
 git -C "$clone" config user.email test@example.invalid

@@ -35,7 +35,9 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 
 - New layers in the sync model (e.g. inheritance between manifests, recursive imports). The simple "one upstream, one consumer, one manifest" shape is intentional.
 - Skills that bind to a specific tech stack in their core (e.g. a skill that only works on Rails, or only on Expo) — those belong in stack-specific repos.
-- Hooks that auto-fire on every PR (the project deliberately keeps post-PR review manual via `/reviewit`).
+- Hooks that auto-fire hosted reviewers on every PR. Local `/deepgrill` and
+  `/codex-review` operate manually through the draft PR ledger; `/reviewit`
+  remains an explicit hosted fallback.
 
 ## Workflow
 
