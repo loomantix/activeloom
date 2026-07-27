@@ -60,6 +60,7 @@ The reference downstream workflow lives at [`.github/workflows/sync-from-upstrea
 ### Other
 
 - `.claude/REVIEW_WORKFLOW.md` — canonical doc describing the lean / deep AI review chains. Sync this into each downstream repo's `.claude/` so Claude sessions follow the same flow.
+- `.claude/references/local-review-ledger.md` — the draft-PR ledger contract every local review skill loads before it reviews. Sync it alongside `REVIEW_WORKFLOW.md`; `/refactorpass`, `/grill`, `/deepgrill`, `/codex-review`, and `/reviewit` all resolve it relative to their own skill directory, so a locally installed skill reads it from this checkout.
 - `.claude/MODEL_NOTES.md` — prompt-authoring notes for the current default Claude model. The skills and agents here are prompts, and some patterns that helped on an earlier model generation now suppress review findings or waste tokens; this records those deltas and the checklist to apply when adding a skill.
 - `.github/copilot-instructions.md.template` — substitution-driven Copilot reviewer prompt. Each downstream repo fills in `PROJECT_NAME`, `STACK_TABLE`, `CODE_RULES`, etc. via `.platform-config.yml`.
 - `claude/github-api-usage.md` — drop-in guidance for any repo's `CLAUDE.md` on rate-limit-aware GitHub API usage.

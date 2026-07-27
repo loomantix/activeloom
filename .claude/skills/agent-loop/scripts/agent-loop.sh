@@ -931,9 +931,26 @@ run_review_convergence() {
 }
 
 finalize_pr() {
-    local body_file="$AGENT_LOOP_LOG_DIR/pr-body-final.md"
-    verify_local_review_threads || return 1
-    attest_pr_boundary "$(git rev-parse HEAD)" "$AGENT_LOOP_REVIEW_BASE" || return 1
+    local body_file="$AGENT_LOOP_LOG_DIR/pr-body-final.md" boundary_status=0
+    verify_local_review_threads || {
+        recovery_message "Local-review threads lost their reply or resolution before the PR could be marked ready."
+        return 1
+    }
+    # Convergence proved base *ancestry*, not that the base tip still equals the
+    # pinned SHA, and the final publication-diff inspection and reviewed-head
+    # validation run between the two checks. A base commit landing in that window
+    # is the ordinary way this fails, so name it: without these messages the
+    # terminal step of a converged run aborts through the `on_exit` backstop with
+    # nothing but an exit code, and the natural operator response is to mark the
+    # PR ready by hand — the exact boundary this gate protects.
+    attest_pr_boundary "$(git rev-parse HEAD)" "$AGENT_LOOP_REVIEW_BASE" || boundary_status=$?
+    if [ "$boundary_status" -eq 2 ]; then
+        recovery_message "The PR base advanced after review converged; re-run so a fresh round pins and reviews the new base. The draft PR is preserved."
+        return 1
+    elif [ "$boundary_status" -ne 0 ]; then
+        recovery_message "The draft PR boundary diverged after review converged; the PR was not marked ready."
+        return 1
+    fi
     {
         echo "## Summary"
         echo

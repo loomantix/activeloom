@@ -27,7 +27,7 @@ Proceed in the current session only after an explicit override.
 
 ### PR-first boundary
 
-1. Load `.claude/references/local-review-ledger.md`.
+1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
 2. Require a clean, committed feature branch, not `main`, `master`, or
    `staging`.
 3. Reuse the open PR whose head is the branch. If none exists, push normally

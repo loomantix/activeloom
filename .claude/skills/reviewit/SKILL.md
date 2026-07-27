@@ -590,7 +590,7 @@ Invoke via the Skill tool: `Skill(skill="deepgrill", args="<pr-number>")`.
 
 > ⚠️ **Do not stop after `/deepgrill` returns.** When control returns from the Skill tool, treat the output as **Phase 5.5's deliverable** and immediately proceed to Phase 6. Do not summarize, do not hand back to the user mid-skill, do not assume the workflow is done. `/reviewit` owns the final summary.
 
-Before invoking `/deepgrill`, load `.claude/references/local-review-ledger.md`
+Before invoking `/deepgrill`, load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md)
 and require it to read every prior thread. Findings are posted inline before
 editing, then pushed, replied to with the fix SHA and validation, and resolved.
 Those follow-up commits are **not** automatically re-routed through

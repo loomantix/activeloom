@@ -128,6 +128,10 @@ elif args[:2] == ['pr', 'view']:
             ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
+        # A file overrides the env var so a hook can move the base mid-run.
+        base_oid_file = state / 'pr-base-oid'
+        if base_oid_file.exists():
+            base_head = base_oid_file.read_text().strip()
         print('\t'.join([
             os.environ.get('AGENT_PR_HEAD_OID', remote_head),
             os.environ.get('AGENT_PR_HEAD_REF_NAME', branch),
@@ -729,6 +733,32 @@ def test_validation_hook_dirt_blocks_ready_and_preserves_the_worktree(
     assert not (consumer[3] / "pr-ready").exists()
     worktrees = list((tmp_path / "worktrees").glob("*"))
     assert worktrees, "the worktree holding the uncommitted work must be preserved"
+
+
+def test_base_movement_after_convergence_is_named_not_a_bare_abort(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Convergence proves base ancestry, not that the base tip is unchanged, and
+    # the final reviewed-head validation runs between the two checks. A base
+    # commit landing in that window must say so — an unexplained abort on a
+    # converged PR invites a manual `gh pr ready`.
+    validation = (
+        "printf 'validate\\n' >> \"$EVENT_LOG\"; "
+        '[ ! -e "$AGENT_LOOP_LOG_DIR/final-reviewed-head-validation.log" ] || '
+        "printf '%s\\n' \"$AGENT_MOVED_BASE_OID\" > \"$AGENT_STATE_DIR/pr-base-oid\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "51"],
+        issues=[_issue(51)],
+        config=_config(tmp_path, validation_hook=validation),
+        extra_env={"AGENT_MOVED_BASE_OID": "b" * 40},
+    )
+    assert result.returncode != 0
+    assert "base advanced after review converged" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    assert (consumer[3] / "pr-branch").exists(), "the draft PR must be preserved"
+    assert list((tmp_path / "worktrees").glob("*")), "the worktree must be preserved"
 
 
 def test_review_round_cap_preserves_draft_without_marking_ready(

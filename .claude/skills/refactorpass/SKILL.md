@@ -17,7 +17,7 @@ session. Continue only after an explicit override.
 
 ## PR-first pre-flight
 
-1. Load `.claude/references/local-review-ledger.md`.
+1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
 2. Require a clean, committed feature branch, not `main`, `master`, or
    `staging`.
 3. Reuse its open PR. If none exists, push normally and open a draft PR before

@@ -33,7 +33,7 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 
 ### PR-first pre-flight
 
-1. Load `.claude/references/local-review-ledger.md`.
+1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
 2. Require a clean, committed feature branch, not `main`, `master`, or
    `staging`.
 3. Reuse the branch's open PR. If none exists, push normally and open a draft

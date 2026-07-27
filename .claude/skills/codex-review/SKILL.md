@@ -29,7 +29,7 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
 
 2. **Resolve the PR and durable context before starting Codex.**
    - `$ARGUMENTS` must contain a PR number and may contain `verify`.
-   - Load `.claude/references/local-review-ledger.md`.
+   - Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
    - Fetch the PR head without repurposing a primary checkout. Require the current linked worktree branch, its remote head, and the PR head to match.
    - Read every prior review thread, including resolved and outdated threads. Summarize their fingerprints, dispositions, fix SHAs, and reviewed-head attestations for the Codex prompt.
    - Read the PR base with `gh pr view <n> --json baseRefName`.
