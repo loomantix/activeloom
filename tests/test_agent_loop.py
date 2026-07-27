@@ -149,8 +149,14 @@ elif args[:2] == ['pr', 'view']:
             ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
-        head = os.environ.get('AGENT_PR_HEAD_OID', remote_head)
-        print('\t'.join(['OPEN', 'true', branch, head]))
+        raced_head = state / 'raced-pr-head'
+        head = (
+            raced_head.read_text()
+            if raced_head.exists()
+            else os.environ.get('AGENT_PR_HEAD_OID', remote_head)
+        )
+        draft = 'false' if (state / 'pr-ready').exists() else 'true'
+        print('\t'.join(['OPEN', draft, branch, head]))
     elif '--json number' in joined:
         print('1')
     elif 'headRefOid' in joined:
@@ -163,6 +169,8 @@ elif args[:2] == ['pr', 'view']:
         else:
             sys.exit(1)
 elif args[:2] == ['pr', 'create']:
+    for transient in ('pr-ready', 'raced-pr-head', 'reviews.json'):
+        (state / transient).unlink(missing_ok=True)
     head = subprocess.run(
         ['git', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True
     ).stdout.strip()
@@ -175,7 +183,24 @@ elif args[:2] == ['pr', 'create']:
 elif args[:2] == ['pr', 'edit']:
     (state / 'pr-edited').touch()
 elif args[:2] == ['pr', 'ready']:
-    (state / 'pr-ready').touch()
+    if '--undo' in args:
+        (state / 'pr-ready').unlink(missing_ok=True)
+    else:
+        (state / 'pr-ready').touch()
+        raced_head = os.environ.get('AGENT_RACE_HEAD_ON_READY')
+        if raced_head:
+            (state / 'raced-pr-head').write_text(raced_head)
+elif args[:2] == ['pr', 'review']:
+    body = args[args.index('--body') + 1]
+    reviews_file = state / 'reviews.json'
+    reviews = json.loads(reviews_file.read_text()) if reviews_file.exists() else []
+    reviews.append({
+        'body': body,
+        'commit_id': subprocess.run(
+            ['git', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True
+        ).stdout.strip(),
+    })
+    reviews_file.write_text(json.dumps(reviews))
 elif args[:2] == ['pr', 'close']:
     (state / 'pr-closed').touch()
 elif args[:2] == ['api', 'graphql']:
@@ -185,6 +210,10 @@ elif args[:2] == ['api', 'graphql']:
             'hasNextPage': False, 'endCursor': None
         }}
     }}}}]))
+elif args[:1] == ['api'] and any('/reviews?per_page=100' in arg for arg in args):
+    reviews_file = state / 'reviews.json'
+    reviews = json.loads(reviews_file.read_text()) if reviews_file.exists() else []
+    print(json.dumps([reviews]))
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
     sys.exit(2)
@@ -204,7 +233,12 @@ def _issue(number: int, body: str = "", *, assigned: bool = False) -> dict[str, 
     }
 
 
-def _config(tmp_path: Path, **overrides: str | int) -> str:
+def _config(
+    tmp_path: Path,
+    *,
+    auto_clean_attestation: bool = True,
+    **overrides: str | int,
+) -> str:
     values: dict[str, str | int] = {
         "base_branch": "main",
         "setup_hook": "printf 'setup\\n' >> \"$EVENT_LOG\"",
@@ -229,11 +263,20 @@ def _config(tmp_path: Path, **overrides: str | int) -> str:
     values.update(overrides)
     for key in ("codex_review_hook", "claude_review_hook"):
         command = str(values[key])
+        clean_attestation = (
+            'gh pr review "$AGENT_LOOP_PR_NUMBER" --comment --body '
+            '"<!-- local-review-clean:v1 engine=$AGENT_LOOP_REVIEW_ENGINE '
+            'round=$AGENT_LOOP_REVIEW_ROUND head=$AGENT_LOOP_PR_HEAD_SHA -->'
+            '\\nno new material findings"'
+            if auto_clean_attestation
+            else "true"
+        )
         values[key] = (
             f"{command}; hook_status=$?; "
             '[ "$hook_status" -eq 0 ] || exit "$hook_status"; '
             'if [ "$(git rev-parse HEAD)" != "$AGENT_LOOP_PR_HEAD_SHA" ]; then '
-            'git push origin HEAD:"refs/heads/$AGENT_LOOP_BRANCH"; fi'
+            'git push origin HEAD:"refs/heads/$AGENT_LOOP_BRANCH"; '
+            f"else {clean_attestation}; fi"
         )
     return "\n".join(f"{key} = {value}" for key, value in values.items()) + "\n"
 
@@ -867,6 +910,58 @@ def test_local_review_thread_requires_reply_and_resolution_before_ready(
     assert "must contain a disposition reply and be resolved" in result.stderr
     assert "issue-69" in _agent_loop_branches(consumer[1])
     assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_clean_review_requires_current_head_ledger_attestation(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "70"],
+        issues=[_issue(70)],
+        config=_config(tmp_path, auto_clean_attestation=False),
+    )
+    assert result.returncode != 0
+    assert "must attest its round, exact head, and no new material findings" in result.stderr
+    assert "issue-70" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_review_hooks_can_publish_clean_ledger_attestations(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "71"],
+        issues=[_issue(71)],
+        config=_config(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert gh_log.count("pr review 1 --comment --body") == 2
+    reviews = json.loads((consumer[3] / "reviews.json").read_text(encoding="utf-8"))
+    assert {review["body"].split(" engine=", 1)[1].split(" ", 1)[0] for review in reviews} == {
+        "codex",
+        "claude",
+    }
+
+
+def test_ready_head_race_returns_pr_to_draft(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "72"],
+        issues=[_issue(72)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_RACE_HEAD_ON_READY": "a" * 40},
+    )
+    assert result.returncode != 0
+    assert "returned it to draft" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "pr ready 1\n" in gh_log
+    assert "pr ready 1 --undo" in gh_log
 
 
 def test_review_contract_version_is_required_before_claim(

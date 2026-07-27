@@ -77,6 +77,12 @@ report the exact unresolved thread; do not silently continue.
 
 A pass with no new confirmed findings must leave a PR review comment containing
 the engine, round, exact reviewed head SHA, and `no new material findings`.
+Include this machine-readable marker so automation can attest the clean pass:
+
+```text
+<!-- local-review-clean:v1 engine=<codex|claude> round=<n> head=<sha> -->
+```
+
 Clean evidence becomes stale as soon as the PR head changes.
 
 For a two-engine loop:

@@ -1000,6 +1000,12 @@ run_review_pass() {
     export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
     classify_review_result "$engine" "$before_sha" "$after_sha" "$outcome_file" || return 1
     classification="$REVIEW_FIX_CLASSIFICATION"
+    if [ "$classification" = clean ]; then
+        verify_clean_pass_attestation "$slug" "$round" "$before_sha" || {
+            recovery_message "$engine review did not publish the required clean-pass attestation in round $round."
+            return 1
+        }
+    fi
     outcome_signature="$(review_outcome_signature "$outcome_file")" || {
         recovery_message "Could not snapshot $engine review outcome in round $round."
         return 1
@@ -1174,6 +1180,24 @@ attest_pr_head() {
     fi
 }
 
+attest_ready_pr_head() {
+    local expected_sha="$1" phase="$2"
+    local row state draft head_branch head_sha
+    row="$(gh pr view "$AGENT_LOOP_PR_NUMBER" \
+        --json state,isDraft,headRefName,headRefOid \
+        --jq '[.state,(.isDraft|tostring),.headRefName,.headRefOid] | @tsv')" || {
+        echo "could not attest ready PR $phase" >&2
+        return 1
+    }
+    IFS=$'\t' read -r state draft head_branch head_sha <<< "$row"
+    if [ "$state" != OPEN ] || [ "$draft" != false ] || \
+       [ "$head_branch" != "$AGENT_LOOP_BRANCH" ] || \
+       [ "$head_sha" != "$expected_sha" ]; then
+        echo "ready PR identity or head changed $phase" >&2
+        return 1
+    fi
+}
+
 attest_review_head() {
     local phase="$1" local_sha status
     status="$(git status --porcelain)" || return 1
@@ -1238,6 +1262,28 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
           )] | length == 0)
     ' "$ledger_file" >/dev/null || {
         echo "local-review threads must contain a disposition reply and be resolved" >&2
+        return 1
+    }
+}
+
+verify_clean_pass_attestation() {
+    local engine="$1" round="$2" reviewed_head="$3"
+    local reviews_file="$AGENT_LOOP_LOG_DIR/$engine-review-round-$round-reviews.json"
+    local marker
+    marker="<!-- local-review-clean:v1 engine=$engine round=$round head=$reviewed_head -->"
+    gh api --paginate --slurp \
+        "repos/$GH_REPO/pulls/$AGENT_LOOP_PR_NUMBER/reviews?per_page=100" \
+        > "$reviews_file" || {
+        echo "could not load PR reviews for the $engine clean-pass attestation" >&2
+        return 1
+    }
+    jq -e --arg marker "$marker" --arg head "$reviewed_head" '
+      any(.[][]?;
+        (.commit_id == $head) and
+        ((.body // "") | contains($marker)) and
+        ((.body // "") | contains("no new material findings")))
+    ' "$reviews_file" >/dev/null || {
+        echo "$engine review must attest its round, exact head, and no new material findings" >&2
         return 1
     }
 }
@@ -1323,7 +1369,13 @@ finalize_pr() {
         echo "Closes #$AGENT_LOOP_ISSUE_ID"
     } > "$body_file"
     gh pr edit "$AGENT_LOOP_PR_NUMBER" --body-file "$body_file" || return 1
+    attest_review_head "immediately before marking ready" || return 1
     gh pr ready "$AGENT_LOOP_PR_NUMBER" || return 1
+    if ! attest_ready_pr_head "$final_sha" "after marking ready"; then
+        gh pr ready "$AGENT_LOOP_PR_NUMBER" --undo >/dev/null 2>&1 || true
+        echo "ready PR identity or head changed during finalization; returned it to draft" >&2
+        return 1
+    fi
     echo -e "${GREEN}✓${NC} Review converged; PR ready: $AGENT_LOOP_PR_URL ($final_sha)"
 }
 

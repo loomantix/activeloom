@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Preserve ordinary Git access for local hooks while denying publication.
+# Preserve ordinary Git access while denying non-review publication and
+# constraining review pushes to the exact issue branch.
+# These command shims are not credential isolation; that redesign is tracked at
+# https://github.com/loomantix/codex-platform/issues/37.
 
 set -euo pipefail
 

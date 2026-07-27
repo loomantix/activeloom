@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Hooks receive complete issue context locally and must not mutate GitHub state.
+# Deny GitHub API access to non-review hooks. Review hooks currently receive
+# the broader PR-ledger capability described by the v2 contract.
+# These command shims are not credential isolation; that redesign is tracked at
+# https://github.com/loomantix/codex-platform/issues/37.
 # Preserve the narrow protocol used by `credential.helper = !gh auth
-# git-credential` so authenticated Git reads continue to work.
+# git-credential` until the credential-isolation redesign removes it.
 
 set -euo pipefail
 
@@ -15,5 +18,5 @@ if [ "$#" -eq 3 ] && [ "$1" = auth ] && [ "$2" = git-credential ] && [ "$3" = ge
     exec "$real_gh" "$@"
 fi
 
-echo "gh is disabled inside agent-loop hooks; the wrapper owns remote mutations" >&2
+echo "gh is disabled inside non-review agent-loop hooks; the wrapper owns remote mutations" >&2
 exit 1

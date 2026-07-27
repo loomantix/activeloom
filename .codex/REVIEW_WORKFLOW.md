@@ -5,8 +5,9 @@ edits will be overwritten on the next sync.
 
 ## PR-First Rule
 
-Open a draft pull request before any local cleanup or adversarial review. Local
-Codex and Claude passes use GitHub review threads as durable shared context:
+Open a draft pull request before any structured review cleanup such as
+`refactorpass`, or adversarial review. Local Codex and Claude passes use GitHub
+review threads as durable shared context:
 post each verified finding inline before editing, push the correction, reply
 with the fix and validation, then resolve the thread. Every pass must read
 resolved as well as unresolved threads before reviewing the current head.
