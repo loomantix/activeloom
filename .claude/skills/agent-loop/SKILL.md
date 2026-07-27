@@ -82,6 +82,10 @@ wrapper treats a silent no-op pass as unverified rather than clean. Validation
 hooks must leave a clean tree; work they write but do not commit is not in the
 reviewed head and would be discarded with the worktree.
 
+The wrapper accepts machine-readable findings, replies, and clean-pass evidence
+only from the authenticated GitHub actor resolved at startup. Review hooks must
+post ledger evidence with that same identity.
+
 For a non-mutating consumer smoke test from an upstream development worktree,
 set `AGENT_LOOP_PROJECT_DIR=/path/to/consumer` and pass `--dry-run`. Do not use
 that override for a mutating run; execute the consumer's synced script instead.

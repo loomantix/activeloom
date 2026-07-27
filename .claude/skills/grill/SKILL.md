@@ -82,8 +82,9 @@ The inline comment must exist before the corresponding edit. If no defensible
 diff anchor exists, keep it out of the automated fix loop or track a genuinely
 architectural follow-up as the ledger requires.
 
-If no new material finding survives, post a clean-pass PR review attestation
-with `engine=claude` and the exact reviewed head SHA.
+If no new confirmed finding survives and the pass makes no commit, post a
+clean-pass PR review attestation with `engine=claude` and the exact reviewed
+head SHA. A fix pass attests through its thread replies instead.
 
 ## Phase 3: Disposition and fixes
 

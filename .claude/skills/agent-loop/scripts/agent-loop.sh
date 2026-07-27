@@ -647,11 +647,17 @@ verify_clean_pass_attestation() {
     bodies_file="$AGENT_LOOP_LOG_DIR/$slug-clean-pass-round-$round.txt"
     {
         gh api "repos/{owner}/{repo}/issues/$AGENT_LOOP_PR_NUMBER/comments" \
-            --paginate --jq '.[].body' &&
+            --paginate |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty' &&
         gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/comments" \
-            --paginate --jq '.[].body' &&
+            --paginate |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty' &&
         gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/reviews" \
-            --paginate --jq '.[].body'
+            --paginate |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty'
     } > "$bodies_file" || return 1
     grep -Fq -- "$marker" "$bodies_file"
 }
@@ -669,7 +675,7 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
         nodes {
           isResolved
           comments(first:100) {
-            nodes { body databaseId }
+            nodes { body databaseId author { login } }
             pageInfo { hasNextPage }
           }
         }
@@ -689,28 +695,37 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     # state cannot be established. Resolution is then checked per marker — a
     # marker with no later comment in its thread is an unanswered finding, which
     # a thread-length test cannot see on a reused thread.
-    jq -e --arg marker '<!-- local-review:v1 ' '
+    jq -e --arg marker '<!-- local-review:v1 ' --arg reviewer "$CURRENT_LOGIN" '
       def markers: [.comments.nodes | to_entries[]
-        | select((.value.body // "") | contains($marker)) | .key];
+        | select(
+            (.value.author.login == $reviewer)
+            and ((.value.body // "") | contains($marker))
+          ) | .key];
+      def has_reviewer_reply_after_latest_marker:
+        (markers | max) as $latest
+        | any(.comments.nodes | to_entries[];
+            (.key > $latest) and (.value.author.login == $reviewer));
       all(.[]; (.errors // []) | length == 0)
       and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
         | ($threads | all(.comments.pageInfo.hasNextPage | not))
         and ($threads
           | map(select(markers | length > 0))
-          | all(.isResolved and ((markers | max) < ((.comments.nodes | length) - 1)))))
+          | all(.isResolved and has_reviewer_reply_after_latest_marker)))
     ' "$ledger_file" >/dev/null
 }
 
 run_review_convergence() {
-    local round=1 engine slug hook before after material outcome_file classification
+    local round=1 engine slug hook before after material outcome_file classification round_base_sha
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
         export AGENT_LOOP_REVIEW_ROUND="$round"
         material=false
         git fetch origin "$BASE_BRANCH" --quiet
-        if ! git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD; then
+        round_base_sha="$(git rev-parse "origin/$BASE_BRANCH")"
+        export AGENT_LOOP_REVIEW_BASE="$round_base_sha"
+        if ! git merge-base --is-ancestor "$round_base_sha" HEAD; then
             echo -e "${BLUE}▸${NC} Integrating fresh base before review round $round"
-            if ! git merge --no-edit "origin/$BASE_BRANCH"; then
+            if ! git merge --no-edit "$round_base_sha"; then
                 git merge --abort >/dev/null 2>&1 || true
                 recovery_message "Fresh-base merge conflicted before review round $round."
                 return 1
@@ -962,7 +977,6 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             ;;
     esac
     open_draft_pr "$SELECTED_ID" "$branch"
-    export AGENT_LOOP_REVIEW_BASE="origin/$BASE_BRANCH"
     REVIEW_ROUNDS_USED=0
     run_review_convergence
     inspect_publication_diff || { recovery_message "Final reviewed diff inspection failed."; exit 1; }

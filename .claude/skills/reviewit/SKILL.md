@@ -51,7 +51,9 @@ This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilo
    gh pr view <pr-number> --json number,title,headRefName,baseRefName,state,files,mergeable
    ```
 
-3. **Check PR is open**. If closed/merged/draft-without-explicit-confirmation, notify and exit.
+3. **Check PR is open**. If closed or merged, notify and exit. An explicit
+   `/reviewit <pr-number>` invocation is sufficient authorization to review an
+   open draft; keep it draft throughout this skill.
 
 4. **Confirm the head ref is checked out locally** (`git rev-parse --abbrev-ref HEAD` matches `headRefName`). If not, the skill cannot push fixes — surface and exit.
 

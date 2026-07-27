@@ -139,7 +139,9 @@ When the status file appears with exit code zero, read the findings file — it 
 - Present the resulting thread list with `file:line`, severity, and your one-line verification.
 - Call out where Codex **disagreed with or added to** earlier ledger findings;
   that cross-engine delta is the reason to run it.
-- If Codex reports no new material finding, post a clean-pass PR review attestation with `engine=codex` and the exact reviewed head.
+- If Codex reports no new confirmed finding and makes no commit, post a
+  clean-pass PR review attestation with `engine=codex` and the exact reviewed
+  head. A fix pass attests through its thread replies instead.
 
 ## Phase 4: Disposition
 

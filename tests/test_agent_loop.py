@@ -155,6 +155,10 @@ elif args[:2] == ['api', 'graphql']:
         }}}}]))
         sys.exit(1)
     nodes = json.loads(os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]'))
+    default_author = os.environ.get('AGENT_THREAD_AUTHOR', 'tester')
+    for node in nodes:
+        for comment in node.get('comments', {}).get('nodes', []):
+            comment.setdefault('author', {'login': default_author})
     print(json.dumps([{'data': {'repository': {'pullRequest': {
         'reviewThreads': {'nodes': nodes, 'pageInfo': {
             'hasNextPage': False, 'endCursor': None
@@ -171,7 +175,12 @@ elif args[0] == 'api' and args[1].startswith('repos/{owner}/{repo}/'):
     if args[1].endswith('issues/1/comments'):
         log = state / 'pr-comments.log'
         if log.exists():
-            sys.stdout.write(log.read_text())
+            author = os.environ.get('AGENT_COMMENT_AUTHOR', 'tester')
+            comments = [
+                {'body': line, 'user': {'login': author}}
+                for line in log.read_text().splitlines()
+            ]
+            print(json.dumps(comments))
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
     sys.exit(2)
@@ -194,6 +203,8 @@ def _issue(number: int, body: str = "", *, assigned: bool = False) -> dict[str, 
 def _clean_pass_hook(engine: str) -> str:
     return (
         f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
+        "printf '%s\\n' \"$AGENT_LOOP_REVIEW_BASE\" >> "
+        "\"$AGENT_STATE_DIR/review-bases.log\"; "
         "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
         f'-f body="<!-- local-review-pass:v1 engine={engine} '
         'round=$AGENT_LOOP_REVIEW_ROUND head=$AGENT_LOOP_PR_HEAD_SHA -->"'
@@ -452,6 +463,37 @@ def test_attestation_must_match_the_reviewed_head(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def test_clean_pass_attestation_must_be_from_local_reviewer(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "49"],
+        issues=[_issue(49)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_COMMENT_AUTHOR": "untrusted-user"},
+    )
+    assert result.returncode != 0
+    assert "posted no clean-pass attestation" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_review_hooks_receive_same_literal_base_sha(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "50"],
+        issues=[_issue(50)],
+        config=_config(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    bases = (consumer[3] / "review-bases.log").read_text(encoding="utf-8").splitlines()
+    assert len(bases) == 2
+    assert bases[0] == bases[1]
+    assert re.fullmatch(r"[0-9a-f]{40}", bases[0])
+
+
 def test_failed_ledger_fetch_is_not_a_verified_ledger(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -489,6 +531,39 @@ def test_resolved_thread_needs_a_reply_after_its_latest_marker(
         consumer,
         ["--issues", "46"],
         issues=[_issue(46)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps([thread])},
+    )
+    assert result.returncode != 0
+    assert "reply and explicit resolution" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_resolved_thread_needs_reply_from_local_reviewer(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    thread = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {
+                    "body": "<!-- local-review:v1 engine=codex round=1 head=abc fingerprint=fixture -->\nFinding",
+                    "databaseId": 1,
+                    "author": {"login": "tester"},
+                },
+                {
+                    "body": "Not a local-review disposition.",
+                    "databaseId": 2,
+                    "author": {"login": "untrusted-user"},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    result = _run(
+        consumer,
+        ["--issues", "51"],
+        issues=[_issue(51)],
         config=_config(tmp_path),
         extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps([thread])},
     )

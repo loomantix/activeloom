@@ -27,14 +27,22 @@ session. Continue only after an explicit override.
 5. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
 6. Skip docs/config-only changesets.
 
-## Single `/simplify` pass
+## Single proposal-only `/simplify` pass
 
-Invoke `Skill(skill="simplify")` once. Do not run a second pass.
+Record the exact HEAD and clean worktree status. Invoke
+`Skill(skill="simplify", args="Analyze the PR diff and return proposed
+behavior-preserving cleanups only. Do not edit files, stage changes, or
+commit.")` once. Do not run a second pass.
+
+Require HEAD and worktree status to remain unchanged when it returns. If
+`/simplify` edited or committed despite the proposal-only instruction, stop,
+preserve the worktree, and report a failed ledger contract. Do not post a
+finding after its edit already exists.
 
 Consolidate its suggestions, verify each against the source, and deduplicate
 against the complete PR ledger. For every confirmed cleanup:
 
-1. Post one inline local-review comment before accepting the edit.
+1. Post one inline local-review comment before applying the edit.
 2. Keep the cleanup behavior-preserving and inside changed code, apart from a
    tiny adjacent edit required to complete it safely.
 3. Reject broad rewrites, feature behavior, unrelated style churn, and
@@ -45,8 +53,10 @@ them and create one `refactor: /simplify pass — <summary>` commit. Push normal
 reply to every cleanup thread with the commit SHA and validation, then resolve
 it. Stop if any ledger step fails.
 
-If no cleanup survives verification, leave a clean-pass PR review comment with
-Claude, the exact reviewed head, and `no new material findings`.
+If no cleanup survives verification, leave an informational PR comment naming
+the cleanup lane and exact reviewed head. Do not use the
+`local-review-pass:v1` engine attestation: only the final adversarial `grill`
+lane may certify the enclosing Claude review hook.
 
 ## Output
 

@@ -27,8 +27,9 @@ Use this path when both local engines are available:
 5. Classify fixes as `material` or `minor`. Restart at Codex when either pass
    makes a material fix. Keep minor-only fixes without restarting.
 6. Converge after one complete Codex-then-Claude round makes no material fixes,
-   both clean attestations cover the current head, and every local-review thread
-   has a disposition reply and is resolved.
+   every pass that committed nothing has an attestation for the exact head it
+   reviewed, and every local-review thread has a disposition reply and is
+   resolved. A pass with a fix attests through its thread reply instead.
 7. Stop after four rounds by default. Leave the PR draft and report
    non-convergence instead of continuing an unbounded cycle.
 
