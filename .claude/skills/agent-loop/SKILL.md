@@ -76,7 +76,11 @@ fresh fetch plus `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 `AGENT_LOOP_PR_HEAD_SHA`, `AGENT_LOOP_REVIEW_ENGINE`, and
 `AGENT_LOOP_REVIEW_ROUND`. A hook that commits may write exactly `minor` or
 `material` to `AGENT_LOOP_REVIEW_OUTCOME_FILE`; a missing classification
-defaults to material.
+defaults to material. A hook that commits nothing must instead post the ledger's
+clean-pass comment for its own engine, round, and `AGENT_LOOP_PR_HEAD_SHA` — the
+wrapper treats a silent no-op pass as unverified rather than clean. Validation
+hooks must leave a clean tree; work they write but do not commit is not in the
+reviewed head and would be discarded with the worktree.
 
 For a non-mutating consumer smoke test from an upstream development worktree,
 set `AGENT_LOOP_PROJECT_DIR=/path/to/consumer` and pass `--dry-run`. Do not use
@@ -152,7 +156,8 @@ opened one summary PR at the end. That model is gone:
   must be migrated by hand: set `review_contract_version = 2`, add
   `review_max_rounds`, and update both review hooks to the PR-ledger contract.
   Old hooks that prohibit all pushes will fail closed because each fix must be
-  pushed normally to the exact draft-PR branch.
+  pushed normally to the exact draft-PR branch, and a hook that reviews without
+  posting a clean-pass attestation fails closed for the same reason.
 
 ## Test Guidance
 

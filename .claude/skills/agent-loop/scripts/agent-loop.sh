@@ -566,6 +566,18 @@ run_validation() {
         "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log"
 }
 
+# Head attestation compares commit SHAs only, so a validation hook that exits 0
+# while writing a tracked file leaves work that no gate can see — and the
+# published PR would then be marked ready without it, moments before
+# `git worktree remove --force` discards it.
+require_clean_tree_after() {
+    local label="$1"
+    [ -z "$(git status --porcelain)" ] || {
+        recovery_message "$label left uncommitted changes; the reviewed head does not contain them."
+        return 1
+    }
+}
+
 inspect_publication_diff() {
     local file_count
     # This function is called in an `||` context, so `set -e` is disabled in its
@@ -624,6 +636,26 @@ attest_pr_head() {
         [ "$expected" = "$pr_sha" ]
 }
 
+# A review hook that exits 0 without committing or posting anything is
+# indistinguishable from a genuinely clean pass unless the pass itself leaves
+# evidence. Require the ledger's clean-pass attestation, bound to this engine,
+# this round, and the exact head that was reviewed, so a no-op or silently
+# declining hook cannot converge an unreviewed PR.
+verify_clean_pass_attestation() {
+    local slug="$1" round="$2" sha="$3" marker bodies_file
+    marker="<!-- local-review-pass:v1 engine=$slug round=$round head=$sha -->"
+    bodies_file="$AGENT_LOOP_LOG_DIR/$slug-clean-pass-round-$round.txt"
+    {
+        gh api "repos/{owner}/{repo}/issues/$AGENT_LOOP_PR_NUMBER/comments" \
+            --paginate --jq '.[].body' &&
+        gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/comments" \
+            --paginate --jq '.[].body' &&
+        gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/reviews" \
+            --paginate --jq '.[].body'
+    } > "$bodies_file" || return 1
+    grep -Fq -- "$marker" "$bodies_file"
+}
+
 verify_local_review_threads() {
     local owner name ledger_file query
     owner="$(gh repo view --json owner --jq .owner.login)"
@@ -646,18 +678,26 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     }
   }
 }'
+    # This function is only ever called on the left of `||`, so `set -e` is
+    # disabled in its body: check the fetch explicitly or a partial page set that
+    # happens to stay parseable is verified as a complete ledger.
     gh api graphql --paginate --slurp -f query="$query" -f owner="$owner" \
-        -f name="$name" -F number="$AGENT_LOOP_PR_NUMBER" > "$ledger_file"
-    jq -e '
-      all(.[]; (.errors // []) | length == 0) and
-      ([.[].data.repository.pullRequest.reviewThreads.nodes[]
-        | select(any(.comments.nodes[];
-            (.body // "") | contains("<!-- local-review:v1 ")))
-        | select(
-            (.isResolved | not) or
-            (.comments.pageInfo.hasNextPage) or
-            ((.comments.nodes | length) < 2)
-          )] | length == 0)
+        -f name="$name" -F number="$AGENT_LOOP_PR_NUMBER" > "$ledger_file" || return 1
+    # The comment-pagination guard runs before the marker filter on purpose: a
+    # thread whose marker sits past the first comment page has no marker in
+    # `comments.nodes`, so filtering first would drop exactly the threads whose
+    # state cannot be established. Resolution is then checked per marker — a
+    # marker with no later comment in its thread is an unanswered finding, which
+    # a thread-length test cannot see on a reused thread.
+    jq -e --arg marker '<!-- local-review:v1 ' '
+      def markers: [.comments.nodes | to_entries[]
+        | select((.value.body // "") | contains($marker)) | .key];
+      all(.[]; (.errors // []) | length == 0)
+      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
+        | ($threads | all(.comments.pageInfo.hasNextPage | not))
+        and ($threads
+          | map(select(markers | length > 0))
+          | all(.isResolved and ((markers | max) < ((.comments.nodes | length) - 1)))))
     ' "$ledger_file" >/dev/null
 }
 
@@ -677,8 +717,12 @@ run_review_convergence() {
             fi
             inspect_publication_diff || return 1
             run_validation "fresh-base-round-$round" || return 1
+            require_clean_tree_after "fresh-base-round-$round validation" || return 1
             git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH" || return 1
-            material=true
+            # Deliberately not material: both engines review this merged head
+            # below, so the round is already a complete pass over the final tree.
+            # The post-review base check at the bottom of the loop is what forces
+            # a restart, because that is the case the reviewers did not see.
         fi
         for engine in Codex Claude; do
             if [ "$engine" = Codex ]; then
@@ -717,6 +761,7 @@ run_review_convergence() {
                 return 1
             }
             run_validation "$slug-review-round-$round" || return 1
+            require_clean_tree_after "$slug review round $round validation" || return 1
             if [ "$after" != "$before" ]; then
                 classification=material
                 if [ -e "$outcome_file" ]; then
@@ -734,9 +779,15 @@ run_review_convergence() {
                     esac
                 fi
                 [ "$classification" = minor ] || material=true
-            elif [ -e "$outcome_file" ]; then
-                recovery_message "$engine review wrote an outcome without a fix commit."
-                return 1
+            else
+                [ ! -e "$outcome_file" ] || {
+                    recovery_message "$engine review wrote an outcome without a fix commit."
+                    return 1
+                }
+                verify_clean_pass_attestation "$slug" "$round" "$after" || {
+                    recovery_message "$engine review round $round committed nothing and posted no clean-pass attestation for head $after; the pass is unverified."
+                    return 1
+                }
             fi
         done
         git fetch origin "$BASE_BRANCH" --quiet
@@ -916,6 +967,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     run_review_convergence
     inspect_publication_diff || { recovery_message "Final reviewed diff inspection failed."; exit 1; }
     run_validation "final-reviewed-head" || { recovery_message "Final reviewed-head validation failed."; exit 1; }
+    require_clean_tree_after "final-reviewed-head validation" || exit 1
     finalize_pr
 
     # Publication already succeeded and the branch is retained locally and on

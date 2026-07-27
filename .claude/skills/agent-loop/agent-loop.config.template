@@ -22,6 +22,10 @@ validation_hook =
 # validation, resolve completed threads, and leave local/remote/PR heads equal.
 # When a pass commits, it may write exactly `minor` or `material` to
 # $AGENT_LOOP_REVIEW_OUTCOME_FILE; a missing classification defaults material.
+# A pass that commits nothing must post a clean-pass comment carrying
+# `<!-- local-review-pass:v1 engine=<slug> round=$AGENT_LOOP_REVIEW_ROUND
+# head=$AGENT_LOOP_PR_HEAD_SHA -->`, or the run fails as unverified.
+# Validation hooks must also leave a clean tree.
 # They must not force-push, merge, or invoke hosted AI reviewers.
 review_contract_version = 2
 review_max_rounds = 4

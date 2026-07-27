@@ -68,9 +68,19 @@ report the exact unresolved thread.
 
 ## Record clean passes and convergence
 
-A pass with no new confirmed findings leaves a PR review comment naming the
-engine, round, exact reviewed head SHA, and `no new material findings`. Clean
-evidence becomes stale as soon as the PR head changes.
+A pass with no new confirmed findings leaves a PR comment naming the engine,
+round, exact reviewed head SHA, and `no new material findings`, carrying this
+machine-readable marker:
+
+```text
+<!-- local-review-pass:v1 engine=<codex|claude> round=<n> head=<sha> -->
+```
+
+An automated runner requires that attestation from every pass that committed
+nothing: a hook exiting successfully proves only that it ran, not that it read
+anything. Clean evidence becomes stale as soon as the PR head changes, so the
+marker's `head` must be the exact SHA reviewed, and a pass that fixed something
+attests through its thread replies instead.
 
 For a two-engine loop:
 
