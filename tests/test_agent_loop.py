@@ -155,8 +155,17 @@ elif args[:2] == ['pr', 'view']:
             if raced_head.exists()
             else os.environ.get('AGENT_PR_HEAD_OID', remote_head)
         )
-        draft = 'false' if (state / 'pr-ready').exists() else 'true'
-        print('\t'.join(['OPEN', draft, branch, head]))
+        base_branch = os.environ.get('AGENT_PR_BASE_REF_NAME', 'main')
+        base_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        base_oid = os.environ.get('AGENT_PR_BASE_OID', base_head)
+        draft = os.environ.get(
+            'AGENT_PR_IS_DRAFT',
+            'false' if (state / 'pr-ready').exists() else 'true',
+        )
+        print('\t'.join(['OPEN', draft, branch, head, base_branch, base_oid]))
     elif '--json number' in joined:
         print('1')
     elif 'headRefOid' in joined:
@@ -184,12 +193,29 @@ elif args[:2] == ['pr', 'edit']:
     (state / 'pr-edited').touch()
 elif args[:2] == ['pr', 'ready']:
     if '--undo' in args:
+        if os.environ.get('AGENT_FAIL_READY_UNDO') == 'true':
+            sys.exit(75)
         (state / 'pr-ready').unlink(missing_ok=True)
     else:
         (state / 'pr-ready').touch()
+        if os.environ.get('AGENT_RACE_THREAD_ON_READY') == 'true':
+            (state / 'review-threads.json').write_text(json.dumps([{
+                'isResolved': False,
+                'comments': {
+                    'nodes': [{
+                        'body': '<!-- local-review:v1 engine=codex round=9 '
+                                'head=' + 'a' * 40 + ' fingerprint=ready-race -->',
+                        'databaseId': 99,
+                        'author': {'login': 'tester'},
+                    }],
+                    'pageInfo': {'hasNextPage': False},
+                },
+            }]))
         raced_head = os.environ.get('AGENT_RACE_HEAD_ON_READY')
         if raced_head:
             (state / 'raced-pr-head').write_text(raced_head)
+        if os.environ.get('AGENT_FAIL_READY_AFTER_MUTATION') == 'true':
+            sys.exit(76)
 elif args[:2] == ['pr', 'review']:
     body = args[args.index('--body') + 1]
     reviews_file = state / 'reviews.json'
@@ -205,16 +231,36 @@ elif args[:2] == ['pr', 'review']:
 elif args[:2] == ['pr', 'close']:
     (state / 'pr-closed').touch()
 elif args[:2] == ['api', 'graphql']:
-    nodes = json.loads(os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]'))
-    print(json.dumps([{'data': {'repository': {'pullRequest': {
-        'reviewThreads': {'nodes': nodes, 'pageInfo': {
-            'hasNextPage': False, 'endCursor': None
-        }}
-    }}}}]))
-elif args[:1] == ['api'] and any('/reviews?per_page=100' in arg for arg in args):
+    threads_file = state / 'review-threads.json'
+    nodes = json.loads(
+        threads_file.read_text()
+        if threads_file.exists()
+        else os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]')
+    )
+    pages = json.loads(os.environ.get('AGENT_REVIEW_THREAD_PAGES_JSON', 'null'))
+    if pages is None:
+        pages = [nodes]
+    query = args[args.index('-f') + 1] if '-f' in args else ''
+    if '--paginate' not in args or '$endCursor' not in query or 'after:$endCursor' not in query:
+        pages = pages[:1]
+    output = []
+    for index, page_nodes in enumerate(pages):
+        has_next = index + 1 < len(pages)
+        output.append({'data': {'repository': {'pullRequest': {
+            'reviewThreads': {'nodes': page_nodes, 'pageInfo': {
+                'hasNextPage': has_next,
+                'endCursor': f'cursor-{index + 1}' if has_next else None,
+            }}
+        }}}})
+    print(json.dumps(output))
+elif args[:1] == ['api'] and any('/issues/1/comments' in arg for arg in args):
+    print('[]')
+elif args[:1] == ['api'] and any('/pulls/1/comments' in arg for arg in args):
+    print('[]')
+elif args[:1] == ['api'] and any('/pulls/1/reviews' in arg for arg in args):
     reviews_file = state / 'reviews.json'
     reviews = json.loads(reviews_file.read_text()) if reviews_file.exists() else []
-    print(json.dumps([reviews]))
+    print(json.dumps([reviews] if '--slurp' in args else reviews))
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
     sys.exit(2)
@@ -238,6 +284,7 @@ def _config(
     tmp_path: Path,
     *,
     auto_clean_attestation: bool = True,
+    auto_committed_evidence: bool = True,
     **overrides: str | int,
 ) -> str:
     values: dict[str, str | int] = {
@@ -263,6 +310,7 @@ def _config(
     }
     values.update(overrides)
     for key in ("codex_review_hook", "claude_review_hook"):
+        engine = key.removesuffix("_review_hook")
         command = str(values[key])
         clean_attestation = (
             'gh pr review "$AGENT_LOOP_PR_NUMBER" --comment --body '
@@ -272,11 +320,33 @@ def _config(
             if auto_clean_attestation
             else "true"
         )
+        committed_evidence = (
+            "after=$(git rev-parse HEAD); "
+            "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
+            "--arg round \"$AGENT_LOOP_REVIEW_ROUND\" "
+            "--arg before \"$AGENT_LOOP_PR_HEAD_SHA\" --arg after \"$after\" "
+            '\'[{isResolved:true,comments:{nodes:['
+            '{body:("<!-- local-review:v1 engine="+$engine+" round="+$round+" '
+            'head="+$before+" fingerprint=fixture-"+$engine+" -->\\nFinding"),'
+            'databaseId:1,author:{login:"tester"}},'
+            '{body:("<!-- local-review-disposition:v1 engine="+$engine+" '
+            'round="+$round+" head="+$after+" fingerprint=fixture-"+$engine+" '
+            'outcome=fixed -->\\nFixed and validated."),databaseId:2,'
+            'author:{login:"tester"}}],pageInfo:{hasNextPage:false}}}]\' '
+            '> "$AGENT_STATE_DIR/review-threads.json"; '
+            'gh pr review "$AGENT_LOOP_PR_NUMBER" --comment --body '
+            f'"<!-- local-review-complete:v1 engine={engine} '
+            'round=$AGENT_LOOP_REVIEW_ROUND before=$AGENT_LOOP_PR_HEAD_SHA '
+            'head=$after -->"'
+            if auto_committed_evidence
+            else "true"
+        )
         values[key] = (
             f"{command}; hook_status=$?; "
             '[ "$hook_status" -eq 0 ] || exit "$hook_status"; '
             'if [ "$(git rev-parse HEAD)" != "$AGENT_LOOP_PR_HEAD_SHA" ]; then '
             'git push origin HEAD:"refs/heads/$AGENT_LOOP_BRANCH"; '
+            f"{committed_evidence}; "
             f"else {clean_attestation}; fi"
         )
     return "\n".join(f"{key} = {value}" for key, value in values.items()) + "\n"
@@ -736,7 +806,7 @@ def test_validation_cannot_change_accepted_review_classification(
         ),
     )
     assert result.returncode != 0
-    assert "classification changed during validation" in result.stderr
+    assert "outcome file changed during validation" in result.stderr
     assert "issue-38" in _agent_loop_branches(consumer[1])
     assert not (consumer[3] / "pr-ready").exists()
 
@@ -816,15 +886,24 @@ def test_final_validation_cannot_change_an_accepted_outcome(
         "printf 'material\\n' > "
         f'"$AGENT_LOOP_LOG_DIR/{engine}-review-round-1.outcome"; fi'
     )
+    config = (
+        _config(
+            tmp_path,
+            validation_hook=validation_hook,
+            codex_review_hook=review_hook,
+        )
+        if engine == "codex"
+        else _config(
+            tmp_path,
+            validation_hook=validation_hook,
+            claude_review_hook=review_hook,
+        )
+    )
     result = _run(
         consumer,
         ["--issues", "50"],
         issues=[_issue(50)],
-        config=_config(
-            tmp_path,
-            validation_hook=validation_hook,
-            **{f"{engine}_review_hook": review_hook},
-        ),
+        config=config,
     )
     assert result.returncode != 0
     assert f"{engine.title()} review outcome file changed" in result.stderr
@@ -983,6 +1062,30 @@ def test_clean_pass_attestation_from_another_account_is_not_review_evidence(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def test_committed_review_requires_structured_fix_and_completion_evidence(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    review_hook = (
+        "printf 'silent fix\\n' > silent-fix.txt; git add silent-fix.txt; "
+        "git commit -m 'fix: silent review edit'; "
+        "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "76"],
+        issues=[_issue(76)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=review_hook,
+            auto_committed_evidence=False,
+        ),
+    )
+    assert result.returncode != 0
+    assert "posted no final-lane completion attestation" in result.stderr
+    assert "issue-76" in _agent_loop_branches(consumer[1])
+    assert not (consumer[3] / "pr-ready").exists()
+
+
 def test_truncated_review_thread_cannot_hide_its_marker_behind_pagination(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1004,6 +1107,49 @@ def test_truncated_review_thread_cannot_hide_its_marker_behind_pagination(
         issues=[_issue(74)],
         config=_config(tmp_path),
         extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps(threads)},
+    )
+    assert result.returncode != 0
+    assert "must contain a disposition reply and be resolved" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_later_review_thread_page_cannot_hide_an_incomplete_finding(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first_page = [
+        {
+            "isResolved": True,
+            "comments": {
+                "nodes": [_thread_comment(1, "Unrelated discussion.")],
+                "pageInfo": {"hasNextPage": False},
+            },
+        }
+    ]
+    second_page = [
+        {
+            "isResolved": False,
+            "comments": {
+                "nodes": [
+                    _thread_comment(
+                        2,
+                        "<!-- local-review:v1 engine=codex round=2 "
+                        f"head={'a' * 40} fingerprint=second-page -->",
+                    )
+                ],
+                "pageInfo": {"hasNextPage": False},
+            },
+        }
+    ]
+    result = _run(
+        consumer,
+        ["--issues", "77"],
+        issues=[_issue(77)],
+        config=_config(tmp_path),
+        extra_env={
+            "AGENT_REVIEW_THREAD_PAGES_JSON": json.dumps(
+                [first_page, second_page]
+            )
+        },
     )
     assert result.returncode != 0
     assert "must contain a disposition reply and be resolved" in result.stderr
@@ -1040,11 +1186,86 @@ def test_ready_head_race_returns_pr_to_draft(
         extra_env={"AGENT_RACE_HEAD_ON_READY": "a" * 40},
     )
     assert result.returncode != 0
-    assert "returned it to draft" in result.stderr
+    assert "attested back in draft state" in result.stderr
     assert not (consumer[3] / "pr-ready").exists()
     gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
     assert "pr ready 1\n" in gh_log
     assert "pr ready 1 --undo" in gh_log
+
+
+@pytest.mark.parametrize(
+    ("extra_env", "expected"),
+    [
+        ({"AGENT_PR_BASE_REF_NAME": "release"}, "base branch changed"),
+        ({"AGENT_PR_BASE_OID": "a" * 40}, "base advanced or diverged"),
+    ],
+)
+def test_review_requires_exact_pr_base_boundary(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    extra_env: dict[str, str],
+    expected: str,
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "78"],
+        issues=[_issue(78)],
+        config=_config(tmp_path),
+        extra_env=extra_env,
+    )
+    assert result.returncode != 0
+    assert expected in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_new_review_finding_during_ready_is_rolled_back_to_draft(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "79"],
+        issues=[_issue(79)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_RACE_THREAD_ON_READY": "true"},
+    )
+    assert result.returncode != 0
+    assert "local-review ledger changed during finalization" in result.stderr
+    assert "attested back in draft state" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_ready_rollback_failure_reports_operator_critical_state(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "80"],
+        issues=[_issue(80)],
+        config=_config(tmp_path),
+        extra_env={
+            "AGENT_RACE_HEAD_ON_READY": "a" * 40,
+            "AGENT_FAIL_READY_UNDO": "true",
+        },
+    )
+    assert result.returncode != 0
+    assert "rollback to draft failed and operator action is required" in result.stderr
+    assert (consumer[3] / "pr-ready").exists()
+
+
+def test_ambiguous_ready_failure_is_restored_and_attested_draft(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "81"],
+        issues=[_issue(81)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_FAIL_READY_AFTER_MUTATION": "true"},
+    )
+    assert result.returncode != 0
+    assert "ready mutation failed after changing or obscuring PR state" in result.stderr
+    assert "attested back in draft state" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_review_contract_version_is_required_before_claim(
@@ -1068,11 +1289,16 @@ def test_review_contract_version_is_required_before_claim(
 def test_zero_timeout_is_rejected_before_claim(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path, timeout_key: str
 ) -> None:
+    config = (
+        _config(tmp_path, worker_timeout_seconds=0)
+        if timeout_key == "worker_timeout_seconds"
+        else _config(tmp_path, hook_timeout_seconds=0)
+    )
     result = _run(
         consumer,
         ["--issues", "57"],
         issues=[_issue(57)],
-        config=_config(tmp_path, **{timeout_key: 0}),
+        config=config,
     )
     assert result.returncode != 0
     assert f"{timeout_key} must be a positive integer" in result.stderr
@@ -1607,7 +1833,7 @@ def test_reviewer_history_rewrite_blocks_publication(
         config=_config(tmp_path, codex_review_hook=codex_hook),
     )
     assert result.returncode != 0
-    assert "Configured Codex review hook failed" in result.stderr
+    assert "rewrote or dropped previously reviewed commits" in result.stderr
     assert "Worktree preserved:" in result.stderr
     remote_branches = _agent_loop_branches(consumer[1])
     assert "issue-26" in remote_branches

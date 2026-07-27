@@ -958,8 +958,8 @@ run_review_pass() {
     local engine="$1" slug="$2" hook="$3" round="$4"
     local hook_description="$5" hook_failure_description="$6"
     local review_description="$7" validation_description="$8"
-    local before_sha after_sha status classification outcome_signature
-    local validated_classification validated_outcome_signature outcome_file
+    local before_sha after_sha status classification outcome_signature outcome_file
+    local boundary_status
 
     export AGENT_LOOP_REVIEW_ENGINE="$slug"
     outcome_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.outcome"
@@ -967,10 +967,15 @@ run_review_pass() {
     rm -f -- "$outcome_file"
     before_sha="$(git rev-parse HEAD)"
     export AGENT_LOOP_PR_HEAD_SHA="$before_sha"
-    attest_review_head "before $engine review round $round" || {
+    boundary_status=0
+    attest_review_head "before $engine review round $round" \
+        "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
+    if [ "$boundary_status" -eq 2 ]; then
+        return 2
+    elif [ "$boundary_status" -ne 0 ]; then
         recovery_message "PR head attestation failed before $engine review round $round."
         return 1
-    }
+    fi
     run_bounded_hook "$hook_description (round $round)" "$hook" \
         "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
         recovery_message "$hook_failure_description failed in review round $round."
@@ -993,16 +998,30 @@ run_review_pass() {
         recovery_message "$review_description rewrote or dropped previously reviewed commits in round $round."
         return 1
     }
-    attest_review_head "after $engine review round $round" || {
+    boundary_status=0
+    attest_review_head "after $engine review round $round" \
+        "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
+    if [ "$boundary_status" -eq 2 ]; then
+        return 2
+    elif [ "$boundary_status" -ne 0 ]; then
         recovery_message "$review_description did not leave local, remote, and PR heads aligned in round $round."
         return 1
-    }
+    fi
     export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
     classify_review_result "$engine" "$before_sha" "$after_sha" "$outcome_file" || return 1
     classification="$REVIEW_FIX_CLASSIFICATION"
     if [ "$classification" = clean ]; then
         verify_clean_pass_attestation "$slug" "$round" "$before_sha" || {
             recovery_message "$engine review did not publish the required clean-pass attestation in round $round."
+            return 1
+        }
+    else
+        verify_review_completion_attestation "$slug" "$round" "$before_sha" "$after_sha" || {
+            recovery_message "$engine review committed but posted no final-lane completion attestation in round $round."
+            return 1
+        }
+        verify_committed_pass_evidence "$slug" "$round" "$after_sha" || {
+            recovery_message "$engine review committed without a resolved same-round finding and structured fix disposition in round $round."
             return 1
         }
     fi
@@ -1014,35 +1033,38 @@ run_review_pass() {
         recovery_message "Validation after $validation_description failed in review round $round."
         return 1
     }
-    classify_review_result "$engine" "$before_sha" "$after_sha" "$outcome_file" || return 1
-    validated_classification="$REVIEW_FIX_CLASSIFICATION"
-    if [ "$validated_classification" != "$classification" ]; then
-        recovery_message "$engine review outcome classification changed during validation in round $round."
-        return 1
-    fi
-    validated_outcome_signature="$(review_outcome_signature "$outcome_file")" || {
-        recovery_message "Could not re-read $engine review outcome after validation in round $round."
-        return 1
-    }
-    if [ "$validated_outcome_signature" != "$outcome_signature" ]; then
-        recovery_message "$engine review outcome file changed during validation in round $round."
-        return 1
-    fi
-    attest_review_head "after $engine review validation in round $round" || {
+    require_review_outcome_signature "$engine" "$outcome_file" \
+        "$outcome_signature" "during validation in round $round" || return 1
+    boundary_status=0
+    attest_review_head "after $engine review validation in round $round" \
+        "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
+    if [ "$boundary_status" -eq 2 ]; then
+        return 2
+    elif [ "$boundary_status" -ne 0 ]; then
         recovery_message "PR head attestation failed after $engine review validation in round $round."
         return 1
-    }
+    fi
 
     REVIEW_PASS_CLASSIFICATION="$classification"
     REVIEW_PASS_OUTCOME_FILE="$outcome_file"
     REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
 }
 
+require_fast_forward_base_advance() {
+    local reviewed_base="$1" phase="$2" latest_base
+    fetch_base || return 1
+    latest_base="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" || return 1
+    if ! git merge-base --is-ancestor "$reviewed_base" "$latest_base"; then
+        recovery_message "Base branch moved non-fast-forward $phase."
+        return 1
+    fi
+}
+
 run_review_convergence() {
     local round=1 codex_classification claude_classification
     local codex_outcome_signature claude_outcome_signature
     local codex_outcome_file claude_outcome_file
-    local round_base_sha latest_base_sha
+    local round_base_sha latest_base_sha pass_status
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
@@ -1050,6 +1072,8 @@ run_review_convergence() {
 
         fetch_base
         round_base_sha="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")"
+        export AGENT_LOOP_REVIEW_BASE_SHA
+        AGENT_LOOP_REVIEW_BASE_SHA="$round_base_sha"
         if ! git merge-base --is-ancestor "$round_base_sha" HEAD; then
             echo -e "${BLUE}▸${NC} Integrating fresh base before review round $round"
             if ! git merge --no-edit "$round_base_sha"; then
@@ -1065,24 +1089,43 @@ run_review_convergence() {
                 recovery_message "Fresh-base validation failed before review round $round."
                 return 1
             }
-            push_review_head "after fresh-base integration for round $round" || {
+            push_review_head "after fresh-base integration for round $round" \
+                "$round_base_sha" || {
                 recovery_message "Could not publish fresh-base integration before review round $round."
                 return 1
             }
         fi
-        export AGENT_LOOP_REVIEW_BASE_SHA
-        AGENT_LOOP_REVIEW_BASE_SHA="$round_base_sha"
+        pass_status=0
         run_review_pass Codex codex "$CODEX_REVIEW_HOOK" "$round" \
             "configured Codex review hook" "Configured Codex review hook" \
             "Configured Codex review hook" \
-            "the configured Codex review hook"
+            "the configured Codex review hook" || pass_status=$?
+        if [ "$pass_status" -eq 2 ]; then
+            require_fast_forward_base_advance "$round_base_sha" \
+                "during review round $round (Codex boundary)" || return 1
+            echo "   PR base advanced during Codex review; restart at Codex on the next round"
+            round=$((round + 1))
+            continue
+        elif [ "$pass_status" -ne 0 ]; then
+            return 1
+        fi
         codex_classification="$REVIEW_PASS_CLASSIFICATION"
         codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
         codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
 
+        pass_status=0
         run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
             "configured Claude review hook" "Claude review hook" "Claude review" \
-            "Claude review"
+            "Claude review" || pass_status=$?
+        if [ "$pass_status" -eq 2 ]; then
+            require_fast_forward_base_advance "$round_base_sha" \
+                "during review round $round (Claude boundary)" || return 1
+            echo "   PR base advanced during Claude review; restart at Codex on the next round"
+            round=$((round + 1))
+            continue
+        elif [ "$pass_status" -ne 0 ]; then
+            return 1
+        fi
         claude_classification="$REVIEW_PASS_CLASSIFICATION"
         claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
         claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
@@ -1162,44 +1205,39 @@ attest_remote_branch() {
     fi
 }
 
-attest_pr_head() {
-    local expected_sha="$1" phase="$2"
-    local row state draft head_branch head_sha
+attest_pr_state() {
+    local expected_sha="$1" expected_base="$2" expected_draft="$3" phase="$4"
+    local row state draft head_branch head_sha base_branch base_sha
     row="$(gh pr view "$AGENT_LOOP_PR_NUMBER" \
-        --json state,isDraft,headRefName,headRefOid \
-        --jq '[.state,(.isDraft|tostring),.headRefName,.headRefOid] | @tsv')" || {
-        echo "could not attest draft PR $phase" >&2
+        --json state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid \
+        --jq '[.state,(.isDraft|tostring),.headRefName,.headRefOid,.baseRefName,.baseRefOid] | @tsv')" || {
+        echo "could not attest PR boundary $phase" >&2
         return 1
     }
-    IFS=$'\t' read -r state draft head_branch head_sha <<< "$row"
-    if [ "$state" != OPEN ] || [ "$draft" != true ] || \
+    IFS=$'\t' read -r state draft head_branch head_sha base_branch base_sha <<< "$row"
+    if [ "$state" != OPEN ] || [ "$draft" != "$expected_draft" ] || \
        [ "$head_branch" != "$AGENT_LOOP_BRANCH" ] || \
-       [ "$head_sha" != "$expected_sha" ]; then
-        echo "draft PR identity or head changed $phase" >&2
+       [ "$base_branch" != "$BASE_BRANCH" ] || \
+       { [ -n "$expected_sha" ] && [ "$head_sha" != "$expected_sha" ]; }; then
+        echo "PR identity, state, head, or base branch changed $phase" >&2
         return 1
     fi
+    if [ -n "$expected_base" ] && [ "$base_sha" != "$expected_base" ]; then
+        echo "PR base advanced or diverged $phase" >&2
+        return 2
+    fi
+}
+
+attest_pr_head() {
+    attest_pr_state "$1" "$2" true "$3"
 }
 
 attest_ready_pr_head() {
-    local expected_sha="$1" phase="$2"
-    local row state draft head_branch head_sha
-    row="$(gh pr view "$AGENT_LOOP_PR_NUMBER" \
-        --json state,isDraft,headRefName,headRefOid \
-        --jq '[.state,(.isDraft|tostring),.headRefName,.headRefOid] | @tsv')" || {
-        echo "could not attest ready PR $phase" >&2
-        return 1
-    }
-    IFS=$'\t' read -r state draft head_branch head_sha <<< "$row"
-    if [ "$state" != OPEN ] || [ "$draft" != false ] || \
-       [ "$head_branch" != "$AGENT_LOOP_BRANCH" ] || \
-       [ "$head_sha" != "$expected_sha" ]; then
-        echo "ready PR identity or head changed $phase" >&2
-        return 1
-    fi
+    attest_pr_state "$1" "$2" false "$3"
 }
 
 attest_review_head() {
-    local phase="$1" local_sha status
+    local phase="$1" expected_base="$2" local_sha status
     status="$(git status --porcelain)" || return 1
     [ -z "$status" ] || {
         echo "review worktree is dirty $phase" >&2
@@ -1211,19 +1249,19 @@ attest_review_head() {
     }
     local_sha="$(git rev-parse HEAD)" || return 1
     attest_remote_branch "$AGENT_LOOP_BRANCH" "$local_sha" "$phase" || return 1
-    attest_pr_head "$local_sha" "$phase"
+    attest_pr_head "$local_sha" "$expected_base" "$phase"
 }
 
 push_review_head() {
-    local phase="$1" sha
+    local phase="$1" expected_base="$2" sha
     require_issue_branch_head || return 1
     sha="$(git rev-parse HEAD)" || return 1
     git push origin "$sha:refs/heads/$AGENT_LOOP_BRANCH" || return 1
     attest_remote_branch "$AGENT_LOOP_BRANCH" "$sha" "$phase" || return 1
-    attest_pr_head "$sha" "$phase"
+    attest_pr_head "$sha" "$expected_base" "$phase"
 }
 
-verify_local_review_threads() {
+fetch_local_review_threads() {
     local owner="${GH_REPO%%/*}" name="${GH_REPO#*/}"
     local ledger_file="$AGENT_LOOP_LOG_DIR/local-review-threads.json"
     local query
@@ -1250,6 +1288,75 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
         echo "could not load PR review threads" >&2
         return 1
     }
+    printf '%s\n' "$ledger_file"
+}
+
+fetch_review_attestation_bodies() {
+    local output_file="$1"
+    {
+        gh api --paginate "repos/$GH_REPO/issues/$AGENT_LOOP_PR_NUMBER/comments" |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty' &&
+        gh api --paginate "repos/$GH_REPO/pulls/$AGENT_LOOP_PR_NUMBER/comments" |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty' &&
+        gh api --paginate "repos/$GH_REPO/pulls/$AGENT_LOOP_PR_NUMBER/reviews" |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty'
+    } > "$output_file"
+}
+
+verify_review_completion_attestation() {
+    local engine="$1" round="$2" before_sha="$3" after_sha="$4"
+    local bodies_file="$AGENT_LOOP_LOG_DIR/$engine-review-round-$round-complete.txt"
+    local marker
+    marker="<!-- local-review-complete:v1 engine=$engine round=$round before=$before_sha head=$after_sha -->"
+    fetch_review_attestation_bodies "$bodies_file" || return 1
+    grep -Fq -- "$marker" "$bodies_file"
+}
+
+verify_committed_pass_evidence() {
+    local engine="$1" round="$2" after_sha="$3" ledger_file
+    ledger_file="$(fetch_local_review_threads)" || return 1
+    jq -e --arg reviewer "$CURRENT_LOGIN" --arg engine "$engine" \
+        --argjson round "$round" --arg after "$after_sha" '
+      def finding:
+        capture("<!-- local-review:v1 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) -->");
+      def disposition:
+        capture("<!-- local-review-disposition:v1 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) outcome=(?<outcome>fixed|dismissed|deferred) -->");
+      all(.[]; (.errors // []) | length == 0)
+      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
+        | ($threads | all(.comments.pageInfo.hasNextPage | not))
+        and any($threads[];
+          . as $thread
+          | $thread.isResolved
+          and any($thread.comments.nodes | to_entries[];
+            select(.value.author.login == $reviewer)
+            | (try (.value.body | finding) catch null) as $finding
+            | select(
+                $finding != null
+                and $finding.engine == $engine
+                and ($finding.round | tonumber) == $round
+              )
+            | .key as $finding_index
+            | any($thread.comments.nodes | to_entries[];
+                (.key > $finding_index)
+                and (.value.author.login == $reviewer)
+                and ((try (.value.body | disposition) catch null) as $reply
+                  | $reply != null
+                  and $reply.engine == $engine
+                  and ($reply.round | tonumber) == $round
+                  and $reply.head == $after
+                  and $reply.fingerprint == $finding.fingerprint
+                  and $reply.outcome == "fixed")
+              )
+          )))
+    ' "$ledger_file" >/dev/null
+}
+
+verify_local_review_threads() {
+    local ledger_file
+    ledger_file="$(fetch_local_review_threads)" || return 1
     # Check comment pagination across every thread *before* filtering by marker.
     # A thread whose marker sits past the first comment page carries no marker in
     # `comments.nodes`, so filtering first would silently drop exactly the threads
@@ -1319,7 +1426,7 @@ close_unattested_pr() {
 }
 
 open_draft_pr() {
-    local number="$1" branch="$2" publication_sha="$3"
+    local number="$1" branch="$2" publication_sha="$3" publication_base_sha="$4"
     local body_file pr_url pr_number
     require_origin_identity || {
         echo "origin identity changed before draft PR publication" >&2
@@ -1359,18 +1466,33 @@ open_draft_pr() {
     export AGENT_LOOP_PR_NUMBER="$pr_number"
     export AGENT_LOOP_PR_URL="$pr_url"
     export AGENT_LOOP_PR_HEAD_SHA="$publication_sha"
-    if ! attest_pr_head "$publication_sha" "after draft PR creation"; then
+    if ! attest_pr_head "$publication_sha" "$publication_base_sha" \
+        "after draft PR creation"; then
         close_unattested_pr "$pr_url" "created draft PR head could not be attested"
         return 1
     fi
     echo -e "${GREEN}✓${NC} Opened draft review ledger $pr_url"
 }
 
+restore_draft_after_finalization_failure() {
+    local expected_sha="$1" expected_base="$2" reason="$3"
+    if ! gh pr ready "$AGENT_LOOP_PR_NUMBER" --undo >/dev/null 2>&1; then
+        echo "$reason; rollback to draft failed and operator action is required" >&2
+        return 1
+    fi
+    if ! attest_pr_state "" "" true "after finalization rollback"; then
+        echo "$reason; rollback could not be attested and operator action is required" >&2
+        return 1
+    fi
+    echo "$reason; PR was attested back in draft state" >&2
+    return 0
+}
+
 finalize_pr() {
     local body_file="$AGENT_LOOP_LOG_DIR/pr-body-final.md"
     local final_sha
     final_sha="$(git rev-parse HEAD)" || return 1
-    attest_review_head "before marking ready" || return 1
+    attest_review_head "before marking ready" "$REVIEWED_BASE_SHA" || return 1
     verify_local_review_threads || return 1
     {
         echo "## Summary"
@@ -1389,11 +1511,27 @@ finalize_pr() {
         echo "Closes #$AGENT_LOOP_ISSUE_ID"
     } > "$body_file"
     gh pr edit "$AGENT_LOOP_PR_NUMBER" --body-file "$body_file" || return 1
-    attest_review_head "immediately before marking ready" || return 1
-    gh pr ready "$AGENT_LOOP_PR_NUMBER" || return 1
-    if ! attest_ready_pr_head "$final_sha" "after marking ready"; then
-        gh pr ready "$AGENT_LOOP_PR_NUMBER" --undo >/dev/null 2>&1 || true
-        echo "ready PR identity or head changed during finalization; returned it to draft" >&2
+    attest_review_head "immediately before marking ready" "$REVIEWED_BASE_SHA" || return 1
+    verify_local_review_threads || return 1
+    if ! gh pr ready "$AGENT_LOOP_PR_NUMBER"; then
+        if attest_pr_head "$final_sha" "$REVIEWED_BASE_SHA" \
+            "after failed ready mutation"; then
+            echo "could not mark PR ready; it remains in the attested draft state" >&2
+            return 1
+        fi
+        restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
+            "ready mutation failed after changing or obscuring PR state" || return 1
+        return 1
+    fi
+    if ! attest_ready_pr_head "$final_sha" "$REVIEWED_BASE_SHA" \
+        "after marking ready"; then
+        restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
+            "ready PR boundary changed during finalization" || return 1
+        return 1
+    fi
+    if ! verify_local_review_threads; then
+        restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
+            "local-review ledger changed during finalization" || return 1
         return 1
     fi
     echo -e "${GREEN}✓${NC} Review converged; PR ready: $AGENT_LOOP_PR_URL ($final_sha)"
@@ -1565,7 +1703,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         exit 1
     fi
     initial_pr_sha="$(git rev-parse HEAD)"
-    open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha"
+    open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
 
     export AGENT_LOOP_REVIEW_BASE="$BASE_REMOTE_REF"
     REVIEW_ROUNDS_USED=0
@@ -1587,7 +1725,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         recovery_message "Final reviewed-head validation failed."
         exit 1
     }
-    attest_review_head "after final reviewed-head validation" || {
+    attest_review_head "after final reviewed-head validation" "$REVIEWED_BASE_SHA" || {
         recovery_message "Final reviewed-head attestation failed."
         exit 1
     }

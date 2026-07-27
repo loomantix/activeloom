@@ -38,8 +38,10 @@ review_contract_version = 2
 # When a hook commits, write exactly `material` or `minor` to
 # `$AGENT_LOOP_REVIEW_OUTCOME_FILE`. Missing classification defaults to material;
 # a no-commit pass is clean, must not write the file, and must publish the
-# `local-review-pass:v1` marker required by the local review ledger. Later hooks and final
-# validation must not create, remove, or alter an accepted outcome.
+# `local-review-pass:v1` marker required by the local review ledger. A committed
+# pass must publish a same-round `local-review-disposition:v1` reply tied to the
+# pushed SHA plus a final-lane `local-review-complete:v1` marker. Later hooks and
+# final validation must not create, remove, or alter an accepted outcome.
 claude_review_hook =
 codex_review_hook =
 review_max_rounds = 4
