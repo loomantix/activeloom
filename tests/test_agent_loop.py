@@ -2083,7 +2083,8 @@ printf 'codex\n' >> "$EVENT_LOG"
 """,
     )
     claude = (
-        'if git cat-file -e "$AGENT_LOOP_REVIEW_BASE_SHA:fresh-base.txt" '
+        'if [ "$AGENT_LOOP_REVIEW_ROUND" = 1 ] && '
+        'git cat-file -e "$AGENT_LOOP_REVIEW_BASE_SHA:fresh-base.txt" '
         ">/dev/null 2>&1; then exit 42; fi; "
         "printf 'claude\\n' >> \"$EVENT_LOG\""
     )
