@@ -41,7 +41,8 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 4. Require local HEAD, remote head, and PR head to match.
 5. Record the exact PR base and head SHAs. Read every prior review thread,
    including resolved and outdated threads.
-6. Skip docs/config-only changesets.
+6. Skip docs/config-only changesets, per the ledger's changeset
+   classification.
 
 Do not begin a reviewer until the PR ledger is available. Do not use a
 force-push to establish or update the review branch.

@@ -61,6 +61,16 @@ customer/tenant-variable behavior.
 ## Review Principles
 
 - Treat generated findings as hypotheses; verify against source before posting.
+- **No reviewer in this chain pre-filters by severity or confidence.** Not a
+  `grill` sub-agent, not `codex-review`, not an inline `Agent(...)` prompt you
+  write yourself. Each reports everything with a severity and confidence
+  attached; the filtering happens one level up, where every lens is visible at
+  once and each claim can be checked against the diff. A finding suppressed
+  inside the reviewer is unrecoverable; a low-scored finding costs one line to
+  dismiss. See [`MODEL_NOTES.md`](MODEL_NOTES.md) §1.
+- The agent matrix is a ceiling, not a floor. Run only the lenses whose signals
+  appear in the diff, and never add an agent to re-check another agent's work.
+  See [`MODEL_NOTES.md`](MODEL_NOTES.md) §2–§3.
 - Fix every valid in-scope finding. Dismiss false positives with evidence in the
   thread.
 - Defer only genuinely large architectural work and link the tracking issue.
@@ -69,3 +79,23 @@ customer/tenant-variable behavior.
 - Never copy sensitive source, credentials, private data, or model logs into PR
   metadata.
 - Stop at the configured cap and preserve the draft PR on non-convergence.
+
+## Cross-references
+
+- [`MODEL_NOTES.md`](MODEL_NOTES.md) — prompt-authoring deltas for the current
+  default model; read before editing any skill or agent.
+- [`references/local-review-ledger.md`](references/local-review-ledger.md) — the
+  PR-thread ledger contract, including the shared docs/config-only changeset
+  classification every skill skips on.
+- [`skills/refactorpass/SKILL.md`](skills/refactorpass/SKILL.md) ·
+  [`skills/grill/SKILL.md`](skills/grill/SKILL.md) ·
+  [`skills/deepgrill/SKILL.md`](skills/deepgrill/SKILL.md) ·
+  [`skills/codex-review/SKILL.md`](skills/codex-review/SKILL.md) — the local
+  convergence lanes.
+- [`skills/reviewit/SKILL.md`](skills/reviewit/SKILL.md) — the hosted fallback,
+  including the `tier=flash` cost rule.
+- [`skills/review-accessibility/SKILL.md`](skills/review-accessibility/SKILL.md)
+  — optional, human-triggered a11y pass; opens its own PR and is not part of
+  either path above.
+- `/pushit` and `/review-cycle` are retired; their stubs are gone, so old
+  invocations resolve to nothing.

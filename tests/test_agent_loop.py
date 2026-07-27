@@ -164,8 +164,14 @@ elif args[:2] == ['pr', 'create']:
     (state / 'pr-branch').write_text(branch)
     print('https://example.invalid/pr/1')
 elif args[:2] == ['pr', 'edit']:
+    if os.environ.get('AGENT_PR_EDIT_FAIL'):
+        print('pr edit failed (stub)', file=sys.stderr)
+        sys.exit(1)
     (state / 'pr-edited').touch()
 elif args[:2] == ['pr', 'ready']:
+    if os.environ.get('AGENT_PR_READY_FAIL'):
+        print('pr ready failed (stub)', file=sys.stderr)
+        sys.exit(1)
     (state / 'pr-ready').touch()
 elif args[:2] == ['api', 'graphql']:
     if os.environ.get('AGENT_GRAPHQL_PARTIAL'):
@@ -759,6 +765,40 @@ def test_base_movement_after_convergence_is_named_not_a_bare_abort(
     assert not (consumer[3] / "pr-ready").exists()
     assert (consumer[3] / "pr-branch").exists(), "the draft PR must be preserved"
     assert list((tmp_path / "worktrees").glob("*")), "the worktree must be preserved"
+
+
+def test_pr_body_rewrite_failure_still_marks_the_converged_pr_ready(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The final body rewrite is reporting; every claim in it was already proven
+    # by the convergence gates. Aborting on it would strand a fully reviewed PR
+    # in draft — the state an operator "fixes" with a manual `gh pr ready` that
+    # skips the boundary check.
+    result = _run(
+        consumer,
+        ["--issues", "52"],
+        issues=[_issue(52)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_PR_EDIT_FAIL": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert (consumer[3] / "pr-ready").exists()
+    assert "Could not update the PR body" in result.stderr
+
+
+def test_pr_ready_failure_is_named_so_it_is_not_silently_left_draft(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "53"],
+        issues=[_issue(53)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_PR_READY_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    assert "'gh pr ready' failed" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_review_round_cap_preserves_draft_without_marking_ready(

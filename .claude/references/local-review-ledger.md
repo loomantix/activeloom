@@ -16,6 +16,22 @@ Before any cleanup or adversarial review:
 
 Never force-push during a review relay. A moved remote head ends the pass.
 
+## Classify the changeset
+
+`refactorpass`, `grill`, `deepgrill`, and `codex-review` all skip
+docs/config-only changesets. This is the shared definition; classify the file
+list for the pinned `<base-sha>..HEAD` range:
+
+- **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
+  `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
+- **Docs / config / fixtures** — `.md`, `.txt`, `.yml`, `.yaml`, `.json`,
+  `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
+  `.env.example`, anything under `docs/`, `*.fixture.*`, snapshot files.
+- **Anything else** — treat as source.
+
+Zero source files means skip; one or more means run the full pass. A mixed
+changeset is not a partial skip — the source files justify the spend.
+
 ## Rebuild context from GitHub
 
 At the start of every pass, read the PR description, changed files, current

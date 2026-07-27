@@ -619,7 +619,12 @@ open_draft_pr() {
         recovery_message "Pushed origin/$branch, but 'gh pr create' failed. Open the PR for that branch manually, or delete it with 'git push origin --delete $branch', before re-running. The local branch $branch is retained."
         exit 1
     fi
-    pr_number="$(gh pr view "$pr_url" --json number --jq .number)"
+    # The PR exists from here on, so every later failure must name it — a bare
+    # `set -e` abort would leave an open draft PR nobody was told about.
+    pr_number="$(gh pr view "$pr_url" --json number --jq .number)" || {
+        recovery_message "Opened $pr_url but could not read its number. Review or close that PR before re-running."
+        exit 1
+    }
     export AGENT_LOOP_PR_NUMBER="$pr_number"
     export AGENT_LOOP_PR_URL="$pr_url"
     export AGENT_LOOP_PR_HEAD_SHA
@@ -649,51 +654,48 @@ attest_pr_boundary() {
     [ "$expected_base" = "$pr_base_oid" ] || return 2
 }
 
+# Every attestation the wrapper trusts must have been authored by the actor
+# running the loop, so all three comment surfaces are filtered by login before
+# the marker is matched. A `gh api` failure has to fail the lookup rather than
+# yield an empty body set that reads as "marker absent" for the wrong reason —
+# `pipefail` plus the explicit `|| return 1` below is what enforces that.
+collect_reviewer_comment_bodies() {
+    local out_file="$1" endpoint
+    {
+        for endpoint in "issues/$AGENT_LOOP_PR_NUMBER/comments" \
+                        "pulls/$AGENT_LOOP_PR_NUMBER/comments" \
+                        "pulls/$AGENT_LOOP_PR_NUMBER/reviews"; do
+            gh api "repos/{owner}/{repo}/$endpoint" --paginate |
+                jq -r --arg reviewer "$CURRENT_LOGIN" \
+                    '.[] | select(.user.login == $reviewer) | .body // empty' ||
+                return 1
+        done
+    } > "$out_file"
+}
+
+verify_attestation_marker() {
+    local marker="$1" bodies_file="$2"
+    collect_reviewer_comment_bodies "$bodies_file" || return 1
+    grep -Fq -- "$marker" "$bodies_file"
+}
+
 # A review hook that exits 0 without committing or posting anything is
 # indistinguishable from a genuinely clean pass unless the pass itself leaves
 # evidence. Require the ledger's clean-pass attestation, bound to this engine,
 # this round, and the exact head that was reviewed, so a no-op or silently
 # declining hook cannot converge an unreviewed PR.
 verify_clean_pass_attestation() {
-    local slug="$1" round="$2" sha="$3" marker bodies_file
-    marker="<!-- local-review-pass:v1 engine=$slug round=$round head=$sha -->"
-    bodies_file="$AGENT_LOOP_LOG_DIR/$slug-clean-pass-round-$round.txt"
-    {
-        gh api "repos/{owner}/{repo}/issues/$AGENT_LOOP_PR_NUMBER/comments" \
-            --paginate |
-            jq -r --arg reviewer "$CURRENT_LOGIN" \
-                '.[] | select(.user.login == $reviewer) | .body // empty' &&
-        gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/comments" \
-            --paginate |
-            jq -r --arg reviewer "$CURRENT_LOGIN" \
-                '.[] | select(.user.login == $reviewer) | .body // empty' &&
-        gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/reviews" \
-            --paginate |
-            jq -r --arg reviewer "$CURRENT_LOGIN" \
-                '.[] | select(.user.login == $reviewer) | .body // empty'
-    } > "$bodies_file" || return 1
-    grep -Fq -- "$marker" "$bodies_file"
+    local slug="$1" round="$2" sha="$3"
+    verify_attestation_marker \
+        "<!-- local-review-pass:v1 engine=$slug round=$round head=$sha -->" \
+        "$AGENT_LOOP_LOG_DIR/$slug-clean-pass-round-$round.txt"
 }
 
 verify_review_completion_attestation() {
-    local slug="$1" round="$2" before="$3" after="$4" marker bodies_file
-    marker="<!-- local-review-complete:v1 engine=$slug round=$round before=$before head=$after -->"
-    bodies_file="$AGENT_LOOP_LOG_DIR/$slug-review-complete-round-$round.txt"
-    {
-        gh api "repos/{owner}/{repo}/issues/$AGENT_LOOP_PR_NUMBER/comments" \
-            --paginate |
-            jq -r --arg reviewer "$CURRENT_LOGIN" \
-                '.[] | select(.user.login == $reviewer) | .body // empty' &&
-        gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/comments" \
-            --paginate |
-            jq -r --arg reviewer "$CURRENT_LOGIN" \
-                '.[] | select(.user.login == $reviewer) | .body // empty' &&
-        gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/reviews" \
-            --paginate |
-            jq -r --arg reviewer "$CURRENT_LOGIN" \
-                '.[] | select(.user.login == $reviewer) | .body // empty'
-    } > "$bodies_file" || return 1
-    grep -Fq -- "$marker" "$bodies_file"
+    local slug="$1" round="$2" before="$3" after="$4"
+    verify_attestation_marker \
+        "<!-- local-review-complete:v1 engine=$slug round=$round before=$before head=$after -->" \
+        "$AGENT_LOOP_LOG_DIR/$slug-review-complete-round-$round.txt"
 }
 
 fetch_local_review_threads() {
@@ -793,6 +795,10 @@ verify_local_review_threads() {
     ' "$ledger_file" >/dev/null
 }
 
+# Called on the left of `||`, so `set -e` is disabled throughout this body: every
+# command whose failure must stop the run is checked explicitly. An unchecked
+# `git fetch` here would pin a stale base SHA and hand both engines a base the
+# reviewers believe is current.
 run_review_convergence() {
     local round=1 engine slug hook before after material outcome_file classification round_base_sha
     local base_advanced boundary_status
@@ -801,8 +807,14 @@ run_review_convergence() {
         export AGENT_LOOP_REVIEW_ROUND="$round"
         material=false
         base_advanced=false
-        git fetch origin "$BASE_BRANCH" --quiet
-        round_base_sha="$(git rev-parse "origin/$BASE_BRANCH")"
+        git fetch origin "$BASE_BRANCH" --quiet || {
+            recovery_message "Could not fetch origin/$BASE_BRANCH before review round $round."
+            return 1
+        }
+        round_base_sha="$(git rev-parse "origin/$BASE_BRANCH")" || {
+            recovery_message "Could not resolve origin/$BASE_BRANCH before review round $round."
+            return 1
+        }
         export AGENT_LOOP_REVIEW_BASE="$round_base_sha"
         if ! git merge-base --is-ancestor "$round_base_sha" HEAD; then
             echo -e "${BLUE}▸${NC} Integrating fresh base before review round $round"
@@ -908,7 +920,13 @@ run_review_convergence() {
             fi
             [ "$base_advanced" = false ] || break
         done
-        git fetch origin "$BASE_BRANCH" --quiet
+        # A failed fetch here would leave `origin/$BASE_BRANCH` at the SHA the
+        # round already pinned, so the ancestry test below would pass and the
+        # round could converge without ever seeing a base commit that landed.
+        git fetch origin "$BASE_BRANCH" --quiet || {
+            recovery_message "Could not re-fetch origin/$BASE_BRANCH after review round $round."
+            return 1
+        }
         if ! git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD; then
             material=true
             echo "   Base advanced during the round; the next round integrates it before Codex."
@@ -966,8 +984,18 @@ finalize_pr() {
         echo
         echo "Closes #$AGENT_LOOP_ISSUE_ID"
     } > "$body_file"
-    gh pr edit "$AGENT_LOOP_PR_NUMBER" --body-file "$body_file"
-    gh pr ready "$AGENT_LOOP_PR_NUMBER"
+    # The body rewrite is reporting, not a gate: every claim in it was already
+    # proven by the checks above. `gh pr edit` is the flakiest call in this
+    # function (it has aborted repo-wide on unrelated Projects-classic API
+    # deprecations), and letting it abort here would strand a fully converged PR
+    # in draft — the state an operator is most likely to "fix" with a manual
+    # `gh pr ready` that skips the boundary gate. Warn and continue instead.
+    gh pr edit "$AGENT_LOOP_PR_NUMBER" --body-file "$body_file" ||
+        echo -e "${YELLOW}!${NC} Could not update the PR body; the draft body still describes review as in progress." >&2
+    gh pr ready "$AGENT_LOOP_PR_NUMBER" || {
+        recovery_message "Review converged but 'gh pr ready' failed; mark $AGENT_LOOP_PR_URL ready manually."
+        return 1
+    }
     echo -e "${GREEN}✓${NC} Review converged; PR ready: $AGENT_LOOP_PR_URL"
 }
 
@@ -1098,11 +1126,15 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     esac
     open_draft_pr "$SELECTED_ID" "$branch"
     REVIEW_ROUNDS_USED=0
-    run_review_convergence
+    # Both of these already emit their own recovery message before failing, so
+    # they exit explicitly rather than relying on `set -e` — every other step in
+    # this loop is guarded the same way, and an unguarded call reads as a step
+    # whose failure is tolerated.
+    run_review_convergence || exit 1
     inspect_publication_diff || { recovery_message "Final reviewed diff inspection failed."; exit 1; }
     run_validation "final-reviewed-head" || { recovery_message "Final reviewed-head validation failed."; exit 1; }
     require_clean_tree_after "final-reviewed-head validation" || exit 1
-    finalize_pr
+    finalize_pr || exit 1
 
     # Publication already succeeded and the branch is retained locally and on
     # origin, so cleanup can no longer lose work. Clear ACTIVE_WORKTREE before any

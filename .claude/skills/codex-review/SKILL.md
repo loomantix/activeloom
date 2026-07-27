@@ -44,7 +44,7 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
      git ls-files --others --exclude-standard
      ```
 
-   - If the changeset is docs/config-only, post a scoped clean-pass attestation and exit.
+   - If the changeset is docs/config-only per the ledger's changeset classification, post a scoped clean-pass attestation and exit.
 
 ## Phase 1: Build the review prompt
 
@@ -145,7 +145,9 @@ When the status file appears with exit code zero, read the findings file — it 
 
 ## Phase 4: Disposition
 
-Fix only **confirmed** findings (default: fix now, in this PR). Dismiss false positives by replying with evidence and resolving the thread. For a finding that needs a human/scope/legal decision, leave it unresolved and flag it for the user rather than guessing.
+Fix only **confirmed** findings (default: fix now, in this PR). Dismiss false positives by replying with evidence and resolving the thread.
+
+For a finding that needs a human/scope/legal decision (risk acceptance, prod-data assumptions, an architectural rework), do not guess at the decision — but do disposition the thread, because convergence requires every marked thread to carry a reply and a resolution. File the tracking issue, reply with `outcome=deferred` plus the issue link, resolve the thread, and surface the decision to the user in the skill output. Leave the thread unresolved only when you cannot even file the issue; that is a non-converging run, so say so plainly and leave the PR in draft.
 
 After fixes, run the relevant gates, commit, and push normally. Require local,
 remote, and PR heads to match. Reply to each fixed thread with the commit SHA

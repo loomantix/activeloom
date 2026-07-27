@@ -35,7 +35,8 @@ Proceed in the current session only after an explicit override.
 4. Require local HEAD, remote head, and PR head to match.
 5. Record the PR number and exact base SHA. Read every prior review thread,
    including resolved and outdated threads.
-6. Apply the underlying skills' docs/config-only skip.
+6. Apply the docs/config-only skip, per the ledger's changeset
+   classification.
 
 ## Phase 1: Refactor pass
 
