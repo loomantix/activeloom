@@ -64,8 +64,16 @@ For each published finding:
 1. Apply the correction and run the smallest relevant validation.
 2. Commit and push with a normal, non-force push.
 3. Reply in the same thread with the fix commit SHA, validation result, and
-   concise rationale. For dismissal or tracked deferral, reply with evidence or
-   the issue link.
+   concise rationale. A fixed finding must also carry this marker, using the
+   same fingerprint as the finding and the full pushed fix SHA:
+
+   ```text
+   <!-- local-review-disposition:v1 engine=<codex|claude> round=<n> head=<fix-sha> fingerprint=<stable-id> outcome=fixed -->
+   ```
+
+   For dismissal or tracked deferral, reply with evidence or the issue link and
+   use `outcome=dismissed` or `outcome=deferred` with the reviewed head.
+
 4. Resolve the thread only after the reply is visible on GitHub.
 
 If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
@@ -86,6 +94,17 @@ nothing: a hook exiting successfully proves only that it ran, not that it read
 anything. Clean evidence becomes stale as soon as the PR head changes, so the
 marker's `head` must be the exact SHA reviewed, and a pass that fixed something
 attests through its thread replies instead.
+
+A review hook that committed must also leave a final-lane completion marker
+after its last adversarial lane finishes:
+
+```text
+<!-- local-review-complete:v1 engine=<codex|claude> round=<n> before=<reviewed-sha> head=<final-sha> -->
+```
+
+The runner requires both this completion marker and a same-round finding plus
+`outcome=fixed` disposition tied to the pushed SHA. This prevents an earlier
+cleanup commit from masking a final adversarial lane that silently declined.
 
 For a two-engine loop:
 

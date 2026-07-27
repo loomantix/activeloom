@@ -50,8 +50,9 @@ against the complete PR ledger. For every confirmed cleanup:
 
 Run the smallest relevant formatter or test. If edits remain uncommitted, stage
 them and create one `refactor: /simplify pass — <summary>` commit. Push normally,
-reply to every cleanup thread with the commit SHA and validation, then resolve
-it. Stop if any ledger step fails.
+reply to every cleanup thread with the commit SHA, validation, and structured
+`outcome=fixed` marker, then resolve it. Stop if any ledger step fails. The
+final adversarial `/grill` lane owns the enclosing Claude completion marker.
 
 If no cleanup survives verification, leave an informational PR comment naming
 the cleanup lane and exact reviewed head. Do not use the

@@ -102,8 +102,10 @@ For confirmed fixes:
 2. run focused validation;
 3. commit conventionally and push normally;
 4. require local HEAD, remote head, and PR head to match;
-5. reply to each thread with the fix SHA and validation result;
-6. resolve each replied thread.
+5. reply to each thread with the fix SHA, validation result, and structured
+   `outcome=fixed` marker;
+6. post the committed-pass completion marker after the final adversarial lane;
+7. resolve each replied thread.
 
 Never resolve a finding merely because code changed. A marked thread requires
 both a response and an explicit resolution. Never batch unrelated findings

@@ -76,10 +76,12 @@ fresh fetch plus `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 `AGENT_LOOP_PR_HEAD_SHA`, `AGENT_LOOP_REVIEW_ENGINE`, and
 `AGENT_LOOP_REVIEW_ROUND`. A hook that commits may write exactly `minor` or
 `material` to `AGENT_LOOP_REVIEW_OUTCOME_FILE`; a missing classification
-defaults to material. A hook that commits nothing must instead post the ledger's
-clean-pass comment for its own engine, round, and `AGENT_LOOP_PR_HEAD_SHA` — the
-wrapper treats a silent no-op pass as unverified rather than clean. Validation
-hooks must leave a clean tree; work they write but do not commit is not in the
+defaults to material. A hook that commits must post a structured
+`outcome=fixed` disposition tied to the pushed SHA and a final-lane completion
+marker. A hook that commits nothing must instead post the ledger's clean-pass
+comment for its own engine, round, and `AGENT_LOOP_PR_HEAD_SHA` — the wrapper
+treats a silent no-op pass as unverified rather than clean. Validation hooks
+must leave a clean tree; work they write but do not commit is not in the
 reviewed head and would be discarded with the worktree.
 
 The wrapper accepts machine-readable findings, replies, and clean-pass evidence
@@ -117,7 +119,8 @@ is not required on `PATH`.
 5. Run the worker and require a clean local commit.
 6. Fetch and merge the base, inspect the diff, validate, push, and open a draft PR.
 7. Run a Codex pass and then a Claude pass against the PR ledger. Each hook
-   comments before fixes, pushes normally, replies, and resolves.
+   comments before fixes, pushes normally, posts structured fix and final-lane
+   completion evidence, then resolves.
 8. If either engine made material fixes, restart from Codex. Stop after
    `review_max_rounds` and preserve the draft.
 9. Require a complete clean round plus replies and resolutions on every marked

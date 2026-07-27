@@ -149,7 +149,9 @@ Fix only **confirmed** findings (default: fix now, in this PR). Dismiss false po
 
 After fixes, run the relevant gates, commit, and push normally. Require local,
 remote, and PR heads to match. Reply to each fixed thread with the commit SHA
-and validation result, then resolve it. Do not force-push or merge.
+and validation result plus the ledger's structured `outcome=fixed` marker, then
+resolve it. After the last adversarial lane, post the committed-pass completion
+marker for the exact before/final head pair. Do not force-push or merge.
 
 ## Output
 

@@ -118,6 +118,24 @@ elif args[:2] == ['pr', 'view']:
     joined = ' '.join(args)
     if '--json number' in joined:
         print('1')
+    elif 'baseRefOid' in joined:
+        branch = (state / 'pr-branch').read_text()
+        remote_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        base_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        print('\t'.join([
+            os.environ.get('AGENT_PR_HEAD_OID', remote_head),
+            os.environ.get('AGENT_PR_HEAD_REF_NAME', branch),
+            os.environ.get('AGENT_PR_BASE_REF_NAME', 'main'),
+            os.environ.get('AGENT_PR_BASE_OID', base_head),
+            os.environ.get('AGENT_PR_STATE', 'OPEN'),
+            os.environ.get('AGENT_PR_IS_DRAFT', 'true'),
+        ]))
     elif 'headRefOid' in joined:
         branch = (state / 'pr-branch').read_text()
         remote_head = subprocess.run(
@@ -154,7 +172,11 @@ elif args[:2] == ['api', 'graphql']:
             }}
         }}}}]))
         sys.exit(1)
-    nodes = json.loads(os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]'))
+    threads_file = state / 'review-threads.json'
+    if threads_file.exists():
+        nodes = json.loads(threads_file.read_text())
+    else:
+        nodes = json.loads(os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]'))
     default_author = os.environ.get('AGENT_THREAD_AUTHOR', 'tester')
     for node in nodes:
         for comment in node.get('comments', {}).get('nodes', []):
@@ -208,6 +230,30 @@ def _clean_pass_hook(engine: str) -> str:
         "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
         f'-f body="<!-- local-review-pass:v1 engine={engine} '
         'round=$AGENT_LOOP_REVIEW_ROUND head=$AGENT_LOOP_PR_HEAD_SHA -->"'
+    )
+
+
+def _committed_review_hook(engine: str, classification: str = "minor") -> str:
+    return (
+        f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
+        f"printf '{engine} fix\\n' > \"review-{engine}-$AGENT_LOOP_REVIEW_ROUND.txt\"; "
+        f"git add \"review-{engine}-$AGENT_LOOP_REVIEW_ROUND.txt\"; "
+        f"git commit -m 'fix: {engine} review'; "
+        "after=$(git rev-parse HEAD); "
+        'git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH"; '
+        f"printf '{classification}\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; "
+        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
+        "--arg round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg before \"$AGENT_LOOP_PR_HEAD_SHA\" --arg after \"$after\" "
+        '\'[{isResolved:true,comments:{nodes:['
+        '{body:("<!-- local-review:v1 engine="+$engine+" round="+$round+" head="+$before+" fingerprint=fixture-"+$engine+" -->\\nFinding"),databaseId:1,author:{login:"tester"}},'
+        '{body:("<!-- local-review-disposition:v1 engine="+$engine+" round="+$round+" head="+$after+" fingerprint=fixture-"+$engine+" outcome=fixed -->\\nFixed in `"+$after+"`.\\n\\nValidation: fixture passed."),databaseId:2,author:{login:"tester"}}'
+        '],pageInfo:{hasNextPage:false}}}]\' '
+        '> "$AGENT_STATE_DIR/review-threads.json"; '
+        "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
+        '-f body="<!-- local-review-complete:v1 engine='
+        f"{engine} round=$AGENT_LOOP_REVIEW_ROUND "
+        'before=$AGENT_LOOP_PR_HEAD_SHA head=$after -->"'
     )
 
 
@@ -478,6 +524,72 @@ def test_clean_pass_attestation_must_be_from_local_reviewer(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def test_committed_review_requires_ledger_and_final_lane_evidence(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    hook = (
+        "printf changed > silent-fix.txt; git add silent-fix.txt; "
+        "git commit -m 'fix: silent review edit'; "
+        "after=$(git rev-parse HEAD); "
+        'git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH"; '
+        "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; "
+        "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
+        '-f body="<!-- local-review-complete:v1 engine=codex '
+        'round=$AGENT_LOOP_REVIEW_ROUND before=$AGENT_LOOP_PR_HEAD_SHA '
+        'head=$after -->"'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "52"],
+        issues=[_issue(52)],
+        config=_config(tmp_path, codex_review_hook=hook),
+    )
+    assert result.returncode != 0
+    assert "committed without a resolved same-round finding" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_committed_review_with_structured_evidence_can_converge(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "53"],
+        issues=[_issue(53)],
+        config=_config(
+            tmp_path,
+            codex_review_hook=_committed_review_hook("codex"),
+        ),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (consumer[3] / "pr-ready").exists()
+
+
+@pytest.mark.parametrize(
+    ("extra_env", "issue"),
+    [
+        ({"AGENT_PR_BASE_REF_NAME": "release"}, 54),
+        ({"AGENT_PR_IS_DRAFT": "false"}, 55),
+    ],
+)
+def test_review_requires_immutable_open_draft_pr_boundary(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    extra_env: dict[str, str],
+    issue: int,
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", str(issue)],
+        issues=[_issue(issue)],
+        config=_config(tmp_path),
+        extra_env=extra_env,
+    )
+    assert result.returncode != 0
+    assert "draft PR review boundary diverged" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
 def test_review_hooks_receive_same_literal_base_sha(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -622,13 +734,7 @@ def test_validation_hook_dirt_blocks_ready_and_preserves_the_worktree(
 def test_review_round_cap_preserves_draft_without_marking_ready(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = (
-        'printf "%s\\n" "$AGENT_LOOP_REVIEW_ROUND" > '
-        '"review-$AGENT_LOOP_REVIEW_ROUND.txt"; '
-        'git add "review-$AGENT_LOOP_REVIEW_ROUND.txt"; '
-        'git commit -m "fix: review round $AGENT_LOOP_REVIEW_ROUND"; '
-        'git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH"'
-    )
+    codex_hook = _committed_review_hook("codex", "material")
     result = _run(
         consumer,
         ["--issues", "42"],

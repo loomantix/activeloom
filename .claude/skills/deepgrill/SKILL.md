@@ -52,7 +52,9 @@ type/API design, comments/docs, tests, security, and conditional
 tenant-coupling. Keep the matrix bounded per `MODEL_NOTES.md`.
 
 Every confirmed finding must be posted inline before editing. A completed fix
-must be pushed, replied to with its SHA and validation, then resolved.
+must be pushed, replied to with its SHA, validation, and structured disposition,
+then resolved. When the combined hook committed, the final `/grill` lane posts
+the completion marker for the enclosing before/final head pair.
 
 ## Phase 3: Handoff
 

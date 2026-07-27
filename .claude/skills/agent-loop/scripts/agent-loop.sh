@@ -627,13 +627,26 @@ open_draft_pr() {
     echo -e "${GREEN}✓${NC} Opened draft review ledger $pr_url"
 }
 
-attest_pr_head() {
-    local expected="$1" remote_sha pr_sha
+attest_pr_boundary() {
+    local expected_head="$1" expected_base="$2" remote_sha pr_data
+    local pr_head pr_head_ref pr_base_ref pr_base_oid pr_state pr_draft
     remote_sha="$(git ls-remote origin "refs/heads/$AGENT_LOOP_BRANCH" | awk 'NR == 1 {print $1}')"
-    pr_sha="$(gh pr view "$AGENT_LOOP_PR_NUMBER" --json headRefOid --jq .headRefOid)"
-    [ "$expected" = "$(git rev-parse HEAD)" ] &&
-        [ "$expected" = "$remote_sha" ] &&
-        [ "$expected" = "$pr_sha" ]
+    pr_data="$(gh pr view "$AGENT_LOOP_PR_NUMBER" \
+        --json headRefOid,headRefName,baseRefName,baseRefOid,state,isDraft \
+        --jq '[.headRefOid,.headRefName,.baseRefName,.baseRefOid,.state,.isDraft] | @tsv')" ||
+        return 1
+    IFS=$'\t' read -r pr_head pr_head_ref pr_base_ref pr_base_oid pr_state pr_draft \
+        <<< "$pr_data"
+    if ! { [ "$expected_head" = "$(git rev-parse HEAD)" ] &&
+        [ "$expected_head" = "$remote_sha" ] &&
+        [ "$expected_head" = "$pr_head" ] &&
+        [ "$AGENT_LOOP_BRANCH" = "$pr_head_ref" ] &&
+        [ "$BASE_BRANCH" = "$pr_base_ref" ] &&
+        [ "$pr_state" = OPEN ] &&
+        [ "$pr_draft" = true ]; }; then
+        return 1
+    fi
+    [ "$expected_base" = "$pr_base_oid" ] || return 2
 }
 
 # A review hook that exits 0 without committing or posting anything is
@@ -662,7 +675,28 @@ verify_clean_pass_attestation() {
     grep -Fq -- "$marker" "$bodies_file"
 }
 
-verify_local_review_threads() {
+verify_review_completion_attestation() {
+    local slug="$1" round="$2" before="$3" after="$4" marker bodies_file
+    marker="<!-- local-review-complete:v1 engine=$slug round=$round before=$before head=$after -->"
+    bodies_file="$AGENT_LOOP_LOG_DIR/$slug-review-complete-round-$round.txt"
+    {
+        gh api "repos/{owner}/{repo}/issues/$AGENT_LOOP_PR_NUMBER/comments" \
+            --paginate |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty' &&
+        gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/comments" \
+            --paginate |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty' &&
+        gh api "repos/{owner}/{repo}/pulls/$AGENT_LOOP_PR_NUMBER/reviews" \
+            --paginate |
+            jq -r --arg reviewer "$CURRENT_LOGIN" \
+                '.[] | select(.user.login == $reviewer) | .body // empty'
+    } > "$bodies_file" || return 1
+    grep -Fq -- "$marker" "$bodies_file"
+}
+
+fetch_local_review_threads() {
     local owner name ledger_file query
     owner="$(gh repo view --json owner --jq .owner.login)"
     name="$(gh repo view --json name --jq .name)"
@@ -689,6 +723,51 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     # happens to stay parseable is verified as a complete ledger.
     gh api graphql --paginate --slurp -f query="$query" -f owner="$owner" \
         -f name="$name" -F number="$AGENT_LOOP_PR_NUMBER" > "$ledger_file" || return 1
+    printf '%s\n' "$ledger_file"
+}
+
+verify_committed_pass_evidence() {
+    local slug="$1" round="$2" after="$3" ledger_file
+    ledger_file="$(fetch_local_review_threads)" || return 1
+    jq -e --arg reviewer "$CURRENT_LOGIN" --arg engine "$slug" \
+        --argjson round "$round" --arg after "$after" '
+      def finding:
+        capture("<!-- local-review:v1 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) -->");
+      def disposition:
+        capture("<!-- local-review-disposition:v1 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) outcome=(?<outcome>fixed|dismissed|deferred) -->");
+      all(.[]; (.errors // []) | length == 0)
+      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
+        | ($threads | all(.comments.pageInfo.hasNextPage | not))
+        and any($threads[];
+          . as $thread
+          | $thread.isResolved
+          and any($thread.comments.nodes | to_entries[];
+            select(.value.author.login == $reviewer)
+            | (try (.value.body | finding) catch null) as $finding
+            | select(
+                $finding != null
+                and $finding.engine == $engine
+                and ($finding.round | tonumber) == $round
+              )
+            | .key as $finding_index
+            | any($thread.comments.nodes | to_entries[];
+                (.key > $finding_index)
+                and (.value.author.login == $reviewer)
+                and ((try (.value.body | disposition) catch null) as $reply
+                  | $reply != null
+                  and $reply.engine == $engine
+                  and ($reply.round | tonumber) == $round
+                  and $reply.head == $after
+                  and $reply.fingerprint == $finding.fingerprint
+                  and $reply.outcome == "fixed")
+              )
+          )))
+    ' "$ledger_file" >/dev/null
+}
+
+verify_local_review_threads() {
+    local ledger_file
+    ledger_file="$(fetch_local_review_threads)" || return 1
     # The comment-pagination guard runs before the marker filter on purpose: a
     # thread whose marker sits past the first comment page has no marker in
     # `comments.nodes`, so filtering first would drop exactly the threads whose
@@ -716,10 +795,12 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
 
 run_review_convergence() {
     local round=1 engine slug hook before after material outcome_file classification round_base_sha
+    local base_advanced boundary_status
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
         export AGENT_LOOP_REVIEW_ROUND="$round"
         material=false
+        base_advanced=false
         git fetch origin "$BASE_BRANCH" --quiet
         round_base_sha="$(git rev-parse "origin/$BASE_BRANCH")"
         export AGENT_LOOP_REVIEW_BASE="$round_base_sha"
@@ -753,10 +834,17 @@ run_review_convergence() {
             rm -f -- "$outcome_file"
             before="$(git rev-parse HEAD)"
             export AGENT_LOOP_PR_HEAD_SHA="$before"
-            attest_pr_head "$before" || {
-                recovery_message "Local, remote, and PR heads diverged before $engine review round $round."
+            boundary_status=0
+            attest_pr_boundary "$before" "$round_base_sha" || boundary_status=$?
+            if [ "$boundary_status" -eq 2 ]; then
+                material=true
+                base_advanced=true
+                echo "   PR base advanced before $engine; the next round pins and integrates it."
+                break
+            elif [ "$boundary_status" -ne 0 ]; then
+                recovery_message "The local, remote, or draft PR review boundary diverged before $engine review round $round."
                 return 1
-            }
+            fi
             run_bounded_hook "local $engine PR review round $round" "$hook" \
                 "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" || {
                 recovery_message "$engine review hook failed in round $round."
@@ -771,10 +859,16 @@ run_review_convergence() {
                 recovery_message "$engine review rewrote history in round $round."
                 return 1
             }
-            attest_pr_head "$after" || {
-                recovery_message "$engine review must push its normal commit to the draft PR head."
+            boundary_status=0
+            attest_pr_boundary "$after" "$round_base_sha" || boundary_status=$?
+            if [ "$boundary_status" -eq 2 ]; then
+                material=true
+                base_advanced=true
+                echo "   PR base advanced during $engine; this round cannot converge."
+            elif [ "$boundary_status" -ne 0 ]; then
+                recovery_message "$engine review must preserve the open draft PR boundary and push its normal commit to that exact head."
                 return 1
-            }
+            fi
             run_validation "$slug-review-round-$round" || return 1
             require_clean_tree_after "$slug review round $round validation" || return 1
             if [ "$after" != "$before" ]; then
@@ -793,6 +887,14 @@ run_review_convergence() {
                             ;;
                     esac
                 fi
+                verify_review_completion_attestation "$slug" "$round" "$before" "$after" || {
+                    recovery_message "$engine review round $round committed but posted no final-lane completion attestation for head $after."
+                    return 1
+                }
+                verify_committed_pass_evidence "$slug" "$round" "$after" || {
+                    recovery_message "$engine review round $round committed without a resolved same-round finding and structured fix disposition for head $after."
+                    return 1
+                }
                 [ "$classification" = minor ] || material=true
             else
                 [ ! -e "$outcome_file" ] || {
@@ -804,6 +906,7 @@ run_review_convergence() {
                     return 1
                 }
             fi
+            [ "$base_advanced" = false ] || break
         done
         git fetch origin "$BASE_BRANCH" --quiet
         if ! git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD; then
@@ -830,7 +933,7 @@ run_review_convergence() {
 finalize_pr() {
     local body_file="$AGENT_LOOP_LOG_DIR/pr-body-final.md"
     verify_local_review_threads || return 1
-    attest_pr_head "$(git rev-parse HEAD)" || return 1
+    attest_pr_boundary "$(git rev-parse HEAD)" "$AGENT_LOOP_REVIEW_BASE" || return 1
     {
         echo "## Summary"
         echo
