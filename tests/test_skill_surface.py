@@ -165,3 +165,15 @@ def test_new_script_modes_are_executable() -> None:
         path: stat.S_IMODE((REPO_ROOT / path).stat().st_mode)
         for path in expected
     } == expected
+
+
+def test_ship_staging_marks_drafts_ready_and_verifies_the_transition() -> None:
+    text = (SKILLS_ROOT / "ship-staging/SKILL.md").read_text(encoding="utf-8")
+
+    ready_command = text.index("gh pr ready <pr>")
+    refetch = text.index("Could not verify PR after marking it ready")
+    merge_command = text.index("gh pr merge <pr> --merge --delete-branch", refetch)
+
+    assert ready_command < refetch < merge_command
+    assert '.headRefOid == $head' in text
+    assert ".isDraft == false" in text
