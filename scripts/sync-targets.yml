@@ -52,7 +52,10 @@ targets:
 
   # /codex-review — independent second-opinion review via the Codex CLI
   # (read-only by default). Generic: assumes only an installed + authenticated
-  # `codex` binary; no org-specific references.
+  # `codex` binary; no org-specific references. Same shape as /pr-stats and
+  # /actions-usage-audit: repo-specific prompt scaffolding and invariants live
+  # in a consumer-owned, non-synced `.claude/codex-review.local.md` the skill
+  # reads if present.
   - source: .claude/skills/codex-review/SKILL.md
     destination: .claude/skills/codex-review/SKILL.md
     substitutions: []

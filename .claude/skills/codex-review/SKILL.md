@@ -58,6 +58,12 @@ Write a tight, scoped prompt. A vague "review this" wastes the run; name the fil
 - The 3–4 riskiest things about this specific change, phrased as **where to scrutinize hardest** — not as an attack. See the framing rules below.
 - The output contract: **only high-confidence material findings** (correctness, security, data-loss); for each, `file:line`, severity, concrete issue, concrete fix; "no material findings" if clean; be terse.
 
+### Optional repo context
+
+Repo-specific knowledge — how to run the suite and the traps in doing so, which invariants are structural, which questions are already settled — lives outside this skill so the skill stays generic and portable. Before writing the prompt, check for a context file at `.claude/codex-review.local.md` in the current repo (or one the user names) and read it. If absent, build the prompt from this skill alone.
+
+That file is also where a **reusable prompt scaffold** belongs, and the reason is worth stating: a prompt written ad hoc into a scratch directory gets opened as the template for the next round, and the round after that. Lines that were true when first written — a permission sentence, a suite's pass count, a "do not re-raise" list, a defect-class tally — ride along unexamined into runs where they are false. Keep the scaffold in the repo where it can be corrected once, and keep the parts that change every round (head SHA, the delta, the ledger summary) out of it.
+
 ### Framing: write it as internal QA, not as an attack
 
 The reviewer is another vendor's model with its own safety classifiers. A security-focused review of code you own is entirely legitimate, but **offensive-security phrasing can get the run refused mid-pass** — and a refusal burns the whole multi-minute, rate-limited run and reads deceptively like a clean review. Frame every prompt so its legitimacy is obvious from the text alone:
@@ -127,6 +133,19 @@ If `$ARGUMENTS` contains `verify`, the user wants Codex to also **run the tests/
 ```
 
 `workspace-write` lets Codex write within the repo (run tests, build) but it cannot escape the working directory or reach arbitrary network. **Never use `--dangerously-bypass-approvals-and-sandbox` (`--yolo`, = `danger-full-access` + no approvals) for a review** — it removes the sandbox entirely (full write + network + command execution), defeating the point of a read-only reviewer. Reserve yolo for a deliberate _fix_ workflow, never this skill.
+
+**The prompt's permission sentence must move with the sandbox flag.** The sandbox is what Codex _can_ do; the prompt is what it believes it _may_ do, and the two are set in different places. A prompt reused from an earlier read-only run still says "READ-ONLY. Do not edit, write, commit, or push" — under `workspace-write` that silently cancels the reason you opened the sandbox, and Codex declines the tests or mutation checks you just paid for. Nothing errors; the pass simply comes back thinner than it should, and the omission is invisible unless you demanded evidence the check ran.
+
+Say exactly one of these, and pick it from the flag you actually passed:
+
+| Sandbox           | Permission sentence in the prompt                                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `read-only`       | Read-only. Do not edit, write, commit, or push. Report findings only.                                                                                       |
+| `workspace-write` | You may run tests and make temporary local edits to verify a finding. Restore every file before finishing, and leave the tree clean. Do not commit or push. |
+
+Two things make the `workspace-write` wording load-bearing. Ask for the **restore** explicitly — a reviewer that mutates a file to prove an assertion is unpinned has no other reason to put it back, and you inherit a dirty tree you then have to untangle from your own edits. And ask for the **evidence** in the output contract — "state which checks you ran and what happened" — because a silent decline and a genuine clean pass produce the same terse "no material findings".
+
+Start the run from a clean tree so anything dirty afterwards is unambiguously the reviewer's, and check `git status` before acting on the findings.
 
 ## Phase 3: Relay, verify, and record findings
 
