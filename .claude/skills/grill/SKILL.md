@@ -66,6 +66,11 @@ read the source, request every plausible finding with severity and `file:line`,
 and impose a concise output ceiling. Do not ask finders to suppress findings by
 confidence. Run selected agents in parallel; the orchestrator verifies them.
 
+Brief each finder per the ledger's diff-delivery rules: resolve the changed-file
+list once, name the paths that lens owns, and prefer `git diff <base-sha>..HEAD
+-- <path>` over handing every agent one whole-diff artifact. Scope a lens by the
+files it reviews, never by the findings it may report.
+
 ## Phase 2: Verify and deduplicate
 
 Combine the outputs, inspect the code, and reject false positives,

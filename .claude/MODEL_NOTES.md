@@ -119,6 +119,7 @@ Two separate reasons, and the second is the load-bearing one:
 - [ ] No "double-check", "re-verify", or "verify with a subagent" scaffolding (§2).
 - [ ] Any external-state check kept is genuinely about the world, not about re-reading the model's own output (§2).
 - [ ] Agent spawning has a stated ceiling, and no agent exists only to check another agent's work (§3).
+- [ ] A skill that fans the changeset out to agents scopes each to the files it reviews, and does not hand every agent the same whole-diff artifact — see the diff-delivery rules in [`references/local-review-ledger.md`](references/local-review-ledger.md).
 - [ ] Every `Agent(...)` prompt states an output length (§4).
 - [ ] No generic model-behavior boilerplate about scope, corrections, or task completion (§5).
 - [ ] Effort overrides, if any, are justified against Opus 5's scale rather than inherited from 4.x (§6).

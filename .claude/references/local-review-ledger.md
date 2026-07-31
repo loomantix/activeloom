@@ -32,6 +32,46 @@ list for the pinned `<base-sha>..HEAD` range:
 Zero source files means skip; one or more means run the full pass. A mixed
 changeset is not a partial skip — the source files justify the spend.
 
+## Deliver the diff once
+
+Every lane that fans out to review agents must decide how the changeset reaches
+them. Left unspecified, the default improvisation is to write the whole diff to
+one file and hand that path to every agent, each of which reads all of it and
+then reads it again. The changeset is the largest single input to a review pass
+and the most duplicated one, so its delivery is part of the contract.
+
+Resolve the changed-file list once, from the pinned range, and reuse it:
+
+```bash
+git diff --name-only <base-sha>..HEAD
+git diff --stat <base-sha>..HEAD
+```
+
+Then apply these rules.
+
+1. **Scope each agent to the files it reviews.** Name the exact paths in the
+   agent's prompt. An agent that owns four files must not be handed the other
+   forty. A lens that genuinely spans the whole changeset — architectural
+   altitude, cross-file consistency — gets the `--stat` summary and pulls
+   individual files as it needs them.
+2. **Prefer a scoped command over a stored artifact.** A per-path
+   `git diff <base-sha>..HEAD -- <path>` is reproducible, needs no temp file,
+   and returns only what the agent asked for. Reach for it before writing a
+   diff to disk.
+3. **An artifact, if one exists, is pinned and read once.** State its path and
+   size in the prompt. Re-access a region with a targeted `grep -n` or a bounded
+   read, never a second full read: the file cannot have changed, so a repeat
+   read returns bytes the agent already has.
+4. **Bound any large read.** Above roughly 25k characters, read with an explicit
+   offset and limit, or narrow the range with `-- <path>`.
+
+State the changeset's size when briefing an agent, the same way agent prompts
+state an output ceiling. An agent told the diff spans 40 files reads
+differently from one handed an unlabeled path.
+
+These rules are about duplicated bytes, not about depth. Never drop a lens, skip
+a file an agent needs, or leave a finding unpursued to satisfy them.
+
 ## Rebuild context from GitHub
 
 At the start of every pass, read the PR description, changed files, current
