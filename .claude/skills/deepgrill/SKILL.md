@@ -70,11 +70,25 @@ Print:
 - Findings: <posted/replied/resolved counts>
 - Review depth: <agents run>
 - Classification: <clean | minor | material>
+- Product code changed: <yes | no>
 
 Next local step:
   If this pass made a material fix, restart at /codex-review <pr-number>.
+  If it changed no product code, the PR has converged — recommend this repo's
+  ship step, whatever it uses to merge the PR, instead of a new round.
   Otherwise this completes the Claude half of the current local round.
 ```
+
+Classify by what the fix **changes**, not by how severe the finding sounded.
+Only a change to product code is material; tests, fixtures, comments, and docs
+are minor, and they leave the other engine's attestation valid for the new head.
+
+A round that finds only test and comment work is the signal to ship. The product
+has converged and the review has moved on to auditing its own artifacts — a
+surface that regenerates each time it is hardened, so the findings never run out
+and their volume says nothing about whether more review is warranted. Say so
+plainly and recommend shipping; the caller cannot see that the fixes stopped
+touching product code.
 
 When the hosted fallback was explicitly selected, hand off to
 `/reviewit <pr-number> deep` instead.

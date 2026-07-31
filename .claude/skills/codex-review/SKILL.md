@@ -161,6 +161,17 @@ When the status file appears with exit code zero, read the findings file — it 
 - If Codex reports no new confirmed finding and makes no commit, post a
   clean-pass PR review attestation with `engine=codex` and the exact reviewed
   head. A fix pass attests through its thread replies instead.
+- Your attestation stays valid while the head moves for **tests, fixtures,
+  comments, or docs only** — those leave every production line you reviewed
+  byte-identical. It is invalidated only by a change to product code. When
+  reviewing a head that moved since your last attestation, diff the two over
+  product paths first: if that diff is empty, carry the attestation forward and
+  say so rather than re-reviewing unchanged product code as if it were new.
+- If this pass changes no product code, stop the loop and recommend this repo's
+  ship step, whatever it uses to merge the PR. A round that finds only test and
+  comment work means the product converged and the review is auditing its own
+  artifacts — a self-renewing surface, so the next round will find more and
+  still not improve what ships.
 
 ## Phase 4: Disposition
 

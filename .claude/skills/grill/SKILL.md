@@ -121,6 +121,18 @@ Material fixes invalidate prior clean-pass attestations and require the next
 local engine to review the new exact head. Minor-only fixes do not by
 themselves start an unbounded new round.
 
+Classify by what the fix **changes**, not by how severe the finding sounded: a
+fix is material only when it changes product code. A pass whose commits touch
+only tests, fixtures, comments, or docs is minor-only, and the other engine's
+attestation still covers the head — confirm by diffing the attested SHA against
+the current head over product paths.
+
+If this pass changed no product code, stop the loop and recommend the ship step —
+whatever this repo uses to merge the PR. A round that finds only test and comment
+work means the product converged and the review is now auditing its own
+artifacts; that surface regenerates every time you harden it, so another round is
+guaranteed to find more and equally guaranteed not to improve what ships.
+
 ## Phase 4: Output
 
 Report the PR and reviewed head, mode and lenses, disposition/thread counts,
@@ -129,7 +141,9 @@ pass.
 
 If this Claude pass made a material fix, restart the bounded round at
 `/codex-review <pr-number>` in a fresh session. Otherwise it completes the
-Claude half of the current round.
+Claude half of the current round — and if it changed no product code at all,
+report the PR as converged and recommend the ship step rather than implying
+another round is owed.
 
 ## Boundaries
 
