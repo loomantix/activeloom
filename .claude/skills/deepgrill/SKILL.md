@@ -37,6 +37,9 @@ Proceed in the current session only after an explicit override.
    including resolved and outdated threads.
 6. Apply the docs/config-only skip, per the ledger's changeset
    classification.
+7. Resolve the changed-file list once and pass it to both lanes, so the refactor
+   pass and the deep grill share one resolution instead of each rebuilding the
+   changeset. The ledger's diff-delivery rules govern both.
 
 ## Phase 1: Refactor pass
 

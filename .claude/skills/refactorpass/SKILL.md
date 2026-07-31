@@ -27,6 +27,10 @@ session. Continue only after an explicit override.
 5. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
 6. Skip docs/config-only changesets, per the ledger's changeset
    classification.
+7. Resolve the changed-file list once and follow the ledger's diff-delivery
+   rules. If this pass fans cleanup angles out to agents, scope each to the
+   files it reviews rather than giving every angle the same whole-diff
+   artifact.
 
 ## Single `/simplify` pass
 
