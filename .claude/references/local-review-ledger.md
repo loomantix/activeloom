@@ -147,9 +147,25 @@ machine-readable marker:
 
 An automated runner requires that attestation from every pass that committed
 nothing: a hook exiting successfully proves only that it ran, not that it read
-anything. Clean evidence becomes stale as soon as the PR head changes, so the
-marker's `head` must be the exact SHA reviewed, and a pass that fixed something
-attests through its thread replies instead.
+anything. The marker's `head` must be the exact SHA reviewed, and a pass that
+fixed something attests through its thread replies instead.
+
+Clean evidence goes stale when **product code** changes, not whenever the head
+moves. A later commit touching only tests, fixtures, comments, or docs leaves
+every production line the attesting engine read byte-identical, so that
+attestation still covers the new head: record it as carried forward, naming both
+the attested SHA and the current one.
+
+Do not treat every head move as invalidating. That reading is what produces an
+unbounded loop, and it is not a hypothetical — test and doc hardening is always
+available to find, so each engine's commits perpetually re-stale the other's
+attestation and no round can terminate. The loop then feels productive, because
+every round genuinely does surface findings; they are just findings about the
+review's own artifacts rather than about the product.
+
+Verify a carry-forward rather than assuming it. Diff the attested SHA against
+the current head restricted to product paths; if that diff is empty, the
+attestation holds and the round is done.
 
 A review hook that committed must also leave a final-lane completion marker
 after its last adversarial lane finishes:
@@ -165,13 +181,34 @@ cleanup commit from masking a final adversarial lane that silently declined.
 For a two-engine loop:
 
 - run one fresh Codex pass and one fresh Claude pass per round;
-- classify committed fixes as `material` or `minor`;
+- classify committed fixes as `material` or `minor` **by what the fix changes,
+  not by how severe the finding sounded**: a fix is `material` only when it
+  changes product code — the application or library source that ships. A fix
+  touching only tests, fixtures, comments, or docs is `minor` even when the
+  finding that produced it was severity-high, because the shipped behavior is
+  unchanged;
 - restart at Codex when either engine makes a material fix;
 - keep minor fixes, but do not restart solely because of them;
-- converge only after a complete Codex-then-Claude round reports no material
-  fixes and every local-review thread has a reply and is resolved;
+- converge after a complete Codex-then-Claude round in which neither engine
+  changed product code, and every local-review thread has a reply and is
+  resolved;
 - stop at the configured round cap, preserving the draft PR and reporting
   non-convergence.
+
+**When a pass changes no product code, stop and say so.** Do not open another
+round, and do not let the round cap imply the remaining rounds are owed. State
+that the pass was minor-only, that the other engine's attestation carries
+forward, and recommend this repository's ship step by name — whatever it uses to
+merge the PR. The reviewer that notices this is the one responsible for
+surfacing it; a caller watching rounds go by cannot see that the fixes stopped
+touching product code.
+
+The signal to watch for is a round whose findings are all about tests, fixtures,
+or comments. That means the product converged and the review has moved on to
+auditing its own artifacts. Those findings can be real and still not be reasons
+to keep reviewing: hardening assertions creates fresh assertions to mutate, so
+the supply never runs out and the next round is guaranteed to find more. Ship,
+and carry anything genuinely worth doing to a follow-up issue.
 
 The next reviewer must read this ledger before reviewing the new head. That is
 how prior rationale survives after local model context has been discarded.
