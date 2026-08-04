@@ -50,6 +50,23 @@ Use this path when both local engines are available:
    when either pass makes one. Minor-only fixes are validated and kept but do
    not restart the cycle. Convergence requires one complete Codex-then-Claude
    round with no material fixes.
+
+   **The chain gets cheaper as it repeats.** Two rules make that happen, and both
+   are derived from the ledger so a fresh session reaches the same answer:
+   - **The refactor pass runs once per engine per PR.** A second cleanup pass over
+     an already-simplified diff returns naming and shape churn, which moves the
+     head and re-stales the other engine's attestation for nothing that ships.
+     Each engine's cleanup lane latches on a `local-review-refactor:v1` marker;
+     a docs/config-only skip does not consume it.
+   - **Rounds 1–2 are adversarial; round 3 and later are convergence rounds.**
+     Once both engines have read the change cold twice, the remaining findings
+     are mostly about the review's own artifacts. A convergence round runs only
+     the lanes that can find a reason not to deploy, changes the PR only for a
+     blocking defect, defers everything else to a linked issue, and ends the loop
+     as soon as it finds no blocker. Lanes still report everything they find —
+     the narrowing is a disposition rule applied when consolidating lane output,
+     never an instruction to a lane to withhold what it found.
+
 7. Cap the loop at four rounds unless the consumer explicitly configures a
    different positive bound. At cap exhaustion, stop, preserve the branch,
    worktree, and draft PR, and report non-convergence. Do not mark it ready.
@@ -87,11 +104,13 @@ Use this path when local Claude Code is unavailable.
 
 ### Deep
 
-1. Open a draft PR, then run `deepgrill <pr-number>`. It executes
-   `refactorpass` plus `grill deep`'s six core lanes and the conditional
-   tenant-coupling lane.
+1. Open a draft PR, then run `deepgrill <pr-number>`. It executes `grill deep`'s
+   six core lanes and the conditional tenant-coupling lane, preceded by
+   `refactorpass` on this engine's first pass over the PR.
 2. Run `reviewit <pr-number> deep`. Deep mode uses the same hosted reviewers
    with its larger cap, early-exit rules, and final fresh Codex `deepgrill`.
+   That tail `deepgrill` skips the refactor pass — step 1 already spent this
+   engine's cleanup latch on the PR.
 
 Choose deep when the change touches auth, crypto, secret handling, schema/data
 shape, GitHub Actions, sync tooling, `.codex/skills/**`, a large refactor, an

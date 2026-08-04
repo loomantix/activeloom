@@ -1,12 +1,14 @@
 ---
 name: refactorpass
-description: PR-first cleanup pass for Codex. Use when the user asks for refactoring, cleanup, simplification, or the platform review chain on an open draft PR. Posts verified cleanup suggestions inline before editing, skips docs/config-only changesets, runs a structured cleanup matrix, and pushes, replies, and resolves when appropriate.
+description: PR-first cleanup pass for Codex. Use when the user asks for refactoring, cleanup, simplification, or the platform review chain on an open draft PR. Posts verified cleanup suggestions inline before editing, skips docs/config-only changesets, runs a structured cleanup matrix, and pushes, replies, and resolves when appropriate. Runs at most once per PR for this engine.
 ---
 
 # Refactor Pass
 
 Run a structured, behavior-preserving cleanup pass on an open draft PR before
-adversarial review. This is not a broad refactor.
+adversarial review. This is not a broad refactor, and it is not a step that
+repeats each review round: it is the Codex engine's **one** cleanup pass on that
+PR.
 
 ## Context Window Check
 
@@ -52,23 +54,45 @@ Run these lanes as independently as the active runtime permits:
    otherwise the default branch, once. Pass the literal `<base-sha>..HEAD` range
    to every cleanup lane; never let lanes re-resolve a mutable ref.
 4. Skip if the changeset is docs/config-only. Treat source files such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash` as review-worthy.
-5. Read the changed source files and execute every lane in the Cleanup Matrix.
-6. Consolidate lane suggestions, verify them, and deduplicate them against the
+5. Check the once-per-engine latch. Search the PR's comments for
+   `local-review-refactor:v1 engine=codex`, authored by the actor running this
+   review. If it is present, this PR has already had its Codex cleanup pass:
+   report the skip with the head the earlier pass ran on and stop without running
+   a lane. Continue only when the marker is absent or the caller explicitly asked
+   to force a re-run, and say which of the two applied.
+
+   The rule exists because the second pass over an already-simplified diff
+   returns naming and shape churn, not cleanups. That churn moves the head and
+   re-stales the other engine's attestation for no shipped benefit.
+
+6. Read the changed source files and execute every lane in the Cleanup Matrix.
+7. Consolidate lane suggestions, verify them, and deduplicate them against the
    complete PR ledger.
-7. Post each confirmed cleanup inline before editing, then apply only cleanup
+8. Post each confirmed cleanup inline before editing, then apply only cleanup
    that is behavior-preserving and clearly improves the fresh diff.
-8. Keep scope tight: touch only code changed by the current branch unless a tiny adjacent edit is required to finish the cleanup safely.
-9. Do not introduce feature behavior, broad rewrites, unrelated style churn, formatting-only commits, or speculative abstraction.
-10. Run the smallest relevant formatter/test command if the repo documents one.
-11. If changes were made, commit them as `refactor: codex cleanup pass - <summary>`
+9. Keep scope tight: touch only code changed by the current branch unless a tiny adjacent edit is required to finish the cleanup safely.
+10. Do not introduce feature behavior, broad rewrites, unrelated style churn, formatting-only commits, or speculative abstraction.
+11. Run the smallest relevant formatter/test command if the repo documents one.
+12. If changes were made, commit them as `refactor: codex cleanup pass - <summary>`
     and push without force. Reply to each cleanup thread with the commit and
     validation, then resolve it.
+13. Whether or not the lanes produced changes, post one informational PR comment
+    closing the latch for this engine, carrying the ledger's marker:
+
+    ```text
+    <!-- local-review-refactor:v1 engine=codex head=<reviewed-sha> outcome=<committed|no-op> -->
+    ```
+
+    Post it only for a pass that actually ran the cleanup lanes. A docs/config-only
+    skip leaves the latch open, so a later round whose changeset contains source
+    can still spend the one pass.
 
 ## Output
 
 Report:
 
 - cleanup depth: independent subagents, local three-pass fallback, docs/config-only skip, or no source changes
+- latch state: first pass for this engine, skipped because already spent at `<sha>`, or forced re-run
 - whether changes were made
 - commit SHA if created
 - validation run

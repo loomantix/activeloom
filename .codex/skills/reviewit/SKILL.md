@@ -103,7 +103,7 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
      - **Lean**: continue to the next iteration if any reviewer found new findings on the post-fix HEAD and the cap is not reached. Otherwise exit the loop.
      - **Deep**: continue to the next iteration only if this iteration produced ≥1 `fix` resolution (a commit was pushed) and the cap is not reached. If the iteration produced only defer/dismiss findings (or none at all), **early-exit** the loop — re-firing reviewers on an unchanged HEAD just re-posts the same findings.
 
-8. **Deep mode only — final `deepgrill`.** After the loop exits for any reason (clean, early-exit, or iter cap), set `phase: final-deepgrill` and invoke `deepgrill <pr-number>`. It loads the existing PR ledger, runs `refactorpass` plus `grill deep`'s six core lanes (code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, security reviewer) and the conditional tenant-coupling lane when signaled, posts verified findings inline before fixes, then replies and resolves. When control returns from the sub-skill, set `deepgrillRan: true`, capture the sub-skill's output, and continue to the summary step. **Do not stop after `deepgrill` returns** — `reviewit` owns the final summary.
+8. **Deep mode only — final `deepgrill`.** After the loop exits for any reason (clean, early-exit, or iter cap), set `phase: final-deepgrill` and invoke `deepgrill <pr-number>`. It loads the existing PR ledger, runs `grill deep`'s six core lanes (code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, security reviewer) and the conditional tenant-coupling lane when signaled, posts verified findings inline before fixes, then replies and resolves. It runs `refactorpass` first only when this engine has not already spent its once-per-PR cleanup latch — on a PR that ran the pre-push chain it normally has, so expect a grill-only tail pass. If the PR is already three or more Codex rounds deep, `deepgrill` selects its convergence stance: narrowed lanes, blocking-defects-only fixes, and issues for the rest. Both decisions come from the PR ledger; do not override them from here. When control returns from the sub-skill, set `deepgrillRan: true`, capture the sub-skill's output, and continue to the summary step. **Do not stop after `deepgrill` returns** — `reviewit` owns the final summary.
 
 ## Important Details
 
@@ -126,7 +126,7 @@ Summarize:
 - findings fixed / deferred / dismissed counts and links
 - commits pushed
 - replies posted (and any failed reply targets)
-- deep-mode `deepgrill` result: whether `refactorpass` produced a commit, and the count of `grill deep` findings the user chose to fix / defer / ignore
+- deep-mode `deepgrill` result: the round it resolved and whether it ran adversarially or in convergence mode, whether `refactorpass` ran at all and if so whether it produced a commit, and the count of `grill deep` findings the user chose to fix / defer / ignore
 - state file path if still waiting
 - resume command if applicable
 - any remaining risks
