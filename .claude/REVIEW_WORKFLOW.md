@@ -28,6 +28,23 @@ Use this path when both local engines are available:
    severe the finding sounded**. A fix is `material` only when it changes product
    code. Tests, fixtures, comments, and docs are `minor`. Restart at Codex when
    either pass makes a material fix. Keep minor-only fixes without restarting.
+
+   **The chain gets cheaper as it repeats.** Two rules make that happen, and both
+   are enforced from the ledger rather than from session memory:
+   - **The refactor pass runs once per engine per PR.** A second `/simplify` over
+     an already-simplified diff returns naming and shape churn, which moves the
+     head and re-stales the other engine's attestation for nothing that ships.
+     Each engine's cleanup lane latches on a `local-review-refactor:v1` marker;
+     a docs/config-only skip does not consume it.
+   - **Rounds 1–2 are adversarial; round 3 and later are convergence rounds.**
+     Once both engines have read the change cold twice, the remaining findings
+     are mostly about the review's own artifacts. A convergence round runs only
+     the lenses that can find a reason not to deploy, changes the PR only for a
+     blocking defect, defers everything else to a linked issue, and ends the loop
+     as soon as it finds no blocker. Lenses still report everything they find —
+     the narrowing is a disposition rule applied by the orchestrator, never an
+     instruction to a review agent to withhold by severity or confidence.
+
 6. Converge after one complete Codex-then-Claude round changes no product code,
    every pass that committed nothing has an attestation covering the current head,
    every committed pass has a structured fix disposition plus a final-lane
@@ -66,7 +83,8 @@ When a local Codex CLI is unavailable:
 
 1. Open a draft PR and run `deepgrill <pr-number>`.
 2. Run `reviewit <pr-number> deep`; its final local `deepgrill` receives the
-   same PR number and ledger.
+   same PR number and ledger. That tail `deepgrill` skips the refactor pass —
+   step 1 already spent this engine's cleanup latch on the PR.
 
 Use deep mode for auth, crypto, secrets, schema/data-shape work, GitHub Actions,
 sync tooling, `.claude/skills/**`, large refactors, recurring incidents, or

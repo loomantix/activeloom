@@ -1,13 +1,14 @@
 ---
 name: refactorpass
-description: PR-first refactor pass that runs /simplify once against an open draft PR, verifies and commits the surviving cleanups, pushes, and records them in the PR ledger.
-argument-hint: (optional PR number; always single-pass)
+description: PR-first refactor pass that runs /simplify once against an open draft PR, verifies and commits the surviving cleanups, pushes, and records them in the PR ledger. Runs at most once per PR for this engine.
+argument-hint: (optional PR number, optional "force"; always single-pass)
 ---
 
 # Refactor pass — PR-first wrapper
 
 Run one behavior-preserving cleanup pass on an open draft PR before adversarial
-review.
+review. This is the Claude engine's **one** cleanup pass on that PR, not a step
+that repeats each review round.
 
 ## Context-window check
 
@@ -27,7 +28,18 @@ session. Continue only after an explicit override.
 5. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
 6. Skip docs/config-only changesets, per the ledger's changeset
    classification.
-7. Resolve the changed-file list once and follow the ledger's diff-delivery
+7. **Check the once-per-engine latch.** Search the PR's comments for
+   `local-review-refactor:v1 engine=claude`, authored by the actor running this
+   review. If it is present, this PR has already had its Claude cleanup pass:
+   report the skip with the head the earlier pass ran on and stop. Do not run
+   `/simplify`. Continue only when the marker is absent or `$ARGUMENTS` contains
+   `force`, and say which of the two applied.
+
+   The rule exists because the second pass over an already-simplified diff
+   returns naming and shape churn, not cleanups. That churn moves the head and
+   re-stales the other engine's attestation for no shipped benefit.
+
+8. Resolve the changed-file list once and follow the ledger's diff-delivery
    rules. If this pass fans cleanup angles out to agents, scope each to the
    files it reviews rather than giving every angle the same whole-diff
    artifact.
@@ -70,6 +82,17 @@ what was consolidated. Stop if any step fails.
 If nothing survived, the branch is unchanged: post the same informational
 comment with no commit SHA and move on. Do not push.
 
+Either way, that comment closes the latch for this engine and must carry the
+ledger's marker:
+
+```text
+<!-- local-review-refactor:v1 engine=claude head=<reviewed-sha> outcome=<committed|no-op> -->
+```
+
+Post it only for a pass that actually ran `/simplify`. A docs/config-only skip
+leaves the latch open, so a later round whose changeset contains source can still
+spend the one pass.
+
 Do not use the `local-review-pass:v1` engine attestation and do not open
 `local-review:v1` threads for cleanups: only the final adversarial `grill` lane
 may certify the enclosing Claude review hook, and it owns the completion marker.
@@ -79,6 +102,8 @@ may certify the enclosing Claude review hook, and it owns the completion marker.
 Report:
 
 - PR number and reviewed head;
+- latch state: `first pass for this engine`, `skipped — already spent at <sha>`,
+  or `forced re-run`;
 - whether cleanup changed the branch and the commit SHA;
 - cleanups kept and cleanups dropped on verification;
 - validation run;

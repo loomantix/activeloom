@@ -1,13 +1,16 @@
 ---
 name: deepgrill
-description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /refactorpass plus /grill deep. Use on complex or high-risk changes such as auth/crypto, schema migrations, sync-propagating work, and large refactors.
+description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /grill deep — preceded by /refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use on complex or high-risk changes such as auth/crypto, schema migrations, sync-propagating work, and large refactors.
 argument-hint: (optional PR number)
 ---
 
 # /deepgrill — PR-first deep chain
 
-Run `/refactorpass` and `/grill deep` against an open draft PR and its durable
-local-review ledger.
+Run `/grill deep` against an open draft PR and its durable local-review ledger,
+preceded by `/refactorpass` only on this engine's first pass over that PR.
+
+The chain gets cheaper as it repeats, deliberately. Cleanup runs once; the
+adversarial stance holds for two rounds and then gives way to landing the change.
 
 Use this path for `.claude/skills/**`, sync scripts, GitHub Actions, auth,
 crypto, secrets, sensitive-data paths, schema/data-shape changes, large
@@ -40,20 +43,34 @@ Proceed in the current session only after an explicit override.
 7. Resolve the changed-file list once and pass it to both lanes, so the refactor
    pass and the deep grill share one resolution instead of each rebuilding the
    changeset. The ledger's diff-delivery rules govern both.
+8. Resolve this engine's round number per the ledger — `$AGENT_LOOP_REVIEW_ROUND`
+   when the runner set it, otherwise one past the count of `local-review-pass:v1`
+   and `local-review-complete:v1` markers naming `engine=claude`. Rounds 1–2 are
+   adversarial; round 3 and later are convergence rounds. State which applies
+   before running a lane.
 
-## Phase 1: Refactor pass
+## Phase 1: Refactor pass — first Claude pass only
 
-Invoke `Skill(skill="refactorpass", args="<pr-number>")` and wait for it to
-return. Do not stop when the sub-skill returns.
+Search the PR for `local-review-refactor:v1 engine=claude`. If it is present,
+skip this phase entirely, report `refactor pass: already spent at <sha>`, and go
+to Phase 2. A convergence round never runs cleanup, marker or not.
+
+Otherwise invoke `Skill(skill="refactorpass", args="<pr-number>")` and wait for
+it to return. Do not stop when the sub-skill returns.
 
 ## Phase 2: Deep grill
 
 Reload the PR head and ledger, then invoke
-`Skill(skill="grill", args="<pr-number> deep")`.
+`Skill(skill="grill", args="<pr-number> deep")`, passing the resolved round so
+the lane selects the matching stance.
 
-The deep matrix uses the relevant lenses from code review, silent failures,
-type/API design, comments/docs, tests, security, and conditional
-tenant-coupling. Keep the matrix bounded per `MODEL_NOTES.md`.
+In an adversarial round the deep matrix uses the relevant lenses from code
+review, silent failures, type/API design, comments/docs, tests, security, and
+conditional tenant-coupling. Keep the matrix bounded per `MODEL_NOTES.md`.
+
+In a convergence round the matrix narrows to correctness, silent failure, and
+security when its signal is present, and the PR changes only for a blocking
+defect. `/grill` owns those rules; do not restate or relax them here.
 
 Every confirmed finding must be posted inline before editing. A completed fix
 must be pushed, replied to with its SHA, validation, and structured disposition,
@@ -67,6 +84,8 @@ Print:
 ```text
 ✅ /deepgrill complete on PR #<pr-number>.
 - Reviewed head: <sha>
+- Round: <n> (<adversarial | convergence>)
+- Refactor pass: <ran | already spent at <sha> | docs-config skip>
 - Findings: <posted/replied/resolved counts>
 - Review depth: <agents run>
 - Classification: <clean | minor | material>
@@ -78,6 +97,9 @@ Next local step:
   ship step, whatever it uses to merge the PR, instead of a new round.
   Otherwise this completes the Claude half of the current local round.
 ```
+
+A convergence round that found no blocking defect ends the loop. Say so and name
+the ship step; do not report the remaining rounds as owed.
 
 Classify by what the fix **changes**, not by how severe the finding sounded.
 Only a change to product code is material; tests, fixtures, comments, and docs
