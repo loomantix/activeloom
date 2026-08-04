@@ -24,6 +24,23 @@ If either is yes, stop and tell the user:
 
 Do not proceed in the current session unless the user explicitly overrides.
 
+## Stance Resolution
+
+Resolve this engine's round number per `.codex/references/local-review-ledger.md`
+before selecting lanes: use `$AGENT_LOOP_REVIEW_ROUND` when the runner set it,
+take it from an invoking `deepgrill`, or count the `local-review-pass:v1` and
+`local-review-complete:v1` markers on the PR naming `engine=codex` and add one.
+
+- **Rounds 1–2 run adversarially.** The stance, matrices, and fix bias below
+  apply as written.
+- **Round 3 and later run in convergence mode.** Both engines have read the
+  change cold twice; the goal moves from challenging it to landing it. See
+  "Convergence Rounds" below — it overrides the lane selection and the fix bias,
+  and nothing else. The post-before-editing, reply, and resolve contract is
+  unchanged, and the round cap does not move.
+
+State the resolved round and stance in the output.
+
 ## Adversarial Stance
 
 Assume there are problems to find. Treat the diff as guilty until each risk is
@@ -51,6 +68,41 @@ deferral time rather than leaving the suggestion as an undocumented todo. A
 Reason: every valid finding that ships becomes the floor for the next PR in
 this area. Letting them accrue as "deferred" turns the backlog into review
 noise and makes future grills more expensive.
+
+## Convergence Rounds
+
+In round 3 and later, run only the lanes that can find a reason not to deploy:
+the code reviewer, the silent failure hunter, and the security reviewer when its
+signal is present. Drop the type/API design, comment/docs, PR test, and
+tenant-coupling lanes. They found what they were going to find in rounds 1–2, and
+they audit a surface that regenerates every time it is hardened — guaranteed to
+return work, guaranteed not to change what ships.
+
+Brief those lanes exactly as an adversarial round does. They still report every
+evidence-backed finding with severity attached; the narrowing is a disposition
+rule applied when consolidating lane output, not an instruction to a lane to
+withhold what it found.
+
+The fix bias inverts. Change the PR only for a **blocking** defect — one that
+ships wrong behavior, loses or corrupts data, opens a security or privacy hole,
+breaks a public contract, or breaks deploy or rollout:
+
+- Fix a blocking finding with the smallest edit that clears it. No refactor, no
+  rename, no new abstraction, no test or comment hardening alongside it.
+- Defer every confirmed non-blocking finding. File the GitHub issue, reply with
+  `outcome=deferred` plus the link, and resolve the thread. Deferral is the
+  expected disposition here, not an admission of scope creep, and the 300+ line
+  threshold in the Fix Bias section does not apply to a convergence round.
+- Dismiss invalid findings with evidence, exactly as in an adversarial round.
+
+The findings a convergence round defers are usually real. Fixing them in this PR
+is still the wrong call: each one moves the head, re-stales the other engine's
+attestation, and buys another round of the same. Land the change and let the
+issue carry the work.
+
+A convergence round that finds no blocking defect ends the loop: post the
+clean-pass attestation, recommend the repository's ship step, and list the
+deferred issues.
 
 ## Mode
 
@@ -106,11 +158,14 @@ Run these lanes as independently as the active runtime permits:
    SHA, give every lane the same literal `<base-sha>..HEAD` range.
 4. Skip docs/config-only changes unless the user explicitly wants review.
 5. Read `AGENTS.md`, relevant path-specific instructions, and changed files.
-6. In lean mode, execute every lane in the Lean Review Matrix. Load these role references for lane prompts:
+6. Resolve the round and stance per "Stance Resolution". In a convergence round,
+   the lane list in "Convergence Rounds" replaces steps 7 and 8, and its inverted
+   fix bias replaces step 10. Every other step, including step 9, is unchanged.
+7. In lean mode, execute every lane in the Lean Review Matrix. Load these role references for lane prompts:
    - `.codex/references/roles/code-reviewer.md`
    - `.codex/references/roles/silent-failure-hunter.md`
      Keep lane findings separated until both lanes complete, then deduplicate by root cause.
-7. In deep mode, execute every lane in the Deep Review Matrix. Load these role references for lane prompts:
+8. In deep mode, execute every lane in the Deep Review Matrix. Load these role references for lane prompts:
    - `.codex/references/roles/code-reviewer.md`
    - `.codex/references/roles/silent-failure-hunter.md`
    - `.codex/references/roles/type-design-analyzer.md`
@@ -118,23 +173,24 @@ Run these lanes as independently as the active runtime permits:
    - `.codex/references/roles/pr-test-analyzer.md`
    - `.codex/references/roles/security-reviewer.md`
      When the tenant-coupling signal is present, load `.codex/references/roles/code-reviewer.md` again for the dedicated conditional pass. Keep lane findings separated until all lanes complete, then deduplicate by root cause.
-8. Verify and deduplicate lane findings against the source and complete PR
+9. Verify and deduplicate lane findings against the source and complete PR
    ledger. For each confirmed root cause, post one inline comment on an exact
    diff anchor before editing.
-9. Fix it unless it is invalid or a valid major architectural rework. Dismiss
-   invalid findings with evidence. Defer only 300+ line or cross-cutting
-   refactors, and track each deferral in a GitHub issue.
-10. Run targeted validation, commit, and push with no force.
-11. Reply to every posted thread with the fix SHA and validation or disposition
+10. Fix it unless it is invalid or a valid major architectural rework. Dismiss
+    invalid findings with evidence. Defer only 300+ line or cross-cutting
+    refactors, and track each deferral in a GitHub issue.
+11. Run targeted validation, commit, and push with no force.
+12. Reply to every posted thread with the fix SHA and validation or disposition
     rationale, then resolve it. Stop on any posting, push, reply, or resolution
     failure.
-12. If the pass has no new confirmed findings, leave a clean-pass PR review
+13. If the pass has no new confirmed findings, leave a clean-pass PR review
     comment naming the engine and exact reviewed head.
 
 ## Output
 
 End with:
 
+- round and stance: `<n>` plus adversarial or convergence
 - review depth: lean with independent subagents, lean local two-pass fallback, deep with independent subagents, or deep local multi-pass fallback
 - findings fixed
 - findings deferred (with linked GitHub issue) or dismissed (with one-line evidence)

@@ -16,10 +16,15 @@ Load `.codex/references/local-review-ledger.md`. The originating engine's
 resolved threads are required input to this pass, not optional background.
 
 This is **not** `deepgrill`. Both are PR-first and use the same thread ledger,
-but `deepgrill` runs `refactorpass` plus the current engine's deep matrix.
-`pr-grill` is the cross-engine relay leg: it skips `refactorpass`, scrutinizes
-the prior engine's design decisions, and pushes signed fix commits back to the
-PR head branch.
+but `deepgrill` runs the current engine's deep matrix, preceded by `refactorpass`
+on that engine's first pass over the PR. `pr-grill` is the cross-engine relay
+leg: it never runs `refactorpass`, scrutinizes the prior engine's design
+decisions, and pushes signed fix commits back to the PR head branch.
+
+A relay leg is still a round for the engine running it. Resolve the round and
+stance per the ledger's "Resolve the round, then pick the stance" — from round 3
+on, a relay pass narrows to the deploy-blocking lanes, changes the PR only for a
+blocking defect, and defers the rest to linked issues.
 
 ## Safety preconditions — verify before doing anything
 

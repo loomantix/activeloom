@@ -1,6 +1,6 @@
 ---
 name: deepgrill
-description: High-fidelity PR-first Codex review chain. Opens or reuses a draft PR, records verified findings inline before fixes, and runs refactorpass plus grill deep. Use for complex or high-risk changes such as auth, crypto, secrets, data migrations, GitHub Actions, sync tooling, .codex/skills, large refactors, or when the user asks for a deep review.
+description: High-fidelity PR-first Codex review chain. Opens or reuses a draft PR, records verified findings inline before fixes, and runs grill deep — preceded by refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use for complex or high-risk changes such as auth, crypto, secrets, data migrations, GitHub Actions, sync tooling, .codex/skills, large refactors, or when the user asks for a deep review.
 ---
 
 # Deep Grill
@@ -31,15 +31,30 @@ draft PR before invoking any review lane. Verify the local HEAD, remote branch,
 and PR head SHA match. Record the PR number and load all prior review threads,
 including resolved and outdated threads.
 
+Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
+when the runner set it, otherwise one past the count of `local-review-pass:v1`
+and `local-review-complete:v1` markers on the PR naming `engine=codex`. Rounds
+1–2 are adversarial; round 3 and later are convergence rounds. State which
+applies before invoking a lane.
+
 ## Chain
 
-Run the full high-fidelity PR review chain:
+The chain gets cheaper as it repeats, deliberately. Cleanup runs once; the
+adversarial stance holds for two rounds and then gives way to landing the change.
 
-1. Execute `refactorpass <pr-number>` against the draft PR.
+1. Search the PR for `local-review-refactor:v1 engine=codex`. If it is absent and
+   this is an adversarial round, execute `refactorpass <pr-number>` against the
+   draft PR. If it is present, or this is a convergence round, skip cleanup
+   entirely and report `refactor pass: already spent at <sha>` or
+   `refactor pass: skipped (convergence round)`.
 2. Reload the PR head and review ledger.
-3. Execute `grill <pr-number> deep`, including all six core independent review
-   lanes and the conditional tenant-coupling lane when customer-variable
-   behavior is present.
+3. Execute `grill <pr-number> deep`, passing the resolved round so the lane picks
+   the matching stance. An adversarial round runs all six core independent review
+   lanes and the conditional tenant-coupling lane when customer-variable behavior
+   is present. A convergence round runs only the code reviewer, silent failure
+   hunter, and security reviewer when its signal is present, and changes the PR
+   only for a blocking defect. `grill` owns those rules; do not restate or relax
+   them here.
 4. Require every confirmed finding to have been posted inline before its fix,
    replied to after push, and resolved.
 
@@ -102,6 +117,8 @@ Missing classification for a commit defaults to material.
 Codex deepgrill pass complete.
 PR: #<pr-number>
 Reviewed head: <sha>
+Round: <n> (<adversarial | convergence>)
+Refactor pass: <ran | already spent at <sha> | skipped (convergence round) | docs-config skip>
 Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
   Run a fresh local Claude review on this PR head against <review-base-sha>.
@@ -111,6 +128,9 @@ Next:
   Mark ready only after one full Codex-then-Claude round produces no material
   fixes and every local-review thread is resolved.
 ```
+
+A convergence round that found no blocking defect ends the loop. Say so and name
+the repository's ship step; do not report the remaining rounds as owed.
 
 Do not recommend or invoke `reviewit` on the local convergence path. The current
 process or outer agent-loop wrapper owns the next pass and final summary.
