@@ -1,14 +1,14 @@
 ---
 name: ship-staging
-description: Merge an approved GitHub pull request into a staging base branch, mark linked issues as on-staging, fast-forward the local staging reference checkout, and post a short Google Chat notification. Use when the user asks to ship, merge, or deploy a staging-targeted PR through the staging branch, especially with "ship-staging".
+description: Mark an approved draft pull request ready, merge it into a staging base branch, mark linked issues as on-staging, fast-forward the local staging reference checkout, and post a short Google Chat notification. Use when the user asks to ship, merge, or deploy a staging-targeted PR through the staging branch, especially with "ship-staging".
 ---
 
 # Ship Staging
 
-Merge one ready PR into `staging`, mark its linked issues as shipped to
-staging, refresh the local staging reference checkout, and notify the configured
-development Google Chat space. This skill is intentionally narrow: it ships
-staging-base PRs only.
+Mark an approved draft PR ready when necessary, merge it into `staging`, mark
+its linked issues as shipped to staging, refresh the local staging reference
+checkout, and notify the configured development Google Chat space. This skill
+is intentionally narrow: it ships staging-base PRs only.
 
 ## Guardrails
 
@@ -16,8 +16,10 @@ staging-base PRs only.
   repo's separate promotion or hotfix workflow.
 - Use only `gh pr merge <pr> --merge --delete-branch`.
 - Never use `--admin`, `--squash`, `--rebase`, `--auto`, or `--no-verify`.
-- Stop on draft PRs, merge conflicts, blocked/dirty/unstable merge state,
-  requested changes, failing CI, or required checks still running.
+- Mark an open draft PR ready before evaluating its merge gates. Stop if the
+  ready transition fails or cannot be verified.
+- Stop on merge conflicts, blocked/dirty/unstable merge state, requested
+  changes, failing CI, or required checks still running.
 - Resolve the Google Chat webhook at runtime from `GCHAT_DEV_WEBHOOK_URL` or a
   consumer-supplied path in `GCHAT_DEV_WEBHOOK_FILE`. The public skill does not
   define a default secret location.
@@ -54,7 +56,10 @@ staging-base PRs only.
    ```
 
 3. Resolve the current repository identity and fetch PR state. Both queries must
-   succeed before merging:
+   succeed before merging. Refuse before changing draft state unless the PR is
+   open and targets `staging`. If it is a draft, mark it ready, refetch the same
+   fields, and verify that the PR is still open, still targets `staging`, has
+   the same head, and is no longer a draft:
 
    ```bash
    CURRENT_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner') || exit 1
@@ -62,6 +67,34 @@ staging-base PRs only.
      echo "Could not resolve PR state; refusing to merge" >&2
      exit 1
    fi
+   if ! jq -e '.state == "OPEN" and .baseRefName == "staging"' <<<"$PR_JSON" >/dev/null; then
+     echo "PR must be open and target staging; refusing to change readiness" >&2
+     exit 1
+   fi
+
+   READY_TRANSITION="already ready"
+   if jq -e '.isDraft == true' <<<"$PR_JSON" >/dev/null; then
+     PRE_READY_HEAD=$(jq -r '.headRefOid' <<<"$PR_JSON")
+     if ! gh pr ready <pr>; then
+       echo "Could not mark draft PR ready; refusing to merge" >&2
+       exit 1
+     fi
+     if ! PR_JSON=$(gh pr view <pr> --json number,title,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,url,body,author,reviewDecision,statusCheckRollup,labels); then
+       echo "Could not verify PR after marking it ready; refusing to merge" >&2
+       exit 1
+     fi
+     if ! jq -e --arg head "$PRE_READY_HEAD" '
+       .state == "OPEN"
+       and .baseRefName == "staging"
+       and .headRefOid == $head
+       and .isDraft == false
+     ' <<<"$PR_JSON" >/dev/null; then
+       echo "PR state or head changed during the ready transition; refusing to merge" >&2
+       exit 1
+     fi
+     READY_TRANSITION="marked ready"
+   fi
+
    checks_status=0
    REQUIRED_CHECKS=$(gh pr checks <pr> --required --json bucket,name,state) || checks_status=$?
    if [[ "$checks_status" -ne 0 && "$checks_status" -ne 8 ]]; then
@@ -87,7 +120,7 @@ staging-base PRs only.
 
 4. Refuse without merging when any of these are true:
    - `state != "OPEN"`
-   - `isDraft == true`
+   - `isDraft != false` after the ready transition
    - `baseRefName != "staging"`
    - `mergeable != "MERGEABLE"`
    - `mergeStateStatus` is `BLOCKED`, `BEHIND`, `DIRTY`, or `UNSTABLE`
@@ -293,6 +326,7 @@ staging-base PRs only.
     ```text
     Shipped PR #<number> - <title>
     Merge commit: <short-sha>
+    Ready transition: <marked ready | already ready>
     Issue discovery: <complete | degraded | failed>
     Issues marked status: on-staging: <#N, #M | none>
     Staging checkout: <fast-forwarded | skipped with reason>
