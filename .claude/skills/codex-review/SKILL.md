@@ -45,6 +45,7 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
      ```
 
    - If the changeset is docs/config-only per the ledger's changeset classification, post a scoped clean-pass attestation and exit.
+   - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v1` and `local-review-complete:v1` markers on the PR naming `engine=codex`. Rounds 1–2 are adversarial; round 3 and later are convergence rounds, and the prompt and dispositions change accordingly.
 
 ## Phase 1: Build the review prompt
 
@@ -57,6 +58,18 @@ Write a tight, scoped prompt. A vague "review this" wastes the run; name the fil
 - The tracked diff to read (`git diff <MB>`) plus the untracked paths from `git ls-files --others --exclude-standard`, and an instruction to **read the actual source, not just the diff**.
 - The 3–4 riskiest things about this specific change, phrased as **where to scrutinize hardest** — not as an attack. See the framing rules below.
 - The output contract: **only high-confidence material findings** (correctness, security, data-loss); for each, `file:line`, severity, concrete issue, concrete fix; "no material findings" if clean; be terse.
+
+### Convergence rounds (round 3 and later)
+
+Codex has already read this change cold twice. Narrow the prompt's scrutiny list
+to what could stop the deploy — correctness, data safety, security and privacy,
+broken public contracts, rollout breakage — and drop the design, docs, and test
+angles from it. Say plainly that the change is converging and the question is
+whether anything blocks shipping, not whether it could be better.
+
+Keep the terse-but-complete output contract as written. The narrowing belongs in
+what Codex is pointed at and in how you disposition what comes back, not in an
+instruction to withhold findings it already made.
 
 ### Optional repo context
 
@@ -177,6 +190,8 @@ When the status file appears with exit code zero, read the findings file — it 
 
 Fix only **confirmed** findings (default: fix now, in this PR). Dismiss false positives by replying with evidence and resolving the thread.
 
+In a convergence round the default inverts: fix only a blocking defect — wrong shipped behavior, data loss or corruption, a security or privacy hole, a broken public contract, or broken deploy/rollout — with the smallest edit that clears it. Every other confirmed finding gets an issue, an `outcome=deferred` reply with the link, and a resolved thread. Those deferrals are usually real findings; fixing them here just moves the head and buys another round.
+
 For a finding that needs a human/scope/legal decision (risk acceptance, prod-data assumptions, an architectural rework), do not guess at the decision — but do disposition the thread, because convergence requires every marked thread to carry a reply and a resolution. File the tracking issue, reply with `outcome=deferred` plus the issue link, resolve the thread, and surface the decision to the user in the skill output. Leave the thread unresolved only when you cannot even file the issue; that is a non-converging run, so say so plainly and leave the PR in draft.
 
 After fixes, run the relevant gates, commit, and push normally. Require local,
@@ -192,6 +207,7 @@ End with:
 ```
 ✅ /codex-review complete (mode: <read-only | verify>).
 - Scope: PR #N vs <base> at <reviewed-head>
+- Round: <n> (<adversarial | convergence>)
 - Codex findings: <total> (<confirmed>/<disputed>/<needs-human-decision>)
 - Fixed: <count>  ·  Dismissed: <count>  ·  Flagged for you: <count>
 - Threads: <posted>/<replied>/<resolved>

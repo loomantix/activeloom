@@ -22,6 +22,23 @@ Parse `$ARGUMENTS` for an optional PR number and the word `deep`.
 - Five agents is the maximum for one pass. The matrix is a ceiling, not a
   target.
 
+## Stance resolution
+
+Resolve this engine's round number per the ledger before selecting lenses: use
+`$AGENT_LOOP_REVIEW_ROUND` when the runner set it, take it from an invoking
+`/deepgrill`, or count the `local-review-pass:v1` and `local-review-complete:v1`
+markers on the PR naming `engine=claude` and add one.
+
+- **Rounds 1–2 run adversarially** — the matrix and dispositions below apply as
+  written.
+- **Round 3 and later run in convergence mode.** Both engines have read the
+  change cold twice; the goal moves from challenging it to landing it. Convergence
+  mode overrides the lens table and the fix bias, as set out under "Convergence
+  rounds" below. It does not change the post-before-editing, reply, or resolve
+  contract, and it does not raise the round cap.
+
+State the resolved round and stance in the output.
+
 ## Phase 0: Fresh context and PR boundary
 
 ### Context-window check
@@ -71,6 +88,21 @@ list once, name the paths that lens owns, and prefer `git diff <base-sha>..HEAD
 -- <path>` over handing every agent one whole-diff artifact. Scope a lens by the
 files it reviews, never by the findings it may report.
 
+### Convergence rounds (round 3 and later)
+
+Run only `code-reviewer`, `silent-failure-hunter`, and `security-review` when its
+signal is present. Drop `type-design-analyzer`, `comment-analyzer`,
+`pr-test-analyzer`, and the tenant-coupling pass: they found what they were going
+to find in rounds 1–2, and they audit a surface that regenerates every time it is
+hardened, so they are guaranteed to return work and guaranteed not to change what
+ships.
+
+Brief those finders exactly as an adversarial round does. They still report
+everything they find with severity attached — a reviewer instructed to withhold
+by severity or confidence drops real defects, and this narrowing is a disposition
+rule enforced one level up, not a reporting rule pushed into the agent. See
+[`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §1.
+
 ## Phase 2: Verify and deduplicate
 
 Combine the outputs, inspect the code, and reject false positives,
@@ -94,13 +126,30 @@ head SHA. A fix pass attests through its thread replies instead.
 
 ## Phase 3: Disposition and fixes
 
-Apply the fix-everything-valid bias:
+In an adversarial round, apply the fix-everything-valid bias:
 
 - Fix a confirmed finding in this PR.
 - Dismiss only a false positive or a change that would make the code worse.
   Reply with evidence and resolve the thread without editing.
 - Defer only a genuinely architectural change. File an issue, reply with its
   link and rationale, then resolve the thread.
+
+In a convergence round, the bias inverts toward landing the change. Change the PR
+only for a **blocking** defect — one that ships wrong behavior, loses or corrupts
+data, opens a security or privacy hole, breaks a public contract, or breaks
+deploy or rollout:
+
+- Fix a blocking finding with the smallest edit that clears it. No refactor, no
+  rename, no new abstraction, no test or comment hardening alongside it.
+- Defer every confirmed non-blocking finding. File the issue, reply with
+  `outcome=deferred` plus the link, and resolve the thread. Deferral here is the
+  expected disposition, not an admission of scope creep.
+- Dismiss false positives exactly as above.
+
+The findings a convergence round defers are usually real. Fixing them in this PR
+is still the wrong call: each one moves the head, re-stales the other engine's
+attestation, and buys another round of the same. Land the change and let the
+issue carry the work.
 
 For confirmed fixes:
 
@@ -135,9 +184,12 @@ guaranteed to find more and equally guaranteed not to improve what ships.
 
 ## Phase 4: Output
 
-Report the PR and reviewed head, mode and lenses, disposition/thread counts,
-validation, fix SHAs, and whether material fixes require another local-engine
-pass.
+Report the PR and reviewed head, the resolved round and stance, mode and lenses,
+disposition/thread counts, validation, fix SHAs, and whether material fixes
+require another local-engine pass.
+
+A convergence round that found no blocking defect ends the loop: post the
+clean-pass attestation, recommend the ship step, and list the deferred issues.
 
 If this Claude pass made a material fix, restart the bounded round at
 `/codex-review <pr-number>` in a fresh session. Otherwise it completes the
