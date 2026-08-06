@@ -174,15 +174,17 @@ Run these lanes as independently as the active runtime permits:
    - `.codex/references/roles/security-reviewer.md`
      When the tenant-coupling signal is present, load `.codex/references/roles/code-reviewer.md` again for the dedicated conditional pass. Keep lane findings separated until all lanes complete, then deduplicate by root cause.
 9. Verify and deduplicate lane findings against the source and complete PR
-   ledger. For each confirmed root cause, post one inline comment on an exact
-   diff anchor before editing.
+   ledger. For each confirmed root cause, use the deterministic ledger helper
+   required by `.codex/references/local-review-ledger.md` to post one inline
+   comment on an exact GitHub diff anchor before editing. Do not hand-compose
+   review-comment API requests.
 10. Fix it unless it is invalid or a valid major architectural rework. Dismiss
     invalid findings with evidence. Defer only 300+ line or cross-cutting
     refactors, and track each deferral in a GitHub issue.
 11. Run targeted validation, commit, and push with no force.
-12. Reply to every posted thread with the fix SHA and validation or disposition
-    rationale, then resolve it. Stop on any posting, push, reply, or resolution
-    failure.
+12. Use the ledger helper to reply to every posted thread with the fix SHA and
+    validation or disposition rationale, then resolve it. Stop on any posting,
+    push, reply, or resolution failure.
 13. If the pass has no new confirmed findings, leave a clean-pass PR review
     comment naming the engine and exact reviewed head.
 

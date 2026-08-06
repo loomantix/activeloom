@@ -159,6 +159,7 @@ def test_new_script_modes_are_executable() -> None:
         ".codex/skills/agent-loop/scripts/hook-git-guard": 0o755,
         ".codex/skills/backlog-refinement/scripts/bail-report.py": 0o755,
         ".codex/skills/backlog-refinement/scripts/candidates.py": 0o755,
+        ".codex/skills/grill/scripts/review-ledger.py": 0o755,
         ".codex/skills/issues/scripts/ready.py": 0o755,
     }
     assert {

@@ -42,6 +42,11 @@ targets:
     destination: .codex/skills/grill/SKILL.md
     substitutions: []
 
+  - source: .codex/skills/grill/scripts/review-ledger.py
+    destination: .codex/skills/grill/scripts/review-ledger.py
+    substitutions: []
+    mode: '0755'
+
   - source: .codex/skills/deepgrill/SKILL.md
     destination: .codex/skills/deepgrill/SKILL.md
     substitutions: []

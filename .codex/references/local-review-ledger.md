@@ -127,6 +127,58 @@ Post only confirmed findings. Never copy raw model output, hidden reasoning,
 logs, credentials, private data, or repository content unrelated to the
 finding into the PR.
 
+### Use the deterministic ledger helper
+
+Use `.codex/skills/grill/scripts/review-ledger.py` for every local-review
+finding, disposition reply, thread resolution, and pass marker. Do not
+hand-compose `gh api` form arguments for these mutations.
+
+The helper verifies the current PR head, builds JSON requests, reads mutations
+back, and rejects a line unless it exists in GitHub's actual PR patch. A locally
+expanded diff is not proof that GitHub accepts the line. Run `preflight-anchor`
+before preparing the mutation. When the exact line is unavailable, choose
+another causally defensible changed line or explicitly use `--file-level`;
+never silently change the anchor type. Keep a finding out of the automated fix
+loop when neither anchor is defensible.
+
+Pass comment bodies through stdin so shell parsing cannot turn body text into
+request fields:
+
+```bash
+python3 .codex/skills/grill/scripts/review-ledger.py preflight-anchor \
+  --repo <owner/repo> --pr <number> --head <full-head-sha> \
+  --path <repository-relative-path> --line <right-side-line>
+
+python3 .codex/skills/grill/scripts/review-ledger.py post-finding \
+  --repo <owner/repo> --pr <number> --head <full-head-sha> \
+  --path <repository-relative-path> --line <right-side-line> \
+  --body-file - <<'REVIEW_COMMENT'
+<!-- local-review:v1 engine=<codex|claude> round=<n> head=<sha> fingerprint=<stable-id> -->
+<severity, lens, evidence, impact, and expected correction>
+REVIEW_COMMENT
+```
+
+After the fix is pushed, reply through the dedicated review-comment reply
+endpoint and resolve only after the verified reply succeeds:
+
+```bash
+python3 .codex/skills/grill/scripts/review-ledger.py reply \
+  --repo <owner/repo> --pr <number> --head <full-fix-sha> \
+  --comment-id <top-level-comment-database-id> --body-file - <<'REVIEW_REPLY'
+<!-- local-review-disposition:v1 engine=<codex|claude> round=<n> head=<fix-sha> fingerprint=<stable-id> outcome=fixed -->
+<fix and validation evidence>
+REVIEW_REPLY
+
+python3 .codex/skills/grill/scripts/review-ledger.py resolve \
+  --repo <owner/repo> --pr <number> --head <full-fix-sha> \
+  --thread-id <graphql-review-thread-id>
+```
+
+Use the helper's `post-pr-comment` subcommand for refactor, clean-pass, and
+completion markers. A preflight rejection performs no mutation; correct the
+anchor before posting. A GitHub mutation or read-back failure is the existing
+stop condition—do not retry it with an improvised API command.
+
 ## Fix, reply, and resolve
 
 For each published finding:
