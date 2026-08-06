@@ -44,6 +44,7 @@
 .codex/skills/deepgrill/SKILL.md
 .codex/skills/feature-dev/SKILL.md
 .codex/skills/grill/SKILL.md
+.codex/skills/grill/scripts/review-ledger.py
 .codex/skills/issues/SKILL.md
 .codex/skills/issues/scripts/link.py
 .codex/skills/issues/scripts/ready.py

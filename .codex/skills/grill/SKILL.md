@@ -120,7 +120,7 @@ Lean mode must cover two independent lanes:
 
 Run these lanes as independently as the active runtime permits:
 
-- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent reviewers for both lanes. Tell each reviewer to inspect the diff independently, return only actionable findings with file/line evidence, and avoid relying on conclusions from the other lane.
+- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent reviewers for both lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from the other lane.
 - If subagents are unavailable or not permitted, perform two separate local passes using the lane prompts above. Do not present that as equivalent to independent subagents.
 - If lean mode was requested but independent subagents could not be used, explicitly say so in the output under `review depth`.
 
@@ -142,7 +142,7 @@ Run these lanes as independently as the active runtime permits:
   every applicable lane whenever the active runtime exposes subagent/delegation tools.
   Do not require the user to separately say "use subagents" before spawning
   those lane reviewers.
-- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent reviewers with disjoint lane prompts. Tell each reviewer to inspect the diff independently, return only actionable findings with file/line evidence, and avoid relying on conclusions from other lanes.
+- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent reviewers using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the disjoint lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from other lanes.
 - If subagents are unavailable or not permitted, perform a separate local pass for every applicable lane using the prompts above. Do not present that as equivalent to independent subagents.
 - If deep mode was requested but independent subagents could not be used, explicitly say so in the output under `review depth`.
 - Run the tenant-coupling lane as a separate use of the code-reviewer role with the narrow prompt above; do not dilute it into the general correctness lane.
@@ -154,10 +154,15 @@ Run these lanes as independently as the active runtime permits:
    and require local HEAD, remote head, and PR head to match. If the branch has
    no PR, push it and open a draft PR before reviewing.
 3. Read every prior review thread, including resolved and outdated threads,
-   before inspecting the current PR diff. When the caller supplies a pinned base
-   SHA, give every lane the same literal `<base-sha>..HEAD` range.
+   once at the orchestrator level before inspecting the current PR diff. When
+   the caller supplies a pinned base SHA, resolve the reviewed head, changed-file
+   list, and stat once, then build the ledger's immutable packet using the same
+   literal `<base-sha>..<head-sha>` range for every lane. Do not make each lane
+   reload the PR ledger.
 4. Skip docs/config-only changes unless the user explicitly wants review.
-5. Read `AGENTS.md`, relevant path-specific instructions, and changed files.
+5. Read `AGENTS.md` and relevant path-specific instructions. Assign every lane
+   the exact changed paths its lens needs, and have it pull path-scoped diffs per
+   the ledger instead of receiving one pasted or stored whole diff.
 6. Resolve the round and stance per "Stance Resolution". In a convergence round,
    the lane list in "Convergence Rounds" replaces steps 7 and 8, and its inverted
    fix bias replaces step 10. Every other step, including step 9, is unchanged.
@@ -174,15 +179,17 @@ Run these lanes as independently as the active runtime permits:
    - `.codex/references/roles/security-reviewer.md`
      When the tenant-coupling signal is present, load `.codex/references/roles/code-reviewer.md` again for the dedicated conditional pass. Keep lane findings separated until all lanes complete, then deduplicate by root cause.
 9. Verify and deduplicate lane findings against the source and complete PR
-   ledger. For each confirmed root cause, post one inline comment on an exact
-   diff anchor before editing.
+   ledger. For each confirmed root cause, use the deterministic ledger helper
+   required by `.codex/references/local-review-ledger.md` to post one inline
+   comment on an exact GitHub diff anchor before editing. Do not hand-compose
+   review-comment API requests.
 10. Fix it unless it is invalid or a valid major architectural rework. Dismiss
     invalid findings with evidence. Defer only 300+ line or cross-cutting
     refactors, and track each deferral in a GitHub issue.
 11. Run targeted validation, commit, and push with no force.
-12. Reply to every posted thread with the fix SHA and validation or disposition
-    rationale, then resolve it. Stop on any posting, push, reply, or resolution
-    failure.
+12. Use the ledger helper to reply to every posted thread with the fix SHA and
+    validation or disposition rationale, then resolve it. Stop on any posting,
+    push, reply, or resolution failure.
 13. If the pass has no new confirmed findings, leave a clean-pass PR review
     comment naming the engine and exact reviewed head.
 

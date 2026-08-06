@@ -39,7 +39,7 @@ Refactorpass must cover three lanes:
 
 Run these lanes as independently as the active runtime permits:
 
-- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent cleanup reviewers for the three lanes. Tell each reviewer to inspect only the local diff, suggest behavior-preserving cleanup, and avoid broad rewrites.
+- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent cleanup reviewers for the three lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the cleanup lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to suggest behavior-preserving cleanup and avoid broad rewrites.
 - If subagents are unavailable or not permitted, perform three separate local passes using the lane prompts above. Do not present that as equivalent to independent subagents.
 - If refactorpass could not use independent subagents, explicitly say so in the output under `cleanup depth`.
 
@@ -51,8 +51,10 @@ Run these lanes as independently as the active runtime permits:
    heads to match. Read all prior review threads.
 3. Use the exact base SHA supplied by an invoking `deepgrill` or caller. Only
    when run standalone without a supplied base, resolve `@{u}` when available,
-   otherwise the default branch, once. Pass the literal `<base-sha>..HEAD` range
-   to every cleanup lane; never let lanes re-resolve a mutable ref.
+   otherwise the default branch, once. Resolve the reviewed head, changed-file
+   list, and diff stat once and build the ledger's immutable review packet. Pass
+   the literal `<base-sha>..<head-sha>` range to every cleanup lane; never let
+   lanes re-resolve a mutable ref or rebuild the packet independently.
 4. Skip if the changeset is docs/config-only. Treat source files such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash` as review-worthy.
 5. Check the once-per-engine latch. Search the PR's comments for
    `local-review-refactor:v1 engine=codex`, authored by the actor running this
@@ -65,7 +67,9 @@ Run these lanes as independently as the active runtime permits:
    returns naming and shape churn, not cleanups. That churn moves the head and
    re-stales the other engine's attestation for no shipped benefit.
 
-6. Read the changed source files and execute every lane in the Cleanup Matrix.
+6. Assign each lane the exact changed source paths its lens needs and execute
+   every lane in the Cleanup Matrix. Follow the ledger's scoped-read contract;
+   do not hand every lane a whole-diff artifact.
 7. Consolidate lane suggestions, verify them, and deduplicate them against the
    complete PR ledger.
 8. Post each confirmed cleanup inline before editing, then apply only cleanup
