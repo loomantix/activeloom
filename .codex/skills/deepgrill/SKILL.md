@@ -67,10 +67,20 @@ any explicitly requested fetch. Verify the value with
 `git rev-parse --verify '<sha>^{commit}'` and retain the resulting full object
 ID for the entire pass.
 
-Give `refactorpass` and every grill reviewer the literal
-`<review-base-sha>..HEAD` range. No lane may re-resolve `@{u}`, a default branch,
-or a remote-tracking ref independently. Report the pinned SHA in the handoff so
-the Claude reviewer receives the same base for the round.
+Resolve the reviewed head SHA, changed-file list, and diff stat once from the
+pinned range. Build the immutable review packet required by the ledger and reuse
+it unchanged for `refactorpass`, `grill`, and every lane. Give them the literal
+`<review-base-sha>..<reviewed-head-sha>` range; do not use a mutable `HEAD` token
+inside the packet. No lane may re-resolve `@{u}`, a default branch, or a
+remote-tracking ref independently. Report both pinned SHAs in the handoff so the
+Claude reviewer can reconstruct the same range for the round.
+
+Keep the packet as the byte-identical prefix of every spawned review prompt and
+append only the lane lens and exact file scope. Spawn with no inherited
+conversation history (`fork_turns="none"`) when the runtime supports that
+choice. The ledger governs scoped diff reads, bounded output, and PR-ledger
+deduplication; do not paste the whole diff or the implementation conversation
+into lane prompts.
 
 Deep grill is not a single generalized review. If the active Codex runtime permits subagents/delegation, use independent reviewers for every applicable lane. If subagents are unavailable or not permitted, run a separate local pass for every applicable lane and disclose the downgrade in the final output.
 

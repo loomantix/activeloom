@@ -16,6 +16,92 @@ Before any cleanup or adversarial review:
 
 Never force-push during a review relay. A moved remote head ends the pass.
 
+## Build one immutable review packet
+
+Review fan-out must use one canonical description of the changeset. Without an
+explicit contract, each lane tends to rebuild the PR context, ingest the whole
+diff, and inherit unrelated implementation conversation. That duplicates the
+largest inputs to the pass and reduces the useful context available for review.
+
+Resolve these values once, before invoking any cleanup or adversarial lane:
+
+```bash
+git diff --name-only <base-sha>..<head-sha>
+git diff --stat <base-sha>..<head-sha>
+```
+
+Create one immutable review packet containing, in this order:
+
+1. canonical repository identity and PR number;
+2. exact base SHA, reviewed head SHA, and literal review range;
+3. resolved round and stance;
+4. changed-file list and diff stat, copied exactly from the commands above;
+5. repository and path-specific instruction files the lanes must read; and
+6. the output contract: actionable findings only, with severity and `file:line`
+   evidence, or `NO FINDINGS`.
+
+Use this canonical prefix shape so prompt wording as well as data stays stable:
+
+```text
+REVIEW_PACKET_V1
+Repository: <owner/repo>
+PR: <number>
+Base: <full-base-sha>
+Head: <full-head-sha>
+Range: <full-base-sha>..<full-head-sha>
+Round: <number> (<adversarial|convergence>)
+Changed files (<count>):
+<verbatim name-only output>
+Diff stat:
+<verbatim stat output>
+Instructions:
+<ordered repository-relative instruction paths>
+Output: findings only, each with severity and file:line evidence; NO FINDINGS if clean; maximum 1000 words, compress but do not omit material findings
+END_REVIEW_PACKET_V1
+```
+
+Reuse the packet unchanged for `refactorpass`, `grill`, and every lane in the
+same pass. If the head moves after a fix, end that review pass; build a new
+packet for the new head rather than mutating the old one.
+
+When spawning review agents, keep the complete packet as a byte-identical prompt
+prefix and append only a short lane-specific suffix containing the lens and its
+file scope. Put no lane-specific wording before the shared prefix. When the
+runtime supports selecting inherited history, use no inherited conversation
+history (`fork_turns="none"`) or the smallest permitted history; the packet and
+repository files are the source of truth. Do not forward the user's prompt,
+implementation transcript, prior lane conclusions, or a pasted whole diff.
+
+The orchestrator reads the complete PR ledger once. Lanes review independently
+from the pinned source and do not each reload every historical thread. The
+orchestrator verifies and deduplicates their findings against the ledger after
+all lanes return.
+
+## Deliver scoped diff data
+
+The changed-file list belongs in the shared packet, but the full diff does not.
+Apply these rules when a lane reads the changeset:
+
+1. **Scope each lane to the files it reviews.** Name exact repository-relative
+   paths in the lane-specific suffix. A genuinely cross-file lens gets the
+   shared stat and pulls individual paths as needed.
+2. **Prefer a scoped command over a stored artifact.** Use
+   `git diff <base-sha>..<head-sha> -- <path>`. Do not create one whole-diff
+   file and hand it to every lane.
+3. **Read a pinned artifact at most once.** If a caller already supplied an
+   immutable artifact, state its path and size. Revisit a region with targeted
+   search or a bounded read, never another full read.
+4. **Bound large reads.** Above roughly 25,000 characters, narrow by path or use
+   an explicit offset and limit.
+5. **Bound lane output.** Use the packet's 1,000-word default unless the
+   orchestrator deliberately sets a different ceiling before fan-out. A lane
+   must not narrate its process or repeat the packet. It must still report every
+   material finding; compact the evidence instead of silently dropping one.
+
+State the changeset size and lane file count in the lane-specific suffix. These
+rules reduce duplicated bytes; they never justify dropping a lens, omitting a
+needed file, or weakening verification.
+
 ## Run the refactor pass once per engine
 
 A cleanup pass earns its cost on the first cold read of a changeset. By the

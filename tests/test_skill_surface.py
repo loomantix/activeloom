@@ -168,6 +168,46 @@ def test_new_script_modes_are_executable() -> None:
     } == expected
 
 
+def test_local_review_skills_share_cache_stable_scoped_context() -> None:
+    ledger = (REPO_ROOT / ".codex/references/local-review-ledger.md").read_text(
+        encoding="utf-8"
+    )
+    deepgrill = (SKILLS_ROOT / "deepgrill/SKILL.md").read_text(encoding="utf-8")
+    grill = (SKILLS_ROOT / "grill/SKILL.md").read_text(encoding="utf-8")
+    refactorpass = (SKILLS_ROOT / "refactorpass/SKILL.md").read_text(encoding="utf-8")
+    normalized = {
+        name: " ".join(text.split())
+        for name, text in {
+            "ledger": ledger,
+            "deepgrill": deepgrill,
+            "grill": grill,
+            "refactorpass": refactorpass,
+        }.items()
+    }
+
+    assert "Build one immutable review packet" in normalized["ledger"]
+    assert "REVIEW_PACKET_V1" in normalized["ledger"]
+    assert "byte-identical prompt prefix" in normalized["ledger"]
+    assert 'fork_turns="none"' in normalized["ledger"]
+    assert "git diff <base-sha>..<head-sha> -- <path>" in normalized["ledger"]
+    assert "Do not create one whole-diff" in normalized["ledger"]
+    assert "Bound lane output" in normalized["ledger"]
+    assert "maximum 1000 words" in normalized["ledger"]
+
+    for skill in (
+        normalized["deepgrill"],
+        normalized["grill"],
+        normalized["refactorpass"],
+    ):
+        assert "immutable review packet" in skill
+        assert "scoped diff" in skill.lower()
+        assert "no inherited conversation history" in skill
+
+    assert "changed-file list, and diff stat once" in normalized["deepgrill"]
+    assert "Do not make each lane reload the PR ledger" in normalized["grill"]
+    assert "do not hand every lane a whole-diff artifact" in normalized["refactorpass"]
+
+
 def test_ship_staging_marks_drafts_ready_and_verifies_the_transition() -> None:
     text = (SKILLS_ROOT / "ship-staging/SKILL.md").read_text(encoding="utf-8")
 
