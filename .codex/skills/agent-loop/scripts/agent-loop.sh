@@ -359,30 +359,36 @@ issue_json() {
     gh issue view "$1" --json number,title,body,state,labels,assignees
 }
 
+# Command substitution strips trailing newlines. jq appends this non-newline
+# sentinel, which is removed after capture so the worker context and later
+# publication attestation retain the exact issue text. One constant feeds both
+# the jq producer and the bash consumer so the two notations cannot drift apart.
+readonly ISSUE_CONTEXT_SENTINEL=$'\x1e'
+
 set_selected_issue_context() {
     local json="$1" title body
-    # Command substitution strips trailing newlines. Append a non-newline
-    # sentinel inside jq, then remove only that byte after capture so the worker
-    # context and later publication attestation retain the exact issue text.
-    title="$(jq -erj '
+    # The sentinel makes jq output unconditionally non-empty, so an extraction
+    # failure is reported only by error() and the non-zero exit it produces.
+    title="$(jq -rj --arg sentinel "$ISSUE_CONTEXT_SENTINEL" '
         if ((.title | type) == "string" and (.title | length) > 0)
         then .title else error("invalid issue title") end,
-        "\u001e"
+        $sentinel
     ' <<<"$json")" || {
         echo "could not extract a non-empty issue title" >&2
         return 1
     }
-    title="${title%$'\x1e'}"
-    body="$(jq -erj '
+    # Quoted so the suffix is stripped literally rather than as a glob pattern.
+    title="${title%"$ISSUE_CONTEXT_SENTINEL"}"
+    body="$(jq -rj --arg sentinel "$ISSUE_CONTEXT_SENTINEL" '
         if .body == null then ""
         elif (.body | type) == "string" then .body
         else error("invalid issue body") end,
-        "\u001e"
+        $sentinel
     ' <<<"$json")" || {
         echo "could not extract the issue body" >&2
         return 1
     }
-    body="${body%$'\x1e'}"
+    body="${body%"$ISSUE_CONTEXT_SENTINEL"}"
     SELECTED_TITLE="$title"
     SELECTED_BODY="$body"
 }
