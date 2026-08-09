@@ -1351,6 +1351,38 @@ exec "$AGENT_TEST_REAL_JQ" "$@"
     assert not (tmp_path / "worktrees").exists()
 
 
+def test_issue_context_empty_jq_output_stops_before_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # A jq that exits 0 having produced no output is the one failure neither
+    # error() branch can observe, because the filter never ran. `jq -e` turns it
+    # into exit 4; without it the capture silently succeeds as an empty title
+    # and body and a worker runs against blank requirements.
+    real_jq = shutil.which("jq")
+    assert real_jq is not None
+    _write_executable(
+        consumer[2] / "jq",
+        """#!/usr/bin/env bash
+if [[ "$*" == *'invalid issue title'* ]]; then
+    exec "$AGENT_TEST_REAL_JQ" "$@" </dev/null
+fi
+exec "$AGENT_TEST_REAL_JQ" "$@"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "31"],
+        issues=[_issue(31, "Material issue requirements")],
+        config=_config(tmp_path),
+        extra_env={"AGENT_TEST_REAL_JQ": real_jq},
+    )
+    assert result.returncode != 0
+    assert "issue selection failed" in result.stderr
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit" not in gh_log
+    assert not (tmp_path / "worktrees").exists()
+
+
 def test_failed_claim_rollback_is_reported_and_stops(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -2178,10 +2210,23 @@ def test_worker_receives_issue_body_without_gh(
     assert _run_git("show", f"{branch}:title.txt", cwd=consumer[1]).stdout == "Issue 29"
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("Keep these requirements exact.\n\n", id="lf-trailing"),
+        pytest.param("Behalte dies exakt: ✅\r\n\r\n", id="crlf-non-ascii-trailing"),
+        pytest.param("Keep this exact.\x1e", id="trailing-sentinel"),
+        pytest.param("Before\x1eafter", id="interior-sentinel"),
+        pytest.param("\x1e", id="only-sentinel"),
+    ],
+)
 def test_issue_body_trailing_newlines_survive_publication_verification(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, body: str
 ) -> None:
-    body = "Keep these requirements exact.\n\n"
+    # returncode 0 covers verify_issue_for_publication's exact `.body` compare;
+    # the hex assertion covers the worker environment variable. The sentinel
+    # cases pin that the capture strips exactly one trailing occurrence, so
+    # issue text containing the sentinel byte round-trips unchanged.
     worker_hook = (
         "python3 -c 'import os; "
         'print(os.environ["AGENT_LOOP_ISSUE_BODY"].encode().hex())\' > body.hex; '

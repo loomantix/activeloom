@@ -75,7 +75,10 @@ Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
 `AGENT_LOOP_ISSUE_BODY`, `AGENT_LOOP_BASE_BRANCH`, `AGENT_LOOP_BRANCH`,
 `AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and `AGENT_LOOP_PROMPT`. Because
 ordinary `gh` commands are masked inside hooks, the worker reads its issue from
-`AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY` rather than the API. Review
+`AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY` rather than the API. Both
+are byte-exact copies of the issue text, including trailing whitespace; the
+pre-publication re-attestation compares them against the live issue, so a hook
+that rewrites them in place will fail that check. Review
 hooks also receive `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 `AGENT_LOOP_PR_HEAD_SHA`, `AGENT_LOOP_REVIEW_BASE`, the fully qualified fetched remote
 ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA` captured after the round's fresh

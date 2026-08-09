@@ -361,15 +361,24 @@ issue_json() {
 
 # Command substitution strips trailing newlines. jq appends this non-newline
 # sentinel, which is removed after capture so the worker context and later
-# publication attestation retain the exact issue text. One constant feeds both
-# the jq producer and the bash consumer so the two notations cannot drift apart.
+# publication attestation retain the issue text byte for byte. Text that itself
+# ends in the sentinel still round-trips, because the strip removes exactly one
+# trailing occurrence and jq always appended one. The one byte that does not
+# survive is NUL, which command substitution drops; that predates the sentinel
+# and fails closed at the publication compare rather than shipping a corrupted
+# capture. One constant feeds the jq producer and the bash consumer, and both
+# suffix strips quote the expansion, so a future sentinel value cannot drift
+# between the two sites or be reinterpreted as a glob pattern.
 readonly ISSUE_CONTEXT_SENTINEL=$'\x1e'
 
 set_selected_issue_context() {
     local json="$1" title body
-    # The sentinel makes jq output unconditionally non-empty, so an extraction
-    # failure is reported only by error() and the non-zero exit it produces.
-    title="$(jq -rj --arg sentinel "$ISSUE_CONTEXT_SENTINEL" '
+    # Keep -e. The sentinel guarantees a non-null, non-false last output on
+    # every success path, so -e cannot fail one; what it still catches is jq
+    # producing no output at all, which happens when the input carries no JSON
+    # document and neither error() branch can observe. Without it the capture
+    # would silently succeed as an empty title and body.
+    title="$(jq -erj --arg sentinel "$ISSUE_CONTEXT_SENTINEL" '
         if ((.title | type) == "string" and (.title | length) > 0)
         then .title else error("invalid issue title") end,
         $sentinel
@@ -377,9 +386,8 @@ set_selected_issue_context() {
         echo "could not extract a non-empty issue title" >&2
         return 1
     }
-    # Quoted so the suffix is stripped literally rather than as a glob pattern.
     title="${title%"$ISSUE_CONTEXT_SENTINEL"}"
-    body="$(jq -rj --arg sentinel "$ISSUE_CONTEXT_SENTINEL" '
+    body="$(jq -erj --arg sentinel "$ISSUE_CONTEXT_SENTINEL" '
         if .body == null then ""
         elif (.body | type) == "string" then .body
         else error("invalid issue body") end,
