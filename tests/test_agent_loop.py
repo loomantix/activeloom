@@ -2178,6 +2178,29 @@ def test_worker_receives_issue_body_without_gh(
     assert _run_git("show", f"{branch}:title.txt", cwd=consumer[1]).stdout == "Issue 29"
 
 
+def test_issue_body_trailing_newlines_survive_publication_verification(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    body = "Keep these requirements exact.\n\n"
+    worker_hook = (
+        "python3 -c 'import os; "
+        'print(os.environ["AGENT_LOOP_ISSUE_BODY"].encode().hex())\' > body.hex; '
+        "git add body.hex; git commit -m 'fix: preserve issue body'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "33"],
+        issues=[_issue(33, body)],
+        config=_config(tmp_path, worker_hook=worker_hook),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branch = _agent_loop_branches(consumer[1]).strip()
+    assert (
+        _run_git("show", f"{branch}:body.hex", cwd=consumer[1]).stdout
+        == f"{body.encode().hex()}\n"
+    )
+
+
 def test_worker_receives_issue_context_refreshed_after_claim(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

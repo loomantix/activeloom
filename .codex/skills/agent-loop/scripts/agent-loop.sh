@@ -361,21 +361,28 @@ issue_json() {
 
 set_selected_issue_context() {
     local json="$1" title body
-    title="$(jq -er '
+    # Command substitution strips trailing newlines. Append a non-newline
+    # sentinel inside jq, then remove only that byte after capture so the worker
+    # context and later publication attestation retain the exact issue text.
+    title="$(jq -erj '
         if ((.title | type) == "string" and (.title | length) > 0)
-        then .title else error("invalid issue title") end
+        then .title else error("invalid issue title") end,
+        "\u001e"
     ' <<<"$json")" || {
         echo "could not extract a non-empty issue title" >&2
         return 1
     }
-    body="$(jq -er '
+    title="${title%$'\x1e'}"
+    body="$(jq -erj '
         if .body == null then ""
         elif (.body | type) == "string" then .body
-        else error("invalid issue body") end
+        else error("invalid issue body") end,
+        "\u001e"
     ' <<<"$json")" || {
         echo "could not extract the issue body" >&2
         return 1
     }
+    body="${body%$'\x1e'}"
     SELECTED_TITLE="$title"
     SELECTED_BODY="$body"
 }
