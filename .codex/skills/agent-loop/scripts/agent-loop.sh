@@ -518,8 +518,8 @@ sha256_text() {
     python3 -c '
 from hashlib import sha256
 import sys
-sys.stdout.write(sha256(sys.argv[1].encode("utf-8")).hexdigest())
-' "$1"
+sys.stdout.write(sha256(sys.stdin.buffer.read()).hexdigest())
+'
 }
 
 issue_is_selectable() {
@@ -894,6 +894,9 @@ run_bounded_hook() {
     done
     (
         set +e
+        if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then
+            exec {AGENT_LOOP_RUN_LOCK_FD}<&-
+        fi
         # Setup, worker, and validation hooks remain local-only. Review hooks run
         # after the wrapper opens a draft PR and must be able to post inline
         # comments, push fixes, reply, and resolve; their remote mutations are
@@ -1899,8 +1902,8 @@ resume_review_run() {
         return 1
     }
     set_selected_issue_context "$issue_json_value" || return 1
-    issue_title_sha256="$(sha256_text "$SELECTED_TITLE")" || return 1
-    issue_body_sha256="$(sha256_text "$SELECTED_BODY")" || return 1
+    issue_title_sha256="$(printf '%s' "$SELECTED_TITLE" | sha256_text)" || return 1
+    issue_body_sha256="$(printf '%s' "$SELECTED_BODY" | sha256_text)" || return 1
     if [ "$issue_title_sha256" != "$(jq -r '.issueTitleSha256' <<<"$RESUME_STATE_JSON")" ] || \
        [ "$issue_body_sha256" != "$(jq -r '.issueBodySha256' <<<"$RESUME_STATE_JSON")" ]; then
         recovery_message "Issue title or body changed since the review checkpoint."
@@ -2328,8 +2331,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         python3 "$RUN_STATE_HELPER" create --file "$AGENT_LOOP_RUN_STATE_FILE" \
             --run-id "$RUN_TAG-issue-$SELECTED_ID" --repo "$GH_REPO" \
             --issue "$SELECTED_ID" --base-branch "$BASE_BRANCH" \
-            --issue-title-sha256 "$(sha256_text "$SELECTED_TITLE")" \
-            --issue-body-sha256 "$(sha256_text "$SELECTED_BODY")" \
+            --issue-title-sha256 "$(printf '%s' "$SELECTED_TITLE" | sha256_text)" \
+            --issue-body-sha256 "$(printf '%s' "$SELECTED_BODY" | sha256_text)" \
             --branch "$branch" --worktree "$ACTIVE_WORKTREE" \
             --log-dir "$AGENT_LOOP_LOG_DIR" --pr "$AGENT_LOOP_PR_NUMBER" \
             --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \

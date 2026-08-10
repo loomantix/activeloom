@@ -28,6 +28,19 @@ def _review_row(comment_id: int, body: str, *, login: str = "reviewer") -> dict[
     return {"id": comment_id, "body": body, "user": {"login": login}}
 
 
+def _run_gh_with_forward_compare(
+    args: list[str], payload: dict[str, Any] | None = None
+) -> str:
+    if args[:2] == ["pr", "view"]:
+        return AFTER + "\n"
+    if args[:1] == ["api"] and "/compare/" in args[1]:
+        before = args[1].rsplit("/", 1)[1].split("...", 1)[0]
+        return json.dumps(
+            {"status": "ahead", "merge_base_commit": {"sha": before}}
+        )
+    pytest.fail(str(args))
+
+
 def _finding_body(
     fingerprint: str,
     content: str = "Finding.",
@@ -1138,9 +1151,7 @@ def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
     monkeypatch.setattr(
         review_ledger,
         "_run_gh",
-        lambda args, payload=None: AFTER + "\n"
-        if args[:2] == ["pr", "view"]
-        else pytest.fail(str(args)),
+        _run_gh_with_forward_compare,
     )
     args = [
         "verify-ledger",
@@ -1420,6 +1431,7 @@ def test_verify_ledger_separates_live_pr_head_from_historical_result_head(
 
 def test_attest_rejects_changed_results_without_ledger_evidence(
     review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     result_file = tmp_path / "result.json"
@@ -1442,6 +1454,7 @@ def test_attest_rejects_changed_results_without_ledger_evidence(
     )
     threads = _threads_file(tmp_path, [])
     heads = _heads_file(tmp_path, HEAD, AFTER)
+    monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
     with pytest.raises(review_ledger.LedgerError, match="exactly match"):
         review_ledger.main(
             [
@@ -1472,6 +1485,31 @@ def test_attest_rejects_changed_results_without_ledger_evidence(
                 hashlib.sha256(result_file.read_bytes()).hexdigest(),
             ]
         )
+
+
+def test_allowed_heads_reject_non_forward_transition(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    heads = _heads_file(tmp_path, HEAD, AFTER)
+    monkeypatch.setattr(
+        review_ledger,
+        "_json_output",
+        lambda args, payload=None: {
+            "status": "diverged",
+            "merge_base_commit": {"sha": "c" * 40},
+        },
+    )
+    args = SimpleNamespace(
+        allowed_heads_file=str(heads),
+        repo=REPO,
+        before=HEAD,
+        head=AFTER,
+        result_head=None,
+    )
+    with pytest.raises(review_ledger.LedgerError, match="forward-only"):
+        review_ledger._load_allowed_heads(args)
 
 
 def test_attest_rejects_clean_result_with_same_round_fix(

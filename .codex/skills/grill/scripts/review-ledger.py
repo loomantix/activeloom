@@ -939,6 +939,18 @@ def _load_allowed_heads(args: argparse.Namespace) -> dict[str, int]:
         or values[-1] != _result_head(args)
     ):
         _fail("allowed transition heads do not match the observed review transition")
+    for before, after in zip(values, values[1:]):
+        comparison = _json_output(
+            ["api", f"repos/{args.repo}/compare/{before}...{after}"]
+        )
+        merge_base = comparison.get("merge_base_commit") if isinstance(comparison, dict) else None
+        if (
+            not isinstance(comparison, dict)
+            or comparison.get("status") != "ahead"
+            or not isinstance(merge_base, dict)
+            or merge_base.get("sha") != before
+        ):
+            _fail("allowed transition heads are not forward-only")
     return {value: index for index, value in enumerate(values)}
 
 
