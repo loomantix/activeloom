@@ -44,8 +44,10 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
      git ls-files --others --exclude-standard
      ```
 
-   - If the changeset is docs/config-only per the ledger's changeset classification, post a scoped clean-pass attestation and exit.
-   - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v1` and `local-review-complete:v1` markers on the PR naming `engine=codex`. Rounds 1–2 are adversarial; round 3 and later are convergence rounds, and the prompt and dispositions change accordingly.
+   - If the changeset is docs/config-only per the ledger's classification,
+     record a scoped clean v3 result. Under agent-loop the wrapper attests it;
+     otherwise use the deterministic helper's `attest` command, then exit.
+   - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds 1–2 are adversarial; round 3 and later are convergence rounds, and the prompt and dispositions change accordingly.
 
 ## Phase 1: Build the review prompt
 
@@ -171,20 +173,12 @@ When the status file appears with exit code zero, read the findings file — it 
 - Present the resulting thread list with `file:line`, severity, and your one-line verification.
 - Call out where Codex **disagreed with or added to** earlier ledger findings;
   that cross-engine delta is the reason to run it.
-- If Codex reports no new confirmed finding and makes no commit, post a
-  clean-pass PR review attestation with `engine=codex` and the exact reviewed
-  head. A fix pass attests through its thread replies instead.
-- Your attestation stays valid while the head moves for **tests, fixtures,
-  comments, or docs only** — those leave every production line you reviewed
-  byte-identical. It is invalidated only by a change to product code. When
-  reviewing a head that moved since your last attestation, diff the two over
-  product paths first: if that diff is empty, carry the attestation forward and
-  say so rather than re-reviewing unchanged product code as if it were new.
-- If this pass changes no product code, stop the loop and recommend this repo's
-  ship step, whatever it uses to merge the PR. A round that finds only test and
-  comment work means the product converged and the review is auditing its own
-  artifacts — a self-renewing surface, so the next round will find more and
-  still not improve what ships.
+- If Codex reports no new confirmed finding and makes no commit, record a clean
+  v3 result for the exact reviewed head. Under agent-loop the wrapper owns the
+  canonical pass attestation.
+- Every attestation remains exact to the head reviewed. A later minor fix is an
+  explicit transition in the round; it does not rewrite the attestation or
+  claim Codex reviewed the later head. A material transition restarts at Codex.
 
 ## Phase 4: Disposition
 
@@ -195,10 +189,10 @@ In a convergence round the default inverts: fix only a blocking defect — wrong
 For a finding that needs a human/scope/legal decision (risk acceptance, prod-data assumptions, an architectural rework), do not guess at the decision — but do disposition the thread, because convergence requires every marked thread to carry a reply and a resolution. File the tracking issue, reply with `outcome=deferred` plus the issue link, resolve the thread, and surface the decision to the user in the skill output. Leave the thread unresolved only when you cannot even file the issue; that is a non-converging run, so say so plainly and leave the PR in draft.
 
 After fixes, run the relevant gates, commit, and push normally. Require local,
-remote, and PR heads to match. Reply to each fixed thread with the commit SHA
-and validation result plus the ledger's structured `outcome=fixed` marker, then
-resolve it. After the last adversarial lane, post the committed-pass completion
-marker for the exact before/final head pair. Do not force-push or merge.
+remote, and PR heads to match. Use the deterministic helper's resumable
+`dispose` transaction for each fixed thread. After the last lane, always write
+the v3 structured result; under agent-loop the wrapper owns the completion
+attestation. Do not force-push or merge.
 
 ## Output
 

@@ -42,6 +42,11 @@ targets:
     destination: .claude/skills/grill/SKILL.md
     substitutions: []
 
+  - source: .claude/skills/grill/scripts/review-ledger.py
+    destination: .claude/skills/grill/scripts/review-ledger.py
+    substitutions: []
+    mode: '0755'
+
   - source: .claude/skills/deepgrill/SKILL.md
     destination: .claude/skills/deepgrill/SKILL.md
     substitutions: []

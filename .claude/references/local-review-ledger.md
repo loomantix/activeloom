@@ -18,19 +18,104 @@ Never force-push during a review relay. A moved remote head ends the pass.
 
 ## Classify the changeset
 
-`refactorpass`, `grill`, `deepgrill`, and `codex-review` all skip
-docs/config-only changesets. This is the shared definition; classify the file
-list for the pinned `<base-sha>..HEAD` range:
+`refactorpass`, `grill`, and `deepgrill` skip docs/config-only changesets. This
+is the shared definition for the pinned review range:
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
   `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
-- **Docs / config / fixtures** — `.md`, `.txt`, `.yml`, `.yaml`, `.json`,
+- **Docs, config, or fixtures** — `.md`, `.txt`, `.yml`, `.yaml`, `.json`,
   `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
-  `.env.example`, anything under `docs/`, `*.fixture.*`, snapshot files.
+  `.env.example`, paths under `docs/`, `*.fixture.*`, and snapshot files.
 - **Anything else** — treat as source.
 
 Zero source files means skip; one or more means run the full pass. A mixed
-changeset is not a partial skip — the source files justify the spend.
+changeset is not a partial skip.
+
+## Build one immutable review packet
+
+Review fan-out must use one canonical description of the changeset. Without an
+explicit contract, each lane tends to rebuild the PR context, ingest the whole
+diff, and inherit unrelated implementation conversation. That duplicates the
+largest inputs to the pass and reduces the useful context available for review.
+
+Resolve these values once, before invoking any cleanup or adversarial lane:
+
+```bash
+git diff --name-only <base-sha>..<head-sha>
+git diff --stat <base-sha>..<head-sha>
+```
+
+Create one immutable review packet containing, in this order:
+
+1. canonical repository identity and PR number;
+2. exact base SHA, reviewed head SHA, and literal review range;
+3. resolved round and stance;
+4. changed-file list and diff stat, copied exactly from the commands above;
+5. repository and path-specific instruction files the lanes must read; and
+6. the output contract: actionable findings only, with severity and `file:line`
+   evidence, or `NO FINDINGS`.
+
+Use this canonical prefix shape so prompt wording as well as data stays stable:
+
+```text
+REVIEW_PACKET_V1
+Repository: <owner/repo>
+PR: <number>
+Base: <full-base-sha>
+Head: <full-head-sha>
+Range: <full-base-sha>..<full-head-sha>
+Round: <number> (<adversarial|convergence>)
+Changed files (<count>):
+<verbatim name-only output>
+Diff stat:
+<verbatim stat output>
+Instructions:
+<ordered repository-relative instruction paths>
+Output: findings only, each with severity and file:line evidence; NO FINDINGS if clean; maximum 1000 words, compress but do not omit material findings
+END_REVIEW_PACKET_V1
+```
+
+Reuse the packet unchanged for `refactorpass`, `grill`, and every lane in the
+same pass. If the head moves after a fix, end that review pass; build a new
+packet for the new head rather than mutating the old one.
+
+When spawning review agents, keep the complete packet as a byte-identical prompt
+prefix and append only a short lane-specific suffix containing the lens and its
+file scope. Put no lane-specific wording before the shared prefix. When the
+runtime supports selecting inherited history, use no inherited conversation
+history (`fork_turns="none"`) or the smallest permitted history; the packet and
+repository files are the source of truth. Do not forward the user's prompt,
+implementation transcript, prior lane conclusions, or a pasted whole diff.
+
+The orchestrator reads the complete PR ledger once. Lanes review independently
+from the pinned source and do not each reload every historical thread. The
+orchestrator verifies and deduplicates their findings against the ledger after
+all lanes return.
+
+## Deliver scoped diff data
+
+The changed-file list belongs in the shared packet, but the full diff does not.
+Apply these rules when a lane reads the changeset:
+
+1. **Scope each lane to the files it reviews.** Name exact repository-relative
+   paths in the lane-specific suffix. A genuinely cross-file lens gets the
+   shared stat and pulls individual paths as needed.
+2. **Prefer a scoped command over a stored artifact.** Use
+   `git diff <base-sha>..<head-sha> -- <path>`. Do not create one whole-diff
+   file and hand it to every lane.
+3. **Read a pinned artifact at most once.** If a caller already supplied an
+   immutable artifact, state its path and size. Revisit a region with targeted
+   search or a bounded read, never another full read.
+4. **Bound large reads.** Above roughly 25,000 characters, narrow by path or use
+   an explicit offset and limit.
+5. **Bound lane output.** Use the packet's 1,000-word default unless the
+   orchestrator deliberately sets a different ceiling before fan-out. A lane
+   must not narrate its process or repeat the packet. It must still report every
+   material finding; compact the evidence instead of silently dropping one.
+
+State the changeset size and lane file count in the lane-specific suffix. These
+rules reduce duplicated bytes; they never justify dropping a lens, omitting a
+needed file, or weakening verification.
 
 ## Run the refactor pass once per engine
 
@@ -46,9 +131,9 @@ for a marker naming this engine:
 <!-- local-review-refactor:v1 engine=<codex|claude> head=<sha> outcome=<committed|no-op> -->
 ```
 
-If one exists, skip the cleanup lane, say so in the pass output, and go straight
-to the adversarial lane. If none exists, run the cleanup lane and post the
-marker as an informational PR comment when it finishes.
+If one exists, skip the cleanup lanes, say so in the pass output, and go straight
+to the adversarial lanes. If none exists, run the cleanup lanes and post the
+marker as an informational PR comment when they finish.
 
 Post the marker only for a pass that actually ran the cleanup lanes. A pass that
 exited on the docs/config-only classification has not spent its engine's refactor
@@ -60,23 +145,24 @@ per-round evidence, and no automated runner parses it.
 
 ## Resolve the round, then pick the stance
 
-Resolve this engine's round number before selecting lenses. Use
+Resolve this engine's round number before selecting lanes. Use
 `$AGENT_LOOP_REVIEW_ROUND` when the automated runner set it. Otherwise count the
-`local-review-pass:v1` and `local-review-complete:v1` markers already on the PR
+`local-review-pass:v3` and `local-review-complete:v3` markers already on the PR
 that name this engine; this pass is one past that count.
 
 - **Rounds 1–2 — adversarial.** The full stance: assume the diff is guilty, run
-  every lens whose signal is present, fix every valid finding.
+  every applicable lane, fix every valid finding.
 - **Round 3 and later — convergence.** Both engines have now read the change
   cold twice. What remains is rarely a deeper defect; it is the review's own
   surface. Shift the goal from challenging the change to landing it.
 
 A convergence round:
 
-- runs only the lenses that can find a reason not to deploy — correctness,
-  silent failure, and security when its signal is present. Drop type/API design,
-  comments/docs, test analysis, and tenant-coupling. Those found what they were
-  going to find in rounds 1–2, and they regenerate work indefinitely;
+- runs only the lanes that can find a reason not to deploy — code reviewer,
+  silent failure hunter, and the security reviewer when its signal is present.
+  Drop type/API design, comment/docs, PR test analysis, and tenant-coupling.
+  Those found what they were going to find in rounds 1–2, and they regenerate
+  work indefinitely;
 - changes the PR only for a **blocking** defect: one that ships wrong behavior,
   loses or corrupts data, opens a security or privacy hole, breaks a public
   contract, or breaks deploy or rollout. Everything else becomes a follow-up
@@ -86,61 +172,23 @@ A convergence round:
 - ends the loop as soon as it finds no blocking defect. Post the clean-pass
   attestation and recommend this repository's ship step by name.
 
-This is a disposition rule, not a reporting rule. Lenses still report everything
-they find with severity attached; never instruct a review agent to withhold a
-finding by severity or confidence. The narrowing happens one level up, where the
-whole set is visible and the orchestrator decides what the PR changes versus what
-a follow-up issue tracks.
+This is a disposition rule, not a reporting rule. Lanes still report every
+evidence-backed finding they have, with severity attached. The narrowing happens
+one level up, where the whole set is visible and the orchestrator decides what
+the PR changes versus what a follow-up issue tracks.
 
 Convergence rounds do not extend the round cap — they are how rounds 3 and 4 are
 spent. Reaching the cap in convergence mode with open non-blocking findings means
 ship the PR and carry the issues, not open a fifth round.
 
-## Deliver the diff once
-
-Every lane that fans out to review agents must decide how the changeset reaches
-them. Left unspecified, the default improvisation is to write the whole diff to
-one file and hand that path to every agent, each of which reads all of it and
-then reads it again. The changeset is the largest single input to a review pass
-and the most duplicated one, so its delivery is part of the contract.
-
-Resolve the changed-file list once, from the pinned range, and reuse it:
-
-```bash
-git diff --name-only <base-sha>..HEAD
-git diff --stat <base-sha>..HEAD
-```
-
-Then apply these rules.
-
-1. **Scope each agent to the files it reviews.** Name the exact paths in the
-   agent's prompt. An agent that owns four files must not be handed the other
-   forty. A lens that genuinely spans the whole changeset — architectural
-   altitude, cross-file consistency — gets the `--stat` summary and pulls
-   individual files as it needs them.
-2. **Prefer a scoped command over a stored artifact.** A per-path
-   `git diff <base-sha>..HEAD -- <path>` is reproducible, needs no temp file,
-   and returns only what the agent asked for. Reach for it before writing a
-   diff to disk.
-3. **An artifact, if one exists, is pinned and read once.** State its path and
-   size in the prompt. Re-access a region with a targeted `grep -n` or a bounded
-   read, never a second full read: the file cannot have changed, so a repeat
-   read returns bytes the agent already has.
-4. **Bound any large read.** Above roughly 25k characters, read with an explicit
-   offset and limit, or narrow the range with `-- <path>`.
-
-State the changeset's size when briefing an agent, the same way agent prompts
-state an output ceiling. An agent told the diff spans 40 files reads
-differently from one handed an unlabeled path.
-
-These rules are about duplicated bytes, not about depth. Never drop a lens, skip
-a file an agent needs, or leave a finding unpursued to satisfy them.
-
 ## Rebuild context from GitHub
 
-At the start of every pass, read the PR description, changed files, current
-diff, commits, and all review threads, including resolved and outdated threads.
-Also read replies and clean-pass attestations from earlier local reviewers.
+At the start of every pass, read:
+
+- the PR description and changed files;
+- the current PR diff and commit list;
+- all review threads, including resolved and outdated threads;
+- all replies and clean-pass attestations from earlier local reviewers.
 
 Treat this as the context ledger for the back-and-forth. Do not rely on a prior
 model transcript or a local summary. Do not reopen a resolved root cause unless
@@ -158,24 +206,89 @@ Review lanes may return hypotheses privately. Verify each against the source and
 deduplicate by root cause before publishing it. For every confirmed finding:
 
 1. Compute a stable fingerprint from the normalized repository-relative path
-   and root-cause description. Do not include line, round, engine, or head SHA.
-2. Search prior local-review threads for the fingerprint. Reply to the existing
-   thread when it is the same root cause; do not create a duplicate.
+   and root-cause description. The fingerprint must not include the line
+   number, round, engine, or head SHA.
+2. Search all prior local-review threads for that fingerprint. A later concrete
+   occurrence of the same root cause is appended to and reopens the existing
+   thread with `reopen-occurrence`; do not create a duplicate root thread.
 3. Post one inline comment on an exact diff anchor before changing the file.
-   Prefer a right-side line. Use a left-side line only for deleted code.
-4. Include this machine-readable marker:
+   Prefer a right-side line. Use a left-side line only when the finding concerns
+   deleted code. A finding without a defensible diff anchor is not an inline
+   finding; keep it out of the automated fix loop or track a genuinely large
+   follow-up separately.
+4. Put only the human finding prose in a regular UTF-8 content file. The helper
+   owns the v3 marker, its field order, and its content hash.
+5. State severity, review lens, evidence, impact, and the expected correction.
+   Keep one root cause per thread.
 
-   ```text
-   <!-- local-review:v1 engine=<codex|claude> round=<n> head=<sha> fingerprint=<stable-id> -->
-   ```
+Post only confirmed findings. Never copy raw model output, hidden reasoning,
+logs, credentials, private data, or repository content unrelated to the
+finding into the PR.
 
-5. State severity, review lens, evidence, impact, and expected correction. Keep
-   one root cause per thread.
+### Use the deterministic ledger helper
 
-A finding without a defensible diff anchor stays out of the automated fix loop
-or becomes a separately tracked architectural follow-up. Never copy raw model
-output, hidden reasoning, logs, credentials, private data, or unrelated source
-into the PR.
+Use `.codex/skills/grill/scripts/review-ledger.py` for every local-review
+finding, disposition reply, thread resolution, and pass marker. Do not
+hand-compose `gh api` form arguments for these mutations.
+
+The v3 helper verifies the current PR head before and after each mutation,
+constructs markers and JSON itself, reads mutations back, and reconciles retries
+by an idempotency key containing engine, round, exact head, fingerprint, and
+occurrence. It rejects a line unless it exists in GitHub's actual PR patch. A
+locally expanded diff is not proof that GitHub accepts the line. Run
+`preflight-anchor` before preparing the mutation. When the exact line is
+unavailable, choose another causally defensible changed line or explicitly use
+`--file-level`; never silently change the anchor type.
+
+Create the human prose with the active file-editing tool under
+`$AGENT_LOOP_LOG_DIR/ledger-content/` when that variable is set, or in another
+owner-only temporary directory outside the Git worktree. Do not use stdin,
+heredocs, command substitution, or model-authored marker text. The helper
+preserves literal backticks, dollar expressions, quotes, Unicode, CRLF, and a
+missing final newline:
+
+```bash
+python3 .codex/skills/grill/scripts/review-ledger.py preflight-anchor \
+  --repo <owner/repo> --pr <number> --head <full-head-sha> \
+  --path <repository-relative-path> --line <right-side-line>
+
+python3 .codex/skills/grill/scripts/review-ledger.py post-finding \
+  --repo <owner/repo> --pr <number> --head <full-head-sha> \
+  --path <repository-relative-path> --line <right-side-line> \
+  --engine <codex|claude> --round <n> --fingerprint <stable-id> \
+  --occurrence 1 --severity <blocking|major|minor|nit> --lens <lens> \
+  --content-file <regular-utf8-file>
+```
+
+When the same fingerprint recurs on a later reviewed head, append a new numbered
+occurrence to its existing root comment and reopen that thread atomically:
+
+```bash
+python3 .codex/skills/grill/scripts/review-ledger.py reopen-occurrence \
+  --repo <owner/repo> --pr <number> --head <reviewed-sha> \
+  --engine <codex|claude> --round <n> --fingerprint <stable-id> \
+  --occurrence <next-number> --severity <severity> --lens <lens> \
+  --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
+  --content-file <regular-utf8-file>
+```
+
+After the fix is pushed, use the resumable `dispose` transaction. It posts or
+reuses the exact disposition, verifies it, resolves the thread, and verifies
+the final state. If the reply succeeds but resolution fails, running the same
+command again reuses the reply and completes only the missing resolution:
+
+```bash
+python3 .codex/skills/grill/scripts/review-ledger.py dispose \
+  --repo <owner/repo> --pr <number> --head <full-fix-sha> \
+  --engine <codex|claude> --round <n> --fingerprint <stable-id> \
+  --occurrence <number> --outcome <fixed|dismissed|deferred> \
+  --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
+  --content-file <regular-utf8-file>
+```
+
+Use `reconcile --fingerprint <stable-id>` to inspect known occurrences and
+dispositions after an uncertain response. Retry the identical helper command;
+never improvise an API mutation. A preflight rejection performs no mutation.
 
 ## Fix, reply, and resolve
 
@@ -183,64 +296,54 @@ For each published finding:
 
 1. Apply the correction and run the smallest relevant validation.
 2. Commit and push with a normal, non-force push.
-3. Reply in the same thread with the fix commit SHA, validation result, and
-   concise rationale. A fixed finding must also carry this marker, using the
-   same fingerprint as the finding and the full pushed fix SHA:
-
-   ```text
-   <!-- local-review-disposition:v1 engine=<codex|claude> round=<n> head=<fix-sha> fingerprint=<stable-id> outcome=fixed -->
-   ```
-
-   For dismissal or tracked deferral, reply with evidence or the issue link and
-   use `outcome=dismissed` or `outcome=deferred` with the reviewed head.
-
-4. Resolve the thread only after the reply is visible on GitHub.
+3. Put the fix SHA, validation result, and concise rationale in a content file.
+   Use `dispose` with the matching fingerprint and occurrence. For dismissal or
+   tracked deferral, use `outcome=dismissed` or `outcome=deferred` and the exact
+   reviewed head.
+4. Let `dispose` verify the reply and resolution as one resumable transaction.
 
 If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
-report the exact unresolved thread.
+report the exact unresolved thread; do not silently continue.
 
 ## Record clean passes and convergence
 
-A pass with no new confirmed findings leaves a PR comment naming the engine,
-round, exact reviewed head SHA, and `no new material findings`, carrying this
-machine-readable marker:
+Every pass writes `$AGENT_LOOP_REVIEW_RESULT_FILE` when that variable is set.
+The file is always present, including clean and blocked passes, and contains
+exactly this contract:
 
-```text
-<!-- local-review-pass:v1 engine=<codex|claude> round=<n> head=<sha> -->
+```json
+{
+  "version": 3,
+  "status": "clean|changed|blocked",
+  "engine": "codex|claude",
+  "round": 1,
+  "baseSha": "<sha>",
+  "beforeSha": "<sha>",
+  "afterSha": "<sha>",
+  "classification": null,
+  "findingFingerprints": [],
+  "finalLaneComplete": true
+}
 ```
 
-An automated runner requires that attestation from every pass that committed
-nothing: a hook exiting successfully proves only that it ran, not that it read
-anything. The marker's `head` must be the exact SHA reviewed, and a pass that
-fixed something attests through its thread replies instead.
+For `changed`, classification is `minor` or `material`, fingerprints is the
+non-empty set dispositioned by the pass, and `finalLaneComplete` is true. For
+`blocked`, classification is null, `finalLaneComplete` is false, and the object
+also contains a short safe `blocker` string. Use a file-editing tool or a
+deterministic serializer; do not construct JSON with shell interpolation.
 
-Clean evidence goes stale when **product code** changes, not whenever the head
-moves. A later commit touching only tests, fixtures, comments, or docs leaves
-every production line the attesting engine read byte-identical, so that
-attestation still covers the new head: record it as carried forward, naming both
-the attested SHA and the current one.
+The automated wrapper validates this file against the pinned base and observed
+before/after Git state, verifies every changed fingerprint against resolved v3
+threads, and then posts the canonical `local-review-pass:v3` or
+`local-review-complete:v3` attestation itself. Review hooks never post their own
+pass/completion markers. A missing or invalid result and a valid `blocked`
+result both stop clearly even when the reviewer process exits zero.
 
-Do not treat every head move as invalidating. That reading is what produces an
-unbounded loop, and it is not a hypothetical — test and doc hardening is always
-available to find, so each engine's commits perpetually re-stale the other's
-attestation and no round can terminate. The loop then feels productive, because
-every round genuinely does surface findings; they are just findings about the
-review's own artifacts rather than about the product.
-
-Verify a carry-forward rather than assuming it. Diff the attested SHA against
-the current head restricted to product paths; if that diff is empty, the
-attestation holds and the round is done.
-
-A review hook that committed must also leave a final-lane completion marker
-after its last adversarial lane finishes:
-
-```text
-<!-- local-review-complete:v1 engine=<codex|claude> round=<n> before=<reviewed-sha> head=<final-sha> -->
-```
-
-The runner requires both this completion marker and a same-round finding plus
-`outcome=fixed` disposition tied to the pushed SHA. This prevents an earlier
-cleanup commit from masking a final adversarial lane that silently declined.
+Every engine pass remains evidence for the exact head it reviewed. A later
+minor commit does not rewrite that historical fact. Round convergence is a
+separate explicit transition: one Codex-to-Claude round may converge when all
+observed changes are minor and dispositioned, without claiming Codex reviewed
+Claude's later head. Any material change restarts at Codex.
 
 For a two-engine loop:
 
@@ -249,34 +352,14 @@ For a two-engine loop:
   latch above;
 - run rounds 1–2 adversarially and rounds 3+ in convergence mode, per the stance
   rules above;
-- classify committed fixes as `material` or `minor` **by what the fix changes,
-  not by how severe the finding sounded**: a fix is `material` only when it
-  changes product code — the application or library source that ships. A fix
-  touching only tests, fixtures, comments, or docs is `minor` even when the
-  finding that produced it was severity-high, because the shipped behavior is
-  unchanged;
+- classify committed fixes as `material` or `minor`;
 - restart at Codex when either engine makes a material fix;
 - keep minor fixes, but do not restart solely because of them;
-- converge after a complete Codex-then-Claude round in which neither engine
-  changed product code, and every local-review thread has a reply and is
-  resolved;
-- stop at the configured round cap, preserving the draft PR and reporting
-  non-convergence.
+- converge only after a complete Codex-then-Claude round reports no material
+  fixes and every local-review thread has a reply and is resolved;
+- stop at the configured round cap. Preserve the draft PR and report
+  non-convergence instead of starting an unbounded cycle.
 
-**When a pass changes no product code, stop and say so.** Do not open another
-round, and do not let the round cap imply the remaining rounds are owed. State
-that the pass was minor-only, that the other engine's attestation carries
-forward, and recommend this repository's ship step by name — whatever it uses to
-merge the PR. The reviewer that notices this is the one responsible for
-surfacing it; a caller watching rounds go by cannot see that the fixes stopped
-touching product code.
-
-The signal to watch for is a round whose findings are all about tests, fixtures,
-or comments. That means the product converged and the review has moved on to
-auditing its own artifacts. Those findings can be real and still not be reasons
-to keep reviewing: hardening assertions creates fresh assertions to mutate, so
-the supply never runs out and the next round is guaranteed to find more. Ship,
-and carry anything genuinely worth doing to a follow-up issue.
-
-The next reviewer must read this ledger before reviewing the new head. That is
-how prior rationale survives after local model context has been discarded.
+The next reviewer must read the ledger before reviewing the new head. That
+requirement is what carries prior rationale forward after local model context
+has been discarded.

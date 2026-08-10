@@ -15,6 +15,11 @@ set -euo pipefail
 # test output. Default every path this wrapper creates to owner-only access.
 umask 077
 
+unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
+    AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
+    AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
+    AGENT_LOOP_PR_HEAD_SHA
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -36,8 +41,8 @@ Usage: agent-loop.sh [iterations] [options]
 Options:
   --iterations N       Process at most N issues (default: 10).
   --issues N,N,...     Restrict selection to this explicit issue allowlist.
-  --resume             Permit allowlisted issues already assigned only to @me
-                       (no effect on the ready queue, which is unassigned-only).
+  --include-assigned   Include eligible issues assigned only to @me.
+  --resume             Deprecated alias for --include-assigned.
   --dry-run            Show selection, gates, paths, hooks, and publication only.
   -h, --help           Show this help.
 
@@ -60,7 +65,7 @@ while [ "$#" -gt 0 ]; do
             ISSUE_ALLOWLIST="$2"
             shift 2
             ;;
-        --resume)
+        --resume|--include-assigned)
             RESUME_IN_PROGRESS=true
             shift
             ;;
@@ -117,6 +122,7 @@ CONFIG_FILE="$PROJECT_DIR/.claude/skills/agent-loop/agent-loop.config"
 PROMPT_FILE="$PROJECT_DIR/.claude/skills/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
 ISSUES_READY="$PROJECT_DIR/.claude/skills/issues/scripts/ready.py"
+REVIEW_LEDGER="$PROJECT_DIR/.claude/skills/grill/scripts/review-ledger.py"
 
 BASE_BRANCH=""
 SETUP_HOOK=""
@@ -192,9 +198,19 @@ if [ -e "$CONFIG_FILE" ]; then
     done < "$CONFIG_FILE"
 fi
 
-if [ "$REVIEW_CONTRACT_VERSION" != 2 ]; then
-    echo "agent-loop config must set review_contract_version = 2 after migrating the PR-first local review hooks" >&2
+if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; then
+    echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
     exit 1
+fi
+if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ ! -f "$REVIEW_LEDGER" ] || [ ! -r "$REVIEW_LEDGER" ]; then
+        echo "review contract v3 helper is unavailable: $REVIEW_LEDGER" >&2
+        exit 1
+    fi
+    [ "$(python3 "$REVIEW_LEDGER" --protocol-version)" = 3 ] || {
+        echo "review contract v3 requires review-ledger.py protocol version 3" >&2
+        exit 1
+    }
 fi
 
 BASE_BRANCH="${AGENT_LOOP_BASE_BRANCH:-$BASE_BRANCH}"
@@ -245,6 +261,11 @@ fi
 [[ "$PROMPT_TEMPLATE" == *"{ISSUE_ID}"* ]] || { echo "prompt template must contain {ISSUE_ID}: $PROMPT_FILE" >&2; exit 1; }
 
 cd "$PROJECT_DIR"
+GH_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || {
+    echo "could not resolve the GitHub repository for $PROJECT_DIR" >&2
+    exit 1
+}
+export GH_REPO
 if [ "$DRY_RUN" = false ]; then
     git fetch origin "$BASE_BRANCH" --quiet
 fi
@@ -376,7 +397,11 @@ select_next_issue() {
     fi
 
     local ready_json
-    ready_json="$("$ISSUES_READY" --unassigned --agent --limit 100 --json)" || return 2
+    if [ "$RESUME_IN_PROGRESS" = true ]; then
+        ready_json="$("$ISSUES_READY" --agent --limit 100 --json)" || return 2
+    else
+        ready_json="$("$ISSUES_READY" --unassigned --agent --limit 100 --json)" || return 2
+    fi
     jq -e 'type == "array"' <<<"$ready_json" >/dev/null 2>&1 || return 2
     while IFS= read -r number; do
         [ -n "$number" ] || continue
@@ -767,6 +792,43 @@ verify_committed_pass_evidence() {
     ' "$ledger_file" >/dev/null
 }
 
+verify_v3_committed_pass_evidence() {
+    local slug="$1" round="$2" before="$3" after="$4" result_json="$5" ledger_file fingerprints
+    ledger_file="$(fetch_local_review_threads)" || return 1
+    fingerprints="$(jq -c '.findingFingerprints' <<<"$result_json")" || return 1
+    jq -e --arg reviewer "$CURRENT_LOGIN" --arg engine "$slug" \
+        --argjson round "$round" --arg before "$before" --arg after "$after" \
+        --argjson expected "$fingerprints" '
+      def finding:
+        capture("<!-- local-review:v3 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[0-9]+) severity=(?<severity>blocking|major|minor|nit) lens=(?<lens>[A-Za-z0-9._:/-]+) content-sha256=(?<content>[0-9a-f]{64}) -->");
+      def disposition:
+        capture("<!-- local-review-disposition:v3 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[0-9]+) outcome=(?<outcome>fixed|dismissed|deferred) content-sha256=(?<content>[0-9a-f]{64}) -->");
+      all(.[]; (.errors // []) | length == 0)
+      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
+        | ($threads | all(.comments.pageInfo.hasNextPage | not))
+        and all($expected[]; . as $fingerprint
+          | any($threads[];
+              . as $thread | $thread.isResolved
+              and any($thread.comments.nodes | to_entries[];
+                select(.value.author.login == $reviewer)
+                | (try (.value.body | finding) catch null) as $finding
+                | select($finding != null and $finding.engine == $engine
+                    and ($finding.round | tonumber) == $round
+                    and $finding.head == $before
+                    and $finding.fingerprint == $fingerprint)
+                | .key as $finding_index
+                | any($thread.comments.nodes | to_entries[];
+                    (.key > $finding_index) and (.value.author.login == $reviewer)
+                    and ((try (.value.body | disposition) catch null) as $reply
+                      | $reply != null and $reply.engine == $engine
+                      and ($reply.round | tonumber) == $round
+                      and $reply.head == $after
+                      and $reply.fingerprint == $fingerprint
+                      and $reply.occurrence == $finding.occurrence
+                      and $reply.outcome == "fixed"))))))
+    ' "$ledger_file" >/dev/null
+}
+
 verify_local_review_threads() {
     local ledger_file
     ledger_file="$(fetch_local_review_threads)" || return 1
@@ -776,7 +838,7 @@ verify_local_review_threads() {
     # state cannot be established. Resolution is then checked per marker — a
     # marker with no later comment in its thread is an unanswered finding, which
     # a thread-length test cannot see on a reused thread.
-    jq -e --arg marker '<!-- local-review:v1 ' --arg reviewer "$CURRENT_LOGIN" '
+    jq -e --arg marker '<!-- local-review:v' --arg reviewer "$CURRENT_LOGIN" '
       def markers: [.comments.nodes | to_entries[]
         | select(
             (.value.author.login == $reviewer)
@@ -801,7 +863,7 @@ verify_local_review_threads() {
 # reviewers believe is current.
 run_review_convergence() {
     local round=1 engine slug hook before after material outcome_file classification round_base_sha
-    local base_advanced boundary_status
+    local base_advanced boundary_status result_file result_json result_status blocker
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
         export AGENT_LOOP_REVIEW_ROUND="$round"
@@ -816,6 +878,7 @@ run_review_convergence() {
             return 1
         }
         export AGENT_LOOP_REVIEW_BASE="$round_base_sha"
+        export AGENT_LOOP_REVIEW_BASE_SHA="$round_base_sha"
         if ! git merge-base --is-ancestor "$round_base_sha" HEAD; then
             echo -e "${BLUE}▸${NC} Integrating fresh base before review round $round"
             if ! git merge --no-edit "$round_base_sha"; then
@@ -842,8 +905,16 @@ run_review_convergence() {
             fi
             export AGENT_LOOP_REVIEW_ENGINE="$slug"
             outcome_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.outcome"
-            export AGENT_LOOP_REVIEW_OUTCOME_FILE="$outcome_file"
+            result_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.result.json"
             rm -f -- "$outcome_file"
+            rm -f -- "$result_file"
+            if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+                unset AGENT_LOOP_REVIEW_OUTCOME_FILE
+                export AGENT_LOOP_REVIEW_RESULT_FILE="$result_file"
+            else
+                unset AGENT_LOOP_REVIEW_RESULT_FILE
+                export AGENT_LOOP_REVIEW_OUTCOME_FILE="$outcome_file"
+            fi
             before="$(git rev-parse HEAD)"
             export AGENT_LOOP_PR_HEAD_SHA="$before"
             boundary_status=0
@@ -883,7 +954,35 @@ run_review_convergence() {
             fi
             run_validation "$slug-review-round-$round" || return 1
             require_clean_tree_after "$slug review round $round validation" || return 1
-            if [ "$after" != "$before" ]; then
+            if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+                result_json="$(python3 "$REVIEW_LEDGER" validate-result \
+                    --engine "$slug" --round "$round" --base "$round_base_sha" \
+                    --before "$before" --head "$after" --result-file "$result_file")" || {
+                    recovery_message "$engine review did not produce a valid contract v3 result in round $round."
+                    return 1
+                }
+                result_status="$(jq -r '.status' <<<"$result_json")"
+                if [ "$result_status" = blocked ]; then
+                    blocker="$(jq -r '.blocker' <<<"$result_json")"
+                    recovery_message "$engine review blocked in round $round: $blocker"
+                    return 1
+                fi
+                classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$result_json")"
+                if [ "$classification" != clean ]; then
+                    verify_v3_committed_pass_evidence "$slug" "$round" "$before" "$after" "$result_json" || {
+                        recovery_message "$engine review result lacks matching resolved v3 finding dispositions in round $round."
+                        return 1
+                    }
+                    [ "$classification" = minor ] || material=true
+                fi
+                python3 "$REVIEW_LEDGER" attest --repo "$GH_REPO" \
+                    --pr "$AGENT_LOOP_PR_NUMBER" --head "$after" --engine "$slug" \
+                    --round "$round" --base "$round_base_sha" --before "$before" \
+                    --result-file "$result_file" >/dev/null || {
+                    recovery_message "$engine review result attestation failed in round $round."
+                    return 1
+                }
+            elif [ "$after" != "$before" ]; then
                 classification=material
                 if [ -e "$outcome_file" ]; then
                     [ -f "$outcome_file" ] && [ ! -L "$outcome_file" ] || {
@@ -937,14 +1036,14 @@ run_review_convergence() {
                 return 1
             }
             REVIEW_ROUNDS_USED="$round"
-            unset AGENT_LOOP_REVIEW_OUTCOME_FILE
+            unset AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE
             return 0
         fi
         echo "   Material fixes landed; the next round rereads the complete PR ledger."
         round=$((round + 1))
     done
     recovery_message "Local review did not converge within $REVIEW_MAX_ROUNDS round(s); draft PR preserved."
-    unset AGENT_LOOP_REVIEW_OUTCOME_FILE
+    unset AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE
     return 1
 }
 

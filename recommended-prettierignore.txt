@@ -50,6 +50,7 @@
 .claude/skills/deepgrill/SKILL.md
 .claude/skills/feature-dev/SKILL.md
 .claude/skills/grill/SKILL.md
+.claude/skills/grill/scripts/review-ledger.py
 .claude/skills/issues/SKILL.md
 .claude/skills/issues/scripts/link.py
 .claude/skills/issues/scripts/ready.py

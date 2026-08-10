@@ -24,10 +24,11 @@ Use this path when both local engines are available:
    and apply the comment/fix/reply/resolve contract to confirmed findings.
 4. On the resulting head, run a fresh Claude `deepgrill <pr-number>` with the
    same ledger contract.
-5. Classify fixes as `material` or `minor` **by what the fix changes, not by how
-   severe the finding sounded**. A fix is `material` only when it changes product
-   code. Tests, fixtures, comments, and docs are `minor`. Restart at Codex when
-   either pass makes a material fix. Keep minor-only fixes without restarting.
+5. Classify fixes by effect, not path or finding severity. `material` includes
+   substantive correctness, security/privacy, data-safety, compatibility,
+   deployment/sync, or review-integrity changes, including tests or workflows
+   needed to prevent a false green. `minor` is low-risk non-behavioral cleanup
+   or polish. Restart at Codex after a material fix; retain minor fixes.
 
    **The chain gets cheaper as it repeats.** Two rules make that happen, and both
    are enforced from the ledger rather than from session memory:
@@ -45,23 +46,13 @@ Use this path when both local engines are available:
      the narrowing is a disposition rule applied by the orchestrator, never an
      instruction to a review agent to withhold by severity or confidence.
 
-6. Converge after one complete Codex-then-Claude round changes no product code,
-   every pass that committed nothing has an attestation covering the current head,
-   every committed pass has a structured fix disposition plus a final-lane
-   completion marker, and every local-review thread has a disposition reply and is
-   resolved.
-
-   An attestation covers the current head when no product code changed since the
-   SHA it names — a later tests-or-docs-only commit does not invalidate it. Diff
-   the attested SHA against the head over product paths to confirm. Requiring a
-   byte-exact head match instead is what makes this loop unbounded: minor commits
-   perpetually re-stale the other engine's attestation, so the condition in step 6
-   can never be met while either engine keeps finding test work.
-
-7. **The moment a pass changes no product code, stop and recommend shipping.**
-   Name the consumer's ship step — whatever that repo uses to merge the PR.
-   Reaching this before the cap is the expected outcome, not an early exit — the
-   cap is a backstop for non-convergence, never a quota of rounds to spend.
+6. Converge after one complete Codex-then-Claude round has no material
+   transition, every pass has a validated v3 result for its exact reviewed head,
+   and every local-review thread has a disposition reply and is resolved. A
+   minor A-to-B transition can complete the round without pretending the first
+   engine reviewed B; its exact-head attestation remains historical evidence.
+7. The wrapper, not review hooks, posts canonical pass/completion attestations
+   after validating structured results and the GitHub ledger.
 8. Stop after four rounds by default. Leave the PR draft and report
    non-convergence instead of continuing an unbounded cycle.
 

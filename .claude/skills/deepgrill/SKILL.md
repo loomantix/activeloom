@@ -44,8 +44,8 @@ Proceed in the current session only after an explicit override.
    pass and the deep grill share one resolution instead of each rebuilding the
    changeset. The ledger's diff-delivery rules govern both.
 8. Resolve this engine's round number per the ledger — `$AGENT_LOOP_REVIEW_ROUND`
-   when the runner set it, otherwise one past the count of `local-review-pass:v1`
-   and `local-review-complete:v1` markers naming `engine=claude`. Rounds 1–2 are
+   when the runner set it, otherwise one past the count of `local-review-pass:v3`
+   and `local-review-complete:v3` markers naming `engine=claude`. Rounds 1–2 are
    adversarial; round 3 and later are convergence rounds. State which applies
    before running a lane.
 
@@ -74,8 +74,9 @@ defect. `/grill` owns those rules; do not restate or relax them here.
 
 Every confirmed finding must be posted inline before editing. A completed fix
 must be pushed, replied to with its SHA, validation, and structured disposition,
-then resolved. When the combined hook committed, the final `/grill` lane posts
-the completion marker for the enclosing before/final head pair.
+then resolved through the deterministic helper. The final `/grill` lane always
+writes the v3 structured result; under agent-loop the wrapper posts the
+completion attestation after validating it.
 
 ## Phase 3: Handoff
 
@@ -89,28 +90,21 @@ Print:
 - Findings: <posted/replied/resolved counts>
 - Review depth: <agents run>
 - Classification: <clean | minor | material>
-- Product code changed: <yes | no>
 
 Next local step:
   If this pass made a material fix, restart at /codex-review <pr-number>.
-  If it changed no product code, the PR has converged — recommend this repo's
-  ship step, whatever it uses to merge the PR, instead of a new round.
-  Otherwise this completes the Claude half of the current local round.
+  Otherwise this completes the Claude half of the current local round; the
+  outer runner decides convergence from both exact-head v3 results.
 ```
 
 A convergence round that found no blocking defect ends the loop. Say so and name
 the ship step; do not report the remaining rounds as owed.
 
-Classify by what the fix **changes**, not by how severe the finding sounded.
-Only a change to product code is material; tests, fixtures, comments, and docs
-are minor, and they leave the other engine's attestation valid for the new head.
-
-A round that finds only test and comment work is the signal to ship. The product
-has converged and the review has moved on to auditing its own artifacts — a
-surface that regenerates each time it is hardened, so the findings never run out
-and their volume says nothing about whether more review is warranted. Say so
-plainly and recommend shipping; the caller cannot see that the fixes stopped
-touching product code.
+Classify by effect, not path or finding severity. A correctness, security,
+deployment/sync, or review-integrity fix may be material even when it touches a
+test or workflow. Minor means low-risk non-behavioral cleanup or polish. Every
+attestation stays exact to its reviewed head; the outer round owns any explicit
+minor-transition convergence decision.
 
 When the hosted fallback was explicitly selected, hand off to
 `/reviewit <pr-number> deep` instead.

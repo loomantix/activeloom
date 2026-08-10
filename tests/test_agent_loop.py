@@ -59,6 +59,10 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     script.parent.mkdir(parents=True)
     ready.parent.mkdir(parents=True)
     shutil.copy2(AGENT_LOOP, script)
+    ledger_source = REPO_ROOT / ".claude/skills/grill/scripts/review-ledger.py"
+    ledger_target = repo / ".claude/skills/grill/scripts/review-ledger.py"
+    ledger_target.parent.mkdir(parents=True)
+    shutil.copy2(ledger_source, ledger_target)
     _write_executable(
         ready,
         "#!/usr/bin/env python3\n"
@@ -350,6 +354,26 @@ def _run(
 def test_script_remains_executable_and_valid_bash() -> None:
     assert stat.S_IMODE(AGENT_LOOP.stat().st_mode) == 0o755
     subprocess.run(["bash", "-n", str(AGENT_LOOP)], check=True)
+
+
+def test_v3_missing_structured_result_is_not_treated_as_clean(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "30"],
+        issues=[_issue(30)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook="true",
+            claude_review_hook="true",
+        ),
+    )
+    assert result.returncode != 0
+    assert "valid contract v3 result" in result.stderr
+    comments = consumer[3] / "pr-comments.log"
+    assert not comments.exists()
 
 
 def test_issue_allowlist_never_selects_unrelated_ready_work(
