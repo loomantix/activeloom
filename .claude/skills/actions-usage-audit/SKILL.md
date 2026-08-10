@@ -2,6 +2,7 @@
 name: actions-usage-audit
 description: Audit an org's GitHub Actions minute consumption — build a month-over-month minutes-by-repo matrix from the billing usage API, attribute a spike to repos and workflows, and surface concrete cut opportunities. Use when an Actions/billing alert fires or you need to understand what is burning CI minutes. Read-only.
 argument-hint: optional org login (defaults to the current repo's owner) and optional year, e.g. `acme` or `acme 2026`
+disable-model-invocation: true
 ---
 
 # actions-usage-audit

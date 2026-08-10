@@ -2,6 +2,7 @@
 name: codex-review
 description: Independent PR-first second opinion via the local Codex CLI. Codex finds issues read-only; Claude verifies them, posts confirmed findings inline before editing, then pushes, replies, and resolves. `verify` lets Codex run tests/build.
 argument-hint: <pr-number> (optional "verify")
+disable-model-invocation: true
 ---
 
 # /codex-review — independent Codex cross-review
