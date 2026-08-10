@@ -38,10 +38,19 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 PLACEHOLDER_RE = re.compile(r"<<([A-Z][A-Z0-9_]*)>>")
-FENCE_RE = re.compile(r"\A {0,3}(`{3,}|~{3,})")
-RAW_TAG_OPEN_RE = re.compile(r"<(pre|script|style|textarea)\b", re.IGNORECASE)
+FENCE_RE = re.compile(
+    r"\A(?:(?:[ \t]*>[ \t]?)|(?:[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+))*[ \t]*(`{3,}|~{3,})"
+)
+RAW_TAG_EVENT_RE = re.compile(
+    r"</(?P<close>pre|script|style|textarea)\s*>|<(?P<open>pre|script|style|textarea)\b",
+    re.IGNORECASE,
+)
 HTML_COMMENT_OPEN = "<!--"
 HTML_COMMENT_CLOSE = "-->"
+PROCESSING_INSTRUCTION_OPEN = "<?"
+PROCESSING_INSTRUCTION_CLOSE = "?>"
+CDATA_OPEN = "<![CDATA["
+CDATA_CLOSE = "]]>"
 
 
 def literal_content_lines(lines: list[str]) -> list[bool]:
@@ -54,8 +63,11 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
     """
     literal = [False] * len(lines)
     fence: tuple[str, int] | None = None
-    raw_close: re.Pattern[str] | None = None
+    raw_tag: str | None = None
     in_comment = False
+    in_processing_instruction = False
+    in_declaration = False
+    in_cdata = False
     for index, line in enumerate(lines):
         fence_match = FENCE_RE.match(line)
         if fence is None and fence_match is not None:
@@ -73,26 +85,53 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
             ):
                 fence = None
             continue
-        if raw_close is not None:
+        raw_literal = raw_tag is not None
+        for event in RAW_TAG_EVENT_RE.finditer(line):
+            opening = event.group("open")
+            closing = event.group("close")
+            if raw_tag is None and opening is not None:
+                raw_tag = opening.lower()
+                raw_literal = True
+            elif raw_tag is not None and closing is not None and closing.lower() == raw_tag:
+                raw_tag = None
+
+        comment_open = line.rfind(HTML_COMMENT_OPEN)
+        comment_close = line.rfind(HTML_COMMENT_CLOSE)
+        if in_comment or comment_open >= 0:
+            raw_literal = True
+            in_comment = (
+                comment_close < 0 if in_comment and comment_open < 0 else comment_open > comment_close
+            )
+
+        processing_open = line.rfind(PROCESSING_INSTRUCTION_OPEN)
+        processing_close = line.rfind(PROCESSING_INSTRUCTION_CLOSE)
+        if in_processing_instruction or processing_open >= 0:
+            raw_literal = True
+            in_processing_instruction = (
+                processing_close < 0
+                if in_processing_instruction and processing_open < 0
+                else processing_open > processing_close
+            )
+
+        cdata_open = line.rfind(CDATA_OPEN)
+        cdata_close = line.rfind(CDATA_CLOSE)
+        if in_cdata or cdata_open >= 0:
+            raw_literal = True
+            in_cdata = cdata_close < 0 if in_cdata and cdata_open < 0 else cdata_open > cdata_close
+
+        declaration_opens = list(re.finditer(r"<![A-Z]", line))
+        declaration_open = declaration_opens[-1].start() if declaration_opens else -1
+        declaration_close = line.rfind(">")
+        if in_declaration or declaration_open >= 0:
+            raw_literal = True
+            in_declaration = (
+                declaration_close < 0
+                if in_declaration and declaration_open < 0
+                else declaration_open > declaration_close
+            )
+
+        if raw_literal:
             literal[index] = True
-            if raw_close.search(line):
-                raw_close = None
-            continue
-        if in_comment:
-            literal[index] = True
-            if HTML_COMMENT_CLOSE in line:
-                in_comment = False
-            continue
-        if HTML_COMMENT_OPEN in line:
-            literal[index] = True
-            in_comment = HTML_COMMENT_CLOSE not in line
-            continue
-        raw_tag = RAW_TAG_OPEN_RE.search(line)
-        if raw_tag is not None:
-            literal[index] = True
-            close = re.compile(rf"</{re.escape(raw_tag.group(1))}\s*>", re.IGNORECASE)
-            if not close.search(line):
-                raw_close = close
             continue
 
         # CommonMark expands tabs to four-column stops. Mixed prefixes such as
@@ -131,6 +170,10 @@ def check_source(source: Path, collapse_keys: list[str]) -> list[str]:
                 reason = "shares its line with a placeholder that is not opted in"
             elif PLACEHOLDER_RE.sub("", line).strip(" \t\r"):
                 reason = "shares its line with non-placeholder text"
+            elif index > 0 and lines[index - 1].strip():
+                reason = "is not preceded by a blank separator"
+            elif index + 1 < len(lines) and lines[index + 1].strip():
+                reason = "is not followed by a blank separator"
             else:
                 continue
             violations.append(f"{source}:{index + 1}: `{key}` {reason}")

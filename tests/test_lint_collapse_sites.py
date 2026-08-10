@@ -66,6 +66,12 @@ def test_rejects_a_placeholder_inside_literal_content(
         "<textarea>\ntext\n<<E>>\n</textarea>\n",
         "<!--\ncomment\n<<E>>\n-->\n",
         "<!--\n--!>\n<<E>>\n-->\n",
+        "<!-- closed --> <!-- still open\n\n<<E>>\n\n-->\n",
+        "<pre></pre><pre>\n\n<<E>>\n\n</pre>\n",
+        "<?instruction\n\n<<E>>\n\n?>\n",
+        "<!DECLARATION\n\n<<E>>\n\n>\n",
+        "<![CDATA[\n\n<<E>>\n\n]]>\n",
+        "- ```\n  code\n\n  <<E>>\n\n  more\n  ```\n",
         "intro\n\n \t<<E>>\n\noutro\n",
         "intro\n\n   \t<<E>>\n\noutro\n",
     ],
@@ -84,6 +90,22 @@ def test_rejects_a_placeholder_sharing_its_line_with_prose(
     violations = _check(lint_collapse_sites, tmp_path, "intro\n\n- <<E>>\n\noutro\n")
     assert len(violations) == 1
     assert "shares its line" in violations[0]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "intro\n<<E>>\n\noutro\n",
+        "intro\n\n<<E>>\noutro\n",
+        "intro\n<<E>>\noutro\n",
+    ],
+)
+def test_rejects_a_placeholder_without_blank_separators(
+    lint_collapse_sites: ModuleType, tmp_path: Path, body: str
+) -> None:
+    violations = _check(lint_collapse_sites, tmp_path, body)
+    assert len(violations) == 1
+    assert "blank separator" in violations[0]
 
 
 def test_rejects_a_line_with_a_non_opted_placeholder(
