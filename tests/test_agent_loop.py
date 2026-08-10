@@ -1232,6 +1232,49 @@ attest
     assert events[-1] == "validate"
 
 
+def test_v3_base_advance_during_review_restarts_without_stale_attestation(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    updater = tmp_path / "advance-base-v3.sh"
+    clean_result = _clean_v3_hook("codex")
+    _write_executable(
+        updater,
+        f"""#!/usr/bin/env bash
+set -e
+clone="$AGENT_STATE_DIR/base-clone-v3"
+if [ ! -d "$clone/.git" ]; then
+  git clone "$REMOTE_PATH" "$clone" >/dev/null 2>&1
+  git -C "$clone" config user.name Test
+  git -C "$clone" config user.email test@example.invalid
+  printf 'fresh-v3\n' > "$clone/fresh-base-v3.txt"
+  git -C "$clone" add fresh-base-v3.txt
+  git -C "$clone" commit -m 'chore: advance v3 base' >/dev/null
+  git -C "$clone" push origin main >/dev/null
+fi
+{clean_result}
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "35"],
+        issues=[_issue(35)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook=str(updater),
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+        extra_env={"REMOTE_PATH": str(consumer[1])},
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "convergence round 2/4" in result.stdout
+    assert "convergence round 3/4" not in result.stdout
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=codex round=1" not in comments
+    assert "local-review-pass:v3 engine=codex round=2" in comments
+    assert (consumer[3] / "pr-ready").exists()
+
+
 def test_large_worker_writes_survive_and_log_is_bounded(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

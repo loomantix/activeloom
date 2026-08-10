@@ -925,7 +925,9 @@ run_review_convergence() {
             fi
             run_validation "$slug-review-round-$round" || return 1
             require_clean_tree_after "$slug review round $round validation" || return 1
-            if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+            if [ "$base_advanced" = true ]; then
+                echo "   Review result is superseded by the advanced base; the next round revalidates it."
+            elif [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
                 result_json="$(python3 "$REVIEW_LEDGER" validate-result \
                     --engine "$slug" --round "$round" --base "$round_base_sha" \
                     --before "$before" --head "$after" --result-file "$result_file")" || {

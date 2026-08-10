@@ -38,8 +38,10 @@ Proceed in the current session only after an explicit override.
 4. Require local HEAD, remote head, and PR head to match.
 5. Record the PR number and exact base SHA. Read every prior review thread,
    including resolved and outdated threads.
-6. Apply the docs/config-only skip, per the ledger's changeset
-   classification.
+6. Apply the docs/config-only skip, per the ledger's changeset classification.
+   On a skip, finalize a clean v3 result using the ledger's wrapper/standalone
+   ownership rule, report `docs-config skip`, and exit without spending the
+   refactor latch.
 7. Resolve the changed-file list once for the initial packet. If refactorpass
    commits, that packet ends with its reviewed head: reload the PR head and
    build a new immutable packet before deep grill. If refactorpass is a no-op,
@@ -78,8 +80,9 @@ defect. `/grill` owns those rules; do not restate or relax them here.
 Every confirmed finding must be posted inline before editing. A completed fix
 must be pushed, replied to with its SHA, validation, and structured disposition,
 then resolved through the deterministic helper. The final `/grill` lane always
-writes the v3 structured result; under agent-loop the wrapper posts the
-completion attestation after validating it.
+finalizes the v3 structured result: under agent-loop the wrapper posts the
+completion attestation after validating it, while a standalone pass attests
+through the helper before reporting completion.
 
 ## Phase 3: Handoff
 

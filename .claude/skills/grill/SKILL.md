@@ -58,8 +58,9 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 4. Require local HEAD, remote head, and PR head to match.
 5. Record the exact PR base and head SHAs. Read every prior review thread,
    including resolved and outdated threads.
-6. Skip docs/config-only changesets, per the ledger's changeset
-   classification.
+6. Skip docs/config-only changesets, per the ledger's changeset classification.
+   Finalize a clean v3 result using the ledger's wrapper/standalone ownership
+   rule before returning.
 
 Do not begin a reviewer until the PR ledger is available. Do not use a
 force-push to establish or update the review branch.
@@ -120,9 +121,9 @@ The inline comment must exist before the corresponding edit. If no defensible
 diff anchor exists, keep it out of the automated fix loop or track a genuinely
 architectural follow-up as the ledger requires.
 
-If no new confirmed finding survives, record a `clean` v3 result. Under
-agent-loop the wrapper owns the canonical pass attestation; do not post it from
-the review hook.
+If no new confirmed finding survives, finalize a `clean` v3 result per the
+ledger. Under agent-loop the wrapper owns the canonical pass attestation; a
+standalone pass must attest through the helper before reporting completion.
 
 ## Phase 3: Disposition and fixes
 
@@ -192,8 +193,8 @@ result, recommend the ship step, and list the deferred issues.
 
 If this Claude pass made a material fix, restart the bounded round at
 `/codex-review <pr-number>` in a fresh session. Otherwise it completes the
-Claude half of the current round. When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set,
-always write `clean`, `changed`, or `blocked` per the ledger before returning.
+Claude half of the current round. Always finalize `clean`, `changed`, or
+`blocked` per the ledger's wrapper/standalone ownership rule before returning.
 
 ## Boundaries
 

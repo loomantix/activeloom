@@ -47,8 +47,8 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
      ```
 
    - If the changeset is docs/config-only per the ledger's classification,
-     record a scoped clean v3 result. Under agent-loop the wrapper attests it;
-     otherwise use the deterministic helper's `attest` command, then exit.
+     finalize a scoped clean v3 result using the ledger's wrapper/standalone
+     ownership rule, then exit.
    - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds 1–2 are adversarial; round 3 and later are convergence rounds, and the prompt and dispositions change accordingly. The result's `baseSha` and the prompt range must name `REVIEW_BASE` exactly.
 
 ## Phase 1: Build the review prompt
@@ -175,9 +175,9 @@ When the status file appears with exit code zero, read the findings file — it 
 - Present the resulting thread list with `file:line`, severity, and your one-line verification.
 - Call out where Codex **disagreed with or added to** earlier ledger findings;
   that cross-engine delta is the reason to run it.
-- If Codex reports no new confirmed finding and makes no commit, record a clean
-  v3 result for the exact reviewed head. Under agent-loop the wrapper owns the
-  canonical pass attestation.
+- If Codex reports no new confirmed finding and makes no commit, finalize a
+  clean v3 result for the exact reviewed head using the ledger's
+  wrapper/standalone ownership rule.
 - Every attestation remains exact to the head reviewed. A later minor fix is an
   explicit transition in the round; it does not rewrite the attestation or
   claim Codex reviewed the later head. A material transition restarts at Codex.
@@ -193,8 +193,9 @@ For a finding that needs a human/scope/legal decision (risk acceptance, prod-dat
 After fixes, run the relevant gates, commit, and push normally. Require local,
 remote, and PR heads to match. Use the deterministic helper's resumable
 `dispose` transaction for each fixed thread. After the last lane, always write
-the v3 structured result; under agent-loop the wrapper owns the completion
-attestation. Do not force-push or merge.
+and finalize the v3 structured result per the ledger; under agent-loop the
+wrapper owns the completion attestation, while a standalone pass attests
+through the helper. Do not force-push or merge.
 
 ## Output
 

@@ -745,6 +745,7 @@ def _verify_complete_v3_threads(
     repo: str, pr: int, actor: str
 ) -> list[tuple[re.Match[str], re.Match[str]]]:
     matched: list[tuple[re.Match[str], re.Match[str]]] = []
+    topology: dict[str, list[tuple[str, int, re.Match[str]]]] = {}
     for thread in _review_threads(repo, pr):
         repository = thread.get("repository")
         pull_request = thread.get("pullRequest")
@@ -760,11 +761,29 @@ def _verify_complete_v3_threads(
             continue
         if not findings:
             _fail("local-review ledger contains a disposition without a finding")
+        thread_id = thread.get("id")
+        if not isinstance(thread_id, str):
+            _fail("local-review finding thread has no stable identity")
+        for finding_index, finding in findings:
+            topology.setdefault(finding.group("fingerprint"), []).append(
+                (thread_id, finding_index, finding)
+            )
         if thread.get("isResolved") is not True:
             _fail(
                 f"local-review finding thread {thread.get('id', '<unknown>')} is unresolved"
             )
         matched.extend(_matching_dispositions(findings, dispositions))
+    for records in topology.values():
+        thread_ids = {thread_id for thread_id, _, _ in records}
+        occurrences = sorted(int(finding.group("occurrence")) for _, _, finding in records)
+        roots = [record for record in records if record[2].group("occurrence") == "1"]
+        if (
+            len(thread_ids) != 1
+            or occurrences != list(range(1, len(records) + 1))
+            or len(roots) != 1
+            or roots[0][1] != 0
+        ):
+            _fail("local-review fingerprint topology is invalid")
     return matched
 
 
@@ -1104,6 +1123,7 @@ def _validate_result_data(
         if (
             args.before == args.head
             or classification not in {"minor", "material"}
+            or (args.round >= 3 and classification != "material")
             or (classification == "material" and not fingerprints)
             or data["finalLaneComplete"] is not True
             or "blocker" in data

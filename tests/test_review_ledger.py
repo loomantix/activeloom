@@ -1084,6 +1084,67 @@ def test_complete_ledger_rejects_unstructured_same_actor_reply(
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
 
+@pytest.mark.parametrize("case", ["missing-root", "gap", "split-root", "reply-root"])
+def test_complete_ledger_rejects_invalid_fingerprint_topology(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    def thread(
+        thread_id: str, occurrences: list[int], *, leading_comment: bool = False
+    ) -> dict[str, Any]:
+        nodes: list[dict[str, Any]] = []
+        if leading_comment:
+            nodes.append(
+                {
+                    "databaseId": 1,
+                    "body": "Unrelated root.",
+                    "author": {"login": "someone-else"},
+                }
+            )
+        for occurrence in occurrences:
+            nodes.extend(
+                [
+                    {
+                        "databaseId": 10 + occurrence,
+                        "body": _v3_finding_body(
+                            fingerprint="topology", occurrence=occurrence
+                        ),
+                        "author": {"login": ACTOR},
+                    },
+                    {
+                        "databaseId": 20 + occurrence,
+                        "body": _v3_disposition_body(
+                            fingerprint="topology", occurrence=occurrence
+                        ),
+                        "author": {"login": ACTOR},
+                    },
+                ]
+            )
+        return {
+            "id": thread_id,
+            "isResolved": True,
+            "repository": {"nameWithOwner": REPO},
+            "pullRequest": {"number": 7},
+            "comments": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": False},
+            },
+        }
+
+    if case == "missing-root":
+        threads = [thread("THREAD", [2])]
+    elif case == "gap":
+        threads = [thread("THREAD", [1, 3])]
+    elif case == "split-root":
+        threads = [thread("THREAD-A", [1]), thread("THREAD-B", [1])]
+    else:
+        threads = [thread("THREAD", [1], leading_comment=True)]
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: threads)
+    with pytest.raises(review_ledger.LedgerError, match="fingerprint topology"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+
 def test_changed_minor_result_allows_cleanup_only_fingerprint_set(
     review_ledger: ModuleType, tmp_path: Path
 ) -> None:
@@ -1116,6 +1177,40 @@ def test_changed_minor_result_allows_cleanup_only_fingerprint_set(
     )
     data = review_ledger._validate_result_data(args)
     assert data["findingFingerprints"] == []
+
+
+def test_convergence_round_rejects_minor_changed_result(
+    review_ledger: ModuleType, tmp_path: Path
+) -> None:
+    after = "b" * 40
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "changed",
+                "engine": "codex",
+                "round": 3,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": after,
+                "classification": "minor",
+                "findingFingerprints": ["blocking-fix"],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        result_file=str(result_file),
+        engine="codex",
+        round=3,
+        base="c" * 40,
+        before=HEAD,
+        head=after,
+    )
+    with pytest.raises(review_ledger.LedgerError, match="changed review result"):
+        review_ledger._validate_result_data(args)
 
 
 def test_actor_scoped_records_ignore_foreign_markers(review_ledger: ModuleType) -> None:
@@ -1480,3 +1575,24 @@ def test_attest_content_file_reads_result_once_and_returns_classification(
     assert output["status"] == "clean"
     assert output["classification"] is None
     assert posted["body"].endswith(f"\n{content}")
+
+
+def test_review_skills_define_wrapper_and_standalone_v3_finalization() -> None:
+    root = Path(__file__).resolve().parent.parent
+    ledger = (root / ".claude/references/local-review-ledger.md").read_text(
+        encoding="utf-8"
+    )
+    deepgrill = (root / ".claude/skills/deepgrill/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    grill = (root / ".claude/skills/grill/SKILL.md").read_text(encoding="utf-8")
+    codex_review = (root / ".claude/skills/codex-review/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Finalize wrapper and standalone results" in ledger
+    assert "helper returns `verified: true`" in ledger
+    assert "On a skip, finalize a clean v3 result" in deepgrill
+    for skill in (deepgrill, grill, codex_review):
+        assert "wrapper/standalone" in skill
+        assert "standalone pass" in skill

@@ -359,6 +359,24 @@ same evidence validation from the helper. Review hooks never post their own
 pass/completion markers. A missing or invalid result and a valid `blocked`
 result both stop clearly even when the reviewer process exits zero.
 
+### Finalize wrapper and standalone results
+
+Result ownership depends on the caller:
+
+- When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, serialize the exact result to
+  that regular file and return without posting a pass/completion marker. The
+  wrapper validates the file and owns attestation.
+- When it is unset, the reviewer is standalone. Create an owner-only temporary
+  directory outside the Git worktree, serialize the same result to a regular
+  file there, and invoke the helper's `attest` command with the exact repository,
+  PR, base, before, and final head. Do not report the pass complete unless the
+  helper returns `verified: true`.
+
+Docs/config-only skips follow the same rule with a `clean` result whose
+`beforeSha` and `afterSha` both name the reviewed head. A skip returns only
+after wrapper result creation or standalone attestation succeeds; it does not
+spend the refactor latch.
+
 Every engine pass remains evidence for the exact head it reviewed. A later
 minor commit does not rewrite that historical fact. Round convergence is a
 separate explicit transition: one Codex-to-Claude round may converge when all
