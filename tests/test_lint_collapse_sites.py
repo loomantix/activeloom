@@ -121,8 +121,9 @@ def test_canonical_manifest_passes(
     # block being dropped all yield `checked = 0`. Asserting only the exit code
     # would let the lint decay into a no-op while staying green, so pin the
     # count it reports.
-    checked = int(re.search(r"verified in (\d+) source", capsys.readouterr().out).group(1))
-    assert checked >= 1
+    reported = re.search(r"verified in (\d+) source", capsys.readouterr().out)
+    assert reported is not None
+    assert int(reported.group(1)) >= 1
 
 
 def test_main_rejects_an_unsafe_site(
