@@ -96,13 +96,11 @@ customer/tenant-variable behavior.
   See [`MODEL_NOTES.md`](MODEL_NOTES.md) §2–§3.
 - Fix every valid in-scope finding. Dismiss false positives with evidence in the
   thread.
-- **A round that only finds test, fixture, and comment work is the signal to
-  ship, not to keep going.** It means the product converged and the review has
-  turned to auditing its own artifacts. That surface is self-renewing — each
-  round's hardening gives the next round new assertions to mutate — so the
-  findings never run out and their existence is not evidence more review is
-  warranted. Recommend the ship step and move anything genuinely worth doing to
-  a follow-up issue.
+- **A round that only finds non-material test, fixture, comment, or docs polish
+  is the signal to ship, not to keep going.** It means the product converged and
+  the review has turned to auditing its own artifacts. A test or workflow fix
+  needed to prevent a false green remains material and restarts at Codex under
+  step 5. Move genuinely useful non-material polish to a follow-up issue.
 - Defer only genuinely large architectural work and link the tracking issue.
 - A fix without a preceding inline finding, a finding without a reply, or a
   resolved thread without a visible disposition is a failed pass.

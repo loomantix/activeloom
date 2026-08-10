@@ -16,6 +16,7 @@ set -euo pipefail
 umask 077
 
 unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
+    AGENT_LOOP_REVIEW_ACTOR \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
     AGENT_LOOP_PR_HEAD_SHA
@@ -283,6 +284,7 @@ CURRENT_LOGIN="$(gh api user --jq .login)" || {
     exit 1
 }
 [ -n "$CURRENT_LOGIN" ] || { echo "current GitHub login resolved empty" >&2; exit 1; }
+export AGENT_LOOP_REVIEW_ACTOR="$CURRENT_LOGIN"
 
 REPO_NAME="$(basename "$PROJECT_DIR")"
 RUN_TAG="$(date -u +%Y%m%d-%H%M%S)-$$"
@@ -410,6 +412,7 @@ select_next_issue() {
         issue_is_selectable "$number" "$json" || continue
         SELECTED_ID="$number"
         SELECTED_BODY="$(jq -r '.body // ""' <<<"$json")"
+        [ "$(jq '.assignees | length' <<<"$json")" -gt 0 ] && SELECTED_ASSIGNED=true
         return 0
     done < <(jq -r '.[].number' <<<"$ready_json")
     return 1
@@ -831,7 +834,7 @@ verify_local_review_threads() {
 # reviewers believe is current.
 run_review_convergence() {
     local round=1 engine slug hook before after material outcome_file classification round_base_sha
-    local base_advanced boundary_status result_file result_json result_status blocker
+    local base_advanced boundary_status result_file result_json result_status blocker attest_json
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
         export AGENT_LOOP_REVIEW_ROUND="$round"
@@ -935,14 +938,14 @@ run_review_convergence() {
                     recovery_message "$engine review blocked in round $round: $blocker"
                     return 1
                 fi
-                classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$result_json")"
-                python3 "$REVIEW_LEDGER" attest --repo "$GH_REPO" \
+                attest_json="$(python3 "$REVIEW_LEDGER" attest --repo "$GH_REPO" \
                     --pr "$AGENT_LOOP_PR_NUMBER" --head "$after" --engine "$slug" \
                     --round "$round" --base "$round_base_sha" --before "$before" \
-                    --result-file "$result_file" >/dev/null || {
+                    --result-file "$result_file")" || {
                     recovery_message "$engine review result attestation failed in round $round."
                     return 1
                 }
+                classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$attest_json")"
                 if [ "$classification" != clean ]; then
                     [ "$classification" = minor ] || material=true
                 fi

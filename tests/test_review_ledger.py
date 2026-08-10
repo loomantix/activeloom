@@ -1,4 +1,5 @@
 """Regression tests for deterministic local-review ledger mutations."""
+
 from __future__ import annotations
 
 import argparse
@@ -23,6 +24,40 @@ PATCH = """@@ -10,3 +10,4 @@
 +more
  context
 """
+
+
+def _v3_finding_body(
+    *,
+    head: str = HEAD,
+    engine: str = "codex",
+    round_number: int = 2,
+    fingerprint: str = "finding",
+    occurrence: int = 1,
+    content: str = "Finding.",
+) -> str:
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    return (
+        f"<!-- local-review:v3 engine={engine} round={round_number} head={head} "
+        f"fingerprint={fingerprint} occurrence={occurrence} severity=major "
+        f"lens=correctness content-sha256={digest} -->\n{content}"
+    )
+
+
+def _v3_disposition_body(
+    *,
+    head: str = HEAD,
+    engine: str = "codex",
+    round_number: int = 2,
+    fingerprint: str = "finding",
+    occurrence: int = 1,
+    content: str = "Fixed and validated.",
+) -> str:
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    return (
+        f"<!-- local-review-disposition:v3 engine={engine} round={round_number} "
+        f"head={head} fingerprint={fingerprint} occurrence={occurrence} "
+        f"outcome=fixed content-sha256={digest} -->\n{content}"
+    )
 
 
 @pytest.fixture(scope="session")
@@ -492,7 +527,9 @@ def test_v3_helper_owns_marker_and_preserves_hostile_markdown(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    content_text = "`tick` $() ${HOME} 'single' \"double\" — Unicode\r\nno-final-newline"
+    content_text = (
+        "`tick` $() ${HOME} 'single' \"double\" — Unicode\r\nno-final-newline"
+    )
     content = tmp_path / "finding.md"
     content.write_bytes(content_text.encode("utf-8"))
     posted: dict[str, Any] = {}
@@ -615,7 +652,7 @@ def test_v3_post_fails_if_head_moves_after_mutation(
     assert head_reads == 2
 
 
-def test_v3_dispose_is_resumable_after_resolve_response_failure(
+def test_v3_dispose_reconciles_after_resolve_response_failure(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -717,8 +754,6 @@ def test_v3_dispose_is_resumable_after_resolve_response_failure(
         str(content),
     ]
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
-    with pytest.raises(review_ledger.LedgerError, match="lost resolve"):
-        review_ledger.main(args)
     review_ledger.main(args)
     assert reply_posts == 1
     assert mutation_attempts == 1
@@ -1018,10 +1053,12 @@ def test_reconcile_does_not_cross_engine_or_round_identity(
 def test_complete_ledger_rejects_unstructured_same_actor_reply(
     review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    finding_content = "Finding."
     finding = (
         "<!-- local-review:v3 engine=codex round=1 "
         f"head={HEAD} fingerprint=missing-disposition occurrence=1 severity=major "
-        f"lens=tests content-sha256={'a' * 64} -->\nFinding."
+        "lens=tests content-sha256="
+        f"{hashlib.sha256(finding_content.encode()).hexdigest()} -->\n{finding_content}"
     )
     threads = [
         {
@@ -1092,15 +1129,15 @@ def test_actor_scoped_records_ignore_foreign_markers(review_ledger: ModuleType) 
 def test_attestation_rejects_result_fingerprints_without_ledger_evidence(
     review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
     monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
-    monkeypatch.setattr(
-        review_ledger, "_verify_complete_v3_threads", lambda *_args: []
-    )
+    monkeypatch.setattr(review_ledger, "_verify_complete_v3_threads", lambda *_args: [])
     args = argparse.Namespace(
         repo=REPO,
         pr=7,
         head="b" * 40,
         before=HEAD,
+        base="c" * 40,
         engine="codex",
         round=1,
     )
@@ -1111,3 +1148,268 @@ def test_attestation_rejects_result_fingerprints_without_ledger_evidence(
     }
     with pytest.raises(review_ledger.LedgerError, match="complete fixed-finding set"):
         review_ledger._verify_result_evidence(args, data, ACTOR)
+
+
+def test_complete_ledger_rejects_tampered_malformed_and_orphan_records(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base_thread = {
+        "id": "THREAD",
+        "isResolved": True,
+        "repository": {"nameWithOwner": REPO},
+        "pullRequest": {"number": 7},
+        "comments": {"nodes": [], "pageInfo": {"hasNextPage": False}},
+    }
+
+    tampered = dict(base_thread)
+    tampered["comments"] = {
+        "nodes": [
+            {
+                "databaseId": 1,
+                "body": _v3_finding_body() + " edited",
+                "author": {"login": ACTOR},
+            }
+        ],
+        "pageInfo": {"hasNextPage": False},
+    }
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [tampered])
+    with pytest.raises(review_ledger.LedgerError, match="content hash mismatch"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+    malformed = dict(base_thread)
+    malformed["comments"] = {
+        "nodes": [
+            {
+                "databaseId": 1,
+                "body": "<!-- local-review:v3 malformed -->\nFinding.",
+                "author": {"login": ACTOR},
+            }
+        ],
+        "pageInfo": {"hasNextPage": False},
+    }
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [malformed])
+    with pytest.raises(review_ledger.LedgerError, match="marker is malformed"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+    orphan = dict(base_thread)
+    orphan["comments"] = {
+        "nodes": [
+            {
+                "databaseId": 2,
+                "body": _v3_disposition_body(),
+                "author": {"login": ACTOR},
+            }
+        ],
+        "pageInfo": {"hasNextPage": False},
+    }
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [orphan])
+    with pytest.raises(review_ledger.LedgerError, match="without a finding"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+
+def test_review_threads_rejects_truncated_top_level_pagination(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "cursor"},
+                    }
+                }
+            }
+        }
+    }
+    monkeypatch.setattr(review_ledger, "_json_output", lambda *_args, **_kwargs: [page])
+    with pytest.raises(review_ledger.LedgerError, match="pagination is incomplete"):
+        review_ledger._review_threads(REPO, 7)
+
+
+def test_fixed_finding_must_precede_final_head(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final_head = "b" * 40
+    finding = review_ledger.FINDING_V3_RE.search(
+        _v3_finding_body(head=final_head, fingerprint="too-late")
+    )
+    disposition = review_ledger.DISPOSITION_V3_RE.search(
+        _v3_disposition_body(head=final_head, fingerprint="too-late")
+    )
+    assert finding is not None and disposition is not None
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger,
+        "_verify_complete_v3_threads",
+        lambda *_args: [(finding, disposition)],
+    )
+    monkeypatch.setattr(review_ledger, "_is_ancestor", lambda *_args: True)
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        base="c" * 40,
+        before=HEAD,
+        head=final_head,
+        engine="codex",
+        round=2,
+    )
+    data = {
+        "status": "changed",
+        "classification": "material",
+        "findingFingerprints": ["too-late"],
+    }
+    with pytest.raises(review_ledger.LedgerError, match="not posted before"):
+        review_ledger._verify_result_evidence(args, data, ACTOR)
+
+
+def test_review_base_must_match_git_ancestry_and_pr_boundary(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = "c" * 40
+    monkeypatch.setattr(review_ledger, "_run_git", lambda *_args: base + "\n")
+    monkeypatch.setattr(review_ledger, "_is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(review_ledger, "_run_gh", lambda *_args: base + "\n")
+    review_ledger._verify_review_base(REPO, 7, base, HEAD)
+
+    monkeypatch.setattr(review_ledger, "_run_gh", lambda *_args: "d" * 40 + "\n")
+    with pytest.raises(review_ledger.LedgerError, match="PR base mismatch"):
+        review_ledger._verify_review_base(REPO, 7, base, HEAD)
+
+
+def test_attestation_identity_replays_exact_body_and_rejects_conflicts(
+    review_ledger: ModuleType,
+) -> None:
+    body = (
+        f"<!-- local-review-pass:v3 engine=codex round=2 base={'c' * 40} "
+        f"head={HEAD} result-sha256={'d' * 64} -->\nClean."
+    )
+    rows = [{"id": 7, "body": body}]
+    assert review_ledger._matching_attestation(rows, "codex", 2, body) == 7
+    with pytest.raises(review_ledger.LedgerError, match="conflicts"):
+        review_ledger._matching_attestation(
+            rows, "codex", 2, body.replace("Clean.", "Different.")
+        )
+
+
+def test_reconcile_reports_unresolved_disposed_thread(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = [
+        {"id": 88, "user": {"login": ACTOR}, "body": _v3_finding_body()},
+        {"id": 89, "user": {"login": ACTOR}, "body": _v3_disposition_body()},
+    ]
+    thread = {
+        "id": "THREAD",
+        "isResolved": False,
+        "comments": {
+            "nodes": [{"databaseId": 88}, {"databaseId": 89}],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+    args = argparse.Namespace(repo=REPO, pr=7, head=HEAD, fingerprint="finding")
+    review_ledger._reconcile(args)
+    output = json.loads(capsys.readouterr().out)
+    assert output["nextAction"] == "dispose"
+    assert output["threadId"] == "THREAD"
+    assert output["threadResolved"] is False
+
+
+def test_post_reconciles_after_comment_readback_failure(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = "<!-- local-review:v3 deterministic -->"
+    body = marker + "\nFinding."
+    comments: list[dict[str, Any]] = []
+
+    def fake_json(args: list[str], payload: dict[str, Any] | None = None) -> Any:
+        if "-X" in args:
+            assert payload == {
+                "body": body,
+                "commit_id": HEAD,
+                "path": "changed.ts",
+                "line": 11,
+                "side": "RIGHT",
+            }
+            comments.append({"id": 123, "body": body, "user": {"login": ACTOR}})
+            return {"id": 123}
+        raise review_ledger.LedgerError("lost comment readback")
+
+    monkeypatch.setattr(review_ledger, "_json_output", fake_json)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: comments)
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=HEAD,
+        actor=ACTOR,
+        path="changed.ts",
+        line=11,
+        side="RIGHT",
+        file_level=False,
+    )
+    assert review_ledger._post_review_comment(args, marker, body) == (123, False)
+
+
+def test_attest_reads_result_once_and_returns_authoritative_classification(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "clean",
+                "engine": "codex",
+                "round": 2,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": HEAD,
+                "classification": None,
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    reads = 0
+    original_read = review_ledger._read_result_bytes
+
+    def counted_read(args: argparse.Namespace) -> bytes:
+        nonlocal reads
+        reads += 1
+        return cast(bytes, original_read(args))
+
+    monkeypatch.setattr(review_ledger, "_read_result_bytes", counted_read)
+    monkeypatch.setattr(review_ledger, "_verify_result_evidence", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_issue_comments", lambda *_args: [])
+    monkeypatch.setattr(review_ledger, "_verify_issue_comment", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger, "_json_output", lambda *_args, **_kwargs: {"id": 42}
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=HEAD,
+        engine="codex",
+        round=2,
+        base="c" * 40,
+        before=HEAD,
+        result_file=str(result_file),
+        content_file=None,
+    )
+    review_ledger._attest(args)
+    output = json.loads(capsys.readouterr().out)
+    assert reads == 1
+    assert output["status"] == "clean"
+    assert output["classification"] is None

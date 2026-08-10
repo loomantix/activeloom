@@ -75,11 +75,11 @@ Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_BASE_BRANCH`,
 fresh fetch plus `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 `AGENT_LOOP_PR_HEAD_SHA`, `AGENT_LOOP_REVIEW_ENGINE`, and
 `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_BASE_SHA`, and under contract v3
-`AGENT_LOOP_REVIEW_RESULT_FILE`. Every hook writes a structured clean, changed,
-or blocked result. The wrapper validates its exact SHAs and finding
-fingerprints, verifies resolved v3 dispositions, and owns the canonical
-pass/completion attestation. A missing, invalid, or blocked result stops even
-when the hook exits zero. Validation hooks
+`AGENT_LOOP_REVIEW_ACTOR` plus `AGENT_LOOP_REVIEW_RESULT_FILE`. Every hook writes
+a structured clean, changed, or blocked result. The wrapper validates its exact
+SHAs and finding fingerprints, verifies resolved v3 dispositions, and owns the
+canonical pass/completion attestation. A missing, invalid, or blocked result
+stops even when the hook exits zero. Validation hooks
 must leave a clean tree; work they write but do not commit is not in the
 reviewed head and would be discarded with the worktree.
 
@@ -162,8 +162,9 @@ opened one summary PR at the end. That model is gone:
   must be migrated by hand: set `review_contract_version = 3`, add
   `review_max_rounds`, and update both review hooks to the PR-ledger contract.
   Old hooks that prohibit all pushes will fail closed because each fix must be
-  pushed normally to the exact draft-PR branch, and a hook that reviews without
-  posting a clean-pass attestation fails closed for the same reason.
+  pushed normally to the exact draft-PR branch. Every v3 hook must write its
+  structured result; it must not post pass/completion attestations because the
+  wrapper validates the result and owns those markers.
 
 ## Test Guidance
 

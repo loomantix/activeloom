@@ -8,6 +8,7 @@ ordering, claim/assignee-identity races, worker failure + recovery,
 capacity/timeout retry with model fallback, private bounded logs, fresh-base
 publication, and conflict-marker rejection.
 """
+
 from __future__ import annotations
 
 import json
@@ -81,7 +82,9 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _run_git("commit", "-m", "test fixture", cwd=repo)
     _run_git("remote", "add", "origin", str(remote), cwd=repo)
     _run_git("push", "-u", "origin", "main", cwd=repo)
-    _run_git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=repo)
+    _run_git(
+        "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=repo
+    )
 
     gh = bin_dir / "gh"
     _write_executable(
@@ -95,13 +98,19 @@ with (state / 'gh.log').open('a') as handle:
     handle.write(' '.join(args) + '\n')
 issues = json.loads(os.environ.get('AGENT_ISSUES_JSON', '{}'))
 if args[:2] == ['api', 'user']:
-    print('tester' if '--jq' in args else json.dumps({'login': 'tester'}))
+    actor_file = state / 'gh-actor'
+    actor = actor_file.read_text().strip() if actor_file.exists() else 'tester'
+    print(actor if '--jq' in args else json.dumps({'login': actor}))
 elif args[:2] == ['issue', 'view']:
     number = args[2]
     issue = issues.get(number, {'number': int(number), 'title': 'fixture', 'body': '', 'state': 'OPEN', 'labels': [{'name': 'dev: agent'}], 'assignees': []})
     if args[3:] == ['--json', 'assignees']:
-        login = os.environ.get('AGENT_VERIFIED_ASSIGNEE', 'tester')
-        print(json.dumps({'assignees': ([{'login': login}] if login else [])}))
+        if os.environ.get('AGENT_VERIFIED_ASSIGNEES'):
+            assignees = json.loads(os.environ['AGENT_VERIFIED_ASSIGNEES'])
+        else:
+            login = os.environ.get('AGENT_VERIFIED_ASSIGNEE', 'tester')
+            assignees = ([{'login': login}] if login else [])
+        print(json.dumps({'assignees': assignees}))
     elif 'closedByPullRequestsReferences' in ' '.join(args):
         dep = json.loads(os.environ.get('AGENT_ISSUE_DEPENDENCIES', '{}')).get(number, [])
         for row in dep:
@@ -125,6 +134,15 @@ elif args[:2] == ['pr', 'view']:
     joined = ' '.join(args)
     if '--json number' in joined:
         print('1')
+    elif args[-2:] == ['--jq', '.baseRefOid']:
+        base_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        base_oid_file = state / 'pr-base-oid'
+        if base_oid_file.exists():
+            base_head = base_oid_file.read_text().strip()
+        print(os.environ.get('AGENT_PR_BASE_OID', base_head))
     elif 'baseRefOid' in joined:
         branch = (state / 'pr-branch').read_text()
         remote_head = subprocess.run(
@@ -256,7 +274,7 @@ def _clean_pass_hook(engine: str) -> str:
     return (
         f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
         "printf '%s\\n' \"$AGENT_LOOP_REVIEW_BASE\" >> "
-        "\"$AGENT_STATE_DIR/review-bases.log\"; "
+        '"$AGENT_STATE_DIR/review-bases.log"; '
         "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
         f'-f body="<!-- local-review-pass:v1 engine={engine} '
         'round=$AGENT_LOOP_REVIEW_ROUND head=$AGENT_LOOP_PR_HEAD_SHA -->"'
@@ -266,11 +284,11 @@ def _clean_pass_hook(engine: str) -> str:
 def _clean_v3_hook(engine: str) -> str:
     return (
         f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
-        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
-        "--argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
-        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" "
-        "--arg head \"$AGENT_LOOP_PR_HEAD_SHA\" "
-        "'{version:3,status:\"clean\",engine:$engine,round:$round,"
+        'jq -n --arg engine "$AGENT_LOOP_REVIEW_ENGINE" '
+        '--argjson round "$AGENT_LOOP_REVIEW_ROUND" '
+        '--arg base "$AGENT_LOOP_REVIEW_BASE_SHA" '
+        '--arg head "$AGENT_LOOP_PR_HEAD_SHA" '
+        '\'{version:3,status:"clean",engine:$engine,round:$round,'
         "baseSha:$base,beforeSha:$head,afterSha:$head,classification:null,"
         "findingFingerprints:[],finalLaneComplete:true}' "
         '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
@@ -280,7 +298,7 @@ def _clean_v3_hook(engine: str) -> str:
 def _cleanup_v3_hook(engine: str) -> str:
     return (
         f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
-        "before=\"$AGENT_LOOP_PR_HEAD_SHA\"; "
+        'before="$AGENT_LOOP_PR_HEAD_SHA"; '
         f"printf '{engine} cleanup\\n' > review-cleanup.txt; "
         "git add review-cleanup.txt; git commit -m 'refactor: cleanup'; "
         'git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH"; '
@@ -291,12 +309,12 @@ def _cleanup_v3_hook(engine: str) -> str:
         "python3 .claude/skills/grill/scripts/review-ledger.py post-pr-comment "
         '--repo fixture/consumer --pr "$AGENT_LOOP_PR_NUMBER" --head "$after" '
         '--body-file "$AGENT_LOOP_LOG_DIR/refactor.md"; '
-        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
-        "--argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
-        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" "
-        "--arg before \"$before\" --arg after \"$after\" "
-        "'{version:3,status:\"changed\",engine:$engine,round:$round,"
-        "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"minor\","
+        'jq -n --arg engine "$AGENT_LOOP_REVIEW_ENGINE" '
+        '--argjson round "$AGENT_LOOP_REVIEW_ROUND" '
+        '--arg base "$AGENT_LOOP_REVIEW_BASE_SHA" '
+        '--arg before "$before" --arg after "$after" '
+        '\'{version:3,status:"changed",engine:$engine,round:$round,'
+        'baseSha:$base,beforeSha:$before,afterSha:$after,classification:"minor",'
         "findingFingerprints:[],finalLaneComplete:true}' "
         '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
     )
@@ -306,18 +324,18 @@ def _committed_review_hook(engine: str, classification: str = "minor") -> str:
     return (
         f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
         f"printf '{engine} fix\\n' > \"review-{engine}-$AGENT_LOOP_REVIEW_ROUND.txt\"; "
-        f"git add \"review-{engine}-$AGENT_LOOP_REVIEW_ROUND.txt\"; "
+        f'git add "review-{engine}-$AGENT_LOOP_REVIEW_ROUND.txt"; '
         f"git commit -m 'fix: {engine} review'; "
         "after=$(git rev-parse HEAD); "
         'git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH"; '
         f"printf '{classification}\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; "
-        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
-        "--arg round \"$AGENT_LOOP_REVIEW_ROUND\" "
-        "--arg before \"$AGENT_LOOP_PR_HEAD_SHA\" --arg after \"$after\" "
-        '\'[{isResolved:true,comments:{nodes:['
+        'jq -n --arg engine "$AGENT_LOOP_REVIEW_ENGINE" '
+        '--arg round "$AGENT_LOOP_REVIEW_ROUND" '
+        '--arg before "$AGENT_LOOP_PR_HEAD_SHA" --arg after "$after" '
+        "'[{isResolved:true,comments:{nodes:["
         '{body:("<!-- local-review:v1 engine="+$engine+" round="+$round+" head="+$before+" fingerprint=fixture-"+$engine+" -->\\nFinding"),databaseId:1,author:{login:"tester"}},'
         '{body:("<!-- local-review-disposition:v1 engine="+$engine+" round="+$round+" head="+$after+" fingerprint=fixture-"+$engine+" outcome=fixed -->\\nFixed in `"+$after+"`.\\n\\nValidation: fixture passed."),databaseId:2,author:{login:"tester"}}'
-        '],pageInfo:{hasNextPage:false}}}]\' '
+        "],pageInfo:{hasNextPage:false}}}]' "
         '> "$AGENT_STATE_DIR/review-threads.json"; '
         "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
         '-f body="<!-- local-review-complete:v1 engine='
@@ -473,6 +491,121 @@ def test_v3_cleanup_only_minor_transition_is_attestable(
     assert "local-review-complete:v3 engine=codex round=1" in comments
 
 
+def test_v3_rejects_github_actor_drift_after_review_hook(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    drifting_hook = (
+        "printf 'other-user' > \"$AGENT_STATE_DIR/gh-actor\"; "
+        + _clean_v3_hook("codex")
+    )
+    result = _run(
+        consumer,
+        ["--issues", "33"],
+        issues=[_issue(33)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook=drifting_hook,
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+    )
+    assert result.returncode != 0
+    assert "authenticated GitHub actor changed" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_v3_material_fix_attests_and_forces_another_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    hook = tmp_path / "material-v3-hook.py"
+    _write_executable(
+        hook,
+        """#!/usr/bin/env python3
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+
+before = os.environ["AGENT_LOOP_PR_HEAD_SHA"]
+Path("material-fix.txt").write_text("fixed\\n", encoding="utf-8")
+subprocess.run(["git", "add", "material-fix.txt"], check=True)
+subprocess.run(["git", "commit", "-m", "fix: material review finding"], check=True)
+subprocess.run(["git", "push"], check=True)
+after = subprocess.run(
+    ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+).stdout.strip()
+
+finding_content = "Material review finding."
+disposition_content = f"Fixed in {after}. Validation: fixture."
+finding_hash = hashlib.sha256(finding_content.encode()).hexdigest()
+disposition_hash = hashlib.sha256(disposition_content.encode()).hexdigest()
+finding = (
+    f"<!-- local-review:v3 engine=codex round={os.environ['AGENT_LOOP_REVIEW_ROUND']} "
+    f"head={before} fingerprint=material-fix occurrence=1 severity=major "
+    f"lens=correctness content-sha256={finding_hash} -->\\n{finding_content}"
+)
+disposition = (
+    f"<!-- local-review-disposition:v3 engine=codex "
+    f"round={os.environ['AGENT_LOOP_REVIEW_ROUND']} head={after} "
+    f"fingerprint=material-fix occurrence=1 outcome=fixed "
+    f"content-sha256={disposition_hash} -->\\n{disposition_content}"
+)
+thread = {
+    "id": "THREAD-MATERIAL",
+    "isResolved": True,
+    "repository": {"nameWithOwner": "fixture/consumer"},
+    "pullRequest": {"number": 1},
+    "comments": {
+        "nodes": [
+            {"databaseId": 88, "body": finding, "author": {"login": "tester"}},
+            {"databaseId": 89, "body": disposition, "author": {"login": "tester"}},
+        ],
+        "pageInfo": {"hasNextPage": False},
+    },
+}
+state = Path(os.environ["AGENT_STATE_DIR"])
+(state / "review-threads.json").write_text(json.dumps([thread]), encoding="utf-8")
+with (state / "events.log").open("a", encoding="utf-8") as handle:
+    handle.write("codex-material\\n")
+result = {
+    "version": 3,
+    "status": "changed",
+    "engine": "codex",
+    "round": int(os.environ["AGENT_LOOP_REVIEW_ROUND"]),
+    "baseSha": os.environ["AGENT_LOOP_REVIEW_BASE_SHA"],
+    "beforeSha": before,
+    "afterSha": after,
+    "classification": "material",
+    "findingFingerprints": ["material-fix"],
+    "finalLaneComplete": True,
+}
+Path(os.environ["AGENT_LOOP_REVIEW_RESULT_FILE"]).write_text(
+    json.dumps(result), encoding="utf-8"
+)
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "34"],
+        issues=[_issue(34)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            review_max_rounds=1,
+            codex_review_hook=str(hook),
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+    )
+    assert result.returncode != 0
+    assert "did not converge within 1 round(s)" in result.stderr, (
+        result.stderr + result.stdout
+    )
+    assert not (consumer[3] / "pr-ready").exists()
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-complete:v3 engine=codex round=1" in comments
+
+
 def test_issue_allowlist_never_selects_unrelated_ready_work(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -560,7 +693,12 @@ def test_per_issue_worktrees_and_hook_order(
         "validate",
     ]
     assert events == expected * 2
-    remote_branches = _run_git("for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]).stdout
+    remote_branches = _run_git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
+    ).stdout
     assert "issue-4" in remote_branches
     assert "issue-5" in remote_branches
 
@@ -612,7 +750,9 @@ def test_silent_review_pass_without_attestation_is_not_convergence(
         consumer,
         ["--issues", "43"],
         issues=[_issue(43)],
-        config=_config(tmp_path, codex_review_hook="printf 'codex\\n' >> \"$EVENT_LOG\""),
+        config=_config(
+            tmp_path, codex_review_hook="printf 'codex\\n' >> \"$EVENT_LOG\""
+        ),
     )
     assert result.returncode != 0
     assert "posted no clean-pass attestation" in result.stderr
@@ -666,7 +806,7 @@ def test_committed_review_requires_ledger_and_final_lane_evidence(
         "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; "
         "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
         '-f body="<!-- local-review-complete:v1 engine=codex '
-        'round=$AGENT_LOOP_REVIEW_ROUND before=$AGENT_LOOP_PR_HEAD_SHA '
+        "round=$AGENT_LOOP_REVIEW_ROUND before=$AGENT_LOOP_PR_HEAD_SHA "
         'head=$after -->"'
     )
     result = _run(
@@ -763,9 +903,15 @@ def test_resolved_thread_needs_a_reply_after_its_latest_marker(
         "isResolved": True,
         "comments": {
             "nodes": [
-                {"body": "<!-- local-review:v1 engine=codex round=1 head=abc fingerprint=fixture -->\nFirst", "databaseId": 1},
+                {
+                    "body": "<!-- local-review:v1 engine=codex round=1 head=abc fingerprint=fixture -->\nFirst",
+                    "databaseId": 1,
+                },
                 {"body": "Fixed in deadbeef; validation passed.", "databaseId": 2},
-                {"body": "<!-- local-review:v1 engine=codex round=2 head=def fingerprint=fixture -->\nSecond", "databaseId": 3},
+                {
+                    "body": "<!-- local-review:v1 engine=codex round=2 head=def fingerprint=fixture -->\nSecond",
+                    "databaseId": 3,
+                },
             ],
             "pageInfo": {"hasNextPage": False},
         },
@@ -872,7 +1018,7 @@ def test_base_movement_after_convergence_is_named_not_a_bare_abort(
     validation = (
         "printf 'validate\\n' >> \"$EVENT_LOG\"; "
         '[ ! -e "$AGENT_LOOP_LOG_DIR/final-reviewed-head-validation.log" ] || '
-        "printf '%s\\n' \"$AGENT_MOVED_BASE_OID\" > \"$AGENT_STATE_DIR/pr-base-oid\""
+        'printf \'%s\\n\' "$AGENT_MOVED_BASE_OID" > "$AGENT_STATE_DIR/pr-base-oid"'
     )
     result = _run(
         consumer,
@@ -1070,7 +1216,10 @@ attest
     )
     assert result.returncode == 0, result.stderr + result.stdout
     branch = _run_git(
-        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
     ).stdout.strip()
     published = _run_git("show", f"{branch}:fresh-base.txt", cwd=consumer[1]).stdout
     assert published == "fresh\n"
@@ -1105,9 +1254,14 @@ def test_large_worker_writes_survive_and_log_is_bounded(
     )
     assert result.returncode == 0, result.stderr + result.stdout
     branch = _run_git(
-        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
     ).stdout.strip()
-    size = _run_git("cat-file", "-s", f"{branch}:big.bin", cwd=consumer[1]).stdout.strip()
+    size = _run_git(
+        "cat-file", "-s", f"{branch}:big.bin", cwd=consumer[1]
+    ).stdout.strip()
     assert int(size) == 2048 * 1024  # written in full, not truncated at the log cap
     logs = list((tmp_path / "logs").glob("*/worker-attempt-1.log"))
     assert logs, "worker log was not captured"
@@ -1133,7 +1287,10 @@ def test_committed_conflict_markers_block_publication(
     assert result.returncode != 0
     assert "conflict markers or whitespace errors" in result.stderr
     branches = _run_git(
-        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
     ).stdout
     assert "issue-12" not in branches  # never published
 
@@ -1221,6 +1378,27 @@ def test_claim_and_resume_revalidate_assignee_identity(
     assert not list((tmp_path / "worktrees").glob("*"))
 
 
+def test_include_assigned_never_rolls_back_preexisting_assignment(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--include-assigned"],
+        issues=[_issue(18, assigned=True)],
+        config=_config(tmp_path),
+        extra_env={
+            "AGENT_VERIFIED_ASSIGNEES": json.dumps(
+                [{"login": "tester"}, {"login": "other-user"}]
+            )
+        },
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "could not be claimed; skipping" in result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "--add-assignee @me" not in gh_log
+    assert "--remove-assignee @me" not in gh_log
+
+
 def test_persistent_logs_are_owner_only(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1261,7 +1439,10 @@ def test_untracked_leftover_does_not_abort_batch_after_publish(
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Worktree preserved" not in result.stderr
     remote_branches = _run_git(
-        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
     ).stdout
     assert "issue-21" in remote_branches
     assert "issue-22" in remote_branches
@@ -1289,7 +1470,10 @@ def test_pr_create_failure_reports_orphaned_pushed_branch(
     assert "Pushed origin/agent-loop/issue-23" in result.stderr
     # The push really happened, so the branch exists on the remote.
     remote_branches = _run_git(
-        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/agent-loop",
+        cwd=consumer[1],
     ).stdout
     assert "issue-23" in remote_branches
 
