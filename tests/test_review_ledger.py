@@ -1357,13 +1357,16 @@ def test_post_reconciles_after_comment_readback_failure(
     assert review_ledger._post_review_comment(args, marker, body) == (123, False)
 
 
-def test_attest_reads_result_once_and_returns_authoritative_classification(
+def test_attest_content_file_reads_result_once_and_returns_classification(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     result_file = tmp_path / "result.json"
+    content_file = tmp_path / "attestation.md"
+    content = "Custom attestation content with literal `code`."
+    content_file.write_text(content, encoding="utf-8")
     result_file.write_text(
         json.dumps(
             {
@@ -1394,22 +1397,41 @@ def test_attest_reads_result_once_and_returns_authoritative_classification(
     monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
     monkeypatch.setattr(review_ledger, "_issue_comments", lambda *_args: [])
     monkeypatch.setattr(review_ledger, "_verify_issue_comment", lambda *_args: None)
-    monkeypatch.setattr(
-        review_ledger, "_json_output", lambda *_args, **_kwargs: {"id": 42}
+    posted: dict[str, Any] = {}
+
+    def fake_json(
+        _args: list[str], payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        assert payload is not None
+        posted.update(payload)
+        return {"id": 42}
+
+    monkeypatch.setattr(review_ledger, "_json_output", fake_json)
+    review_ledger.main(
+        [
+            "attest",
+            "--repo",
+            REPO,
+            "--pr",
+            "7",
+            "--head",
+            HEAD,
+            "--engine",
+            "codex",
+            "--round",
+            "2",
+            "--base",
+            "c" * 40,
+            "--before",
+            HEAD,
+            "--result-file",
+            str(result_file),
+            "--content-file",
+            str(content_file),
+        ]
     )
-    args = argparse.Namespace(
-        repo=REPO,
-        pr=7,
-        head=HEAD,
-        engine="codex",
-        round=2,
-        base="c" * 40,
-        before=HEAD,
-        result_file=str(result_file),
-        content_file=None,
-    )
-    review_ledger._attest(args)
     output = json.loads(capsys.readouterr().out)
     assert reads == 1
     assert output["status"] == "clean"
     assert output["classification"] is None
+    assert posted["body"].endswith(f"\n{content}")

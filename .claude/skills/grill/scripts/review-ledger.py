@@ -1421,10 +1421,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         _fail("--round must be a positive integer")
     if getattr(args, "occurrence", 1) < 1:
         _fail("--occurrence must be a positive integer")
-    if getattr(args, "content_file", None):
-        required = ("engine", "round", "fingerprint")
-        if args.command == "post-finding":
-            required += ("severity", "lens")
+    if args.command == "post-finding" and getattr(args, "content_file", None):
+        required = ("engine", "round", "fingerprint", "severity", "lens")
         missing = [name for name in required if getattr(args, name, None) is None]
         if missing:
             _fail(
