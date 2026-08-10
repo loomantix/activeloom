@@ -1264,6 +1264,51 @@ def test_fixed_finding_must_precede_final_head(
         review_ledger._verify_result_evidence(args, data, ACTOR)
 
 
+def test_fixed_finding_accepts_intermediate_disposition_head(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding_head = "b" * 40
+    disposition_head = "c" * 40
+    final_head = "d" * 40
+    finding = review_ledger.FINDING_V3_RE.search(
+        _v3_finding_body(head=finding_head, fingerprint="intermediate-fix")
+    )
+    disposition = review_ledger.DISPOSITION_V3_RE.search(
+        _v3_disposition_body(head=disposition_head, fingerprint="intermediate-fix")
+    )
+    assert finding is not None and disposition is not None
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger,
+        "_verify_complete_v3_threads",
+        lambda *_args: [(finding, disposition)],
+    )
+    ancestry = {
+        (HEAD, finding_head),
+        (finding_head, disposition_head),
+        (disposition_head, final_head),
+    }
+    monkeypatch.setattr(
+        review_ledger, "_is_ancestor", lambda pair, child: (pair, child) in ancestry
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        base="e" * 40,
+        before=HEAD,
+        head=final_head,
+        engine="codex",
+        round=2,
+    )
+    data = {
+        "status": "changed",
+        "classification": "material",
+        "findingFingerprints": ["intermediate-fix"],
+    }
+    review_ledger._verify_result_evidence(args, data, ACTOR)
+
+
 def test_review_base_must_match_git_ancestry_and_pr_boundary(
     review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

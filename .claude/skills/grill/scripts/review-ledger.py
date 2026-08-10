@@ -824,16 +824,20 @@ def _verify_result_evidence(
             finding.group("engine") != args.engine
             or int(finding.group("round")) != args.round
             or disposition.group("outcome") != "fixed"
-            or disposition.group("head") != args.head
         ):
             continue
         finding_head = finding.group("head")
-        if finding_head == args.head:
-            _fail("fixed finding was not posted before the final fix head")
-        if not _is_ancestor(args.before, finding_head) or not _is_ancestor(
-            finding_head, args.head
+        disposition_head = disposition.group("head")
+        if finding_head == disposition_head:
+            _fail("fixed finding was not posted before its disposition head")
+        if (
+            not _is_ancestor(args.before, finding_head)
+            or not _is_ancestor(finding_head, disposition_head)
+            or not _is_ancestor(disposition_head, args.head)
         ):
-            _fail("fixed finding head is outside the observed review transition")
+            _fail(
+                "fixed finding or disposition is outside the observed review transition"
+            )
         fixed.add(finding.group("fingerprint"))
     expected = set(cast(list[str], data["findingFingerprints"]))
     if fixed != expected:
