@@ -77,7 +77,7 @@ If a skill command is not found in a Codex session, run the dry-run check from t
 
 Consumer-owned `create_if_missing` targets are intentionally not upgraded by a
 sync. Existing `agent-loop` consumers must manually merge the current config,
-instruction, and prompt contracts—including `review_contract_version = 2`—
+instruction, and prompt contracts—including `review_contract_version = 3`—
 before using the synced convergence wrapper; see the skill's **Existing
 Consumer Migration** section.
 

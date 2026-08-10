@@ -137,7 +137,7 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     synced_ledger = consumer / ledger_relative
     assert synced_ledger.is_file()
     assert synced_ledger.read_bytes() == (REPO_ROOT / ledger_relative).read_bytes()
-    assert "review_contract_version = 2" in (
+    assert "review_contract_version = 3" in (
         consumer / ".codex/skills/agent-loop/agent-loop.config"
     ).read_text(encoding="utf-8")
     sentinel = "\nconsumer customization\n"
@@ -155,6 +155,7 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
 def test_new_script_modes_are_executable() -> None:
     expected = {
         ".codex/skills/agent-loop/scripts/agent-loop.sh": 0o755,
+        ".codex/skills/agent-loop/scripts/agent-loop-state.py": 0o755,
         ".codex/skills/agent-loop/scripts/hook-gh-guard": 0o755,
         ".codex/skills/agent-loop/scripts/hook-git-guard": 0o755,
         ".codex/skills/backlog-refinement/scripts/bail-report.py": 0o755,
@@ -193,6 +194,9 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     assert "Do not create one whole-diff" in normalized["ledger"]
     assert "Bound lane output" in normalized["ledger"]
     assert "maximum 1000 words" in normalized["ledger"]
+    assert "Review-significant config" in normalized["ledger"]
+    assert "dependency manifests and lockfiles" in normalized["ledger"]
+    assert "`attest --threads-file <path> --allowed-heads-file <path>`" in ledger
 
     for skill in (
         normalized["deepgrill"],

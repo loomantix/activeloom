@@ -75,13 +75,15 @@ Use this path when both local engines are available:
 
 The `agent-loop` skill automates this path with a required non-mutating
 validation hook plus `review_max_rounds`, `codex_review_hook`, and
-`claude_review_hook`. Review hooks classify committed fixes through
-`$AGENT_LOOP_REVIEW_OUTCOME_FILE`; a missing classification defaults to
-`material`, while a pass with no commit is clean. The wrapper opens a draft PR
-before review, exports the PR identity to both hooks, and verifies that each hook
-leaves the local, remote, and PR heads aligned. Consumer hooks own semantic
-finding verification, inline posting, replies, resolution, and classification;
-they must fail if a valid finding or undisposed local-review thread remains.
+`claude_review_hook`. Under contract v3 every hook writes a structured clean,
+changed, or blocked result to `$AGENT_LOOP_REVIEW_RESULT_FILE`. The wrapper
+validates that result against observed Git state and the v3 ledger, then posts
+the canonical pass/completion attestation itself. It opens a draft PR before
+review, exports the pinned PR identity to both hooks, checkpoints private atomic
+run state, and verifies that each hook leaves local, remote, and PR heads
+aligned. Consumer hooks own semantic finding verification, deterministic inline
+posting and disposition, and classification; they must fail or return blocked
+if a valid finding or undisposed local-review thread remains.
 
 Do not run `reviewit` after this path merely as an extra ritual. If the developer
 switches to hosted review and it creates or pushes a commit, the prior local
