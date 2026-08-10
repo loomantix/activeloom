@@ -143,6 +143,13 @@ jobs:
     # side yields. Renders the full sync surface against the fixture
     # consumer config and asserts prettier-cleanliness of the rendered
     # copilot instructions under the canonical .prettierrc.
+    #
+    # The second half pins the other side of that contract: the engine must
+    # reproduce its source byte-for-byte apart from the line an empty
+    # substitution vacated. A render that silently rewrites literal content
+    # (blank runs inside raw <pre> or indented code, which the pinned prettier
+    # preserves) would still pass a --check, so cleanliness alone cannot catch
+    # it — the golden comparison can.
     name: Rendered template prettier check
     runs-on: ubuntu-latest
     steps:
@@ -171,6 +178,23 @@ jobs:
           # discovery would otherwise find nothing and fall back to defaults.
           npx --yes prettier@3.8.3 --config .prettierrc --check \
             "$RENDER_DIR/.github/copilot-instructions.md"
+      - name: Render fidelity fixture and compare against golden
+        run: |
+          set -euo pipefail
+          # Render from a throwaway upstream tree so the fixture template is
+          # never a real sync target and can never reach a consumer.
+          UPSTREAM=$(mktemp -d)
+          CONSUMER=$(mktemp -d)
+          mkdir -p "$UPSTREAM/scripts"
+          cp tests/fixtures/render-fidelity/sync-targets.yml "$UPSTREAM/scripts/"
+          cp tests/fixtures/render-fidelity/template.md "$UPSTREAM/"
+          cp tests/fixtures/render-fidelity/.platform-config.yml "$CONSUMER/"
+          python3 scripts/sync-engine.py \
+            --upstream-repo "$UPSTREAM" \
+            --consumer-dir "$CONSUMER"
+          diff -u tests/fixtures/render-fidelity/expected.md "$CONSUMER/rendered.md"
+          npx --yes prettier@3.8.3 --config .prettierrc --check \
+            "$CONSUMER/rendered.md"
 
   skill-content:
     name: Skill content policy

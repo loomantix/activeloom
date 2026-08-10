@@ -1,0 +1,16 @@
+# Consumer config for the render-fidelity half of the `render-check` job.
+#
+# FIXTURE_OPTIONAL is deliberately empty: an empty substitution on its own
+# template line is the one thing the engine is allowed to remove, and dropping
+# only its line would leave the blank-line run prettier collapses.
+
+substitutions:
+  FIXTURE_NAME: FidelityFixture
+
+  FIXTURE_BODY: |
+    A populated whole-line placeholder keeps its line and its own spacing.
+
+  FIXTURE_OPTIONAL: ''
+
+allowed_destinations:
+  - '**'

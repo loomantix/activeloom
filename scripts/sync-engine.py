@@ -181,6 +181,84 @@ def load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(fp) or {}
 
 
+WHOLE_LINE_PLACEHOLDER_RE = re.compile(r"\A[ \t]*<<([A-Z][A-Z0-9_]*)>>[ \t]*\Z")
+
+
+def drop_empty_placeholder_lines(text: str, values: dict[str, str], declared: set[str]) -> str:
+    """Delete template lines holding nothing but a placeholder that renders empty.
+
+    A template author writes an optional section as blank / `<<KEY>>` / blank —
+    separator, section, separator. When the consumer leaves that value empty the
+    section renders to nothing but both separators remain, so the render gains a
+    blank-line run the author never wrote. Prettier collapses such a run, so a
+    consumer that format-checks the rendered destination sees every sync PR
+    re-introduce it and every local format run revert it — churn that repeats
+    daily until one side yields.
+
+    Fix it at the only point where the distinction is knowable: which blank lines
+    the substitution *caused*. Nothing downstream can tell an author-written
+    blank line from a placeholder-produced one without re-parsing the document,
+    and a whole-file normalizer that guesses will rewrite literal content —
+    prettier preserves blank runs inside indented code and raw `<pre>`, and
+    CommonMark fence closing has enough corner cases that mirroring it means
+    shipping a Markdown parser inside the sync engine.
+
+    So the rule stays purely local: drop the placeholder's own line, and drop one
+    adjacent blank line only when keeping it would leave a blank-line run (or a
+    leading/trailing blank) that the substitution itself introduced. Start and
+    end of file count as blank for that test. Every other byte — fenced code,
+    indented code, raw preformatted HTML, an already-empty document — passes
+    through untouched, and a verbatim copy (`substitutions: []`, so `declared` is
+    empty) can never match here at all.
+    """
+    trailing_newline = text.endswith("\n")
+    lines = (text[:-1] if trailing_newline else text).split("\n")
+    keep = [True] * len(lines)
+
+    def is_blank(index: int) -> bool:
+        # Out of range means a file boundary, which behaves like a blank line:
+        # a placeholder at either end leaves a leading/trailing blank behind.
+        if not 0 <= index < len(lines):
+            return True
+        return not lines[index].strip()
+
+    def previous_kept(index: int) -> int:
+        # Look past lines already dropped this pass, so back-to-back empty
+        # placeholders don't each consume a separator.
+        probe = index - 1
+        while probe >= 0 and not keep[probe]:
+            probe -= 1
+        return probe
+
+    for i, line in enumerate(lines):
+        match = WHOLE_LINE_PLACEHOLDER_RE.match(line)
+        if match is None:
+            continue
+        key = match.group(1)
+        if key not in declared or str(values.get(key, "")).strip():
+            continue
+        keep[i] = False
+        if not (is_blank(previous_kept(i)) and is_blank(i + 1)):
+            continue
+        # Prefer the following separator so the preceding section keeps its own
+        # spacing; fall back to the preceding one when the placeholder ended the
+        # file and there is no following line to drop.
+        if i + 1 < len(lines):
+            keep[i + 1] = False
+        elif i - 1 >= 0:
+            keep[i - 1] = False
+
+    if all(keep):
+        # Byte-identity when nothing matched, rather than a round trip through
+        # split/join that would eat the sole newline of a "\n"-only source.
+        return text
+    out = "\n".join(line for line, kept in zip(lines, keep) if kept)
+    # An `out` emptied by dropping every line is an empty document, not a blank
+    # line — the pinned prettier writes an empty file, so appending "\n" here
+    # would be churn against the consumer's own format run.
+    return out + "\n" if trailing_newline and out else out
+
+
 def substitute(text: str, values: dict[str, str], target_keys: list[str], source: str) -> str:
     """Replace `<<KEY>>` tokens in text with values from `values`.
 
@@ -225,72 +303,7 @@ def substitute(text: str, values: dict[str, str], target_keys: list[str], source
             return str(values[key]).rstrip("\n")
         return match.group(0)
 
-    return PLACEHOLDER_RE.sub(replace, text)
-
-
-FENCE_RE = re.compile(r"\A {0,3}(`{3,}|~{3,})")
-
-
-def normalize_rendered_markdown(text: str) -> str:
-    """Normalize blank-line structure of a template-rendered markdown file.
-
-    Substituting placeholders can leave blank-line runs the template author
-    never wrote: an empty value on its own template line collapses to nothing,
-    so the blank lines that surrounded the placeholder become consecutive.
-    Prettier's markdown formatter collapses such runs to a single blank line —
-    so a consumer that format-checks the rendered destination sees every sync
-    PR re-introduce the run and every local format run revert it (churn that
-    repeats daily until one side yields).
-
-    Mirror exactly the blank-line subset of prettier's behavior so rendered
-    output is stable under a consumer's `prettier --check`:
-      - collapse runs of 2+ blank lines (whitespace-only counts as blank)
-        into one empty line,
-      - drop leading blank lines,
-      - end the file with exactly one trailing newline.
-
-    Fenced code blocks (``` or ~~~, up to 3 leading spaces, closed by a fence
-    of the same char at least as long — CommonMark rules) pass through
-    verbatim: blank-line runs inside them are content, and prettier leaves
-    them alone too.
-
-    This intentionally reproduces only the blank-line subset of prettier;
-    everything else rendered (tables, lists, emphasis) must already be clean
-    in the template and in consumer substitution values — the template side
-    is enforced by the render check in CI, the value side is the consumer's
-    contract (docs/sync.md).
-    """
-    out: list[str] = []
-    blank_run = 0
-    fence_close: tuple[str, int] | None = None  # (fence char, opening length)
-    # rstrip before splitting: the final "\n" would otherwise yield a
-    # trailing "" element that an unclosed fence at EOF appends verbatim,
-    # growing the file by one line per run (idempotency break on malformed
-    # input). Trailing blank lines are re-normalized by the join below.
-    for line in text.rstrip("\n").split("\n"):
-        fence_match = FENCE_RE.match(line)
-        if fence_close is None and fence_match is not None:
-            marker = fence_match.group(1)
-            fence_close = (marker[0], len(marker))
-        elif fence_close is not None and fence_match is not None:
-            char, length = fence_close
-            marker = fence_match.group(1)
-            if marker[0] == char and len(marker) >= length and not line.strip(marker[0]).strip():
-                fence_close = None
-        if fence_close is not None or fence_match is not None:
-            if blank_run and out:
-                out.append("")
-            blank_run = 0
-            out.append(line)
-            continue
-        if not line.strip():
-            blank_run += 1
-            continue
-        if blank_run and out:
-            out.append("")
-        blank_run = 0
-        out.append(line)
-    return "\n".join(out) + "\n"
+    return PLACEHOLDER_RE.sub(replace, drop_empty_placeholder_lines(text, values, declared))
 
 
 def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
@@ -715,13 +728,13 @@ def main() -> int:
         # "undeclared placeholder in source" warning fires when a developer
         # adds a `<<KEY>>` token to a source file but forgets to declare
         # it in sync-targets.yml.
+        # Rendered output is the template byte-for-byte with values spliced in;
+        # the only whitespace the engine removes is a line a substitution
+        # emptied (see `drop_empty_placeholder_lines`). A verbatim copy
+        # (subs == []) substitutes nothing and so stays byte-identical to the
+        # upstream source — consumers prettier-ignore vendored content, and any
+        # engine-side rewrite would itself become churn.
         substituted = substitute(text, values, subs, source_rel)
-        # Normalize blank-line structure for template-rendered markdown only.
-        # Verbatim copies (subs == []) must stay byte-identical to the
-        # upstream source — consumers prettier-ignore them as vendored
-        # content, and any engine-side rewrite would itself become churn.
-        if subs and dest_rel.endswith(".md"):
-            substituted = normalize_rendered_markdown(substituted)
 
         if args.dry_run:
             existing = dest_path.read_text(encoding="utf-8") if dest_path.is_file() else None

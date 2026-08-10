@@ -180,82 +180,178 @@ def test_substitute_strips_trailing_newlines_from_block_scalar(
 
 
 # ---------------------------------------------------------------------------
-# normalize_rendered_markdown — blank-line stability of template renders
+# drop_empty_placeholder_lines — blank-line stability of template renders
 # ---------------------------------------------------------------------------
+#
+# The engine renders faithfully: the only whitespace it removes is a line that a
+# substitution emptied. Every literal-content case below is a regression guard
+# against reintroducing a whole-file normalizer, which cannot tell an
+# author-written blank line from a placeholder-produced one and so rewrites
+# content the pinned prettier preserves.
 
 
-def test_normalize_collapses_blank_run_left_by_empty_placeholder(
+def test_render_collapses_blank_run_left_by_empty_placeholder(
     sync_engine: ModuleType,
 ) -> None:
-    # The motivating case: an empty substitution on its own template line
-    # leaves the blank lines around it stacked — prettier collapses the run,
-    # so the render must too or every sync PR reintroduces it.
-    rendered = sync_engine.substitute(
+    # The motivating case: an empty substitution on its own template line would
+    # leave the blank lines around it stacked — prettier collapses the run, so
+    # every sync PR would reintroduce it and every local format run revert it.
+    out = sync_engine.substitute(
         "- last list item\n\n<<EXTRA>>\n\n---\n", {"EXTRA": ""}, ["EXTRA"], "src.md"
     )
-    out = sync_engine.normalize_rendered_markdown(rendered)
     assert out == "- last list item\n\n---\n"
 
 
-def test_normalize_treats_whitespace_only_lines_as_blank(
+def test_render_drops_separator_only_when_a_run_would_form(
     sync_engine: ModuleType,
 ) -> None:
-    out = sync_engine.normalize_rendered_markdown("a\n \n\t\nb\n")
+    # One side non-blank means removing the placeholder line leaves no run, so
+    # no separator is consumed and the author's spacing survives intact.
+    assert (
+        sync_engine.substitute("a\n<<E>>\n\nb\n", {"E": ""}, ["E"], "src.md") == "a\n\nb\n"
+    )
+    assert (
+        sync_engine.substitute("a\n\n<<E>>\nb\n", {"E": ""}, ["E"], "src.md") == "a\n\nb\n"
+    )
+    assert sync_engine.substitute("a\n<<E>>\nb\n", {"E": ""}, ["E"], "src.md") == "a\nb\n"
+
+
+def test_render_drops_leading_and_trailing_blank_at_file_edges(
+    sync_engine: ModuleType,
+) -> None:
+    # Start/end of file behave like a blank line: a placeholder at either edge
+    # would otherwise leave a leading or trailing blank that prettier strips.
+    assert sync_engine.substitute("<<E>>\n\nb\n", {"E": ""}, ["E"], "src.md") == "b\n"
+    assert sync_engine.substitute("a\n\n<<E>>\n", {"E": ""}, ["E"], "src.md") == "a\n"
+
+
+def test_render_handles_back_to_back_empty_placeholders(
+    sync_engine: ModuleType,
+) -> None:
+    # Adjacent empty placeholders must not each eat a separator and glue the
+    # surrounding sections together.
+    assert (
+        sync_engine.substitute(
+            "a\n\n<<E>>\n<<F>>\n\nb\n", {"E": "", "F": ""}, ["E", "F"], "src.md"
+        )
+        == "a\n\nb\n"
+    )
+    assert (
+        sync_engine.substitute(
+            "a\n\n<<E>>\n\n<<F>>\n\nb\n", {"E": "", "F": ""}, ["E", "F"], "src.md"
+        )
+        == "a\n\nb\n"
+    )
+
+
+def test_render_matches_whole_line_placeholder_with_surrounding_whitespace(
+    sync_engine: ModuleType,
+) -> None:
+    # An indented or trailing-space placeholder line is still a whole-line
+    # placeholder; leaving it behind would emit a whitespace-only line.
+    out = sync_engine.substitute("a\n\n  <<E>>  \n\nb\n", {"E": ""}, ["E"], "src.md")
     assert out == "a\n\nb\n"
 
 
-def test_normalize_drops_leading_blanks_and_fixes_trailing_newline(
+def test_render_keeps_line_for_non_empty_and_inline_placeholders(
     sync_engine: ModuleType,
 ) -> None:
-    assert sync_engine.normalize_rendered_markdown("\n\na\n\n\n") == "a\n"
-    assert sync_engine.normalize_rendered_markdown("a") == "a\n"
+    # Only a whole-line placeholder that renders empty is removed. A value with
+    # content keeps its line, and an inline placeholder never removes one.
+    assert (
+        sync_engine.substitute("a\n\n<<E>>\n\nb\n", {"E": "X"}, ["E"], "src.md")
+        == "a\n\nX\n\nb\n"
+    )
+    assert (
+        sync_engine.substitute("docs: <<E>>.\n", {"E": ""}, ["E"], "src.md") == "docs: .\n"
+    )
 
 
-def test_normalize_preserves_blank_runs_inside_fences(
+def test_render_preserves_blank_runs_inside_raw_pre_html(
     sync_engine: ModuleType,
 ) -> None:
-    text = "intro\n\n```python\nx = 1\n\n\n\ny = 2\n```\n\nafter\n"
-    assert sync_engine.normalize_rendered_markdown(text) == text
+    # Verified against the pinned prettier: it leaves raw <pre> content alone,
+    # blank runs included. Collapsing them would rewrite literal page content.
+    text = "intro\n\n<pre>\nline one\n\n\n\nline two\n</pre>\n\nafter\n"
+    assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md") == text
 
 
-def test_normalize_fence_closes_only_on_matching_longer_fence(
+def test_render_preserves_blank_runs_inside_indented_code(
     sync_engine: ModuleType,
 ) -> None:
-    # A ```` fence is not closed by ``` (shorter) nor by ~~~ (wrong char);
-    # blank runs stay verbatim until the real closing fence.
-    text = "````\n```\n\n\n~~~\n````\n\nafter\n"
-    assert sync_engine.normalize_rendered_markdown(text) == text
+    # Same for four-space indented code blocks — the blank runs are code.
+    text = "intro\n\n    code one\n\n\n\n    code two\n\nafter\n"
+    assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md") == text
 
 
-def test_normalize_keeps_single_blank_before_fence(
+def test_render_preserves_fenced_code_regardless_of_fence_shape(
     sync_engine: ModuleType,
 ) -> None:
-    out = sync_engine.normalize_rendered_markdown("text\n\n\n```\ncode\n```\n")
-    assert out == "text\n\n```\ncode\n```\n"
-
-
-def test_normalize_is_idempotent(sync_engine: ModuleType) -> None:
+    # CommonMark fence closing has corner cases a normalizer gets wrong: a
+    # closer carrying both leading indentation and trailing whitespace is valid
+    # (and was previously missed), while a split-marker line like "``` ```" is
+    # not a closer (and previously closed the block early). Rendering faithfully
+    # makes both moot — no fence is parsed at all.
     samples = [
-        "a\n\n\n\nb\n",
-        "text\n\n```\ncode\n\n\nmore\n```\n\n\n---\n",
-        "```\nunclosed fence\n",
-        "",
+        "text\n\n   ```\ncode\n\n\n\nmore\n   ```   \n\n\n\nafter\n",
+        "```\na\n``` ```\n\n\n\nb\n```\n",
+        "text\n\n  ~~~\ncode\n\n\n\nmore\n  ~~~  \n\nafter\n",
+        "````\n```\n\n\n~~~\n````\n\nafter\n",
+        "```\nunclosed fence\n\n\n\nstill inside\n",
     ]
     for text in samples:
-        once = sync_engine.normalize_rendered_markdown(text)
-        assert sync_engine.normalize_rendered_markdown(once) == once
+        assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md") == text
 
 
-def test_main_normalizes_substituted_md_but_not_verbatim_copies(
+def test_render_leaves_empty_and_blank_only_documents_alone(
+    sync_engine: ModuleType,
+) -> None:
+    # The pinned prettier writes an empty file for empty input, so appending a
+    # newline here would be churn. A blank-only source is left verbatim: no
+    # substitution emptied those lines, so they are the author's content.
+    assert sync_engine.substitute("", {}, [], "src.md") == ""
+    assert sync_engine.substitute("\n", {}, [], "src.md") == "\n"
+    assert sync_engine.substitute("\n\n  \n", {}, [], "src.md") == "\n\n  \n"
+    # A document that is nothing but an emptied placeholder renders empty.
+    assert sync_engine.substitute("<<E>>\n", {"E": ""}, ["E"], "src.md") == ""
+
+
+def test_render_is_idempotent(sync_engine: ModuleType) -> None:
+    # Re-rendering an already-rendered document is a no-op: the output holds no
+    # placeholders, so nothing further can be dropped.
+    samples = [
+        "- last list item\n\n<<EXTRA>>\n\n---\n",
+        "a\n\n<<E>>\n<<F>>\n\nb\n",
+        "<<E>>\n",
+        "text\n\n```\ncode\n\n\nmore\n```\n\n\n---\n",
+        "",
+    ]
+    values = {"EXTRA": "", "E": "", "F": ""}
+    keys = ["EXTRA", "E", "F"]
+    for text in samples:
+        once = sync_engine.substitute(text, values, keys, "src.md")
+        assert sync_engine.substitute(once, values, keys, "src.md") == once
+
+
+def test_verbatim_copy_never_drops_a_placeholder_line(
+    sync_engine: ModuleType,
+) -> None:
+    # subs == [] declares nothing, so a `<<KEY>>` line is left intact even when
+    # the consumer happens to configure an empty value for that key.
+    text = "a\n\n<<E>>\n\nb\n"
+    assert sync_engine.substitute(text, {"E": ""}, [], "src.md") == text
+
+
+def test_main_renders_substituted_md_but_leaves_verbatim_copies_alone(
     sync_engine: ModuleType,
     upstream_repo: Path,
     consumer_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Substituted .md render: blank-line runs collapse. Verbatim copy
-    # (subs == []): byte-identical even with ugly whitespace — consumers
-    # prettier-ignore vendored files, and an engine rewrite would itself
-    # be churn against the upstream source of truth.
+    # Substituted render: the emptied placeholder line and one separator go.
+    # Verbatim copy (subs == []): byte-identical even with ugly whitespace —
+    # consumers prettier-ignore vendored files, and an engine rewrite would
+    # itself be churn against the upstream source of truth.
     ugly = "# Title\n\n\n\nbody\n\n\n"
     (upstream_repo / "tpl.md").write_text("# <<NAME>>\n\n<<EXTRA>>\n\nbody\n")
     (upstream_repo / "verbatim.md").write_text(ugly)
