@@ -51,6 +51,10 @@ DISPOSITION_V3_RE = re.compile(
     r"content-sha256=(?P<content_sha>[0-9a-f]{64}) -->$",
     re.MULTILINE,
 )
+PROTOCOL_THREAD_MARKER_RE = re.compile(r"^<!--[ \t]*local-review(?=[: \t-])")
+LEGACY_THREAD_MARKER_RE = re.compile(
+    r"^<!--[ \t]*local-review(?:-disposition)?:v1(?=[ \t]|-->)"
+)
 
 
 class LedgerError(RuntimeError):
@@ -315,6 +319,21 @@ def _verify_issue_comment(
             _fail(f"PR comment {comment_id} was not authored by {expected_actor}")
 
 
+def _issue_comment_exists(repo: str, pr: int, comment_id: int) -> bool:
+    return any(row.get("id") == comment_id for row in _issue_comments(repo, pr))
+
+
+def _delete_issue_comment(repo: str, pr: int, comment_id: int) -> None:
+    try:
+        _run_gh(["api", "-X", "DELETE", f"repos/{repo}/issues/comments/{comment_id}"])
+    except LedgerError as error:
+        if _issue_comment_exists(repo, pr, comment_id):
+            raise error
+        return
+    if _issue_comment_exists(repo, pr, comment_id):
+        _fail(f"could not verify rollback of PR comment {comment_id}")
+
+
 def _posted_comment_id(response: Any) -> int:
     if not isinstance(response, dict) or not isinstance(response.get("id"), int):
         _fail("GitHub accepted the mutation but returned no comment ID")
@@ -379,7 +398,7 @@ def _disposition_records(
 
 def _require_finding_occurrence(
     rows: list[dict[str, Any]], args: argparse.Namespace
-) -> tuple[int, int]:
+) -> tuple[int, int, re.Match[str]]:
     records = _finding_records(rows, args.fingerprint)
     matches = [
         (row, match)
@@ -400,7 +419,7 @@ def _require_finding_occurrence(
     occurrence_id = matches[0][0].get("id")
     if not isinstance(occurrence_id, int):
         _fail("finding occurrence has no comment ID")
-    return cast(int, roots[0]["id"]), occurrence_id
+    return cast(int, roots[0]["id"]), occurrence_id, matches[0][1]
 
 
 def _finding_body(args: argparse.Namespace) -> tuple[str, str]:
@@ -700,14 +719,18 @@ def _thread_markers(
         if not isinstance(author, dict) or author.get("login") != actor:
             continue
         body = str(comment.get("body", ""))
-        if FINDING_V1 in body or DISPOSITION_V1 in body:
+        first_line = body.partition("\n")[0].removesuffix("\r")
+        legacy_marker = LEGACY_THREAD_MARKER_RE.match(first_line)
+        if FINDING_V1 in body or DISPOSITION_V1 in body or legacy_marker is not None:
             _fail("actor-owned legacy local-review marker is incompatible with v3")
         finding = FINDING_V3_RE.search(body)
         disposition = DISPOSITION_V3_RE.search(body)
-        if FINDING_V1.replace(":v1", ":v3") in body and finding is None:
-            _fail("actor-owned local-review finding marker is malformed")
-        if DISPOSITION_V1.replace(":v1", ":v3") in body and disposition is None:
-            _fail("actor-owned local-review disposition marker is malformed")
+        if (
+            PROTOCOL_THREAD_MARKER_RE.match(first_line) is not None
+            and finding is None
+            and disposition is None
+        ):
+            _fail("actor-owned local-review marker is malformed or unsupported")
         if finding is not None:
             _verify_marker_content(body, finding, "finding")
             findings.append((index, finding))
@@ -746,6 +769,11 @@ def _matching_dispositions(
         if len(candidates) != 1:
             _fail("local-review finding lacks exactly one matching disposition")
         disposition_index, disposition = candidates[0]
+        if (
+            finding.group("severity") == "blocking"
+            and disposition.group("outcome") == "deferred"
+        ):
+            _fail("blocking local-review findings cannot be deferred")
         if disposition_index in used_dispositions:
             _fail("local-review disposition matches multiple findings")
         used_dispositions.add(disposition_index)
@@ -1004,21 +1032,46 @@ def _dispose(args: argparse.Namespace) -> None:
     args.actor = _current_login()
     _verify_head(args.repo, args.pr, args.head)
     rows = _actor_rows(_review_comments(args.repo, args.pr), args.actor)
-    root_id, occurrence_id = _require_finding_occurrence(rows, args)
-    conflicts = [
+    root_id, occurrence_id, finding = _require_finding_occurrence(rows, args)
+    if finding.group("severity") == "blocking" and args.outcome == "deferred":
+        _fail("blocking local-review findings cannot be deferred")
+    prior_dispositions = [
         (row, match)
         for row, match in _disposition_records(rows, args.fingerprint)
         if match.group("engine") == args.engine
         and int(match.group("round")) == args.round
         and int(match.group("occurrence")) == args.occurrence
-        and (row.get("body") != body or match.group(0) != marker)
     ]
-    if conflicts:
+    if len(prior_dispositions) > 1:
         _fail("finding occurrence already has a conflicting disposition")
+    resumed: tuple[int, str] | None = None
+    if prior_dispositions:
+        row, prior = prior_dispositions[0]
+        prior_body = str(row.get("body", ""))
+        if prior_body != body or prior.group(0) != marker:
+            content = body.partition("\n")[2]
+            prior_id = row.get("id")
+            if (
+                prior.group("outcome") != args.outcome
+                or prior.group("content_sha") != _sha256_text(content)
+                or prior_body != f"{prior.group(0)}\n{content}"
+                or not isinstance(prior_id, int)
+                or not _is_ancestor(finding.group("head"), prior.group("head"))
+                or not _is_ancestor(prior.group("head"), args.head)
+            ):
+                _fail("finding occurrence already has a conflicting disposition")
+            _verify_marker_content(prior_body, prior, "disposition")
+            resumed = (prior_id, prior_body)
     _thread_state(args, (root_id, occurrence_id))
-    comment_id, replayed = _post_review_comment(
-        args, marker, body, reply_to=args.comment_id
-    )
+    if resumed is None:
+        comment_id, replayed = _post_review_comment(
+            args, marker, body, reply_to=args.comment_id
+        )
+    else:
+        comment_id, prior_body = resumed
+        _verify_comment(args.repo, comment_id, prior_body, args.actor)
+        _verify_head(args.repo, args.pr, args.head)
+        replayed = True
     thread_replayed = _set_thread_state(args, True)
     _verify_head(args.repo, args.pr, args.head)
     print(
@@ -1193,6 +1246,7 @@ def _attest(args: argparse.Namespace) -> None:
     comments = _actor_rows(_issue_comments(args.repo, args.pr), actor)
     existing = _matching_attestation(comments, args.engine, args.round, body)
     replayed = existing is not None
+    created = existing is None
     if existing is None:
         try:
             response = _json_output(
@@ -1210,9 +1264,20 @@ def _attest(args: argparse.Namespace) -> None:
             replayed = True
     else:
         comment_id = existing
-    _verify_issue_comment(args.repo, comment_id, body, actor)
-    _verify_review_base(args.repo, args.pr, args.base, args.before)
-    _verify_head(args.repo, args.pr, args.head)
+    try:
+        _verify_issue_comment(args.repo, comment_id, body, actor)
+        _verify_review_base(args.repo, args.pr, args.base, args.before)
+        _verify_head(args.repo, args.pr, args.head)
+    except LedgerError as error:
+        if created:
+            try:
+                _delete_issue_comment(args.repo, args.pr, comment_id)
+            except LedgerError as rollback_error:
+                raise LedgerError(
+                    "attestation verification failed and rollback could not be verified: "
+                    f"{rollback_error}"
+                ) from error
+        raise
     print(
         json.dumps(
             {

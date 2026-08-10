@@ -33,12 +33,13 @@ def _v3_finding_body(
     round_number: int = 2,
     fingerprint: str = "finding",
     occurrence: int = 1,
+    severity: str = "major",
     content: str = "Finding.",
 ) -> str:
     digest = hashlib.sha256(content.encode()).hexdigest()
     return (
         f"<!-- local-review:v3 engine={engine} round={round_number} head={head} "
-        f"fingerprint={fingerprint} occurrence={occurrence} severity=major "
+        f"fingerprint={fingerprint} occurrence={occurrence} severity={severity} "
         f"lens=correctness content-sha256={digest} -->\n{content}"
     )
 
@@ -50,13 +51,14 @@ def _v3_disposition_body(
     round_number: int = 2,
     fingerprint: str = "finding",
     occurrence: int = 1,
+    outcome: str = "fixed",
     content: str = "Fixed and validated.",
 ) -> str:
     digest = hashlib.sha256(content.encode()).hexdigest()
     return (
         f"<!-- local-review-disposition:v3 engine={engine} round={round_number} "
         f"head={head} fingerprint={fingerprint} occurrence={occurrence} "
-        f"outcome=fixed content-sha256={digest} -->\n{content}"
+        f"outcome={outcome} content-sha256={digest} -->\n{content}"
     )
 
 
@@ -1083,6 +1085,166 @@ def test_conflicting_disposition_is_rejected_before_thread_mutation(
         review_ledger._dispose(args)
 
 
+def test_dispose_resumes_landed_reply_on_a_descendant_head(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    disposition_head = "b" * 40
+    current_head = "c" * 40
+    content_text = "Fixed and validated."
+    content = tmp_path / "disposition.md"
+    content.write_text(content_text, encoding="utf-8")
+    prior_body = _v3_disposition_body(
+        head=disposition_head,
+        fingerprint="resumable",
+        content=content_text,
+    )
+    rows = [
+        {
+            "id": 88,
+            "user": {"login": ACTOR},
+            "body": _v3_finding_body(head=HEAD, fingerprint="resumable"),
+        },
+        {"id": 89, "user": {"login": ACTOR}, "body": prior_body},
+    ]
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
+    monkeypatch.setattr(
+        review_ledger,
+        "_is_ancestor",
+        lambda ancestor, descendant: (ancestor, descendant)
+        in {(HEAD, disposition_head), (disposition_head, current_head)},
+    )
+    monkeypatch.setattr(review_ledger, "_thread_state", lambda *_args: False)
+    monkeypatch.setattr(review_ledger, "_set_thread_state", lambda *_args: False)
+    monkeypatch.setattr(
+        review_ledger,
+        "_post_review_comment",
+        lambda *_args, **_kwargs: pytest.fail("landed disposition must be reused"),
+    )
+    monkeypatch.setattr(
+        review_ledger,
+        "_verify_comment",
+        lambda _repo, comment_id, body, actor: (
+            comment_id == 89 and body == prior_body and actor == ACTOR
+        )
+        or pytest.fail("unexpected disposition readback"),
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=current_head,
+        engine="codex",
+        round=2,
+        fingerprint="resumable",
+        occurrence=1,
+        outcome="fixed",
+        comment_id=88,
+        thread_id="THREAD",
+        content_file=str(content),
+    )
+
+    review_ledger._dispose(args)
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["comment_id"] == 89
+    assert output["replayed"] is True
+    assert output["resolved"] is True
+
+
+def test_dispose_rejects_landed_reply_from_an_unrelated_head(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content_text = "Fixed and validated."
+    content = tmp_path / "disposition.md"
+    content.write_text(content_text, encoding="utf-8")
+    rows = [
+        {
+            "id": 88,
+            "user": {"login": ACTOR},
+            "body": _v3_finding_body(head=HEAD, fingerprint="unrelated"),
+        },
+        {
+            "id": 89,
+            "user": {"login": ACTOR},
+            "body": _v3_disposition_body(
+                head="b" * 40,
+                fingerprint="unrelated",
+                content=content_text,
+            ),
+        },
+    ]
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
+    monkeypatch.setattr(review_ledger, "_is_ancestor", lambda *_args: False)
+    monkeypatch.setattr(
+        review_ledger,
+        "_thread_state",
+        lambda *_args, **_kwargs: pytest.fail("thread must not be touched"),
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head="c" * 40,
+        engine="codex",
+        round=2,
+        fingerprint="unrelated",
+        occurrence=1,
+        outcome="fixed",
+        comment_id=88,
+        thread_id="THREAD",
+        content_file=str(content),
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="conflicting disposition"):
+        review_ledger._dispose(args)
+
+
+def test_dispose_rejects_blocking_deferral_before_thread_mutation(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "disposition.md"
+    content.write_text("Deferred to #123.", encoding="utf-8")
+    rows = [
+        {
+            "id": 88,
+            "user": {"login": ACTOR},
+            "body": _v3_finding_body(
+                fingerprint="blocker", severity="blocking"
+            ),
+        }
+    ]
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
+    monkeypatch.setattr(
+        review_ledger,
+        "_thread_state",
+        lambda *_args, **_kwargs: pytest.fail("thread must not be touched"),
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=HEAD,
+        engine="codex",
+        round=2,
+        fingerprint="blocker",
+        occurrence=1,
+        outcome="deferred",
+        comment_id=88,
+        thread_id="THREAD",
+        content_file=str(content),
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="cannot be deferred"):
+        review_ledger._dispose(args)
+
+
 def test_reconcile_does_not_cross_engine_or_round_identity(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -1353,6 +1515,25 @@ def test_complete_ledger_rejects_tampered_malformed_and_orphan_records(
     with pytest.raises(review_ledger.LedgerError, match="marker is malformed"):
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
+    for tampered_body in (
+        _v3_finding_body().replace("<!-- local-review", "<!--  local-review", 1),
+        _v3_finding_body().replace(":v3", ":v4", 1),
+    ):
+        malformed["comments"] = {
+            "nodes": [
+                {
+                    "databaseId": 1,
+                    "body": tampered_body,
+                    "author": {"login": ACTOR},
+                }
+            ],
+            "pageInfo": {"hasNextPage": False},
+        }
+        with pytest.raises(
+            review_ledger.LedgerError, match="malformed or unsupported"
+        ):
+            review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
     orphan = dict(base_thread)
     orphan["comments"] = {
         "nodes": [
@@ -1382,6 +1563,36 @@ def test_complete_ledger_rejects_tampered_malformed_and_orphan_records(
     }
     monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [legacy])
     with pytest.raises(review_ledger.LedgerError, match="incompatible with v3"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+
+def test_complete_ledger_rejects_blocking_deferred_disposition(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = {
+        "id": "THREAD",
+        "isResolved": True,
+        "repository": {"nameWithOwner": REPO},
+        "pullRequest": {"number": 7},
+        "comments": {
+            "nodes": [
+                {
+                    "databaseId": 1,
+                    "body": _v3_finding_body(severity="blocking"),
+                    "author": {"login": ACTOR},
+                },
+                {
+                    "databaseId": 2,
+                    "body": _v3_disposition_body(outcome="deferred"),
+                    "author": {"login": ACTOR},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+
+    with pytest.raises(review_ledger.LedgerError, match="cannot be deferred"):
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
 
@@ -1666,6 +1877,172 @@ def test_attest_content_file_reads_result_once_and_returns_classification(
     assert output["classification"] is None
     assert posted["body"].endswith(f"\n{content}")
     assert base_checks == 1
+
+
+@pytest.mark.parametrize(
+    ("race", "lost_delete_response"),
+    [("base", False), ("head", False), ("base", True)],
+)
+def test_attest_rolls_back_new_evidence_and_allows_same_round_retry(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    race: str,
+    lost_delete_response: bool,
+) -> None:
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "clean",
+                "engine": "codex",
+                "round": 2,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": HEAD,
+                "classification": None,
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=HEAD,
+        engine="codex",
+        round=2,
+        base="c" * 40,
+        before=HEAD,
+        result_file=str(result_file),
+        content_file=None,
+    )
+    comments: list[dict[str, Any]] = []
+    posts = 0
+    base_checks = 0
+    head_checks = 0
+
+    def post_comment(
+        _args: list[str], payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        nonlocal posts
+        assert payload is not None
+        posts += 1
+        comment = {
+            "id": 40 + posts,
+            "body": payload["body"],
+            "user": {"login": ACTOR},
+        }
+        comments.append(comment)
+        return {"id": comment["id"]}
+
+    def verify_comment(
+        _repo: str, comment_id: int, body: str, actor: str | None = None
+    ) -> None:
+        assert actor == ACTOR
+        assert any(
+            row["id"] == comment_id and row["body"] == body for row in comments
+        )
+
+    def verify_base(*_args: Any) -> None:
+        nonlocal base_checks
+        base_checks += 1
+        if race == "base" and base_checks == 1:
+            raise review_ledger.LedgerError("base boundary changed")
+
+    def verify_head(*_args: Any) -> None:
+        nonlocal head_checks
+        head_checks += 1
+        if race == "head" and head_checks == 2:
+            raise review_ledger.LedgerError("head boundary changed")
+
+    def delete_comment(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        assert payload is None
+        comment_id = int(args[-1].rsplit("/", 1)[1])
+        comments[:] = [row for row in comments if row["id"] != comment_id]
+        if lost_delete_response:
+            raise review_ledger.LedgerError("lost delete response")
+        return ""
+
+    monkeypatch.setattr(review_ledger, "_verify_result_evidence", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_issue_comments", lambda *_args: list(comments))
+    monkeypatch.setattr(review_ledger, "_json_output", post_comment)
+    monkeypatch.setattr(review_ledger, "_verify_issue_comment", verify_comment)
+    monkeypatch.setattr(review_ledger, "_verify_review_base", verify_base)
+    monkeypatch.setattr(review_ledger, "_verify_head", verify_head)
+    monkeypatch.setattr(review_ledger, "_run_gh", delete_comment)
+
+    with pytest.raises(review_ledger.LedgerError, match="boundary changed"):
+        review_ledger._attest(args)
+    assert comments == []
+
+    review_ledger._attest(args)
+    assert posts == 2
+    assert len(comments) == 1
+
+
+def test_attest_preserves_preexisting_evidence_on_final_boundary_failure(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "clean",
+                "engine": "codex",
+                "round": 2,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": HEAD,
+                "classification": None,
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result_hash = hashlib.sha256(result_file.read_bytes()).hexdigest()
+    body = (
+        f"<!-- local-review-pass:v3 engine=codex round=2 base={'c' * 40} "
+        f"head={HEAD} result-sha256={result_hash} -->\nNo new material findings."
+    )
+    comments = [{"id": 41, "body": body, "user": {"login": ACTOR}}]
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=HEAD,
+        engine="codex",
+        round=2,
+        base="c" * 40,
+        before=HEAD,
+        result_file=str(result_file),
+        content_file=None,
+    )
+    monkeypatch.setattr(review_ledger, "_verify_result_evidence", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_issue_comments", lambda *_args: comments)
+    monkeypatch.setattr(review_ledger, "_verify_issue_comment", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger,
+        "_verify_review_base",
+        lambda *_args: (_ for _ in ()).throw(
+            review_ledger.LedgerError("base boundary changed")
+        ),
+    )
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger,
+        "_run_gh",
+        lambda *_args, **_kwargs: pytest.fail("historical comment must not be deleted"),
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="base boundary changed"):
+        review_ledger._attest(args)
+    assert comments == [{"id": 41, "body": body, "user": {"login": ACTOR}}]
 
 
 def test_review_skills_define_wrapper_and_standalone_v3_finalization() -> None:
