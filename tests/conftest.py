@@ -28,7 +28,9 @@ def _load_script(name: str, path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load {path}")
-    module = ModuleType(name)
+    # `module_from_spec` rather than a bare `ModuleType`: it populates
+    # `__file__`, which a script needs to resolve repo-relative paths.
+    module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
@@ -37,6 +39,11 @@ def _load_script(name: str, path: Path) -> ModuleType:
 @pytest.fixture(scope="session")
 def sync_engine() -> ModuleType:
     return _load_script("sync_engine", SCRIPTS_DIR / "sync-engine.py")
+
+
+@pytest.fixture(scope="session")
+def lint_collapse_sites() -> ModuleType:
+    return _load_script("lint_collapse_sites", SCRIPTS_DIR / "lint-collapse-sites.py")
 
 
 @pytest.fixture(scope="session")

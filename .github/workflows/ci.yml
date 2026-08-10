@@ -143,7 +143,15 @@ jobs:
     # side yields. Renders the full sync surface against the fixture
     # consumer config and asserts prettier-cleanliness of the rendered
     # copilot instructions under the canonical .prettierrc.
-    name: Rendered template prettier check
+    #
+    # The second half pins the other side of that contract: apart from replacing
+    # placeholder tokens and explicitly collapsing an emptied placeholder line
+    # plus one adjacent separator, the engine must preserve template bytes. A
+    # render that silently rewrites literal content
+    # (blank runs inside raw <pre> or indented code, which the pinned prettier
+    # preserves) would still pass a --check, so cleanliness alone cannot catch
+    # it — the golden comparison can.
+    name: Rendered template fidelity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -171,6 +179,23 @@ jobs:
           # discovery would otherwise find nothing and fall back to defaults.
           npx --yes prettier@3.8.3 --config .prettierrc --check \
             "$RENDER_DIR/.github/copilot-instructions.md"
+      - name: Render fidelity fixture and compare against golden
+        run: |
+          set -euo pipefail
+          # Render from a throwaway upstream tree so the fixture template is
+          # never a real sync target and can never reach a consumer.
+          UPSTREAM=$(mktemp -d)
+          CONSUMER=$(mktemp -d)
+          mkdir -p "$UPSTREAM/scripts"
+          cp tests/fixtures/render-fidelity/sync-targets.yml "$UPSTREAM/scripts/"
+          cp tests/fixtures/render-fidelity/template.md "$UPSTREAM/"
+          cp tests/fixtures/render-fidelity/.platform-config.yml "$CONSUMER/"
+          python3 scripts/sync-engine.py \
+            --upstream-repo "$UPSTREAM" \
+            --consumer-dir "$CONSUMER"
+          diff -u tests/fixtures/render-fidelity/expected.md "$CONSUMER/rendered.md"
+          npx --yes prettier@3.8.3 --config .prettierrc --check \
+            "$CONSUMER/rendered.md"
 
   skill-content:
     name: Skill content policy
@@ -239,5 +264,24 @@ jobs:
                   assert 'destination' in t, f"delete target missing destination: {t!r}"
               else:
                   assert 'source' in t and 'destination' in t, f"copy target missing keys: {t!r}"
+                  substitutions = t.get('substitutions', [])
+                  assert isinstance(substitutions, list) and all(
+                      isinstance(key, str) for key in substitutions
+                  ), f"substitutions must be a string list: {t!r}"
+                  collapse = t.get('collapse_empty_substitutions', [])
+                  assert isinstance(collapse, list) and all(
+                      isinstance(key, str) for key in collapse
+                  ), f"collapse_empty_substitutions must be a string list: {t!r}"
+                  assert set(collapse) <= set(substitutions), (
+                      f"collapse_empty_substitutions must be declared substitutions: {t!r}"
+                  )
           print(f"OK: {len(targets)} targets")
           PY
+
+      # The engine deliberately owns no Markdown knowledge, so nothing at render
+      # time stops a key opted into structural collapsing from deleting a line of
+      # a fenced block, a raw <pre>, or an indented code block. Enforce the
+      # "prose-only, whole-line" rule here instead, where reading the template is
+      # cheap and a violation is an authoring mistake rather than consumer churn.
+      - name: Lint collapse opt-ins against their template sites
+        run: python3 scripts/lint-collapse-sites.py

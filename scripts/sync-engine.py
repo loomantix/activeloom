@@ -50,8 +50,10 @@ class Target(TypedDict, total=False):
     """One entry in `scripts/sync-targets.yml`.
 
     Either a copy target (requires `source` + `destination`) or a delete
-    target (requires `destination` + `delete: True`). `substitutions` and
-    `mode` apply to copy targets only.
+    target (requires `destination` + `delete: True`). `substitutions`,
+    `collapse_empty_substitutions`, and `mode` apply to copy targets only;
+    every `collapse_empty_substitutions` key must also appear in
+    `substitutions`.
 
     `create_if_missing: True` on a copy target makes the engine bootstrap
     the destination on first sync and then leave it alone — preserving any
@@ -65,6 +67,7 @@ class Target(TypedDict, total=False):
     source: str
     destination: Required[str]
     substitutions: list[str]
+    collapse_empty_substitutions: list[str]
     mode: str | int
     delete: bool
     create_if_missing: bool
@@ -73,12 +76,23 @@ class Target(TypedDict, total=False):
 class ConsumerConfig(TypedDict, total=False):
     """Top-level shape of a consumer's `.platform-config.yml`."""
 
-    substitutions: dict[str, str]
+    substitutions: dict[str, object]
     skip_targets: list[str]
     allowed_destinations: list[str]
 
 
+PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 PLACEHOLDER_RE = re.compile(r"<<([A-Z][A-Z0-9_]*)>>")
+
+# Every field the engine understands on one `targets:` entry. An unrecognized
+# key is rejected rather than ignored: each optional field here *enables*
+# something, so a typo silently disables it and every gate stays green —
+# `collapse_empty_subsitutions` (one missing `t`) renders the exact blank-line
+# churn the opt-in exists to prevent, and neither the engine, the collapse-site
+# lint, nor the manifest schema job can see the key it never read. The manifest
+# and this engine ship from the same upstream checkout, so there is no
+# version-skew cost to failing closed.
+KNOWN_TARGET_FIELDS: Final[frozenset[str]] = frozenset(Target.__annotations__)
 
 
 def glob_to_regex(pattern: str) -> re.Pattern[str]:
@@ -181,13 +195,130 @@ def load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(fp) or {}
 
 
-def substitute(text: str, values: dict[str, str], target_keys: list[str], source: str) -> str:
+def drop_empty_placeholder_lines(
+    text: str, rendered_values: dict[str, str], collapse_keys: set[str], source: str
+) -> str:
+    """Delete opted-in placeholder-only lines whose values render empty.
+
+    Collapsing is opt-in per key rather than inferred, because only the
+    substitution step knows which blank lines it caused; see `docs/sync.md`
+    ("Template half") for why the engine has no Markdown parser and what makes
+    a key safe to opt in.
+
+    The contract:
+
+      - a line qualifies only if it contains at least one placeholder, every
+        placeholder on it is listed in `collapse_keys`, every one of those
+        values renders to the empty string, and nothing outside the
+        placeholders remains but spaces, tabs, and carriage returns (see the
+        CRLF note on the qualification test below);
+      - a qualifying line is dropped, plus one adjacent blank line when keeping
+        it would leave a blank-line run. Start and end of file count as blank
+        for that test, so a placeholder at either edge does not leave a leading
+        or trailing blank;
+      - the following blank is preferred so the preceding section keeps its own
+        spacing.
+
+    An opted-in key that renders empty but whose line never qualifies is a
+    misconfiguration that would otherwise leave exactly the blank-line churn the
+    opt-in exists to prevent, so it warns rather than passing silently.
+
+    Every other byte passes through untouched, and an empty `collapse_keys`
+    (the default) is byte-identity.
+    """
+    if not collapse_keys:
+        return text
+    trailing_newline = text.endswith("\n")
+    lines = (text[:-1] if trailing_newline else text).split("\n")
+    keep = [True] * len(lines)
+
+    def is_blank(index: int) -> bool:
+        # Out of range means a file boundary, which behaves like a blank line:
+        # a placeholder at either end leaves a leading/trailing blank behind.
+        if not 0 <= index < len(lines):
+            return True
+        return not lines[index].strip()
+
+    def previous_kept(index: int) -> int:
+        # Look past lines already dropped this pass, so back-to-back empty
+        # placeholders don't each consume a separator.
+        probe = index - 1
+        while probe >= 0 and not keep[probe]:
+            probe -= 1
+        return probe
+
+    collapsed: set[str] = set()
+    for i, line in enumerate(lines):
+        matches = list(PLACEHOLDER_RE.finditer(line))
+        # Strip `\r` alongside spaces and tabs: `.split("\n")` leaves it on
+        # every line of a CRLF source, and without this the residue is truthy
+        # and no line ever qualifies. Matches `is_blank`'s bare `.strip()`.
+        if not matches or PLACEHOLDER_RE.sub("", line).strip(" \t\r"):
+            continue
+        keys = [match.group(1) for match in matches]
+        if any(key not in collapse_keys or rendered_values.get(key) != "" for key in keys):
+            continue
+        collapsed.update(keys)
+        keep[i] = False
+        previous = previous_kept(i)
+        if not (is_blank(previous) and is_blank(i + 1)):
+            continue
+        # Prefer the following separator so the preceding section keeps its own
+        # spacing; fall back to the preceding one when the placeholder ended the
+        # file and there is no following line to drop.
+        if i + 1 < len(lines):
+            keep[i + 1] = False
+        elif previous >= 0:
+            keep[previous] = False
+
+    present = set(PLACEHOLDER_RE.findall(text))
+    unmatched = sorted(
+        key
+        for key in collapse_keys
+        if key in present and rendered_values.get(key) == "" and key not in collapsed
+    )
+    if unmatched:
+        # GitHub Actions annotation form, matching the `allowed_destinations`
+        # warning in `main()`. This fires in a *consumer's* sync run, which
+        # exits 0 — plain stderr in a green job is unread, so the consumer
+        # would ship the blank-line churn the opt-in exists to prevent with no
+        # visible signal. A non-zero exit would be worse: one upstream
+        # authoring slip would break every consumer's sync.
+        sys.stderr.write(
+            f"::warning file={source}::collapse_empty_substitutions keys rendered empty "
+            f"in {source} but no line qualified (not a whole-line placeholder?): "
+            f"{', '.join(unmatched)}\n"
+        )
+
+    if all(keep):
+        # Byte-identity when nothing matched, rather than a round trip through
+        # split/join that would eat the sole newline of a "\n"-only source.
+        return text
+    out = "\n".join(line for line, kept in zip(lines, keep) if kept)
+    # An `out` emptied by dropping every line is an empty document, not a blank
+    # line — the pinned prettier writes an empty file, so appending "\n" here
+    # would be churn against the consumer's own format run.
+    return out + "\n" if trailing_newline and out else out
+
+
+def substitute(
+    text: str,
+    values: dict[str, object],
+    target_keys: list[str],
+    source: str,
+    collapse_empty_substitutions: Sequence[str] = (),
+) -> str:
     """Replace `<<KEY>>` tokens in text with values from `values`.
 
     Only keys listed in `target_keys` are substituted — unknown placeholders
     in the source are left intact (and a warning is printed) so that a
     template change doesn't silently swallow content the consumer hadn't
     configured for yet.
+
+    `collapse_empty_substitutions` must be a subset of `target_keys` (`main`
+    exits 1 otherwise). Those keys additionally have their placeholder-only
+    template line removed when the value renders empty — see
+    `drop_empty_placeholder_lines` for the exact contract.
     """
     seen = set(PLACEHOLDER_RE.findall(text))
     declared = set(target_keys)
@@ -214,6 +345,14 @@ def substitute(text: str, values: dict[str, str], target_keys: list[str], source
         )
         sys.exit(1)
 
+    # A YAML key written with no value (`DOMAIN_RULES:`) parses as None and is
+    # the natural way a consumer says "this section is empty" — `str(None)`
+    # would render the literal word `None` into their repo and block collapsing.
+    rendered_values = {
+        key: "" if values[key] is None else str(values[key]).rstrip("\n") for key in declared
+    }
+    collapse_keys = set(collapse_empty_substitutions)
+
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
         if key in declared:
@@ -222,75 +361,11 @@ def substitute(text: str, values: dict[str, str], target_keys: list[str], source
             # produces double-blank-line drift in rendered output. Strip
             # trailing newlines so the template alone controls inter-section
             # spacing.
-            return str(values[key]).rstrip("\n")
+            return rendered_values[key]
         return match.group(0)
 
-    return PLACEHOLDER_RE.sub(replace, text)
-
-
-FENCE_RE = re.compile(r"\A {0,3}(`{3,}|~{3,})")
-
-
-def normalize_rendered_markdown(text: str) -> str:
-    """Normalize blank-line structure of a template-rendered markdown file.
-
-    Substituting placeholders can leave blank-line runs the template author
-    never wrote: an empty value on its own template line collapses to nothing,
-    so the blank lines that surrounded the placeholder become consecutive.
-    Prettier's markdown formatter collapses such runs to a single blank line —
-    so a consumer that format-checks the rendered destination sees every sync
-    PR re-introduce the run and every local format run revert it (churn that
-    repeats daily until one side yields).
-
-    Mirror exactly the blank-line subset of prettier's behavior so rendered
-    output is stable under a consumer's `prettier --check`:
-      - collapse runs of 2+ blank lines (whitespace-only counts as blank)
-        into one empty line,
-      - drop leading blank lines,
-      - end the file with exactly one trailing newline.
-
-    Fenced code blocks (``` or ~~~, up to 3 leading spaces, closed by a fence
-    of the same char at least as long — CommonMark rules) pass through
-    verbatim: blank-line runs inside them are content, and prettier leaves
-    them alone too.
-
-    This intentionally reproduces only the blank-line subset of prettier;
-    everything else rendered (tables, lists, emphasis) must already be clean
-    in the template and in consumer substitution values — the template side
-    is enforced by the render check in CI, the value side is the consumer's
-    contract (docs/sync.md).
-    """
-    out: list[str] = []
-    blank_run = 0
-    fence_close: tuple[str, int] | None = None  # (fence char, opening length)
-    # rstrip before splitting: the final "\n" would otherwise yield a
-    # trailing "" element that an unclosed fence at EOF appends verbatim,
-    # growing the file by one line per run (idempotency break on malformed
-    # input). Trailing blank lines are re-normalized by the join below.
-    for line in text.rstrip("\n").split("\n"):
-        fence_match = FENCE_RE.match(line)
-        if fence_close is None and fence_match is not None:
-            marker = fence_match.group(1)
-            fence_close = (marker[0], len(marker))
-        elif fence_close is not None and fence_match is not None:
-            char, length = fence_close
-            marker = fence_match.group(1)
-            if marker[0] == char and len(marker) >= length and not line.strip(marker[0]).strip():
-                fence_close = None
-        if fence_close is not None or fence_match is not None:
-            if blank_run and out:
-                out.append("")
-            blank_run = 0
-            out.append(line)
-            continue
-        if not line.strip():
-            blank_run += 1
-            continue
-        if blank_run and out:
-            out.append("")
-        blank_run = 0
-        out.append(line)
-    return "\n".join(out) + "\n"
+    prepared = drop_empty_placeholder_lines(text, rendered_values, collapse_keys, source)
+    return PLACEHOLDER_RE.sub(replace, prepared)
 
 
 def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
@@ -389,6 +464,22 @@ def parse_mode(value: object) -> int | None:
     return mode_int
 
 
+def parse_str_list(target: dict[str, Any], key: str) -> list[str] | None:
+    """Read an optional list-of-strings field off one sync-targets.yml entry.
+
+    Returns `[]` when the key is absent or null, the list itself when it is
+    well-formed, and `None` after writing the error when it is not — the caller
+    turns that into a non-zero exit.
+    """
+    raw = target.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        sys.stderr.write(f"  ❌ `{key}` must be a list of strings, got {raw!r}: {target!r}\n")
+        return None
+    return raw
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--upstream-repo", required=True, type=Path, help="path to a checkout of the upstream repo")
@@ -480,9 +571,39 @@ def main() -> int:
         if not isinstance(target, dict):
             sys.stderr.write(f"  ❌ malformed target entry: expected a mapping, got {target!r}\n")
             return 1
+        unknown_fields = sorted(str(key) for key in target if key not in KNOWN_TARGET_FIELDS)
+        if unknown_fields:
+            sys.stderr.write(
+                f"  ❌ unknown field(s) in target entry: {', '.join(unknown_fields)} "
+                f"(known: {', '.join(sorted(KNOWN_TARGET_FIELDS))}): {target!r}\n"
+            )
+            return 1
         source_rel = target.get("source")
         dest_rel = target.get("destination")
-        subs = target.get("substitutions") or []
+        subs = parse_str_list(target, "substitutions")
+        if subs is None:
+            return 1
+        collapse_empty_substitutions = parse_str_list(target, "collapse_empty_substitutions")
+        if collapse_empty_substitutions is None:
+            return 1
+        for field, keys in (
+            ("substitutions", subs),
+            ("collapse_empty_substitutions", collapse_empty_substitutions),
+        ):
+            invalid_keys = sorted(key for key in set(keys) if PLACEHOLDER_NAME_RE.fullmatch(key) is None)
+            if invalid_keys:
+                sys.stderr.write(
+                    f"  ❌ `{field}` contains invalid placeholder keys: "
+                    f"{', '.join(invalid_keys)}\n"
+                )
+                return 1
+        undeclared_collapse_keys = set(collapse_empty_substitutions) - set(subs)
+        if undeclared_collapse_keys:
+            sys.stderr.write(
+                f"  ❌ `collapse_empty_substitutions` keys must also appear in "
+                f"`substitutions`: {', '.join(sorted(undeclared_collapse_keys))}\n"
+            )
+            return 1
 
         # Require `delete` to be a real boolean if present. Strings like
         # "false" / "no" are truthy in Python, so a stringly-typed mistake
@@ -715,13 +836,12 @@ def main() -> int:
         # "undeclared placeholder in source" warning fires when a developer
         # adds a `<<KEY>>` token to a source file but forgets to declare
         # it in sync-targets.yml.
-        substituted = substitute(text, values, subs, source_rel)
-        # Normalize blank-line structure for template-rendered markdown only.
-        # Verbatim copies (subs == []) must stay byte-identical to the
-        # upstream source — consumers prettier-ignore them as vendored
-        # content, and any engine-side rewrite would itself become churn.
-        if subs and dest_rel.endswith(".md"):
-            substituted = normalize_rendered_markdown(substituted)
+        # Ordinary rendering preserves surrounding template bytes and strips
+        # trailing newlines from inserted values. A manifest may explicitly opt
+        # selected prose-only keys into structural blank collapsing; see
+        # `drop_empty_placeholder_lines`. A verbatim copy (subs == []) substitutes
+        # nothing and stays byte-identical to the upstream source.
+        substituted = substitute(text, values, subs, source_rel, collapse_empty_substitutions)
 
         if args.dry_run:
             existing = dest_path.read_text(encoding="utf-8") if dest_path.is_file() else None

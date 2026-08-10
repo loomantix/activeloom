@@ -253,6 +253,18 @@ targets:
       - DOMAIN_RULES
       - REVIEW_FOCUS
       - WHAT_NOT_TO_SUGGEST_EXTRA
+    # Every key here sits alone on its template line between blank separators.
+    # When the value is empty, remove its vacated line plus one separator so
+    # the render stays prettier-clean. Never opt in keys used inside literal
+    # content — the `sync-targets` CI job enforces both halves of that rule.
+    # `PROJECT_NAME` and `CANONICAL_DOCS` are inline and so cannot qualify.
+    collapse_empty_substitutions:
+      - PROJECT_OVERVIEW
+      - STACK_TABLE
+      - CODE_RULES
+      - DOMAIN_RULES
+      - REVIEW_FOCUS
+      - WHAT_NOT_TO_SUGGEST_EXTRA
 
   # DCO sign-off check — only relevant for OSS consumers (Apache 2 + DCO is
   # the standard contract). The canonical version uses `git rev-list
