@@ -1492,6 +1492,51 @@ def test_finalized_checkpoint_failure_is_restored_to_draft(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def test_uncertain_finalized_checkpoint_restores_resumable_finalizing_state(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    helper = (
+        consumer[0]
+        / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
+    )
+    source = helper.read_text(encoding="utf-8")
+    needle = "    _atomic_write(path, value)\n    print(json.dumps(value, sort_keys=True))"
+    replacement = """    _atomic_write(path, value)
+    failure_marker = Path(os.environ["AGENT_STATE_DIR"]) / "failed-finalized-replace"
+    if (
+        args.phase == "finalized"
+        and os.environ.get("AGENT_FAIL_AFTER_FINALIZED_STATE_REPLACE") == "true"
+        and not failure_marker.exists()
+    ):
+        failure_marker.touch()
+        raise StateError("simulated failure after finalized state replacement")
+    print(json.dumps(value, sort_keys=True))"""
+    assert needle in source
+    helper.write_text(source.replace(needle, replacement), encoding="utf-8")
+
+    first = _run(
+        consumer,
+        ["--issues", "92"],
+        issues=[_issue(92)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_FAIL_AFTER_FINALIZED_STATE_REPLACE": "true"},
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    assert json.loads(state_file.read_text())["phase"] == "finalizing"
+    assert not (consumer[3] / "pr-ready").exists()
+
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(92, assigned=True)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_FAIL_AFTER_FINALIZED_STATE_REPLACE": "true"},
+    )
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert json.loads(state_file.read_text())["phase"] == "finalized"
+
+
 def test_interrupted_ready_finalization_resumes_without_repeating_ready(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1718,6 +1763,23 @@ def test_v3_wrapper_owns_clean_attestations_and_finalizes_state(
     assert all("local-review-pass:v3" in row["body"] for row in comments)
 
 
+def test_v3_finalization_revalidates_historical_codex_head_after_claude_minor_fix(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "90"],
+        issues=[_issue(90)],
+        config=_config_v3(tmp_path, claude_review_hook=_v3_changed_hook()),
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text())
+    assert state["phase"] == "finalized"
+    assert state["round"] == 1
+
+
 def test_v3_missing_result_blocks_without_false_clean_marker(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1767,6 +1829,46 @@ def test_resume_run_continues_preserved_draft_review(
     assert json.loads(state_file.read_text())["phase"] == "finalized"
 
 
+def test_resume_run_accepts_canonicalized_relative_path_roots(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    def relative_roots(config: str) -> str:
+        return config.replace(
+            f"worktree_root = {tmp_path / 'worktrees'}",
+            "worktree_root = relative-worktrees",
+        ).replace(
+            f"log_root = {tmp_path / 'logs'}",
+            "log_root = relative-logs",
+        )
+
+    first = _run(
+        consumer,
+        ["--issues", "93"],
+        issues=[_issue(93)],
+        config=relative_roots(
+            _config_v3(
+                tmp_path,
+                codex_review_hook="true",
+                claude_review_hook="true",
+            )
+        ),
+    )
+    assert first.returncode != 0
+    state_file = next((consumer[0] / "relative-logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text())
+    assert Path(state["logDir"]).is_absolute()
+    assert Path(state["worktree"]).is_absolute()
+
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(93, assigned=True)],
+        config=relative_roots(_config_v3(tmp_path)),
+    )
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert json.loads(state_file.read_text())["phase"] == "finalized"
+
+
 def test_resume_run_advances_identity_after_uncheckpointed_codex_fix(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1807,6 +1909,52 @@ def test_resume_run_advances_identity_after_uncheckpointed_codex_fix(
     final_state = json.loads(state_file.read_text())
     assert final_state["phase"] == "finalized"
     assert final_state["round"] == 2
+
+
+def test_resume_run_advances_identity_after_uncheckpointed_clean_attestation(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_after_codex_attestation = (
+        'if [ "${AGENT_LOOP_REVIEW_ENGINE:-}" = codex ] && '
+        '[ ! -e "$AGENT_STATE_DIR/codex-clean-validation-failed" ]; then '
+        'touch "$AGENT_STATE_DIR/codex-clean-validation-failed"; exit 73; fi; '
+        'printf "validate\\n" >> "$EVENT_LOG"'
+    )
+    config = _config_v3(tmp_path, validation_hook=fail_after_codex_attestation)
+    first = _run(
+        consumer,
+        ["--issues", "91"],
+        issues=[_issue(91)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text())
+    assert state["round"] == 1
+    assert state["reviewEngine"] == "codex"
+    assert state["headSha"] == _run_git(
+        "rev-parse", "HEAD", cwd=Path(state["worktree"])
+    ).stdout.strip()
+
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(91, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert second.returncode == 0, second.stderr + second.stdout
+    final_state = json.loads(state_file.read_text())
+    assert final_state["phase"] == "finalized"
+    assert final_state["round"] == 2
+    comments = json.loads((consumer[3] / "issue-comments.json").read_text())
+    codex_round_one = [
+        row
+        for row in comments
+        if "local-review-pass:v3 engine=codex round=1" in row["body"]
+    ]
+    assert len(codex_round_one) == 1
 
 
 def test_resume_run_rejects_changed_issue_contract(
@@ -3340,7 +3488,16 @@ def test_missing_default_codex_fails_before_claim(
     repo, _, bin_dir, state_dir = consumer
     no_codex_bin = tmp_path / "no-codex-bin"
     no_codex_bin.mkdir()
-    for command in ("bash", "dirname", "flock", "git", "jq", "python3", "timeout"):
+    for command in (
+        "bash",
+        "dirname",
+        "flock",
+        "git",
+        "jq",
+        "python3",
+        "realpath",
+        "timeout",
+    ):
         executable = shutil.which(command)
         assert executable is not None
         (no_codex_bin / command).symlink_to(executable)

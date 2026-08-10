@@ -715,6 +715,10 @@ def _read_result_bytes(path_value: str) -> bytes:
     return path.read_bytes()
 
 
+def _result_head(args: argparse.Namespace) -> str:
+    return cast(str, getattr(args, "result_head", None) or args.head)
+
+
 def _validate_result_data(
     args: argparse.Namespace, raw: bytes | None = None
 ) -> dict[str, Any]:
@@ -738,7 +742,7 @@ def _validate_result_data(
         "round": args.round,
         "baseSha": args.base,
         "beforeSha": args.before,
-        "afterSha": args.head,
+        "afterSha": _result_head(args),
     }
     for key, value in expected.items():
         if data.get(key) != value:
@@ -753,10 +757,10 @@ def _validate_result_data(
         _fail("review result finalLaneComplete must be boolean")
     classification = data.get("classification")
     if status == "clean":
-        if args.before != args.head or classification is not None or fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
+        if args.before != _result_head(args) or classification is not None or fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
             _fail("clean review result conflicts with the observed pass")
     elif status == "changed":
-        if args.before == args.head or classification not in {"minor", "material"} or not fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
+        if args.before == _result_head(args) or classification not in {"minor", "material"} or not fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
             _fail("changed review result conflicts with the observed pass")
     else:
         blocker = data.get("blocker")
@@ -932,7 +936,7 @@ def _load_allowed_heads(args: argparse.Namespace) -> dict[str, int]:
         or any(not isinstance(value, str) or not SHA_RE.fullmatch(value) for value in values)
         or len(set(values)) != len(values)
         or values[0] != args.before
-        or values[-1] != args.head
+        or values[-1] != _result_head(args)
     ):
         _fail("allowed transition heads do not match the observed review transition")
     return {value: index for index, value in enumerate(values)}
@@ -1240,6 +1244,10 @@ def _parser() -> argparse.ArgumentParser:
     verify_ledger.add_argument("--round", type=int)
     verify_ledger.add_argument("--base")
     verify_ledger.add_argument("--before")
+    verify_ledger.add_argument(
+        "--result-head",
+        help="Historical result afterSha when --head names a later live PR head",
+    )
     verify_ledger.add_argument("--result-file")
     verify_ledger.add_argument("--allowed-heads-file")
     verify_ledger.set_defaults(handler=_verify_ledger)
@@ -1247,7 +1255,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    for name in ("head", "base", "before"):
+    for name in ("head", "base", "before", "result_head"):
         value = getattr(args, name, None)
         if value is not None and not SHA_RE.fullmatch(value):
             _fail(f"--{name} must be a full 40-character lowercase commit SHA")

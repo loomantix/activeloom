@@ -250,7 +250,7 @@ done
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
-for cmd in git gh jq python3 timeout flock; do
+for cmd in git gh jq python3 timeout flock realpath; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
 REAL_GIT_BIN="$(type -P git)"
@@ -281,6 +281,12 @@ fi
 [[ "$PROMPT_TEMPLATE" == *"{ISSUE_ID}"* ]] || { echo "prompt template must contain {ISSUE_ID}: $PROMPT_FILE" >&2; exit 1; }
 
 cd "$PROJECT_DIR"
+
+# Relative path controls are interpreted from the repository root during an
+# original run. Pin that interpretation now so persisted absolute state uses
+# the same boundary when a later resume starts from another directory.
+WORKTREE_ROOT="$(realpath -m -- "$WORKTREE_ROOT")" || exit 1
+LOG_ROOT="$(realpath -m -- "$LOG_ROOT")" || exit 1
 
 # Repository-scoped gh commands must resolve from this checkout, never from an
 # ambient GH_REPO that could point issue claims and PR creation at another repo.
@@ -1580,6 +1586,15 @@ fetch_review_attestation_bodies() {
     } > "$output_file"
 }
 
+review_pass_identity_is_attested() {
+    local engine="$1" round="$2" base_sha="$3" head_sha="$4"
+    local bodies_file="$AGENT_LOOP_LOG_DIR/$engine-review-round-$round-resume-attestations.txt"
+    local marker_pattern
+    marker_pattern="^<!-- local-review-pass:v3 engine=$engine round=$round base=$base_sha head=$head_sha result-sha256=[0-9a-f]{64} -->$"
+    fetch_review_attestation_bodies "$bodies_file" || return 2
+    grep -Eq -- "$marker_pattern" "$bodies_file"
+}
+
 verify_review_completion_attestation() {
     local engine="$1" round="$2" before_sha="$3" after_sha="$4"
     local bodies_file="$AGENT_LOOP_LOG_DIR/$engine-review-round-$round-complete.txt"
@@ -1631,11 +1646,14 @@ verify_committed_pass_evidence() {
 verify_v3_committed_pass_evidence() {
     local engine="$1" round="$2" before_sha="$3" after_sha="$4" result_file="$5"
     local allowed_heads_file="$6" base_sha="${7:-${AGENT_LOOP_REVIEW_BASE_SHA:-}}"
-    local ledger_file
+    local ledger_file live_head
     [ -n "$base_sha" ] || return 1
+    live_head="$(git rev-parse HEAD)" || return 1
+    git merge-base --is-ancestor "$after_sha" "$live_head" || return 1
     ledger_file="$(fetch_local_review_threads)" || return 1
     python3 "$REVIEW_LEDGER" verify-ledger \
-        --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$after_sha" \
+        --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$live_head" \
+        --result-head "$after_sha" \
         --threads-file "$ledger_file" --actor "$CURRENT_LOGIN" \
         --engine "$engine" --round "$round" \
         --base "$base_sha" --before "$before_sha" \
@@ -1854,6 +1872,11 @@ finalize_pr() {
         "$final_sha"; then
         restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
             "finalized run-state checkpoint failed" || return 1
+        update_run_state finalizing "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
+            "$final_sha" || {
+            recovery_message "Could not restore a resumable finalizing checkpoint after rollback."
+            return 1
+        }
         return 1
     fi
     echo -e "${GREEN}✓${NC} Review converged; PR ready: $AGENT_LOOP_PR_URL ($final_sha)"
@@ -1861,7 +1884,7 @@ finalize_pr() {
 
 resume_review_run() {
     local issue_json_value state_head state_phase state_round current_head branch_status
-    local resume_boundary_status=0 checkpoint_base latest_base
+    local resume_boundary_status=0 checkpoint_base latest_base attestation_status
     local issue_title_sha256 issue_body_sha256
     local ready_finalization=false pr_draft_state state_review_engine
     local finalizing_head_drift=false
@@ -1939,6 +1962,18 @@ resume_review_run() {
     CONVERGED_CLAUDE_OUTCOME_SIGNATURE=""
 
     checkpoint_base="$(jq -r '.baseSha' <<<"$RESUME_STATE_JSON")"
+    if [ "$state_phase" = reviewing ] && [ "$state_review_engine" = codex ] && \
+       [ "$current_head" = "$state_head" ]; then
+        attestation_status=0
+        review_pass_identity_is_attested codex "$state_round" \
+            "$checkpoint_base" "$state_head" || attestation_status=$?
+        if [ "$attestation_status" -eq 0 ]; then
+            state_round=$((state_round + 1))
+        elif [ "$attestation_status" -ne 1 ]; then
+            recovery_message "Could not reconcile the interrupted Codex pass attestation."
+            return 1
+        fi
+    fi
     if [ "$state_phase" = reviewing ] && \
        { [ "$state_review_engine" = claude ] || [ "$current_head" != "$state_head" ]; }; then
         state_round=$((state_round + 1))
@@ -2095,6 +2130,11 @@ resume_review_run() {
             "$(git rev-parse HEAD)" || {
             restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
                 "recovered finalized checkpoint failed" || return 1
+            update_run_state finalizing "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
+                "$(git rev-parse HEAD)" || {
+                recovery_message "Could not restore a resumable finalizing checkpoint after recovered rollback."
+                return 1
+            }
             recovery_message "Could not complete the recovered finalized checkpoint."
             return 1
         }

@@ -1350,6 +1350,74 @@ def test_validate_result_enforces_observed_transition(
         )
 
 
+def test_verify_ledger_separates_live_pr_head_from_historical_result_head(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    threads = _threads_file(tmp_path, [])
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "clean",
+                "engine": "codex",
+                "round": 2,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": HEAD,
+                "classification": None,
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    heads = _heads_file(tmp_path, HEAD)
+    monkeypatch.setattr(
+        review_ledger,
+        "_run_gh",
+        lambda args, payload=None: AFTER + "\n"
+        if args[:2] == ["pr", "view"]
+        else pytest.fail(str(args)),
+    )
+
+    review_ledger.main(
+        [
+            "verify-ledger",
+            "--repo",
+            REPO,
+            "--pr",
+            "7",
+            "--head",
+            AFTER,
+            "--result-head",
+            HEAD,
+            "--threads-file",
+            str(threads),
+            "--engine",
+            "codex",
+            "--round",
+            "2",
+            "--base",
+            "c" * 40,
+            "--before",
+            HEAD,
+            "--result-file",
+            str(result_file),
+            "--allowed-heads-file",
+            str(heads),
+        ]
+    )
+    assert json.loads(capsys.readouterr().out) == {
+        "resultStatus": "clean",
+        "threadsVerified": 0,
+        "verified": True,
+    }
+
+
 def test_attest_rejects_changed_results_without_ledger_evidence(
     review_ledger: ModuleType,
     tmp_path: Path,
