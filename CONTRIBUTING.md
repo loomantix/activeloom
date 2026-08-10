@@ -25,7 +25,7 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 **In scope:**
 
 - New Claude Code skills that have value across multiple consumers (avoid skills that are tightly coupled to a single project's conventions — those belong in that project's repo).
-- Improvements to existing skills (`/grill`, `/refactorpass`, `/reviewit`, `/issues`, `/feature-dev`, `/copilot-review`, `/agent-loop`, `/deepgrill`, `/phone-install`, `/task-packet`).
+- Improvements to existing skills (`/critique`, `/refactorpass`, `/reviewit`, `/issues`, `/feature-dev`, `/copilot-review`, `/agent-loop`, `/deepcritique`, `/phone-install`, `/task-packet`).
 - Improvements to the sync engine (`scripts/sync-engine.py`, `scripts/create-signed-commit.py`) that make it more robust, more portable, or safer to operate.
 - Improvements to the consumer-side workflow template (`.github/workflows/sync-from-upstream.yml.template`).
 - Documentation, examples, contract clarifications.
@@ -35,7 +35,7 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 
 - New layers in the sync model (e.g. inheritance between manifests, recursive imports). The simple "one upstream, one consumer, one manifest" shape is intentional.
 - Skills that bind to a specific tech stack in their core (e.g. a skill that only works on Rails, or only on Expo) — those belong in stack-specific repos.
-- Hooks that auto-fire hosted reviewers on every PR. Local `/deepgrill` and
+- Hooks that auto-fire hosted reviewers on every PR. Local `/deepcritique` and
   `/codex-review` operate manually through the draft PR ledger; `/reviewit`
   remains an explicit hosted fallback.
 

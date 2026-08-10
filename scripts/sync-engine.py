@@ -90,7 +90,7 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
                and `a/b/c/foo.md`; `a/**/b` matches `a/b` and `a/x/y/b`.
         trailing `**` → matches the rest of the path (any characters,
                including `/`). So `.claude/skills/**` matches
-               `.claude/skills/grill/SKILL.md` but NOT `.claude/skills`
+               `.claude/skills/critique/SKILL.md` but NOT `.claude/skills`
                itself (the trailing `/` in the pattern is required).
         bare `**` without an adjacent `/` → treated as `.*` (any-chars).
         `*` → any run of characters except `/`.

@@ -94,7 +94,7 @@ leaves the latch open, so a later round whose changeset contains source can stil
 spend the one pass.
 
 Do not use the `local-review-pass:v1` engine attestation and do not open
-`local-review:v1` threads for cleanups: only the final adversarial `grill` lane
+`local-review:v1` threads for cleanups: only the final adversarial `critique` lane
 may certify the enclosing Claude review hook, and it owns the completion marker.
 
 ## Output
@@ -107,7 +107,7 @@ Report:
 - whether cleanup changed the branch and the commit SHA;
 - cleanups kept and cleanups dropped on verification;
 - validation run;
-- next step: `/grill <pr-number>` or return to `/deepgrill <pr-number>`.
+- next step: `/critique <pr-number>` or return to `/deepcritique <pr-number>`.
 
 ## Boundaries
 

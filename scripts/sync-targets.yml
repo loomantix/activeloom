@@ -38,12 +38,12 @@ targets:
     destination: .claude/skills/refactorpass/SKILL.md
     substitutions: []
 
-  - source: .claude/skills/grill/SKILL.md
-    destination: .claude/skills/grill/SKILL.md
+  - source: .claude/skills/critique/SKILL.md
+    destination: .claude/skills/critique/SKILL.md
     substitutions: []
 
-  - source: .claude/skills/deepgrill/SKILL.md
-    destination: .claude/skills/deepgrill/SKILL.md
+  - source: .claude/skills/deepcritique/SKILL.md
+    destination: .claude/skills/deepcritique/SKILL.md
     substitutions: []
 
   - source: .claude/skills/reviewit/SKILL.md
@@ -238,6 +238,16 @@ targets:
   - destination: .claude/skills/review-cycle/SKILL.md
     delete: true
   - destination: .claude/hooks/check-simplify-state.sh
+    delete: true
+  # `/grill` and `/deepgrill` became `/critique` and `/deepcritique`. These
+  # deletes are what make the rename atomic in a consumer: the same sync run
+  # that writes the new paths removes the old ones, so no repo is ever left
+  # holding two review skills that both claim to be the chain. Retiring these
+  # entries early would strand the old copies as live, model-invocable skills
+  # — keep them until every consumer has run a sync that includes them.
+  - destination: .claude/skills/grill/SKILL.md
+    delete: true
+  - destination: .claude/skills/deepgrill/SKILL.md
     delete: true
 
   # Copilot instructions — generated from the template using the consumer's
