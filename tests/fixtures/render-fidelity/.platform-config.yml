@@ -11,6 +11,7 @@ substitutions:
     A populated whole-line placeholder keeps its line and its own spacing.
 
   FIXTURE_OPTIONAL: ''
+  FIXTURE_OPTIONAL_SECOND: ''
 
 allowed_destinations:
   - '**'

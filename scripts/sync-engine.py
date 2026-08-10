@@ -50,8 +50,8 @@ class Target(TypedDict, total=False):
     """One entry in `scripts/sync-targets.yml`.
 
     Either a copy target (requires `source` + `destination`) or a delete
-    target (requires `destination` + `delete: True`). `substitutions` and
-    `mode` apply to copy targets only.
+    target (requires `destination` + `delete: True`). `substitutions`,
+    `collapse_empty_substitutions`, and `mode` apply to copy targets only.
 
     `create_if_missing: True` on a copy target makes the engine bootstrap
     the destination on first sync and then leave it alone — preserving any
@@ -65,6 +65,7 @@ class Target(TypedDict, total=False):
     source: str
     destination: Required[str]
     substitutions: list[str]
+    collapse_empty_substitutions: list[str]
     mode: str | int
     delete: bool
     create_if_missing: bool
@@ -181,8 +182,8 @@ def load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(fp) or {}
 
 
-def drop_empty_placeholder_lines(text: str, values: dict[str, str], declared: set[str]) -> str:
-    """Delete template lines holding nothing but a placeholder that renders empty.
+def drop_empty_placeholder_lines(text: str, rendered_values: dict[str, str], collapse_keys: set[str]) -> str:
+    """Delete opted-in placeholder-only lines whose values render empty.
 
     A template author writes an optional section as blank / `<<KEY>>` / blank —
     separator, section, separator. When the consumer leaves that value empty the
@@ -200,13 +201,14 @@ def drop_empty_placeholder_lines(text: str, values: dict[str, str], declared: se
     CommonMark fence closing has enough corner cases that mirroring it means
     shipping a Markdown parser inside the sync engine.
 
-    So the rule stays purely local: drop the placeholder's own line, and drop one
-    adjacent blank line only when keeping it would leave a blank-line run (or a
-    leading/trailing blank) that the substitution itself introduced. Start and
-    end of file count as blank for that test. Every other byte — fenced code,
-    indented code, raw preformatted HTML, an already-empty document — passes
-    through untouched, and a verbatim copy (`substitutions: []`, so `declared` is
-    empty) can never match here at all.
+    So the rule stays local and explicit: a manifest opts individual keys into
+    structural blank collapsing only where their template occurrences are prose
+    separators, never literal content. A line made solely of opted-in placeholders
+    whose rendered values are empty goes away, plus one adjacent blank line only
+    when keeping it would leave a blank-line run (or a leading/trailing blank).
+    Start and end of file count as blank for that test. Every other byte — fenced
+    code, indented code, raw preformatted HTML, non-Markdown templates, and an
+    already-empty document — passes through untouched by default.
     """
     trailing_newline = text.endswith("\n")
     lines = (text[:-1] if trailing_newline else text).split("\n")
@@ -228,22 +230,23 @@ def drop_empty_placeholder_lines(text: str, values: dict[str, str], declared: se
         return probe
 
     for i, line in enumerate(lines):
-        match = PLACEHOLDER_RE.fullmatch(line.strip(" \t"))
-        if match is None:
+        matches = list(PLACEHOLDER_RE.finditer(line))
+        if not matches or PLACEHOLDER_RE.sub("", line).strip(" \t"):
             continue
-        key = match.group(1)
-        if key not in declared or str(values.get(key, "")).strip():
+        keys = [match.group(1) for match in matches]
+        if any(key not in collapse_keys or key not in rendered_values or rendered_values[key] != "" for key in keys):
             continue
         keep[i] = False
-        if not (is_blank(previous_kept(i)) and is_blank(i + 1)):
+        previous = previous_kept(i)
+        if not (is_blank(previous) and is_blank(i + 1)):
             continue
         # Prefer the following separator so the preceding section keeps its own
         # spacing; fall back to the preceding one when the placeholder ended the
         # file and there is no following line to drop.
         if i + 1 < len(lines):
             keep[i + 1] = False
-        elif i - 1 >= 0:
-            keep[i - 1] = False
+        elif previous >= 0:
+            keep[previous] = False
 
     if all(keep):
         # Byte-identity when nothing matched, rather than a round trip through
@@ -256,7 +259,13 @@ def drop_empty_placeholder_lines(text: str, values: dict[str, str], declared: se
     return out + "\n" if trailing_newline and out else out
 
 
-def substitute(text: str, values: dict[str, str], target_keys: list[str], source: str) -> str:
+def substitute(
+    text: str,
+    values: dict[str, str],
+    target_keys: list[str],
+    source: str,
+    collapse_empty_substitutions: Sequence[str] = (),
+) -> str:
     """Replace `<<KEY>>` tokens in text with values from `values`.
 
     Only keys listed in `target_keys` are substituted — unknown placeholders
@@ -289,6 +298,9 @@ def substitute(text: str, values: dict[str, str], target_keys: list[str], source
         )
         sys.exit(1)
 
+    rendered_values = {key: str(values[key]).rstrip("\n") for key in declared}
+    collapse_keys = set(collapse_empty_substitutions)
+
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
         if key in declared:
@@ -297,10 +309,11 @@ def substitute(text: str, values: dict[str, str], target_keys: list[str], source
             # produces double-blank-line drift in rendered output. Strip
             # trailing newlines so the template alone controls inter-section
             # spacing.
-            return str(values[key]).rstrip("\n")
+            return rendered_values[key]
         return match.group(0)
 
-    return PLACEHOLDER_RE.sub(replace, drop_empty_placeholder_lines(text, values, declared))
+    prepared = drop_empty_placeholder_lines(text, rendered_values, collapse_keys)
+    return PLACEHOLDER_RE.sub(replace, prepared)
 
 
 def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
@@ -492,7 +505,32 @@ def main() -> int:
             return 1
         source_rel = target.get("source")
         dest_rel = target.get("destination")
-        subs = target.get("substitutions") or []
+        subs_raw = target.get("substitutions")
+        if subs_raw is None:
+            subs: list[str] = []
+        elif not isinstance(subs_raw, list) or not all(isinstance(key, str) for key in subs_raw):
+            sys.stderr.write(f"  ❌ `substitutions` must be a list of strings, got {subs_raw!r}: {target!r}\n")
+            return 1
+        else:
+            subs = subs_raw
+
+        collapse_raw = target.get("collapse_empty_substitutions")
+        if collapse_raw is None:
+            collapse_empty_substitutions: list[str] = []
+        elif not isinstance(collapse_raw, list) or not all(isinstance(key, str) for key in collapse_raw):
+            sys.stderr.write(
+                f"  ❌ `collapse_empty_substitutions` must be a list of strings, got {collapse_raw!r}: {target!r}\n"
+            )
+            return 1
+        else:
+            collapse_empty_substitutions = collapse_raw
+        undeclared_collapse_keys = set(collapse_empty_substitutions) - set(subs)
+        if undeclared_collapse_keys:
+            sys.stderr.write(
+                f"  ❌ `collapse_empty_substitutions` keys must also appear in "
+                f"`substitutions`: {', '.join(sorted(undeclared_collapse_keys))}\n"
+            )
+            return 1
 
         # Require `delete` to be a real boolean if present. Strings like
         # "false" / "no" are truthy in Python, so a stringly-typed mistake
@@ -725,13 +763,14 @@ def main() -> int:
         # "undeclared placeholder in source" warning fires when a developer
         # adds a `<<KEY>>` token to a source file but forgets to declare
         # it in sync-targets.yml.
-        # Rendered output is the template byte-for-byte with values spliced in;
-        # the only whitespace the engine removes is a line a substitution
-        # emptied (see `drop_empty_placeholder_lines`). A verbatim copy
-        # (subs == []) substitutes nothing and so stays byte-identical to the
-        # upstream source — consumers prettier-ignore vendored content, and any
-        # engine-side rewrite would itself become churn.
-        substituted = substitute(text, values, subs, source_rel)
+        # Ordinary rendering preserves surrounding template bytes and strips
+        # trailing newlines from inserted values. A manifest may explicitly opt
+        # selected prose-only keys into structural blank collapsing; see
+        # `drop_empty_placeholder_lines`. A verbatim copy (subs == []) substitutes
+        # nothing and stays byte-identical to the upstream source.
+        substituted = substitute(
+            text, values, subs, source_rel, collapse_empty_substitutions
+        )
 
         if args.dry_run:
             existing = dest_path.read_text(encoding="utf-8") if dest_path.is_file() else None

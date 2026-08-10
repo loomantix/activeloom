@@ -197,7 +197,11 @@ def test_render_collapses_blank_run_left_by_empty_placeholder(
     # leave the blank lines around it stacked — prettier collapses the run, so
     # every sync PR would reintroduce it and every local format run revert it.
     out = sync_engine.substitute(
-        "- last list item\n\n<<EXTRA>>\n\n---\n", {"EXTRA": ""}, ["EXTRA"], "src.md"
+        "- last list item\n\n<<EXTRA>>\n\n---\n",
+        {"EXTRA": ""},
+        ["EXTRA"],
+        "src.md",
+        ["EXTRA"],
     )
     assert out == "- last list item\n\n---\n"
 
@@ -207,13 +211,9 @@ def test_render_drops_separator_only_when_a_run_would_form(
 ) -> None:
     # One side non-blank means removing the placeholder line leaves no run, so
     # no separator is consumed and the author's spacing survives intact.
-    assert (
-        sync_engine.substitute("a\n<<E>>\n\nb\n", {"E": ""}, ["E"], "src.md") == "a\n\nb\n"
-    )
-    assert (
-        sync_engine.substitute("a\n\n<<E>>\nb\n", {"E": ""}, ["E"], "src.md") == "a\n\nb\n"
-    )
-    assert sync_engine.substitute("a\n<<E>>\nb\n", {"E": ""}, ["E"], "src.md") == "a\nb\n"
+    assert sync_engine.substitute("a\n<<E>>\n\nb\n", {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\nb\n"
+    assert sync_engine.substitute("a\n\n<<E>>\nb\n", {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\nb\n"
+    assert sync_engine.substitute("a\n<<E>>\nb\n", {"E": ""}, ["E"], "src.md", ["E"]) == "a\nb\n"
 
 
 def test_render_drops_leading_and_trailing_blank_at_file_edges(
@@ -221,8 +221,8 @@ def test_render_drops_leading_and_trailing_blank_at_file_edges(
 ) -> None:
     # Start/end of file behave like a blank line: a placeholder at either edge
     # would otherwise leave a leading or trailing blank that prettier strips.
-    assert sync_engine.substitute("<<E>>\n\nb\n", {"E": ""}, ["E"], "src.md") == "b\n"
-    assert sync_engine.substitute("a\n\n<<E>>\n", {"E": ""}, ["E"], "src.md") == "a\n"
+    assert sync_engine.substitute("<<E>>\n\nb\n", {"E": ""}, ["E"], "src.md", ["E"]) == "b\n"
+    assert sync_engine.substitute("a\n\n<<E>>\n", {"E": ""}, ["E"], "src.md", ["E"]) == "a\n"
 
 
 def test_render_handles_back_to_back_empty_placeholders(
@@ -232,15 +232,43 @@ def test_render_handles_back_to_back_empty_placeholders(
     # surrounding sections together.
     assert (
         sync_engine.substitute(
-            "a\n\n<<E>>\n<<F>>\n\nb\n", {"E": "", "F": ""}, ["E", "F"], "src.md"
+            "a\n\n<<E>>\n<<F>>\n\nb\n",
+            {"E": "", "F": ""},
+            ["E", "F"],
+            "src.md",
+            ["E", "F"],
         )
         == "a\n\nb\n"
     )
     assert (
         sync_engine.substitute(
-            "a\n\n<<E>>\n\n<<F>>\n\nb\n", {"E": "", "F": ""}, ["E", "F"], "src.md"
+            "a\n\n<<E>>\n\n<<F>>\n\nb\n",
+            {"E": "", "F": ""},
+            ["E", "F"],
+            "src.md",
+            ["E", "F"],
         )
         == "a\n\nb\n"
+    )
+    assert (
+        sync_engine.substitute(
+            "a\n\n<<E>><<F>>\n\nb\n",
+            {"E": "", "F": ""},
+            ["E", "F"],
+            "src.md",
+            ["E", "F"],
+        )
+        == "a\n\nb\n"
+    )
+    assert (
+        sync_engine.substitute(
+            "a\n\n<<E>>\n<<F>>\n",
+            {"E": "", "F": ""},
+            ["E", "F"],
+            "src.md",
+            ["E", "F"],
+        )
+        == "a\n"
     )
 
 
@@ -249,7 +277,7 @@ def test_render_matches_whole_line_placeholder_with_surrounding_whitespace(
 ) -> None:
     # An indented or trailing-space placeholder line is still a whole-line
     # placeholder; leaving it behind would emit a whitespace-only line.
-    out = sync_engine.substitute("a\n\n  <<E>>  \n\nb\n", {"E": ""}, ["E"], "src.md")
+    out = sync_engine.substitute("a\n\n  <<E>>  \n\nb\n", {"E": ""}, ["E"], "src.md", ["E"])
     assert out == "a\n\nb\n"
 
 
@@ -258,13 +286,28 @@ def test_render_keeps_line_for_non_empty_and_inline_placeholders(
 ) -> None:
     # Only a whole-line placeholder that renders empty is removed. A value with
     # content keeps its line, and an inline placeholder never removes one.
-    assert (
-        sync_engine.substitute("a\n\n<<E>>\n\nb\n", {"E": "X"}, ["E"], "src.md")
-        == "a\n\nX\n\nb\n"
-    )
-    assert (
-        sync_engine.substitute("docs: <<E>>.\n", {"E": ""}, ["E"], "src.md") == "docs: .\n"
-    )
+    assert sync_engine.substitute("a\n\n<<E>>\n\nb\n", {"E": "X"}, ["E"], "src.md", ["E"]) == "a\n\nX\n\nb\n"
+    assert sync_engine.substitute("docs: <<E>>.\n", {"E": ""}, ["E"], "src.md", ["E"]) == "docs: .\n"
+
+
+def test_render_preserves_non_opted_empty_placeholder_in_literal_content(
+    sync_engine: ModuleType,
+) -> None:
+    samples = [
+        "```text\nline one\n\n<<E>>\n\nline two\n```\n",
+        "<pre>\nline one\n\n<<E>>\n\nline two\n</pre>\n",
+        "    line one\n\n    <<E>>\n\n    line two\n",
+    ]
+    for text in samples:
+        expected = text.replace("<<E>>", "")
+        assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md") == expected
+
+
+def test_render_preserves_horizontal_whitespace_value_when_opted_in(
+    sync_engine: ModuleType,
+) -> None:
+    text = "a\n\n<<E>>\n\nb\n"
+    assert sync_engine.substitute(text, {"E": " \t "}, ["E"], "src.md", ["E"]) == "a\n\n \t \n\nb\n"
 
 
 def test_render_preserves_blank_runs_inside_raw_pre_html(
@@ -313,7 +356,7 @@ def test_render_leaves_empty_and_blank_only_documents_alone(
     assert sync_engine.substitute("\n", {}, [], "src.md") == "\n"
     assert sync_engine.substitute("\n\n  \n", {}, [], "src.md") == "\n\n  \n"
     # A document that is nothing but an emptied placeholder renders empty.
-    assert sync_engine.substitute("<<E>>\n", {"E": ""}, ["E"], "src.md") == ""
+    assert sync_engine.substitute("<<E>>\n", {"E": ""}, ["E"], "src.md", ["E"]) == ""
 
 
 def test_render_is_idempotent(sync_engine: ModuleType) -> None:
@@ -329,8 +372,8 @@ def test_render_is_idempotent(sync_engine: ModuleType) -> None:
     values = {"EXTRA": "", "E": "", "F": ""}
     keys = ["EXTRA", "E", "F"]
     for text in samples:
-        once = sync_engine.substitute(text, values, keys, "src.md")
-        assert sync_engine.substitute(once, values, keys, "src.md") == once
+        once = sync_engine.substitute(text, values, keys, "src.md", keys)
+        assert sync_engine.substitute(once, values, keys, "src.md", keys) == once
 
 
 def test_verbatim_copy_never_drops_a_placeholder_line(
@@ -363,8 +406,13 @@ def test_main_renders_substituted_md_but_leaves_verbatim_copies_alone(
                     "source": "tpl.md",
                     "destination": "rendered.md",
                     "substitutions": ["NAME", "EXTRA"],
+                    "collapse_empty_substitutions": ["EXTRA"],
                 },
-                {"source": "verbatim.md", "destination": "verbatim.md", "substitutions": []},
+                {
+                    "source": "verbatim.md",
+                    "destination": "verbatim.md",
+                    "substitutions": [],
+                },
             ]
         },
     )
@@ -550,6 +598,60 @@ def test_main_copy_target_writes_substituted_file(
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
     assert (consumer_dir / "dest.md").read_text() == "hello world\n"
+
+
+def test_main_plain_substitution_preserves_non_markdown_literal_spacing(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "block: |\n  first\n\n  <<EMPTY>>\n\n  last\n"
+    (upstream_repo / "src.yml").write_text(source)
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "src.yml",
+                    "destination": "dest.yml",
+                    "substitutions": ["EMPTY"],
+                }
+            ]
+        },
+    )
+    _write_yaml(consumer_dir / ".platform-config.yml", {"substitutions": {"EMPTY": ""}})
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    assert (consumer_dir / "dest.yml").read_text() == source.replace("<<EMPTY>>", "")
+
+
+def test_main_rejects_undeclared_collapse_empty_key(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (upstream_repo / "src.md").write_text("<<NAME>>\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "src.md",
+                    "destination": "dest.md",
+                    "substitutions": ["NAME"],
+                    "collapse_empty_substitutions": ["EMPTY"],
+                }
+            ]
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "must also appear in `substitutions`" in capsys.readouterr().err
 
 
 def test_main_delete_target_unlinks_real_file(

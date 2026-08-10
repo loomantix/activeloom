@@ -263,5 +263,16 @@ jobs:
                   assert 'destination' in t, f"delete target missing destination: {t!r}"
               else:
                   assert 'source' in t and 'destination' in t, f"copy target missing keys: {t!r}"
+                  substitutions = t.get('substitutions', [])
+                  assert isinstance(substitutions, list) and all(
+                      isinstance(key, str) for key in substitutions
+                  ), f"substitutions must be a string list: {t!r}"
+                  collapse = t.get('collapse_empty_substitutions', [])
+                  assert isinstance(collapse, list) and all(
+                      isinstance(key, str) for key in collapse
+                  ), f"collapse_empty_substitutions must be a string list: {t!r}"
+                  assert set(collapse) <= set(substitutions), (
+                      f"collapse_empty_substitutions must be declared substitutions: {t!r}"
+                  )
           print(f"OK: {len(targets)} targets")
           PY

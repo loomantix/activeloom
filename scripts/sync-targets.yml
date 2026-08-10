@@ -281,6 +281,11 @@ targets:
       - DOMAIN_RULES
       - REVIEW_FOCUS
       - WHAT_NOT_TO_SUGGEST_EXTRA
+    # This optional prose-only section sits between blank separators. When the
+    # value is empty, remove its vacated line plus one separator so the render
+    # stays prettier-clean. Never opt in keys used inside literal content.
+    collapse_empty_substitutions:
+      - WHAT_NOT_TO_SUGGEST_EXTRA
 
   # DCO sign-off check — only relevant for OSS consumers (Apache 2 + DCO is
   # the standard contract). The canonical version uses `git rev-list

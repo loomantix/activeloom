@@ -36,7 +36,7 @@ first fenced line
 last fenced line
 ```
 
-<<FIXTURE_OPTIONAL>>
+<<FIXTURE_OPTIONAL>><<FIXTURE_OPTIONAL_SECOND>>
 
 ---
 

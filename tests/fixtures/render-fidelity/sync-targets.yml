@@ -8,3 +8,7 @@ targets:
       - FIXTURE_NAME
       - FIXTURE_BODY
       - FIXTURE_OPTIONAL
+      - FIXTURE_OPTIONAL_SECOND
+    collapse_empty_substitutions:
+      - FIXTURE_OPTIONAL
+      - FIXTURE_OPTIONAL_SECOND
