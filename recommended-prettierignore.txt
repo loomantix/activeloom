@@ -32,6 +32,7 @@
 # >>> platform-synced paths <<<
 .claude/MODEL_NOTES.md
 .claude/REVIEW_WORKFLOW.md
+.claude/SKILL_AUTHORING.md
 .claude/agents/code-architect.md
 .claude/agents/code-explorer.md
 .claude/agents/code-reviewer.md

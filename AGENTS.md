@@ -22,6 +22,7 @@ If work needs non-public context, discuss that context outside this public repos
 - Keep changes scoped to the user's request and the existing repo architecture.
 - Run the smallest meaningful validation command after edits; report anything that could not be run.
 - Read [.claude/MODEL_NOTES.md](.claude/MODEL_NOTES.md) before editing anything under `.claude/skills/` or `.claude/agents/` — those files are prompts, and the notes record the model-generation deltas that make some plausible-looking phrasings harmful.
+- Read [.claude/SKILL_AUTHORING.md](.claude/SKILL_AUTHORING.md) alongside it when adding or restructuring a skill — it covers document structure (invocation, information hierarchy, completion criteria, pruning) where MODEL_NOTES covers model-generation deltas.
 
 ## Cross-References
 
@@ -30,3 +31,4 @@ If work needs non-public context, discuss that context outside this public repos
 - [SECURITY.md](SECURITY.md) — responsible disclosure.
 - [.claude/REVIEW_WORKFLOW.md](.claude/REVIEW_WORKFLOW.md) — canonical AI review chain.
 - [.claude/MODEL_NOTES.md](.claude/MODEL_NOTES.md) — prompt-authoring deltas for the current default model.
+- [.claude/SKILL_AUTHORING.md](.claude/SKILL_AUTHORING.md) — how to structure a skill document: invocation, information hierarchy, completion criteria, pruning.

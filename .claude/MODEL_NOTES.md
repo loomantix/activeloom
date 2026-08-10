@@ -127,6 +127,7 @@ Two separate reasons, and the second is the load-bearing one:
 
 ## Cross-references
 
+- [SKILL_AUTHORING.md](SKILL_AUTHORING.md) — the structural companion to this file. These notes cover what the current model does differently; that one covers how to build the document (invocation, information hierarchy, completion criteria, pruning). A new skill should pass both checklists.
 - [REVIEW_WORKFLOW.md](REVIEW_WORKFLOW.md) — the canonical AI review chain these notes constrain.
 - [`skills/critique/SKILL.md`](skills/critique/SKILL.md) — the reference implementation of §1 and §3 (unfiltered agents, filtering aggregator, bounded matrix).
 - [`agents/code-reviewer.md`](agents/code-reviewer.md) — the reference implementation of §1 on the agent side.
