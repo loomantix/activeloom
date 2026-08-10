@@ -144,9 +144,10 @@ jobs:
     # consumer config and asserts prettier-cleanliness of the rendered
     # copilot instructions under the canonical .prettierrc.
     #
-    # The second half pins the other side of that contract: the engine must
-    # reproduce its source byte-for-byte apart from the line an empty
-    # substitution vacated. A render that silently rewrites literal content
+    # The second half pins the other side of that contract: apart from replacing
+    # placeholder tokens and explicitly collapsing an emptied placeholder line
+    # plus one adjacent separator, the engine must preserve template bytes. A
+    # render that silently rewrites literal content
     # (blank runs inside raw <pre> or indented code, which the pinned prettier
     # preserves) would still pass a --check, so cleanliness alone cannot catch
     # it — the golden comparison can.

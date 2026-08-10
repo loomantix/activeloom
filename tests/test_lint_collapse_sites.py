@@ -51,7 +51,29 @@ def test_rejects_a_placeholder_inside_literal_content(
 ) -> None:
     violations = _check(lint_collapse_sites, tmp_path, body)
     assert len(violations) == 1
-    assert "inside literal content" in violations[0]
+    assert "inside literal Markdown content" in violations[0]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "```\ncontent\n``` ```\n<<E>>\n```\n",
+        "~~~\ncontent\n~~~payload\n<<E>>\n~~~\n",
+        "```\ncontent\n ```python\n<<E>>\n```\n",
+        "<script>\ntext\n<<E>>\n</script>\n",
+        "<style>\nrule\n<<E>>\n</style>\n",
+        "<textarea>\ntext\n<<E>>\n</textarea>\n",
+        "<!--\ncomment\n<<E>>\n-->\n",
+        "intro\n\n \t<<E>>\n\noutro\n",
+        "intro\n\n   \t<<E>>\n\noutro\n",
+    ],
+)
+def test_rejects_literal_content_the_old_scanner_misclassified(
+    lint_collapse_sites: ModuleType, tmp_path: Path, body: str
+) -> None:
+    violations = _check(lint_collapse_sites, tmp_path, body)
+    assert len(violations) == 1
+    assert "inside literal Markdown content" in violations[0]
 
 
 def test_rejects_a_placeholder_sharing_its_line_with_prose(
@@ -60,6 +82,22 @@ def test_rejects_a_placeholder_sharing_its_line_with_prose(
     violations = _check(lint_collapse_sites, tmp_path, "intro\n\n- <<E>>\n\noutro\n")
     assert len(violations) == 1
     assert "shares its line" in violations[0]
+
+
+def test_rejects_a_line_with_a_non_opted_placeholder(
+    lint_collapse_sites: ModuleType, tmp_path: Path
+) -> None:
+    violations = _check(lint_collapse_sites, tmp_path, "intro\n\n<<E>><<F>>\n\noutro\n")
+    assert len(violations) == 1
+    assert "placeholder that is not opted in" in violations[0]
+
+
+def test_rejects_an_invalid_placeholder_key(
+    lint_collapse_sites: ModuleType, tmp_path: Path
+) -> None:
+    violations = _check(lint_collapse_sites, tmp_path, "<<1E>>\n", ["1E"])
+    assert len(violations) == 1
+    assert "not a valid placeholder key" in violations[0]
 
 
 def test_reports_every_violating_site(lint_collapse_sites: ModuleType, tmp_path: Path) -> None:
@@ -74,3 +112,49 @@ def test_closing_fence_ends_literal_content(lint_collapse_sites: ModuleType, tmp
 def test_canonical_manifest_passes(lint_collapse_sites: ModuleType) -> None:
     # The rule is only worth enforcing if this repo's own manifest satisfies it.
     assert lint_collapse_sites.main() == 0
+
+
+def test_main_rejects_an_unsafe_site(
+    lint_collapse_sites: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "template.md").write_text("```\n<<E>>\n```\n", encoding="utf-8")
+    (repo / "scripts" / "sync-targets.yml").write_text(
+        "targets:\n"
+        "  - source: template.md\n"
+        "    destination: rendered.md\n"
+        "    substitutions: [E]\n"
+        "    collapse_empty_substitutions: [E]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(lint_collapse_sites, "REPO_ROOT", repo)
+
+    assert lint_collapse_sites.main() == 1
+    assert "must be whole-line, prose-only" in capsys.readouterr().err
+
+
+def test_main_rejects_non_markdown_destinations(
+    lint_collapse_sites: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "template.sh").write_text("cat <<EOF\n<<E>>\nEOF\n", encoding="utf-8")
+    (repo / "scripts" / "sync-targets.yml").write_text(
+        "targets:\n"
+        "  - source: template.sh\n"
+        "    destination: rendered.sh\n"
+        "    substitutions: [E]\n"
+        "    collapse_empty_substitutions: [E]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(lint_collapse_sites, "REPO_ROOT", repo)
+
+    assert lint_collapse_sites.main() == 1
+    assert "targets non-Markdown destination" in capsys.readouterr().err

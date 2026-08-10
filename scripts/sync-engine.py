@@ -76,11 +76,12 @@ class Target(TypedDict, total=False):
 class ConsumerConfig(TypedDict, total=False):
     """Top-level shape of a consumer's `.platform-config.yml`."""
 
-    substitutions: dict[str, str]
+    substitutions: dict[str, object]
     skip_targets: list[str]
     allowed_destinations: list[str]
 
 
+PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 PLACEHOLDER_RE = re.compile(r"<<([A-Z][A-Z0-9_]*)>>")
 
 
@@ -284,7 +285,7 @@ def drop_empty_placeholder_lines(
 
 def substitute(
     text: str,
-    values: dict[str, str],
+    values: dict[str, object],
     target_keys: list[str],
     source: str,
     collapse_empty_substitutions: Sequence[str] = (),
@@ -560,6 +561,17 @@ def main() -> int:
         collapse_empty_substitutions = parse_str_list(target, "collapse_empty_substitutions")
         if collapse_empty_substitutions is None:
             return 1
+        for field, keys in (
+            ("substitutions", subs),
+            ("collapse_empty_substitutions", collapse_empty_substitutions),
+        ):
+            invalid_keys = sorted(key for key in set(keys) if PLACEHOLDER_NAME_RE.fullmatch(key) is None)
+            if invalid_keys:
+                sys.stderr.write(
+                    f"  ❌ `{field}` contains invalid placeholder keys: "
+                    f"{', '.join(invalid_keys)}\n"
+                )
+                return 1
         undeclared_collapse_keys = set(collapse_empty_substitutions) - set(subs)
         if undeclared_collapse_keys:
             sys.stderr.write(

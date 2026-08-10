@@ -760,6 +760,36 @@ def test_main_rejects_malformed_string_lists(
     assert not (consumer_dir / "dest.md").exists()
 
 
+@pytest.mark.parametrize("key", ["1NAME", "_NAME", "name"])
+def test_main_rejects_invalid_placeholder_keys(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    key: str,
+) -> None:
+    (upstream_repo / "src.md").write_text(f"<<{key}>>\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "src.md",
+                    "destination": "dest.md",
+                    "substitutions": [key],
+                    "collapse_empty_substitutions": [key],
+                }
+            ]
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "contains invalid placeholder keys" in capsys.readouterr().err
+    assert not (consumer_dir / "dest.md").exists()
+
+
 def test_main_delete_target_unlinks_real_file(
     sync_engine: ModuleType,
     upstream_repo: Path,

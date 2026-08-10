@@ -1,8 +1,9 @@
 # Render fidelity fixture — FidelityFixture
 
 This template exists only for the `render-check` CI job. It pairs with
-`expected.md`: the engine must reproduce every byte below except the line held
-by an empty whole-line placeholder, and the result must be clean under the
+`expected.md`: apart from replacing placeholder tokens and explicitly collapsing
+an emptied placeholder line plus one adjacent separator, the engine must
+preserve the remaining template bytes, and the result must be clean under the
 pinned prettier.
 
 A populated whole-line placeholder keeps its line and its own spacing.
