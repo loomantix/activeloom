@@ -185,31 +185,29 @@ def load_yaml(path: Path) -> dict[str, Any]:
 def drop_empty_placeholder_lines(text: str, rendered_values: dict[str, str], collapse_keys: set[str]) -> str:
     """Delete opted-in placeholder-only lines whose values render empty.
 
-    A template author writes an optional section as blank / `<<KEY>>` / blank —
-    separator, section, separator. When the consumer leaves that value empty the
-    section renders to nothing but both separators remain, so the render gains a
-    blank-line run the author never wrote. Prettier collapses such a run, so a
-    consumer that format-checks the rendered destination sees every sync PR
-    re-introduce it and every local format run revert it — churn that repeats
-    daily until one side yields.
+    Collapsing is opt-in per key rather than inferred, because only the
+    substitution step knows which blank lines it caused; see `docs/sync.md`
+    ("Template half") for why the engine has no Markdown parser and what makes
+    a key safe to opt in.
 
-    Fix it at the only point where the distinction is knowable: which blank lines
-    the substitution *caused*. Nothing downstream can tell an author-written
-    blank line from a placeholder-produced one without re-parsing the document,
-    and a whole-file normalizer that guesses will rewrite literal content —
-    prettier preserves blank runs inside indented code and raw `<pre>`, and
-    CommonMark fence closing has enough corner cases that mirroring it means
-    shipping a Markdown parser inside the sync engine.
+    The contract:
 
-    So the rule stays local and explicit: a manifest opts individual keys into
-    structural blank collapsing only where their template occurrences are prose
-    separators, never literal content. A line made solely of opted-in placeholders
-    whose rendered values are empty goes away, plus one adjacent blank line only
-    when keeping it would leave a blank-line run (or a leading/trailing blank).
-    Start and end of file count as blank for that test. Every other byte — fenced
-    code, indented code, raw preformatted HTML, non-Markdown templates, and an
-    already-empty document — passes through untouched by default.
+      - a line qualifies only if it contains at least one placeholder, every
+        placeholder on it is listed in `collapse_keys`, every one of those
+        values renders to the empty string, and nothing outside the
+        placeholders remains but spaces and tabs;
+      - a qualifying line is dropped, plus one adjacent blank line when keeping
+        it would leave a blank-line run. Start and end of file count as blank
+        for that test, so a placeholder at either edge does not leave a leading
+        or trailing blank;
+      - the following blank is preferred so the preceding section keeps its own
+        spacing.
+
+    Every other byte passes through untouched, and an empty `collapse_keys`
+    (the default) is byte-identity.
     """
+    if not collapse_keys:
+        return text
     trailing_newline = text.endswith("\n")
     lines = (text[:-1] if trailing_newline else text).split("\n")
     keep = [True] * len(lines)
@@ -234,7 +232,7 @@ def drop_empty_placeholder_lines(text: str, rendered_values: dict[str, str], col
         if not matches or PLACEHOLDER_RE.sub("", line).strip(" \t"):
             continue
         keys = [match.group(1) for match in matches]
-        if any(key not in collapse_keys or key not in rendered_values or rendered_values[key] != "" for key in keys):
+        if any(key not in collapse_keys or rendered_values.get(key) != "" for key in keys):
             continue
         keep[i] = False
         previous = previous_kept(i)
@@ -412,6 +410,22 @@ def parse_mode(value: object) -> int | None:
     return mode_int
 
 
+def parse_str_list(target: dict[str, Any], key: str) -> list[str] | None:
+    """Read an optional list-of-strings field off one sync-targets.yml entry.
+
+    Returns `[]` when the key is absent or null, the list itself when it is
+    well-formed, and `None` after writing the error when it is not — the caller
+    turns that into a non-zero exit.
+    """
+    raw = target.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        sys.stderr.write(f"  ❌ `{key}` must be a list of strings, got {raw!r}: {target!r}\n")
+        return None
+    return raw
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--upstream-repo", required=True, type=Path, help="path to a checkout of the upstream repo")
@@ -505,25 +519,12 @@ def main() -> int:
             return 1
         source_rel = target.get("source")
         dest_rel = target.get("destination")
-        subs_raw = target.get("substitutions")
-        if subs_raw is None:
-            subs: list[str] = []
-        elif not isinstance(subs_raw, list) or not all(isinstance(key, str) for key in subs_raw):
-            sys.stderr.write(f"  ❌ `substitutions` must be a list of strings, got {subs_raw!r}: {target!r}\n")
+        subs = parse_str_list(target, "substitutions")
+        if subs is None:
             return 1
-        else:
-            subs = subs_raw
-
-        collapse_raw = target.get("collapse_empty_substitutions")
-        if collapse_raw is None:
-            collapse_empty_substitutions: list[str] = []
-        elif not isinstance(collapse_raw, list) or not all(isinstance(key, str) for key in collapse_raw):
-            sys.stderr.write(
-                f"  ❌ `collapse_empty_substitutions` must be a list of strings, got {collapse_raw!r}: {target!r}\n"
-            )
+        collapse_empty_substitutions = parse_str_list(target, "collapse_empty_substitutions")
+        if collapse_empty_substitutions is None:
             return 1
-        else:
-            collapse_empty_substitutions = collapse_raw
         undeclared_collapse_keys = set(collapse_empty_substitutions) - set(subs)
         if undeclared_collapse_keys:
             sys.stderr.write(
@@ -768,9 +769,7 @@ def main() -> int:
         # selected prose-only keys into structural blank collapsing; see
         # `drop_empty_placeholder_lines`. A verbatim copy (subs == []) substitutes
         # nothing and stays byte-identical to the upstream source.
-        substituted = substitute(
-            text, values, subs, source_rel, collapse_empty_substitutions
-        )
+        substituted = substitute(text, values, subs, source_rel, collapse_empty_substitutions)
 
         if args.dry_run:
             existing = dest_path.read_text(encoding="utf-8") if dest_path.is_file() else None
