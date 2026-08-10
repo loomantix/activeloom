@@ -26,7 +26,8 @@ Parse `$ARGUMENTS` for an optional PR number and the word `deep`.
 
 Resolve this engine's round number per the ledger before selecting lenses: use
 `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, take it from an invoking
-`/deepcritique`, or count the `local-review-pass:v1` and `local-review-complete:v1`
+`/deepcritique`, or count the `local-review-pass:v3` and
+`local-review-complete:v3`
 markers on the PR naming `engine=claude` and add one.
 
 - **Rounds 1–2 run adversarially** — the matrix and dispositions below apply as
@@ -58,8 +59,9 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 4. Require local HEAD, remote head, and PR head to match.
 5. Record the exact PR base and head SHAs. Read every prior review thread,
    including resolved and outdated threads.
-6. Skip docs/config-only changesets, per the ledger's changeset
-   classification.
+6. Skip docs/config-only changesets, per the ledger's changeset classification.
+   Finalize a clean v3 result using the ledger's wrapper/standalone ownership
+   rule before returning.
 
 Do not begin a reviewer until the PR ledger is available. Do not use a
 force-push to establish or update the review branch.
@@ -120,9 +122,13 @@ The inline comment must exist before the corresponding edit. If no defensible
 diff anchor exists, keep it out of the automated fix loop or track a genuinely
 architectural follow-up as the ledger requires.
 
-If no new confirmed finding survives and the pass makes no commit, post a
-clean-pass PR review attestation with `engine=claude` and the exact reviewed
-head SHA. A fix pass attests through its thread replies instead.
+If no new confirmed finding survives and the enclosing review hook did not move
+the head, finalize a `clean` v3 result per the ledger. When deepcritique's earlier
+refactorpass committed, preserve the enclosing hook's original before SHA and
+finalize `changed` with classification `minor` and an empty finding set; the
+committed refactor latch supplies the evidence. Under agent-loop the wrapper
+owns the canonical pass attestation; a standalone pass must attest through the
+helper before reporting completion.
 
 ## Phase 3: Disposition and fixes
 
@@ -157,10 +163,10 @@ For confirmed fixes:
 2. run focused validation;
 3. commit conventionally and push normally;
 4. require local HEAD, remote head, and PR head to match;
-5. reply to each thread with the fix SHA, validation result, and structured
-   `outcome=fixed` marker;
-6. post the committed-pass completion marker after the final adversarial lane;
-7. resolve each replied thread.
+5. use the deterministic helper's resumable `dispose` transaction with the fix
+   SHA, validation result, fingerprint, and occurrence;
+6. after the final lane, write the v3 structured result. Under agent-loop the
+   wrapper owns the committed-pass marker.
 
 Never resolve a finding merely because code changed. A marked thread requires
 both a response and an explicit resolution. Never batch unrelated findings
@@ -170,17 +176,16 @@ Material fixes invalidate prior clean-pass attestations and require the next
 local engine to review the new exact head. Minor-only fixes do not by
 themselves start an unbounded new round.
 
-Classify by what the fix **changes**, not by how severe the finding sounded: a
-fix is material only when it changes product code. A pass whose commits touch
-only tests, fixtures, comments, or docs is minor-only, and the other engine's
-attestation still covers the head — confirm by diffing the attested SHA against
-the current head over product paths.
+Classify by effect, not path or finding severity. `material` includes any
+substantive correctness, security/privacy, data-safety, compatibility,
+deployment/sync, or review-integrity change, including a test or workflow
+change needed to prevent a false green. `minor` is low-risk non-behavioral
+cleanup, clarity, or test/docs polish.
 
-If this pass changed no product code, stop the loop and recommend the ship step —
-whatever this repo uses to merge the PR. A round that finds only test and comment
-work means the product converged and the review is now auditing its own
-artifacts; that surface regenerates every time you harden it, so another round is
-guaranteed to find more and equally guaranteed not to improve what ships.
+Every engine attestation remains exact to the head it reviewed. A later minor
+fix does not rewrite that evidence or claim the other engine reviewed the new
+head. The outer round may still converge through an explicit minor transition;
+a material transition restarts at Codex.
 
 ## Phase 4: Output
 
@@ -188,14 +193,13 @@ Report the PR and reviewed head, the resolved round and stance, mode and lenses,
 disposition/thread counts, validation, fix SHAs, and whether material fixes
 require another local-engine pass.
 
-A convergence round that found no blocking defect ends the loop: post the
-clean-pass attestation, recommend the ship step, and list the deferred issues.
+A convergence round that found no blocking defect ends the loop: record a clean
+result, recommend the ship step, and list the deferred issues.
 
 If this Claude pass made a material fix, restart the bounded round at
 `/codex-review <pr-number>` in a fresh session. Otherwise it completes the
-Claude half of the current round — and if it changed no product code at all,
-report the PR as converged and recommend the ship step rather than implying
-another round is owed.
+Claude half of the current round. Always finalize `clean`, `changed`, or
+`blocked` per the ledger's wrapper/standalone ownership rule before returning.
 
 ## Boundaries
 

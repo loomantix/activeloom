@@ -1,7 +1,7 @@
 ---
 name: agent-loop
 description: Autonomous issue implementation loop with strict issue allowlisting, one linked worktree and draft PR per issue, bounded local Codex/Claude review rounds, inline thread traceability, and fresh-base validation. Use for a bounded GitHub issue queue without hosted AI reviewers.
-argument-hint: '[iterations] [--iterations N] [--issues N,N,...] [--resume] [--dry-run]'
+argument-hint: '[iterations] [--iterations N] [--issues N,N,...] [--include-assigned|--resume] [--dry-run]'
 disable-model-invocation: true
 ---
 
@@ -21,12 +21,12 @@ substituted via `worker_hook`.
 .claude/skills/agent-loop/scripts/agent-loop.sh --issues 5105,5106 --dry-run
 ```
 
-| Option             | Behavior                                                                                                                                                                      |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--issues N,N,...` | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
-| `--iterations N`   | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
-| `--resume`         | Permit an eligible issue already assigned only to the current user.                                                                                                           |
-| `--dry-run`        | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
+| Option               | Behavior                                                                                                                                                                      |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--issues N,N,...`   | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
+| `--iterations N`     | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
+| `--include-assigned` | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
+| `--dry-run`          | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
 
 Omitting `--issues` retains the ready-queue behavior for backward
 compatibility. Use an allowlist for every scoped or retrospective-driven run.
@@ -57,7 +57,7 @@ with the issue worktree as the current directory.
 | `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                              |
 | `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories. |
 | `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                   |
-| `review_contract_version`                        | Required value `2`; prevents old pre-PR/no-push hooks from running under the PR-first wrapper.              |
+| `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility. |
 | `review_max_rounds`                              | Maximum complete Codex→Claude rounds. Default `4`; cap exhaustion preserves the draft PR.                   |
 | `claude_review_hook`                             | Required local Claude PR review. Reads the ledger, comments before fixes, pushes, replies, and resolves.    |
 | `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                               |
@@ -75,13 +75,12 @@ Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_BASE_BRANCH`,
 `AGENT_LOOP_PROMPT`. Review hooks also receive `AGENT_LOOP_REVIEW_BASE` after a
 fresh fetch plus `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 `AGENT_LOOP_PR_HEAD_SHA`, `AGENT_LOOP_REVIEW_ENGINE`, and
-`AGENT_LOOP_REVIEW_ROUND`. A hook that commits may write exactly `minor` or
-`material` to `AGENT_LOOP_REVIEW_OUTCOME_FILE`; a missing classification
-defaults to material. A hook that commits must post a structured
-`outcome=fixed` disposition tied to the pushed SHA and a final-lane completion
-marker. A hook that commits nothing must instead post the ledger's clean-pass
-comment for its own engine, round, and `AGENT_LOOP_PR_HEAD_SHA` — the wrapper
-treats a silent no-op pass as unverified rather than clean. Validation hooks
+`AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_BASE_SHA`, and under contract v3
+`AGENT_LOOP_REVIEW_ACTOR` plus `AGENT_LOOP_REVIEW_RESULT_FILE`. Every hook writes
+a structured clean, changed, or blocked result. The wrapper validates its exact
+SHAs and finding fingerprints, verifies resolved v3 dispositions, and owns the
+canonical pass/completion attestation. A missing, invalid, or blocked result
+stops even when the hook exits zero. Validation hooks
 must leave a clean tree; work they write but do not commit is not in the
 reviewed head and would be discarded with the worktree.
 
@@ -161,11 +160,12 @@ opened one summary PR at the end. That model is gone:
 - Each issue now gets its own branch, worktree, and PR — there is no summary PR.
 - `agent-loop.config`, `prompt.txt`, and `agent-loop-instructions.md` are
   `create_if_missing` targets, so existing consumers keep their old copies. They
-  must be migrated by hand: set `review_contract_version = 2`, add
+  must be migrated by hand: set `review_contract_version = 3`, add
   `review_max_rounds`, and update both review hooks to the PR-ledger contract.
   Old hooks that prohibit all pushes will fail closed because each fix must be
-  pushed normally to the exact draft-PR branch, and a hook that reviews without
-  posting a clean-pass attestation fails closed for the same reason.
+  pushed normally to the exact draft-PR branch. Every v3 hook must write its
+  structured result; it must not post pass/completion attestations because the
+  wrapper validates the result and owns those markers.
 
 ## Test Guidance
 

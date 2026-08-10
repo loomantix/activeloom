@@ -38,14 +38,18 @@ Proceed in the current session only after an explicit override.
 4. Require local HEAD, remote head, and PR head to match.
 5. Record the PR number and exact base SHA. Read every prior review thread,
    including resolved and outdated threads.
-6. Apply the docs/config-only skip, per the ledger's changeset
-   classification.
-7. Resolve the changed-file list once and pass it to both lanes, so the refactor
-   pass and the deep critique share one resolution instead of each rebuilding the
-   changeset. The ledger's diff-delivery rules govern both.
+6. Apply the docs/config-only skip, per the ledger's changeset classification.
+   On a skip, finalize a clean v3 result using the ledger's wrapper/standalone
+   ownership rule, report `docs-config skip`, and exit without spending the
+   refactor latch.
+7. Resolve the changed-file list once for the initial packet. If refactorpass
+   commits, that packet ends with its reviewed head: reload the PR head and
+   build a new immutable packet before deep critique. If refactorpass is a no-op,
+   both lanes may reuse the initial packet. The ledger's diff-delivery rules
+   govern both.
 8. Resolve this engine's round number per the ledger — `$AGENT_LOOP_REVIEW_ROUND`
-   when the runner set it, otherwise one past the count of `local-review-pass:v1`
-   and `local-review-complete:v1` markers naming `engine=claude`. Rounds 1–2 are
+   when the runner set it, otherwise one past the count of `local-review-pass:v3`
+   and `local-review-complete:v3` markers naming `engine=claude`. Rounds 1–2 are
    adversarial; round 3 and later are convergence rounds. State which applies
    before running a lane.
 
@@ -60,7 +64,8 @@ it to return. Do not stop when the sub-skill returns.
 
 ## Phase 2: Deep critique
 
-Reload the PR head and ledger, then invoke
+Reload the PR head and ledger. When refactorpass moved the head, rebuild the
+immutable review packet from the same pinned base through that new head. Then
 `Skill(skill="critique", args="<pr-number> deep")`, passing the resolved round so
 the lane selects the matching stance.
 
@@ -74,8 +79,16 @@ defect. `/critique` owns those rules; do not restate or relax them here.
 
 Every confirmed finding must be posted inline before editing. A completed fix
 must be pushed, replied to with its SHA, validation, and structured disposition,
-then resolved. When the combined hook committed, the final `/critique` lane posts
-the completion marker for the enclosing before/final head pair.
+then resolved through the deterministic helper. The final `/critique` lane always
+finalizes the v3 structured result: under agent-loop the wrapper posts the
+completion attestation after validating it, while a standalone pass attests
+through the helper before reporting completion.
+
+The final result covers the entire enclosing deepcritique transition, beginning
+at the head recorded before refactorpass. If refactorpass committed and critique made
+no later fix, serialize `changed` with classification `minor`, an empty finding
+set, and that original before SHA; the committed refactor latch supplies the
+evidence. Do not emit `clean` for a cleanup-moved enclosing hook.
 
 ## Phase 3: Handoff
 
@@ -89,28 +102,21 @@ Print:
 - Findings: <posted/replied/resolved counts>
 - Review depth: <agents run>
 - Classification: <clean | minor | material>
-- Product code changed: <yes | no>
 
 Next local step:
   If this pass made a material fix, restart at /codex-review <pr-number>.
-  If it changed no product code, the PR has converged — recommend this repo's
-  ship step, whatever it uses to merge the PR, instead of a new round.
-  Otherwise this completes the Claude half of the current local round.
+  Otherwise this completes the Claude half of the current local round; the
+  outer runner decides convergence from both exact-head v3 results.
 ```
 
 A convergence round that found no blocking defect ends the loop. Say so and name
 the ship step; do not report the remaining rounds as owed.
 
-Classify by what the fix **changes**, not by how severe the finding sounded.
-Only a change to product code is material; tests, fixtures, comments, and docs
-are minor, and they leave the other engine's attestation valid for the new head.
-
-A round that finds only test and comment work is the signal to ship. The product
-has converged and the review has moved on to auditing its own artifacts — a
-surface that regenerates each time it is hardened, so the findings never run out
-and their volume says nothing about whether more review is warranted. Say so
-plainly and recommend shipping; the caller cannot see that the fixes stopped
-touching product code.
+Classify by effect, not path or finding severity. A correctness, security,
+deployment/sync, or review-integrity fix may be material even when it touches a
+test or workflow. Minor means low-risk non-behavioral cleanup or polish. Every
+attestation stays exact to its reviewed head; the outer round owns any explicit
+minor-transition convergence decision.
 
 When the hosted fallback was explicitly selected, hand off to
 `/reviewit <pr-number> deep` instead.

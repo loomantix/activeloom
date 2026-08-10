@@ -34,19 +34,23 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
    - Fetch the PR head without repurposing a primary checkout. Require the current linked worktree branch, its remote head, and the PR head to match.
    - Read every prior review thread, including resolved and outdated threads. Summarize their fingerprints, dispositions, fix SHAs, and reviewed-head attestations for the Codex prompt.
    - Read the PR base with `gh pr view <n> --json baseRefName`.
-   - Compute the merge base and capture the authoritative tracked and untracked scope:
+   - When `$AGENT_LOOP_REVIEW_BASE_SHA` is set, validate it as a full commit SHA
+     and use that literal SHA as the review base without fetching or recomputing
+     the range. Otherwise fetch the base branch once, resolve one exact base SHA,
+     and keep it immutable for the pass. Capture the authoritative tracked and
+     untracked scope from that exact base:
 
      ```bash
-     BASE=origin/<base-branch>
-     git fetch origin <base-branch> --quiet
-     MB=$(git merge-base "$BASE" HEAD)
-     git diff --stat "$MB"         # committed, staged, and unstaged tracked changes
+     REVIEW_BASE=<runner-provided-sha-or-once-resolved-base-sha>
+     git diff --stat "$REVIEW_BASE" # committed, staged, and unstaged tracked changes
      git status --short
      git ls-files --others --exclude-standard
      ```
 
-   - If the changeset is docs/config-only per the ledger's changeset classification, post a scoped clean-pass attestation and exit.
-   - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v1` and `local-review-complete:v1` markers on the PR naming `engine=codex`. Rounds 1–2 are adversarial; round 3 and later are convergence rounds, and the prompt and dispositions change accordingly.
+   - If the changeset is docs/config-only per the ledger's classification,
+     finalize a scoped clean v3 result using the ledger's wrapper/standalone
+     ownership rule, then exit.
+   - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds 1–2 are adversarial; round 3 and later are convergence rounds, and the prompt and dispositions change accordingly. The result's `baseSha` and the prompt range must name `REVIEW_BASE` exactly.
 
 ## Phase 1: Build the review prompt
 
@@ -56,7 +60,7 @@ Write a tight, scoped prompt. A vague "review this" wastes the run; name the fil
 - 2–3 lines on what the change does.
 - A concise summary of the complete local-review ledger, including resolved
   and outdated threads, so Codex does not rediscover disposed defects.
-- The tracked diff to read (`git diff <MB>`) plus the untracked paths from `git ls-files --others --exclude-standard`, and an instruction to **read the actual source, not just the diff**.
+- The tracked diff to read (`git diff <REVIEW_BASE>`) plus the untracked paths from `git ls-files --others --exclude-standard`, and an instruction to **read the actual source, not just the diff**.
 - The 3–4 riskiest things about this specific change, phrased as **where to scrutinize hardest** — not as an attack. See the framing rules below.
 - The output contract: **only high-confidence material findings** (correctness, security, data-loss); for each, `file:line`, severity, concrete issue, concrete fix; "no material findings" if clean; be terse.
 
@@ -172,20 +176,12 @@ When the status file appears with exit code zero, read the findings file — it 
 - Present the resulting thread list with `file:line`, severity, and your one-line verification.
 - Call out where Codex **disagreed with or added to** earlier ledger findings;
   that cross-engine delta is the reason to run it.
-- If Codex reports no new confirmed finding and makes no commit, post a
-  clean-pass PR review attestation with `engine=codex` and the exact reviewed
-  head. A fix pass attests through its thread replies instead.
-- Your attestation stays valid while the head moves for **tests, fixtures,
-  comments, or docs only** — those leave every production line you reviewed
-  byte-identical. It is invalidated only by a change to product code. When
-  reviewing a head that moved since your last attestation, diff the two over
-  product paths first: if that diff is empty, carry the attestation forward and
-  say so rather than re-reviewing unchanged product code as if it were new.
-- If this pass changes no product code, stop the loop and recommend this repo's
-  ship step, whatever it uses to merge the PR. A round that finds only test and
-  comment work means the product converged and the review is auditing its own
-  artifacts — a self-renewing surface, so the next round will find more and
-  still not improve what ships.
+- If Codex reports no new confirmed finding and makes no commit, finalize a
+  clean v3 result for the exact reviewed head using the ledger's
+  wrapper/standalone ownership rule.
+- Every attestation remains exact to the head reviewed. A later minor fix is an
+  explicit transition in the round; it does not rewrite the attestation or
+  claim Codex reviewed the later head. A material transition restarts at Codex.
 
 ## Phase 4: Disposition
 
@@ -196,10 +192,11 @@ In a convergence round the default inverts: fix only a blocking defect — wrong
 For a finding that needs a human/scope/legal decision (risk acceptance, prod-data assumptions, an architectural rework), do not guess at the decision — but do disposition the thread, because convergence requires every marked thread to carry a reply and a resolution. File the tracking issue, reply with `outcome=deferred` plus the issue link, resolve the thread, and surface the decision to the user in the skill output. Leave the thread unresolved only when you cannot even file the issue; that is a non-converging run, so say so plainly and leave the PR in draft.
 
 After fixes, run the relevant gates, commit, and push normally. Require local,
-remote, and PR heads to match. Reply to each fixed thread with the commit SHA
-and validation result plus the ledger's structured `outcome=fixed` marker, then
-resolve it. After the last adversarial lane, post the committed-pass completion
-marker for the exact before/final head pair. Do not force-push or merge.
+remote, and PR heads to match. Use the deterministic helper's resumable
+`dispose` transaction for each fixed thread. After the last lane, always write
+and finalize the v3 structured result per the ledger; under agent-loop the
+wrapper owns the completion attestation, while a standalone pass attests
+through the helper. Do not force-push or merge.
 
 ## Output
 

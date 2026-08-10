@@ -52,6 +52,7 @@
 .claude/skills/codex-review/SKILL.md
 .claude/skills/copilot-review/SKILL.md
 .claude/skills/critique/SKILL.md
+.claude/skills/critique/scripts/review-ledger.py
 .claude/skills/deepcritique/SKILL.md
 .claude/skills/feature-dev/SKILL.md
 .claude/skills/issues/SKILL.md
