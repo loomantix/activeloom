@@ -1,12 +1,12 @@
 ---
-name: deepgrill
-description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /grill deep — preceded by /refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use on complex or high-risk changes such as auth/crypto, schema migrations, sync-propagating work, and large refactors.
+name: deepcritique
+description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /critique deep — preceded by /refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use on complex or high-risk changes such as auth/crypto, schema migrations, sync-propagating work, and large refactors.
 argument-hint: (optional PR number)
 ---
 
-# /deepgrill — PR-first deep chain
+# /deepcritique — PR-first deep chain
 
-Run `/grill deep` against an open draft PR and its durable local-review ledger,
+Run `/critique deep` against an open draft PR and its durable local-review ledger,
 preceded by `/refactorpass` only on this engine's first pass over that PR.
 
 The chain gets cheaper as it repeats, deliberately. Cleanup runs once; the
@@ -41,7 +41,7 @@ Proceed in the current session only after an explicit override.
 6. Apply the docs/config-only skip, per the ledger's changeset
    classification.
 7. Resolve the changed-file list once and pass it to both lanes, so the refactor
-   pass and the deep grill share one resolution instead of each rebuilding the
+   pass and the deep critique share one resolution instead of each rebuilding the
    changeset. The ledger's diff-delivery rules govern both.
 8. Resolve this engine's round number per the ledger — `$AGENT_LOOP_REVIEW_ROUND`
    when the runner set it, otherwise one past the count of `local-review-pass:v1`
@@ -58,10 +58,10 @@ to Phase 2. A convergence round never runs cleanup, marker or not.
 Otherwise invoke `Skill(skill="refactorpass", args="<pr-number>")` and wait for
 it to return. Do not stop when the sub-skill returns.
 
-## Phase 2: Deep grill
+## Phase 2: Deep critique
 
 Reload the PR head and ledger, then invoke
-`Skill(skill="grill", args="<pr-number> deep")`, passing the resolved round so
+`Skill(skill="critique", args="<pr-number> deep")`, passing the resolved round so
 the lane selects the matching stance.
 
 In an adversarial round the deep matrix uses the relevant lenses from code
@@ -70,11 +70,11 @@ conditional tenant-coupling. Keep the matrix bounded per `MODEL_NOTES.md`.
 
 In a convergence round the matrix narrows to correctness, silent failure, and
 security when its signal is present, and the PR changes only for a blocking
-defect. `/grill` owns those rules; do not restate or relax them here.
+defect. `/critique` owns those rules; do not restate or relax them here.
 
 Every confirmed finding must be posted inline before editing. A completed fix
 must be pushed, replied to with its SHA, validation, and structured disposition,
-then resolved. When the combined hook committed, the final `/grill` lane posts
+then resolved. When the combined hook committed, the final `/critique` lane posts
 the completion marker for the enclosing before/final head pair.
 
 ## Phase 3: Handoff
@@ -82,7 +82,7 @@ the completion marker for the enclosing before/final head pair.
 Print:
 
 ```text
-✅ /deepgrill complete on PR #<pr-number>.
+✅ /deepcritique complete on PR #<pr-number>.
 - Reviewed head: <sha>
 - Round: <n> (<adversarial | convergence>)
 - Refactor pass: <ran | already spent at <sha> | docs-config skip>
@@ -123,5 +123,5 @@ When the hosted fallback was explicitly selected, hand off to
 
 ## Source of truth
 
-This skill lives upstream at `.claude/skills/deepgrill/` and is synced to
+This skill lives upstream at `.claude/skills/deepcritique/` and is synced to
 consumer repos.

@@ -18,7 +18,7 @@ Never force-push during a review relay. A moved remote head ends the pass.
 
 ## Classify the changeset
 
-`refactorpass`, `grill`, `deepgrill`, and `codex-review` all skip
+`refactorpass`, `critique`, `deepcritique`, and `codex-review` all skip
 docs/config-only changesets. This is the shared definition; classify the file
 list for the pinned `<base-sha>..HEAD` range:
 

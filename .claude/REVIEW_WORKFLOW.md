@@ -12,7 +12,7 @@ with the fix and validation, then resolve the thread. Every pass reads resolved
 as well as unresolved threads before reviewing the current head.
 
 Load [the local review ledger](references/local-review-ledger.md) before running
-`refactorpass`, `grill`, `deepgrill`, `codex-review`, or local review hooks.
+`refactorpass`, `critique`, `deepcritique`, `codex-review`, or local review hooks.
 
 ## Local Convergence Path
 
@@ -22,7 +22,7 @@ Use this path when both local engines are available:
 2. Pin the exact base SHA for the round and give it to both reviewers.
 3. Run `codex-review <pr-number>` as a fresh local Codex pass. Read the ledger
    and apply the comment/fix/reply/resolve contract to confirmed findings.
-4. On the resulting head, run a fresh Claude `deepgrill <pr-number>` with the
+4. On the resulting head, run a fresh Claude `deepcritique <pr-number>` with the
    same ledger contract.
 5. Classify fixes as `material` or `minor` **by what the fix changes, not by how
    severe the finding sounded**. A fix is `material` only when it changes product
@@ -76,14 +76,14 @@ When a local Codex CLI is unavailable:
 ### Lean
 
 1. Open a draft PR.
-2. Run `refactorpass <pr-number>`, then `grill <pr-number>`.
+2. Run `refactorpass <pr-number>`, then `critique <pr-number>`.
 3. Run `reviewit <pr-number>` for the bounded Gemini Flash and Copilot loop.
 
 ### Deep
 
-1. Open a draft PR and run `deepgrill <pr-number>`.
-2. Run `reviewit <pr-number> deep`; its final local `deepgrill` receives the
-   same PR number and ledger. That tail `deepgrill` skips the refactor pass —
+1. Open a draft PR and run `deepcritique <pr-number>`.
+2. Run `reviewit <pr-number> deep`; its final local `deepcritique` receives the
+   same PR number and ledger. That tail `deepcritique` skips the refactor pass —
    step 1 already spent this engine's cleanup latch on the PR.
 
 Use deep mode for auth, crypto, secrets, schema/data-shape work, GitHub Actions,
@@ -94,7 +94,7 @@ customer/tenant-variable behavior.
 
 - Treat generated findings as hypotheses; verify against source before posting.
 - **No reviewer in this chain pre-filters by severity or confidence.** Not a
-  `grill` sub-agent, not `codex-review`, not an inline `Agent(...)` prompt you
+  `critique` sub-agent, not `codex-review`, not an inline `Agent(...)` prompt you
   write yourself. Each reports everything with a severity and confidence
   attached; the filtering happens one level up, where every lens is visible at
   once and each claim can be checked against the diff. A finding suppressed
@@ -127,8 +127,8 @@ customer/tenant-variable behavior.
   PR-thread ledger contract, including the shared docs/config-only changeset
   classification every skill skips on.
 - [`skills/refactorpass/SKILL.md`](skills/refactorpass/SKILL.md) ·
-  [`skills/grill/SKILL.md`](skills/grill/SKILL.md) ·
-  [`skills/deepgrill/SKILL.md`](skills/deepgrill/SKILL.md) ·
+  [`skills/critique/SKILL.md`](skills/critique/SKILL.md) ·
+  [`skills/deepcritique/SKILL.md`](skills/deepcritique/SKILL.md) ·
   [`skills/codex-review/SKILL.md`](skills/codex-review/SKILL.md) — the local
   convergence lanes.
 - [`skills/reviewit/SKILL.md`](skills/reviewit/SKILL.md) — the hosted fallback,

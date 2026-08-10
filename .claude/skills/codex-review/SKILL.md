@@ -7,13 +7,13 @@ disable-model-invocation: true
 
 # /codex-review — independent Codex cross-review
 
-You are getting an **independent opinion** on an open PR from the [Codex CLI](https://github.com/openai/codex), run locally. Codex is a different model family from the Claude review chain (`/grill`, `/deepgrill`). In the bounded local loop, Codex runs first in each round and reads the complete PR ledger cold; Claude `/deepgrill` follows on the resulting head.
+You are getting an **independent opinion** on an open PR from the [Codex CLI](https://github.com/openai/codex), run locally. Codex is a different model family from the Claude review chain (`/critique`, `/deepcritique`). In the bounded local loop, Codex runs first in each round and reads the complete PR ledger cold; Claude `/deepcritique` follows on the resulting head.
 
 Codex runs **read-only by default** — it can read the tree and reason, but cannot modify files, so it is a safe reviewer. This skill never lets Codex edit code. Findings come back to _you_; you verify each against the source and fix only the confirmed ones.
 
 ## When to use
 
-- Before `/deepgrill` in each bounded local round, including after any material
+- Before `/deepcritique` in each bounded local round, including after any material
   Claude fix restarts the loop.
 - Standalone, when you want a fresh cold read of a PR.
 - Skip on docs/config-only changesets — there is nothing for an adversarial reviewer to find.

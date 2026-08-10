@@ -13,7 +13,7 @@ failure is:
    user-invoked.** `disable-model-invocation: true` removes a skill from
    the model's reach; whether a user-invoked skill stays reachable from
    another skill's body is undocumented, so the chain steps
-   (`/refactorpass`, `/grill`, `/deepgrill`) have to stay model-invoked.
+   (`/refactorpass`, `/critique`, `/deepcritique`) have to stay model-invoked.
    Flipping one is a silent break — the chain simply stops running its
    tail, with no error — so it is worth a test rather than a comment.
 """
