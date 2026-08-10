@@ -261,7 +261,8 @@ python3 .codex/skills/grill/scripts/review-ledger.py post-finding \
 ```
 
 When the same fingerprint recurs on a later reviewed head, append a new numbered
-occurrence to its existing root comment and reopen that thread atomically:
+occurrence to its existing root comment, then reopen that thread as a resumable,
+idempotent sequence:
 
 ```bash
 python3 .codex/skills/grill/scripts/review-ledger.py reopen-occurrence \
@@ -271,6 +272,9 @@ python3 .codex/skills/grill/scripts/review-ledger.py reopen-occurrence \
   --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
   --content-file <regular-utf8-file>
 ```
+
+If either mutation's response is lost, retry the identical command. The helper
+reuses the verified occurrence and completes only the missing thread-state change.
 
 After the fix is pushed, use the resumable `dispose` transaction. It posts or
 reuses the exact disposition, verifies it, resolves the thread, and verifies

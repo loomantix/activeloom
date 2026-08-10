@@ -389,10 +389,19 @@ recovery_message() {
 
 update_run_state() {
     local phase="$1" round="$2" base_sha="$3" head_sha="$4"
+    local codex_result_sha256="${5:-}" claude_result_sha256="${6:-}"
+    local -a command
     [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] || return 0
-    python3 "$RUN_STATE_HELPER" update --file "$AGENT_LOOP_RUN_STATE_FILE" \
-        --phase "$phase" --round "$round" --base-sha "$base_sha" \
-        --head-sha "$head_sha" >/dev/null
+    command=(python3 "$RUN_STATE_HELPER" update --file "$AGENT_LOOP_RUN_STATE_FILE"
+        --phase "$phase" --round "$round" --base-sha "$base_sha"
+        --head-sha "$head_sha")
+    if [ -n "$codex_result_sha256" ]; then
+        command+=(--codex-result-sha256 "$codex_result_sha256")
+    fi
+    if [ -n "$claude_result_sha256" ]; then
+        command+=(--claude-result-sha256 "$claude_result_sha256")
+    fi
+    "${command[@]}" >/dev/null
 }
 
 on_interrupt() {
@@ -1033,6 +1042,39 @@ require_review_outcome_signature() {
     fi
 }
 
+verify_v3_result_attestation() {
+    local engine="$1" slug="$2" outcome_file="$3" expected_signature="$4"
+    local before_sha after_sha result_status classification fingerprints result_hash
+    local marker bodies_file
+    case "$expected_signature" in
+        file:*) result_hash="${expected_signature#file:}" ;;
+        *) recovery_message "$engine converged review result is missing."; return 1 ;;
+    esac
+    before_sha="$(jq -r '.beforeSha' "$outcome_file")" || return 1
+    after_sha="$(jq -r '.afterSha' "$outcome_file")" || return 1
+    python3 "$REVIEW_LEDGER" validate-result \
+        --engine "$slug" --round "$REVIEW_ROUNDS_USED" --base "$REVIEWED_BASE_SHA" \
+        --before "$before_sha" --head "$after_sha" \
+        --result-file "$outcome_file" >/dev/null || {
+        recovery_message "$engine converged review result is no longer schema-valid."
+        return 1
+    }
+    result_status="$(jq -r '.status' "$outcome_file")" || return 1
+    if [ "$result_status" = clean ]; then
+        marker="<!-- local-review-pass:v3 engine=$slug round=$REVIEW_ROUNDS_USED base=$REVIEWED_BASE_SHA head=$after_sha result-sha256=$result_hash -->"
+    else
+        classification="$(jq -r '.classification' "$outcome_file")" || return 1
+        fingerprints="$(jq -r '.findingFingerprints | join(",")' "$outcome_file")" || return 1
+        marker="<!-- local-review-complete:v3 engine=$slug round=$REVIEW_ROUNDS_USED base=$REVIEWED_BASE_SHA before=$before_sha head=$after_sha classification=$classification fingerprints=$fingerprints result-sha256=$result_hash -->"
+    fi
+    bodies_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$REVIEW_ROUNDS_USED-attestations.txt"
+    fetch_review_attestation_bodies "$bodies_file" || return 1
+    grep -Fqx -- "$marker" "$bodies_file" || {
+        recovery_message "$engine converged review result lacks its exact authenticated PR attestation."
+        return 1
+    }
+}
+
 verify_converged_review_outcomes() {
     if [ -z "${CONVERGED_CODEX_OUTCOME_FILE:-}" ] || \
        [ -z "${CONVERGED_CLAUDE_OUTCOME_FILE:-}" ]; then
@@ -1043,6 +1085,12 @@ verify_converged_review_outcomes() {
         "$CONVERGED_CODEX_OUTCOME_SIGNATURE" "before publication" || return 1
     require_review_outcome_signature Claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
         "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" "before publication" || return 1
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        verify_v3_result_attestation Codex codex "$CONVERGED_CODEX_OUTCOME_FILE" \
+            "$CONVERGED_CODEX_OUTCOME_SIGNATURE" || return 1
+        verify_v3_result_attestation Claude claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
+            "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" || return 1
+    fi
 }
 
 run_review_pass() {
@@ -1124,7 +1172,7 @@ run_review_pass() {
         classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$result_json")"
         if [ "$classification" != clean ]; then
             verify_v3_committed_pass_evidence "$slug" "$round" "$before_sha" \
-                "$after_sha" "$result_json" || {
+                "$after_sha" "$result_file" || {
                 recovery_message "$engine review result lacks matching resolved v3 finding dispositions in round $round."
                 return 1
             }
@@ -1288,7 +1336,9 @@ run_review_convergence() {
             CONVERGED_CLAUDE_OUTCOME_FILE="$claude_outcome_file"
             CONVERGED_CLAUDE_OUTCOME_SIGNATURE="$claude_outcome_signature"
             update_run_state converged "$round" "$REVIEWED_BASE_SHA" \
-                "$(git rev-parse HEAD)" || {
+                "$(git rev-parse HEAD)" \
+                "${codex_outcome_signature#file:}" \
+                "${claude_outcome_signature#file:}" || {
                 recovery_message "Could not checkpoint converged review state."
                 return 1
             }
@@ -1495,51 +1545,15 @@ verify_committed_pass_evidence() {
 }
 
 verify_v3_committed_pass_evidence() {
-    local engine="$1" round="$2" before_sha="$3" after_sha="$4" result_json="$5"
-    local ledger_file fingerprints
+    local engine="$1" round="$2" before_sha="$3" after_sha="$4" result_file="$5"
+    local ledger_file
     ledger_file="$(fetch_local_review_threads)" || return 1
-    fingerprints="$(jq -c '.findingFingerprints' <<<"$result_json")" || return 1
-    jq -e --arg reviewer "$CURRENT_LOGIN" --arg engine "$engine" \
-        --argjson round "$round" --arg before "$before_sha" --arg after "$after_sha" \
-        --argjson expected "$fingerprints" '
-      def finding:
-        capture("<!-- local-review:v3 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[0-9]+) severity=(?<severity>blocking|major|minor|nit) lens=(?<lens>[A-Za-z0-9._:/-]+) content-sha256=(?<content>[0-9a-f]{64}) -->");
-      def disposition:
-        capture("<!-- local-review-disposition:v3 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[0-9]+) outcome=(?<outcome>fixed|dismissed|deferred) content-sha256=(?<content>[0-9a-f]{64}) -->");
-      all(.[]; (.errors // []) | length == 0)
-      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
-        | ($threads | all(.comments.pageInfo.hasNextPage | not))
-        and all($expected[]; . as $fingerprint
-          | any($threads[];
-              . as $thread
-              | $thread.isResolved
-              and any($thread.comments.nodes | to_entries[];
-                  select(.value.author.login == $reviewer)
-                  | (try (.value.body | finding) catch null) as $finding
-                  | select(
-                      $finding != null
-                      and $finding.engine == $engine
-                      and ($finding.round | tonumber) == $round
-                      and $finding.head == $before
-                      and $finding.fingerprint == $fingerprint
-                    )
-                  | .key as $finding_index
-                  | any($thread.comments.nodes | to_entries[];
-                      (.key > $finding_index)
-                      and (.value.author.login == $reviewer)
-                      and ((try (.value.body | disposition) catch null) as $reply
-                        | $reply != null
-                        and $reply.engine == $engine
-                        and ($reply.round | tonumber) == $round
-                        and $reply.head == $after
-                        and $reply.fingerprint == $fingerprint
-                        and $reply.occurrence == $finding.occurrence
-                        and $reply.outcome == "fixed")
-                    )
-                )
-            )))
-      )
-    ' "$ledger_file" >/dev/null
+    python3 "$REVIEW_LEDGER" verify-ledger \
+        --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$after_sha" \
+        --threads-file "$ledger_file" --actor "$CURRENT_LOGIN" \
+        --engine "$engine" --round "$round" \
+        --base "$AGENT_LOOP_REVIEW_BASE_SHA" --before "$before_sha" \
+        --result-file "$result_file" >/dev/null
 }
 
 attest_v3_review_result() {
@@ -1562,23 +1576,10 @@ verify_local_review_threads() {
     # length: the ledger requires a recurring root cause to reuse its existing
     # thread, so a resolved round-1 thread that gains an unanswered round-2
     # finding still has two or more comments and would pass a length check.
-    jq -e --arg marker '<!-- local-review:v' --arg reviewer "$CURRENT_LOGIN" '
-      def markers: [.comments.nodes | to_entries[]
-        | select(
-            (.value.author.login == $reviewer)
-            and ((.value.body // "") | contains($marker))
-          ) | .key];
-      def has_reviewer_reply_after_latest_marker:
-        (markers | max) as $latest
-        | any(.comments.nodes | to_entries[];
-            (.key > $latest) and (.value.author.login == $reviewer));
-      all(.[]; (.errors // []) | length == 0)
-      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
-        | ($threads | all(.comments.pageInfo.hasNextPage | not))
-        and ($threads
-          | map(select(markers | length > 0))
-          | all(.isResolved and has_reviewer_reply_after_latest_marker)))
-    ' "$ledger_file" >/dev/null || {
+    python3 "$REVIEW_LEDGER" verify-ledger \
+        --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
+        --head "$(git rev-parse HEAD)" --threads-file "$ledger_file" \
+        --actor "$CURRENT_LOGIN" >/dev/null || {
         echo "local-review threads must contain a disposition reply and be resolved" >&2
         return 1
     }
@@ -1730,6 +1731,12 @@ finalize_pr() {
             "local-review ledger changed during finalization" || return 1
         return 1
     fi
+    if ! update_run_state finalized "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
+        "$final_sha"; then
+        restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
+            "finalized run-state checkpoint failed" || return 1
+        return 1
+    fi
     echo -e "${GREEN}✓${NC} Review converged; PR ready: $AGENT_LOOP_PR_URL ($final_sha)"
 }
 
@@ -1822,8 +1829,8 @@ resume_review_run() {
         REVIEWED_BASE_SHA="$(jq -r '.baseSha' <<<"$RESUME_STATE_JSON")"
         CONVERGED_CODEX_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json"
         CONVERGED_CLAUDE_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/claude-review-round-$state_round.result.json"
-        CONVERGED_CODEX_OUTCOME_SIGNATURE="$(review_outcome_signature "$CONVERGED_CODEX_OUTCOME_FILE")" || return 1
-        CONVERGED_CLAUDE_OUTCOME_SIGNATURE="$(review_outcome_signature "$CONVERGED_CLAUDE_OUTCOME_FILE")" || return 1
+        CONVERGED_CODEX_OUTCOME_SIGNATURE="file:$(jq -r '.codexResultSha256' <<<"$RESUME_STATE_JSON")"
+        CONVERGED_CLAUDE_OUTCOME_SIGNATURE="file:$(jq -r '.claudeResultSha256' <<<"$RESUME_STATE_JSON")"
         verify_converged_review_outcomes || return 1
         echo -e "${GREEN}✓${NC} Recovered converged review checkpoint at round $state_round"
     else
@@ -1849,11 +1856,6 @@ resume_review_run() {
         return 1
     }
     finalize_pr
-    update_run_state finalized "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
-        "$(git rev-parse HEAD)" || {
-        recovery_message "PR finalized but run state could not be marked finalized."
-        return 1
-    }
     cd "$PROJECT_DIR"
     git worktree remove "$ACTIVE_WORKTREE"
     echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID recovery complete; local branch retained at $AGENT_LOOP_BRANCH"
@@ -2084,12 +2086,6 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         exit 1
     fi
     finalize_pr
-
-    update_run_state finalized "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
-        "$(git rev-parse HEAD)" || {
-        recovery_message "PR finalized but run state could not be marked finalized."
-        exit 1
-    }
 
     cd "$PROJECT_DIR"
     git worktree remove "$ACTIVE_WORKTREE"

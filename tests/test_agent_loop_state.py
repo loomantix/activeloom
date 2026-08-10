@@ -123,3 +123,73 @@ def test_state_create_never_clobbers_an_existing_file(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "already exists" in result.stderr
     assert state.read_text(encoding="utf-8") == "preserve me\n"
+
+
+def test_converged_state_requires_and_preserves_review_result_hashes(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "run-state.json"
+    created = _run(
+        "create",
+        "--file",
+        str(state),
+        "--run-id",
+        "run-1",
+        "--repo",
+        "example/repository",
+        "--issue",
+        "7",
+        "--base-branch",
+        "main",
+        "--branch",
+        "agent-loop/issue-7-run-1",
+        "--worktree",
+        str(tmp_path / "worktree"),
+        "--log-dir",
+        str(tmp_path / "logs"),
+        "--pr",
+        "9",
+        "--pr-url",
+        "https://example.invalid/pr/9",
+        "--base-sha",
+        BASE,
+        "--head-sha",
+        HEAD,
+    )
+    assert created.returncode == 0, created.stderr
+    missing = _run(
+        "update",
+        "--file",
+        str(state),
+        "--phase",
+        "converged",
+    )
+    assert missing.returncode != 0
+    assert "requires both review result hashes" in missing.stderr
+
+    updated = _run(
+        "update",
+        "--file",
+        str(state),
+        "--phase",
+        "converged",
+        "--codex-result-sha256",
+        "c" * 64,
+        "--claude-result-sha256",
+        "d" * 64,
+    )
+    assert updated.returncode == 0, updated.stderr
+    value = json.loads(state.read_text(encoding="utf-8"))
+    assert value["codexResultSha256"] == "c" * 64
+    assert value["claudeResultSha256"] == "d" * 64
+
+    finalized = _run(
+        "update",
+        "--file",
+        str(state),
+        "--phase",
+        "finalized",
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    value = json.loads(state.read_text(encoding="utf-8"))
+    assert value["codexResultSha256"] == "c" * 64

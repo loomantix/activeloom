@@ -13,6 +13,7 @@ import pytest
 
 
 HEAD = "a" * 40
+AFTER = "b" * 40
 REPO = "example/repository"
 PATCH = """@@ -10,3 +10,4 @@
  context
@@ -21,6 +22,69 @@ PATCH = """@@ -10,3 +10,4 @@
 +more
  context
 """
+
+
+def _review_row(comment_id: int, body: str, *, login: str = "reviewer") -> dict[str, Any]:
+    return {"id": comment_id, "body": body, "user": {"login": login}}
+
+
+def _finding_body(
+    fingerprint: str,
+    content: str = "Finding.",
+    *,
+    round_number: int = 2,
+    severity: str = "major",
+    lens: str = "correctness",
+) -> str:
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return (
+        f"<!-- local-review:v3 engine=codex round={round_number} head={HEAD} "
+        f"fingerprint={fingerprint} occurrence=1 severity={severity} lens={lens} "
+        f"content-sha256={digest} -->\n{content}"
+    )
+
+
+def _disposition_body(
+    fingerprint: str,
+    content: str = "Fixed and validated.",
+    *,
+    head: str = AFTER,
+    round_number: int = 2,
+    outcome: str = "fixed",
+) -> str:
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return (
+        f"<!-- local-review-disposition:v3 engine=codex round={round_number} "
+        f"head={head} fingerprint={fingerprint} occurrence=1 outcome={outcome} "
+        f"content-sha256={digest} -->\n{content}"
+    )
+
+
+def _threads_file(tmp_path: Path, threads: list[dict[str, Any]]) -> Path:
+    path = tmp_path / "threads.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {
+                                    "nodes": threads,
+                                    "pageInfo": {
+                                        "hasNextPage": False,
+                                        "endCursor": None,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 @pytest.fixture(scope="session")
@@ -40,6 +104,13 @@ def review_ledger() -> ModuleType:
     sys.modules["review_ledger"] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def authenticated_actor(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(review_ledger, "_current_actor", lambda: "reviewer")
 
 
 def test_diff_lines_tracks_both_sides(review_ledger: ModuleType) -> None:
@@ -186,7 +257,7 @@ def test_post_finding_uses_exact_json_schema_and_verifies_readback(
             mutation_payloads.append(payload)
             return json.dumps({"id": 123})
         if args[-1] == f"repos/{REPO}/pulls/comments/123":
-            return json.dumps({"id": 123, "body": body_text})
+            return json.dumps(_review_row(123, body_text))
         raise AssertionError(args)
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -248,7 +319,7 @@ def test_file_level_fallback_is_explicit(
             posted.update(payload)
             return json.dumps({"id": 456})
         if args[-1] == f"repos/{REPO}/pulls/comments/456":
-            return json.dumps({"id": 456, "body": body_text})
+            return json.dumps(_review_row(456, body_text))
         raise AssertionError(args)
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -296,7 +367,7 @@ def test_reply_uses_dedicated_endpoint_and_verifies_body(
         if args[-1] == f"repos/{REPO}/pulls/7/comments/88/replies":
             return json.dumps({"id": 99})
         if args[-1] == f"repos/{REPO}/pulls/comments/99":
-            return json.dumps({"id": 99, "body": body_text})
+            return json.dumps(_review_row(99, body_text))
         raise AssertionError(args)
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -339,7 +410,7 @@ def test_post_pr_comment_uses_json_and_verifies_readback(
             posted.append(payload)
             return json.dumps({"id": 77})
         if args[-1] == f"repos/{REPO}/issues/comments/77":
-            return json.dumps({"id": 77, "body": body_text})
+            return json.dumps(_review_row(77, body_text))
         raise AssertionError(args)
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -488,7 +559,7 @@ def test_v3_helper_owns_marker_and_preserves_hostile_markdown(
             posted.update(payload)
             return json.dumps({"id": 123})
         if endpoint == f"repos/{REPO}/pulls/comments/123":
-            return json.dumps({"id": 123, "body": posted["body"]})
+            return json.dumps(_review_row(123, posted["body"]))
         raise AssertionError(args)
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -541,7 +612,7 @@ def test_v3_post_recovers_after_successful_mutation_loses_response(
         if endpoint == f"repos/{REPO}/pulls/7/comments":
             posts += 1
             assert payload is not None
-            comments.append({"id": 123, "body": payload["body"]})
+            comments.append(_review_row(123, cast(str, payload["body"])))
             raise review_ledger.LedgerError("lost response")
         if endpoint == f"repos/{REPO}/pulls/comments/123":
             return json.dumps(comments[0])
@@ -580,7 +651,7 @@ def test_v3_post_fails_if_head_moves_after_mutation(
             posted_body = cast(str, payload["body"])
             return json.dumps({"id": 123})
         if endpoint == f"repos/{REPO}/pulls/comments/123":
-            return json.dumps({"id": 123, "body": posted_body})
+            return json.dumps(_review_row(123, posted_body))
         raise AssertionError(args)
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -597,15 +668,10 @@ def test_v3_dispose_is_resumable_after_resolve_response_failure(
     content = tmp_path / "disposition.md"
     content.write_text("Fixed in the current head and validated.", encoding="utf-8")
     comments: list[dict[str, Any]] = [
-        {
-            "id": 88,
-            "body": (
-                "<!-- local-review:v3 engine=codex round=2 "
-                f"head={HEAD} fingerprint=hostile-content occurrence=1 "
-                "severity=major lens=security content-sha256="
-                f"{'d' * 64} -->\nFinding."
-            ),
-        }
+        _review_row(
+            88,
+            _finding_body("hostile-content", lens="security"),
+        )
     ]
     resolved = False
     reply_posts = 0
@@ -621,7 +687,7 @@ def test_v3_dispose_is_resumable_after_resolve_response_failure(
         if endpoint == f"repos/{REPO}/pulls/7/comments/88/replies":
             reply_posts += 1
             assert payload is not None
-            comments.append({"id": 99, "body": payload["body"]})
+            comments.append(_review_row(99, cast(str, payload["body"])))
             return json.dumps({"id": 99})
         if endpoint == f"repos/{REPO}/pulls/comments/99":
             return json.dumps(next(row for row in comments if row["id"] == 99))
@@ -698,11 +764,7 @@ def test_v3_dispose_rejects_mismatched_thread_before_reply(
 ) -> None:
     content = tmp_path / "disposition.md"
     content.write_text("Fixed and validated.", encoding="utf-8")
-    finding = (
-        "<!-- local-review:v3 engine=codex round=2 "
-        f"head={HEAD} fingerprint=mismatch occurrence=1 severity=major "
-        f"lens=correctness content-sha256={'a' * 64} -->\nFinding."
-    )
+    finding = _finding_body("mismatch")
     reply_posts = 0
 
     def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
@@ -711,7 +773,7 @@ def test_v3_dispose_rejects_mismatched_thread_before_reply(
             return HEAD + "\n"
         endpoint = args[-1]
         if endpoint.endswith("/comments?per_page=100"):
-            return json.dumps([[{"id": 88, "body": finding}]])
+            return json.dumps([[_review_row(88, finding)]])
         if endpoint == f"repos/{REPO}/pulls/7/comments/88/replies":
             reply_posts += 1
             return json.dumps({"id": 99})
@@ -770,14 +832,10 @@ def test_v3_reopen_occurrence_is_sequential_and_idempotent(
     content = tmp_path / "recurrence.md"
     content.write_text("The same root cause recurred on this head.", encoding="utf-8")
     comments: list[dict[str, Any]] = [
-        {
-            "id": 88,
-            "body": (
-                "<!-- local-review:v3 engine=codex round=1 "
-                f"head={HEAD} fingerprint=repeat occurrence=1 severity=major "
-                f"lens=correctness content-sha256={'a' * 64} -->\nFirst occurrence."
-            ),
-        }
+        _review_row(
+            88,
+            _finding_body("repeat", "First occurrence.", round_number=1),
+        )
     ]
     resolved = True
     reply_posts = 0
@@ -792,7 +850,7 @@ def test_v3_reopen_occurrence_is_sequential_and_idempotent(
         if endpoint == f"repos/{REPO}/pulls/7/comments/88/replies":
             reply_posts += 1
             assert payload is not None
-            comments.append({"id": 99, "body": payload["body"]})
+            comments.append(_review_row(99, cast(str, payload["body"])))
             return json.dumps({"id": 99})
         if endpoint == f"repos/{REPO}/pulls/comments/99":
             return json.dumps(next(row for row in comments if row["id"] == 99))
@@ -859,6 +917,242 @@ def test_v3_reopen_occurrence_is_sequential_and_idempotent(
     review_ledger.main(args)
     assert reply_posts == 1
     assert resolved is False
+
+
+def test_v3_ignores_foreign_actor_fingerprint_roots(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "finding.md"
+    content.write_text("Authenticated finding.", encoding="utf-8")
+    foreign = _review_row(
+        88,
+        _finding_body("hostile-content", lens="security"),
+        login="other-user",
+    )
+    posted: dict[str, Any] = {}
+
+    def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        if args[:2] == ["pr", "view"]:
+            return HEAD + "\n"
+        endpoint = args[-1]
+        if endpoint.endswith("/files?per_page=100"):
+            return json.dumps([[{"filename": "changed.ts", "patch": PATCH}]])
+        if endpoint.endswith("/comments?per_page=100"):
+            return json.dumps([[foreign]])
+        if endpoint == f"repos/{REPO}/pulls/7/comments":
+            assert payload is not None
+            posted.update(payload)
+            return json.dumps({"id": 123})
+        if endpoint == f"repos/{REPO}/pulls/comments/123":
+            return json.dumps(_review_row(123, cast(str, posted["body"])))
+        raise AssertionError(args)
+
+    monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
+    review_ledger.main(_v3_finding_args(content))
+    assert posted
+
+
+def test_v3_rejects_invalid_authenticated_content_hash(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    forged = _review_row(
+        88,
+        _finding_body("hash-check").replace("Finding.", "Edited finding."),
+    )
+
+    def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        assert payload is None
+        if args[:2] == ["pr", "view"]:
+            return HEAD + "\n"
+        if args[-1].endswith("/comments?per_page=100"):
+            return json.dumps([[forged]])
+        raise AssertionError(args)
+
+    monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
+    with pytest.raises(review_ledger.LedgerError, match="invalid content hash"):
+        review_ledger.main(
+            [
+                "reconcile",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--head",
+                HEAD,
+                "--fingerprint",
+                "hash-check",
+            ]
+        )
+    assert capsys.readouterr().out == ""
+
+
+def test_v3_dispose_rejects_conflicting_stable_identity_before_mutation(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "disposition.md"
+    content.write_text("Fixed and validated.", encoding="utf-8")
+    rows = [
+        _review_row(88, _finding_body("conflict")),
+        _review_row(
+            99,
+            _disposition_body(
+                "conflict",
+                "Previously dismissed.",
+                head=HEAD,
+                outcome="dismissed",
+            ),
+        ),
+    ]
+
+    def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        assert payload is None
+        if args[:2] == ["pr", "view"]:
+            return HEAD + "\n"
+        if args[-1].endswith("/comments?per_page=100"):
+            return json.dumps([rows])
+        raise AssertionError("mutation must not run for a conflicting disposition")
+
+    monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
+    with pytest.raises(review_ledger.LedgerError, match="conflicting content or outcome"):
+        review_ledger.main(
+            [
+                "dispose",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--head",
+                HEAD,
+                "--engine",
+                "codex",
+                "--round",
+                "2",
+                "--fingerprint",
+                "conflict",
+                "--outcome",
+                "fixed",
+                "--comment-id",
+                "88",
+                "--thread-id",
+                "THREAD",
+                "--content-file",
+                str(content),
+            ]
+        )
+
+
+def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    threads = _threads_file(
+        tmp_path,
+        [
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": _finding_body("major-fix"),
+                            "databaseId": 1,
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": _disposition_body("major-fix"),
+                            "databaseId": 2,
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            },
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": _finding_body(
+                                "minor-deferred", severity="minor"
+                            ),
+                            "databaseId": 3,
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": _disposition_body(
+                                "minor-deferred", outcome="deferred"
+                            ),
+                            "databaseId": 4,
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            },
+        ],
+    )
+    result_file = tmp_path / "result.json"
+    result = {
+        "version": 3,
+        "status": "changed",
+        "engine": "codex",
+        "round": 2,
+        "baseSha": "c" * 40,
+        "beforeSha": HEAD,
+        "afterSha": AFTER,
+        "classification": "material",
+        "findingFingerprints": ["major-fix", "minor-deferred"],
+        "finalLaneComplete": True,
+    }
+    result_file.write_text(json.dumps(result), encoding="utf-8")
+    monkeypatch.setattr(
+        review_ledger,
+        "_run_gh",
+        lambda args, payload=None: AFTER + "\n"
+        if args[:2] == ["pr", "view"]
+        else pytest.fail(str(args)),
+    )
+    args = [
+        "verify-ledger",
+        "--repo",
+        REPO,
+        "--pr",
+        "7",
+        "--head",
+        AFTER,
+        "--threads-file",
+        str(threads),
+        "--engine",
+        "codex",
+        "--round",
+        "2",
+        "--base",
+        "c" * 40,
+        "--before",
+        HEAD,
+        "--result-file",
+        str(result_file),
+    ]
+    review_ledger.main(args)
+    assert json.loads(capsys.readouterr().out)["threadsVerified"] == 2
+
+    result["findingFingerprints"] = ["major-fix"]
+    result_file.write_text(json.dumps(result), encoding="utf-8")
+    with pytest.raises(review_ledger.LedgerError, match="exactly match"):
+        review_ledger.main(args)
+
+    result["findingFingerprints"] = ["major-fix", "minor-deferred"]
+    result["classification"] = "minor"
+    result_file.write_text(json.dumps(result), encoding="utf-8")
+    with pytest.raises(review_ledger.LedgerError, match="material classification"):
+        review_ledger.main(args)
 
 
 def test_validate_result_enforces_observed_transition(

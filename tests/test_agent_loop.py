@@ -72,8 +72,9 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write_executable(
         ready,
         "#!/usr/bin/env python3\n"
-        "import os, pathlib\n"
+        "import json, os, pathlib, sys\n"
         "state = pathlib.Path(os.environ['AGENT_STATE_DIR'])\n"
+        "(state / 'ready-argv.json').write_text(json.dumps(sys.argv[1:]))\n"
         "key = ('AGENT_POST_CLAIM_READY_JSON' "
         "if any(state.glob('claimed-*')) else 'AGENT_READY_JSON')\n"
         "print(os.environ.get(key, os.environ.get('AGENT_READY_JSON', '[]')))\n",
@@ -175,7 +176,12 @@ elif args[:2] == ['pr', 'view']:
     elif '--json number' in joined:
         print('1')
     elif 'headRefOid' in joined:
-        print(os.environ.get('AGENT_PR_HEAD_OID', (state / 'pr-head').read_text()))
+        branch = (state / 'pr-branch').read_text()
+        remote_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        print(os.environ.get('AGENT_PR_HEAD_OID', remote_head))
     else:
         number = args[2]
         row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
@@ -204,6 +210,10 @@ elif args[:2] == ['pr', 'ready']:
         (state / 'pr-ready').unlink(missing_ok=True)
     else:
         (state / 'pr-ready').touch()
+        if os.environ.get('AGENT_FAIL_FINALIZED_CHECKPOINT') == 'true':
+            for state_file in (state.parent / 'logs').glob('*/run-state.json'):
+                state_file.unlink()
+                state_file.mkdir()
         if os.environ.get('AGENT_RACE_THREAD_ON_READY') == 'true':
             (state / 'review-threads.json').write_text(json.dumps([{
                 'isResolved': False,
@@ -266,7 +276,11 @@ elif args[:1] == ['api'] and any('/issues/1/comments?per_page=100' in arg for ar
 elif args[:1] == ['api'] and any('/issues/1/comments' in arg for arg in args) and '-X' in args:
     comments_file = state / 'issue-comments.json'
     comments = json.loads(comments_file.read_text()) if comments_file.exists() else []
-    row = {'id': len(comments) + 700, 'body': input_payload['body']}
+    row = {
+        'id': len(comments) + 700,
+        'body': input_payload['body'],
+        'user': {'login': 'tester'},
+    }
     comments.append(row)
     comments_file.write_text(json.dumps(comments))
     print(json.dumps(row))
@@ -580,6 +594,7 @@ def test_per_issue_worktrees_and_hook_order(
         ["--issues", "4,5", "--iterations", "2"],
         issues=[_issue(4), _issue(5)],
         config=_config(tmp_path),
+        timeout=120,
     )
     assert result.returncode == 0, result.stderr + result.stdout
     paths = re.findall(r"^   Worktree: (.+)$", result.stdout, re.MULTILINE)
@@ -1000,7 +1015,7 @@ def _thread_comment(
 def _finding(round_number: int, engine: str = "codex") -> str:
     return (
         f"<!-- local-review:v1 engine={engine} round={round_number} "
-        "head=a fingerprint=f -->"
+        f"head={'a' * 40} fingerprint=f -->"
     )
 
 
@@ -1315,6 +1330,22 @@ def test_ambiguous_ready_failure_is_restored_and_attested_draft(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def test_finalized_checkpoint_failure_is_restored_to_draft(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "82"],
+        issues=[_issue(82)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_FAIL_FINALIZED_CHECKPOINT": "true"},
+    )
+    assert result.returncode != 0
+    assert "finalized run-state checkpoint failed" in result.stderr
+    assert "attested back in draft state" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
 def test_review_contract_version_is_required_before_claim(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1332,7 +1363,7 @@ def test_review_contract_version_is_required_before_claim(
     assert not (tmp_path / "worktrees").exists()
 
 
-def test_unscoped_include_assigned_discovers_my_ready_issue(
+def test_unscoped_include_assigned_controls_ready_helper_filter(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     issue = _issue(24, assigned=True)
@@ -1345,6 +1376,19 @@ def test_unscoped_include_assigned_discovers_my_ready_issue(
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Issue #24 (1/10)" in result.stdout
+    ready_argv = json.loads((consumer[3] / "ready-argv.json").read_text())
+    assert "--unassigned" not in ready_argv
+
+    default_result = _run(
+        consumer,
+        ["--dry-run"],
+        issues=[_issue(24)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_READY_JSON": json.dumps([{"number": 24}])},
+    )
+    assert default_result.returncode == 0, default_result.stderr + default_result.stdout
+    ready_argv = json.loads((consumer[3] / "ready-argv.json").read_text())
+    assert "--unassigned" in ready_argv
 
 
 def test_v3_wrapper_owns_clean_attestations_and_finalizes_state(
@@ -1361,6 +1405,8 @@ def test_v3_wrapper_owns_clean_attestations_and_finalizes_state(
     assert len(state_files) == 1
     state = json.loads(state_files[0].read_text(encoding="utf-8"))
     assert state["phase"] == "finalized"
+    assert re.fullmatch(r"[0-9a-f]{64}", state["codexResultSha256"])
+    assert re.fullmatch(r"[0-9a-f]{64}", state["claudeResultSha256"])
     comments = json.loads((consumer[3] / "issue-comments.json").read_text())
     assert len(comments) == 2
     assert all("local-review-pass:v3" in row["body"] for row in comments)
@@ -1412,6 +1458,34 @@ def test_resume_run_continues_preserved_draft_review(
     assert second.returncode == 0, second.stderr + second.stdout
     assert "agent-loop recovery finished" in second.stdout
     assert json.loads(state_file.read_text())["phase"] == "finalized"
+
+
+def test_converged_resume_rejects_tampered_review_result(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "28"],
+        issues=[_issue(28)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_FAIL_READY_AFTER_MUTATION": "true"},
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text())
+    assert state["phase"] == "converged"
+    result_file = state_file.parent / f"codex-review-round-{state['round']}.result.json"
+    result_file.write_text("{}\n", encoding="utf-8")
+
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(28, assigned=True)],
+        config=_config_v3(tmp_path),
+    )
+    assert second.returncode != 0
+    assert "outcome file changed before publication" in second.stderr
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 @pytest.mark.parametrize("timeout_key", ["worker_timeout_seconds", "hook_timeout_seconds"])

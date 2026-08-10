@@ -14,6 +14,7 @@ from typing import Any, NoReturn, cast
 
 
 PROTOCOL_VERSION = 3
+CURRENT_ACTOR: str | None = None
 HUNK_WITH_LEFT_RE = re.compile(
     r"^@@ -(?P<left>\d+)(?:,\d+)? \+(?P<right>\d+)(?:,\d+)? @@"
 )
@@ -49,6 +50,23 @@ DISPOSITION_V3_RE = re.compile(
     r"content-sha256=(?P<content_sha>[0-9a-f]{64}) -->$",
     re.MULTILINE,
 )
+FINDING_V1_RE = re.compile(
+    r"^<!-- local-review:v1 "
+    r"engine=(?P<engine>codex|claude) "
+    r"round=(?P<round>[1-9][0-9]*) "
+    r"head=(?P<head>[0-9a-f]{40}) "
+    r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) -->$",
+    re.MULTILINE,
+)
+DISPOSITION_V1_RE = re.compile(
+    r"^<!-- local-review-disposition:v1 "
+    r"engine=(?P<engine>codex|claude) "
+    r"round=(?P<round>[1-9][0-9]*) "
+    r"head=(?P<head>[0-9a-f]{40}) "
+    r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) "
+    r"outcome=(?P<outcome>fixed|dismissed|deferred) -->$",
+    re.MULTILINE,
+)
 
 
 class LedgerError(RuntimeError):
@@ -82,6 +100,29 @@ def _json_output(args: list[str], payload: dict[str, Any] | None = None) -> Any:
         return json.loads(raw)
     except json.JSONDecodeError as error:
         raise LedgerError("GitHub returned invalid JSON") from error
+
+
+def _current_actor() -> str:
+    global CURRENT_ACTOR
+    if CURRENT_ACTOR is None:
+        actor = _run_gh(["api", "user", "--jq", ".login"]).strip()
+        if not actor:
+            _fail("could not resolve the authenticated GitHub actor")
+        CURRENT_ACTOR = actor
+    return CURRENT_ACTOR
+
+
+def _authenticated_rows(
+    rows: list[dict[str, Any]], *, graphql: bool = False
+) -> list[dict[str, Any]]:
+    actor = _current_actor()
+    identity_key = "author" if graphql else "user"
+    return [
+        row
+        for row in rows
+        if isinstance(row.get(identity_key), dict)
+        and row[identity_key].get("login") == actor
+    ]
 
 
 def _read_legacy_body(path: str, marker: str | tuple[str, ...]) -> str:
@@ -202,7 +243,7 @@ def _pr_files(repo: str, pr: int) -> dict[str, str | None]:
 
 
 def _review_comments(repo: str, pr: int) -> list[dict[str, Any]]:
-    return _flatten_pages(
+    return _authenticated_rows(_flatten_pages(
         _json_output(
             [
                 "api",
@@ -212,11 +253,11 @@ def _review_comments(repo: str, pr: int) -> list[dict[str, Any]]:
             ]
         ),
         "review-comments",
-    )
+    ))
 
 
 def _issue_comments(repo: str, pr: int) -> list[dict[str, Any]]:
-    return _flatten_pages(
+    return _authenticated_rows(_flatten_pages(
         _json_output(
             [
                 "api",
@@ -226,7 +267,7 @@ def _issue_comments(repo: str, pr: int) -> list[dict[str, Any]]:
             ]
         ),
         "PR-comments",
-    )
+    ))
 
 
 def _validate_anchor(
@@ -253,13 +294,23 @@ def _validate_anchor(
 
 def _verify_comment(repo: str, comment_id: int, expected_body: str) -> None:
     response = _json_output(["api", f"repos/{repo}/pulls/comments/{comment_id}"])
-    if not isinstance(response, dict) or response.get("body") != expected_body:
+    if (
+        not isinstance(response, dict)
+        or response.get("body") != expected_body
+        or not isinstance(response.get("user"), dict)
+        or response["user"].get("login") != _current_actor()
+    ):
         _fail(f"could not verify review comment {comment_id} after posting")
 
 
 def _verify_issue_comment(repo: str, comment_id: int, expected_body: str) -> None:
     response = _json_output(["api", f"repos/{repo}/issues/comments/{comment_id}"])
-    if not isinstance(response, dict) or response.get("body") != expected_body:
+    if (
+        not isinstance(response, dict)
+        or response.get("body") != expected_body
+        or not isinstance(response.get("user"), dict)
+        or response["user"].get("login") != _current_actor()
+    ):
         _fail(f"could not verify PR comment {comment_id} after posting")
 
 
@@ -281,15 +332,60 @@ def _matching_body(rows: list[dict[str, Any]], marker: str, body: str) -> int | 
     return cast(int, row["id"])
 
 
+def _protocol_match(
+    body: str, pattern: re.Pattern[str], marker: str
+) -> re.Match[str] | None:
+    if marker not in body:
+        return None
+    match = pattern.match(body)
+    if match is None or not body[match.end():].startswith("\n"):
+        _fail(f"authenticated {marker} record is malformed")
+    content = body[match.end() + 1:]
+    if _sha256_text(content) != match.group("content_sha"):
+        _fail(f"authenticated {marker} record has an invalid content hash")
+    return match
+
+
+def _finding_match(body: str) -> re.Match[str] | None:
+    return _protocol_match(body, FINDING_V3_RE, "<!-- local-review:v3")
+
+
+def _disposition_match(body: str) -> re.Match[str] | None:
+    return _protocol_match(
+        body, DISPOSITION_V3_RE, "<!-- local-review-disposition:v3"
+    )
+
+
 def _finding_records(
     rows: list[dict[str, Any]], fingerprint: str
 ) -> list[tuple[dict[str, Any], re.Match[str]]]:
     records: list[tuple[dict[str, Any], re.Match[str]]] = []
     for row in rows:
-        match = FINDING_V3_RE.search(str(row.get("body", "")))
+        match = _finding_match(str(row.get("body", "")))
         if match is not None and match.group("fingerprint") == fingerprint:
             records.append((row, match))
     return records
+
+
+def _require_disposition_consistency(
+    rows: list[dict[str, Any]], args: argparse.Namespace, body: str
+) -> None:
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        match = _disposition_match(str(row.get("body", "")))
+        if (
+            match is not None
+            and match.group("engine") == args.engine
+            and int(match.group("round")) == args.round
+            and match.group("head") == args.head
+            and match.group("fingerprint") == args.fingerprint
+            and int(match.group("occurrence")) == args.occurrence
+        ):
+            matches.append(row)
+    if len(matches) > 1:
+        _fail("disposition identity is duplicated")
+    if matches and matches[0].get("body") != body:
+        _fail("disposition identity already exists with conflicting content or outcome")
 
 
 def _require_finding_root(
@@ -524,7 +620,9 @@ def _reopen_occurrence(args: argparse.Namespace) -> None:
 def _dispose(args: argparse.Namespace) -> None:
     marker, body = _disposition_body(args)
     _verify_head(args.repo, args.pr, args.head)
-    _require_finding_occurrence(_review_comments(args.repo, args.pr), args)
+    rows = _review_comments(args.repo, args.pr)
+    _require_finding_occurrence(rows, args)
+    _require_disposition_consistency(rows, args, body)
     _thread_state(args)
     comment_id, replayed = _post_review_comment(
         args, marker, body, reply_to=args.comment_id
@@ -663,8 +761,8 @@ def _reconcile(args: argparse.Namespace) -> None:
     disposition_rows: list[dict[str, Any]] = []
     for row in comments:
         body = str(row.get("body", ""))
-        finding = FINDING_V3_RE.search(body)
-        disposition = DISPOSITION_V3_RE.search(body)
+        finding = _finding_match(body)
+        disposition = _disposition_match(body)
         if finding and finding.group("fingerprint") == args.fingerprint:
             finding_rows.append({"id": row.get("id"), **finding.groupdict()})
         if disposition and disposition.group("fingerprint") == args.fingerprint:
@@ -697,6 +795,187 @@ def _reconcile(args: argparse.Namespace) -> None:
                 "nextOccurrence": len(occurrences) + 1 if sequence_valid else None,
                 "undisposedOccurrences": undisposed,
                 "nextAction": next_action,
+                "verified": True,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def _load_review_threads(path_value: str) -> list[dict[str, Any]]:
+    path = Path(path_value)
+    if path.is_symlink() or not path.is_file():
+        _fail("review threads must be a regular non-symlink file")
+    try:
+        pages = json.loads(path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LedgerError("review threads must contain valid UTF-8 JSON") from error
+    if not isinstance(pages, list) or not pages:
+        _fail("review threads response has an unexpected shape")
+    threads: list[dict[str, Any]] = []
+    for page in pages:
+        if not isinstance(page, dict) or page.get("errors"):
+            _fail("GitHub review threads response contains errors")
+        try:
+            connection = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+            nodes = connection["nodes"]
+            page_info = connection["pageInfo"]
+        except (KeyError, TypeError) as error:
+            raise LedgerError("GitHub review threads response has an unexpected shape") from error
+        if (
+            not isinstance(nodes, list)
+            or not isinstance(page_info, dict)
+            or not isinstance(page_info.get("hasNextPage"), bool)
+        ):
+            _fail("GitHub review threads response has an unexpected shape")
+        for thread in nodes:
+            if not isinstance(thread, dict):
+                _fail("GitHub review thread has an unexpected shape")
+            try:
+                comments = thread["comments"]
+                comment_nodes = comments["nodes"]
+                comments_page_info = comments["pageInfo"]
+            except (KeyError, TypeError) as error:
+                raise LedgerError("GitHub review thread comments have an unexpected shape") from error
+            if (
+                not isinstance(comment_nodes, list)
+                or not isinstance(comments_page_info, dict)
+                or comments_page_info.get("hasNextPage") is not False
+            ):
+                _fail("GitHub review thread comments are incomplete")
+            threads.append(thread)
+    if pages[-1]["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"].get("hasNextPage") is not False:
+        _fail("GitHub review thread pages are incomplete")
+    return threads
+
+
+def _thread_protocol_records(
+    thread: dict[str, Any]
+) -> tuple[
+    list[tuple[int, re.Match[str]]],
+    list[tuple[int, re.Match[str]]],
+    list[tuple[int, re.Match[str]]],
+    list[tuple[int, re.Match[str]]],
+]:
+    comments = cast(dict[str, Any], thread["comments"])["nodes"]
+    findings_v3: list[tuple[int, re.Match[str]]] = []
+    dispositions_v3: list[tuple[int, re.Match[str]]] = []
+    findings_v1: list[tuple[int, re.Match[str]]] = []
+    dispositions_v1: list[tuple[int, re.Match[str]]] = []
+    for index, row in enumerate(comments):
+        if not isinstance(row, dict):
+            _fail("GitHub review comment has an unexpected shape")
+        author = row.get("author")
+        if not isinstance(author, dict) or author.get("login") != _current_actor():
+            continue
+        body = str(row.get("body", ""))
+        finding_v3 = _finding_match(body)
+        disposition_v3 = _disposition_match(body)
+        if finding_v3 is not None:
+            findings_v3.append((index, finding_v3))
+        if disposition_v3 is not None:
+            dispositions_v3.append((index, disposition_v3))
+        finding_v1 = FINDING_V1_RE.search(body)
+        disposition_v1 = DISPOSITION_V1_RE.search(body)
+        if finding_v1 is not None:
+            findings_v1.append((index, finding_v1))
+        if disposition_v1 is not None:
+            dispositions_v1.append((index, disposition_v1))
+    return findings_v3, dispositions_v3, findings_v1, dispositions_v1
+
+
+def _matching_dispositions(
+    finding_index: int,
+    finding: re.Match[str],
+    dispositions: list[tuple[int, re.Match[str]]],
+    *,
+    expected_head: str | None = None,
+) -> list[re.Match[str]]:
+    fields = ("engine", "round", "fingerprint")
+    matches = [
+        disposition
+        for index, disposition in dispositions
+        if index > finding_index
+        and all(disposition.group(field) == finding.group(field) for field in fields)
+        and (
+            "occurrence" not in finding.groupdict()
+            or disposition.group("occurrence") == finding.group("occurrence")
+        )
+        and (expected_head is None or disposition.group("head") == expected_head)
+    ]
+    return matches
+
+
+def _verify_thread_dispositions(threads: list[dict[str, Any]]) -> int:
+    verified = 0
+    for thread in threads:
+        findings_v3, dispositions_v3, findings_v1, dispositions_v1 = (
+            _thread_protocol_records(thread)
+        )
+        findings: list[tuple[int, re.Match[str], list[tuple[int, re.Match[str]]]]] = [
+            (index, finding, dispositions_v3) for index, finding in findings_v3
+        ] + [(index, finding, dispositions_v1) for index, finding in findings_v1]
+        if not findings:
+            continue
+        if thread.get("isResolved") is not True:
+            _fail("local-review thread is not resolved")
+        finding_index, finding, dispositions = max(findings, key=lambda row: row[0])
+        matches = _matching_dispositions(finding_index, finding, dispositions)
+        if len(matches) != 1:
+            _fail("latest local-review finding lacks exactly one matching disposition")
+        verified += 1
+    return verified
+
+
+def _verify_result_evidence(
+    args: argparse.Namespace, threads: list[dict[str, Any]]
+) -> dict[str, Any]:
+    data = _validate_result_data(args)
+    if data["status"] != "changed":
+        _fail("ledger result evidence requires a changed review result")
+    evidence: dict[str, tuple[re.Match[str], re.Match[str]]] = {}
+    for thread in threads:
+        findings, dispositions, _, _ = _thread_protocol_records(thread)
+        for finding_index, finding in findings:
+            if (
+                finding.group("engine") != args.engine
+                or int(finding.group("round")) != args.round
+                or finding.group("head") != args.before
+            ):
+                continue
+            fingerprint = finding.group("fingerprint")
+            if fingerprint in evidence:
+                _fail("same-round finding fingerprint is duplicated")
+            matches = _matching_dispositions(
+                finding_index, finding, dispositions, expected_head=args.head
+            )
+            if thread.get("isResolved") is not True or len(matches) != 1:
+                _fail("same-round finding lacks one resolved matching disposition")
+            evidence[fingerprint] = (finding, matches[0])
+    if set(evidence) != set(data["findingFingerprints"]):
+        _fail("review result fingerprints do not exactly match same-round ledger evidence")
+    fixed_major = any(
+        finding.group("severity") in {"blocking", "major"}
+        and disposition.group("outcome") == "fixed"
+        for finding, disposition in evidence.values()
+    )
+    if fixed_major and data["classification"] != "material":
+        _fail("fixed blocking or major findings require material classification")
+    return data
+
+
+def _verify_ledger(args: argparse.Namespace) -> None:
+    _verify_head(args.repo, args.pr, args.head)
+    threads = _load_review_threads(args.threads_file)
+    thread_count = _verify_thread_dispositions(threads)
+    data = None
+    if args.result_file is not None:
+        data = _verify_result_evidence(args, threads)
+    print(
+        json.dumps(
+            {
+                "resultStatus": None if data is None else data["status"],
+                "threadsVerified": thread_count,
                 "verified": True,
             },
             sort_keys=True,
@@ -807,6 +1086,17 @@ def _parser() -> argparse.ArgumentParser:
     _add_common(reconcile)
     reconcile.add_argument("--fingerprint", required=True)
     reconcile.set_defaults(handler=_reconcile)
+
+    verify_ledger = commands.add_parser("verify-ledger")
+    _add_common(verify_ledger)
+    verify_ledger.add_argument("--threads-file", required=True)
+    verify_ledger.add_argument("--actor")
+    verify_ledger.add_argument("--engine", choices=("codex", "claude"))
+    verify_ledger.add_argument("--round", type=int)
+    verify_ledger.add_argument("--base")
+    verify_ledger.add_argument("--before")
+    verify_ledger.add_argument("--result-file")
+    verify_ledger.set_defaults(handler=_verify_ledger)
     return parser
 
 
@@ -821,17 +1111,29 @@ def _validate_args(args: argparse.Namespace) -> None:
     if getattr(args, "occurrence", 1) < 1:
         _fail("--occurrence must be a positive integer")
     if getattr(args, "content_file", None):
-        required = ("engine", "round", "fingerprint")
+        required = ["engine", "round", "fingerprint"]
         if args.command == "post-finding":
-            required += ("severity", "lens")
+            required.extend(("severity", "lens"))
         missing = [name for name in required if getattr(args, name, None) is None]
         if missing:
             _fail("v3 content mode requires " + ", ".join(f"--{name.replace('_', '-')}" for name in missing))
+    if args.command == "verify-ledger":
+        result_fields = ("engine", "round", "base", "before", "result_file")
+        present = [getattr(args, name, None) is not None for name in result_fields]
+        if any(present) and not all(present):
+            _fail(
+                "verify-ledger result evidence requires --engine, --round, "
+                "--base, --before, and --result-file"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
+    global CURRENT_ACTOR
+    CURRENT_ACTOR = None
     args = _parser().parse_args(argv)
     _validate_args(args)
+    if getattr(args, "actor", None) is not None:
+        CURRENT_ACTOR = _require_token(args.actor, "actor")
     args.handler(args)
     return 0
 

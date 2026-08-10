@@ -16,6 +16,7 @@ from typing import Any, NoReturn
 
 STATE_VERSION = 1
 SHA_RE = re.compile(r"[0-9a-f]{40}")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PHASES = {"draft-open", "reviewing", "converged", "finalized"}
 
 
@@ -59,6 +60,8 @@ def _validate(value: dict[str, Any]) -> None:
         "headSha",
         "phase",
         "round",
+        "codexResultSha256",
+        "claudeResultSha256",
     }
     if set(value) != required:
         _fail("run state has missing or unknown fields")
@@ -75,6 +78,17 @@ def _validate(value: dict[str, Any]) -> None:
             _fail(f"run state {key} must be a full lowercase commit SHA")
     if value["phase"] not in PHASES:
         _fail("run state phase is invalid")
+    for key in ("codexResultSha256", "claudeResultSha256"):
+        digest = value[key]
+        if digest is not None and (
+            not isinstance(digest, str) or not SHA256_RE.fullmatch(digest)
+        ):
+            _fail(f"run state {key} must be null or a lowercase SHA-256 digest")
+    if value["phase"] in {"converged", "finalized"} and any(
+        value[key] is None
+        for key in ("codexResultSha256", "claudeResultSha256")
+    ):
+        _fail("converged or finalized run state requires both review result hashes")
     worktree = Path(value["worktree"])
     log_dir = Path(value["logDir"])
     if not worktree.is_absolute() or not log_dir.is_absolute():
@@ -134,6 +148,8 @@ def _create(args: argparse.Namespace) -> None:
         "headSha": args.head_sha,
         "phase": "draft-open",
         "round": 1,
+        "codexResultSha256": None,
+        "claudeResultSha256": None,
     }
     _atomic_write(path, value, replace=False)
     print(json.dumps(value, sort_keys=True))
@@ -149,6 +165,14 @@ def _update(args: argparse.Namespace) -> None:
         value["baseSha"] = args.base_sha
     if args.head_sha is not None:
         value["headSha"] = args.head_sha
+    if args.phase in {"draft-open", "reviewing"}:
+        value["codexResultSha256"] = None
+        value["claudeResultSha256"] = None
+    elif args.phase == "converged":
+        if args.codex_result_sha256 is None or args.claude_result_sha256 is None:
+            _fail("converged state requires both review result hashes")
+        value["codexResultSha256"] = args.codex_result_sha256
+        value["claudeResultSha256"] = args.claude_result_sha256
     _atomic_write(path, value)
     print(json.dumps(value, sort_keys=True))
 
@@ -181,6 +205,8 @@ def _parser() -> argparse.ArgumentParser:
     update.add_argument("--round", type=int)
     update.add_argument("--base-sha")
     update.add_argument("--head-sha")
+    update.add_argument("--codex-result-sha256")
+    update.add_argument("--claude-result-sha256")
     update.set_defaults(handler=_update)
     show = commands.add_parser("show")
     show.add_argument("--file", required=True)
