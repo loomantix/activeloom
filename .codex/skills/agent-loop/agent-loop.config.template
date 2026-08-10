@@ -16,7 +16,7 @@ validation_hook =
 
 # Required acknowledgement of the current review-hook contract. Existing
 # consumer configs must migrate the hooks below before adding this marker.
-review_contract_version = 2
+review_contract_version = 3
 
 # Both review hooks are required. The wrapper runs Codex first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are
@@ -35,13 +35,12 @@ review_contract_version = 2
 # engine an arbitrary command launches; these commands own that guarantee.
 # Hooks also receive `$AGENT_LOOP_PR_NUMBER`, `$AGENT_LOOP_PR_URL`, and
 # `$AGENT_LOOP_PR_HEAD_SHA`. The last value is the exact head at pass start.
-# When a hook commits, write exactly `material` or `minor` to
-# `$AGENT_LOOP_REVIEW_OUTCOME_FILE`. Missing classification defaults to material;
-# a no-commit pass is clean, must not write the file, and must publish the
-# `local-review-pass:v1` marker required by the local review ledger. A committed
-# pass must publish a same-round `local-review-disposition:v1` reply tied to the
-# pushed SHA plus a final-lane `local-review-complete:v1` marker. Later hooks and
-# final validation must not create, remove, or alter an accepted outcome.
+# Every hook must write the v3 JSON result contract to
+# `$AGENT_LOOP_REVIEW_RESULT_FILE`, including clean and blocked passes. Hooks use
+# the deterministic ledger helper for findings and the resumable `dispose`
+# transaction, but never post pass/completion markers; the wrapper validates the
+# result and posts those attestations. Later hooks and final validation must not
+# create, remove, or alter an accepted result file.
 claude_review_hook =
 codex_review_hook =
 review_max_rounds = 4

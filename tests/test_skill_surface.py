@@ -137,7 +137,7 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     synced_ledger = consumer / ledger_relative
     assert synced_ledger.is_file()
     assert synced_ledger.read_bytes() == (REPO_ROOT / ledger_relative).read_bytes()
-    assert "review_contract_version = 2" in (
+    assert "review_contract_version = 3" in (
         consumer / ".codex/skills/agent-loop/agent-loop.config"
     ).read_text(encoding="utf-8")
     sentinel = "\nconsumer customization\n"

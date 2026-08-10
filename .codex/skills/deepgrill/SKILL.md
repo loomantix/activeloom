@@ -32,8 +32,8 @@ and PR head SHA match. Record the PR number and load all prior review threads,
 including resolved and outdated threads.
 
 Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
-when the runner set it, otherwise one past the count of `local-review-pass:v1`
-and `local-review-complete:v1` markers on the PR naming `engine=codex`. Rounds
+when the runner set it, otherwise one past the count of `local-review-pass:v3`
+and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds
 1–2 are adversarial; round 3 and later are convergence rounds. State which
 applies before invoking a lane.
 
@@ -118,10 +118,12 @@ the hosted-path summary.
 When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
 return control after pushing reviewed fixes and completing their PR threads:
 
-If `$AGENT_LOOP_REVIEW_OUTCOME_FILE` is set and this pass commits fixes, write
-exactly `material` when any fix is substantive or `minor` when every fix is
-low-risk and non-behavioral. Do not create the file when no fix commit is made.
-Missing classification for a commit defaults to material.
+If `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, always write the v3 structured
+result after the final lane. Use `clean` when the head did not move, `changed`
+with `minor` or `material` plus every dispositioned finding fingerprint when it
+did, or `blocked` with a short safe blocker when the pass cannot complete. The
+outer wrapper validates the observed transition and posts the canonical
+attestation; this skill must not post a pass/completion marker itself.
 
 ```text
 Codex deepgrill pass complete.

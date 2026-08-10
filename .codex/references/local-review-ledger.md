@@ -16,6 +16,21 @@ Before any cleanup or adversarial review:
 
 Never force-push during a review relay. A moved remote head ends the pass.
 
+## Classify the changeset
+
+`refactorpass`, `grill`, and `deepgrill` skip docs/config-only changesets. This
+is the shared definition for the pinned review range:
+
+- **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
+  `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
+- **Docs, config, or fixtures** — `.md`, `.txt`, `.yml`, `.yaml`, `.json`,
+  `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
+  `.env.example`, paths under `docs/`, `*.fixture.*`, and snapshot files.
+- **Anything else** — treat as source.
+
+Zero source files means skip; one or more means run the full pass. A mixed
+changeset is not a partial skip.
+
 ## Build one immutable review packet
 
 Review fan-out must use one canonical description of the changeset. Without an
@@ -132,7 +147,7 @@ per-round evidence, and no automated runner parses it.
 
 Resolve this engine's round number before selecting lanes. Use
 `$AGENT_LOOP_REVIEW_ROUND` when the automated runner set it. Otherwise count the
-`local-review-pass:v1` and `local-review-complete:v1` markers already on the PR
+`local-review-pass:v3` and `local-review-complete:v3` markers already on the PR
 that name this engine; this pass is one past that count.
 
 - **Rounds 1–2 — adversarial.** The full stance: assume the diff is guilty, run
@@ -193,19 +208,16 @@ deduplicate by root cause before publishing it. For every confirmed finding:
 1. Compute a stable fingerprint from the normalized repository-relative path
    and root-cause description. The fingerprint must not include the line
    number, round, engine, or head SHA.
-2. Search all prior local-review threads for that fingerprint. Reply to the
-   existing thread when it is the same root cause; do not create a duplicate.
+2. Search all prior local-review threads for that fingerprint. A later concrete
+   occurrence of the same root cause is appended to and reopens the existing
+   thread with `reopen-occurrence`; do not create a duplicate root thread.
 3. Post one inline comment on an exact diff anchor before changing the file.
    Prefer a right-side line. Use a left-side line only when the finding concerns
    deleted code. A finding without a defensible diff anchor is not an inline
    finding; keep it out of the automated fix loop or track a genuinely large
    follow-up separately.
-4. Include this machine-readable marker:
-
-   ```text
-   <!-- local-review:v1 engine=<codex|claude> round=<n> head=<sha> fingerprint=<stable-id> -->
-   ```
-
+4. Put only the human finding prose in a regular UTF-8 content file. The helper
+   owns the v3 marker, its field order, and its content hash.
 5. State severity, review lens, evidence, impact, and the expected correction.
    Keep one root cause per thread.
 
@@ -219,16 +231,21 @@ Use `.codex/skills/grill/scripts/review-ledger.py` for every local-review
 finding, disposition reply, thread resolution, and pass marker. Do not
 hand-compose `gh api` form arguments for these mutations.
 
-The helper verifies the current PR head, builds JSON requests, reads mutations
-back, and rejects a line unless it exists in GitHub's actual PR patch. A locally
-expanded diff is not proof that GitHub accepts the line. Run `preflight-anchor`
-before preparing the mutation. When the exact line is unavailable, choose
-another causally defensible changed line or explicitly use `--file-level`;
-never silently change the anchor type. Keep a finding out of the automated fix
-loop when neither anchor is defensible.
+The v3 helper verifies the current PR head before and after each mutation,
+constructs markers and JSON itself, reads mutations back, and reconciles retries
+by an idempotency key containing engine, round, exact head, fingerprint, and
+occurrence. It rejects a line unless it exists in GitHub's actual PR patch. A
+locally expanded diff is not proof that GitHub accepts the line. Run
+`preflight-anchor` before preparing the mutation. When the exact line is
+unavailable, choose another causally defensible changed line or explicitly use
+`--file-level`; never silently change the anchor type.
 
-Pass comment bodies through stdin so shell parsing cannot turn body text into
-request fields:
+Create the human prose with the active file-editing tool under
+`$AGENT_LOOP_LOG_DIR/ledger-content/` when that variable is set, or in another
+owner-only temporary directory outside the Git worktree. Do not use stdin,
+heredocs, command substitution, or model-authored marker text. The helper
+preserves literal backticks, dollar expressions, quotes, Unicode, CRLF, and a
+missing final newline:
 
 ```bash
 python3 .codex/skills/grill/scripts/review-ledger.py preflight-anchor \
@@ -238,32 +255,40 @@ python3 .codex/skills/grill/scripts/review-ledger.py preflight-anchor \
 python3 .codex/skills/grill/scripts/review-ledger.py post-finding \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line> \
-  --body-file - <<'REVIEW_COMMENT'
-<!-- local-review:v1 engine=<codex|claude> round=<n> head=<sha> fingerprint=<stable-id> -->
-<severity, lens, evidence, impact, and expected correction>
-REVIEW_COMMENT
+  --engine <codex|claude> --round <n> --fingerprint <stable-id> \
+  --occurrence 1 --severity <blocking|major|minor|nit> --lens <lens> \
+  --content-file <regular-utf8-file>
 ```
 
-After the fix is pushed, reply through the dedicated review-comment reply
-endpoint and resolve only after the verified reply succeeds:
+When the same fingerprint recurs on a later reviewed head, append a new numbered
+occurrence to its existing root comment and reopen that thread atomically:
 
 ```bash
-python3 .codex/skills/grill/scripts/review-ledger.py reply \
-  --repo <owner/repo> --pr <number> --head <full-fix-sha> \
-  --comment-id <top-level-comment-database-id> --body-file - <<'REVIEW_REPLY'
-<!-- local-review-disposition:v1 engine=<codex|claude> round=<n> head=<fix-sha> fingerprint=<stable-id> outcome=fixed -->
-<fix and validation evidence>
-REVIEW_REPLY
-
-python3 .codex/skills/grill/scripts/review-ledger.py resolve \
-  --repo <owner/repo> --pr <number> --head <full-fix-sha> \
-  --thread-id <graphql-review-thread-id>
+python3 .codex/skills/grill/scripts/review-ledger.py reopen-occurrence \
+  --repo <owner/repo> --pr <number> --head <reviewed-sha> \
+  --engine <codex|claude> --round <n> --fingerprint <stable-id> \
+  --occurrence <next-number> --severity <severity> --lens <lens> \
+  --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
+  --content-file <regular-utf8-file>
 ```
 
-Use the helper's `post-pr-comment` subcommand for refactor, clean-pass, and
-completion markers. A preflight rejection performs no mutation; correct the
-anchor before posting. A GitHub mutation or read-back failure is the existing
-stop condition—do not retry it with an improvised API command.
+After the fix is pushed, use the resumable `dispose` transaction. It posts or
+reuses the exact disposition, verifies it, resolves the thread, and verifies
+the final state. If the reply succeeds but resolution fails, running the same
+command again reuses the reply and completes only the missing resolution:
+
+```bash
+python3 .codex/skills/grill/scripts/review-ledger.py dispose \
+  --repo <owner/repo> --pr <number> --head <full-fix-sha> \
+  --engine <codex|claude> --round <n> --fingerprint <stable-id> \
+  --occurrence <number> --outcome <fixed|dismissed|deferred> \
+  --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
+  --content-file <regular-utf8-file>
+```
+
+Use `reconcile --fingerprint <stable-id>` to inspect known occurrences and
+dispositions after an uncertain response. Retry the identical helper command;
+never improvise an API mutation. A preflight rejection performs no mutation.
 
 ## Fix, reply, and resolve
 
@@ -271,48 +296,54 @@ For each published finding:
 
 1. Apply the correction and run the smallest relevant validation.
 2. Commit and push with a normal, non-force push.
-3. Reply in the same thread with the fix commit SHA, validation result, and a
-   concise rationale. A fixed finding must also carry this marker, using the
-   same fingerprint as the finding and the full pushed fix SHA:
-
-   ```text
-   <!-- local-review-disposition:v1 engine=<codex|claude> round=<n> head=<fix-sha> fingerprint=<stable-id> outcome=fixed -->
-   ```
-
-   For dismissal or tracked deferral, reply with evidence or the issue link and
-   use `outcome=dismissed` or `outcome=deferred` with the reviewed head.
-
-4. Resolve the review thread only after the reply is visible on GitHub.
+3. Put the fix SHA, validation result, and concise rationale in a content file.
+   Use `dispose` with the matching fingerprint and occurrence. For dismissal or
+   tracked deferral, use `outcome=dismissed` or `outcome=deferred` and the exact
+   reviewed head.
+4. Let `dispose` verify the reply and resolution as one resumable transaction.
 
 If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
 report the exact unresolved thread; do not silently continue.
 
 ## Record clean passes and convergence
 
-A pass with no new confirmed findings must leave a PR review comment containing
-the engine, round, exact reviewed head SHA, and `no new material findings`.
-Include this machine-readable marker so automation can attest the clean pass:
+Every pass writes `$AGENT_LOOP_REVIEW_RESULT_FILE` when that variable is set.
+The file is always present, including clean and blocked passes, and contains
+exactly this contract:
 
-```text
-<!-- local-review-pass:v1 engine=<codex|claude> round=<n> head=<sha> -->
+```json
+{
+  "version": 3,
+  "status": "clean|changed|blocked",
+  "engine": "codex|claude",
+  "round": 1,
+  "baseSha": "<sha>",
+  "beforeSha": "<sha>",
+  "afterSha": "<sha>",
+  "classification": null,
+  "findingFingerprints": [],
+  "finalLaneComplete": true
+}
 ```
 
-An automated runner requires that attestation from every pass that committed
-nothing: a hook exiting successfully proves only that it ran, not that it read
-anything. Clean evidence becomes stale as soon as the PR head changes, so the
-marker's `head` must be the exact SHA reviewed, and a pass that fixed something
-attests through its thread replies instead.
+For `changed`, classification is `minor` or `material`, fingerprints is the
+non-empty set dispositioned by the pass, and `finalLaneComplete` is true. For
+`blocked`, classification is null, `finalLaneComplete` is false, and the object
+also contains a short safe `blocker` string. Use a file-editing tool or a
+deterministic serializer; do not construct JSON with shell interpolation.
 
-A review hook that committed must also leave a final-lane completion marker
-after its last adversarial lane finishes:
+The automated wrapper validates this file against the pinned base and observed
+before/after Git state, verifies every changed fingerprint against resolved v3
+threads, and then posts the canonical `local-review-pass:v3` or
+`local-review-complete:v3` attestation itself. Review hooks never post their own
+pass/completion markers. A missing or invalid result and a valid `blocked`
+result both stop clearly even when the reviewer process exits zero.
 
-```text
-<!-- local-review-complete:v1 engine=<codex|claude> round=<n> before=<reviewed-sha> head=<final-sha> -->
-```
-
-The runner requires both this completion marker and a same-round finding plus
-`outcome=fixed` disposition tied to the pushed SHA. This prevents an earlier
-cleanup commit from masking a final adversarial lane that silently declined.
+Every engine pass remains evidence for the exact head it reviewed. A later
+minor commit does not rewrite that historical fact. Round convergence is a
+separate explicit transition: one Codex-to-Claude round may converge when all
+observed changes are minor and dispositioned, without claiming Codex reviewed
+Claude's later head. Any material change restarts at Codex.
 
 For a two-engine loop:
 

@@ -28,8 +28,8 @@ Do not proceed in the current session unless the user explicitly overrides.
 
 Resolve this engine's round number per `.codex/references/local-review-ledger.md`
 before selecting lanes: use `$AGENT_LOOP_REVIEW_ROUND` when the runner set it,
-take it from an invoking `deepgrill`, or count the `local-review-pass:v1` and
-`local-review-complete:v1` markers on the PR naming `engine=codex` and add one.
+take it from an invoking `deepgrill`, or count the `local-review-pass:v3` and
+`local-review-complete:v3` markers on the PR naming `engine=codex` and add one.
 
 - **Rounds 1–2 run adversarially.** The stance, matrices, and fix bias below
   apply as written.
@@ -187,11 +187,14 @@ Run these lanes as independently as the active runtime permits:
     invalid findings with evidence. Defer only 300+ line or cross-cutting
     refactors, and track each deferral in a GitHub issue.
 11. Run targeted validation, commit, and push with no force.
-12. Use the ledger helper to reply to every posted thread with the fix SHA and
-    validation or disposition rationale, then resolve it. Stop on any posting,
-    push, reply, or resolution failure.
-13. If the pass has no new confirmed findings, leave a clean-pass PR review
-    comment naming the engine and exact reviewed head.
+12. Use the ledger helper's resumable `dispose` transaction for every posted
+    finding. Stop on any posting, push, disposition, or resolution failure; on
+    an uncertain helper response, retry only the identical command.
+13. Always write the v3 structured result to
+    `$AGENT_LOOP_REVIEW_RESULT_FILE` when set. The outer wrapper validates it
+    and owns the pass/completion attestation. Outside agent-loop, create the
+    same result as a private temporary file and use the helper's `attest`
+    command so manual and automated passes share one protocol.
 
 ## Output
 

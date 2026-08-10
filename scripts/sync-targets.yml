@@ -94,6 +94,11 @@ targets:
     substitutions: []
     mode: '0755'
 
+  - source: .codex/skills/agent-loop/scripts/agent-loop-state.py
+    destination: .codex/skills/agent-loop/scripts/agent-loop-state.py
+    substitutions: []
+    mode: '0755'
+
   - source: .codex/skills/agent-loop/scripts/hook-git-guard
     destination: .codex/skills/agent-loop/scripts/hook-git-guard
     substitutions: []

@@ -22,12 +22,13 @@ worker only implements, validates, refactors, and commits locally.
 
 Options:
 
-| Option             | Behavior                                                                                                                                                                      |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--issues N,N,...` | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
-| `--iterations N`   | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
-| `--resume`         | Permit an eligible issue already assigned only to the current user.                                                                                                           |
-| `--dry-run`        | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
+| Option               | Behavior                                                                                                                                                                      |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--issues N,N,...`   | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
+| `--iterations N`     | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
+| `--include-assigned` | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
+| `--resume-run FILE`  | Resume review/finalization from a private contract-v3 run-state file after re-attesting its issue, worktree, branch, PR, base, and head.                                      |
+| `--dry-run`          | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
 
 Omitting `--issues` retains the ready-queue behavior for backward compatibility.
 Use an allowlist for every scoped or retrospective-driven run.
@@ -60,7 +61,7 @@ with the issue worktree as the current directory.
 | `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                                               |
 | `claude_review_hook`                             | Required fresh local Claude review on the draft PR. It must post confirmed findings inline before fixes, push, reply, resolve, and fail on undisposed findings. |
 | `codex_review_hook`                              | Required fresh Codex `deepgrill` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                          |
-| `review_contract_version`                        | Required opt-in to the current hook contract. Set to `2`; missing or unsupported versions fail before issue selection.                                          |
+| `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                             |
 | `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.                                            |
 | `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                                                      |
 | `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                    |
@@ -83,20 +84,20 @@ hooks also receive `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 `AGENT_LOOP_PR_HEAD_SHA`, `AGENT_LOOP_REVIEW_BASE`, the fully qualified fetched remote
 ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA` captured after the round's fresh
 fetch, `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_ENGINE`, and
-`AGENT_LOOP_REVIEW_OUTCOME_FILE`. Both hooks must scope against the SHA so a
+`AGENT_LOOP_REVIEW_RESULT_FILE` for contract v3. Both hooks must scope against the SHA so a
 mid-round remote update cannot give the engines different bases.
 
-When a review hook commits fixes, it writes exactly `material` or `minor` to
-`$AGENT_LOOP_REVIEW_OUTCOME_FILE`. Material means any substantive behavior,
-correctness, security/privacy, data-safety, compatibility, deployment/sync, or
-review-integrity change. Minor means low-risk, non-behavioral cleanup, clarity,
-or test/docs polish. If a hook commits without writing the file, the wrapper
-defaults to `material`; a no-commit pass is clean and must not write an outcome.
-Only material fixes restart at Codex. Minor fixes are retained and validated but
-count toward convergence so low-severity polish cannot keep the loop running.
-The outcome must remain unchanged through post-review validation; a validator
-or later reviewer that creates, removes, or changes an accepted classification
-blocks publication. The wrapper re-attests both records after final validation.
+Every v3 review hook writes a structured `clean`, `changed`, or `blocked`
+result. The wrapper validates the engine, round, pinned base, observed
+before/after SHAs, classification, finding fingerprints, and final-lane status;
+verifies changed fingerprints against resolved v3 dispositions; and posts the
+canonical pass/completion marker itself. Material means any substantive
+behavior, correctness, security/privacy, data-safety, compatibility,
+deployment/sync, or review-integrity change; it is not inferred from file type.
+Minor means low-risk, non-behavioral cleanup, clarity, or test/docs polish. Only
+material fixes restart at Codex. A missing, invalid, or blocked result stops
+clearly even if the hook process exits zero. Accepted result bytes remain
+unchanged through final validation.
 
 The wrapper pins `GH_REPO` from the current checkout before any
 repository-scoped GitHub operation. Setup, worker, and validation hooks cannot
@@ -104,8 +105,8 @@ push or call ordinary `gh`; review hooks run only after draft PR creation and
 may mutate that PR and its head branch. After each review hook, the wrapper
 requires exit 0, a clean attached issue branch, append-only ancestry, unchanged
 origin identity, and identical local, remote, and PR head SHAs. At convergence
-it queries GitHub review threads and fails if any thread bearing the
-`local-review:v1` marker lacks a reply or remains unresolved.
+it queries GitHub review threads and fails if any local-review thread lacks a
+disposition reply or remains unresolved.
 
 ## Existing Consumer Migration
 
@@ -121,7 +122,8 @@ $AGENT_LOOP_PR_NUMBER`, then the Claude hook to run a fresh adversarial review
    fixes, reply with the fix and validation, resolve the threads, leave the
    issue branch attached and clean, and exit nonzero if findings remain.
 3. Configure a non-mutating `validation_hook`, add
-   `review_contract_version = 2`, and optionally override
+   `review_contract_version = 3`, make every hook write the v3 result to
+   `$AGENT_LOOP_REVIEW_RESULT_FILE`, and optionally override
    `review_max_rounds = 4` with another positive cap.
 4. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync
@@ -179,6 +181,13 @@ unchanged. Review, setup, integration, validation mutation,
 detached/wrong-branch state, review-thread failures, and review
 non-convergence failures also preserve the worktree and draft PR. Never reset,
 reuse, clean, or delete a dirty recovery worktree.
+
+Contract v3 creates an owner-only atomic `run-state.json` after draft PR
+publication and checkpoints every review round plus convergence. On a review or
+finalization interruption, use the exact `--resume-run <state-file>` command
+printed by the wrapper. Recovery re-attests repository identity, issue
+assignment, worktree ancestry, branch, PR identity, base, and head before it
+continues; it never re-runs the worker or blindly recreates a remote branch.
 
 If a newly added claim cannot be rolled back before worktree creation, stop and
 manually inspect/unassign it. Publication is not atomic: after a push succeeds,

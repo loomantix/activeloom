@@ -64,6 +64,11 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     shutil.copy2(AGENT_LOOP, script)
     for guard_name in ("hook-git-guard", "hook-gh-guard"):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
+    shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
+    ledger_source = REPO_ROOT / ".codex/skills/grill/scripts/review-ledger.py"
+    ledger_target = repo / ".codex/skills/grill/scripts/review-ledger.py"
+    ledger_target.parent.mkdir(parents=True)
+    shutil.copy2(ledger_source, ledger_target)
     _write_executable(
         ready,
         "#!/usr/bin/env python3\n"
@@ -96,6 +101,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
 import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 state = pathlib.Path(os.environ['AGENT_STATE_DIR'])
+input_payload = json.load(sys.stdin) if '--input' in args else None
 with (state / 'gh.log').open('a') as handle:
     handle.write(' '.join(args) + '\n')
 issues = json.loads(os.environ.get('AGENT_ISSUES_JSON', '{}'))
@@ -253,8 +259,24 @@ elif args[:2] == ['api', 'graphql']:
             }}
         }}}})
     print(json.dumps(output))
+elif args[:1] == ['api'] and any('/issues/1/comments?per_page=100' in arg for arg in args):
+    comments_file = state / 'issue-comments.json'
+    comments = json.loads(comments_file.read_text()) if comments_file.exists() else []
+    print(json.dumps([comments]))
+elif args[:1] == ['api'] and any('/issues/1/comments' in arg for arg in args) and '-X' in args:
+    comments_file = state / 'issue-comments.json'
+    comments = json.loads(comments_file.read_text()) if comments_file.exists() else []
+    row = {'id': len(comments) + 700, 'body': input_payload['body']}
+    comments.append(row)
+    comments_file.write_text(json.dumps(comments))
+    print(json.dumps(row))
+elif args[:1] == ['api'] and any('/issues/comments/' in arg for arg in args):
+    comment_id = int(next(arg.rsplit('/', 1)[1] for arg in args if '/issues/comments/' in arg))
+    comments = json.loads((state / 'issue-comments.json').read_text())
+    print(json.dumps(next(row for row in comments if row['id'] == comment_id)))
 elif args[:1] == ['api'] and any('/issues/1/comments' in arg for arg in args):
-    print('[]')
+    comments_file = state / 'issue-comments.json'
+    print(comments_file.read_text() if comments_file.exists() else '[]')
 elif args[:1] == ['api'] and any('/pulls/1/comments' in arg for arg in args):
     print('[]')
 elif args[:1] == ['api'] and any('/pulls/1/reviews' in arg for arg in args):
@@ -350,6 +372,31 @@ def _config(
             f"else {clean_attestation}; fi"
         )
     return "\n".join(f"{key} = {value}" for key, value in values.items()) + "\n"
+
+
+def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
+    result_command = (
+        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
+        "--argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" "
+        "--arg head \"$AGENT_LOOP_PR_HEAD_SHA\" "
+        "'{version:3,status:\"clean\",engine:$engine,round:$round,"
+        "baseSha:$base,beforeSha:$head,afterSha:$head,classification:null,"
+        "findingFingerprints:[],finalLaneComplete:true}' "
+        '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
+    )
+    values: dict[str, str | int] = {
+        "review_contract_version": 3,
+        "codex_review_hook": result_command,
+        "claude_review_hook": result_command,
+    }
+    values.update(overrides)
+    return _config(
+        tmp_path,
+        auto_clean_attestation=False,
+        auto_committed_evidence=False,
+        **values,
+    )
 
 
 def _run(
@@ -1283,6 +1330,88 @@ def test_review_contract_version_is_required_before_claim(
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
+
+
+def test_unscoped_include_assigned_discovers_my_ready_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    issue = _issue(24, assigned=True)
+    result = _run(
+        consumer,
+        ["--include-assigned", "--dry-run"],
+        issues=[issue],
+        config=_config(tmp_path),
+        extra_env={"AGENT_READY_JSON": json.dumps([{"number": 24}])},
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Issue #24 (1/10)" in result.stdout
+
+
+def test_v3_wrapper_owns_clean_attestations_and_finalizes_state(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "25"],
+        issues=[_issue(25)],
+        config=_config_v3(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    state_files = list((tmp_path / "logs").glob("*/run-state.json"))
+    assert len(state_files) == 1
+    state = json.loads(state_files[0].read_text(encoding="utf-8"))
+    assert state["phase"] == "finalized"
+    comments = json.loads((consumer[3] / "issue-comments.json").read_text())
+    assert len(comments) == 2
+    assert all("local-review-pass:v3" in row["body"] for row in comments)
+
+
+def test_v3_missing_result_blocks_without_false_clean_marker(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "26"],
+        issues=[_issue(26)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook="true",
+            claude_review_hook="true",
+        ),
+    )
+    assert result.returncode != 0
+    assert "valid contract v3 result" in result.stderr
+    comments_file = consumer[3] / "issue-comments.json"
+    assert not comments_file.exists()
+    state_files = list((tmp_path / "logs").glob("*/run-state.json"))
+    assert len(state_files) == 1
+    assert json.loads(state_files[0].read_text())["phase"] == "reviewing"
+
+
+def test_resume_run_continues_preserved_draft_review(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "27"],
+        issues=[_issue(27)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook="true",
+            claude_review_hook="true",
+        ),
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(27, assigned=True)],
+        config=_config_v3(tmp_path),
+    )
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert "agent-loop recovery finished" in second.stdout
+    assert json.loads(state_file.read_text())["phase"] == "finalized"
 
 
 @pytest.mark.parametrize("timeout_key", ["worker_timeout_seconds", "hook_timeout_seconds"])
