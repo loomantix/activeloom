@@ -1,6 +1,7 @@
 ---
 name: phone-install
 description: Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB. Use for phone sideload smoke tests, including consumer-specific build env overrides documented in the consumer repo. Accepts an ADB port and optional staging, development, production, APK-path, no-launch, or no-pull choices from the user's request.
+disable-model-invocation: true
 ---
 
 # /phone-install — release-build + wireless-install on Android

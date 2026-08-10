@@ -8,6 +8,7 @@ description: >-
   remote state, or when the user says "infra migration", "state cutover", "fenced
   cutover", "move the <X> root", or opens a per-root migration window. Read-mostly:
   every live state mutation is explicitly gated on a human go.
+disable-model-invocation: true
 ---
 
 # AWS infra migration — fenced one-writer state cutover

@@ -2,6 +2,7 @@
 name: agent-loop
 description: Autonomous issue implementation loop with strict issue allowlisting, one linked worktree and draft PR per issue, bounded local Codex/Claude review rounds, inline thread traceability, and fresh-base validation. Use for a bounded GitHub issue queue without hosted AI reviewers.
 argument-hint: '[iterations] [--iterations N] [--issues N,N,...] [--resume] [--dry-run]'
+disable-model-invocation: true
 ---
 
 # Agent Loop

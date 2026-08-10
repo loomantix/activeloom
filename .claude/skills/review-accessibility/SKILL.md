@@ -2,6 +2,7 @@
 name: review-accessibility
 description: Accessibility audit for a non-production web app containing only public or synthetic data — runs axe-core against approved routes, fixes violations confidently mapped to source, and opens a PR for human review. Works on any repo since nothing is installed in the target app; axe-core is injected at runtime through the browser tool.
 argument-hint: (optional) a non-production URL alone scans every eligible static route; a URL plus static route paths (e.g. "localhost:3000 /dashboard /settings") scans only those; with no arguments you'll be asked for the dev-server URL or command
+disable-model-invocation: true
 ---
 
 # /review-accessibility — synthetic-data a11y scan + fix + PR
