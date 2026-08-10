@@ -288,6 +288,10 @@ elif args[:2] == ['pr', 'review']:
     reviews_file.write_text(json.dumps(reviews))
 elif args[:2] == ['pr', 'close']:
     (state / 'pr-closed').touch()
+elif args[:1] == ['api'] and any('/compare/' in arg for arg in args):
+    endpoint = next(arg for arg in args if '/compare/' in arg)
+    before = endpoint.rsplit('/compare/', 1)[1].split('...', 1)[0]
+    print(json.dumps({'status': 'ahead', 'merge_base_commit': {'sha': before}}))
 elif args[:2] == ['api', 'graphql']:
     if os.environ.get('AGENT_MUTATE_RESULT_ON_THREADS_FETCH') == 'true':
         marker = state / 'result-mutated'
