@@ -47,7 +47,7 @@ jobs:
     # updates that match it. A bumped SHA without matching file content
     # fails the gate intentionally so a reviewer notices the drift.
     env:
-      CLAUDE_PIN_SHA: 3bd7dc0e97b5c7278913e04105741877e8a6c8b7
+      CLAUDE_PIN_SHA: 6069fc17c60db94ebc5c5001e9e341abd1de5779
       CLAUDE_REPO: loomantix/claude-platform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
