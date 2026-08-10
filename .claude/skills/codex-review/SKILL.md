@@ -33,13 +33,15 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
    - Fetch the PR head without repurposing a primary checkout. Require the current linked worktree branch, its remote head, and the PR head to match.
    - Read every prior review thread, including resolved and outdated threads. Summarize their fingerprints, dispositions, fix SHAs, and reviewed-head attestations for the Codex prompt.
    - Read the PR base with `gh pr view <n> --json baseRefName`.
-   - Compute the merge base and capture the authoritative tracked and untracked scope:
+   - When `$AGENT_LOOP_REVIEW_BASE_SHA` is set, validate it as a full commit SHA
+     and use that literal SHA as the review base without fetching or recomputing
+     the range. Otherwise fetch the base branch once, resolve one exact base SHA,
+     and keep it immutable for the pass. Capture the authoritative tracked and
+     untracked scope from that exact base:
 
      ```bash
-     BASE=origin/<base-branch>
-     git fetch origin <base-branch> --quiet
-     MB=$(git merge-base "$BASE" HEAD)
-     git diff --stat "$MB"         # committed, staged, and unstaged tracked changes
+     REVIEW_BASE=<runner-provided-sha-or-once-resolved-base-sha>
+     git diff --stat "$REVIEW_BASE" # committed, staged, and unstaged tracked changes
      git status --short
      git ls-files --others --exclude-standard
      ```
@@ -47,7 +49,7 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
    - If the changeset is docs/config-only per the ledger's classification,
      record a scoped clean v3 result. Under agent-loop the wrapper attests it;
      otherwise use the deterministic helper's `attest` command, then exit.
-   - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds 1–2 are adversarial; round 3 and later are convergence rounds, and the prompt and dispositions change accordingly.
+   - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds 1–2 are adversarial; round 3 and later are convergence rounds, and the prompt and dispositions change accordingly. The result's `baseSha` and the prompt range must name `REVIEW_BASE` exactly.
 
 ## Phase 1: Build the review prompt
 
@@ -57,7 +59,7 @@ Write a tight, scoped prompt. A vague "review this" wastes the run; name the fil
 - 2–3 lines on what the change does.
 - A concise summary of the complete local-review ledger, including resolved
   and outdated threads, so Codex does not rediscover disposed defects.
-- The tracked diff to read (`git diff <MB>`) plus the untracked paths from `git ls-files --others --exclude-standard`, and an instruction to **read the actual source, not just the diff**.
+- The tracked diff to read (`git diff <REVIEW_BASE>`) plus the untracked paths from `git ls-files --others --exclude-standard`, and an instruction to **read the actual source, not just the diff**.
 - The 3–4 riskiest things about this specific change, phrased as **where to scrutinize hardest** — not as an attack. See the framing rules below.
 - The output contract: **only high-confidence material findings** (correctness, security, data-loss); for each, `file:line`, severity, concrete issue, concrete fix; "no material findings" if clean; be terse.
 

@@ -40,9 +40,11 @@ Proceed in the current session only after an explicit override.
    including resolved and outdated threads.
 6. Apply the docs/config-only skip, per the ledger's changeset
    classification.
-7. Resolve the changed-file list once and pass it to both lanes, so the refactor
-   pass and the deep grill share one resolution instead of each rebuilding the
-   changeset. The ledger's diff-delivery rules govern both.
+7. Resolve the changed-file list once for the initial packet. If refactorpass
+   commits, that packet ends with its reviewed head: reload the PR head and
+   build a new immutable packet before deep grill. If refactorpass is a no-op,
+   both lanes may reuse the initial packet. The ledger's diff-delivery rules
+   govern both.
 8. Resolve this engine's round number per the ledger — `$AGENT_LOOP_REVIEW_ROUND`
    when the runner set it, otherwise one past the count of `local-review-pass:v3`
    and `local-review-complete:v3` markers naming `engine=claude`. Rounds 1–2 are
@@ -60,9 +62,10 @@ it to return. Do not stop when the sub-skill returns.
 
 ## Phase 2: Deep grill
 
-Reload the PR head and ledger, then invoke
-`Skill(skill="grill", args="<pr-number> deep")`, passing the resolved round so
-the lane selects the matching stance.
+Reload the PR head and ledger. When refactorpass moved the head, rebuild the
+immutable review packet from the same pinned base through that new head. Then
+invoke `Skill(skill="grill", args="<pr-number> deep")`, passing the resolved
+round so the lane selects the matching stance.
 
 In an adversarial round the deep matrix uses the relevant lenses from code
 review, silent failures, type/API design, comments/docs, tests, security, and

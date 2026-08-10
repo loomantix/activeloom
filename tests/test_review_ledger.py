@@ -1,6 +1,7 @@
 """Regression tests for deterministic local-review ledger mutations."""
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import hashlib
 import json
@@ -14,6 +15,7 @@ import pytest
 
 HEAD = "a" * 40
 REPO = "example/repository"
+ACTOR = "reviewer"
 PATCH = """@@ -10,3 +10,4 @@
  context
 -old
@@ -40,6 +42,13 @@ def review_ledger() -> ModuleType:
     sys.modules["review_ledger"] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def authenticated_actor(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(review_ledger, "_current_login", lambda: ACTOR)
 
 
 def test_diff_lines_tracks_both_sides(review_ledger: ModuleType) -> None:
@@ -401,7 +410,8 @@ def test_resolve_requires_matching_head_and_verified_response(
         assert args == ["api", "graphql"]
         assert payload is not None
         payloads.append(payload)
-        if len(payloads) == 1:
+        query = cast(str, payload["query"])
+        if "resolveReviewThread" in query:
             return json.dumps(
                 {
                     "data": {
@@ -412,7 +422,20 @@ def test_resolve_requires_matching_head_and_verified_response(
                 }
             )
         return json.dumps(
-            {"data": {"node": {"id": "THREAD", "isResolved": True}}}
+            {
+                "data": {
+                    "node": {
+                        "id": "THREAD",
+                        "isResolved": len(payloads) > 1,
+                        "repository": {"nameWithOwner": REPO},
+                        "pullRequest": {"number": 7},
+                        "comments": {
+                            "nodes": [],
+                            "pageInfo": {"hasNextPage": False},
+                        },
+                    }
+                }
+            }
         )
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -429,7 +452,7 @@ def test_resolve_requires_matching_head_and_verified_response(
             "THREAD",
         ]
     )
-    assert len(payloads) == 2
+    assert len(payloads) == 3
     assert all(
         cast(dict[str, Any], payload["variables"]) == {"threadId": "THREAD"}
         for payload in payloads
@@ -487,7 +510,9 @@ def test_v3_helper_owns_marker_and_preserves_hostile_markdown(
             posted.update(payload)
             return json.dumps({"id": 123})
         if endpoint == f"repos/{REPO}/pulls/comments/123":
-            return json.dumps({"id": 123, "body": posted["body"]})
+            return json.dumps(
+                {"id": 123, "body": posted["body"], "user": {"login": ACTOR}}
+            )
         raise AssertionError(args)
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -540,7 +565,9 @@ def test_v3_post_recovers_after_successful_mutation_loses_response(
         if endpoint == f"repos/{REPO}/pulls/7/comments":
             posts += 1
             assert payload is not None
-            comments.append({"id": 123, "body": payload["body"]})
+            comments.append(
+                {"id": 123, "body": payload["body"], "user": {"login": ACTOR}}
+            )
             raise review_ledger.LedgerError("lost response")
         if endpoint == f"repos/{REPO}/pulls/comments/123":
             return json.dumps(comments[0])
@@ -577,7 +604,9 @@ def test_v3_post_fails_if_head_moves_after_mutation(
             posted_body = cast(str, payload["body"])
             return json.dumps({"id": 123})
         if endpoint == f"repos/{REPO}/pulls/comments/123":
-            return json.dumps({"id": 123, "body": posted_body})
+            return json.dumps(
+                {"id": 123, "body": posted_body, "user": {"login": ACTOR}}
+            )
         raise AssertionError(args)
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -596,6 +625,7 @@ def test_v3_dispose_is_resumable_after_resolve_response_failure(
     comments: list[dict[str, Any]] = [
         {
             "id": 88,
+            "user": {"login": ACTOR},
             "body": (
                 "<!-- local-review:v3 engine=codex round=2 "
                 f"head={HEAD} fingerprint=hostile-content occurrence=1 "
@@ -618,7 +648,9 @@ def test_v3_dispose_is_resumable_after_resolve_response_failure(
         if endpoint == f"repos/{REPO}/pulls/7/comments/88/replies":
             reply_posts += 1
             assert payload is not None
-            comments.append({"id": 99, "body": payload["body"]})
+            comments.append(
+                {"id": 99, "body": payload["body"], "user": {"login": ACTOR}}
+            )
             return json.dumps({"id": 99})
         if endpoint == f"repos/{REPO}/pulls/comments/99":
             return json.dumps(next(row for row in comments if row["id"] == 99))
@@ -632,8 +664,12 @@ def test_v3_dispose_is_resumable_after_resolve_response_failure(
                             "node": {
                                 "id": "THREAD",
                                 "isResolved": resolved,
+                                "repository": {"nameWithOwner": REPO},
+                                "pullRequest": {"number": 7},
                                 "comments": {
-                                    "nodes": [{"databaseId": 88}],
+                                    "nodes": [
+                                        {"databaseId": row["id"]} for row in comments
+                                    ],
                                     "pageInfo": {"hasNextPage": False},
                                 },
                             }
@@ -698,6 +734,7 @@ def test_v3_reopen_occurrence_is_sequential_and_idempotent(
     comments: list[dict[str, Any]] = [
         {
             "id": 88,
+            "user": {"login": ACTOR},
             "body": (
                 "<!-- local-review:v3 engine=codex round=1 "
                 f"head={HEAD} fingerprint=repeat occurrence=1 severity=major "
@@ -718,7 +755,9 @@ def test_v3_reopen_occurrence_is_sequential_and_idempotent(
         if endpoint == f"repos/{REPO}/pulls/7/comments/88/replies":
             reply_posts += 1
             assert payload is not None
-            comments.append({"id": 99, "body": payload["body"]})
+            comments.append(
+                {"id": 99, "body": payload["body"], "user": {"login": ACTOR}}
+            )
             return json.dumps({"id": 99})
         if endpoint == f"repos/{REPO}/pulls/comments/99":
             return json.dumps(next(row for row in comments if row["id"] == 99))
@@ -732,8 +771,12 @@ def test_v3_reopen_occurrence_is_sequential_and_idempotent(
                             "node": {
                                 "id": "THREAD",
                                 "isResolved": resolved,
+                                "repository": {"nameWithOwner": REPO},
+                                "pullRequest": {"number": 7},
                                 "comments": {
-                                    "nodes": [{"databaseId": 88}],
+                                    "nodes": [
+                                        {"databaseId": row["id"]} for row in comments
+                                    ],
                                     "pageInfo": {"hasNextPage": False},
                                 },
                             }
@@ -853,3 +896,218 @@ def test_validate_result_enforces_observed_transition(
                 str(result_file),
             ]
         )
+
+
+def test_dispose_rejects_a_root_comment_from_another_fingerprint(
+    review_ledger: ModuleType, tmp_path: Path
+) -> None:
+    content = tmp_path / "disposition.md"
+    content.write_text("Fixed and validated.", encoding="utf-8")
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=HEAD,
+        engine="codex",
+        round=2,
+        fingerprint="finding-a",
+        occurrence=1,
+        outcome="fixed",
+        comment_id=99,
+        thread_id="THREAD-B",
+        content_file=str(content),
+    )
+    rows = [
+        {
+            "id": 88,
+            "user": {"login": ACTOR},
+            "body": (
+                "<!-- local-review:v3 engine=codex round=2 "
+                f"head={HEAD} fingerprint=finding-a occurrence=1 severity=major "
+                f"lens=correctness content-sha256={'a' * 64} -->\nFinding."
+            ),
+        }
+    ]
+    with pytest.raises(review_ledger.LedgerError, match="fingerprint root"):
+        review_ledger._require_finding_occurrence(rows, args)
+
+
+def test_conflicting_disposition_is_rejected_before_thread_mutation(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "disposition.md"
+    content.write_text("New explanation.", encoding="utf-8")
+    finding = (
+        "<!-- local-review:v3 engine=codex round=2 "
+        f"head={HEAD} fingerprint=conflict occurrence=1 severity=major "
+        f"lens=correctness content-sha256={'a' * 64} -->\nFinding."
+    )
+    prior = (
+        "<!-- local-review-disposition:v3 engine=codex round=2 "
+        f"head={HEAD} fingerprint=conflict occurrence=1 outcome=deferred "
+        f"content-sha256={'b' * 64} -->\nPrior disposition."
+    )
+    rows = [
+        {"id": 88, "user": {"login": ACTOR}, "body": finding},
+        {
+            "id": 89,
+            "in_reply_to_id": 88,
+            "user": {"login": ACTOR},
+            "body": prior,
+        },
+    ]
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
+    monkeypatch.setattr(
+        review_ledger,
+        "_thread_state",
+        lambda *_args, **_kwargs: pytest.fail("thread must not be touched"),
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=HEAD,
+        engine="codex",
+        round=2,
+        fingerprint="conflict",
+        occurrence=1,
+        outcome="fixed",
+        comment_id=88,
+        thread_id="THREAD",
+        content_file=str(content),
+    )
+    with pytest.raises(review_ledger.LedgerError, match="conflicting disposition"):
+        review_ledger._dispose(args)
+
+
+def test_reconcile_does_not_cross_engine_or_round_identity(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = [
+        {
+            "id": 88,
+            "user": {"login": ACTOR},
+            "body": (
+                "<!-- local-review:v3 engine=codex round=1 "
+                f"head={HEAD} fingerprint=repeat occurrence=1 severity=major "
+                f"lens=correctness content-sha256={'a' * 64} -->\nFinding."
+            ),
+        },
+        {
+            "id": 89,
+            "user": {"login": ACTOR},
+            "body": (
+                "<!-- local-review-disposition:v3 engine=claude round=4 "
+                f"head={HEAD} fingerprint=repeat occurrence=1 outcome=fixed "
+                f"content-sha256={'b' * 64} -->\nWrong pass."
+            ),
+        },
+    ]
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
+    args = argparse.Namespace(repo=REPO, pr=7, head=HEAD, fingerprint="repeat")
+    review_ledger._reconcile(args)
+    output = json.loads(capsys.readouterr().out)
+    assert output["ledgerValid"] is False
+    assert output["nextAction"] == "repair-sequence"
+
+
+def test_complete_ledger_rejects_unstructured_same_actor_reply(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding = (
+        "<!-- local-review:v3 engine=codex round=1 "
+        f"head={HEAD} fingerprint=missing-disposition occurrence=1 severity=major "
+        f"lens=tests content-sha256={'a' * 64} -->\nFinding."
+    )
+    threads = [
+        {
+            "id": "THREAD",
+            "isResolved": True,
+            "repository": {"nameWithOwner": REPO},
+            "pullRequest": {"number": 7},
+            "comments": {
+                "nodes": [
+                    {"databaseId": 88, "body": finding, "author": {"login": ACTOR}},
+                    {
+                        "databaseId": 89,
+                        "body": "Looking into this.",
+                        "author": {"login": ACTOR},
+                    },
+                ],
+                "pageInfo": {"hasNextPage": False},
+            },
+        }
+    ]
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: threads)
+    with pytest.raises(review_ledger.LedgerError, match="matching disposition"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+
+def test_changed_minor_result_allows_cleanup_only_fingerprint_set(
+    review_ledger: ModuleType, tmp_path: Path
+) -> None:
+    after = "b" * 40
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "changed",
+                "engine": "codex",
+                "round": 1,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": after,
+                "classification": "minor",
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        result_file=str(result_file),
+        engine="codex",
+        round=1,
+        base="c" * 40,
+        before=HEAD,
+        head=after,
+    )
+    data = review_ledger._validate_result_data(args)
+    assert data["findingFingerprints"] == []
+
+
+def test_actor_scoped_records_ignore_foreign_markers(review_ledger: ModuleType) -> None:
+    rows = [
+        {"id": 1, "user": {"login": "someone-else"}, "body": "marker"},
+        {"id": 2, "user": {"login": ACTOR}, "body": "local marker"},
+    ]
+    assert review_ledger._actor_rows(rows, ACTOR) == [rows[1]]
+
+
+def test_attestation_rejects_result_fingerprints_without_ledger_evidence(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger, "_verify_complete_v3_threads", lambda *_args: []
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head="b" * 40,
+        before=HEAD,
+        engine="codex",
+        round=1,
+    )
+    data = {
+        "status": "changed",
+        "classification": "material",
+        "findingFingerprints": ["missing"],
+    }
+    with pytest.raises(review_ledger.LedgerError, match="complete fixed-finding set"):
+        review_ledger._verify_result_evidence(args, data, ACTOR)

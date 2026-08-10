@@ -90,11 +90,12 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
 import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 state = pathlib.Path(os.environ['AGENT_STATE_DIR'])
+input_payload = json.load(sys.stdin) if '--input' in args else None
 with (state / 'gh.log').open('a') as handle:
     handle.write(' '.join(args) + '\n')
 issues = json.loads(os.environ.get('AGENT_ISSUES_JSON', '{}'))
-if args[:3] == ['api', 'user', '--jq']:
-    print('tester')
+if args[:2] == ['api', 'user']:
+    print('tester' if '--jq' in args else json.dumps({'login': 'tester'}))
 elif args[:2] == ['issue', 'view']:
     number = args[2]
     issue = issues.get(number, {'number': int(number), 'title': 'fixture', 'body': '', 'state': 'OPEN', 'labels': [{'name': 'dev: agent'}], 'assignees': []})
@@ -112,7 +113,9 @@ elif args[:2] == ['issue', 'view']:
 elif args[:2] == ['issue', 'edit']:
     pass
 elif args[:2] == ['repo', 'view']:
-    if 'owner' in ' '.join(args):
+    if 'nameWithOwner' in ' '.join(args):
+        print('fixture/consumer')
+    elif 'owner' in ' '.join(args):
         print('fixture')
     elif 'name' in ' '.join(args):
         print('consumer')
@@ -200,23 +203,36 @@ elif args[:2] == ['api', 'graphql']:
             'hasNextPage': False, 'endCursor': None
         }}
     }}}}]))
-elif args[:2] == ['api', 'repos/{owner}/{repo}/issues/1/comments'] and '-X' in args:
-    body = args[args.index('-f') + 1]
-    assert body.startswith('body='), body
+elif args[0] == 'api' and any(value.endswith('/issues/1/comments') for value in args) and '-X' in args:
+    if input_payload is not None:
+        body = input_payload['body']
+    else:
+        form = args[args.index('-f') + 1]
+        assert form.startswith('body='), form
+        body = form[len('body='):]
+    records_file = state / 'issue-comments.json'
+    records = json.loads(records_file.read_text()) if records_file.exists() else []
+    record = {'id': 1000 + len(records), 'body': body, 'user': {'login': 'tester'}}
+    records.append(record)
+    records_file.write_text(json.dumps(records))
     with (state / 'pr-comments.log').open('a') as handle:
-        handle.write(body[len('body='):].replace('\n', ' ') + '\n')
-elif args[0] == 'api' and args[1].startswith('repos/{owner}/{repo}/'):
+        handle.write(body.replace('\n', ' ') + '\n')
+    print(json.dumps(record))
+elif args[0] == 'api' and any(value.startswith('repos/') for value in args):
+    endpoint = next(value for value in args if value.startswith('repos/'))
     # Clean-pass attestation lookup: issue comments carry the markers this
     # fixture's hooks post; the review-comment and review endpoints are empty.
-    if args[1].endswith('issues/1/comments'):
-        log = state / 'pr-comments.log'
-        if log.exists():
-            author = os.environ.get('AGENT_COMMENT_AUTHOR', 'tester')
-            comments = [
-                {'body': line, 'user': {'login': author}}
-                for line in log.read_text().splitlines()
-            ]
-            print(json.dumps(comments))
+    records_file = state / 'issue-comments.json'
+    records = json.loads(records_file.read_text()) if records_file.exists() else []
+    author = os.environ.get('AGENT_COMMENT_AUTHOR', 'tester')
+    for record in records:
+        record['user'] = {'login': author}
+    endpoint_path = endpoint.split('?', 1)[0]
+    if endpoint_path.endswith('issues/1/comments'):
+        print(json.dumps([records] if '--slurp' in args else records))
+    elif '/issues/comments/' in endpoint_path:
+        comment_id = int(endpoint_path.rsplit('/', 1)[1])
+        print(json.dumps(next(record for record in records if record['id'] == comment_id)))
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
     sys.exit(2)
@@ -244,6 +260,45 @@ def _clean_pass_hook(engine: str) -> str:
         "gh api repos/{owner}/{repo}/issues/1/comments -X POST "
         f'-f body="<!-- local-review-pass:v1 engine={engine} '
         'round=$AGENT_LOOP_REVIEW_ROUND head=$AGENT_LOOP_PR_HEAD_SHA -->"'
+    )
+
+
+def _clean_v3_hook(engine: str) -> str:
+    return (
+        f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
+        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
+        "--argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" "
+        "--arg head \"$AGENT_LOOP_PR_HEAD_SHA\" "
+        "'{version:3,status:\"clean\",engine:$engine,round:$round,"
+        "baseSha:$base,beforeSha:$head,afterSha:$head,classification:null,"
+        "findingFingerprints:[],finalLaneComplete:true}' "
+        '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
+    )
+
+
+def _cleanup_v3_hook(engine: str) -> str:
+    return (
+        f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
+        "before=\"$AGENT_LOOP_PR_HEAD_SHA\"; "
+        f"printf '{engine} cleanup\\n' > review-cleanup.txt; "
+        "git add review-cleanup.txt; git commit -m 'refactor: cleanup'; "
+        'git push origin "HEAD:refs/heads/$AGENT_LOOP_BRANCH"; '
+        "after=$(git rev-parse HEAD); "
+        "printf '<!-- local-review-refactor:v1 engine="
+        f"{engine} head=%s outcome=committed -->\\nCleanup committed.\\n' "
+        '"$before" > "$AGENT_LOOP_LOG_DIR/refactor.md"; '
+        "python3 .claude/skills/grill/scripts/review-ledger.py post-pr-comment "
+        '--repo fixture/consumer --pr "$AGENT_LOOP_PR_NUMBER" --head "$after" '
+        '--body-file "$AGENT_LOOP_LOG_DIR/refactor.md"; '
+        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
+        "--argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" "
+        "--arg before \"$before\" --arg after \"$after\" "
+        "'{version:3,status:\"changed\",engine:$engine,round:$round,"
+        "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"minor\","
+        "findingFingerprints:[],finalLaneComplete:true}' "
+        '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
     )
 
 
@@ -374,6 +429,48 @@ def test_v3_missing_structured_result_is_not_treated_as_clean(
     assert "valid contract v3 result" in result.stderr
     comments = consumer[3] / "pr-comments.log"
     assert not comments.exists()
+
+
+def test_v3_clean_results_attest_and_converge(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "31"],
+        issues=[_issue(31)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook=_clean_v3_hook("codex"),
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (consumer[3] / "pr-ready").exists()
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=codex round=1" in comments
+    assert "local-review-pass:v3 engine=claude round=1" in comments
+
+
+def test_v3_cleanup_only_minor_transition_is_attestable(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "32"],
+        issues=[_issue(32)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook=_cleanup_v3_hook("codex"),
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (consumer[3] / "pr-ready").exists()
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-refactor:v1 engine=codex" in comments
+    assert "local-review-complete:v3 engine=codex round=1" in comments
 
 
 def test_issue_allowlist_never_selects_unrelated_ready_work(

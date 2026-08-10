@@ -792,45 +792,13 @@ verify_committed_pass_evidence() {
     ' "$ledger_file" >/dev/null
 }
 
-verify_v3_committed_pass_evidence() {
-    local slug="$1" round="$2" before="$3" after="$4" result_json="$5" ledger_file fingerprints
-    ledger_file="$(fetch_local_review_threads)" || return 1
-    fingerprints="$(jq -c '.findingFingerprints' <<<"$result_json")" || return 1
-    jq -e --arg reviewer "$CURRENT_LOGIN" --arg engine "$slug" \
-        --argjson round "$round" --arg before "$before" --arg after "$after" \
-        --argjson expected "$fingerprints" '
-      def finding:
-        capture("<!-- local-review:v3 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[0-9]+) severity=(?<severity>blocking|major|minor|nit) lens=(?<lens>[A-Za-z0-9._:/-]+) content-sha256=(?<content>[0-9a-f]{64}) -->");
-      def disposition:
-        capture("<!-- local-review-disposition:v3 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[0-9]+) outcome=(?<outcome>fixed|dismissed|deferred) content-sha256=(?<content>[0-9a-f]{64}) -->");
-      all(.[]; (.errors // []) | length == 0)
-      and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
-        | ($threads | all(.comments.pageInfo.hasNextPage | not))
-        and all($expected[]; . as $fingerprint
-          | any($threads[];
-              . as $thread | $thread.isResolved
-              and any($thread.comments.nodes | to_entries[];
-                select(.value.author.login == $reviewer)
-                | (try (.value.body | finding) catch null) as $finding
-                | select($finding != null and $finding.engine == $engine
-                    and ($finding.round | tonumber) == $round
-                    and $finding.head == $before
-                    and $finding.fingerprint == $fingerprint)
-                | .key as $finding_index
-                | any($thread.comments.nodes | to_entries[];
-                    (.key > $finding_index) and (.value.author.login == $reviewer)
-                    and ((try (.value.body | disposition) catch null) as $reply
-                      | $reply != null and $reply.engine == $engine
-                      and ($reply.round | tonumber) == $round
-                      and $reply.head == $after
-                      and $reply.fingerprint == $fingerprint
-                      and $reply.occurrence == $finding.occurrence
-                      and $reply.outcome == "fixed"))))))
-    ' "$ledger_file" >/dev/null
-}
-
 verify_local_review_threads() {
     local ledger_file
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        python3 "$REVIEW_LEDGER" verify-ledger --repo "$GH_REPO" \
+            --pr "$AGENT_LOOP_PR_NUMBER" --head "$(git rev-parse HEAD)" >/dev/null
+        return
+    fi
     ledger_file="$(fetch_local_review_threads)" || return 1
     # The comment-pagination guard runs before the marker filter on purpose: a
     # thread whose marker sits past the first comment page has no marker in
@@ -838,7 +806,7 @@ verify_local_review_threads() {
     # state cannot be established. Resolution is then checked per marker — a
     # marker with no later comment in its thread is an unanswered finding, which
     # a thread-length test cannot see on a reused thread.
-    jq -e --arg marker '<!-- local-review:v' --arg reviewer "$CURRENT_LOGIN" '
+    jq -e --arg marker '<!-- local-review:v1 ' --arg reviewer "$CURRENT_LOGIN" '
       def markers: [.comments.nodes | to_entries[]
         | select(
             (.value.author.login == $reviewer)
@@ -968,13 +936,6 @@ run_review_convergence() {
                     return 1
                 fi
                 classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$result_json")"
-                if [ "$classification" != clean ]; then
-                    verify_v3_committed_pass_evidence "$slug" "$round" "$before" "$after" "$result_json" || {
-                        recovery_message "$engine review result lacks matching resolved v3 finding dispositions in round $round."
-                        return 1
-                    }
-                    [ "$classification" = minor ] || material=true
-                fi
                 python3 "$REVIEW_LEDGER" attest --repo "$GH_REPO" \
                     --pr "$AGENT_LOOP_PR_NUMBER" --head "$after" --engine "$slug" \
                     --round "$round" --base "$round_base_sha" --before "$before" \
@@ -982,6 +943,9 @@ run_review_convergence() {
                     recovery_message "$engine review result attestation failed in round $round."
                     return 1
                 }
+                if [ "$classification" != clean ]; then
+                    [ "$classification" = minor ] || material=true
+                fi
             elif [ "$after" != "$before" ]; then
                 classification=material
                 if [ -e "$outcome_file" ]; then

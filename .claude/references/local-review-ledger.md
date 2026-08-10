@@ -290,6 +290,15 @@ Use `reconcile --fingerprint <stable-id>` to inspect known occurrences and
 dispositions after an uncertain response. Retry the identical helper command;
 never improvise an API mutation. A preflight rejection performs no mutation.
 
+Before a standalone attestation or final readiness decision, verify the complete
+actor-owned v3 ledger at the exact head. This rejects unresolved threads,
+unstructured replies, cross-occurrence dispositions, and incomplete pagination:
+
+```bash
+python3 .claude/skills/grill/scripts/review-ledger.py verify-ledger \
+  --repo <owner/repo> --pr <number> --head <full-head-sha>
+```
+
 ## Fix, reply, and resolve
 
 For each published finding:
@@ -327,15 +336,22 @@ exactly this contract:
 ```
 
 For `changed`, classification is `minor` or `material`, fingerprints is the
-non-empty set dispositioned by the pass, and `finalLaneComplete` is true. For
+complete set of findings fixed by the pass, and `finalLaneComplete` is true. A
+minor cleanup-only transition may have an empty fingerprint set when the same
+actor's committed refactor latch proves that transition; a material transition
+always has at least one fixed fingerprint. Dismissed and deferred occurrences
+stay out of this list and are verified by the complete-ledger gate. For
 `blocked`, classification is null, `finalLaneComplete` is false, and the object
 also contains a short safe `blocker` string. Use a file-editing tool or a
 deterministic serializer; do not construct JSON with shell interpolation.
 
-The automated wrapper validates this file against the pinned base and observed
-before/after Git state, verifies every changed fingerprint against resolved v3
-threads, and then posts the canonical `local-review-pass:v3` or
-`local-review-complete:v3` attestation itself. Review hooks never post their own
+The deterministic helper validates this file against the observed before/after
+Git state, verifies that its fingerprint set exactly matches the actor-owned
+fixed findings, and requires structured dispositions on every actor-owned v3
+thread before it posts the canonical `local-review-pass:v3` or
+`local-review-complete:v3` attestation. The automated wrapper invokes that
+attestation after its draft-PR boundary checks; standalone reviewers receive the
+same evidence validation from the helper. Review hooks never post their own
 pass/completion markers. A missing or invalid result and a valid `blocked`
 result both stop clearly even when the reviewer process exits zero.
 

@@ -84,6 +84,34 @@ def _json_output(args: list[str], payload: dict[str, Any] | None = None) -> Any:
         raise LedgerError("GitHub returned invalid JSON") from error
 
 
+def _run_git(args: list[str]) -> str:
+    result = subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or "no diagnostic returned"
+        _fail(f"Git operation failed: {detail}")
+    return result.stdout
+
+
+def _current_login() -> str:
+    response = _json_output(["api", "user"])
+    if not isinstance(response, dict) or not isinstance(response.get("login"), str):
+        _fail("GitHub returned an invalid authenticated-user response")
+    login = cast(str, response["login"])
+    if not login:
+        _fail("GitHub returned an empty authenticated user")
+    return login
+
+
+def _actor_rows(rows: list[dict[str, Any]], actor: str) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if isinstance(row.get("user"), dict) and row["user"].get("login") == actor
+    ]
+
+
 def _read_legacy_body(path: str, marker: str | tuple[str, ...]) -> str:
     body = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
     if not body.strip():
@@ -251,16 +279,28 @@ def _validate_anchor(
     )
 
 
-def _verify_comment(repo: str, comment_id: int, expected_body: str) -> None:
+def _verify_comment(
+    repo: str, comment_id: int, expected_body: str, expected_actor: str | None = None
+) -> None:
     response = _json_output(["api", f"repos/{repo}/pulls/comments/{comment_id}"])
     if not isinstance(response, dict) or response.get("body") != expected_body:
         _fail(f"could not verify review comment {comment_id} after posting")
+    if expected_actor is not None:
+        user = response.get("user")
+        if not isinstance(user, dict) or user.get("login") != expected_actor:
+            _fail(f"review comment {comment_id} was not authored by {expected_actor}")
 
 
-def _verify_issue_comment(repo: str, comment_id: int, expected_body: str) -> None:
+def _verify_issue_comment(
+    repo: str, comment_id: int, expected_body: str, expected_actor: str | None = None
+) -> None:
     response = _json_output(["api", f"repos/{repo}/issues/comments/{comment_id}"])
     if not isinstance(response, dict) or response.get("body") != expected_body:
         _fail(f"could not verify PR comment {comment_id} after posting")
+    if expected_actor is not None:
+        user = response.get("user")
+        if not isinstance(user, dict) or user.get("login") != expected_actor:
+            _fail(f"PR comment {comment_id} was not authored by {expected_actor}")
 
 
 def _posted_comment_id(response: Any) -> int:
@@ -292,18 +332,45 @@ def _finding_records(
     return records
 
 
+def _disposition_records(
+    rows: list[dict[str, Any]], fingerprint: str
+) -> list[tuple[dict[str, Any], re.Match[str]]]:
+    records: list[tuple[dict[str, Any], re.Match[str]]] = []
+    for row in rows:
+        match = DISPOSITION_V3_RE.search(str(row.get("body", "")))
+        if match is not None and match.group("fingerprint") == fingerprint:
+            records.append((row, match))
+    return records
+
+
 def _require_finding_occurrence(
     rows: list[dict[str, Any]], args: argparse.Namespace
-) -> None:
+) -> tuple[int, int]:
+    records = _finding_records(rows, args.fingerprint)
     matches = [
-        match
-        for _, match in _finding_records(rows, args.fingerprint)
+        (row, match)
+        for row, match in records
         if match.group("engine") == args.engine
         and int(match.group("round")) == args.round
         and int(match.group("occurrence")) == args.occurrence
     ]
     if len(matches) != 1:
         _fail("disposition does not identify exactly one existing finding occurrence")
+    roots = [
+        row
+        for row, match in records
+        if int(match.group("occurrence")) == 1
+    ]
+    if (
+        len(roots) != 1
+        or not isinstance(roots[0].get("id"), int)
+        or roots[0]["id"] != args.comment_id
+    ):
+        _fail("--comment-id does not identify the fingerprint root comment")
+    occurrence_id = matches[0][0].get("id")
+    if not isinstance(occurrence_id, int):
+        _fail("finding occurrence has no comment ID")
+    return cast(int, roots[0]["id"]), occurrence_id
 
 
 def _finding_body(args: argparse.Namespace) -> tuple[str, str]:
@@ -332,9 +399,13 @@ def _disposition_body(args: argparse.Namespace) -> tuple[str, str]:
 def _post_review_comment(
     args: argparse.Namespace, marker: str, body: str, *, reply_to: int | None = None
 ) -> tuple[int, bool]:
-    existing = _matching_body(_review_comments(args.repo, args.pr), marker, body)
+    actor = getattr(args, "actor", None)
+    rows = _review_comments(args.repo, args.pr)
+    if actor is not None:
+        rows = _actor_rows(rows, actor)
+    existing = _matching_body(rows, marker, body)
     if existing is not None:
-        _verify_comment(args.repo, existing, body)
+        _verify_comment(args.repo, existing, body, actor)
         _verify_head(args.repo, args.pr, args.head)
         return existing, True
     if reply_to is None:
@@ -351,22 +422,29 @@ def _post_review_comment(
         response = _json_output(["api", "-X", "POST", endpoint], payload)
         comment_id = _posted_comment_id(response)
     except LedgerError:
-        recovered = _matching_body(_review_comments(args.repo, args.pr), marker, body)
+        recovered_rows = _review_comments(args.repo, args.pr)
+        if actor is not None:
+            recovered_rows = _actor_rows(recovered_rows, actor)
+        recovered = _matching_body(recovered_rows, marker, body)
         if recovered is None:
             raise
         comment_id = recovered
-    _verify_comment(args.repo, comment_id, body)
+    _verify_comment(args.repo, comment_id, body, actor)
     _verify_head(args.repo, args.pr, args.head)
     return comment_id, False
 
 
-def _thread_state(args: argparse.Namespace) -> bool:
+def _thread_state(
+    args: argparse.Namespace, expected_comment_ids: tuple[int, ...] = ()
+) -> bool:
     query = """
 query($threadId: ID!) {
   node(id: $threadId) {
     ... on PullRequestReviewThread {
       id
       isResolved
+      repository { nameWithOwner }
+      pullRequest { number }
       comments(first: 100) {
         nodes { databaseId }
         pageInfo { hasNextPage }
@@ -385,10 +463,19 @@ query($threadId: ID!) {
         raise LedgerError("GitHub returned an invalid thread read-back") from error
     if not isinstance(thread, dict) or thread.get("id") != args.thread_id:
         _fail(f"could not verify review thread {args.thread_id}")
+    repository = thread.get("repository")
+    pull_request = thread.get("pullRequest")
+    if (
+        not isinstance(repository, dict)
+        or repository.get("nameWithOwner") != args.repo
+        or not isinstance(pull_request, dict)
+        or pull_request.get("number") != args.pr
+    ):
+        _fail(f"review thread {args.thread_id} does not belong to {args.repo}#{args.pr}")
     if not isinstance(thread.get("isResolved"), bool):
         _fail(f"review thread {args.thread_id} has invalid resolution state")
     comment_id = getattr(args, "comment_id", None)
-    if comment_id is not None:
+    if comment_id is not None or expected_comment_ids:
         comments = thread.get("comments")
         if not isinstance(comments, dict):
             _fail("review thread read-back omitted comments")
@@ -400,13 +487,11 @@ query($threadId: ID!) {
             or not isinstance(nodes, list)
         ):
             _fail("review thread comments are incomplete")
-        ids = [
-            row.get("databaseId")
-            for row in nodes
-            if isinstance(row, dict)
-        ]
-        if comment_id not in ids:
-            _fail("--comment-id does not belong to --thread-id")
+        ids = [row.get("databaseId") for row in nodes if isinstance(row, dict)]
+        if comment_id is not None and (not ids or ids[0] != comment_id):
+            _fail("--comment-id is not the root comment of --thread-id")
+        if any(expected not in ids for expected in expected_comment_ids):
+            _fail("finding occurrence does not belong to --thread-id")
     return cast(bool, thread["isResolved"])
 
 
@@ -436,6 +521,206 @@ mutation($threadId: ID!) {{
     return False
 
 
+def _review_threads(repo: str, pr: int) -> list[dict[str, Any]]:
+    try:
+        owner, name = repo.split("/", 1)
+    except ValueError as error:
+        raise LedgerError("--repo must be OWNER/REPO") from error
+    query = """
+query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100, after:$endCursor) {
+        nodes {
+          id
+          isResolved
+          repository { nameWithOwner }
+          pullRequest { number }
+          comments(first:100) {
+            nodes { databaseId body author { login } }
+            pageInfo { hasNextPage }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+""".strip()
+    pages = _json_output(
+        [
+            "api",
+            "graphql",
+            "--paginate",
+            "--slurp",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={pr}",
+        ]
+    )
+    if not isinstance(pages, list):
+        _fail("GitHub review-thread response has an unexpected shape")
+    threads: list[dict[str, Any]] = []
+    for page in pages:
+        if not isinstance(page, dict) or page.get("errors"):
+            _fail("GitHub review-thread response is incomplete")
+        try:
+            connection = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+            nodes = connection["nodes"]
+        except (KeyError, TypeError) as error:
+            raise LedgerError("GitHub review-thread response has an unexpected shape") from error
+        if not isinstance(nodes, list):
+            _fail("GitHub review-thread nodes have an unexpected shape")
+        for thread in nodes:
+            if not isinstance(thread, dict):
+                _fail("GitHub review thread has an unexpected shape")
+            comments = thread.get("comments")
+            if (
+                not isinstance(comments, dict)
+                or not isinstance(comments.get("nodes"), list)
+                or not isinstance(comments.get("pageInfo"), dict)
+                or comments["pageInfo"].get("hasNextPage") is not False
+            ):
+                _fail("GitHub review-thread comments are incomplete")
+            threads.append(thread)
+    return threads
+
+
+def _thread_markers(
+    thread: dict[str, Any], actor: str
+) -> tuple[list[tuple[int, re.Match[str]]], list[tuple[int, re.Match[str]]]]:
+    comments = cast(dict[str, Any], thread["comments"])["nodes"]
+    findings: list[tuple[int, re.Match[str]]] = []
+    dispositions: list[tuple[int, re.Match[str]]] = []
+    for index, comment in enumerate(comments):
+        if not isinstance(comment, dict):
+            _fail("GitHub review comment has an unexpected shape")
+        author = comment.get("author")
+        if not isinstance(author, dict) or author.get("login") != actor:
+            continue
+        body = str(comment.get("body", ""))
+        finding = FINDING_V3_RE.search(body)
+        disposition = DISPOSITION_V3_RE.search(body)
+        if finding is not None:
+            findings.append((index, finding))
+        if disposition is not None:
+            dispositions.append((index, disposition))
+    return findings, dispositions
+
+
+def _matching_dispositions(
+    findings: list[tuple[int, re.Match[str]]],
+    dispositions: list[tuple[int, re.Match[str]]],
+) -> list[tuple[re.Match[str], re.Match[str]]]:
+    matched: list[tuple[re.Match[str], re.Match[str]]] = []
+    for finding_index, finding in findings:
+        candidates = [
+            disposition
+            for disposition_index, disposition in dispositions
+            if disposition_index > finding_index
+            and disposition.group("engine") == finding.group("engine")
+            and disposition.group("round") == finding.group("round")
+            and disposition.group("fingerprint") == finding.group("fingerprint")
+            and disposition.group("occurrence") == finding.group("occurrence")
+        ]
+        if len(candidates) != 1:
+            _fail("local-review finding lacks exactly one matching disposition")
+        matched.append((finding, candidates[0]))
+    return matched
+
+
+def _verify_complete_v3_threads(
+    repo: str, pr: int, actor: str
+) -> list[tuple[re.Match[str], re.Match[str]]]:
+    matched: list[tuple[re.Match[str], re.Match[str]]] = []
+    for thread in _review_threads(repo, pr):
+        repository = thread.get("repository")
+        pull_request = thread.get("pullRequest")
+        if (
+            not isinstance(repository, dict)
+            or repository.get("nameWithOwner") != repo
+            or not isinstance(pull_request, dict)
+            or pull_request.get("number") != pr
+        ):
+            _fail("GitHub returned a review thread outside the requested PR")
+        findings, dispositions = _thread_markers(thread, actor)
+        if not findings:
+            continue
+        if thread.get("isResolved") is not True:
+            _fail("local-review finding thread is unresolved")
+        matched.extend(_matching_dispositions(findings, dispositions))
+    return matched
+
+
+def _is_ancestor(ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        detail = result.stderr.strip() or "no diagnostic returned"
+        _fail(f"Git ancestry check failed: {detail}")
+    return result.returncode == 0
+
+
+def _verify_git_transition(before: str, head: str) -> None:
+    local_head = _run_git(["rev-parse", "HEAD"]).strip()
+    if local_head != head:
+        _fail(f"local HEAD mismatch: expected {head}, found {local_head or '<empty>'}")
+    if not _is_ancestor(before, head):
+        _fail("review result rewrites or does not descend from beforeSha")
+
+
+def _verify_result_evidence(
+    args: argparse.Namespace, data: dict[str, Any], actor: str
+) -> None:
+    _verify_git_transition(args.before, args.head)
+    matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
+    fixed: set[str] = set()
+    for finding, disposition in matched:
+        if (
+            finding.group("engine") != args.engine
+            or int(finding.group("round")) != args.round
+            or disposition.group("outcome") != "fixed"
+            or disposition.group("head") != args.head
+        ):
+            continue
+        finding_head = finding.group("head")
+        if not _is_ancestor(args.before, finding_head) or not _is_ancestor(
+            finding_head, args.head
+        ):
+            _fail("fixed finding head is outside the observed review transition")
+        fixed.add(finding.group("fingerprint"))
+    expected = set(cast(list[str], data["findingFingerprints"]))
+    if fixed != expected:
+        _fail("review result fingerprints do not equal the complete fixed-finding set")
+    if data["status"] == "changed" and not fixed:
+        marker = (
+            f"<!-- local-review-refactor:v1 engine={args.engine} "
+            f"head={args.before} outcome=committed -->"
+        )
+        comments = _actor_rows(_issue_comments(args.repo, args.pr), actor)
+        if data["classification"] != "minor" or not any(
+            marker in str(comment.get("body", "")) for comment in comments
+        ):
+            _fail("changed review result has no fixed finding or verified cleanup latch")
+
+
+def _verify_ledger(args: argparse.Namespace) -> None:
+    actor = _current_login()
+    _verify_head(args.repo, args.pr, args.head)
+    matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
+    _verify_head(args.repo, args.pr, args.head)
+    print(json.dumps({"actor": actor, "dispositions": len(matched), "verified": True}))
+
+
 def _preflight_anchor(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
     files = _pr_files(args.repo, args.pr)
@@ -448,6 +733,7 @@ def _preflight_anchor(args: argparse.Namespace) -> None:
 def _post_finding(args: argparse.Namespace) -> None:
     if args.content_file:
         marker, body = _finding_body(args)
+        args.actor = _current_login()
     else:
         marker = FINDING_V1
         body = _read_legacy_body(args.body_file, marker)
@@ -457,7 +743,7 @@ def _post_finding(args: argparse.Namespace) -> None:
     side = None if args.file_level else args.side
     _validate_anchor(files, args.path, line, side)
     if args.content_file:
-        rows = _review_comments(args.repo, args.pr)
+        rows = _actor_rows(_review_comments(args.repo, args.pr), args.actor)
         existing = _matching_body(rows, marker, body)
         records = _finding_records(rows, args.fingerprint)
         if existing is None and records:
@@ -484,23 +770,28 @@ def _post_finding(args: argparse.Namespace) -> None:
 
 def _reopen_occurrence(args: argparse.Namespace) -> None:
     marker, body = _finding_body(args)
+    args.actor = _current_login()
     _verify_head(args.repo, args.pr, args.head)
-    rows = _review_comments(args.repo, args.pr)
+    rows = _actor_rows(_review_comments(args.repo, args.pr), args.actor)
     records = _finding_records(rows, args.fingerprint)
     existing = _matching_body(rows, marker, body)
     if args.occurrence < 2:
         _fail("reopen-occurrence requires occurrence 2 or later")
-    if existing is None:
-        occurrences = sorted(int(match.group("occurrence")) for _, match in records)
-        if occurrences != list(range(1, args.occurrence)):
-            _fail("finding occurrences are missing, duplicated, or out of sequence")
-        roots = [
-            row
-            for row, match in records
-            if int(match.group("occurrence")) == 1
-        ]
-        if len(roots) != 1 or roots[0].get("id") != args.comment_id:
-            _fail("--comment-id does not identify the fingerprint root comment")
+    occurrences = sorted(int(match.group("occurrence")) for _, match in records)
+    expected_occurrences = list(range(1, args.occurrence + (1 if existing else 0)))
+    if occurrences != expected_occurrences:
+        _fail("finding occurrences are missing, duplicated, or out of sequence")
+    roots = [row for row, match in records if int(match.group("occurrence")) == 1]
+    if len(roots) != 1 or roots[0].get("id") != args.comment_id:
+        _fail("--comment-id does not identify the fingerprint root comment")
+    known_ids = tuple(
+        cast(int, row["id"])
+        for row, _ in records
+        if isinstance(row.get("id"), int)
+    )
+    if len(known_ids) != len(records):
+        _fail("finding occurrence has no comment ID")
+    _thread_state(args, known_ids)
     comment_id, replayed = _post_review_comment(
         args, marker, body, reply_to=args.comment_id
     )
@@ -511,10 +802,21 @@ def _reopen_occurrence(args: argparse.Namespace) -> None:
 
 def _dispose(args: argparse.Namespace) -> None:
     marker, body = _disposition_body(args)
+    args.actor = _current_login()
     _verify_head(args.repo, args.pr, args.head)
-    _require_finding_occurrence(
-        _review_comments(args.repo, args.pr), args
-    )
+    rows = _actor_rows(_review_comments(args.repo, args.pr), args.actor)
+    root_id, occurrence_id = _require_finding_occurrence(rows, args)
+    conflicts = [
+        (row, match)
+        for row, match in _disposition_records(rows, args.fingerprint)
+        if match.group("engine") == args.engine
+        and int(match.group("round")) == args.round
+        and int(match.group("occurrence")) == args.occurrence
+        and (row.get("body") != body or match.group(0) != marker)
+    ]
+    if conflicts:
+        _fail("finding occurrence already has a conflicting disposition")
+    _thread_state(args, (root_id, occurrence_id))
     comment_id, replayed = _post_review_comment(
         args, marker, body, reply_to=args.comment_id
     )
@@ -587,7 +889,13 @@ def _validate_result_data(args: argparse.Namespace) -> dict[str, Any]:
         if args.before != args.head or classification is not None or fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
             _fail("clean review result conflicts with the observed pass")
     elif status == "changed":
-        if args.before == args.head or classification not in {"minor", "material"} or not fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
+        if (
+            args.before == args.head
+            or classification not in {"minor", "material"}
+            or (classification == "material" and not fingerprints)
+            or data["finalLaneComplete"] is not True
+            or "blocker" in data
+        ):
             _fail("changed review result conflicts with the observed pass")
     else:
         blocker = data.get("blocker")
@@ -606,6 +914,9 @@ def _validate_result(args: argparse.Namespace) -> None:
 
 def _attest(args: argparse.Namespace) -> None:
     data = _validate_result_data(args)
+    actor = _current_login()
+    args.actor = actor
+    _verify_result_evidence(args, data, actor)
     result_hash = hashlib.sha256(Path(args.result_file).read_bytes()).hexdigest()
     if data["status"] == "blocked":
         _fail("blocked review results cannot be attested as complete")
@@ -619,27 +930,31 @@ def _attest(args: argparse.Namespace) -> None:
         marker = f"<!-- local-review-complete:v3 engine={args.engine} round={args.round} base={args.base} before={args.before} head={args.head} classification={data['classification']} fingerprints={fingerprints} result-sha256={result_hash} -->"
     body = f"{marker}\n{content}"
     _verify_head(args.repo, args.pr, args.head)
-    existing = _matching_body(_issue_comments(args.repo, args.pr), marker, body)
+    comments = _actor_rows(_issue_comments(args.repo, args.pr), actor)
+    existing = _matching_body(comments, marker, body)
     replayed = existing is not None
     if existing is None:
         try:
             response = _json_output(["api", "-X", "POST", f"repos/{args.repo}/issues/{args.pr}/comments"], {"body": body})
             comment_id = _posted_comment_id(response)
         except LedgerError:
-            recovered = _matching_body(_issue_comments(args.repo, args.pr), marker, body)
+            recovered = _matching_body(
+                _actor_rows(_issue_comments(args.repo, args.pr), actor), marker, body
+            )
             if recovered is None:
                 raise
             comment_id = recovered
             replayed = True
     else:
         comment_id = existing
-    _verify_issue_comment(args.repo, comment_id, body)
+    _verify_issue_comment(args.repo, comment_id, body, actor)
     _verify_head(args.repo, args.pr, args.head)
     print(json.dumps({"comment_id": comment_id, "replayed": replayed, "result_sha256": result_hash, "verified": True}))
 
 
 def _resolve(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
+    _thread_state(args)
     mutation = """
 mutation($threadId: ID!) {
   resolveReviewThread(input: {threadId: $threadId}) {
@@ -664,8 +979,9 @@ mutation($threadId: ID!) {
 
 
 def _reconcile(args: argparse.Namespace) -> None:
+    actor = _current_login()
     _verify_head(args.repo, args.pr, args.head)
-    comments = _review_comments(args.repo, args.pr)
+    comments = _actor_rows(_review_comments(args.repo, args.pr), actor)
     finding_rows: list[dict[str, Any]] = []
     disposition_rows: list[dict[str, Any]] = []
     for row in comments:
@@ -678,11 +994,19 @@ def _reconcile(args: argparse.Namespace) -> None:
             disposition_rows.append({"id": row.get("id"), **disposition.groupdict()})
     occurrences = sorted(int(row["occurrence"]) for row in finding_rows)
     sequence_valid = occurrences == list(range(1, len(occurrences) + 1))
+    finding_keys = {
+        (row["engine"], row["round"], row["fingerprint"], row["occurrence"])
+        for row in finding_rows
+    }
+    disposition_keys = [
+        (row["engine"], row["round"], row["fingerprint"], row["occurrence"])
+        for row in disposition_rows
+    ]
     disposed = {int(row["occurrence"]) for row in disposition_rows}
     ledger_valid = (
         sequence_valid
-        and len(disposed) == len(disposition_rows)
-        and disposed.issubset(set(occurrences))
+        and len(disposition_keys) == len(set(disposition_keys))
+        and set(disposition_keys).issubset(finding_keys)
     )
     undisposed = [value for value in occurrences if value not in disposed]
     next_action = (
@@ -804,6 +1128,10 @@ def _parser() -> argparse.ArgumentParser:
     _add_result_arguments(attest, github=True)
     attest.add_argument("--content-file")
     attest.set_defaults(handler=_attest)
+
+    verify_ledger = commands.add_parser("verify-ledger")
+    _add_common(verify_ledger)
+    verify_ledger.set_defaults(handler=_verify_ledger)
 
     resolve = commands.add_parser("resolve")
     _add_common(resolve)
