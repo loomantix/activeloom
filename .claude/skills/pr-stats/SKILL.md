@@ -1,7 +1,7 @@
 ---
 name: pr-stats
 description: Pull PR-authorship counts per repo and per author across a GitHub org over a given time window. Use when the user asks "how many PRs did X open", "who's been shipping", "PR throughput by repo", or any similar curiosity about creation-volume.
-argument-hint: [--months N | --start YYYY-MM --end YYYY-MM] [--owner <org>] [--merged]
+argument-hint: '[--months N | --start YYYY-MM --end YYYY-MM] [--owner <org>] [--merged]'
 ---
 
 # /pr-stats — org-wide PR author breakdown

@@ -1,10 +1,10 @@
 ---
-name: grill
+name: critique
 description: PR-first adversarial review. Lean mode runs the highest-signal local Claude lenses; `deep` selects the full relevant matrix. Verified findings are posted inline before fixes, then replied to and resolved after a pushed fix.
 argument-hint: (optional PR number and/or "deep")
 ---
 
-# /grill — PR-first adversarial review
+# /critique — PR-first adversarial review
 
 Run a bounded local Claude review against an open draft PR. GitHub review
 threads are the durable context ledger: later reviewers must see what earlier
@@ -26,7 +26,8 @@ Parse `$ARGUMENTS` for an optional PR number and the word `deep`.
 
 Resolve this engine's round number per the ledger before selecting lenses: use
 `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, take it from an invoking
-`/deepgrill`, or count the `local-review-pass:v3` and `local-review-complete:v3`
+`/deepcritique`, or count the `local-review-pass:v3` and
+`local-review-complete:v3`
 markers on the PR naming `engine=claude` and add one.
 
 - **Rounds 1–2 run adversarially** — the matrix and dispositions below apply as
@@ -122,7 +123,7 @@ diff anchor exists, keep it out of the automated fix loop or track a genuinely
 architectural follow-up as the ledger requires.
 
 If no new confirmed finding survives and the enclosing review hook did not move
-the head, finalize a `clean` v3 result per the ledger. When deepgrill's earlier
+the head, finalize a `clean` v3 result per the ledger. When deepcritique's earlier
 refactorpass committed, preserve the enclosing hook's original before SHA and
 finalize `changed` with classification `minor` and an empty finding set; the
 committed refactor latch supplies the evidence. Under agent-loop the wrapper
@@ -209,5 +210,5 @@ Claude half of the current round. Always finalize `clean`, `changed`, or
 
 ## Source of truth
 
-This skill lives upstream at `.claude/skills/grill/` and is synced to consumer
+This skill lives upstream at `.claude/skills/critique/` and is synced to consumer
 repositories.

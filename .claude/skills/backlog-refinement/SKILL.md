@@ -2,6 +2,7 @@
 name: backlog-refinement
 description: Prepare the GitHub backlog for autonomous /agent-loop completion — assess each open issue against the agent-readiness rubric, auto-rewrite agent-shaped issues into agent-ready form (acceptance criteria, file pointers, out-of-scope guardrails) and tag dev:agent, exclude the rest with agent-bail:* reasons, and run the post-loop RCA aggregation that sharpens the rubric from every bail. Use before running /agent-loop, after triaging new issues, or to close the learning loop after a loop run.
 argument-hint: 'mode [args]: queue | refine [n|--all|--limit N] | assess <n> | rca [run-window] | help'
+disable-model-invocation: true
 ---
 
 # /backlog-refinement

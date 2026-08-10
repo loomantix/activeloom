@@ -114,13 +114,41 @@ for src in "$SKILLS_SRC"/*/; do
   installed=$((installed + 1))
 done
 
+# Prune links this script owns whose source has gone away. A skill that is
+# renamed or retired upstream leaves a dangling symlink here that `git pull`
+# cannot clean up, and a dangling entry is worse than a missing one: it
+# occupies the name, so a later skill (or a locally-authored one) cannot take
+# it, and the harness sees a broken skill directory.
+#
+# Deliberately narrow. Only a **symlink** whose target (a) resolves under
+# $SKILLS_SRC and (b) no longer exists is removed. A real directory is a
+# locally-authored skill and is never touched; a symlink pointing anywhere
+# else belongs to another checkout and is left alone even when broken.
+pruned=0
+for target in "$SKILLS_DEST"/*; do
+  [ -L "$target" ] || continue
+  # -e follows the link: false means the destination is gone.
+  [ -e "$target" ] && continue
+  current="$(readlink "$target")"
+  case "$current" in
+    "$SKILLS_SRC"/*) ;;
+    *) continue ;;
+  esac
+  echo "  🧹 $(basename "$target") (retired upstream — removing dangling link)"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    rm "$target"
+  fi
+  pruned=$((pruned + 1))
+done
+
 if [ "$DRY_RUN" -eq 1 ]; then
   echo ""
-  echo "Dry run: $installed would install, $replaced would replace, $skipped left alone."
+  echo "Dry run: $installed would install, $replaced would replace, $pruned would prune, $skipped left alone."
   echo "(no changes written)"
 else
   echo ""
-  echo "Done: $installed installed, $replaced replaced, $skipped left alone."
+  echo "Done: $installed installed, $replaced replaced, $pruned pruned, $skipped left alone."
   echo "Skills now resolve from $SKILLS_DEST → $SKILLS_SRC."
   echo "Run \`git pull\` in $UPSTREAM_ROOT to update — no re-install needed."
+  echo "Re-run this script after a pull that renames or retires a skill, so its stale link is pruned."
 fi

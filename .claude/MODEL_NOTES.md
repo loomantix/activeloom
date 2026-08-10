@@ -56,7 +56,7 @@ Opus 5 delegates to subagents more readily than prior models. That pays off on g
 - **Never** spawn a subagent to verify or double-check the session's own work (see §2).
 - If one agent can do it, use one. Keep spawn counts low.
 
-`/grill`'s agent matrix is a **ceiling, not a floor** — pick the lenses whose signals actually appear in the diff. The "two to five agents is typical in deep mode" line in that skill is a real budget, not a suggestion. If a change feels big enough to want more lenses than the matrix offers, that is a signal to escalate to `/deepgrill`, not to invent extra agents.
+`/critique`'s agent matrix is a **ceiling, not a floor** — pick the lenses whose signals actually appear in the diff. The "two to five agents is typical in deep mode" line in that skill is a real budget, not a suggestion. If a change feels big enough to want more lenses than the matrix offers, that is a signal to escalate to `/deepcritique`, not to invent extra agents.
 
 ## 4. Prompt for length — effort will not do it for you
 
@@ -65,7 +65,7 @@ Two separate behaviors, both longer on Opus 5 than on prior models:
 - **Conversational output.** Per-message output during agentic work runs longer, and the model narrates what it is about to do more readily.
 - **Written deliverables.** Files it writes to disk — reports, handoff notes, PR bodies, summaries — are longer too.
 
-The `effort` parameter controls how much the model _thinks_, not how much it _says_. Lowering effort does not reliably shorten a response. If a skill's output has a length that matters (a PR body, a findings table, a status line), state the length in the prompt. The existing "Under 300 words" ceilings in the `Agent(...)` prompts in `/grill` are exactly the right pattern — keep them, and add them to new agent prompts.
+The `effort` parameter controls how much the model _thinks_, not how much it _says_. Lowering effort does not reliably shorten a response. If a skill's output has a length that matters (a PR body, a findings table, a status line), state the length in the prompt. The existing "Under 300 words" ceilings in the `Agent(...)` prompts in `/critique` are exactly the right pattern — keep them, and add them to new agent prompts.
 
 For documents Claude authors, calibrate rather than truncate:
 
@@ -101,11 +101,11 @@ Never write a rule telling the model not to think or not to reason. That phrasin
 
 ## 8. A bigger context window is not a reason to review in the authoring session
 
-Opus 5 carries a 1M-token context window as both default and maximum, and holds its instruction-following and reasoning quality across it. It is tempting to read that as retiring the pre-flight gates that send `/grill` and `/deepgrill` to a fresh session. **It does not, and this is the one delta in this file that runs the opposite way to "the new model needs less scaffolding".**
+Opus 5 carries a 1M-token context window as both default and maximum, and holds its instruction-following and reasoning quality across it. It is tempting to read that as retiring the pre-flight gates that send `/critique` and `/deepcritique` to a fresh session. **It does not, and this is the one delta in this file that runs the opposite way to "the new model needs less scaffolding".**
 
 Two separate reasons, and the second is the load-bearing one:
 
-- **Cost.** Reviewing in the authoring session drags the whole implementation history through every pass. In practice that reached 700–800k tokens, re-read on each turn of a multi-pass chain, and `/deepgrill` fans that inheritance out across up to six sub-agents.
+- **Cost.** Reviewing in the authoring session drags the whole implementation history through every pass. In practice that reached 700–800k tokens, re-read on each turn of a multi-pass chain, and `/deepcritique` fans that inheritance out across up to six sub-agents.
 - **Review quality.** That history was almost never useful to the review, and sometimes actively unhelpful. A session that just wrote the code re-reads its own diff already holding the rationale that produced it — anchored on why the code is right rather than looking for why it is wrong. That is the opposite of the fresh-eyes stance the adversarial pass exists to provide. No context window fixes it, because the problem is what the context contains, not whether it fits.
 
 **The general lesson for this file: capacity to hold context is not evidence the context is worth holding.** When a new model relaxes a limit, check whether the guardrail was actually about the limit before removing it. Some guardrails were about relevance, and those get _stronger_ as the limit rises — a bigger window means more irrelevant history survives to pollute the pass.
@@ -127,6 +127,7 @@ Two separate reasons, and the second is the load-bearing one:
 
 ## Cross-references
 
+- [SKILL_AUTHORING.md](SKILL_AUTHORING.md) — the structural companion to this file. These notes cover what the current model does differently; that one covers how to build the document (invocation, information hierarchy, completion criteria, pruning). A new skill should pass both checklists.
 - [REVIEW_WORKFLOW.md](REVIEW_WORKFLOW.md) — the canonical AI review chain these notes constrain.
-- [`skills/grill/SKILL.md`](skills/grill/SKILL.md) — the reference implementation of §1 and §3 (unfiltered agents, filtering aggregator, bounded matrix).
+- [`skills/critique/SKILL.md`](skills/critique/SKILL.md) — the reference implementation of §1 and §3 (unfiltered agents, filtering aggregator, bounded matrix).
 - [`agents/code-reviewer.md`](agents/code-reviewer.md) — the reference implementation of §1 on the agent side.

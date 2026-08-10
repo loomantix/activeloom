@@ -18,9 +18,9 @@ Never force-push during a review relay. A moved remote head ends the pass.
 
 ## Classify the changeset
 
-`refactorpass`, `grill`, `deepgrill`, and `codex-review` skip docs/config-only
-changesets. This
-is the shared definition for the pinned review range:
+`refactorpass`, `critique`, `deepcritique`, and `codex-review` all skip
+docs/config-only changesets. This is the shared definition for the pinned
+`<base-sha>..<head-sha>` review range:
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
   `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
@@ -78,7 +78,7 @@ END_REVIEW_PACKET_V1
 
 Reuse the packet unchanged within one cleanup or adversarial packet epoch. If
 `refactorpass` commits, that cleanup epoch ends: build a new packet from the
-same pinned base through the new head before `grill`. Any later fix ends the
+same pinned base through the new head before `critique`. Any later fix ends the
 adversarial pass; never mutate an existing packet to follow a moved head.
 
 When spawning review agents, keep the complete packet as a byte-identical prompt
@@ -229,7 +229,7 @@ finding into the PR.
 
 ### Use the deterministic ledger helper
 
-Use `.claude/skills/grill/scripts/review-ledger.py` for every local-review
+Use `.claude/skills/critique/scripts/review-ledger.py` for every local-review
 finding, disposition reply, thread resolution, and pass marker. Do not
 hand-compose `gh api` form arguments for these mutations.
 
@@ -250,11 +250,11 @@ preserves literal backticks, dollar expressions, quotes, Unicode, CRLF, and a
 missing final newline:
 
 ```bash
-python3 .claude/skills/grill/scripts/review-ledger.py preflight-anchor \
+python3 .claude/skills/critique/scripts/review-ledger.py preflight-anchor \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line>
 
-python3 .claude/skills/grill/scripts/review-ledger.py post-finding \
+python3 .claude/skills/critique/scripts/review-ledger.py post-finding \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line> \
   --engine <codex|claude> --round <n> --fingerprint <stable-id> \
@@ -266,7 +266,7 @@ When the same fingerprint recurs on a later reviewed head, append a new numbered
 occurrence to its existing root comment and reopen that thread atomically:
 
 ```bash
-python3 .claude/skills/grill/scripts/review-ledger.py reopen-occurrence \
+python3 .claude/skills/critique/scripts/review-ledger.py reopen-occurrence \
   --repo <owner/repo> --pr <number> --head <reviewed-sha> \
   --engine <codex|claude> --round <n> --fingerprint <stable-id> \
   --occurrence <next-number> --severity <severity> --lens <lens> \
@@ -282,7 +282,7 @@ identical command again reuses completed work and finishes only the missing
 state transition:
 
 ```bash
-python3 .claude/skills/grill/scripts/review-ledger.py dispose \
+python3 .claude/skills/critique/scripts/review-ledger.py dispose \
   --repo <owner/repo> --pr <number> --head <full-fix-sha> \
   --engine <codex|claude> --round <n> --fingerprint <stable-id> \
   --occurrence <number> --outcome <fixed|dismissed|deferred> \
@@ -299,7 +299,7 @@ actor-owned v3 ledger at the exact head. This rejects unresolved threads,
 unstructured replies, cross-occurrence dispositions, and incomplete pagination:
 
 ```bash
-python3 .claude/skills/grill/scripts/review-ledger.py verify-ledger \
+python3 .claude/skills/critique/scripts/review-ledger.py verify-ledger \
   --repo <owner/repo> --pr <number> --head <full-head-sha>
 ```
 

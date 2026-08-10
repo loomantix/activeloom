@@ -60,8 +60,8 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     script.parent.mkdir(parents=True)
     ready.parent.mkdir(parents=True)
     shutil.copy2(AGENT_LOOP, script)
-    ledger_source = REPO_ROOT / ".claude/skills/grill/scripts/review-ledger.py"
-    ledger_target = repo / ".claude/skills/grill/scripts/review-ledger.py"
+    ledger_source = REPO_ROOT / ".claude/skills/critique/scripts/review-ledger.py"
+    ledger_target = repo / ".claude/skills/critique/scripts/review-ledger.py"
     ledger_target.parent.mkdir(parents=True)
     shutil.copy2(ledger_source, ledger_target)
     _write_executable(
@@ -306,7 +306,7 @@ def _cleanup_v3_hook(engine: str) -> str:
         "printf '<!-- local-review-refactor:v1 engine="
         f"{engine} head=%s outcome=committed -->\\nCleanup committed.\\n' "
         '"$before" > "$AGENT_LOOP_LOG_DIR/refactor.md"; '
-        "python3 .claude/skills/grill/scripts/review-ledger.py post-pr-comment "
+        "python3 .claude/skills/critique/scripts/review-ledger.py post-pr-comment "
         '--repo fixture/consumer --pr "$AGENT_LOOP_PR_NUMBER" --head "$after" '
         '--body-file "$AGENT_LOOP_LOG_DIR/refactor.md"; '
         'jq -n --arg engine "$AGENT_LOOP_REVIEW_ENGINE" '

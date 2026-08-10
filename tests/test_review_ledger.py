@@ -68,7 +68,7 @@ def review_ledger() -> ModuleType:
         Path(__file__).resolve().parent.parent
         / ".claude"
         / "skills"
-        / "grill"
+        / "critique"
         / "scripts"
         / "review-ledger.py"
     )
@@ -2050,19 +2050,19 @@ def test_review_skills_define_wrapper_and_standalone_v3_finalization() -> None:
     ledger = (root / ".claude/references/local-review-ledger.md").read_text(
         encoding="utf-8"
     )
-    deepgrill = (root / ".claude/skills/deepgrill/SKILL.md").read_text(
+    deepcritique = (root / ".claude/skills/deepcritique/SKILL.md").read_text(
         encoding="utf-8"
     )
-    grill = (root / ".claude/skills/grill/SKILL.md").read_text(encoding="utf-8")
+    critique = (root / ".claude/skills/critique/SKILL.md").read_text(encoding="utf-8")
     codex_review = (root / ".claude/skills/codex-review/SKILL.md").read_text(
         encoding="utf-8"
     )
 
     assert "Finalize wrapper and standalone results" in ledger
     assert "helper returns `verified: true`" in ledger
-    assert "On a skip, finalize a clean v3 result" in deepgrill
-    assert "Do not emit `clean` for a cleanup-moved enclosing hook" in deepgrill
-    assert "the enclosing review hook did not move" in grill
-    for skill in (deepgrill, grill, codex_review):
+    assert "On a skip, finalize a clean v3 result" in deepcritique
+    assert "Do not emit `clean` for a cleanup-moved enclosing hook" in deepcritique
+    assert "the enclosing review hook did not move" in critique
+    for skill in (deepcritique, critique, codex_review):
         assert "wrapper/standalone" in skill
         assert "standalone pass" in skill

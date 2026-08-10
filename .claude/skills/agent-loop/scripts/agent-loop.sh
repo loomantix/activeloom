@@ -123,7 +123,7 @@ CONFIG_FILE="$PROJECT_DIR/.claude/skills/agent-loop/agent-loop.config"
 PROMPT_FILE="$PROJECT_DIR/.claude/skills/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
 ISSUES_READY="$PROJECT_DIR/.claude/skills/issues/scripts/ready.py"
-REVIEW_LEDGER="$PROJECT_DIR/.claude/skills/grill/scripts/review-ledger.py"
+REVIEW_LEDGER="$PROJECT_DIR/.claude/skills/critique/scripts/review-ledger.py"
 
 BASE_BRANCH=""
 SETUP_HOOK=""

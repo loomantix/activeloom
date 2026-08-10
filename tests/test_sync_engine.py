@@ -942,28 +942,28 @@ def test_glob_to_regex_literal_path(sync_engine: ModuleType) -> None:
 
 def test_glob_to_regex_single_star_does_not_cross_slash(sync_engine: ModuleType) -> None:
     pat = sync_engine.glob_to_regex(".claude/skills/*")
-    assert pat.match(".claude/skills/grill")
+    assert pat.match(".claude/skills/critique")
     # `*` must NOT match across `/` segments — otherwise an allowlist of
-    # `.claude/skills/*` would cover `.claude/skills/grill/SKILL.md` too.
-    assert not pat.match(".claude/skills/grill/SKILL.md")
+    # `.claude/skills/*` would cover `.claude/skills/critique/SKILL.md` too.
+    assert not pat.match(".claude/skills/critique/SKILL.md")
 
 
 def test_glob_to_regex_double_star_crosses_slashes(sync_engine: ModuleType) -> None:
     pat = sync_engine.glob_to_regex(".claude/skills/**")
-    assert pat.match(".claude/skills/grill")
-    assert pat.match(".claude/skills/grill/SKILL.md")
-    assert pat.match(".claude/skills/grill/scripts/run.sh")
+    assert pat.match(".claude/skills/critique")
+    assert pat.match(".claude/skills/critique/SKILL.md")
+    assert pat.match(".claude/skills/critique/scripts/run.sh")
     # Must not bleed past the prefix.
     assert not pat.match(".claude/agents/foo.md")
 
 
 def test_glob_to_regex_double_star_in_middle(sync_engine: ModuleType) -> None:
     pat = sync_engine.glob_to_regex(".claude/skills/**/SKILL.md")
-    assert pat.match(".claude/skills/grill/SKILL.md")
+    assert pat.match(".claude/skills/critique/SKILL.md")
     assert pat.match(".claude/skills/issues/scripts/SKILL.md")
     # `**` matches zero segments too — direct child should match.
     assert pat.match(".claude/skills/SKILL.md")
-    assert not pat.match(".claude/skills/grill/run.sh")
+    assert not pat.match(".claude/skills/critique/run.sh")
 
 
 def test_glob_to_regex_question_mark(sync_engine: ModuleType) -> None:
@@ -999,8 +999,8 @@ def test_path_matches_any_matches_on_any_pattern(sync_engine: ModuleType) -> Non
         sync_engine.glob_to_regex(".claude/**"),
         sync_engine.glob_to_regex(".codex/**"),
     ]
-    assert sync_engine.path_matches_any(".claude/skills/grill/SKILL.md", patterns)
-    assert sync_engine.path_matches_any(".codex/skills/grill/SKILL.md", patterns)
+    assert sync_engine.path_matches_any(".claude/skills/critique/SKILL.md", patterns)
+    assert sync_engine.path_matches_any(".codex/skills/critique/SKILL.md", patterns)
     assert not sync_engine.path_matches_any(".github/workflows/release.yml", patterns)
 
 

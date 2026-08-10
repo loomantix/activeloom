@@ -1,12 +1,12 @@
 ---
-name: deepgrill
-description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /grill deep — preceded by /refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use on complex or high-risk changes such as auth/crypto, schema migrations, sync-propagating work, and large refactors.
+name: deepcritique
+description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /critique deep — preceded by /refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use on complex or high-risk changes such as auth/crypto, schema migrations, sync-propagating work, and large refactors.
 argument-hint: (optional PR number)
 ---
 
-# /deepgrill — PR-first deep chain
+# /deepcritique — PR-first deep chain
 
-Run `/grill deep` against an open draft PR and its durable local-review ledger,
+Run `/critique deep` against an open draft PR and its durable local-review ledger,
 preceded by `/refactorpass` only on this engine's first pass over that PR.
 
 The chain gets cheaper as it repeats, deliberately. Cleanup runs once; the
@@ -44,7 +44,7 @@ Proceed in the current session only after an explicit override.
    refactor latch.
 7. Resolve the changed-file list once for the initial packet. If refactorpass
    commits, that packet ends with its reviewed head: reload the PR head and
-   build a new immutable packet before deep grill. If refactorpass is a no-op,
+   build a new immutable packet before deep critique. If refactorpass is a no-op,
    both lanes may reuse the initial packet. The ledger's diff-delivery rules
    govern both.
 8. Resolve this engine's round number per the ledger — `$AGENT_LOOP_REVIEW_ROUND`
@@ -62,12 +62,12 @@ to Phase 2. A convergence round never runs cleanup, marker or not.
 Otherwise invoke `Skill(skill="refactorpass", args="<pr-number>")` and wait for
 it to return. Do not stop when the sub-skill returns.
 
-## Phase 2: Deep grill
+## Phase 2: Deep critique
 
 Reload the PR head and ledger. When refactorpass moved the head, rebuild the
 immutable review packet from the same pinned base through that new head. Then
-invoke `Skill(skill="grill", args="<pr-number> deep")`, passing the resolved
-round so the lane selects the matching stance.
+`Skill(skill="critique", args="<pr-number> deep")`, passing the resolved round so
+the lane selects the matching stance.
 
 In an adversarial round the deep matrix uses the relevant lenses from code
 review, silent failures, type/API design, comments/docs, tests, security, and
@@ -75,17 +75,17 @@ conditional tenant-coupling. Keep the matrix bounded per `MODEL_NOTES.md`.
 
 In a convergence round the matrix narrows to correctness, silent failure, and
 security when its signal is present, and the PR changes only for a blocking
-defect. `/grill` owns those rules; do not restate or relax them here.
+defect. `/critique` owns those rules; do not restate or relax them here.
 
 Every confirmed finding must be posted inline before editing. A completed fix
 must be pushed, replied to with its SHA, validation, and structured disposition,
-then resolved through the deterministic helper. The final `/grill` lane always
+then resolved through the deterministic helper. The final `/critique` lane always
 finalizes the v3 structured result: under agent-loop the wrapper posts the
 completion attestation after validating it, while a standalone pass attests
 through the helper before reporting completion.
 
-The final result covers the entire enclosing deepgrill transition, beginning at
-the head recorded before refactorpass. If refactorpass committed and grill made
+The final result covers the entire enclosing deepcritique transition, beginning
+at the head recorded before refactorpass. If refactorpass committed and critique made
 no later fix, serialize `changed` with classification `minor`, an empty finding
 set, and that original before SHA; the committed refactor latch supplies the
 evidence. Do not emit `clean` for a cleanup-moved enclosing hook.
@@ -95,7 +95,7 @@ evidence. Do not emit `clean` for a cleanup-moved enclosing hook.
 Print:
 
 ```text
-✅ /deepgrill complete on PR #<pr-number>.
+✅ /deepcritique complete on PR #<pr-number>.
 - Reviewed head: <sha>
 - Round: <n> (<adversarial | convergence>)
 - Refactor pass: <ran | already spent at <sha> | docs-config skip>
@@ -129,5 +129,5 @@ When the hosted fallback was explicitly selected, hand off to
 
 ## Source of truth
 
-This skill lives upstream at `.claude/skills/deepgrill/` and is synced to
+This skill lives upstream at `.claude/skills/deepcritique/` and is synced to
 consumer repos.
