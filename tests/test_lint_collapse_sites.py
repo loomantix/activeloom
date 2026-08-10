@@ -17,7 +17,7 @@ import pytest
 def _check(lint: ModuleType, tmp_path: Path, body: str, keys: list[str] | None = None) -> list[str]:
     source = tmp_path / "template.md"
     source.write_text(body, encoding="utf-8")
-    violations: list[str] = lint.check_source(source, keys or ["E"])
+    violations: list[str] = lint.check_source(source, ["E"] if keys is None else keys)
     return violations
 
 
@@ -35,6 +35,12 @@ def test_accepts_an_unopted_key_inside_literal_content(
     # `F` is not opted in, so its position is irrelevant — the engine will
     # never collapse its line.
     assert _check(lint_collapse_sites, tmp_path, "```\n<<F>>\n```\n", ["E"]) == []
+
+
+def test_accepts_literal_content_with_an_explicit_empty_opt_in_list(
+    lint_collapse_sites: ModuleType, tmp_path: Path
+) -> None:
+    assert _check(lint_collapse_sites, tmp_path, "```\n<<E>>\n```\n", []) == []
 
 
 @pytest.mark.parametrize(
