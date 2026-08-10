@@ -418,6 +418,7 @@ recovery_message() {
 update_run_state() {
     local phase="$1" round="$2" base_sha="$3" head_sha="$4"
     local codex_result_sha256="${5:-}" claude_result_sha256="${6:-}"
+    local review_engine="${7:-}"
     local -a command
     [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] || return 0
     command=(python3 "$RUN_STATE_HELPER" update --file "$AGENT_LOOP_RUN_STATE_FILE"
@@ -428,6 +429,9 @@ update_run_state() {
     fi
     if [ -n "$claude_result_sha256" ]; then
         command+=(--claude-result-sha256 "$claude_result_sha256")
+    fi
+    if [ -n "$review_engine" ]; then
+        command+=(--review-engine "$review_engine")
     fi
     "${command[@]}" >/dev/null
 }
@@ -1096,15 +1100,13 @@ verify_v3_result_attestation() {
         return 1
     }
     result_status="$(jq -r '.status' "$outcome_file")" || return 1
-    if [ "$result_status" = changed ]; then
-        allowed_heads_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$REVIEW_ROUNDS_USED-heads.json"
-        verify_v3_committed_pass_evidence "$slug" "$REVIEW_ROUNDS_USED" \
-            "$before_sha" "$after_sha" "$outcome_file" "$allowed_heads_file" \
-            "$REVIEWED_BASE_SHA" || {
-            recovery_message "$engine converged review result no longer has matching ledger evidence."
-            return 1
-        }
-    fi
+    allowed_heads_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$REVIEW_ROUNDS_USED-heads.json"
+    verify_v3_committed_pass_evidence "$slug" "$REVIEW_ROUNDS_USED" \
+        "$before_sha" "$after_sha" "$outcome_file" "$allowed_heads_file" \
+        "$REVIEWED_BASE_SHA" || {
+        recovery_message "$engine converged review result no longer has matching ledger evidence."
+        return 1
+    }
     if [ "$result_status" = clean ]; then
         marker="<!-- local-review-pass:v3 engine=$slug round=$REVIEW_ROUNDS_USED base=$REVIEWED_BASE_SHA head=$after_sha result-sha256=$result_hash -->"
     else
@@ -1331,7 +1333,8 @@ run_review_convergence() {
                 return 1
             }
         fi
-        update_run_state reviewing "$round" "$round_base_sha" "$(git rev-parse HEAD)" || {
+        update_run_state reviewing "$round" "$round_base_sha" "$(git rev-parse HEAD)" \
+            "" "" codex || {
             recovery_message "Could not checkpoint review round $round."
             return 1
         }
@@ -1346,7 +1349,8 @@ run_review_convergence() {
             echo "   PR base advanced during Codex review; restart at Codex on the next round"
             round=$((round + 1))
             update_run_state reviewing "$round" \
-                "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" || {
+                "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
+                "" "" codex || {
                 recovery_message "Could not checkpoint the next review round."
                 return 1
             }
@@ -1357,9 +1361,9 @@ run_review_convergence() {
         codex_classification="$REVIEW_PASS_CLASSIFICATION"
         codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
         codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
-        update_run_state reviewing "$((round + 1))" "$round_base_sha" \
-            "$(git rev-parse HEAD)" || {
-            recovery_message "Could not checkpoint the next review round after Codex completed round $round."
+        update_run_state reviewing "$round" "$round_base_sha" \
+            "$(git rev-parse HEAD)" "" "" claude || {
+            recovery_message "Could not checkpoint the Claude leg after Codex completed round $round."
             return 1
         }
 
@@ -1373,7 +1377,8 @@ run_review_convergence() {
             echo "   PR base advanced during Claude review; restart at Codex on the next round"
             round=$((round + 1))
             update_run_state reviewing "$round" \
-                "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" || {
+                "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
+                "" "" codex || {
                 recovery_message "Could not checkpoint the next review round."
                 return 1
             }
@@ -1430,7 +1435,7 @@ run_review_convergence() {
         fi
         round=$((round + 1))
         update_run_state reviewing "$round" "$latest_base_sha" \
-            "$(git rev-parse HEAD)" || {
+            "$(git rev-parse HEAD)" "" "" codex || {
             recovery_message "Could not checkpoint the next review round."
             return 1
         }
@@ -1858,7 +1863,8 @@ resume_review_run() {
     local issue_json_value state_head state_phase state_round current_head branch_status
     local resume_boundary_status=0 checkpoint_base latest_base
     local issue_title_sha256 issue_body_sha256
-    local ready_finalization=false pr_draft_state
+    local ready_finalization=false pr_draft_state state_review_engine
+    local finalizing_head_drift=false
     SELECTED_ID="$(jq -r '.issue' <<<"$RESUME_STATE_JSON")"
     issue_json_value="$(issue_json "$SELECTED_ID")" || {
         recovery_message "Could not reload issue #$SELECTED_ID for review recovery."
@@ -1884,6 +1890,7 @@ resume_review_run() {
     state_head="$(jq -r '.headSha' <<<"$RESUME_STATE_JSON")"
     state_phase="$(jq -r '.phase' <<<"$RESUME_STATE_JSON")"
     state_round="$(jq -r '.round' <<<"$RESUME_STATE_JSON")"
+    state_review_engine="$(jq -r '.reviewEngine // empty' <<<"$RESUME_STATE_JSON")"
     if [ ! -d "$ACTIVE_WORKTREE" ] || [ -L "$ACTIVE_WORKTREE" ]; then
         recovery_message "Recorded recovery worktree is unavailable or unsafe."
         return 1
@@ -1932,6 +1939,10 @@ resume_review_run() {
     CONVERGED_CLAUDE_OUTCOME_SIGNATURE=""
 
     checkpoint_base="$(jq -r '.baseSha' <<<"$RESUME_STATE_JSON")"
+    if [ "$state_phase" = reviewing ] && \
+       { [ "$state_review_engine" = claude ] || [ "$current_head" != "$state_head" ]; }; then
+        state_round=$((state_round + 1))
+    fi
     if [ "$state_phase" = finalizing ]; then
         pr_draft_state="$(gh pr view "$AGENT_LOOP_PR_NUMBER" --json isDraft --jq '.isDraft')" || {
             recovery_message "Could not inspect the finalizing PR state."
@@ -1942,6 +1953,15 @@ resume_review_run() {
             false) ready_finalization=true ;;
             *) recovery_message "Finalizing PR draft state is invalid."; return 1 ;;
         esac
+        if [ "$current_head" != "$state_head" ]; then
+            finalizing_head_drift=true
+            if [ "$ready_finalization" = true ]; then
+                restore_draft_after_finalization_failure "$current_head" "$checkpoint_base" \
+                    "ready PR head moved beyond the finalizing checkpoint" || return 1
+                ready_finalization=false
+                pr_draft_state=true
+            fi
+        fi
         attest_pr_state "$current_head" "$checkpoint_base" "$pr_draft_state" \
             "before finalization recovery" || resume_boundary_status=$?
     else
@@ -1964,14 +1984,39 @@ resume_review_run() {
             state_round=$((state_round + 1))
         fi
         state_phase=reviewing
-        update_run_state reviewing "$state_round" "$latest_base" "$current_head" || {
+        update_run_state reviewing "$state_round" "$latest_base" "$current_head" \
+            "" "" codex || {
             recovery_message "Could not checkpoint the resumed review round."
             return 1
         }
         echo "   Base advanced since the checkpoint; the resumed round will integrate and review it."
     elif [ "$resume_boundary_status" -ne 0 ]; then
+        if [ "$ready_finalization" = true ]; then
+            restore_draft_after_finalization_failure "$current_head" "$checkpoint_base" \
+                "ready PR boundary changed during finalization recovery" || return 1
+            ready_finalization=false
+        fi
         recovery_message "Draft PR state does not match the recovery checkpoint."
         return 1
+    fi
+    if [ "$finalizing_head_drift" = true ] && [ "$state_phase" = finalizing ]; then
+        state_round=$((state_round + 1))
+        state_phase=reviewing
+        update_run_state reviewing "$state_round" "$checkpoint_base" "$current_head" \
+            "" "" codex || {
+            recovery_message "Could not checkpoint review restart after finalizing head drift."
+            return 1
+        }
+        echo "   PR head moved since finalization; the resumed round will review the new draft head."
+    elif [ "$state_phase" = converged ] && [ "$current_head" != "$state_head" ]; then
+        state_round=$((state_round + 1))
+        state_phase=reviewing
+        update_run_state reviewing "$state_round" "$checkpoint_base" "$current_head" \
+            "" "" codex || {
+            recovery_message "Could not checkpoint review restart after converged head drift."
+            return 1
+        }
+        echo "   PR head moved since convergence; the resumed round will review the new draft head."
     fi
     if { [ "$state_phase" = converged ] || [ "$state_phase" = finalizing ]; } && \
        [ "$current_head" = "$state_head" ]; then

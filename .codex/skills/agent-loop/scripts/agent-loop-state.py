@@ -62,6 +62,7 @@ def _validate(value: dict[str, Any]) -> None:
         "headSha",
         "phase",
         "round",
+        "reviewEngine",
         "codexResultSha256",
         "claudeResultSha256",
     }
@@ -80,6 +81,12 @@ def _validate(value: dict[str, Any]) -> None:
             _fail(f"run state {key} must be a full lowercase commit SHA")
     if value["phase"] not in PHASES:
         _fail("run state phase is invalid")
+    review_engine = value["reviewEngine"]
+    if value["phase"] == "reviewing":
+        if review_engine not in {"codex", "claude"}:
+            _fail("reviewing run state requires a current review engine")
+    elif review_engine is not None:
+        _fail("only reviewing run state may name a current review engine")
     for key in ("codexResultSha256", "claudeResultSha256"):
         digest = value[key]
         if digest is not None and (
@@ -155,6 +162,7 @@ def _create(args: argparse.Namespace) -> None:
         "headSha": args.head_sha,
         "phase": "draft-open",
         "round": 1,
+        "reviewEngine": None,
         "codexResultSha256": None,
         "claudeResultSha256": None,
     }
@@ -166,6 +174,7 @@ def _update(args: argparse.Namespace) -> None:
     path = Path(args.file)
     value = _read(path)
     value["phase"] = args.phase
+    value["reviewEngine"] = args.review_engine if args.phase == "reviewing" else None
     if args.round is not None:
         value["round"] = args.round
     if args.base_sha is not None:
@@ -212,6 +221,7 @@ def _parser() -> argparse.ArgumentParser:
     update.add_argument("--file", required=True)
     update.add_argument("--phase", required=True, choices=sorted(PHASES))
     update.add_argument("--round", type=int)
+    update.add_argument("--review-engine", choices=("codex", "claude"))
     update.add_argument("--base-sha")
     update.add_argument("--head-sha")
     update.add_argument("--codex-result-sha256")

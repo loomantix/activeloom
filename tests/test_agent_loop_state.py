@@ -63,7 +63,8 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
     assert stat.S_IMODE(state.parent.stat().st_mode) == 0o700
     value = json.loads(created.stdout)
     assert value["phase"] == "draft-open"
-    updated = _run(
+    assert value["reviewEngine"] is None
+    missing_engine = _run(
         "update",
         "--file",
         str(state),
@@ -76,10 +77,29 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
         "--head-sha",
         "c" * 40,
     )
+    assert missing_engine.returncode != 0
+    assert "current review engine" in missing_engine.stderr
+    updated = _run(
+        "update",
+        "--file",
+        str(state),
+        "--phase",
+        "reviewing",
+        "--round",
+        "2",
+        "--base-sha",
+        BASE,
+        "--head-sha",
+        "c" * 40,
+        "--review-engine",
+        "codex",
+    )
     assert updated.returncode == 0, updated.stderr
     shown = _run("show", "--file", str(state))
     assert shown.returncode == 0, shown.stderr
-    assert json.loads(shown.stdout)["round"] == 2
+    shown_value = json.loads(shown.stdout)
+    assert shown_value["round"] == 2
+    assert shown_value["reviewEngine"] == "codex"
 
 
 def test_state_rejects_permissive_or_unknown_content(tmp_path: Path) -> None:
@@ -114,6 +134,7 @@ def test_state_rejects_json_booleans_for_integer_fields(tmp_path: Path) -> None:
         "headSha": HEAD,
         "phase": "draft-open",
         "round": 1,
+        "reviewEngine": None,
         "codexResultSha256": None,
         "claudeResultSha256": None,
     }
@@ -225,6 +246,7 @@ def test_converged_state_requires_and_preserves_review_result_hashes(
     value = json.loads(state.read_text(encoding="utf-8"))
     assert value["codexResultSha256"] == "c" * 64
     assert value["claudeResultSha256"] == "d" * 64
+    assert value["reviewEngine"] is None
 
     finalizing = _run(
         "update",
