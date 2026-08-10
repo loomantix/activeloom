@@ -249,7 +249,7 @@ def drop_empty_placeholder_lines(
         # a placeholder at either end leaves a leading/trailing blank behind.
         if not 0 <= index < len(lines):
             return True
-        return not lines[index].strip()
+        return not lines[index].strip(" \t\r")
 
     def previous_kept(index: int) -> int:
         # Look past lines already dropped this pass, so back-to-back empty
@@ -264,7 +264,7 @@ def drop_empty_placeholder_lines(
         matches = list(PLACEHOLDER_RE.finditer(line))
         # Strip `\r` alongside spaces and tabs: `.split("\n")` leaves it on
         # every line of a CRLF source, and without this the residue is truthy
-        # and no line ever qualifies. Matches `is_blank`'s bare `.strip()`.
+        # and no line ever qualifies. Matches `is_blank`'s ASCII-only rule.
         if not matches or PLACEHOLDER_RE.sub("", line).strip(" \t\r"):
             continue
         keys = [match.group(1) for match in matches]
@@ -361,7 +361,8 @@ def substitute(
     # the natural way a consumer says "this section is empty" — `str(None)`
     # would render the literal word `None` into their repo and block collapsing.
     rendered_values = {
-        key: "" if values[key] is None else str(values[key]).rstrip("\n") for key in declared
+        key: "" if values[key] is None else str(values[key]).rstrip("\r\n")
+        for key in declared
     }
     collapse_keys = set(collapse_empty_substitutions)
 

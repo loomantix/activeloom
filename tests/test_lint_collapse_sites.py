@@ -51,6 +51,8 @@ def test_accepts_literal_content_with_an_explicit_empty_opt_in_list(
         "<pre>\nline\n\n<<E>>\n\nline\n</pre>\n",
         "intro\n\n    <<E>>\n\noutro\n",
         "intro\n\n\t<<E>>\n\noutro\n",
+        "---\nnote: |\n  before\n\n  <<E>>\n\n  after\n---\n",
+        '+++\nnote = """\nbefore\n\n  <<E>>\n\nafter\n"""\n+++\n',
     ],
 )
 def test_rejects_a_placeholder_inside_literal_content(
@@ -81,6 +83,7 @@ def test_rejects_a_placeholder_inside_literal_content(
         "```\n> ```\n\n<<E>>\n\n```\n",
         "> ```\n> quoted\n```\n\n<<E>>\n\n```\n",
         "- ```\n  listed\n```\n\n<<E>>\n\n```\n",
+        "- ```\n  first\n\noutside\n\n- ```\n\n  <<E>>\n\n  tail\n  ```\n",
         "intro\n\n \t<<E>>\n\noutro\n",
         "intro\n\n   \t<<E>>\n\noutro\n",
     ],
@@ -107,6 +110,7 @@ def test_rejects_a_placeholder_sharing_its_line_with_prose(
         "intro\n<<E>>\n\noutro\n",
         "intro\n\n<<E>>\noutro\n",
         "intro\n<<E>>\noutro\n",
+        "intro\n\n<<E>>\n\u00a0\noutro\n",
     ],
 )
 def test_rejects_a_placeholder_without_blank_separators(

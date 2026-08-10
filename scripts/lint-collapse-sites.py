@@ -39,6 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 PLACEHOLDER_RE = re.compile(r"<<([A-Z][A-Z0-9_]*)>>")
 FENCE_RE = re.compile(r"(`{3,}|~{3,})")
+LIST_ITEM_FENCE_PREFIX_RE = re.compile(r"(?:^|[ \t>])(?:[-+*]|\d{1,9}[.)])[ \t]+\Z")
 RAW_TAG_EVENT_RE = re.compile(
     r"</(?P<close>pre|script|style|textarea)\s*>|<(?P<open>pre|script|style|textarea)\b",
     re.IGNORECASE,
@@ -66,7 +67,17 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
     in_processing_instruction = False
     in_declaration = False
     in_cdata = False
+    front_matter_delimiter = (
+        lines[0].strip(" \t\r")
+        if lines and lines[0].strip(" \t\r") in {"---", "+++"}
+        else None
+    )
     for index, line in enumerate(lines):
+        if front_matter_delimiter is not None:
+            literal[index] = True
+            if index > 0 and line.strip(" \t\r") == front_matter_delimiter:
+                front_matter_delimiter = None
+            continue
         fence_match = FENCE_RE.search(line)
         if fence_match is not None and any(
             char not in " \t>-+*0123456789.)" for char in line[: fence_match.start()]
@@ -88,6 +99,10 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
                 and fence_match.group(1)[0] == char
                 and len(fence_match.group(1)) >= length
                 and line[: fence_match.start()] == opener_prefix
+                # Repeating a list-item prefix starts another list item; it
+                # cannot close the earlier item's fence. Treating it as a
+                # closer exposes the second fenced block to unsafe collapsing.
+                and LIST_ITEM_FENCE_PREFIX_RE.search(opener_prefix) is None
                 and not line[fence_match.end() :].strip(" \t\r")
             ):
                 fence = None
@@ -179,9 +194,9 @@ def check_source(source: Path, collapse_keys: list[str]) -> list[str]:
                 reason = "shares its line with a placeholder that is not opted in"
             elif PLACEHOLDER_RE.sub("", line).strip(" \t\r"):
                 reason = "shares its line with non-placeholder text"
-            elif index > 0 and lines[index - 1].strip():
+            elif index > 0 and lines[index - 1].strip(" \t\r"):
                 reason = "is not preceded by a blank separator"
-            elif index + 1 < len(lines) and lines[index + 1].strip():
+            elif index + 1 < len(lines) and lines[index + 1].strip(" \t\r"):
                 reason = "is not followed by a blank separator"
             else:
                 continue

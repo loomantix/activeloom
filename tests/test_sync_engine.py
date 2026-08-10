@@ -310,6 +310,11 @@ def test_render_preserves_horizontal_whitespace_value_when_opted_in(
     assert sync_engine.substitute(text, {"E": " \t "}, ["E"], "src.md", ["E"]) == "a\n\n \t \n\nb\n"
 
 
+def test_render_preserves_unicode_whitespace_separator(sync_engine: ModuleType) -> None:
+    text = "a\n\n<<E>>\n\u00a0\nb\n"
+    assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\n\u00a0\nb\n"
+
+
 def test_render_keeps_line_when_only_some_placeholders_are_opted_in(
     sync_engine: ModuleType,
 ) -> None:
@@ -344,6 +349,11 @@ def test_render_collapses_crlf_source(sync_engine: ModuleType) -> None:
     # strip it or a CRLF checkout silently gets no collapsing at all.
     text = "a\r\n\r\n<<E>>\r\n\r\nb\r\n"
     assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\r\n\r\nb\r\n"
+
+
+def test_render_treats_crlf_only_value_as_empty(sync_engine: ModuleType) -> None:
+    text = "a\r\n\r\n<<E>>\r\n\r\nb\r\n"
+    assert sync_engine.substitute(text, {"E": "\r\n"}, ["E"], "src.md", ["E"]) == "a\r\n\r\nb\r\n"
 
 
 def test_render_treats_a_null_value_as_empty(sync_engine: ModuleType) -> None:
