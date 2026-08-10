@@ -34,7 +34,7 @@ def test_accepts_an_unopted_key_inside_literal_content(
 ) -> None:
     # `F` is not opted in, so its position is irrelevant — the engine will
     # never collapse its line.
-    assert _check(lint_collapse_sites, tmp_path, "```\n<<F>>\n```\n", ["E"]) == []
+    assert _check(lint_collapse_sites, tmp_path, "<<E>>\n\n```\n<<F>>\n```\n", ["E"]) == []
 
 
 def test_accepts_literal_content_with_an_explicit_empty_opt_in_list(
@@ -78,6 +78,9 @@ def test_rejects_a_placeholder_inside_literal_content(
         "<!DECLARATION\n\n<<E>>\n\n>\n",
         "<![CDATA[\n\n<<E>>\n\n]]>\n",
         "- ```\n  code\n\n  <<E>>\n\n  more\n  ```\n",
+        "```\n> ```\n\n<<E>>\n\n```\n",
+        "> ```\n> quoted\n```\n\n<<E>>\n\n```\n",
+        "- ```\n  listed\n```\n\n<<E>>\n\n```\n",
         "intro\n\n \t<<E>>\n\noutro\n",
         "intro\n\n   \t<<E>>\n\noutro\n",
     ],
@@ -128,6 +131,14 @@ def test_rejects_an_invalid_placeholder_key(
     violations = _check(lint_collapse_sites, tmp_path, "<<1E>>\n", ["1E"])
     assert len(violations) == 1
     assert "not a valid placeholder key" in violations[0]
+
+
+def test_rejects_an_opted_in_key_with_no_placeholder_occurrence(
+    lint_collapse_sites: ModuleType, tmp_path: Path
+) -> None:
+    violations = _check(lint_collapse_sites, tmp_path, "no placeholders here\n")
+    assert len(violations) == 1
+    assert "has no placeholder occurrence" in violations[0]
 
 
 def test_reports_every_violating_site(lint_collapse_sites: ModuleType, tmp_path: Path) -> None:

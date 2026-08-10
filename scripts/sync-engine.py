@@ -195,6 +195,18 @@ def load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(fp) or {}
 
 
+def read_utf8(path: Path) -> str:
+    """Read UTF-8 text without universal-newline translation."""
+    with path.open(encoding="utf-8", newline="") as file:
+        return file.read()
+
+
+def write_utf8(path: Path, content: str) -> None:
+    """Write UTF-8 text without platform newline translation."""
+    with path.open("w", encoding="utf-8", newline="") as file:
+        file.write(content)
+
+
 def drop_empty_placeholder_lines(
     text: str, rendered_values: dict[str, str], collapse_keys: set[str], source: str
 ) -> str:
@@ -371,10 +383,10 @@ def substitute(
 def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
     """Write content to path only if it differs. Return True if a write happened."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.is_file() else None
+    existing = read_utf8(path) if path.is_file() else None
     changed = existing != content
     if changed:
-        path.write_text(content, encoding="utf-8")
+        write_utf8(path, content)
     if mode is not None:
         # `stat.S_IMODE` keeps the full 12-bit permission set (setuid +
         # setgid + sticky + rwx*3). `& 0o777` would mask off the upper
@@ -831,7 +843,7 @@ def main() -> int:
             sys.stderr.write(f"  ❌ source missing in upstream: {source_rel}\n")
             return 1
 
-        text = source_path.read_text(encoding="utf-8")
+        text = read_utf8(source_path)
         # Always run substitution — even when subs=[] — so that the
         # "undeclared placeholder in source" warning fires when a developer
         # adds a `<<KEY>>` token to a source file but forgets to declare
@@ -844,7 +856,7 @@ def main() -> int:
         substituted = substitute(text, values, subs, source_rel, collapse_empty_substitutions)
 
         if args.dry_run:
-            existing = dest_path.read_text(encoding="utf-8") if dest_path.is_file() else None
+            existing = read_utf8(dest_path) if dest_path.is_file() else None
             current_mode = stat.S_IMODE(dest_path.stat().st_mode) if dest_path.is_file() else None
             content_diverged = existing != substituted
             mode_diverged = mode is not None and current_mode is not None and current_mode != mode

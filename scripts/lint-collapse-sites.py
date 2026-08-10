@@ -60,7 +60,7 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
     a consumer a deleted line.
     """
     literal = [False] * len(lines)
-    fence: tuple[str, int] | None = None
+    fence: tuple[str, int, str] | None = None
     raw_tag: str | None = None
     in_comment = False
     in_processing_instruction = False
@@ -73,16 +73,21 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
         ):
             fence_match = None
         if fence is None and fence_match is not None:
-            fence = (fence_match.group(1)[0], len(fence_match.group(1)))
+            fence = (
+                fence_match.group(1)[0],
+                len(fence_match.group(1)),
+                line[: fence_match.start()],
+            )
             literal[index] = True
             continue
         if fence is not None:
             literal[index] = True
-            char, length = fence
+            char, length, opener_prefix = fence
             if (
                 fence_match is not None
                 and fence_match.group(1)[0] == char
                 and len(fence_match.group(1)) >= length
+                and line[: fence_match.start()] == opener_prefix
                 and not line[fence_match.end() :].strip(" \t\r")
             ):
                 fence = None
@@ -157,11 +162,13 @@ def check_source(source: Path, collapse_keys: list[str]) -> list[str]:
     literal = literal_content_lines(lines)
     violations: list[str] = []
     collapse_set = set(collapse_keys)
+    source_keys: set[str] = set()
     for key in sorted(collapse_set):
         if PLACEHOLDER_NAME_RE.fullmatch(key) is None:
             violations.append(f"{source}: `{key}` is not a valid placeholder key")
     for index, line in enumerate(lines):
         line_keys = set(PLACEHOLDER_RE.findall(line))
+        source_keys.update(line_keys)
         present = line_keys & collapse_set
         if not present:
             continue
@@ -179,6 +186,9 @@ def check_source(source: Path, collapse_keys: list[str]) -> list[str]:
             else:
                 continue
             violations.append(f"{source}:{index + 1}: `{key}` {reason}")
+    for key in sorted(collapse_set - source_keys):
+        if PLACEHOLDER_NAME_RE.fullmatch(key) is not None:
+            violations.append(f"{source}: `{key}` has no placeholder occurrence")
     return violations
 
 

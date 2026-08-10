@@ -497,6 +497,32 @@ def test_main_renders_substituted_md_but_leaves_verbatim_copies_alone(
     assert (consumer_dir / "verbatim.md").read_text() == ugly
 
 
+def test_main_preserves_crlf_while_collapsing_an_empty_placeholder(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (upstream_repo / "template.md").write_bytes(b"a\r\n\r\n<<E>>\r\n\r\nb\r\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "template.md",
+                    "destination": "rendered.md",
+                    "substitutions": ["E"],
+                    "collapse_empty_substitutions": ["E"],
+                }
+            ]
+        },
+    )
+    _write_yaml(consumer_dir / ".platform-config.yml", {"substitutions": {"E": ""}})
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 0
+    assert (consumer_dir / "rendered.md").read_bytes() == b"a\r\n\r\nb\r\n"
+
+
 # ---------------------------------------------------------------------------
 # write_if_changed — content + mode divergence
 # ---------------------------------------------------------------------------
