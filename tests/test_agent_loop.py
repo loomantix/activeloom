@@ -1275,6 +1275,47 @@ fi
     assert (consumer[3] / "pr-ready").exists()
 
 
+def test_v3_base_advance_does_not_bypass_blocked_result(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    updater = tmp_path / "advance-base-v3-blocked.sh"
+    _write_executable(
+        updater,
+        """#!/usr/bin/env bash
+set -e
+clone="$AGENT_STATE_DIR/base-clone-v3-blocked"
+git clone "$REMOTE_PATH" "$clone" >/dev/null 2>&1
+git -C "$clone" config user.name Test
+git -C "$clone" config user.email test@example.invalid
+printf 'fresh-v3-blocked\n' > "$clone/fresh-base-v3-blocked.txt"
+git -C "$clone" add fresh-base-v3-blocked.txt
+git -C "$clone" commit -m 'chore: advance v3 base' >/dev/null
+git -C "$clone" push origin main >/dev/null
+jq -n --arg engine "$AGENT_LOOP_REVIEW_ENGINE" \
+  --argjson round "$AGENT_LOOP_REVIEW_ROUND" \
+  --arg base "$AGENT_LOOP_REVIEW_BASE_SHA" \
+  --arg head "$AGENT_LOOP_PR_HEAD_SHA" \
+  '{version:3,status:"blocked",engine:$engine,round:$round,baseSha:$base,beforeSha:$head,afterSha:$head,classification:null,findingFingerprints:[],finalLaneComplete:false,blocker:"ledger mutation failed"}' \
+  > "$AGENT_LOOP_REVIEW_RESULT_FILE"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "36"],
+        issues=[_issue(36)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook=str(updater),
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+        extra_env={"REMOTE_PATH": str(consumer[1])},
+    )
+    assert result.returncode != 0
+    assert "review blocked in round 1: ledger mutation failed" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
 def test_large_worker_writes_survive_and_log_is_bounded(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

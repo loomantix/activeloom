@@ -84,6 +84,12 @@ finalizes the v3 structured result: under agent-loop the wrapper posts the
 completion attestation after validating it, while a standalone pass attests
 through the helper before reporting completion.
 
+The final result covers the entire enclosing deepgrill transition, beginning at
+the head recorded before refactorpass. If refactorpass committed and grill made
+no later fix, serialize `changed` with classification `minor`, an empty finding
+set, and that original before SHA; the committed refactor latch supplies the
+evidence. Do not emit `clean` for a cleanup-moved enclosing hook.
+
 ## Phase 3: Handoff
 
 Print:

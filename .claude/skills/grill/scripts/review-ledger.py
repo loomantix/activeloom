@@ -488,7 +488,7 @@ query($threadId: ID!) {
       repository { nameWithOwner }
       pullRequest { number }
       comments(first: 100) {
-        nodes { databaseId }
+        nodes { databaseId body author { login } }
         pageInfo { hasNextPage }
       }
     }
@@ -519,7 +519,8 @@ query($threadId: ID!) {
     if not isinstance(thread.get("isResolved"), bool):
         _fail(f"review thread {args.thread_id} has invalid resolution state")
     comment_id = getattr(args, "comment_id", None)
-    if comment_id is not None or expected_comment_ids:
+    legacy_actor = getattr(args, "legacy_root_actor", None)
+    if comment_id is not None or expected_comment_ids or legacy_actor is not None:
         comments = thread.get("comments")
         if not isinstance(comments, dict):
             _fail("review thread read-back omitted comments")
@@ -536,6 +537,17 @@ query($threadId: ID!) {
             _fail("--comment-id is not the root comment of --thread-id")
         if any(expected not in ids for expected in expected_comment_ids):
             _fail("finding occurrence does not belong to --thread-id")
+    if legacy_actor is not None:
+        if not isinstance(nodes, list) or not nodes or not isinstance(nodes[0], dict):
+            _fail("legacy resolve target has no root comment")
+        root = nodes[0]
+        author = root.get("author")
+        if (
+            not isinstance(author, dict)
+            or author.get("login") != legacy_actor
+            or FINDING_V1 not in str(root.get("body", ""))
+        ):
+            _fail("legacy resolve target is not an actor-owned v1 finding thread")
     return cast(bool, thread["isResolved"])
 
 
@@ -688,6 +700,8 @@ def _thread_markers(
         if not isinstance(author, dict) or author.get("login") != actor:
             continue
         body = str(comment.get("body", ""))
+        if FINDING_V1 in body or DISPOSITION_V1 in body:
+            _fail("actor-owned legacy local-review marker is incompatible with v3")
         finding = FINDING_V3_RE.search(body)
         disposition = DISPOSITION_V3_RE.search(body)
         if FINDING_V1.replace(":v1", ":v3") in body and finding is None:
@@ -1197,6 +1211,7 @@ def _attest(args: argparse.Namespace) -> None:
     else:
         comment_id = existing
     _verify_issue_comment(args.repo, comment_id, body, actor)
+    _verify_review_base(args.repo, args.pr, args.base, args.before)
     _verify_head(args.repo, args.pr, args.head)
     print(
         json.dumps(
@@ -1214,6 +1229,7 @@ def _attest(args: argparse.Namespace) -> None:
 
 
 def _resolve(args: argparse.Namespace) -> None:
+    args.legacy_root_actor = _current_login()
     _verify_head(args.repo, args.pr, args.head)
     replayed = _set_thread_state(args, True)
     _verify_head(args.repo, args.pr, args.head)

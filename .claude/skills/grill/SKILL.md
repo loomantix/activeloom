@@ -121,9 +121,13 @@ The inline comment must exist before the corresponding edit. If no defensible
 diff anchor exists, keep it out of the automated fix loop or track a genuinely
 architectural follow-up as the ledger requires.
 
-If no new confirmed finding survives, finalize a `clean` v3 result per the
-ledger. Under agent-loop the wrapper owns the canonical pass attestation; a
-standalone pass must attest through the helper before reporting completion.
+If no new confirmed finding survives and the enclosing review hook did not move
+the head, finalize a `clean` v3 result per the ledger. When deepgrill's earlier
+refactorpass committed, preserve the enclosing hook's original before SHA and
+finalize `changed` with classification `minor` and an empty finding set; the
+committed refactor latch supplies the evidence. Under agent-loop the wrapper
+owns the canonical pass attestation; a standalone pass must attest through the
+helper before reporting completion.
 
 ## Phase 3: Disposition and fixes
 

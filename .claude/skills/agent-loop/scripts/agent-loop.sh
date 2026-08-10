@@ -925,9 +925,7 @@ run_review_convergence() {
             fi
             run_validation "$slug-review-round-$round" || return 1
             require_clean_tree_after "$slug review round $round validation" || return 1
-            if [ "$base_advanced" = true ]; then
-                echo "   Review result is superseded by the advanced base; the next round revalidates it."
-            elif [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+            if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
                 result_json="$(python3 "$REVIEW_LEDGER" validate-result \
                     --engine "$slug" --round "$round" --base "$round_base_sha" \
                     --before "$before" --head "$after" --result-file "$result_file")" || {
@@ -940,17 +938,23 @@ run_review_convergence() {
                     recovery_message "$engine review blocked in round $round: $blocker"
                     return 1
                 fi
-                attest_json="$(python3 "$REVIEW_LEDGER" attest --repo "$GH_REPO" \
-                    --pr "$AGENT_LOOP_PR_NUMBER" --head "$after" --engine "$slug" \
-                    --round "$round" --base "$round_base_sha" --before "$before" \
-                    --result-file "$result_file")" || {
-                    recovery_message "$engine review result attestation failed in round $round."
-                    return 1
-                }
-                classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$attest_json")"
-                if [ "$classification" != clean ]; then
-                    [ "$classification" = minor ] || material=true
+                if [ "$base_advanced" = true ]; then
+                    echo "   Valid review result is superseded by the advanced base; the next round revalidates it."
+                else
+                    attest_json="$(python3 "$REVIEW_LEDGER" attest --repo "$GH_REPO" \
+                        --pr "$AGENT_LOOP_PR_NUMBER" --head "$after" --engine "$slug" \
+                        --round "$round" --base "$round_base_sha" --before "$before" \
+                        --result-file "$result_file")" || {
+                        recovery_message "$engine review result attestation failed in round $round."
+                        return 1
+                    }
+                    classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$attest_json")"
+                    if [ "$classification" != clean ]; then
+                        [ "$classification" = minor ] || material=true
+                    fi
                 fi
+            elif [ "$base_advanced" = true ]; then
+                echo "   Review evidence is superseded by the advanced base; the next round revalidates it."
             elif [ "$after" != "$before" ]; then
                 classification=material
                 if [ -e "$outcome_file" ]; then

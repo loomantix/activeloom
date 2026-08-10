@@ -442,6 +442,8 @@ def test_resolve_requires_matching_head_and_verified_response(
     def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
         if args[:2] == ["pr", "view"]:
             return HEAD + "\n"
+        if args == ["api", "user"]:
+            return json.dumps({"login": ACTOR})
         assert args == ["api", "graphql"]
         assert payload is not None
         payloads.append(payload)
@@ -465,7 +467,15 @@ def test_resolve_requires_matching_head_and_verified_response(
                         "repository": {"nameWithOwner": REPO},
                         "pullRequest": {"number": 7},
                         "comments": {
-                            "nodes": [],
+                            "nodes": [
+                                {
+                                    "databaseId": 88,
+                                    "body": "<!-- local-review:v1 engine=codex round=1 head="
+                                    + HEAD
+                                    + " fingerprint=legacy -->\nFinding.",
+                                    "author": {"login": ACTOR},
+                                }
+                            ],
                             "pageInfo": {"hasNextPage": False},
                         },
                     }
@@ -492,6 +502,63 @@ def test_resolve_requires_matching_head_and_verified_response(
         cast(dict[str, Any], payload["variables"]) == {"threadId": "THREAD"}
         for payload in payloads
     )
+
+
+def test_resolve_rejects_same_pr_human_thread(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mutations = 0
+
+    def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        nonlocal mutations
+        if args[:2] == ["pr", "view"]:
+            return HEAD + "\n"
+        if args == ["api", "user"]:
+            return json.dumps({"login": ACTOR})
+        assert args == ["api", "graphql"] and payload is not None
+        query = cast(str, payload["query"])
+        if "mutation" in query:
+            mutations += 1
+            pytest.fail("human thread must not be mutated")
+        return json.dumps(
+            {
+                "data": {
+                    "node": {
+                        "id": "THREAD",
+                        "isResolved": False,
+                        "repository": {"nameWithOwner": REPO},
+                        "pullRequest": {"number": 7},
+                        "comments": {
+                            "nodes": [
+                                {
+                                    "databaseId": 88,
+                                    "body": "Human review finding.",
+                                    "author": {"login": ACTOR},
+                                }
+                            ],
+                            "pageInfo": {"hasNextPage": False},
+                        },
+                    }
+                }
+            }
+        )
+
+    monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
+    with pytest.raises(review_ledger.LedgerError, match="actor-owned v1"):
+        review_ledger.main(
+            [
+                "resolve",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--head",
+                HEAD,
+                "--thread-id",
+                "THREAD",
+            ]
+        )
+    assert mutations == 0
 
 
 def _v3_finding_args(content_file: Path) -> list[str]:
@@ -1301,6 +1368,22 @@ def test_complete_ledger_rejects_tampered_malformed_and_orphan_records(
     with pytest.raises(review_ledger.LedgerError, match="without a finding"):
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
+    legacy = dict(base_thread)
+    legacy["comments"] = {
+        "nodes": [
+            {
+                "databaseId": 3,
+                "body": "<!-- local-review:v1 engine=codex round=1 "
+                f"head={HEAD} fingerprint=legacy -->\nFinding.",
+                "author": {"login": ACTOR},
+            }
+        ],
+        "pageInfo": {"hasNextPage": False},
+    }
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [legacy])
+    with pytest.raises(review_ledger.LedgerError, match="incompatible with v3"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
 
 def test_review_threads_rejects_truncated_top_level_pagination(
     review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
@@ -1534,6 +1617,13 @@ def test_attest_content_file_reads_result_once_and_returns_classification(
 
     monkeypatch.setattr(review_ledger, "_read_result_bytes", counted_read)
     monkeypatch.setattr(review_ledger, "_verify_result_evidence", lambda *_args: None)
+    base_checks = 0
+
+    def verify_base(*_args: Any) -> None:
+        nonlocal base_checks
+        base_checks += 1
+
+    monkeypatch.setattr(review_ledger, "_verify_review_base", verify_base)
     monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
     monkeypatch.setattr(review_ledger, "_issue_comments", lambda *_args: [])
     monkeypatch.setattr(review_ledger, "_verify_issue_comment", lambda *_args: None)
@@ -1575,6 +1665,7 @@ def test_attest_content_file_reads_result_once_and_returns_classification(
     assert output["status"] == "clean"
     assert output["classification"] is None
     assert posted["body"].endswith(f"\n{content}")
+    assert base_checks == 1
 
 
 def test_review_skills_define_wrapper_and_standalone_v3_finalization() -> None:
@@ -1593,6 +1684,8 @@ def test_review_skills_define_wrapper_and_standalone_v3_finalization() -> None:
     assert "Finalize wrapper and standalone results" in ledger
     assert "helper returns `verified: true`" in ledger
     assert "On a skip, finalize a clean v3 result" in deepgrill
+    assert "Do not emit `clean` for a cleanup-moved enclosing hook" in deepgrill
+    assert "the enclosing review hook did not move" in grill
     for skill in (deepgrill, grill, codex_review):
         assert "wrapper/standalone" in skill
         assert "standalone pass" in skill
