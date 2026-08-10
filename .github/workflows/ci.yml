@@ -150,7 +150,7 @@ jobs:
     # (blank runs inside raw <pre> or indented code, which the pinned prettier
     # preserves) would still pass a --check, so cleanliness alone cannot catch
     # it — the golden comparison can.
-    name: Rendered template prettier check
+    name: Rendered template fidelity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1

@@ -181,9 +181,6 @@ def load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(fp) or {}
 
 
-WHOLE_LINE_PLACEHOLDER_RE = re.compile(r"\A[ \t]*<<([A-Z][A-Z0-9_]*)>>[ \t]*\Z")
-
-
 def drop_empty_placeholder_lines(text: str, values: dict[str, str], declared: set[str]) -> str:
     """Delete template lines holding nothing but a placeholder that renders empty.
 
@@ -231,7 +228,7 @@ def drop_empty_placeholder_lines(text: str, values: dict[str, str], declared: se
         return probe
 
     for i, line in enumerate(lines):
-        match = WHOLE_LINE_PLACEHOLDER_RE.match(line)
+        match = PLACEHOLDER_RE.fullmatch(line.strip(" \t"))
         if match is None:
             continue
         key = match.group(1)
