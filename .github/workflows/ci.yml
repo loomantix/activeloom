@@ -75,6 +75,10 @@ jobs:
         run: |
           test -f scripts/create-signed-commit.py
           python3 -m coverage report --include='scripts/create-signed-commit.py' --fail-under=80
+      - name: Coverage gate — lint-collapse-sites.py >=80%
+        run: |
+          test -f scripts/lint-collapse-sites.py
+          python3 -m coverage report --include='scripts/lint-collapse-sites.py' --fail-under=80
 
   shell:
     name: Shell syntax + shellcheck

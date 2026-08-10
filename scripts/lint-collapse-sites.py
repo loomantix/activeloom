@@ -7,10 +7,10 @@ and it decides purely from the line's own bytes. The engine carries no Markdown
 knowledge, by design, because a whole-file normalizer cannot tell an
 author-written blank line from a placeholder-produced one without re-parsing the
 document. That leaves one gap: a key opted into collapsing whose template
-occurrence sits inside literal content — a fenced block, a four-space indented
-block, an HTML comment, or a raw `<pre>`, `<script>`, `<style>`, or `<textarea>`
-— would silently delete a line of that content from every consumer's rendered
-file.
+occurrence sits inside literal content — front matter, a fenced block, a
+four-space indented block, an HTML comment, or a raw `<pre>`, `<script>`,
+`<style>`, or `<textarea>` — would silently delete a line of that content from
+every consumer's rendered file.
 
 Close it here rather than in the engine. Reading the template is cheap at lint
 time, a violation is always an authoring mistake in this repo's own manifest,

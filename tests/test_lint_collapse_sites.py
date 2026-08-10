@@ -166,7 +166,7 @@ def test_canonical_manifest_passes(
     # count it reports.
     reported = re.search(r"verified in (\d+) source", capsys.readouterr().out)
     assert reported is not None
-    assert int(reported.group(1)) >= 1
+    assert int(reported.group(1)) == 1
 
 
 def test_main_rejects_an_unsafe_site(
