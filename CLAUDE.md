@@ -19,6 +19,8 @@ Skills, agent definitions, and the instruction strings a skill tells Claude to p
 
 **Read [.claude/MODEL_NOTES.md](.claude/MODEL_NOTES.md) before editing anything under `.claude/skills/` or `.claude/agents/`,** and work through its checklist before opening the PR. The short version: review agents report everything and the caller filters, no self-verification scaffolding, bounded subagent delegation, explicit output-length ceilings on every `Agent(...)` prompt, and no generic model-behavior boilerplate the harness already supplies.
 
+**Read [.claude/SKILL_AUTHORING.md](.claude/SKILL_AUTHORING.md) alongside it** when adding a skill or restructuring one. MODEL_NOTES covers what the current model does differently; SKILL_AUTHORING covers how to structure the document — invocation and the context cost of a description, where reference material sits relative to steps, completion criteria the model can check, and what to cut. Both carry a checklist; a new skill should pass both.
+
 ## Cross-references
 
 - [README.md](README.md) — what ships here, how to install skills, how to wire up a consumer.
@@ -26,3 +28,4 @@ Skills, agent definitions, and the instruction strings a skill tells Claude to p
 - [SECURITY.md](SECURITY.md) — responsible disclosure.
 - [.claude/REVIEW_WORKFLOW.md](.claude/REVIEW_WORKFLOW.md) — canonical AI review chain.
 - [.claude/MODEL_NOTES.md](.claude/MODEL_NOTES.md) — prompt-authoring deltas for the current default model.
+- [.claude/SKILL_AUTHORING.md](.claude/SKILL_AUTHORING.md) — how to structure a skill document: invocation, information hierarchy, completion criteria, pruning.

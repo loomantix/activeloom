@@ -226,6 +226,17 @@ targets:
     destination: .claude/MODEL_NOTES.md
     substitutions: []
 
+  # Structural companion to MODEL_NOTES. Where those notes cover what the
+  # current model does differently, this covers how to build the document:
+  # invocation and what a `description` costs in always-loaded context,
+  # where reference material sits relative to steps, checkable completion
+  # criteria, and the pruning tests. Synced for the same reason MODEL_NOTES
+  # is — a consumer writing its own skills needs both, and the context cost
+  # of a badly-scoped skill is paid by every session in that repo.
+  - source: .claude/SKILL_AUTHORING.md
+    destination: .claude/SKILL_AUTHORING.md
+    substitutions: []
+
   - source: .claude/settings.json
     destination: .claude/settings.json
     substitutions: []
