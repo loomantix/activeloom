@@ -8,6 +8,7 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
@@ -80,7 +81,9 @@ def _validate(value: dict[str, Any]) -> None:
         _fail("run state paths must be absolute")
 
 
-def _atomic_write(path: Path, value: dict[str, Any]) -> None:
+def _atomic_write(
+    path: Path, value: dict[str, Any], *, replace: bool = True
+) -> None:
     _validate(value)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.parent.is_symlink():
@@ -94,7 +97,14 @@ def _atomic_write(path: Path, value: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        if replace:
+            os.replace(temporary, path)
+        else:
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                _fail("run state already exists")
+            os.unlink(temporary)
         directory = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory)
@@ -109,8 +119,6 @@ def _atomic_write(path: Path, value: dict[str, Any]) -> None:
 
 def _create(args: argparse.Namespace) -> None:
     path = Path(args.file)
-    if path.exists() or path.is_symlink():
-        _fail("run state already exists")
     value = {
         "version": STATE_VERSION,
         "runId": args.run_id,
@@ -127,7 +135,7 @@ def _create(args: argparse.Namespace) -> None:
         "phase": "draft-open",
         "round": 1,
     }
-    _atomic_write(path, value)
+    _atomic_write(path, value, replace=False)
     print(json.dumps(value, sort_keys=True))
 
 
@@ -190,5 +198,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, StateError) as error:
-        print(f"agent-loop-state: {error}", file=os.sys.stderr)
+        print(f"agent-loop-state: {error}", file=sys.stderr)
         raise SystemExit(1) from error

@@ -292,12 +292,27 @@ def _finding_records(
     return records
 
 
+def _require_finding_root(
+    rows: list[dict[str, Any]], args: argparse.Namespace
+) -> list[tuple[dict[str, Any], re.Match[str]]]:
+    records = _finding_records(rows, args.fingerprint)
+    roots = [
+        row
+        for row, match in records
+        if int(match.group("occurrence")) == 1
+    ]
+    if len(roots) != 1 or roots[0].get("id") != args.comment_id:
+        _fail("--comment-id does not identify the fingerprint root comment")
+    return records
+
+
 def _require_finding_occurrence(
     rows: list[dict[str, Any]], args: argparse.Namespace
 ) -> None:
+    records = _require_finding_root(rows, args)
     matches = [
         match
-        for _, match in _finding_records(rows, args.fingerprint)
+        for _, match in records
         if match.group("engine") == args.engine
         and int(match.group("round")) == args.round
         and int(match.group("occurrence")) == args.occurrence
@@ -347,6 +362,7 @@ def _post_review_comment(
     else:
         payload = {"body": body}
         endpoint = f"repos/{args.repo}/pulls/{args.pr}/comments/{reply_to}/replies"
+    replayed = False
     try:
         response = _json_output(["api", "-X", "POST", endpoint], payload)
         comment_id = _posted_comment_id(response)
@@ -355,9 +371,10 @@ def _post_review_comment(
         if recovered is None:
             raise
         comment_id = recovered
+        replayed = True
     _verify_comment(args.repo, comment_id, body)
     _verify_head(args.repo, args.pr, args.head)
-    return comment_id, False
+    return comment_id, replayed
 
 
 def _thread_state(args: argparse.Namespace) -> bool:
@@ -490,17 +507,12 @@ def _reopen_occurrence(args: argparse.Namespace) -> None:
     existing = _matching_body(rows, marker, body)
     if args.occurrence < 2:
         _fail("reopen-occurrence requires occurrence 2 or later")
+    _require_finding_root(rows, args)
     if existing is None:
         occurrences = sorted(int(match.group("occurrence")) for _, match in records)
         if occurrences != list(range(1, args.occurrence)):
             _fail("finding occurrences are missing, duplicated, or out of sequence")
-        roots = [
-            row
-            for row, match in records
-            if int(match.group("occurrence")) == 1
-        ]
-        if len(roots) != 1 or roots[0].get("id") != args.comment_id:
-            _fail("--comment-id does not identify the fingerprint root comment")
+    _thread_state(args)
     comment_id, replayed = _post_review_comment(
         args, marker, body, reply_to=args.comment_id
     )
@@ -512,9 +524,8 @@ def _reopen_occurrence(args: argparse.Namespace) -> None:
 def _dispose(args: argparse.Namespace) -> None:
     marker, body = _disposition_body(args)
     _verify_head(args.repo, args.pr, args.head)
-    _require_finding_occurrence(
-        _review_comments(args.repo, args.pr), args
-    )
+    _require_finding_occurrence(_review_comments(args.repo, args.pr), args)
+    _thread_state(args)
     comment_id, replayed = _post_review_comment(
         args, marker, body, reply_to=args.comment_id
     )
@@ -640,25 +651,7 @@ def _attest(args: argparse.Namespace) -> None:
 
 def _resolve(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
-    mutation = """
-mutation($threadId: ID!) {
-  resolveReviewThread(input: {threadId: $threadId}) {
-    thread { id isResolved }
-  }
-}
-""".strip()
-    response = _json_output(
-        ["api", "graphql"],
-        {"query": mutation, "variables": {"threadId": args.thread_id}},
-    )
-    try:
-        thread = response["data"]["resolveReviewThread"]["thread"]
-    except (KeyError, TypeError) as error:
-        raise LedgerError("GitHub returned an invalid thread-resolution response") from error
-    if thread.get("id") != args.thread_id or thread.get("isResolved") is not True:
-        _fail(f"GitHub did not resolve review thread {args.thread_id}")
-    if not _thread_state(args):
-        _fail(f"could not verify review thread {args.thread_id} as resolved")
+    _set_thread_state(args, True)
     _verify_head(args.repo, args.pr, args.head)
     print(json.dumps({"thread_id": args.thread_id, "resolved": True}))
 

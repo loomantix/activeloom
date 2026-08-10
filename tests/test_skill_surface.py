@@ -155,6 +155,7 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
 def test_new_script_modes_are_executable() -> None:
     expected = {
         ".codex/skills/agent-loop/scripts/agent-loop.sh": 0o755,
+        ".codex/skills/agent-loop/scripts/agent-loop-state.py": 0o755,
         ".codex/skills/agent-loop/scripts/hook-gh-guard": 0o755,
         ".codex/skills/agent-loop/scripts/hook-git-guard": 0o755,
         ".codex/skills/backlog-refinement/scripts/bail-report.py": 0o755,

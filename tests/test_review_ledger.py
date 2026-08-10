@@ -401,18 +401,19 @@ def test_resolve_requires_matching_head_and_verified_response(
         assert args == ["api", "graphql"]
         assert payload is not None
         payloads.append(payload)
-        if len(payloads) == 1:
-            return json.dumps(
-                {
-                    "data": {
-                        "resolveReviewThread": {
-                            "thread": {"id": "THREAD", "isResolved": True}
-                        }
+        return json.dumps(
+            {
+                "data": {
+                    "node": {
+                        "id": "THREAD",
+                        "isResolved": True,
+                        "comments": {
+                            "nodes": [],
+                            "pageInfo": {"hasNextPage": False},
+                        },
                     }
                 }
-            )
-        return json.dumps(
-            {"data": {"node": {"id": "THREAD", "isResolved": True}}}
+            }
         )
 
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
@@ -429,7 +430,7 @@ def test_resolve_requires_matching_head_and_verified_response(
             "THREAD",
         ]
     )
-    assert len(payloads) == 2
+    assert len(payloads) == 1
     assert all(
         cast(dict[str, Any], payload["variables"]) == {"threadId": "THREAD"}
         for payload in payloads
@@ -549,7 +550,9 @@ def test_v3_post_recovers_after_successful_mutation_loses_response(
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
     review_ledger.main(_v3_finding_args(content))
     assert posts == 1
-    assert json.loads(capsys.readouterr().out)["verified"] is True
+    output = json.loads(capsys.readouterr().out)
+    assert output["verified"] is True
+    assert output["replayed"] is True
 
 
 def test_v3_post_fails_if_head_moves_after_mutation(
@@ -686,6 +689,77 @@ def test_v3_dispose_is_resumable_after_resolve_response_failure(
     review_ledger.main(args)
     assert reply_posts == 1
     assert mutation_attempts == 1
+
+
+def test_v3_dispose_rejects_mismatched_thread_before_reply(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "disposition.md"
+    content.write_text("Fixed and validated.", encoding="utf-8")
+    finding = (
+        "<!-- local-review:v3 engine=codex round=2 "
+        f"head={HEAD} fingerprint=mismatch occurrence=1 severity=major "
+        f"lens=correctness content-sha256={'a' * 64} -->\nFinding."
+    )
+    reply_posts = 0
+
+    def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        nonlocal reply_posts
+        if args[:2] == ["pr", "view"]:
+            return HEAD + "\n"
+        endpoint = args[-1]
+        if endpoint.endswith("/comments?per_page=100"):
+            return json.dumps([[{"id": 88, "body": finding}]])
+        if endpoint == f"repos/{REPO}/pulls/7/comments/88/replies":
+            reply_posts += 1
+            return json.dumps({"id": 99})
+        if args == ["api", "graphql"]:
+            return json.dumps(
+                {
+                    "data": {
+                        "node": {
+                            "id": "WRONG-THREAD",
+                            "isResolved": False,
+                            "comments": {
+                                "nodes": [{"databaseId": 999}],
+                                "pageInfo": {"hasNextPage": False},
+                            },
+                        }
+                    }
+                }
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
+    with pytest.raises(review_ledger.LedgerError, match="comment-id"):
+        review_ledger.main(
+            [
+                "dispose",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--head",
+                HEAD,
+                "--engine",
+                "codex",
+                "--round",
+                "2",
+                "--fingerprint",
+                "mismatch",
+                "--outcome",
+                "fixed",
+                "--comment-id",
+                "88",
+                "--thread-id",
+                "WRONG-THREAD",
+                "--content-file",
+                str(content),
+            ]
+        )
+    assert reply_posts == 0
 
 
 def test_v3_reopen_occurrence_is_sequential_and_idempotent(

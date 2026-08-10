@@ -30,7 +30,7 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
-RESUME_IN_PROGRESS=false
+INCLUDE_ASSIGNED=false
 RESUME_RUN_FILE=""
 DRY_RUN=false
 LEGACY_ITERATIONS_SEEN=false
@@ -66,7 +66,7 @@ while [ "$#" -gt 0 ]; do
             shift 2
             ;;
         --resume|--include-assigned)
-            RESUME_IN_PROGRESS=true
+            INCLUDE_ASSIGNED=true
             shift
             ;;
         --resume-run)
@@ -343,7 +343,6 @@ ACTIVE_WORKTREE=""
 RECOVERY_EMITTED=false
 PROCESSED_ISSUES=()
 AGENT_LOOP_RUN_STATE_FILE=""
-RESUME_REVIEW=false
 RESUME_STATE_JSON=""
 
 if [ -n "$RESUME_RUN_FILE" ]; then
@@ -371,7 +370,6 @@ if [ -n "$RESUME_RUN_FILE" ]; then
         finalized) echo "run state is already finalized" >&2; exit 1 ;;
         *) echo "run state is not resumable" >&2; exit 1 ;;
     esac
-    RESUME_REVIEW=true
 fi
 
 recovery_message() {
@@ -479,7 +477,7 @@ issue_is_selectable() {
     if [ "$count" -eq 0 ]; then
         return 0
     fi
-    [ "$RESUME_IN_PROGRESS" = true ] && [ "$mine" = true ] && [ "$count" -eq 1 ]
+    [ "$INCLUDE_ASSIGNED" = true ] && [ "$mine" = true ] && [ "$count" -eq 1 ]
 }
 
 ready_queue_numbers() {
@@ -539,7 +537,7 @@ select_next_issue() {
     fi
 
     local ready_json ready_numbers
-    if [ "$RESUME_IN_PROGRESS" = true ]; then
+    if [ "$INCLUDE_ASSIGNED" = true ]; then
         ready_json="$("$ISSUES_READY" --agent --limit 100 --json)" || return 2
     else
         ready_json="$("$ISSUES_READY" --unassigned --agent --limit 100 --json)" || return 2
@@ -1743,7 +1741,7 @@ resume_review_run() {
         recovery_message "Could not reload issue #$SELECTED_ID for review recovery."
         return 1
     }
-    RESUME_IN_PROGRESS=true
+    INCLUDE_ASSIGNED=true
     issue_is_selectable "$SELECTED_ID" "$issue_json_value" || {
         recovery_message "Issue #$SELECTED_ID is no longer open, agent-labeled, and assigned only to the current user."
         return 1
@@ -1862,7 +1860,7 @@ resume_review_run() {
     ACTIVE_WORKTREE=""
 }
 
-if [ "$RESUME_REVIEW" = true ]; then
+if [ -n "$RESUME_RUN_FILE" ]; then
     echo -e "${CYAN}→${NC} resuming agent-loop review from $AGENT_LOOP_RUN_STATE_FILE"
     resume_review_run
     echo -e "${GREEN}■${NC} agent-loop recovery finished"

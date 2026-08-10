@@ -87,3 +87,39 @@ def test_state_rejects_permissive_or_unknown_content(tmp_path: Path) -> None:
     result = _run("show", "--file", str(state))
     assert result.returncode != 0
     assert "missing or unknown" in result.stderr
+
+
+def test_state_create_never_clobbers_an_existing_file(tmp_path: Path) -> None:
+    state = tmp_path / "run-state.json"
+    state.write_text("preserve me\n", encoding="utf-8")
+    state.chmod(0o600)
+    result = _run(
+        "create",
+        "--file",
+        str(state),
+        "--run-id",
+        "run-1",
+        "--repo",
+        "example/repository",
+        "--issue",
+        "7",
+        "--base-branch",
+        "main",
+        "--branch",
+        "agent-loop/issue-7-run-1",
+        "--worktree",
+        str(tmp_path / "worktree"),
+        "--log-dir",
+        str(tmp_path / "logs"),
+        "--pr",
+        "9",
+        "--pr-url",
+        "https://example.invalid/pr/9",
+        "--base-sha",
+        BASE,
+        "--head-sha",
+        HEAD,
+    )
+    assert result.returncode != 0
+    assert "already exists" in result.stderr
+    assert state.read_text(encoding="utf-8") == "preserve me\n"
