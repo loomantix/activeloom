@@ -194,6 +194,9 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     assert "Do not create one whole-diff" in normalized["ledger"]
     assert "Bound lane output" in normalized["ledger"]
     assert "maximum 1000 words" in normalized["ledger"]
+    assert "Review-significant config" in normalized["ledger"]
+    assert "dependency manifests and lockfiles" in normalized["ledger"]
+    assert "`attest --threads-file <path> --allowed-heads-file <path>`" in ledger
 
     for skill in (
         normalized["deepgrill"],

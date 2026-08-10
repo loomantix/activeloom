@@ -35,11 +35,13 @@ def _finding_body(
     round_number: int = 2,
     severity: str = "major",
     lens: str = "correctness",
+    head: str = HEAD,
+    occurrence: int = 1,
 ) -> str:
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     return (
-        f"<!-- local-review:v3 engine=codex round={round_number} head={HEAD} "
-        f"fingerprint={fingerprint} occurrence=1 severity={severity} lens={lens} "
+        f"<!-- local-review:v3 engine=codex round={round_number} head={head} "
+        f"fingerprint={fingerprint} occurrence={occurrence} severity={severity} lens={lens} "
         f"content-sha256={digest} -->\n{content}"
     )
 
@@ -51,11 +53,12 @@ def _disposition_body(
     head: str = AFTER,
     round_number: int = 2,
     outcome: str = "fixed",
+    occurrence: int = 1,
 ) -> str:
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     return (
         f"<!-- local-review-disposition:v3 engine=codex round={round_number} "
-        f"head={head} fingerprint={fingerprint} occurrence=1 outcome={outcome} "
+        f"head={head} fingerprint={fingerprint} occurrence={occurrence} outcome={outcome} "
         f"content-sha256={digest} -->\n{content}"
     )
 
@@ -84,6 +87,12 @@ def _threads_file(tmp_path: Path, threads: list[dict[str, Any]]) -> Path:
         ),
         encoding="utf-8",
     )
+    return path
+
+
+def _heads_file(tmp_path: Path, *heads: str) -> Path:
+    path = tmp_path / "heads.json"
+    path.write_text(json.dumps(list(heads)), encoding="utf-8")
     return path
 
 
@@ -835,7 +844,11 @@ def test_v3_reopen_occurrence_is_sequential_and_idempotent(
         _review_row(
             88,
             _finding_body("repeat", "First occurrence.", round_number=1),
-        )
+        ),
+        _review_row(
+            89,
+            _disposition_body("repeat", round_number=1),
+        ),
     ]
     resolved = True
     reply_posts = 0
@@ -917,6 +930,15 @@ def test_v3_reopen_occurrence_is_sequential_and_idempotent(
     review_ledger.main(args)
     assert reply_posts == 1
     assert resolved is False
+
+
+def test_v3_reopen_rejects_an_undisposed_prior_occurrence(
+    review_ledger: ModuleType,
+) -> None:
+    rows = [_review_row(88, _finding_body("repeat", round_number=1))]
+    records = review_ledger._finding_records(rows, "repeat")
+    with pytest.raises(review_ledger.LedgerError, match="prior finding occurrence"):
+        review_ledger._require_prior_occurrences_disposed(rows, records, 2)
 
 
 def test_v3_ignores_foreign_actor_fingerprint_roots(
@@ -1061,7 +1083,7 @@ def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
                 "comments": {
                     "nodes": [
                         {
-                            "body": _finding_body("major-fix"),
+                            "body": _finding_body("major-fix", head="d" * 40),
                             "databaseId": 1,
                             "author": {"login": "reviewer"},
                         },
@@ -1112,6 +1134,7 @@ def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
         "finalLaneComplete": True,
     }
     result_file.write_text(json.dumps(result), encoding="utf-8")
+    heads = _heads_file(tmp_path, HEAD, "d" * 40, AFTER)
     monkeypatch.setattr(
         review_ledger,
         "_run_gh",
@@ -1139,6 +1162,8 @@ def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
         HEAD,
         "--result-file",
         str(result_file),
+        "--allowed-heads-file",
+        str(heads),
     ]
     review_ledger.main(args)
     assert json.loads(capsys.readouterr().out)["threadsVerified"] == 2
@@ -1153,6 +1178,86 @@ def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
     result_file.write_text(json.dumps(result), encoding="utf-8")
     with pytest.raises(review_ledger.LedgerError, match="material classification"):
         review_ledger.main(args)
+
+    deferred_only = _threads_file(
+        tmp_path,
+        [
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": _finding_body(
+                                "minor-deferred", severity="minor"
+                            ),
+                            "databaseId": 3,
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": _disposition_body(
+                                "minor-deferred", outcome="deferred"
+                            ),
+                            "databaseId": 4,
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            }
+        ],
+    )
+    assert deferred_only == threads
+    result["findingFingerprints"] = ["minor-deferred"]
+    result["classification"] = "minor"
+    result_file.write_text(json.dumps(result), encoding="utf-8")
+    with pytest.raises(review_ledger.LedgerError, match="at least one fixed"):
+        review_ledger.main(args)
+
+
+def test_verify_ledger_rejects_deferred_blockers_and_earlier_undisposed_findings(
+    review_ledger: ModuleType,
+) -> None:
+    deferred_blocker = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {
+                    "body": _finding_body("blocker", severity="blocking"),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _disposition_body("blocker", outcome="deferred"),
+                    "author": {"login": "reviewer"},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    with pytest.raises(review_ledger.LedgerError, match="must be fixed"):
+        review_ledger._verify_thread_dispositions([deferred_blocker])
+
+    recurrence = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {
+                    "body": _finding_body("repeat", round_number=1),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _finding_body("repeat", occurrence=2),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _disposition_body("repeat", occurrence=2),
+                    "author": {"login": "reviewer"},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    with pytest.raises(review_ledger.LedgerError, match="exactly one"):
+        review_ledger._verify_thread_dispositions([recurrence])
 
 
 def test_validate_result_enforces_observed_transition(
@@ -1219,5 +1324,83 @@ def test_validate_result_enforces_observed_transition(
                 after,
                 "--result-file",
                 str(result_file),
+            ]
+        )
+
+    data["afterSha"] = after
+    data["round"] = True
+    result_file.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(review_ledger.LedgerError, match="must be integers"):
+        review_ledger.main(
+            [
+                "validate-result",
+                "--engine",
+                "claude",
+                "--round",
+                "1",
+                "--base",
+                "c" * 40,
+                "--before",
+                HEAD,
+                "--head",
+                after,
+                "--result-file",
+                str(result_file),
+            ]
+        )
+
+
+def test_attest_rejects_changed_results_without_ledger_evidence(
+    review_ledger: ModuleType,
+    tmp_path: Path,
+) -> None:
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "changed",
+                "engine": "codex",
+                "round": 2,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": AFTER,
+                "classification": "material",
+                "findingFingerprints": ["missing"],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    threads = _threads_file(tmp_path, [])
+    heads = _heads_file(tmp_path, HEAD, AFTER)
+    with pytest.raises(review_ledger.LedgerError, match="exactly match"):
+        review_ledger.main(
+            [
+                "attest",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--head",
+                AFTER,
+                "--engine",
+                "codex",
+                "--round",
+                "2",
+                "--base",
+                "c" * 40,
+                "--before",
+                HEAD,
+                "--result-file",
+                str(result_file),
+                "--threads-file",
+                str(threads),
+                "--allowed-heads-file",
+                str(heads),
+                "--actor",
+                "reviewer",
+                "--expected-result-sha256",
+                hashlib.sha256(result_file.read_bytes()).hexdigest(),
             ]
         )

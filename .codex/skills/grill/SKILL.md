@@ -193,8 +193,12 @@ Run these lanes as independently as the active runtime permits:
 13. Always write the v3 structured result to
     `$AGENT_LOOP_REVIEW_RESULT_FILE` when set. The outer wrapper validates it
     and owns the pass/completion attestation. Outside agent-loop, create the
-    same result as a private temporary file and use the helper's `attest`
-    command so manual and automated passes share one protocol.
+    same result, complete review-thread export, and ordered forward-only
+    before-to-after head list as private temporary files, then use the helper's
+    `attest --threads-file <path> --allowed-heads-file <path>` command. `attest`
+    verifies the ledger and requires `--expected-result-sha256` from
+    `validate-result` before publishing, so manual and automated passes share
+    one protocol.
 
 ## Output
 

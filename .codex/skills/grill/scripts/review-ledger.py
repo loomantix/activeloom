@@ -417,6 +417,31 @@ def _require_finding_occurrence(
         _fail("disposition does not identify exactly one existing finding occurrence")
 
 
+def _require_prior_occurrences_disposed(
+    rows: list[dict[str, Any]],
+    records: list[tuple[dict[str, Any], re.Match[str]]],
+    next_occurrence: int,
+) -> None:
+    dispositions = [
+        match
+        for row in rows
+        if (match := _disposition_match(str(row.get("body", "")))) is not None
+    ]
+    for _, finding in records:
+        if int(finding.group("occurrence")) >= next_occurrence:
+            continue
+        matches = [
+            disposition
+            for disposition in dispositions
+            if disposition.group("engine") == finding.group("engine")
+            and disposition.group("round") == finding.group("round")
+            and disposition.group("fingerprint") == finding.group("fingerprint")
+            and disposition.group("occurrence") == finding.group("occurrence")
+        ]
+        if len(matches) != 1:
+            _fail("every prior finding occurrence must have exactly one disposition")
+
+
 def _finding_body(args: argparse.Namespace) -> tuple[str, str]:
     content = _read_content(args.content_file)
     marker = (
@@ -604,6 +629,7 @@ def _reopen_occurrence(args: argparse.Namespace) -> None:
     if args.occurrence < 2:
         _fail("reopen-occurrence requires occurrence 2 or later")
     _require_finding_root(rows, args)
+    _require_prior_occurrences_disposed(rows, records, args.occurrence)
     if existing is None:
         occurrences = sorted(int(match.group("occurrence")) for _, match in records)
         if occurrences != list(range(1, args.occurrence)):
@@ -658,12 +684,20 @@ def _post_pr_comment(args: argparse.Namespace) -> None:
     print(json.dumps({"comment_id": comment_id, "verified": True}))
 
 
-def _validate_result_data(args: argparse.Namespace) -> dict[str, Any]:
-    path = Path(args.result_file)
+def _read_result_bytes(path_value: str) -> bytes:
+    path = Path(path_value)
     if path.is_symlink() or not path.is_file():
         _fail("review result must be a regular non-symlink file")
+    return path.read_bytes()
+
+
+def _validate_result_data(
+    args: argparse.Namespace, raw: bytes | None = None
+) -> dict[str, Any]:
+    if raw is None:
+        raw = _read_result_bytes(args.result_file)
     try:
-        data = json.loads(path.read_bytes())
+        data = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise LedgerError("review result must contain valid UTF-8 JSON") from error
     if not isinstance(data, dict):
@@ -672,6 +706,8 @@ def _validate_result_data(args: argparse.Namespace) -> dict[str, Any]:
     allowed = required | {"blocker"}
     if set(data) != required and set(data) != allowed:
         _fail("review result has missing or unknown fields")
+    if type(data.get("version")) is not int or type(data.get("round")) is not int:
+        _fail("review result version and round must be integers")
     expected = {
         "version": PROTOCOL_VERSION,
         "engine": args.engine,
@@ -706,18 +742,26 @@ def _validate_result_data(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _validate_result(args: argparse.Namespace) -> None:
-    data = _validate_result_data(args)
+    raw = _read_result_bytes(args.result_file)
+    data = _validate_result_data(args, raw)
     output = dict(data)
-    output["resultSha256"] = hashlib.sha256(Path(args.result_file).read_bytes()).hexdigest()
+    output["resultSha256"] = hashlib.sha256(raw).hexdigest()
     output["verified"] = True
     print(json.dumps(output, sort_keys=True))
 
 
 def _attest(args: argparse.Namespace) -> None:
-    data = _validate_result_data(args)
-    result_hash = hashlib.sha256(Path(args.result_file).read_bytes()).hexdigest()
+    raw = _read_result_bytes(args.result_file)
+    data = _validate_result_data(args, raw)
+    result_hash = hashlib.sha256(raw).hexdigest()
+    if result_hash != args.expected_result_sha256:
+        _fail("review result changed before attestation")
     if data["status"] == "blocked":
         _fail("blocked review results cannot be attested as complete")
+    threads = _load_review_threads(args.threads_file)
+    _verify_thread_dispositions(threads)
+    if data["status"] == "changed":
+        _verify_result_evidence(args, threads, data=data)
     content = _read_content(args.content_file) if args.content_file else (
         "No new material findings." if data["status"] == "clean" else "Review fixes completed and ledger dispositions verified."
     )
@@ -849,6 +893,28 @@ def _load_review_threads(path_value: str) -> list[dict[str, Any]]:
     return threads
 
 
+def _load_allowed_heads(args: argparse.Namespace) -> dict[str, int]:
+    path = Path(args.allowed_heads_file)
+    if path.is_symlink() or not path.is_file():
+        _fail("allowed transition heads must be a regular non-symlink file")
+    try:
+        values = json.loads(path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LedgerError(
+            "allowed transition heads must contain valid UTF-8 JSON"
+        ) from error
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(not isinstance(value, str) or not SHA_RE.fullmatch(value) for value in values)
+        or len(set(values)) != len(values)
+        or values[0] != args.before
+        or values[-1] != args.head
+    ):
+        _fail("allowed transition heads do not match the observed review transition")
+    return {value: index for index, value in enumerate(values)}
+
+
 def _thread_protocol_records(
     thread: dict[str, Any]
 ) -> tuple[
@@ -919,20 +985,33 @@ def _verify_thread_dispositions(threads: list[dict[str, Any]]) -> int:
             continue
         if thread.get("isResolved") is not True:
             _fail("local-review thread is not resolved")
-        finding_index, finding, dispositions = max(findings, key=lambda row: row[0])
-        matches = _matching_dispositions(finding_index, finding, dispositions)
-        if len(matches) != 1:
-            _fail("latest local-review finding lacks exactly one matching disposition")
+        for finding_index, finding, dispositions in findings:
+            matches = _matching_dispositions(finding_index, finding, dispositions)
+            if len(matches) != 1:
+                _fail("local-review finding lacks exactly one matching disposition")
+            if (
+                "severity" in finding.groupdict()
+                and finding.group("severity") == "blocking"
+                and matches[0].group("outcome") != "fixed"
+            ):
+                _fail("blocking local-review findings must be fixed")
         verified += 1
     return verified
 
 
 def _verify_result_evidence(
-    args: argparse.Namespace, threads: list[dict[str, Any]]
+    args: argparse.Namespace,
+    threads: list[dict[str, Any]],
+    *,
+    data: dict[str, Any] | None = None,
+    allowed_heads: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    data = _validate_result_data(args)
+    if data is None:
+        data = _validate_result_data(args)
     if data["status"] != "changed":
         _fail("ledger result evidence requires a changed review result")
+    if allowed_heads is None:
+        allowed_heads = _load_allowed_heads(args)
     evidence: dict[str, tuple[re.Match[str], re.Match[str]]] = {}
     for thread in threads:
         findings, dispositions, _, _ = _thread_protocol_records(thread)
@@ -940,20 +1019,44 @@ def _verify_result_evidence(
             if (
                 finding.group("engine") != args.engine
                 or int(finding.group("round")) != args.round
-                or finding.group("head") != args.before
             ):
                 continue
             fingerprint = finding.group("fingerprint")
+            finding_head = finding.group("head")
+            if finding_head not in allowed_heads:
+                _fail("same-round finding is outside the observed review transition")
             if fingerprint in evidence:
                 _fail("same-round finding fingerprint is duplicated")
-            matches = _matching_dispositions(
-                finding_index, finding, dispositions, expected_head=args.head
-            )
+            matches = [
+                disposition
+                for disposition in _matching_dispositions(
+                    finding_index, finding, dispositions
+                )
+                if disposition.group("head") in allowed_heads
+                and allowed_heads[disposition.group("head")]
+                >= allowed_heads[finding_head]
+                and (
+                    disposition.group("outcome") != "fixed"
+                    or allowed_heads[disposition.group("head")]
+                    > allowed_heads[finding_head]
+                )
+            ]
             if thread.get("isResolved") is not True or len(matches) != 1:
                 _fail("same-round finding lacks one resolved matching disposition")
             evidence[fingerprint] = (finding, matches[0])
     if set(evidence) != set(data["findingFingerprints"]):
         _fail("review result fingerprints do not exactly match same-round ledger evidence")
+    if not any(
+        disposition.group("outcome") == "fixed"
+        for _, disposition in evidence.values()
+    ):
+        _fail("changed review results require at least one fixed finding")
+    if any(
+        finding.group("severity") == "blocking"
+        and disposition.group("outcome") != "fixed"
+        for finding, disposition in evidence.values()
+    ):
+        _fail("blocking local-review findings must be fixed")
     fixed_major = any(
         finding.group("severity") in {"blocking", "major"}
         and disposition.group("outcome") == "fixed"
@@ -1074,6 +1177,10 @@ def _parser() -> argparse.ArgumentParser:
 
     attest = commands.add_parser("attest")
     _add_result_arguments(attest, github=True)
+    attest.add_argument("--threads-file", required=True)
+    attest.add_argument("--allowed-heads-file", required=True)
+    attest.add_argument("--actor")
+    attest.add_argument("--expected-result-sha256", required=True)
     attest.add_argument("--content-file")
     attest.set_defaults(handler=_attest)
 
@@ -1096,6 +1203,7 @@ def _parser() -> argparse.ArgumentParser:
     verify_ledger.add_argument("--base")
     verify_ledger.add_argument("--before")
     verify_ledger.add_argument("--result-file")
+    verify_ledger.add_argument("--allowed-heads-file")
     verify_ledger.set_defaults(handler=_verify_ledger)
     return parser
 
@@ -1118,12 +1226,19 @@ def _validate_args(args: argparse.Namespace) -> None:
         if missing:
             _fail("v3 content mode requires " + ", ".join(f"--{name.replace('_', '-')}" for name in missing))
     if args.command == "verify-ledger":
-        result_fields = ("engine", "round", "base", "before", "result_file")
+        result_fields = (
+            "engine",
+            "round",
+            "base",
+            "before",
+            "result_file",
+            "allowed_heads_file",
+        )
         present = [getattr(args, name, None) is not None for name in result_fields]
         if any(present) and not all(present):
             _fail(
                 "verify-ledger result evidence requires --engine, --round, "
-                "--base, --before, and --result-file"
+                "--base, --before, --result-file, and --allowed-heads-file"
             )
 
 

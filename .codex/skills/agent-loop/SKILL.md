@@ -186,8 +186,10 @@ Contract v3 creates an owner-only atomic `run-state.json` after draft PR
 publication and checkpoints every review round plus convergence. On a review or
 finalization interruption, use the exact `--resume-run <state-file>` command
 printed by the wrapper. Recovery re-attests repository identity, issue
-assignment, worktree ancestry, branch, PR identity, base, and head before it
-continues; it never re-runs the worker or blindly recreates a remote branch.
+assignment and original requirement digests, worktree ancestry, branch, PR
+identity, base, and head before it continues. The original run and every resume
+hold one exclusive run-scoped lock through finalization; recovery never re-runs
+the worker or blindly recreates a remote branch.
 
 If a newly added claim cannot be rolled back before worktree creation, stop and
 manually inspect/unassign it. Publication is not atomic: after a push succeeds,

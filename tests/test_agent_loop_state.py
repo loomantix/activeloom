@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parent.parent
 HELPER = ROOT / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
 HEAD = "a" * 40
 BASE = "b" * 40
+TITLE_HASH = "c" * 64
+BODY_HASH = "d" * 64
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -35,6 +37,10 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
         "example/repository",
         "--issue",
         "7",
+        "--issue-title-sha256",
+        TITLE_HASH,
+        "--issue-body-sha256",
+        BODY_HASH,
         "--base-branch",
         "main",
         "--branch",
@@ -89,6 +95,35 @@ def test_state_rejects_permissive_or_unknown_content(tmp_path: Path) -> None:
     assert "missing or unknown" in result.stderr
 
 
+def test_state_rejects_json_booleans_for_integer_fields(tmp_path: Path) -> None:
+    state = tmp_path / "run-state.json"
+    value = {
+        "version": 1,
+        "runId": "run-1",
+        "repo": "example/repository",
+        "issue": True,
+        "issueTitleSha256": TITLE_HASH,
+        "issueBodySha256": BODY_HASH,
+        "baseBranch": "main",
+        "branch": "agent-loop/issue-7-run-1",
+        "worktree": str((tmp_path / "worktree").resolve()),
+        "logDir": str((tmp_path / "logs").resolve()),
+        "prNumber": 9,
+        "prUrl": "https://example.invalid/pr/9",
+        "baseSha": BASE,
+        "headSha": HEAD,
+        "phase": "draft-open",
+        "round": 1,
+        "codexResultSha256": None,
+        "claudeResultSha256": None,
+    }
+    state.write_text(json.dumps(value), encoding="utf-8")
+    state.chmod(0o600)
+    result = _run("show", "--file", str(state))
+    assert result.returncode != 0
+    assert "positive integer" in result.stderr
+
+
 def test_state_create_never_clobbers_an_existing_file(tmp_path: Path) -> None:
     state = tmp_path / "run-state.json"
     state.write_text("preserve me\n", encoding="utf-8")
@@ -103,6 +138,10 @@ def test_state_create_never_clobbers_an_existing_file(tmp_path: Path) -> None:
         "example/repository",
         "--issue",
         "7",
+        "--issue-title-sha256",
+        TITLE_HASH,
+        "--issue-body-sha256",
+        BODY_HASH,
         "--base-branch",
         "main",
         "--branch",
@@ -139,6 +178,10 @@ def test_converged_state_requires_and_preserves_review_result_hashes(
         "example/repository",
         "--issue",
         "7",
+        "--issue-title-sha256",
+        TITLE_HASH,
+        "--issue-body-sha256",
+        BODY_HASH,
         "--base-branch",
         "main",
         "--branch",

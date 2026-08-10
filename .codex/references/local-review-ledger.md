@@ -23,9 +23,12 @@ is the shared definition for the pinned review range:
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
   `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
-- **Docs, config, or fixtures** — `.md`, `.txt`, `.yml`, `.yaml`, `.json`,
-  `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
+- **Docs, inert config, or fixtures** — `.md`, `.txt`, `.gitignore`,
+  `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
   `.env.example`, paths under `docs/`, `*.fixture.*`, and snapshot files.
+- **Review-significant config** — workflows, dependency manifests and lockfiles,
+  schemas, migrations, deploy configuration, and sync targets are source even
+  when their extension is `.yml`, `.yaml`, `.json`, or `.toml`.
 - **Anything else** — treat as source.
 
 Zero source files means skip; one or more means run the full pass. A mixed
@@ -228,7 +231,10 @@ finding into the PR.
 ### Use the deterministic ledger helper
 
 Use `.codex/skills/grill/scripts/review-ledger.py` for every local-review
-finding, disposition reply, thread resolution, and pass marker. Do not
+finding, disposition reply, thread resolution, and pass marker. The legacy v1
+refactor latch is the one explicit marker-construction exception: post it with
+the helper's `post-pr-comment` command until that informational latch moves to
+the v3 protocol. Do not
 hand-compose `gh api` form arguments for these mutations.
 
 The v3 helper verifies the current PR head before and after each mutation,
@@ -342,6 +348,13 @@ threads, and then posts the canonical `local-review-pass:v3` or
 `local-review-complete:v3` attestation itself. Review hooks never post their own
 pass/completion markers. A missing or invalid result and a valid `blocked`
 result both stop clearly even when the reviewer process exits zero.
+
+Outside agent-loop, create the same result and complete review-thread export as
+private temporary files. Also serialize the ordered forward-only transition
+heads (`beforeSha` through `afterSha`) as a JSON array. Then use
+`attest --threads-file <path> --allowed-heads-file <path>`. The command verifies
+every thread and the changed-result evidence itself before publishing; pass the
+digest returned by `validate-result` as `--expected-result-sha256`.
 
 Every engine pass remains evidence for the exact head it reviewed. A later
 minor commit does not rewrite that historical fact. Round convergence is a

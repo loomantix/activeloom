@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -247,6 +248,12 @@ elif args[:2] == ['pr', 'review']:
 elif args[:2] == ['pr', 'close']:
     (state / 'pr-closed').touch()
 elif args[:2] == ['api', 'graphql']:
+    if os.environ.get('AGENT_MUTATE_RESULT_ON_THREADS_FETCH') == 'true':
+        marker = state / 'result-mutated'
+        if not marker.exists():
+            for result_file in (state.parent / 'logs').glob('*/*.result.json'):
+                result_file.write_text(result_file.read_text() + '\n')
+            marker.touch()
     threads_file = state / 'review-threads.json'
     nodes = json.loads(
         threads_file.read_text()
@@ -1002,6 +1009,71 @@ def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def test_v3_resume_cannot_rerun_the_capped_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    finding_hash = "4be82179d3761dd716ff1e62c19138fc105495b9a66528678e0e76e253adb577"
+    disposition_hash = "13079c2612a9ead4818ab21ef90bf6b7c457916144d8cbaeeff74befa4f4cc8d"
+    codex_hook = (
+        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
+        "before=$AGENT_LOOP_PR_HEAD_SHA; "
+        "printf 'codex round %s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" >> result.txt; "
+        "git add result.txt; git commit -m \"fix: codex round $AGENT_LOOP_REVIEW_ROUND\"; "
+        "git push origin HEAD:\"refs/heads/$AGENT_LOOP_BRANCH\"; "
+        "after=$(git rev-parse HEAD); fingerprint=cap-$AGENT_LOOP_REVIEW_ROUND; "
+        "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex round=$AGENT_LOOP_REVIEW_ROUND "
+        "head=$before fingerprint=$fingerprint occurrence=1 severity=major "
+        f"lens=correctness content-sha256={finding_hash} -->\" 'Finding.'; "
+        "printf -v disposition '%s\\n%s' \"<!-- local-review-disposition:v3 engine=codex "
+        "round=$AGENT_LOOP_REVIEW_ROUND head=$after fingerprint=$fingerprint "
+        f"occurrence=1 outcome=fixed content-sha256={disposition_hash} -->\" 'Fixed.'; "
+        "jq -n --arg finding \"$finding\" --arg disposition \"$disposition\" "
+        "'[{isResolved:true,comments:{nodes:["
+        "{body:$finding,databaseId:1,author:{login:\"tester\"}},"
+        "{body:$disposition,databaseId:2,author:{login:\"tester\"}}],"
+        "pageInfo:{hasNextPage:false}}}]' > \"$AGENT_STATE_DIR/review-threads.json\"; "
+        "jq -n --argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" --arg before \"$before\" "
+        "--arg after \"$after\" --arg fingerprint \"$fingerprint\" "
+        "'{version:3,status:\"changed\",engine:\"codex\",round:$round,"
+        "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"material\","
+        "findingFingerprints:[$fingerprint],finalLaneComplete:true}' "
+        "> \"$AGENT_LOOP_REVIEW_RESULT_FILE\""
+    )
+    first = _run(
+        consumer,
+        ["--issues", "32"],
+        issues=[_issue(32)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            review_max_rounds=2,
+        ),
+        timeout=60,
+    )
+    assert first.returncode != 0, first.stderr + first.stdout
+    assert "did not converge within 2 round(s)" in first.stderr
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    assert json.loads(state_file.read_text())["round"] == 3
+    events_before = (consumer[3] / "events.log").read_text()
+
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(32, assigned=True)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook=codex_hook,
+            review_max_rounds=2,
+        ),
+        timeout=30,
+    )
+    assert second.returncode != 0
+    assert "did not converge within 2 round(s)" in second.stderr
+    assert (consumer[3] / "events.log").read_text() == events_before
+    assert not (consumer[3] / "pr-ready").exists()
+
+
 def _thread_comment(
     database_id: int, body: str, login: str | None = "tester"
 ) -> dict[str, object]:
@@ -1405,6 +1477,8 @@ def test_v3_wrapper_owns_clean_attestations_and_finalizes_state(
     assert len(state_files) == 1
     state = json.loads(state_files[0].read_text(encoding="utf-8"))
     assert state["phase"] == "finalized"
+    assert re.fullmatch(r"[0-9a-f]{64}", state["issueTitleSha256"])
+    assert re.fullmatch(r"[0-9a-f]{64}", state["issueBodySha256"])
     assert re.fullmatch(r"[0-9a-f]{64}", state["codexResultSha256"])
     assert re.fullmatch(r"[0-9a-f]{64}", state["claudeResultSha256"])
     comments = json.loads((consumer[3] / "issue-comments.json").read_text())
@@ -1449,15 +1523,103 @@ def test_resume_run_continues_preserved_draft_review(
     )
     assert first.returncode != 0
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    relative_state_file = os.path.relpath(state_file, consumer[0])
     second = _run(
         consumer,
-        ["--resume-run", str(state_file)],
+        ["--resume-run", relative_state_file],
         issues=[_issue(27, assigned=True)],
         config=_config_v3(tmp_path),
     )
     assert second.returncode == 0, second.stderr + second.stdout
     assert "agent-loop recovery finished" in second.stdout
     assert json.loads(state_file.read_text())["phase"] == "finalized"
+
+
+def test_resume_run_rejects_changed_issue_contract(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "29"],
+        issues=[_issue(29, body="original requirements")],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook="true",
+            claude_review_hook="true",
+        ),
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(29, body="changed requirements", assigned=True)],
+        config=_config_v3(tmp_path),
+    )
+    assert second.returncode != 0
+    assert "Issue title or body changed" in second.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_resume_run_rejects_a_concurrent_owner(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "30"],
+        issues=[_issue(30)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook="true",
+            claude_review_hook="true",
+        ),
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    ready = tmp_path / "lock-ready"
+    locker = subprocess.Popen(
+        [
+            "flock",
+            str(state_file.parent),
+            "python3",
+            "-c",
+            "from pathlib import Path; import sys, time; "
+            "Path(sys.argv[1]).touch(); time.sleep(10)",
+            str(ready),
+        ]
+    )
+    try:
+        for _ in range(100):
+            if ready.exists():
+                break
+            time.sleep(0.01)
+        assert ready.exists()
+        second = _run(
+            consumer,
+            ["--resume-run", str(state_file)],
+            issues=[_issue(30, assigned=True)],
+            config=_config_v3(tmp_path),
+        )
+        assert second.returncode != 0
+        assert "another process already owns" in second.stderr
+    finally:
+        locker.terminate()
+        locker.wait(timeout=5)
+
+
+def test_v3_result_digest_is_pinned_before_attestation(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "31"],
+        issues=[_issue(31)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_MUTATE_RESULT_ON_THREADS_FETCH": "true"},
+    )
+    assert result.returncode != 0
+    assert "review result changed before attestation" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_converged_resume_rejects_tampered_review_result(
@@ -2872,7 +3034,7 @@ def test_missing_default_codex_fails_before_claim(
     repo, _, bin_dir, state_dir = consumer
     no_codex_bin = tmp_path / "no-codex-bin"
     no_codex_bin.mkdir()
-    for command in ("bash", "git", "jq", "python3", "timeout"):
+    for command in ("bash", "dirname", "flock", "git", "jq", "python3", "timeout"):
         executable = shutil.which(command)
         assert executable is not None
         (no_codex_bin / command).symlink_to(executable)

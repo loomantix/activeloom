@@ -50,6 +50,8 @@ def _validate(value: dict[str, Any]) -> None:
         "runId",
         "repo",
         "issue",
+        "issueTitleSha256",
+        "issueBodySha256",
         "baseBranch",
         "branch",
         "worktree",
@@ -65,13 +67,13 @@ def _validate(value: dict[str, Any]) -> None:
     }
     if set(value) != required:
         _fail("run state has missing or unknown fields")
-    if value["version"] != STATE_VERSION:
+    if type(value["version"]) is not int or value["version"] != STATE_VERSION:
         _fail("unsupported run state version")
     for key in ("runId", "repo", "baseBranch", "branch", "worktree", "logDir", "prUrl"):
         if not isinstance(value[key], str) or not value[key]:
             _fail(f"run state {key} must be a non-empty string")
     for key in ("issue", "prNumber", "round"):
-        if not isinstance(value[key], int) or value[key] < 1:
+        if type(value[key]) is not int or value[key] < 1:
             _fail(f"run state {key} must be a positive integer")
     for key in ("baseSha", "headSha"):
         if not isinstance(value[key], str) or not SHA_RE.fullmatch(value[key]):
@@ -84,6 +86,9 @@ def _validate(value: dict[str, Any]) -> None:
             not isinstance(digest, str) or not SHA256_RE.fullmatch(digest)
         ):
             _fail(f"run state {key} must be null or a lowercase SHA-256 digest")
+    for key in ("issueTitleSha256", "issueBodySha256"):
+        if not isinstance(value[key], str) or not SHA256_RE.fullmatch(value[key]):
+            _fail(f"run state {key} must be a lowercase SHA-256 digest")
     if value["phase"] in {"converged", "finalized"} and any(
         value[key] is None
         for key in ("codexResultSha256", "claudeResultSha256")
@@ -138,6 +143,8 @@ def _create(args: argparse.Namespace) -> None:
         "runId": args.run_id,
         "repo": args.repo,
         "issue": args.issue,
+        "issueTitleSha256": args.issue_title_sha256,
+        "issueBodySha256": args.issue_body_sha256,
         "baseBranch": args.base_branch,
         "branch": args.branch,
         "worktree": str(Path(args.worktree).resolve()),
@@ -190,6 +197,8 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--run-id", required=True)
     create.add_argument("--repo", required=True)
     create.add_argument("--issue", required=True, type=int)
+    create.add_argument("--issue-title-sha256", required=True)
+    create.add_argument("--issue-body-sha256", required=True)
     create.add_argument("--base-branch", required=True)
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)
