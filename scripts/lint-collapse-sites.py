@@ -35,8 +35,8 @@ PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 PLACEHOLDER_RE = re.compile(r"<<([A-Z][A-Z0-9_]*)>>")
 FENCE_RE = re.compile(r"\A {0,3}(`{3,}|~{3,})")
 RAW_TAG_OPEN_RE = re.compile(r"<(pre|script|style|textarea)\b", re.IGNORECASE)
-HTML_COMMENT_OPEN_RE = re.compile(r"<!--")
-HTML_COMMENT_CLOSE_RE = re.compile(r"-->")
+HTML_COMMENT_OPEN = "<!--"
+HTML_COMMENT_CLOSE = "-->"
 
 
 def literal_content_lines(lines: list[str]) -> list[bool]:
@@ -50,6 +50,7 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
     literal = [False] * len(lines)
     fence: tuple[str, int] | None = None
     raw_close: re.Pattern[str] | None = None
+    in_comment = False
     for index, line in enumerate(lines):
         fence_match = FENCE_RE.match(line)
         if fence is None and fence_match is not None:
@@ -72,10 +73,14 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
             if raw_close.search(line):
                 raw_close = None
             continue
-        if HTML_COMMENT_OPEN_RE.search(line):
+        if in_comment:
             literal[index] = True
-            if not HTML_COMMENT_CLOSE_RE.search(line):
-                raw_close = HTML_COMMENT_CLOSE_RE
+            if HTML_COMMENT_CLOSE in line:
+                in_comment = False
+            continue
+        if HTML_COMMENT_OPEN in line:
+            literal[index] = True
+            in_comment = HTML_COMMENT_CLOSE not in line
             continue
         raw_tag = RAW_TAG_OPEN_RE.search(line)
         if raw_tag is not None:

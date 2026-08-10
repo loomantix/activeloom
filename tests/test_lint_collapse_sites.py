@@ -64,6 +64,7 @@ def test_rejects_a_placeholder_inside_literal_content(
         "<style>\nrule\n<<E>>\n</style>\n",
         "<textarea>\ntext\n<<E>>\n</textarea>\n",
         "<!--\ncomment\n<<E>>\n-->\n",
+        "<!--\n--!>\n<<E>>\n-->\n",
         "intro\n\n \t<<E>>\n\noutro\n",
         "intro\n\n   \t<<E>>\n\noutro\n",
     ],
