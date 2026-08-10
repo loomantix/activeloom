@@ -17,7 +17,7 @@ from typing import Any, NoReturn
 STATE_VERSION = 1
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
-PHASES = {"draft-open", "reviewing", "converged", "finalized"}
+PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
 
 
 class StateError(RuntimeError):
@@ -89,11 +89,11 @@ def _validate(value: dict[str, Any]) -> None:
     for key in ("issueTitleSha256", "issueBodySha256"):
         if not isinstance(value[key], str) or not SHA256_RE.fullmatch(value[key]):
             _fail(f"run state {key} must be a lowercase SHA-256 digest")
-    if value["phase"] in {"converged", "finalized"} and any(
+    if value["phase"] in {"converged", "finalizing", "finalized"} and any(
         value[key] is None
         for key in ("codexResultSha256", "claudeResultSha256")
     ):
-        _fail("converged or finalized run state requires both review result hashes")
+        _fail("converged, finalizing, or finalized run state requires both review result hashes")
     worktree = Path(value["worktree"])
     log_dir = Path(value["logDir"])
     if not worktree.is_absolute() or not log_dir.is_absolute():

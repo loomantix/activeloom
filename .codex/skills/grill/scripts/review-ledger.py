@@ -377,7 +377,6 @@ def _require_disposition_consistency(
             match is not None
             and match.group("engine") == args.engine
             and int(match.group("round")) == args.round
-            and match.group("head") == args.head
             and match.group("fingerprint") == args.fingerprint
             and int(match.group("occurrence")) == args.occurrence
         ):
@@ -559,17 +558,42 @@ mutation($threadId: ID!) {{
   }}
 }}
 """.strip()
-    response = _json_output(
-        ["api", "graphql"],
-        {"query": mutation, "variables": {"threadId": args.thread_id}},
-    )
     try:
+        response = _json_output(
+            ["api", "graphql"],
+            {"query": mutation, "variables": {"threadId": args.thread_id}},
+        )
         thread = response["data"][field]["thread"]
+        if not isinstance(thread, dict):
+            _fail("GitHub returned an invalid thread mutation response")
+        if thread.get("id") != args.thread_id or thread.get("isResolved") is not resolved:
+            _fail(f"GitHub did not set review thread {args.thread_id} resolved={resolved}")
     except (KeyError, TypeError) as error:
-        raise LedgerError("GitHub returned an invalid thread mutation response") from error
-    if thread.get("id") != args.thread_id or thread.get("isResolved") is not resolved:
-        _fail(f"GitHub did not set review thread {args.thread_id} resolved={resolved}")
-    if _thread_state(args) is not resolved:
+        mutation_error: LedgerError = LedgerError(
+            "GitHub returned an invalid thread mutation response"
+        )
+        mutation_error.__cause__ = error
+        try:
+            if _thread_state(args) is resolved:
+                return False
+        except LedgerError:
+            pass
+        raise mutation_error
+    except LedgerError as error:
+        try:
+            if _thread_state(args) is resolved:
+                return False
+        except LedgerError:
+            pass
+        raise error
+    try:
+        verified = _thread_state(args)
+    except LedgerError as error:
+        try:
+            verified = _thread_state(args)
+        except LedgerError:
+            raise error
+    if verified is not resolved:
         _fail(f"could not verify review thread {args.thread_id} resolved={resolved}")
     return False
 
@@ -760,8 +784,7 @@ def _attest(args: argparse.Namespace) -> None:
         _fail("blocked review results cannot be attested as complete")
     threads = _load_review_threads(args.threads_file)
     _verify_thread_dispositions(threads)
-    if data["status"] == "changed":
-        _verify_result_evidence(args, threads, data=data)
+    _verify_result_evidence(args, threads, data=data)
     content = _read_content(args.content_file) if args.content_file else (
         "No new material findings." if data["status"] == "clean" else "Review fixes completed and ledger dispositions verified."
     )
@@ -1008,6 +1031,21 @@ def _verify_result_evidence(
 ) -> dict[str, Any]:
     if data is None:
         data = _validate_result_data(args)
+    if data["status"] == "clean":
+        for thread in threads:
+            findings, dispositions, _, _ = _thread_protocol_records(thread)
+            for finding_index, finding in findings:
+                if (
+                    finding.group("engine") != args.engine
+                    or int(finding.group("round")) != args.round
+                ):
+                    continue
+                matches = _matching_dispositions(
+                    finding_index, finding, dispositions
+                )
+                if any(match.group("outcome") == "fixed" for match in matches):
+                    _fail("clean review results cannot have same-round fixes")
+        return data
     if data["status"] != "changed":
         _fail("ledger result evidence requires a changed review result")
     if allowed_heads is None:

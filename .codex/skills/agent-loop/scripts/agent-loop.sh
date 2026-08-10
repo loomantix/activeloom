@@ -364,13 +364,19 @@ if [ -n "$RESUME_RUN_FILE" ]; then
         echo "--resume-run requires review_contract_version = 3" >&2
         exit 1
     }
-    RESUME_STATE_JSON="$(python3 "$RUN_STATE_HELPER" show --file "$RESUME_RUN_FILE")" || exit 1
     RESUME_RUN_FILE="$(python3 -c '
 from pathlib import Path
 import sys
-print(Path(sys.argv[1]).resolve(strict=True))
+path = Path(sys.argv[1])
+if path.is_symlink():
+    raise SystemExit(2)
+print(path.resolve(strict=True))
 ' "$RESUME_RUN_FILE")" || exit 1
     AGENT_LOOP_RUN_STATE_FILE="$RESUME_RUN_FILE"
+    resume_log_dir="$(dirname "$RESUME_RUN_FILE")"
+    case "$resume_log_dir" in "$LOG_ROOT"/*) ;; *) echo "run state log directory is outside configured log_root" >&2; exit 1 ;; esac
+    acquire_run_lock "$resume_log_dir" || exit 1
+    RESUME_STATE_JSON="$(python3 "$RUN_STATE_HELPER" show --file "$RESUME_RUN_FILE")" || exit 1
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
         exit 1
@@ -380,13 +386,15 @@ print(Path(sys.argv[1]).resolve(strict=True))
         exit 1
     }
     resume_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
-    resume_log_dir="$(jq -r '.logDir' <<<"$RESUME_STATE_JSON")"
+    recorded_log_dir="$(jq -r '.logDir' <<<"$RESUME_STATE_JSON")"
+    [ "$recorded_log_dir" = "$resume_log_dir" ] || {
+        echo "run state file is outside its recorded log directory" >&2
+        exit 1
+    }
     case "$resume_worktree" in "$WORKTREE_ROOT"/*) ;; *) echo "run state worktree is outside configured worktree_root" >&2; exit 1 ;; esac
-    case "$resume_log_dir" in "$LOG_ROOT"/*) ;; *) echo "run state log directory is outside configured log_root" >&2; exit 1 ;; esac
-    acquire_run_lock "$resume_log_dir" || exit 1
     resume_phase="$(jq -r '.phase' <<<"$RESUME_STATE_JSON")"
     case "$resume_phase" in
-        draft-open|reviewing|converged) ;;
+        draft-open|reviewing|converged|finalizing) ;;
         finalized) echo "run state is already finalized" >&2; exit 1 ;;
         *) echo "run state is not resumable" >&2; exit 1 ;;
     esac
@@ -1073,7 +1081,7 @@ require_review_outcome_signature() {
 verify_v3_result_attestation() {
     local engine="$1" slug="$2" outcome_file="$3" expected_signature="$4"
     local before_sha after_sha result_status classification fingerprints result_hash
-    local marker bodies_file
+    local marker bodies_file allowed_heads_file
     case "$expected_signature" in
         file:*) result_hash="${expected_signature#file:}" ;;
         *) recovery_message "$engine converged review result is missing."; return 1 ;;
@@ -1088,6 +1096,15 @@ verify_v3_result_attestation() {
         return 1
     }
     result_status="$(jq -r '.status' "$outcome_file")" || return 1
+    if [ "$result_status" = changed ]; then
+        allowed_heads_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$REVIEW_ROUNDS_USED-heads.json"
+        verify_v3_committed_pass_evidence "$slug" "$REVIEW_ROUNDS_USED" \
+            "$before_sha" "$after_sha" "$outcome_file" "$allowed_heads_file" \
+            "$REVIEWED_BASE_SHA" || {
+            recovery_message "$engine converged review result no longer has matching ledger evidence."
+            return 1
+        }
+    fi
     if [ "$result_status" = clean ]; then
         marker="<!-- local-review-pass:v3 engine=$slug round=$REVIEW_ROUNDS_USED base=$REVIEWED_BASE_SHA head=$after_sha result-sha256=$result_hash -->"
     else
@@ -1340,6 +1357,11 @@ run_review_convergence() {
         codex_classification="$REVIEW_PASS_CLASSIFICATION"
         codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
         codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+        update_run_state reviewing "$((round + 1))" "$round_base_sha" \
+            "$(git rev-parse HEAD)" || {
+            recovery_message "Could not checkpoint the next review round after Codex completed round $round."
+            return 1
+        }
 
         pass_status=0
         run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
@@ -1603,14 +1625,15 @@ verify_committed_pass_evidence() {
 
 verify_v3_committed_pass_evidence() {
     local engine="$1" round="$2" before_sha="$3" after_sha="$4" result_file="$5"
-    local allowed_heads_file="$6"
+    local allowed_heads_file="$6" base_sha="${7:-${AGENT_LOOP_REVIEW_BASE_SHA:-}}"
     local ledger_file
+    [ -n "$base_sha" ] || return 1
     ledger_file="$(fetch_local_review_threads)" || return 1
     python3 "$REVIEW_LEDGER" verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$after_sha" \
         --threads-file "$ledger_file" --actor "$CURRENT_LOGIN" \
         --engine "$engine" --round "$round" \
-        --base "$AGENT_LOOP_REVIEW_BASE_SHA" --before "$before_sha" \
+        --base "$base_sha" --before "$before_sha" \
         --result-file "$result_file" --allowed-heads-file "$allowed_heads_file" >/dev/null
 }
 
@@ -1790,6 +1813,12 @@ finalize_pr() {
     gh pr edit "$AGENT_LOOP_PR_NUMBER" --body-file "$body_file" || return 1
     attest_review_head "immediately before marking ready" "$REVIEWED_BASE_SHA" || return 1
     verify_local_review_threads || return 1
+    verify_converged_review_outcomes || return 1
+    update_run_state finalizing "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
+        "$final_sha" || {
+        recovery_message "Could not checkpoint the finalizing review state."
+        return 1
+    }
     if ! gh pr ready "$AGENT_LOOP_PR_NUMBER"; then
         if attest_pr_head "$final_sha" "$REVIEWED_BASE_SHA" \
             "after failed ready mutation"; then
@@ -1804,6 +1833,11 @@ finalize_pr() {
         "after marking ready"; then
         restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
             "ready PR boundary changed during finalization" || return 1
+        return 1
+    fi
+    if ! verify_converged_review_outcomes; then
+        restore_draft_after_finalization_failure "$final_sha" "$REVIEWED_BASE_SHA" \
+            "review result ledger evidence changed during finalization" || return 1
         return 1
     fi
     if ! verify_local_review_threads; then
@@ -1824,6 +1858,7 @@ resume_review_run() {
     local issue_json_value state_head state_phase state_round current_head branch_status
     local resume_boundary_status=0 checkpoint_base latest_base
     local issue_title_sha256 issue_body_sha256
+    local ready_finalization=false pr_draft_state
     SELECTED_ID="$(jq -r '.issue' <<<"$RESUME_STATE_JSON")"
     issue_json_value="$(issue_json "$SELECTED_ID")" || {
         recovery_message "Could not reload issue #$SELECTED_ID for review recovery."
@@ -1897,53 +1932,131 @@ resume_review_run() {
     CONVERGED_CLAUDE_OUTCOME_SIGNATURE=""
 
     checkpoint_base="$(jq -r '.baseSha' <<<"$RESUME_STATE_JSON")"
-    attest_pr_state "$current_head" "$checkpoint_base" \
-        true "before review recovery" || resume_boundary_status=$?
+    if [ "$state_phase" = finalizing ]; then
+        pr_draft_state="$(gh pr view "$AGENT_LOOP_PR_NUMBER" --json isDraft --jq '.isDraft')" || {
+            recovery_message "Could not inspect the finalizing PR state."
+            return 1
+        }
+        case "$pr_draft_state" in
+            true) ;;
+            false) ready_finalization=true ;;
+            *) recovery_message "Finalizing PR draft state is invalid."; return 1 ;;
+        esac
+        attest_pr_state "$current_head" "$checkpoint_base" "$pr_draft_state" \
+            "before finalization recovery" || resume_boundary_status=$?
+    else
+        attest_pr_state "$current_head" "$checkpoint_base" \
+            true "before review recovery" || resume_boundary_status=$?
+    fi
     if [ "$resume_boundary_status" -eq 2 ]; then
+        if [ "$ready_finalization" = true ]; then
+            restore_draft_after_finalization_failure "$current_head" "$checkpoint_base" \
+                "base advanced after the PR was marked ready" || return 1
+            ready_finalization=false
+        fi
         fetch_base || return 1
         latest_base="$(git rev-parse "$BASE_REMOTE_REF")" || return 1
         git merge-base --is-ancestor "$checkpoint_base" "$latest_base" || {
             recovery_message "PR base moved non-fast-forward since the recovery checkpoint."
             return 1
         }
+        if [ "$state_phase" = converged ] || [ "$state_phase" = finalizing ]; then
+            state_round=$((state_round + 1))
+        fi
         state_phase=reviewing
+        update_run_state reviewing "$state_round" "$latest_base" "$current_head" || {
+            recovery_message "Could not checkpoint the resumed review round."
+            return 1
+        }
         echo "   Base advanced since the checkpoint; the resumed round will integrate and review it."
     elif [ "$resume_boundary_status" -ne 0 ]; then
         recovery_message "Draft PR state does not match the recovery checkpoint."
         return 1
     fi
-    if [ "$state_phase" = converged ] && [ "$current_head" = "$state_head" ]; then
+    if { [ "$state_phase" = converged ] || [ "$state_phase" = finalizing ]; } && \
+       [ "$current_head" = "$state_head" ]; then
         REVIEW_ROUNDS_USED="$state_round"
         REVIEWED_BASE_SHA="$(jq -r '.baseSha' <<<"$RESUME_STATE_JSON")"
         CONVERGED_CODEX_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json"
         CONVERGED_CLAUDE_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/claude-review-round-$state_round.result.json"
         CONVERGED_CODEX_OUTCOME_SIGNATURE="file:$(jq -r '.codexResultSha256' <<<"$RESUME_STATE_JSON")"
         CONVERGED_CLAUDE_OUTCOME_SIGNATURE="file:$(jq -r '.claudeResultSha256' <<<"$RESUME_STATE_JSON")"
-        verify_converged_review_outcomes || return 1
+        if ! verify_converged_review_outcomes; then
+            if [ "$ready_finalization" = true ]; then
+                restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
+                    "recovered review result evidence changed" || return 1
+            fi
+            return 1
+        fi
         echo -e "${GREEN}✓${NC} Recovered converged review checkpoint at round $state_round"
     else
         run_review_convergence "$state_round"
     fi
 
     inspect_publication_diff "$REVIEWED_BASE_SHA" || {
+        if [ "$ready_finalization" = true ]; then
+            restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
+                "recovered final diff inspection failed" || return 1
+        fi
         recovery_message "Final reviewed diff inspection failed during recovery."
         return 1
     }
     run_validation "final-reviewed-head" || {
+        if [ "$ready_finalization" = true ]; then
+            restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
+                "recovered final validation failed" || return 1
+        fi
         recovery_message "Final reviewed-head validation failed during recovery."
         return 1
     }
-    attest_review_head "after recovered reviewed-head validation" "$REVIEWED_BASE_SHA" || {
-        recovery_message "Final reviewed-head attestation failed during recovery."
+    if [ "$ready_finalization" = true ]; then
+        attest_ready_pr_head "$(git rev-parse HEAD)" "$REVIEWED_BASE_SHA" \
+            "after recovered reviewed-head validation" || {
+            restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
+                "ready reviewed-head attestation failed during recovery" || return 1
+            recovery_message "Ready reviewed-head attestation failed during recovery."
+            return 1
+        }
+    else
+        attest_review_head "after recovered reviewed-head validation" "$REVIEWED_BASE_SHA" || {
+            recovery_message "Final reviewed-head attestation failed during recovery."
+            return 1
+        }
+    fi
+    if ! verify_converged_review_outcomes; then
+        if [ "$ready_finalization" = true ]; then
+            restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
+                "recovered review result evidence changed" || return 1
+        fi
         return 1
-    }
-    verify_converged_review_outcomes || return 1
-    verify_local_review_threads || return 1
+    fi
+    if ! verify_local_review_threads; then
+        if [ "$ready_finalization" = true ]; then
+            restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
+                "recovered local-review ledger changed" || return 1
+        fi
+        return 1
+    fi
     verify_issue_for_publication "$SELECTED_ID" || {
+        if [ "$ready_finalization" = true ]; then
+            restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
+                "issue readiness changed during recovered finalization" || return 1
+        fi
         recovery_message "Issue requirements or readiness changed before recovered publication."
         return 1
     }
-    finalize_pr
+    if [ "$ready_finalization" = true ]; then
+        update_run_state finalized "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
+            "$(git rev-parse HEAD)" || {
+            restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
+                "recovered finalized checkpoint failed" || return 1
+            recovery_message "Could not complete the recovered finalized checkpoint."
+            return 1
+        }
+        echo -e "${GREEN}✓${NC} Recovered ready PR finalization: $AGENT_LOOP_PR_URL ($(git rev-parse HEAD))"
+    else
+        finalize_pr
+    fi
     cd "$PROJECT_DIR"
     git worktree remove "$ACTIVE_WORKTREE"
     echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID recovery complete; local branch retained at $AGENT_LOOP_BRANCH"

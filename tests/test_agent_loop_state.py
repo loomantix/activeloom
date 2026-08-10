@@ -226,6 +226,17 @@ def test_converged_state_requires_and_preserves_review_result_hashes(
     assert value["codexResultSha256"] == "c" * 64
     assert value["claudeResultSha256"] == "d" * 64
 
+    finalizing = _run(
+        "update",
+        "--file",
+        str(state),
+        "--phase",
+        "finalizing",
+    )
+    assert finalizing.returncode == 0, finalizing.stderr
+    value = json.loads(state.read_text(encoding="utf-8"))
+    assert value["codexResultSha256"] == "c" * 64
+
     finalized = _run(
         "update",
         "--file",

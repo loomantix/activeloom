@@ -6,7 +6,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -669,7 +669,7 @@ def test_v3_post_fails_if_head_moves_after_mutation(
     assert head_reads == 2
 
 
-def test_v3_dispose_is_resumable_after_resolve_response_failure(
+def test_v3_dispose_reconciles_after_resolve_response_failure(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -759,8 +759,6 @@ def test_v3_dispose_is_resumable_after_resolve_response_failure(
         str(content),
     ]
     monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
-    with pytest.raises(review_ledger.LedgerError, match="lost resolve"):
-        review_ledger.main(args)
     review_ledger.main(args)
     assert reply_posts == 1
     assert mutation_attempts == 1
@@ -1012,10 +1010,12 @@ def test_v3_rejects_invalid_authenticated_content_hash(
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.parametrize("existing_head", [HEAD, "b" * 40])
 def test_v3_dispose_rejects_conflicting_stable_identity_before_mutation(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    existing_head: str,
 ) -> None:
     content = tmp_path / "disposition.md"
     content.write_text("Fixed and validated.", encoding="utf-8")
@@ -1026,7 +1026,7 @@ def test_v3_dispose_rejects_conflicting_stable_identity_before_mutation(
             _disposition_body(
                 "conflict",
                 "Previously dismissed.",
-                head=HEAD,
+                head=existing_head,
                 outcome="dismissed",
             ),
         ),
@@ -1404,3 +1404,136 @@ def test_attest_rejects_changed_results_without_ledger_evidence(
                 hashlib.sha256(result_file.read_bytes()).hexdigest(),
             ]
         )
+
+
+def test_attest_rejects_clean_result_with_same_round_fix(
+    review_ledger: ModuleType,
+    tmp_path: Path,
+) -> None:
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "clean",
+                "engine": "codex",
+                "round": 2,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": HEAD,
+                "classification": None,
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    threads = _threads_file(
+        tmp_path,
+        [
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": _finding_body(
+                                "same-head-blocker", severity="blocking"
+                            ),
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": _disposition_body("same-head-blocker", head=HEAD),
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            }
+        ],
+    )
+    heads = _heads_file(tmp_path, HEAD)
+    with pytest.raises(review_ledger.LedgerError, match="cannot have same-round fixes"):
+        review_ledger.main(
+            [
+                "attest",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--head",
+                HEAD,
+                "--engine",
+                "codex",
+                "--round",
+                "2",
+                "--base",
+                "c" * 40,
+                "--before",
+                HEAD,
+                "--result-file",
+                str(result_file),
+                "--threads-file",
+                str(threads),
+                "--allowed-heads-file",
+                str(heads),
+                "--actor",
+                "reviewer",
+                "--expected-result-sha256",
+                hashlib.sha256(result_file.read_bytes()).hexdigest(),
+            ]
+        )
+
+
+def test_clean_result_allows_same_round_minor_deferral(
+    review_ledger: ModuleType,
+    tmp_path: Path,
+) -> None:
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "clean",
+                "engine": "codex",
+                "round": 2,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": HEAD,
+                "classification": None,
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    threads = _threads_file(
+        tmp_path,
+        [
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": _finding_body(
+                                "minor-deferral", severity="minor"
+                            ),
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": _disposition_body(
+                                "minor-deferral", head=HEAD, outcome="deferred"
+                            ),
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            }
+        ],
+    )
+    data = json.loads(result_file.read_text(encoding="utf-8"))
+    assert review_ledger._verify_result_evidence(
+        SimpleNamespace(engine="codex", round=2),
+        review_ledger._load_review_threads(threads),
+        data=data,
+    )

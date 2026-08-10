@@ -100,7 +100,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write_executable(
         gh,
         r"""#!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys
+import json, os, pathlib, signal, subprocess, sys, time
 args = sys.argv[1:]
 state = pathlib.Path(os.environ['AGENT_STATE_DIR'])
 input_payload = json.load(sys.stdin) if '--input' in args else None
@@ -151,7 +151,13 @@ elif args[:2] == ['issue', 'edit']:
         claimed.unlink(missing_ok=True)
 elif args[:2] == ['pr', 'view']:
     joined = ' '.join(args)
-    if 'state,isDraft,headRefName,headRefOid' in joined:
+    if '--json isDraft' in joined:
+        print('false' if (state / 'pr-ready').exists() else 'true')
+        if os.environ.get('AGENT_FAIL_RECOVERED_FINALIZED_CHECKPOINT') == 'true':
+            for state_file in (state.parent / 'logs').glob('*/run-state.json'):
+                state_file.unlink()
+                state_file.mkdir()
+    elif 'state,isDraft,headRefName,headRefOid' in joined:
         branch = (state / 'pr-branch').read_text()
         remote_head = subprocess.run(
             ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
@@ -228,11 +234,16 @@ elif args[:2] == ['pr', 'ready']:
                     'pageInfo': {'hasNextPage': False},
                 },
             }]))
+        if os.environ.get('AGENT_DROP_THREADS_ON_READY') == 'true':
+            (state / 'review-threads.json').write_text('[]')
         raced_head = os.environ.get('AGENT_RACE_HEAD_ON_READY')
         if raced_head:
             (state / 'raced-pr-head').write_text(raced_head)
         if os.environ.get('AGENT_FAIL_READY_AFTER_MUTATION') == 'true':
             sys.exit(76)
+        if os.environ.get('AGENT_INTERRUPT_AFTER_READY') == 'true':
+            os.kill(os.getppid(), signal.SIGTERM)
+            time.sleep(0.1)
 elif args[:2] == ['pr', 'review']:
     body = args[args.index('--body') + 1]
     reviews_file = state / 'reviews.json'
@@ -417,6 +428,39 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
         auto_clean_attestation=False,
         auto_committed_evidence=False,
         **values,
+    )
+
+
+def _v3_changed_hook() -> str:
+    finding_hash = "4be82179d3761dd716ff1e62c19138fc105495b9a66528678e0e76e253adb577"
+    disposition_hash = "13079c2612a9ead4818ab21ef90bf6b7c457916144d8cbaeeff74befa4f4cc8d"
+    return (
+        "before=$AGENT_LOOP_PR_HEAD_SHA; fingerprint=minor-fix; "
+        "printf 'review fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'fix: minor review correction'; "
+        "git push origin HEAD:\"refs/heads/$AGENT_LOOP_BRANCH\"; "
+        "after=$(git rev-parse HEAD); "
+        "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=$AGENT_LOOP_REVIEW_ENGINE "
+        "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=$fingerprint "
+        "occurrence=1 severity=minor lens=correctness content-sha256="
+        f"{finding_hash} -->\" 'Finding.'; "
+        "printf -v disposition '%s\\n%s' \"<!-- local-review-disposition:v3 "
+        "engine=$AGENT_LOOP_REVIEW_ENGINE round=$AGENT_LOOP_REVIEW_ROUND head=$after "
+        "fingerprint=$fingerprint occurrence=1 outcome=fixed content-sha256="
+        f"{disposition_hash} -->\" 'Fixed.'; "
+        "jq -n --arg finding \"$finding\" --arg disposition \"$disposition\" "
+        "'[{isResolved:true,comments:{nodes:["
+        "{body:$finding,databaseId:1,author:{login:\"tester\"}},"
+        "{body:$disposition,databaseId:2,author:{login:\"tester\"}}],"
+        "pageInfo:{hasNextPage:false}}}]' > \"$AGENT_STATE_DIR/review-threads.json\"; "
+        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
+        "--argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" --arg before \"$before\" "
+        "--arg after \"$after\" --arg fingerprint \"$fingerprint\" "
+        "'{version:3,status:\"changed\",engine:$engine,round:$round,"
+        "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"minor\","
+        "findingFingerprints:[$fingerprint],finalLaneComplete:true}' "
+        "> \"$AGENT_LOOP_REVIEW_RESULT_FILE\""
     )
 
 
@@ -1418,6 +1462,111 @@ def test_finalized_checkpoint_failure_is_restored_to_draft(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def test_interrupted_ready_finalization_resumes_without_repeating_ready(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "83"],
+        issues=[_issue(83)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_INTERRUPT_AFTER_READY": "true"},
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    assert json.loads(state_file.read_text())["phase"] == "finalizing"
+    assert (consumer[3] / "pr-ready").exists()
+
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(83, assigned=True)],
+        config=_config_v3(tmp_path),
+    )
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert json.loads(state_file.read_text())["phase"] == "finalized"
+    ready_calls = [
+        line
+        for line in (consumer[3] / "gh.log").read_text().splitlines()
+        if line == "pr ready 1"
+    ]
+    assert len(ready_calls) == 1
+
+
+def test_interrupted_ready_finalization_rolls_back_if_evidence_changes(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "85"],
+        issues=[_issue(85)],
+        config=_config_v3(tmp_path, codex_review_hook=_v3_changed_hook()),
+        extra_env={"AGENT_INTERRUPT_AFTER_READY": "true"},
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    assert json.loads(state_file.read_text())["phase"] == "finalizing"
+    assert (consumer[3] / "pr-ready").exists()
+    (consumer[3] / "review-threads.json").write_text("[]\n", encoding="utf-8")
+
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(85, assigned=True)],
+        config=_config_v3(tmp_path, codex_review_hook=_v3_changed_hook()),
+        timeout=60,
+    )
+    assert second.returncode != 0
+    assert "converged review result no longer has matching ledger evidence" in second.stderr
+    assert "attested back in draft state" in second.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_interrupted_ready_finalization_rolls_back_if_checkpoint_fails(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "86"],
+        issues=[_issue(86)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_INTERRUPT_AFTER_READY": "true"},
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    assert (consumer[3] / "pr-ready").exists()
+
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(86, assigned=True)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_FAIL_RECOVERED_FINALIZED_CHECKPOINT": "true"},
+    )
+    assert second.returncode != 0
+    assert "recovered finalized checkpoint failed" in second.stderr
+    assert "attested back in draft state" in second.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_finalization_revalidates_changed_result_ledger_evidence(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "84"],
+        issues=[_issue(84)],
+        config=_config_v3(tmp_path, codex_review_hook=_v3_changed_hook()),
+        extra_env={"AGENT_DROP_THREADS_ON_READY": "true"},
+        timeout=60,
+    )
+    assert result.returncode != 0
+    assert "review result ledger evidence changed during finalization" in result.stderr
+    assert "attested back in draft state" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
 def test_review_contract_version_is_required_before_claim(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1594,6 +1743,7 @@ def test_resume_run_rejects_a_concurrent_owner(
                 break
             time.sleep(0.01)
         assert ready.exists()
+        state_file.write_text("{}\n", encoding="utf-8")
         second = _run(
             consumer,
             ["--resume-run", str(state_file)],
@@ -1605,6 +1755,35 @@ def test_resume_run_rejects_a_concurrent_owner(
     finally:
         locker.terminate()
         locker.wait(timeout=5)
+
+
+def test_partial_round_checkpoint_advances_after_codex_pass(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "33"],
+        issues=[_issue(33)],
+        config=_config_v3(
+            tmp_path,
+            claude_review_hook="exit 73",
+            review_max_rounds=1,
+        ),
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    assert json.loads(state_file.read_text())["round"] == 2
+    events_before = (consumer[3] / "events.log").read_text()
+
+    second = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(33, assigned=True)],
+        config=_config_v3(tmp_path, review_max_rounds=1),
+    )
+    assert second.returncode != 0
+    assert "did not converge within 1 round(s)" in second.stderr
+    assert (consumer[3] / "events.log").read_text() == events_before
 
 
 def test_v3_result_digest_is_pinned_before_attestation(
@@ -1635,7 +1814,7 @@ def test_converged_resume_rejects_tampered_review_result(
     assert first.returncode != 0
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
     state = json.loads(state_file.read_text())
-    assert state["phase"] == "converged"
+    assert state["phase"] == "finalizing"
     result_file = state_file.parent / f"codex-review-round-{state['round']}.result.json"
     result_file.write_text("{}\n", encoding="utf-8")
 
