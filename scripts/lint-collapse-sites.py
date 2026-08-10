@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
 """Check every `collapse_empty_substitutions` key against its template sites.
 
-`drop_empty_placeholder_lines` in `sync-engine.py` deletes a qualifying line
-plus one adjacent blank, and it decides purely from the line's own bytes — the
-engine carries no Markdown knowledge, by design, because a whole-file normalizer
-cannot tell an author-written blank line from a placeholder-produced one without
-re-parsing the document. That leaves one gap: a key opted into collapsing whose
-template occurrence sits inside a fenced block, a raw `<pre>`, or a four-space
-indented block would silently delete a line of literal content from every
-consumer's rendered file.
+`drop_empty_placeholder_lines` in `sync-engine.py` deletes a qualifying line —
+plus one adjacent blank, but only when keeping it would leave a blank-line run —
+and it decides purely from the line's own bytes. The engine carries no Markdown
+knowledge, by design, because a whole-file normalizer cannot tell an
+author-written blank line from a placeholder-produced one without re-parsing the
+document. That leaves one gap: a key opted into collapsing whose template
+occurrence sits inside literal content — a fenced block, a four-space indented
+block, an HTML comment, or a raw `<pre>`, `<script>`, `<style>`, or `<textarea>`
+— would silently delete a line of that content from every consumer's rendered
+file.
 
 Close it here rather than in the engine. Reading the template is cheap at lint
 time, a violation is always an authoring mistake in this repo's own manifest,
 and keeping the check out of the engine preserves the property the fix depends
 on: rendering is byte-faithful and knows nothing about Markdown.
 
-A key passes when every one of its `<<KEY>>` occurrences is alone on its line
-with only other opted-in placeholders and horizontal whitespace, outside
-literal Markdown content. Collapse opt-ins are limited to Markdown destinations;
+A key passes when its name is a valid placeholder key and every one of its
+`<<KEY>>` occurrences is alone on its line with only other opted-in placeholders
+and horizontal whitespace, outside literal Markdown content. The key-name rule is
+the one violation reported against the file rather than a `file:line` site, since
+an invalid key has no occurrence to point at. Collapse opt-ins are limited to
+Markdown destinations;
 other formats need their own syntax-aware safety check. Exits 1 listing every
 violation. Paths resolve against the repo root, so the working directory does
 not matter.

@@ -724,6 +724,39 @@ def test_main_rejects_undeclared_collapse_empty_key(
     assert "must also appear in `substitutions`" in capsys.readouterr().err
 
 
+def test_main_rejects_unknown_target_field(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A misspelled optional field used to be ignored in silence, which meant a
+    # typo disabled the feature it named while the engine, the collapse-site
+    # lint, and the manifest schema job all stayed green — and the render
+    # carried exactly the blank-line churn the opt-in exists to prevent.
+    (upstream_repo / "src.md").write_text("a\n\n<<EMPTY>>\n\nb\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "src.md",
+                    "destination": "dest.md",
+                    "substitutions": ["EMPTY"],
+                    "collapse_empty_subsitutions": ["EMPTY"],
+                }
+            ]
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "unknown field(s) in target entry: collapse_empty_subsitutions" in err
+    assert not (consumer_dir / "dest.md").exists()
+
+
 @pytest.mark.parametrize(
     ("key", "bad_value"),
     [

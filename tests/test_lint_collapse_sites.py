@@ -7,6 +7,7 @@ exactly the sites `drop_empty_placeholder_lines` would happily collapse.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import ModuleType
 
@@ -110,9 +111,18 @@ def test_closing_fence_ends_literal_content(lint_collapse_sites: ModuleType, tmp
     assert _check(lint_collapse_sites, tmp_path, "```\ncode\n```\n\n<<E>>\n") == []
 
 
-def test_canonical_manifest_passes(lint_collapse_sites: ModuleType) -> None:
+def test_canonical_manifest_passes(
+    lint_collapse_sites: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
     # The rule is only worth enforcing if this repo's own manifest satisfies it.
     assert lint_collapse_sites.main() == 0
+    # `main()` also returns 0 when it checked *nothing* — a renamed `targets:`
+    # key, a misspelled `collapse_empty_substitutions` field, or the opt-in
+    # block being dropped all yield `checked = 0`. Asserting only the exit code
+    # would let the lint decay into a no-op while staying green, so pin the
+    # count it reports.
+    checked = int(re.search(r"verified in (\d+) source", capsys.readouterr().out).group(1))
+    assert checked >= 1
 
 
 def test_main_rejects_an_unsafe_site(

@@ -8,6 +8,8 @@ pinned prettier.
 
 A populated whole-line placeholder keeps its line and its own spacing.
 
+An opted-in placeholder that renders non-empty keeps its line.
+
 Raw preformatted HTML keeps its blank runs — prettier does not touch them, so
 neither may the engine:
 

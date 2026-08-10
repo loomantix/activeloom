@@ -7,8 +7,10 @@ targets:
     substitutions:
       - FIXTURE_NAME
       - FIXTURE_BODY
+      - FIXTURE_OPTIONAL_FILLED
       - FIXTURE_OPTIONAL
       - FIXTURE_OPTIONAL_SECOND
     collapse_empty_substitutions:
+      - FIXTURE_OPTIONAL_FILLED
       - FIXTURE_OPTIONAL
       - FIXTURE_OPTIONAL_SECOND

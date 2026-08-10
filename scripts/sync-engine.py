@@ -84,6 +84,16 @@ class ConsumerConfig(TypedDict, total=False):
 PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 PLACEHOLDER_RE = re.compile(r"<<([A-Z][A-Z0-9_]*)>>")
 
+# Every field the engine understands on one `targets:` entry. An unrecognized
+# key is rejected rather than ignored: each optional field here *enables*
+# something, so a typo silently disables it and every gate stays green —
+# `collapse_empty_subsitutions` (one missing `t`) renders the exact blank-line
+# churn the opt-in exists to prevent, and neither the engine, the collapse-site
+# lint, nor the manifest schema job can see the key it never read. The manifest
+# and this engine ship from the same upstream checkout, so there is no
+# version-skew cost to failing closed.
+KNOWN_TARGET_FIELDS: Final[frozenset[str]] = frozenset(Target.__annotations__)
+
 
 def glob_to_regex(pattern: str) -> re.Pattern[str]:
     """Compile a gitignore-flavored glob pattern to an anchored regex.
@@ -200,7 +210,8 @@ def drop_empty_placeholder_lines(
       - a line qualifies only if it contains at least one placeholder, every
         placeholder on it is listed in `collapse_keys`, every one of those
         values renders to the empty string, and nothing outside the
-        placeholders remains but spaces and tabs;
+        placeholders remains but spaces, tabs, and carriage returns (see the
+        CRLF note on the qualification test below);
       - a qualifying line is dropped, plus one adjacent blank line when keeping
         it would leave a blank-line run. Start and end of file count as blank
         for that test, so a placeholder at either edge does not leave a leading
@@ -267,9 +278,16 @@ def drop_empty_placeholder_lines(
         if key in present and rendered_values.get(key) == "" and key not in collapsed
     )
     if unmatched:
+        # GitHub Actions annotation form, matching the `allowed_destinations`
+        # warning in `main()`. This fires in a *consumer's* sync run, which
+        # exits 0 — plain stderr in a green job is unread, so the consumer
+        # would ship the blank-line churn the opt-in exists to prevent with no
+        # visible signal. A non-zero exit would be worse: one upstream
+        # authoring slip would break every consumer's sync.
         sys.stderr.write(
-            f"  ⚠️  collapse_empty_substitutions keys rendered empty in {source} but no "
-            f"line qualified (not a whole-line placeholder?): {', '.join(unmatched)}\n"
+            f"::warning file={source}::collapse_empty_substitutions keys rendered empty "
+            f"in {source} but no line qualified (not a whole-line placeholder?): "
+            f"{', '.join(unmatched)}\n"
         )
 
     if all(keep):
@@ -552,6 +570,13 @@ def main() -> int:
         # a clean malformed-entry error instead.
         if not isinstance(target, dict):
             sys.stderr.write(f"  ❌ malformed target entry: expected a mapping, got {target!r}\n")
+            return 1
+        unknown_fields = sorted(str(key) for key in target if key not in KNOWN_TARGET_FIELDS)
+        if unknown_fields:
+            sys.stderr.write(
+                f"  ❌ unknown field(s) in target entry: {', '.join(unknown_fields)} "
+                f"(known: {', '.join(sorted(KNOWN_TARGET_FIELDS))}): {target!r}\n"
+            )
             return 1
         source_rel = target.get("source")
         dest_rel = target.get("destination")

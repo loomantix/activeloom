@@ -8,6 +8,8 @@ pinned prettier.
 
 <<FIXTURE_BODY>>
 
+<<FIXTURE_OPTIONAL_FILLED>>
+
 Raw preformatted HTML keeps its blank runs — prettier does not touch them, so
 neither may the engine:
 
