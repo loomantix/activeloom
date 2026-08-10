@@ -276,3 +276,11 @@ jobs:
                   )
           print(f"OK: {len(targets)} targets")
           PY
+
+      # The engine deliberately owns no Markdown knowledge, so nothing at render
+      # time stops a key opted into structural collapsing from deleting a line of
+      # a fenced block, a raw <pre>, or an indented code block. Enforce the
+      # "prose-only, whole-line" rule here instead, where reading the template is
+      # cheap and a violation is an authoring mistake rather than consumer churn.
+      - name: Lint collapse opt-ins against their template sites
+        run: python3 scripts/lint-collapse-sites.py

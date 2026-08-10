@@ -310,6 +310,76 @@ def test_render_preserves_horizontal_whitespace_value_when_opted_in(
     assert sync_engine.substitute(text, {"E": " \t "}, ["E"], "src.md", ["E"]) == "a\n\n \t \n\nb\n"
 
 
+def test_render_keeps_line_when_only_some_placeholders_are_opted_in(
+    sync_engine: ModuleType,
+) -> None:
+    text = "a\n\n<<E>><<F>>\n\nb\n"
+    # `F` is substituted but not opted in, so the line is not the engine's to
+    # remove even though both values render empty.
+    assert sync_engine.substitute(text, {"E": "", "F": ""}, ["E", "F"], "src.md", ["E"]) == "a\n\n\n\nb\n"
+
+
+def test_render_keeps_line_when_an_opted_in_sibling_is_non_empty(
+    sync_engine: ModuleType,
+) -> None:
+    text = "a\n\n<<E>><<F>>\n\nb\n"
+    assert (
+        sync_engine.substitute(text, {"E": "", "F": "X"}, ["E", "F"], "src.md", ["E", "F"])
+        == "a\n\nX\n\nb\n"
+    )
+
+
+def test_render_keeps_line_carrying_an_undeclared_placeholder(
+    sync_engine: ModuleType,
+) -> None:
+    # `PLACEHOLDER_RE.sub("", line)` erases the undeclared token too, so the
+    # line looks placeholder-only; dropping it would delete a real unsubstituted
+    # token the consumer has not configured yet.
+    text = "a\n\n<<E>><<UNKNOWN>>\n\nb\n"
+    assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\n<<UNKNOWN>>\n\nb\n"
+
+
+def test_render_collapses_crlf_source(sync_engine: ModuleType) -> None:
+    # `.split("\n")` leaves a `\r` on every line; the qualification test must
+    # strip it or a CRLF checkout silently gets no collapsing at all.
+    text = "a\r\n\r\n<<E>>\r\n\r\nb\r\n"
+    assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\r\n\r\nb\r\n"
+
+
+def test_render_treats_a_null_value_as_empty(sync_engine: ModuleType) -> None:
+    # `DOMAIN_RULES:` with nothing after the colon parses as None. `str(None)`
+    # would render the literal word `None` into the consumer's repo.
+    text = "a\n\n<<E>>\n\nb\n"
+    assert sync_engine.substitute(text, {"E": None}, ["E"], "src.md", ["E"]) == "a\n\nb\n"
+    assert sync_engine.substitute("x <<E>> y\n", {"E": None}, ["E"], "src.md") == "x  y\n"
+
+
+def test_render_warns_when_an_opted_in_key_never_qualifies(
+    sync_engine: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A list bullet is not a whole-line placeholder, so the opt-in cannot fire
+    # and the consumer silently keeps the blank-line run it was meant to remove.
+    text = "a\n\n- <<E>>\n\nb\n"
+    assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\n- \n\nb\n"
+    err = capsys.readouterr().err
+    assert "no line qualified" in err
+    assert "E" in err
+
+
+def test_render_does_not_warn_when_the_opted_in_key_collapsed(
+    sync_engine: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sync_engine.substitute("a\n\n<<E>>\n\nb\n", {"E": ""}, ["E"], "src.md", ["E"])
+    assert "no line qualified" not in capsys.readouterr().err
+
+
+def test_render_does_not_warn_for_a_non_empty_opted_in_key(
+    sync_engine: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sync_engine.substitute("a\n\n<<E>>\n\nb\n", {"E": "value"}, ["E"], "src.md", ["E"])
+    assert "no line qualified" not in capsys.readouterr().err
+
+
 def test_render_preserves_blank_runs_inside_raw_pre_html(
     sync_engine: ModuleType,
 ) -> None:
@@ -652,6 +722,42 @@ def test_main_rejects_undeclared_collapse_empty_key(
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 1
     assert "must also appear in `substitutions`" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("key", "bad_value"),
+    [
+        ("substitutions", "NAME"),
+        ("substitutions", ["NAME", 3]),
+        ("collapse_empty_substitutions", "NAME"),
+        ("collapse_empty_substitutions", ["NAME", None]),
+    ],
+)
+def test_main_rejects_malformed_string_lists(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    key: str,
+    bad_value: object,
+) -> None:
+    # `substitutions` was previously read as `target.get(...) or []`, so a
+    # stringly-typed value was iterated character by character and rendered as
+    # a near-verbatim copy. It must now fail closed.
+    (upstream_repo / "src.md").write_text("<<NAME>>\n")
+    target: dict[str, object] = {
+        "source": "src.md",
+        "destination": "dest.md",
+        "substitutions": ["NAME"],
+    }
+    target[key] = bad_value
+    _write_yaml(upstream_repo / "scripts" / "sync-targets.yml", {"targets": [target]})
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert f"`{key}` must be a list of strings" in capsys.readouterr().err
+    assert not (consumer_dir / "dest.md").exists()
 
 
 def test_main_delete_target_unlinks_real_file(

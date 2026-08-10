@@ -51,7 +51,9 @@ class Target(TypedDict, total=False):
 
     Either a copy target (requires `source` + `destination`) or a delete
     target (requires `destination` + `delete: True`). `substitutions`,
-    `collapse_empty_substitutions`, and `mode` apply to copy targets only.
+    `collapse_empty_substitutions`, and `mode` apply to copy targets only;
+    every `collapse_empty_substitutions` key must also appear in
+    `substitutions`.
 
     `create_if_missing: True` on a copy target makes the engine bootstrap
     the destination on first sync and then leave it alone — preserving any
@@ -182,7 +184,9 @@ def load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(fp) or {}
 
 
-def drop_empty_placeholder_lines(text: str, rendered_values: dict[str, str], collapse_keys: set[str]) -> str:
+def drop_empty_placeholder_lines(
+    text: str, rendered_values: dict[str, str], collapse_keys: set[str], source: str
+) -> str:
     """Delete opted-in placeholder-only lines whose values render empty.
 
     Collapsing is opt-in per key rather than inferred, because only the
@@ -202,6 +206,10 @@ def drop_empty_placeholder_lines(text: str, rendered_values: dict[str, str], col
         or trailing blank;
       - the following blank is preferred so the preceding section keeps its own
         spacing.
+
+    An opted-in key that renders empty but whose line never qualifies is a
+    misconfiguration that would otherwise leave exactly the blank-line churn the
+    opt-in exists to prevent, so it warns rather than passing silently.
 
     Every other byte passes through untouched, and an empty `collapse_keys`
     (the default) is byte-identity.
@@ -227,13 +235,18 @@ def drop_empty_placeholder_lines(text: str, rendered_values: dict[str, str], col
             probe -= 1
         return probe
 
+    collapsed: set[str] = set()
     for i, line in enumerate(lines):
         matches = list(PLACEHOLDER_RE.finditer(line))
-        if not matches or PLACEHOLDER_RE.sub("", line).strip(" \t"):
+        # Strip `\r` alongside spaces and tabs: `.split("\n")` leaves it on
+        # every line of a CRLF source, and without this the residue is truthy
+        # and no line ever qualifies. Matches `is_blank`'s bare `.strip()`.
+        if not matches or PLACEHOLDER_RE.sub("", line).strip(" \t\r"):
             continue
         keys = [match.group(1) for match in matches]
         if any(key not in collapse_keys or rendered_values.get(key) != "" for key in keys):
             continue
+        collapsed.update(keys)
         keep[i] = False
         previous = previous_kept(i)
         if not (is_blank(previous) and is_blank(i + 1)):
@@ -245,6 +258,18 @@ def drop_empty_placeholder_lines(text: str, rendered_values: dict[str, str], col
             keep[i + 1] = False
         elif previous >= 0:
             keep[previous] = False
+
+    present = set(PLACEHOLDER_RE.findall(text))
+    unmatched = sorted(
+        key
+        for key in collapse_keys
+        if key in present and rendered_values.get(key) == "" and key not in collapsed
+    )
+    if unmatched:
+        sys.stderr.write(
+            f"  ⚠️  collapse_empty_substitutions keys rendered empty in {source} but no "
+            f"line qualified (not a whole-line placeholder?): {', '.join(unmatched)}\n"
+        )
 
     if all(keep):
         # Byte-identity when nothing matched, rather than a round trip through
@@ -270,6 +295,11 @@ def substitute(
     in the source are left intact (and a warning is printed) so that a
     template change doesn't silently swallow content the consumer hadn't
     configured for yet.
+
+    `collapse_empty_substitutions` must be a subset of `target_keys` (`main`
+    exits 1 otherwise). Those keys additionally have their placeholder-only
+    template line removed when the value renders empty — see
+    `drop_empty_placeholder_lines` for the exact contract.
     """
     seen = set(PLACEHOLDER_RE.findall(text))
     declared = set(target_keys)
@@ -296,7 +326,12 @@ def substitute(
         )
         sys.exit(1)
 
-    rendered_values = {key: str(values[key]).rstrip("\n") for key in declared}
+    # A YAML key written with no value (`DOMAIN_RULES:`) parses as None and is
+    # the natural way a consumer says "this section is empty" — `str(None)`
+    # would render the literal word `None` into their repo and block collapsing.
+    rendered_values = {
+        key: "" if values[key] is None else str(values[key]).rstrip("\n") for key in declared
+    }
     collapse_keys = set(collapse_empty_substitutions)
 
     def replace(match: re.Match[str]) -> str:
@@ -310,7 +345,7 @@ def substitute(
             return rendered_values[key]
         return match.group(0)
 
-    prepared = drop_empty_placeholder_lines(text, rendered_values, collapse_keys)
+    prepared = drop_empty_placeholder_lines(text, rendered_values, collapse_keys, source)
     return PLACEHOLDER_RE.sub(replace, prepared)
 
 
