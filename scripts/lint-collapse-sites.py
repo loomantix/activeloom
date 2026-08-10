@@ -38,9 +38,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 PLACEHOLDER_RE = re.compile(r"<<([A-Z][A-Z0-9_]*)>>")
-FENCE_RE = re.compile(
-    r"\A(?:(?:[ \t]*>[ \t]?)|(?:[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+))*[ \t]*(`{3,}|~{3,})"
-)
+FENCE_RE = re.compile(r"(`{3,}|~{3,})")
 RAW_TAG_EVENT_RE = re.compile(
     r"</(?P<close>pre|script|style|textarea)\s*>|<(?P<open>pre|script|style|textarea)\b",
     re.IGNORECASE,
@@ -69,7 +67,11 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
     in_declaration = False
     in_cdata = False
     for index, line in enumerate(lines):
-        fence_match = FENCE_RE.match(line)
+        fence_match = FENCE_RE.search(line)
+        if fence_match is not None and any(
+            char not in " \t>-+*0123456789.)" for char in line[: fence_match.start()]
+        ):
+            fence_match = None
         if fence is None and fence_match is not None:
             fence = (fence_match.group(1)[0], len(fence_match.group(1)))
             literal[index] = True
