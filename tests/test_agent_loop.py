@@ -980,7 +980,7 @@ def test_v3_converged_recovery_uses_each_engine_result_digest(
     assert "Recovered converged review checkpoint" in resumed.stdout
 
 
-def test_v3_final_round_interruption_replays_without_exhausting_cap(
+def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     fail_marker = consumer[3] / "fail-codex-review-validation"
@@ -990,7 +990,40 @@ def test_v3_final_round_interruption_replays_without_exhausting_cap(
         '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
         "then exit 71; fi"
     )
-    config = _config_v3(tmp_path, validation_hook=validation, review_max_rounds=1)
+    material_hook = (
+        "printf 'codex-material\\n' >> \"$EVENT_LOG\"; "
+        'before="$AGENT_LOOP_PR_HEAD_SHA"; '
+        "printf 'material fix\\n' > final-round-fix.txt; "
+        "git add final-round-fix.txt; git commit -m 'fix: final round finding'; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; after=$(git rev-parse HEAD); '
+        "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex "
+        "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=final-round-material "
+        "occurrence=1 severity=major lens=recovery "
+        "content-sha256=4be82179d3761dd716ff1e62c19138fc105495b9a66528678e0e76e253adb577 -->\" 'Finding.'; "
+        "printf -v disposition '%s\\n%s' \"<!-- local-review-disposition:v3 "
+        "engine=codex round=$AGENT_LOOP_REVIEW_ROUND head=$after "
+        "fingerprint=final-round-material occurrence=1 outcome=fixed "
+        "content-sha256=13079c2612a9ead4818ab21ef90bf6b7c457916144d8cbaeeff74befa4f4cc8d -->\" 'Fixed.'; "
+        "jq -n --arg finding \"$finding\" --arg disposition \"$disposition\" "
+        "'[{id:\"THREAD-FINAL\",isResolved:true,"
+        "repository:{nameWithOwner:\"fixture/consumer\"},pullRequest:{number:1},"
+        "comments:{nodes:[{body:$finding,databaseId:1,author:{login:\"tester\"}},"
+        "{body:$disposition,databaseId:2,author:{login:\"tester\"}}],"
+        "pageInfo:{hasNextPage:false}}}]' > \"$AGENT_STATE_DIR/review-threads.json\"; "
+        "jq -n --argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" --arg before \"$before\" "
+        "--arg after \"$after\" "
+        "'{version:3,status:\"changed\",engine:\"codex\",round:$round,"
+        "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"material\","
+        "findingFingerprints:[\"final-round-material\"],finalLaneComplete:true}' "
+        '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        codex_review_hook=material_hook,
+        review_max_rounds=1,
+    )
 
     first = _run(
         consumer,
@@ -1015,8 +1048,52 @@ def test_v3_final_round_interruption_replays_without_exhausting_cap(
         timeout=60,
     )
 
+    assert resumed.returncode != 0
+    assert "did not converge within 1 round(s)" in resumed.stderr
+    assert "resuming its remaining leg" in resumed.stdout
+    assert "Recovered authenticated Codex evidence" in resumed.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex-material\n") == 1
+    assert events.count("claude\n") == 1
+    assert "conflicting attestation" not in resumed.stderr
+
+
+def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    config = _config_v3(tmp_path, validation_hook=validation, review_max_rounds=1)
+
+    first = _run(
+        consumer,
+        ["--issues", "95"],
+        issues=[_issue(95)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(95, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
     assert resumed.returncode == 0, resumed.stderr + resumed.stdout
-    assert "Final configured review round was interrupted" in resumed.stdout
+    assert "resuming its remaining leg" in resumed.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex\n") == 1
+    assert events.count("claude\n") == 1
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
 
