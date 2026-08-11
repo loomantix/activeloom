@@ -13,7 +13,7 @@ with the fix and validation, then resolve the thread. Every pass must read
 resolved as well as unresolved threads before reviewing the current head.
 
 Load [the local review ledger](references/local-review-ledger.md) before running
-`refactorpass`, `grill`, `deepgrill`, `pr-grill`, or local review hooks.
+`refactorpass`, `critique`, `deepcritique`, `pr-critique`, or local review hooks.
 
 ## Select One Cross-Model Path
 
@@ -39,7 +39,7 @@ Use this path when both local engines are available:
 3. Fetch the target base, record its immutable commit SHA, and give that exact
    SHA to both reviewers for the round. Neither reviewer may re-resolve a
    mutable remote-tracking ref independently.
-4. In a fresh Codex session, run `deepgrill <pr-number>`. Read the PR ledger,
+4. In a fresh Codex session, run `deepcritique <pr-number>`. Read the PR ledger,
    post every confirmed finding inline before editing, fix, validate, commit,
    push, reply, and resolve.
 5. On that resulting HEAD, run a fresh adversarial Claude review against the
@@ -62,8 +62,9 @@ Use this path when both local engines are available:
      Once both engines have read the change cold twice, the remaining findings
      are mostly about the review's own artifacts. A convergence round runs only
      the lanes that can find a reason not to deploy, changes the PR only for a
-     blocking defect, defers everything else to a linked issue, and ends the loop
-     as soon as it finds no blocker. Lanes still report everything they find —
+     realistically reachable blocking defect, defers everything else, creates
+     an issue only for an urgent high-impact follow-up, and ends the loop as soon
+     as it finds no blocker. Lanes still report everything they find —
      the narrowing is a disposition rule applied when consolidating lane output,
      never an instruction to a lane to withhold what it found.
 
@@ -98,7 +99,7 @@ Use this path when local Claude Code is unavailable.
 
 1. Make the local change, create a clean commit, and open a draft PR.
 2. Run `refactorpass <pr-number>` for source changes.
-3. Run `grill <pr-number>`. Lean mode executes the code-reviewer and silent
+3. Run `critique <pr-number>`. Lean mode executes the code-reviewer and silent
    failure-hunter lanes, using independent subagents when available.
 4. Run `reviewit <pr-number>`. It triggers Gemini Flash and Copilot, verifies and
    deduplicates their findings, fixes confirmed issues, pushes, replies, and
@@ -106,12 +107,12 @@ Use this path when local Claude Code is unavailable.
 
 ### Deep
 
-1. Open a draft PR, then run `deepgrill <pr-number>`. It executes `grill deep`'s
+1. Open a draft PR, then run `deepcritique <pr-number>`. It executes `critique deep`'s
    six core lanes and the conditional tenant-coupling lane, preceded by
    `refactorpass` on this engine's first pass over the PR.
 2. Run `reviewit <pr-number> deep`. Deep mode uses the same hosted reviewers
-   with its larger cap, early-exit rules, and final fresh Codex `deepgrill`.
-   That tail `deepgrill` skips the refactor pass — step 1 already spent this
+   with its larger cap, early-exit rules, and final fresh Codex `deepcritique`.
+   That tail `deepcritique` skips the refactor pass — step 1 already spent this
    engine's cleanup latch on the PR.
 
 Choose deep when the change touches auth, crypto, secret handling, schema/data
@@ -127,7 +128,7 @@ extensions such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
 
 ## Cross-Engine Relay
 
-When a different engine reviews the PR, run `pr-grill <pr-number>` from its
+When a different engine reviews the PR, run `pr-critique <pr-number>` from its
 isolated worktree. It reads the existing ledger, runs the deep matrix, posts
 confirmed findings inline, applies fixes, and completes those same threads. The
 hand-back is mandatory: the originating engine reads the updated ledger and
@@ -137,10 +138,13 @@ re-reviews the new head.
 
 - Treat every generated finding as a hypothesis. Verify it against code, tests,
   and documented constraints before posting or changing anything.
-- Fix every valid in-scope finding, including nits. Dismiss false positives with
-  a concrete rationale in the thread.
-- Defer only genuinely large follow-up work, roughly 300+ lines or a
-  cross-cutting rewrite, and track it explicitly.
+- Fix a confirmed finding only when the likelihood and impact of real user harm,
+  or a credible path to security exploitation, justify the fix's churn and
+  regression risk.
+- Create a follow-up issue only for a concrete, high-impact defect that should
+  be scheduled within roughly two weeks. Record ordinary deferrals without an
+  issue; do not turn speculative hardening, cleanup, or low-likelihood edge cases
+  into backlog.
 - A review fix without a preceding inline finding, a finding without a reply,
   or a resolved thread without a visible disposition is a failed review pass.
 - Never copy sensitive source, credentials, private data, or model logs into PR

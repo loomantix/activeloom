@@ -66,8 +66,8 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     for guard_name in ("hook-git-guard", "hook-gh-guard"):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
-    ledger_source = REPO_ROOT / ".codex/skills/grill/scripts/review-ledger.py"
-    ledger_target = repo / ".codex/skills/grill/scripts/review-ledger.py"
+    ledger_source = REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.py"
+    ledger_target = repo / ".codex/skills/critique/scripts/review-ledger.py"
     ledger_target.parent.mkdir(parents=True)
     shutil.copy2(ledger_source, ledger_target)
     _write_executable(
@@ -716,7 +716,7 @@ def test_per_issue_worktrees_and_hook_order(
         assert "reported no material fixes in a complete round" in body
         assert "Configured Codex and Claude review hooks reported" in body
         assert "configured non-mutating local validation hook" in body
-        assert "local Claude deep grill" not in body
+        assert "local Claude deep critique" not in body
 
 
 def test_outer_review_environment_is_not_leaked_to_worker(
@@ -1714,6 +1714,62 @@ def test_review_contract_version_is_required_before_claim(
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
+
+
+@pytest.mark.parametrize(
+    ("hook_key", "hook_value"),
+    [
+        ("codex_review_hook", "codex exec --skill deepgrill"),
+        ("codex_review_hook", "codex exec --skill grill"),
+        ("codex_review_hook", "python3 .codex/skills/grill/scripts/review-ledger.py attest"),
+        ("claude_review_hook", "claude -p /deepgrill"),
+        ("claude_review_hook", "claude -p /pr-grill"),
+        # Bare command names pin the `^` branch of the guard's word-boundary
+        # pattern. Every case above matches through the leading
+        # `[^[:alnum:]_-]` branch, so without these a regression that drops
+        # `^|` still passes while accepting the shortest spelling of a stale
+        # hook.
+        ("codex_review_hook", "deepgrill"),
+        ("claude_review_hook", "grill"),
+    ],
+)
+def test_retired_grill_hook_is_rejected_before_claim(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    hook_key: str,
+    hook_value: str,
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "20"],
+        issues=[_issue(20)],
+        config=_config_v3(tmp_path, **{hook_key: hook_value}),
+    )
+    assert result.returncode != 0
+    assert f"{hook_key} names a retired grill-family review skill" in result.stderr
+    gh_log = consumer[3] / "gh.log"
+    assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+    assert not (tmp_path / "worktrees").exists()
+
+
+def test_grill_substring_in_unrelated_hook_path_is_not_rejected(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    """`grill-app/` is not the retired skill — the guard must use word boundaries."""
+    result = _run(
+        consumer,
+        ["--issues", "20"],
+        issues=[_issue(20)],
+        config=_config_v3(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
+    )
+    assert "names a retired grill-family review skill" not in result.stderr
+    # Absence of the message alone would also hold if the run died earlier for
+    # an unrelated reason, or if the guard's wording changed. Assert the run
+    # actually got past the preflight by checking it reached the claim and
+    # worktree stage — the mirror of what the rejection cases assert is absent.
+    gh_log = consumer[3] / "gh.log"
+    assert gh_log.exists() and "issue edit" in gh_log.read_text(encoding="utf-8")
+    assert (tmp_path / "worktrees").exists()
 
 
 def test_unscoped_include_assigned_controls_ready_helper_filter(

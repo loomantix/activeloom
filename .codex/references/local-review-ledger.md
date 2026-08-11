@@ -18,7 +18,7 @@ Never force-push during a review relay. A moved remote head ends the pass.
 
 ## Classify the changeset
 
-`refactorpass`, `grill`, and `deepgrill` skip docs/config-only changesets. This
+`refactorpass`, `critique`, and `deepcritique` skip docs/config-only changesets. This
 is the shared definition for the pinned review range:
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
@@ -78,7 +78,7 @@ Output: findings only, each with severity and file:line evidence; NO FINDINGS if
 END_REVIEW_PACKET_V1
 ```
 
-Reuse the packet unchanged for `refactorpass`, `grill`, and every lane in the
+Reuse the packet unchanged for `refactorpass`, `critique`, and every lane in the
 same pass. If the head moves after a fix, end that review pass; build a new
 packet for the new head rather than mutating the old one.
 
@@ -153,8 +153,9 @@ Resolve this engine's round number before selecting lanes. Use
 `local-review-pass:v3` and `local-review-complete:v3` markers already on the PR
 that name this engine; this pass is one past that count.
 
-- **Rounds 1–2 — adversarial.** The full stance: assume the diff is guilty, run
-  every applicable lane, fix every valid finding.
+- **Rounds 1–2 — adversarial.** The full stance: assume the diff is guilty and
+  run every applicable lane. Fix only confirmed findings whose expected user or
+  security harm justifies the change's churn and regression risk.
 - **Round 3 and later — convergence.** Both engines have now read the change
   cold twice. What remains is rarely a deeper defect; it is the review's own
   surface. Shift the goal from challenging the change to landing it.
@@ -166,10 +167,13 @@ A convergence round:
   Drop type/API design, comment/docs, PR test analysis, and tenant-coupling.
   Those found what they were going to find in rounds 1–2, and they regenerate
   work indefinitely;
-- changes the PR only for a **blocking** defect: one that ships wrong behavior,
-  loses or corrupts data, opens a security or privacy hole, breaks a public
-  contract, or breaks deploy or rollout. Everything else becomes a follow-up
-  issue — reply `outcome=deferred` with the issue link and resolve the thread;
+- changes the PR only for a realistically reachable **blocking** defect whose
+  expected harm justifies the churn: one that ships materially wrong behavior,
+  loses or corrupts data, exposes a credible security or privacy exploit,
+  breaks a public contract, or breaks deploy or rollout. Defer everything else
+  and resolve the thread. Create an issue only for a concrete, high-impact
+  follow-up that should be scheduled within roughly two weeks; otherwise record
+  `outcome=deferred` with a no-issue rationale;
 - makes the smallest edit that clears the blocker. No refactors, no renames, no
   new abstraction, no test or comment hardening;
 - ends the loop as soon as it finds no blocking defect. Post the clean-pass
@@ -178,7 +182,8 @@ A convergence round:
 This is a disposition rule, not a reporting rule. Lanes still report every
 evidence-backed finding they have, with severity attached. The narrowing happens
 one level up, where the whole set is visible and the orchestrator decides what
-the PR changes versus what a follow-up issue tracks.
+the PR changes, what merits an urgent follow-up issue, and what should add
+nothing to an already deep backlog.
 
 Convergence rounds do not extend the round cap — they are how rounds 3 and 4 are
 spent. Reaching the cap in convergence mode with open non-blocking findings means
@@ -230,7 +235,7 @@ finding into the PR.
 
 ### Use the deterministic ledger helper
 
-Use `.codex/skills/grill/scripts/review-ledger.py` for every local-review
+Use `.codex/skills/critique/scripts/review-ledger.py` for every local-review
 finding, disposition reply, thread resolution, and pass marker. The legacy v1
 refactor latch is the one explicit marker-construction exception: post it with
 the helper's `post-pr-comment` command until that informational latch moves to
@@ -254,11 +259,11 @@ preserves literal backticks, dollar expressions, quotes, Unicode, CRLF, and a
 missing final newline:
 
 ```bash
-python3 .codex/skills/grill/scripts/review-ledger.py preflight-anchor \
+python3 .codex/skills/critique/scripts/review-ledger.py preflight-anchor \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line>
 
-python3 .codex/skills/grill/scripts/review-ledger.py post-finding \
+python3 .codex/skills/critique/scripts/review-ledger.py post-finding \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line> \
   --engine <codex|claude> --round <n> --fingerprint <stable-id> \
@@ -271,7 +276,7 @@ occurrence to its existing root comment, then reopen that thread as a resumable,
 idempotent sequence:
 
 ```bash
-python3 .codex/skills/grill/scripts/review-ledger.py reopen-occurrence \
+python3 .codex/skills/critique/scripts/review-ledger.py reopen-occurrence \
   --repo <owner/repo> --pr <number> --head <reviewed-sha> \
   --engine <codex|claude> --round <n> --fingerprint <stable-id> \
   --occurrence <next-number> --severity <severity> --lens <lens> \
@@ -288,7 +293,7 @@ the final state. If the reply succeeds but resolution fails, running the same
 command again reuses the reply and completes only the missing resolution:
 
 ```bash
-python3 .codex/skills/grill/scripts/review-ledger.py dispose \
+python3 .codex/skills/critique/scripts/review-ledger.py dispose \
   --repo <owner/repo> --pr <number> --head <full-fix-sha> \
   --engine <codex|claude> --round <n> --fingerprint <stable-id> \
   --occurrence <number> --outcome <fixed|dismissed|deferred> \

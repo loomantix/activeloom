@@ -129,7 +129,8 @@ jobs:
             'pyyaml==6.0.2' \
             'types-PyYAML==6.0.12.20240917' \
             'pytest==8.3.4' \
-            'pytest-cov==6.0.0'
+            'pytest-cov==6.0.0' \
+            'pytest-xdist==3.8.0'
       - name: mypy --strict (config from pyproject.toml)
         run: python3 -m mypy
       - name: Configure git identity (parse_status tests use a fixture git repo)
@@ -137,8 +138,14 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "CI"
           git config --global init.defaultBranch main
-      - name: Run pytest + write coverage data
-        run: python3 -m pytest tests/ --cov --cov-report=term-missing -ra
+      # Two workers roughly halve the subprocess-heavy agent-loop suite without
+      # starving its intentional one-second timeout probes. Four workers made
+      # those tests flaky under local load, so keep this explicit rather than
+      # deriving the worker count from runner CPU capacity.
+      - name: Run pytest with two workers + write coverage data
+        run: >-
+          python3 -m pytest tests/ --cov --cov-report=term-missing -ra
+          --durations=30 -n 2 --dist worksteal
       # Per-file gate matches the security contract: a future refactor
       # that spikes one file's coverage can't paper over a regression
       # in the other. `coverage report --include=<pattern>` already exits

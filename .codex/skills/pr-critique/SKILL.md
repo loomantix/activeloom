@@ -1,23 +1,23 @@
 ---
-name: pr-grill
-description: Cross-engine deep review of an existing PR. Run when you want a second engine's deep adversarial pass on a PR another engine (or you) already opened — typically after the authoring engine's own grill/reviewit. Runs the deep review matrix on the PR diff, applies fixes, and pushes them back to the PR head branch so the originating engine can re-review.
+name: pr-critique
+description: Cross-engine deep review of an existing PR. Run when you want a second engine's deep adversarial pass on a PR another engine (or you) already opened — typically after the authoring engine's own critique/reviewit. Runs the deep review matrix on the PR diff, applies fixes, and pushes them back to the PR head branch so the originating engine can re-review.
 ---
 
-# PR Grill — cross-engine relay review
+# PR Critique — cross-engine relay review
 
 Run the deep review matrix against an **already-open PR** as a different engine
 from the one that authored it, fix what you find, and push the fixes back so the
 originating engine can re-review. The value is engine diversity: a second model
 catches design-level blind spots the authoring engine baked in and would not
-question on its own. The hand-back is the point — `pr-grill` is one leg of a
+question on its own. The hand-back is the point — `pr-critique` is one leg of a
 round trip, not a terminal review.
 
 Load `.codex/references/local-review-ledger.md`. The originating engine's
 resolved threads are required input to this pass, not optional background.
 
-This is **not** `deepgrill`. Both are PR-first and use the same thread ledger,
-but `deepgrill` runs the current engine's deep matrix, preceded by `refactorpass`
-on that engine's first pass over the PR. `pr-grill` is the cross-engine relay
+This is **not** `deepcritique`. Both are PR-first and use the same thread ledger,
+but `deepcritique` runs the current engine's deep matrix, preceded by `refactorpass`
+on that engine's first pass over the PR. `pr-critique` is the cross-engine relay
 leg: it never runs `refactorpass`, scrutinizes the prior engine's design
 decisions, and pushes signed fix commits back to the PR head branch.
 
@@ -41,7 +41,7 @@ blocking defect, and defers the rest to linked issues.
 
 ## Phase 0: Resolve the PR target
 
-Take the PR number from the invocation (`pr-grill <pr-number>`).
+Take the PR number from the invocation (`pr-critique <pr-number>`).
 
 If the PR is not already checked out in this worktree, stop and tell the user to
 fetch it in isolation (do not switch branches in a shared checkout):
@@ -55,13 +55,16 @@ git fetch "$HEAD_REPO_URL" \
 git worktree add -b pr-<pr-number>-review ../review-pr-<pr-number> \
   refs/remotes/pr-<pr-number>/head
 cd ../review-pr-<pr-number>
-# re-run pr-grill <pr-number> here
+# re-run pr-critique <pr-number> here
 ```
 
-Resolve the PR identity and review scope once. Prefer the immutable base SHA
-supplied by the convergence wrapper, then an explicit
-`$PR_GRILL_REVIEW_BASE_SHA`; only a standalone invocation may snapshot the PR's
-current `baseRefOid`. Never let individual lanes re-resolve a mutable ref:
+Resolve the PR identity and review scope once. The immutable base SHA may be
+supplied by the convergence wrapper as `$AGENT_LOOP_REVIEW_BASE_SHA`, as an
+explicit `$PR_CRITIQUE_REVIEW_BASE_SHA`, or — during the rename transition — as
+the legacy `$PR_GRILL_REVIEW_BASE_SHA`. There is no precedence between them:
+resolve every non-empty override and fail closed when any pair names different
+commits. Only a standalone invocation without an override may snapshot the
+PR's current `baseRefOid`. Never let individual lanes re-resolve a mutable ref:
 
 ```bash
 PR_DATA=$(gh pr view <pr-number> \
@@ -71,26 +74,41 @@ PR_HEAD_SHA=$(jq -r .headRefOid <<<"$PR_DATA")
 HEAD_BRANCH=$(jq -r .headRefName <<<"$PR_DATA")
 HEAD_REPO=$(jq -r .headRepository.nameWithOwner <<<"$PR_DATA")
 HEAD_REPO_URL="https://github.com/$HEAD_REPO.git"
-test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA" || {
+  echo "worktree is not at the PR head — fetch it in isolation first" >&2
+  exit 1
+}
 
-REVIEW_BASE_SHA=${AGENT_LOOP_REVIEW_BASE_SHA:-${PR_GRILL_REVIEW_BASE_SHA:-}}
+REVIEW_BASE_SHA=
+for candidate in "${AGENT_LOOP_REVIEW_BASE_SHA:-}" \
+                 "${PR_CRITIQUE_REVIEW_BASE_SHA:-}" \
+                 "${PR_GRILL_REVIEW_BASE_SHA:-}"; do
+  [ -n "$candidate" ] || continue
+  candidate=$(git rev-parse --verify "$candidate^{commit}") || exit 1
+  if [ -n "$REVIEW_BASE_SHA" ] && [ "$REVIEW_BASE_SHA" != "$candidate" ]; then
+    echo "review base overrides are set to different commits" >&2
+    exit 1
+  fi
+  REVIEW_BASE_SHA=$candidate
+done
 if [ -z "$REVIEW_BASE_SHA" ]; then
-  REVIEW_BASE_SHA=$(jq -r .baseRefOid <<<"$PR_DATA")
+  REVIEW_BASE_SHA=$(jq -r '.baseRefOid // empty' <<<"$PR_DATA")
+  [ -n "$REVIEW_BASE_SHA" ] || { echo "PR baseRefOid is unavailable" >&2; exit 1; }
   git fetch -q origin "$BASE"
 fi
-REVIEW_BASE_SHA=$(git rev-parse --verify "$REVIEW_BASE_SHA^{commit}")
+REVIEW_BASE_SHA=$(git rev-parse --verify "$REVIEW_BASE_SHA^{commit}") || exit 1
 RANGE="$REVIEW_BASE_SHA..HEAD"
 ```
 
-Skip docs/config-only changesets (same heuristic as `grill`): if `git diff
+Skip docs/config-only changesets (same heuristic as `critique`): if `git diff
 --name-only "$RANGE"` contains no source files, report the skip and exit — there
 is nothing for the matrix to find.
 
 ## Phase 1: Deep matrix on the PR diff
 
-Run `grill`'s **deep** matrix against `$RANGE`: the six core lanes plus the
+Run `critique`'s **deep** matrix against `$RANGE`: the six core lanes plus the
 conditional tenant-coupling lane when customer-variable behavior is present. Load the lane prompts
-from `grill`'s role references — do not re-author them:
+from `critique`'s role references — do not re-author them:
 
 - `.codex/references/roles/code-reviewer.md`
 - `.codex/references/roles/silent-failure-hunter.md`
@@ -104,7 +122,7 @@ unavailable, run separate local passes and disclose the downgrade under `review
 depth` in the output. Keep lane findings separate until all lanes complete, then
 deduplicate by root cause.
 
-Invoking `pr-grill` is an explicit request to use independent subagents for the
+Invoking `pr-critique` is an explicit request to use independent subagents for the
 six core review lanes, plus the conditional tenant-coupling lane when signaled,
 whenever the active runtime exposes subagent/delegation tools. Do not require the
 user to separately say "use subagents" before spawning those lane reviewers.
@@ -121,21 +139,21 @@ after findings are deduplicated and any fixes are complete.
 line-level bugs, scrutinize the _design decisions_ the author made and did not
 question: chosen abstractions, latency/UX tradeoffs, removed or added special
 cases, and whether a "fix" traded away a property the original code protected.
-These are the findings a same-engine grill misses and the reason this pass
+These are the findings a same-engine critique misses and the reason this pass
 exists.
 
 ## Phase 2: Publish findings, then apply fixes
 
 Verify and deduplicate every finding against the full PR ledger. Post one inline
 comment per confirmed root cause before editing, using the local-review marker
-and an exact diff anchor. Apply `grill`'s fix bias to `$RANGE`: fix every valid
-finding, including nits.
-Dismiss invalid findings or suggestions that would make the code worse, with the
-evidence that disproves them. Defer only valid but extremely large follow-ups
-(roughly 300+ lines or cross-cutting rewrites) and open or link a GitHub issue
-for each deferral. Critical correctness/security findings must not be silently
-dropped. Run the smallest relevant formatter/test command the repo documents for
-the files you touched.
+and an exact diff anchor. Apply `critique`'s round-matched fix bias to `$RANGE`:
+in adversarial rounds, fix every valid finding including nits and defer only
+extremely large follow-ups; in convergence rounds, fix only blocking defects
+and defer every confirmed non-blocker to a linked issue. Dismiss invalid
+findings or suggestions that would make the code worse with the evidence that
+disproves them. Critical correctness/security findings must not be silently
+dropped. Run the smallest relevant formatter/test command the repo documents
+for the files you touched.
 
 ## Phase 3: Commit and push (automatic)
 
@@ -146,8 +164,8 @@ is for your own PR branches.
 
    ```bash
    git add -A
-   git commit -m "fix(pr-grill): <one-line summary of what the cross-engine pass changed>" \
-     --trailer "Cross-engine-review: pr-grill"
+   git commit -m "fix(pr-critique): <one-line summary of what the cross-engine pass changed>" \
+     --trailer "Cross-engine-review: pr-critique"
    ```
 
    Use the repo's normal signing config (do not disable it).
@@ -178,7 +196,7 @@ Print a summary aimed at the **originating engine's re-review** — it needs to
 know what changed and what to scrutinize:
 
 ```text
-pr-grill complete on PR #<pr-number> (cross-engine pass).
+pr-critique complete on PR #<pr-number> (cross-engine pass).
 review depth: <deep with independent subagents | deep local multi-pass fallback>
 findings fixed:    <count + one-line each>
 design tradeoffs flagged: <any decisions the re-review should adjudicate — e.g. a fix
@@ -191,7 +209,7 @@ pinned review base: <full REVIEW_BASE_SHA>
 
 Hand back to the authoring engine for re-review of the new HEAD
 (e.g. the next local convergence pass, `reviewit <pr-number>` on the hosted
-fallback path, or a fresh `grill` on the pushed commit).
+fallback path, or a fresh `critique` on the pushed commit).
 ```
 
 Always surface the design tradeoffs explicitly — the round trip only works if
@@ -204,10 +222,10 @@ the engine reviewing next knows where to look.
 - **Does not force-push or rebase.** A rejected push is reported, not forced.
 - **Does not replace the selected review path.** `reviewit` remains the hosted
   Gemini + Copilot fallback; local Codex/Claude convergence is the alternative.
-  `pr-grill` is an optional cross-engine relay, not a terminal review.
+  `pr-critique` is an optional cross-engine relay, not a terminal review.
 
 ## Source of truth
 
-This skill lives upstream in `codex-platform` at `.codex/skills/pr-grill/`.
+This skill lives upstream in `codex-platform` at `.codex/skills/pr-critique/`.
 Synced into consumer repos; consumer edits are overwritten on the next sync —
 make changes upstream.

@@ -12,7 +12,7 @@ PR.
 
 ## Context Window Check
 
-Run this check before anything else. `refactorpass` (and the `grill` that typically follows) does diff-reading, multi-lane reviewing, and edit application — all cache-hungry. If the current Codex session has already been heavily used for feature implementation, the cache is largely spent on context the cleanup pass does not need, and the downstream `grill` (especially `grill deep`'s six independent lanes) will be measurably slower and more expensive.
+Run this check before anything else. `refactorpass` (and the `critique` that typically follows) does diff-reading, multi-lane reviewing, and edit application — all cache-hungry. If the current Codex session has already been heavily used for feature implementation, the cache is largely spent on context the cleanup pass does not need, and the downstream `critique` (especially `critique deep`'s six independent lanes) will be measurably slower and more expensive.
 
 Assess honestly:
 
@@ -21,7 +21,7 @@ Assess honestly:
 
 If either is yes, stop and tell the user:
 
-> Your context is heavy from the implementation work. Start a new Codex session and run `refactorpass` (and `grill` / `deepgrill`) there. The downstream lanes need cache headroom and a fresh session makes the chain materially cheaper.
+> Your context is heavy from the implementation work. Start a new Codex session and run `refactorpass` (and `critique` / `deepcritique`) there. The downstream lanes need cache headroom and a fresh session makes the chain materially cheaper.
 
 Do not proceed in the current session unless the user explicitly overrides.
 
@@ -49,7 +49,7 @@ Run these lanes as independently as the active runtime permits:
 2. Verify the branch is not `main`, `master`, or `staging`. Resolve or create
    its draft PR before running cleanup lanes, and require local, remote, and PR
    heads to match. Read all prior review threads.
-3. Use the exact base SHA supplied by an invoking `deepgrill` or caller. Only
+3. Use the exact base SHA supplied by an invoking `deepcritique` or caller. Only
    when run standalone without a supplied base, resolve `@{u}` when available,
    otherwise the default branch, once. Resolve the reviewed head, changed-file
    list, and diff stat once and build the ledger's immutable review packet. Pass
@@ -101,8 +101,8 @@ Report:
 - commit SHA if created
 - validation run
 - PR number plus comments, replies, and resolved-thread counts
-- recommended next step from the selected path: if invoked by `deepgrill`,
-  return so it can run `grill deep`; if run standalone on the local path, run
-  `deepgrill` next and hand off to Claude only after that full chain; on the
-  hosted fallback path, run `grill <pr-number>` / `deepgrill <pr-number>` and
+- recommended next step from the selected path: if invoked by `deepcritique`,
+  return so it can run `critique deep`; if run standalone on the local path, run
+  `deepcritique` next and hand off to Claude only after that full chain; on the
+  hosted fallback path, run `critique <pr-number>` / `deepcritique <pr-number>` and
   then `reviewit <pr-number>`

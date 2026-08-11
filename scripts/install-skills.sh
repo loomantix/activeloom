@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # Install the upstream Codex skills into the user's global skills
 # directory by symlinking. Updates then flow via `git pull` in this checkout
-# rather than per-repo sync PRs — no install-skills re-run needed unless new
-# skills are added.
+# rather than per-repo sync PRs. Re-run after a pull that adds, renames, or
+# retires a skill so new links are installed and stale owned links are pruned.
 #
 # Usage:
-#   ./scripts/install-skills.sh           # safe: only install missing skills
+#   ./scripts/install-skills.sh           # install missing skills and prune retired owned links
 #   ./scripts/install-skills.sh --force   # replace existing entries (backed up)
 #   ./scripts/install-skills.sh --dry-run # report what would happen, write nothing
 #
-# Re-run after `git pull` in this repo only if you see "would install" output
-# for a new skill — existing symlinks pick up upstream edits automatically.
+# Existing symlinks pick up in-place upstream edits automatically.
 #
 # Source root override: by default the script uses the parent of its own
 # directory (so `clone-root/scripts/install-skills.sh` finds skills at
@@ -45,6 +44,8 @@ if [ ! -d "$SKILLS_SRC" ]; then
   echo "❌ no skills found at $SKILLS_SRC — is this checkout complete?" >&2
   exit 2
 fi
+UPSTREAM_ROOT="$(cd "$UPSTREAM_ROOT" && pwd)"
+SKILLS_SRC="$UPSTREAM_ROOT/.codex/skills"
 
 if [ "$DRY_RUN" -eq 0 ]; then
   mkdir -p "$SKILLS_DEST"
@@ -114,13 +115,38 @@ for src in "$SKILLS_SRC"/*/; do
   installed=$((installed + 1))
 done
 
+# Prune links this script owns whose source has gone away. A renamed or retired
+# upstream skill leaves a dangling symlink that `git pull` cannot clean up, and
+# that stale entry prevents the retired name from being reused locally.
+#
+# Keep this deliberately narrow: remove only a symlink whose literal target is
+# the same-name path this installer would create under this checkout's skills
+# directory, and whose source no longer exists. Never touch a real local skill,
+# a differently named alias, or a link owned by another checkout.
+pruned=0
+for target in "$SKILLS_DEST"/*; do
+  [ -L "$target" ] || continue
+  [ -e "$target" ] && continue
+  current="$(readlink "$target")"
+  name="$(basename "$target")"
+  [ "$current" = "$SKILLS_SRC/$name" ] || continue
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "  🧹 $name (retired upstream — would prune dangling link)"
+  else
+    echo "  🧹 $name (retired upstream — removing dangling link)"
+    rm "$target"
+  fi
+  pruned=$((pruned + 1))
+done
+
 if [ "$DRY_RUN" -eq 1 ]; then
   echo ""
-  echo "Dry run: $installed would install, $replaced would replace, $skipped left alone."
+  echo "Dry run: $installed would install, $replaced would replace, $pruned would prune, $skipped left alone."
   echo "(no changes written)"
 else
   echo ""
-  echo "Done: $installed installed, $replaced replaced, $skipped left alone."
+  echo "Done: $installed installed, $replaced replaced, $pruned pruned, $skipped left alone."
   echo "Skills now resolve from $SKILLS_DEST → $SKILLS_SRC."
-  echo "Run \`git pull\` in $UPSTREAM_ROOT to update — no re-install needed."
+  echo "Run \`git pull\` in $UPSTREAM_ROOT to pick up in-place skill edits."
+  echo "Re-run this script after a pull that adds, renames, or retires a skill."
 fi
