@@ -98,7 +98,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write_executable(
         gh,
         r"""#!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys
+import json, os, pathlib, re, subprocess, sys
 args = sys.argv[1:]
 state = pathlib.Path(os.environ['AGENT_STATE_DIR'])
 input_payload = json.load(sys.stdin) if '--input' in args else None
@@ -274,6 +274,11 @@ elif args[:2] == ['api', 'graphql']:
         nodes = json.loads(threads_file.read_text())
     else:
         nodes = json.loads(os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]'))
+    if os.environ.get('AGENT_PROJECT_REVIEW_THREAD_ID'):
+        query_arg = next((value for value in args if value.startswith('query=')), '')
+        if not re.search(r'reviewThreads\s*\([^)]*\)\s*\{\s*nodes\s*\{\s*id\b', query_arg, re.S):
+            for node in nodes:
+                node.pop('id', None)
     default_author = os.environ.get('AGENT_THREAD_AUTHOR', 'tester')
     for node in nodes:
         for comment in node.get('comments', {}).get('nodes', []):
@@ -933,7 +938,10 @@ def test_v3_finalization_reuses_sealed_pseudo_v3_history(
         ["--issues", "92"],
         issues=[_issue(92)],
         config=_config_v3(tmp_path),
-        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps(historical_threads)},
+        extra_env={
+            "AGENT_REVIEW_THREADS_JSON": json.dumps(historical_threads),
+            "AGENT_PROJECT_REVIEW_THREAD_ID": "1",
+        },
         timeout=60,
     )
 

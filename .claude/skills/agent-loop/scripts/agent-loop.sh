@@ -1808,6 +1808,7 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     pullRequest(number:$number) {
       reviewThreads(first:100, after:$endCursor) {
         nodes {
+          id
           isResolved
           comments(first:100) {
             nodes { body databaseId author { login } }
