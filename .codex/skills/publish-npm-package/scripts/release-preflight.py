@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -15,6 +16,8 @@ import tempfile
 import urllib.parse
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+COMMAND_TIMEOUT_SECONDS = 300
 
 
 def fail(message: str) -> None:
@@ -27,7 +30,20 @@ def run(
     check: bool = True,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, env=env)
+    command_env = os.environ.copy() if env is None else env.copy()
+    if command and command[0] == "git":
+        command_env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            env=command_env,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        fail(f"command timed out after {COMMAND_TIMEOUT_SECONDS}s: {' '.join(command)}")
     if check and result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         fail(f"command failed: {' '.join(command)}: {detail}")
@@ -37,10 +53,8 @@ def run(
 def credential_free_npm_env(config_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
     for key in list(env):
-        lowered = key.lower()
-        if key.upper() in {"NODE_AUTH_TOKEN", "NPM_TOKEN"} or (
-            lowered.startswith("npm_config_")
-            and any(fragment in lowered for fragment in ("auth", "password", "token"))
+        if key.upper() in {"NODE_AUTH_TOKEN", "NPM_TOKEN", "NPM_OTP"} or key.lower().startswith(
+            "npm_config_"
         ):
             env.pop(key)
     user_config = config_dir / "empty-user.npmrc"
@@ -97,9 +111,13 @@ def inspect_tarball(path: Path, expected_name: str, expected_version: str) -> di
                 member_path = PurePosixPath(member.name)
                 if member_path.is_absolute() or ".." in member_path.parts:
                     fail(f"unsafe tar entry: {member.name}")
+                if not member.isfile() and not member.isdir():
+                    fail(f"unsafe tar entry type: {member.name}")
             manifests = [member for member in members if member.name == "package/package.json"]
             if len(manifests) != 1:
                 fail("tarball must contain exactly one package/package.json")
+            if not manifests[0].isfile():
+                fail("package/package.json must be a regular file")
             extracted = archive.extractfile(manifests[0])
             if extracted is None:
                 fail("cannot read package/package.json from tarball")
@@ -127,9 +145,41 @@ def registry_version_absent(package: str, version: str, registry: str) -> None:
         )
     if result.returncode == 0:
         fail(f"registry already contains immutable version {package}@{version}")
-    combined = (result.stdout + "\n" + result.stderr).lower()
-    if "e404" not in combined and "404 not found" not in combined:
-        fail("could not prove registry version absence; npm view did not return a not-found result")
+    try:
+        error = json.loads(result.stdout)["error"]
+        error_code = error["code"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        fail(f"could not parse npm's structured version-absence response: {exc}")
+    if error_code != "E404":
+        fail(f"could not prove registry version absence; npm view returned {error_code}")
+
+
+def normalize_fingerprint(value: str) -> str:
+    compact = value.replace(" ", "")
+    if compact.lower().startswith("sha256:"):
+        return "SHA256:" + compact.split(":", 1)[1]
+    return compact.upper()
+
+
+def verified_fingerprints(result: subprocess.CompletedProcess[str]) -> set[str]:
+    fingerprints: set[str] = set()
+    for line in (result.stdout + "\n" + result.stderr).splitlines():
+        valid_signature = re.search(r"\[GNUPG:\] VALIDSIG ([0-9A-Fa-f]+)", line)
+        if valid_signature:
+            fingerprints.add(normalize_fingerprint(valid_signature.group(1)))
+        for token in line.split():
+            if token.startswith("SHA256:"):
+                fingerprints.add(normalize_fingerprint(token))
+    return fingerprints
+
+
+def verify_tag_signer(tag: str, expected_fingerprint: str, cwd: Path) -> str:
+    result = run(["git", "verify-tag", "--raw", tag], cwd)
+    fingerprints = verified_fingerprints(result)
+    expected = normalize_fingerprint(expected_fingerprint)
+    if expected not in fingerprints:
+        fail(f"release tag signer does not match approved fingerprint: {expected_fingerprint}")
+    return expected
 
 
 def remote_tag_object(remote: str, tag: str, cwd: Path) -> str | None:
@@ -157,6 +207,8 @@ def main() -> int:
     parser.add_argument("--phase", choices=("prepare", "tag", "publish"), default="prepare")
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--registry", default="https://registry.npmjs.org")
+    parser.add_argument("--access", choices=("public",), required=True)
+    parser.add_argument("--signer-fingerprint")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -164,6 +216,9 @@ def main() -> int:
     artifact = args.artifact.resolve()
     if not artifact.is_file():
         fail(f"build-once artifact does not exist: {artifact}")
+    output = args.output.resolve() if args.output else None
+    if output == artifact:
+        fail("output JSON must not overwrite the build-once artifact")
     package_json = load_json(package_dir / "package.json")
     package = package_json.get("name")
     version = package_json.get("version")
@@ -193,6 +248,10 @@ def main() -> int:
         fail("package.json must declare a repository URL for provenance")
 
     repo_root = Path(run(["git", "rev-parse", "--show-toplevel"], package_dir).stdout.strip())
+    if artifact.is_relative_to(repo_root):
+        fail("build-once artifact must be outside the Git worktree")
+    if output is not None and output.is_relative_to(repo_root):
+        fail("preflight JSON output must be outside the Git worktree")
     remote_url = run(["git", "remote", "get-url", args.remote], repo_root).stdout.strip()
     if github_repository(repository_url) != github_repository(remote_url):
         fail("package.json repository does not exactly match the Git release remote")
@@ -210,12 +269,14 @@ def main() -> int:
         if remote_tag is not None:
             fail(f"remote tag already exists and must never be moved: {args.remote}/{args.tag}")
     else:
+        if not args.signer_fingerprint:
+            fail("tag and publish phases require --signer-fingerprint")
         if local_tag.returncode != 0:
             fail(f"tag phase requires a local tag: {args.tag}")
         tag_type = run(["git", "cat-file", "-t", f"refs/tags/{args.tag}"], repo_root).stdout.strip()
         if tag_type != "tag":
             fail(f"release tag is not annotated: {args.tag}")
-        run(["git", "verify-tag", args.tag], repo_root)
+        signer_fingerprint = verify_tag_signer(args.tag, args.signer_fingerprint, repo_root)
         target = run(["git", "rev-list", "-n", "1", args.tag], repo_root).stdout.strip()
         if target != head:
             fail(f"release tag targets {target}, not current HEAD {head}")
@@ -239,9 +300,11 @@ def main() -> int:
         "tarball": tarball,
         "version": version,
     }
+    if args.phase != "prepare":
+        result["signer_fingerprint"] = signer_fingerprint
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
-    if args.output:
-        args.output.write_text(rendered, encoding="utf-8")
+    if output:
+        output.write_text(rendered, encoding="utf-8")
     sys.stdout.write(rendered)
     return 0
 

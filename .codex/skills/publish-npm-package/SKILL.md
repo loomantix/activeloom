@@ -78,10 +78,17 @@ Build once in the release job:
    its exact output path.
 4. Run `scripts/release-preflight.py --phase publish` against that tarball and
    release tag. Ensure checkout fetched the annotated tag and configure the
-   signer's public verification material so `git verify-tag` can succeed.
+   signer's public verification material so `git verify-tag` can succeed. Pass
+   the approved signer fingerprint explicitly.
 5. Upload the tarball and preflight JSON as workflow artifacts before publishing.
-6. Publish the exact tarball path. Do not run `npm publish` against a directory,
-   rerun `npm pack`, or rebuild between inspection and publication.
+6. Publish the exact tarball path with `--provenance`. This CLI argument must
+   override any repository or user configuration that disables provenance. Do
+   not run `npm publish` against a directory, rerun `npm pack`, or rebuild
+   between inspection and publication.
+7. Run `verify-published-package.py --provenance required` in the same protected
+   job. Fail the job if it cannot verify the artifact, registry signatures,
+   provenance certificate/workflow binding, and live release tag. Upload the
+   verification JSON as a workflow artifact.
 
 Do not provide `NODE_AUTH_TOKEN` to the OIDC publish step. Decide whether to set
 `actions/setup-node`'s `registry-url` only after reading its current documentation:
@@ -93,12 +100,17 @@ when that avoids ambiguous ambient configuration.
 
 Run preflight in `prepare` phase before creating the tag:
 
+Write the tarball and every generated JSON report to a protected temporary or
+artifact-staging directory outside the Git worktree. The helpers reject in-tree
+outputs and reject an output path that aliases the build-once tarball.
+
 ```bash
 python3 <skill-dir>/scripts/release-preflight.py \
   --package-dir <package-dir> \
   --artifact <built-package.tgz> \
   --tag <release-tag> \
   --phase prepare \
+  --access public \
   --output <preflight.json>
 ```
 
@@ -111,8 +123,9 @@ git verify-tag <release-tag>
 ```
 
 Run preflight again with `--phase tag`; it verifies that the tag is annotated,
-signed, targets `HEAD`, is not already on the remote, and that the package version
-is still unpublished. Show the tag object, target commit, signature result, and
+signed by the explicitly approved `--signer-fingerprint`, targets `HEAD`, is not
+already on the remote, and that the package version is still unpublished. Show
+the tag object, target commit, signature result, and
 exact `git push origin refs/tags/<release-tag>` command, then stop for tag-push
 approval.
 
@@ -127,6 +140,11 @@ signed annotated tag. Preserve the failed run and tag as release history.
 
 Use this exception only when npm cannot configure package trust because the exact
 package has never been published.
+
+The bundled helpers intentionally support anonymously readable public packages
+only. Stop for a private package or private registry access path; do not interpret
+an anonymous 404 as version absence and do not pass read credentials into these
+verification helpers.
 
 1. Complete the same clean-worktree, version-absence, test, build-once, tarball
    inspection, PR, merge, and signed-tag gates.
@@ -170,11 +188,15 @@ python3 <skill-dir>/scripts/verify-published-package.py \
   --package <package-name> \
   --version <version> \
   --artifact <built-package.tgz> \
+  --access public \
   --provenance required \
   --source-repository https://github.com/<owner>/<repository> \
   --workflow-path .github/workflows/<publish-workflow.yml> \
   --tag <release-tag> \
   --commit <release-commit> \
+  --repository-dir <release-checkout> \
+  --remote origin \
+  --signer-fingerprint <approved-fingerprint> \
   --output <verification.json>
 ```
 
@@ -187,15 +209,17 @@ Require all of these for a normal Trusted Publisher release:
 - `npm audit signatures` verifies at least one registry signature and at least one
   attestation for the package installation graph.
 - The decoded SLSA statement binds the intended source repository, workflow,
-  release tag, commit, package identity, and artifact SHA-512. Confirm npm's UI
-  shows the same source as a defense-in-depth manual check.
+  release tag, commit, package identity, artifact SHA-512, GitHub-hosted builder,
+  and signing-certificate workflow identity. Confirm npm's UI shows the same
+  source as a defense-in-depth manual check.
 - The remote tag remains the original signed annotated tag and targets the release
   commit.
 
-Provenance is available only under npm's current supported conditions. If the
-repository or package is private, or the bootstrap publication was manual, report
-the unavailable control explicitly. Do not downgrade `required` to `unavailable`
-merely to make verification pass.
+Provenance is available only under npm's current supported conditions. A manual
+bootstrap publication reports the unavailable control explicitly. Private
+packages are outside these credential-free helpers and require a separately
+designed, explicitly authorized verification path. Do not downgrade `required`
+to `unavailable` merely to make verification pass.
 
 ## Fail closed and hand off
 
