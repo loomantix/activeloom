@@ -23,13 +23,13 @@ def _project(tmp_path: Path) -> Path:
     shutil.copy2(ROOT / ".claude/skills/agent-loop/scripts/agent-loop-state.py", scripts)
     shutil.copy2(ROOT / ".claude/skills/agent-loop/scripts/review-push.sh", scripts)
     shutil.copy2(ROOT / ".claude/skills/critique/scripts/review-ledger.py", ledger_dir)
-    (skill / "prompt.txt").write_text(
-        "Read AGENT_LOOP_ISSUE_TITLE and AGENT_LOOP_ISSUE_BODY. Create a local commit only; do not push.\n",
-        encoding="utf-8",
+    shutil.copy2(
+        ROOT / ".claude/skills/agent-loop/prompt.txt.template",
+        skill / "prompt.txt",
     )
-    (project / "agent-loop-instructions.md").write_text(
-        "The worker reads AGENT_LOOP_ISSUE_TITLE and AGENT_LOOP_ISSUE_BODY.\n",
-        encoding="utf-8",
+    shutil.copy2(
+        ROOT / ".claude/skills/agent-loop/agent-loop-instructions.md.template",
+        project / "agent-loop-instructions.md",
     )
     (skill / "agent-loop.config").write_text(
         "review_contract_version = 3\n"
@@ -51,6 +51,9 @@ def _run(project: Path) -> subprocess.CompletedProcess[str]:
 
 def test_doctor_accepts_current_contract_without_mutation(tmp_path: Path) -> None:
     project = _project(tmp_path)
+    assert "config_doctor = true" in (
+        ROOT / ".claude/skills/agent-loop/agent-loop.config.template"
+    ).read_text(encoding="utf-8")
     before = sorted(path.relative_to(project) for path in project.rglob("*"))
     result = _run(project)
     assert result.returncode == 0, result.stderr

@@ -942,6 +942,44 @@ def test_v3_finalization_reuses_sealed_pseudo_v3_history(
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
 
+def test_v3_converged_recovery_uses_each_engine_result_digest(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-final-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-final-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/final-reviewed-head-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    config = _config_v3(tmp_path, validation_hook=validation)
+
+    first = _run(
+        consumer,
+        ["--issues", "93"],
+        issues=[_issue(93)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["phase"] == "converged"
+    assert state["codexResultSha256"] != state["claudeResultSha256"]
+
+    fail_marker.unlink()
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(93, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "Recovered converged review checkpoint" in resumed.stdout
+
+
 def test_v3_review_hook_cannot_self_authorize_direct_push(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
