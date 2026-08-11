@@ -22,13 +22,14 @@ worker only implements, validates, refactors, and commits locally.
 
 Options:
 
-| Option               | Behavior                                                                                                                                                                      |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--issues N,N,...`   | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
-| `--iterations N`     | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
-| `--include-assigned` | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
-| `--resume-run FILE`  | Resume review/finalization from a private contract-v3 run-state file after re-attesting its issue, worktree, branch, PR, base, and head.                                      |
-| `--dry-run`          | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
+| Option                | Behavior                                                                                                                                                                      |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--issues N,N,...`    | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
+| `--iterations N`      | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
+| `--include-assigned`  | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
+| `--resume-run FILE`   | Resume review/finalization from a private contract-v3 run-state file after re-attesting its issue, worktree, branch, PR, base, and head.                                      |
+| `--resume-batch FILE` | Resume an ordered contract-v3 allowlist from its private batch-state file. It cannot be combined with `--resume-run`, `--issues`, or `--dry-run`.                             |
+| `--dry-run`           | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
 
 Omitting `--issues` retains the ready-queue behavior for backward compatibility.
 Use an allowlist for every scoped or retrospective-driven run.
@@ -54,25 +55,25 @@ The config is parsed as literal `key = value` lines and is never sourced.
 Unknown or duplicate keys fail closed. Hook values are shell commands executed
 with the issue worktree as the current directory.
 
-| Key                                              | Purpose                                                                                                                                                         |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                                  |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.                                    |
-| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                                               |
-| `claude_review_hook`                             | Required fresh local Claude review on the draft PR. It must post confirmed findings inline before fixes, push, reply, resolve, and fail on undisposed findings. |
-| `codex_review_hook`                              | Required fresh Codex `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                       |
-| `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                             |
-| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.                                         |
-| `claude_effort_policy`                           | Optional literal Claude effort policy checked by the doctor, such as `low`.                                                                                     |
-| `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.                                            |
-| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                                                      |
-| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                    |
-| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                     |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                                                   |
-| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                           |
-| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                                           |
-| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                     |
-| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                |
+| Key                                              | Purpose                                                                                                                                                                                                     |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                                                                              |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.                                                                                |
+| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                                                                                           |
+| `claude_review_hook`                             | Required fresh local Claude review on the draft PR. It must post confirmed findings inline before fixes, publish through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply, resolve, and fail on undisposed findings. |
+| `codex_review_hook`                              | Required fresh Codex `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                                                                   |
+| `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                                                                         |
+| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.                                                                                     |
+| `claude_effort_policy`                           | Optional literal Claude effort policy checked by the doctor, such as `low`.                                                                                                                                 |
+| `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.                                                                                        |
+| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                                                                                                  |
+| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                                                                |
+| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                 |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                                                                                               |
+| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                       |
+| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                                                                                       |
+| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                                                                 |
+| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                                                            |
 
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
 `AGENT_LOOP_ISSUE_BODY`, `AGENT_LOOP_BASE_BRANCH`, `AGENT_LOOP_BRANCH`,
