@@ -152,8 +152,9 @@ Resolve this engine's round number before selecting lanes. Use
 `local-review-pass:v3` and `local-review-complete:v3` markers already on the PR
 that name this engine; this pass is one past that count.
 
-- **Rounds 1–2 — adversarial.** The full stance: assume the diff is guilty, run
-  every applicable lane, fix every valid finding.
+- **Rounds 1–2 — adversarial.** The full stance: assume the diff is guilty and
+  run every applicable lane. Fix only confirmed findings whose expected user or
+  security harm justifies the change's churn and regression risk.
 - **Round 3 and later — convergence.** Both engines have now read the change
   cold twice. What remains is rarely a deeper defect; it is the review's own
   surface. Shift the goal from challenging the change to landing it.
@@ -165,10 +166,13 @@ A convergence round:
   Drop type/API design, comment/docs, PR test analysis, and tenant-coupling.
   Those found what they were going to find in rounds 1–2, and they regenerate
   work indefinitely;
-- changes the PR only for a **blocking** defect: one that ships wrong behavior,
-  loses or corrupts data, opens a security or privacy hole, breaks a public
-  contract, or breaks deploy or rollout. Everything else becomes a follow-up
-  issue — reply `outcome=deferred` with the issue link and resolve the thread;
+- changes the PR only for a realistically reachable **blocking** defect whose
+  expected harm justifies the churn: one that ships materially wrong behavior,
+  loses or corrupts data, exposes a credible security or privacy exploit,
+  breaks a public contract, or breaks deploy or rollout. Defer everything else
+  and resolve the thread. Create an issue only for a concrete, high-impact
+  follow-up that should be scheduled within roughly two weeks; otherwise record
+  `outcome=deferred` with a no-issue rationale;
 - makes the smallest edit that clears the blocker. No refactors, no renames, no
   new abstraction, no test or comment hardening;
 - ends the loop as soon as it finds no blocking defect. Post the clean-pass
@@ -177,7 +181,8 @@ A convergence round:
 This is a disposition rule, not a reporting rule. Lanes still report every
 evidence-backed finding they have, with severity attached. The narrowing happens
 one level up, where the whole set is visible and the orchestrator decides what
-the PR changes versus what a follow-up issue tracks.
+the PR changes, what merits an urgent follow-up issue, and what should add
+nothing to an already deep backlog.
 
 Convergence rounds do not extend the round cap — they are how rounds 3 and 4 are
 spent. Reaching the cap in convergence mode with open non-blocking findings means

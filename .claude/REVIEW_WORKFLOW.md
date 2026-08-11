@@ -41,8 +41,9 @@ Use this path when both local engines are available:
      Once both engines have read the change cold twice, the remaining findings
      are mostly about the review's own artifacts. A convergence round runs only
      the lenses that can find a reason not to deploy, changes the PR only for a
-     blocking defect, defers everything else to a linked issue, and ends the loop
-     as soon as it finds no blocker. Lenses still report everything they find —
+     realistically reachable blocking defect, defers everything else, creates
+     an issue only for an urgent high-impact follow-up, and ends the loop as soon
+     as it finds no blocker. Lenses still report everything they find —
      the narrowing is a disposition rule applied by the orchestrator, never an
      instruction to a review agent to withhold by severity or confidence.
 
@@ -94,14 +95,15 @@ customer/tenant-variable behavior.
 - The agent matrix is a ceiling, not a floor. Run only the lenses whose signals
   appear in the diff, and never add an agent to re-check another agent's work.
   See [`MODEL_NOTES.md`](MODEL_NOTES.md) §2–§3.
-- Fix every valid in-scope finding. Dismiss false positives with evidence in the
-  thread.
+- Fix a confirmed finding only when likely user harm or a credible security
+  exploit justifies the fix's churn and regression risk.
 - **A round that only finds non-material test, fixture, comment, or docs polish
   is the signal to ship, not to keep going.** It means the product converged and
   the review has turned to auditing its own artifacts. A test or workflow fix
   needed to prevent a false green remains material and restarts at Codex under
-  step 5. Move genuinely useful non-material polish to a follow-up issue.
-- Defer only genuinely large architectural work and link the tracking issue.
+  step 5. Defer non-material polish without growing the backlog.
+- Create a tracking issue only for a concrete, high-impact follow-up that should
+  be scheduled within roughly two weeks.
 - A fix without a preceding inline finding, a finding without a reply, or a
   resolved thread without a visible disposition is a failed pass.
 - Never copy sensitive source, credentials, private data, or model logs into PR
