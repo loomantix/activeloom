@@ -53,21 +53,34 @@ Still keep the reporting bar high: only report specific, actionable findings
 with file/line evidence. If a suspected issue cannot be supported, dismiss it
 privately or list it as dismissed with the evidence that disproved it.
 
-## Fix Bias
+## Disposition Bar
 
-Fix every valid finding in the current PR, including small nits and cleanup
-items. Do not defer valid findings just because they are inconvenient or
-"out of scope." Only dismiss invalid findings, false positives, or suggestions
-that would make the code worse.
+Treat validity and actionability as separate decisions. A technically real
+concern is not automatically worth changing the PR or growing the backlog.
 
-Defer only when the fix is a major architectural rework — roughly 300+ lines
-or a cross-cutting redesign — and in that case file a GitHub issue at
-deferral time rather than leaving the suggestion as an undocumented todo. A
-"deferred" finding without a tracked issue is not allowed.
+Fix a confirmed finding only when the expected harm avoided clearly outweighs
+the churn and regression risk of the fix. Judge that from concrete evidence:
 
-Reason: every valid finding that ships becomes the floor for the next PR in
-this area. Letting them accrue as "deferred" turns the backlog into review
-noise and makes future critiques more expensive.
+- how likely a user is to reach the failing path in normal or reasonably
+  foreseeable use;
+- the impact when they do, the number of users or systems exposed, and whether
+  recovery is possible;
+- confidence in the root cause and in the proposed correction; and
+- the size, complexity, compatibility cost, and regression risk of the change.
+
+For security findings, require a credible exploit path: identify the reachable
+boundary, attacker capability and preconditions, missing or bypassable control,
+and resulting impact. A theoretical weakness, generic hardening opportunity, or
+severity label without a plausible path to discovery and exploitation does not
+by itself justify churn.
+
+Create a GitHub issue only for an urgent follow-up: a concrete, high-impact
+defect that is important enough to schedule within roughly the next two weeks,
+but whose safe fix should not land in this PR. Do not create issues for ordinary
+deferred backlog, speculative hardening, cleanup, or low-likelihood edge cases;
+record those as `outcome=deferred` with the no-issue rationale if already posted,
+or keep them out of the PR ledger when they do not clear the actionable finding
+bar.
 
 ## Convergence Rounds
 
@@ -83,26 +96,28 @@ evidence-backed finding with severity attached; the narrowing is a disposition
 rule applied when consolidating lane output, not an instruction to a lane to
 withhold what it found.
 
-The fix bias inverts. Change the PR only for a **blocking** defect — one that
-ships wrong behavior, loses or corrupts data, opens a security or privacy hole,
-breaks a public contract, or breaks deploy or rollout:
+The actionability bar tightens further. Change the PR only for a **blocking**
+defect that also clears the Disposition Bar above — one that is realistically
+reachable and ships materially wrong behavior, loses or corrupts data, exposes
+a credible security or privacy exploit, breaks a public contract, or breaks
+deploy or rollout:
 
 - Fix a blocking finding with the smallest edit that clears it. No refactor, no
   rename, no new abstraction, no test or comment hardening alongside it.
-- Defer every confirmed non-blocking finding. File the GitHub issue, reply with
-  `outcome=deferred` plus the link, and resolve the thread. Deferral is the
-  expected disposition here, not an admission of scope creep, and the 300+ line
-  threshold in the Fix Bias section does not apply to a convergence round.
+- Defer every confirmed non-blocking finding and resolve its thread. Create and
+  link an issue only when it clears the urgent-follow-up bar above; otherwise
+  reply with `outcome=deferred` and a concise no-issue rationale. Deferral is the
+  expected disposition here, not an admission of scope creep.
 - Dismiss invalid findings with evidence, exactly as in an adversarial round.
 
-The findings a convergence round defers are usually real. Fixing them in this PR
-is still the wrong call: each one moves the head, re-stales the other engine's
-attestation, and buys another round of the same. Land the change and let the
-issue carry the work.
+The findings a convergence round defers may still be real. Fixing them in this
+PR is the wrong call when the expected benefit does not justify moving the head
+and re-staling the other engine's attestation. Land the change; let only urgent
+follow-ups grow the backlog.
 
 A convergence round that finds no blocking defect ends the loop: post the
-clean-pass attestation, recommend the repository's ship step, and list the
-deferred issues.
+clean-pass attestation, recommend the repository's ship step, and list any
+urgent deferred issues.
 
 ## Mode
 
@@ -196,9 +211,9 @@ Run these lanes as independently as the active runtime permits:
    required by `.codex/references/local-review-ledger.md` to post one inline
    comment on an exact GitHub diff anchor before editing. Do not hand-compose
    review-comment API requests.
-10. Fix it unless it is invalid or a valid major architectural rework. Dismiss
-    invalid findings with evidence. Defer only 300+ line or cross-cutting
-    refactors, and track each deferral in a GitHub issue.
+10. Apply the Disposition Bar. Fix only findings whose expected harm reduction
+    justifies the churn. Defer the rest, and create an issue only for an urgent
+    follow-up that should be scheduled within roughly two weeks.
 11. Run targeted validation, commit, and push with no force.
 12. Use the ledger helper's resumable `dispose` transaction for every posted
     finding. Stop on any posting, push, disposition, or resolution failure; on
@@ -220,7 +235,8 @@ End with:
 - round and stance: `<n>` plus adversarial or convergence
 - review depth: lean with independent subagents, lean local two-pass fallback, deep with independent subagents, or deep local multi-pass fallback
 - findings fixed
-- findings deferred (with linked GitHub issue) or dismissed (with one-line evidence)
+- findings deferred (with an issue link only for urgent follow-ups) or dismissed
+  (with one-line evidence)
 - validation run
 - PR number, reviewed head, comments posted, replies posted, and threads resolved
 - the next step for the path selected in `.codex/REVIEW_WORKFLOW.md`: return to
