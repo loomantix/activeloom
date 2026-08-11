@@ -1716,23 +1716,46 @@ def test_review_contract_version_is_required_before_claim(
     assert not (tmp_path / "worktrees").exists()
 
 
-def test_retired_deepgrill_hook_is_rejected_before_claim(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+@pytest.mark.parametrize(
+    ("hook_key", "hook_value"),
+    [
+        ("codex_review_hook", "codex exec --skill deepgrill"),
+        ("codex_review_hook", "codex exec --skill grill"),
+        ("codex_review_hook", "python3 .codex/skills/grill/scripts/review-ledger.py attest"),
+        ("claude_review_hook", "claude -p /deepgrill"),
+        ("claude_review_hook", "claude -p /pr-grill"),
+    ],
+)
+def test_retired_grill_hook_is_rejected_before_claim(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    hook_key: str,
+    hook_value: str,
 ) -> None:
     result = _run(
         consumer,
         ["--issues", "20"],
         issues=[_issue(20)],
-        config=_config_v3(
-            tmp_path,
-            codex_review_hook="codex exec --skill deepgrill",
-        ),
+        config=_config_v3(tmp_path, **{hook_key: hook_value}),
     )
     assert result.returncode != 0
-    assert "codex_review_hook uses retired deepgrill" in result.stderr
+    assert f"{hook_key} names a retired grill-family review skill" in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
+
+
+def test_grill_substring_in_unrelated_hook_path_is_not_rejected(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    """`grill-app/` is not the retired skill — the guard must use word boundaries."""
+    result = _run(
+        consumer,
+        ["--issues", "20"],
+        issues=[_issue(20)],
+        config=_config_v3(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
+    )
+    assert "names a retired grill-family review skill" not in result.stderr
 
 
 def test_unscoped_include_assigned_controls_ready_helper_filter(

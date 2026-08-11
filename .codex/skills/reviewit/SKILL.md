@@ -37,8 +37,10 @@ Create the directory if needed. The state file is local agent bookkeeping; do no
 
 On state load, normalize the legacy `phase=final-deepgrill` value to
 `final-deepcritique` and the legacy `deepgrillRan` key to `deepcritiqueRan`,
-then rewrite the normalized state before continuing. Fail closed if legacy and
-current values conflict; do not guess which final review ran.
+then rewrite the normalized state before continuing. A legacy key present with
+its current counterpart absent is the expected migration input: normalize it
+silently. Fail closed only on a genuine conflict — both spellings present with
+different values — and do not guess which final review ran.
 
 If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate ignore file before writing state.
 

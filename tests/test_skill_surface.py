@@ -128,6 +128,11 @@ def test_install_skills_prunes_only_retired_owned_links(
     mismatched_alias.symlink_to(skills / "retired")
     foreign_stale = destination / "foreign"
     foreign_stale.symlink_to(tmp_path / "elsewhere/missing")
+    # Same *name* as a skill this installer would create, but owned by a
+    # different checkout. Only full-target equality rejects this one — a
+    # basename-only ownership check would delete another checkout's link.
+    foreign_same_name = destination / "shared"
+    foreign_same_name.symlink_to(tmp_path / "other-clone/.codex/skills/shared")
     local_skill = destination / "local"
     local_skill.mkdir()
 
@@ -147,13 +152,25 @@ def test_install_skills_prunes_only_retired_owned_links(
         env=env,
     )
     assert "1 would prune" in dry_run.stdout
+    # A dry run must not claim it removed anything.
+    assert "would prune dangling link" in dry_run.stdout
+    assert "removing dangling link" not in dry_run.stdout
     assert owned_stale.is_symlink()
 
     subprocess.run([str(script)], check=True, capture_output=True, text=True, env=env)
     assert not owned_stale.is_symlink()
     assert mismatched_alias.is_symlink()
     assert foreign_stale.is_symlink()
+    assert foreign_same_name.is_symlink()
     assert local_skill.is_dir()
+    assert (destination / "active").resolve() == active.resolve()
+
+    # Pruning is a no-op once nothing retired remains; a regression that
+    # dropped the dangling-link check would delete every owned link here.
+    clean = subprocess.run(
+        [str(script)], check=True, capture_output=True, text=True, env=env
+    )
+    assert "0 pruned" in clean.stdout
     assert (destination / "active").resolve() == active.resolve()
 
 
@@ -297,7 +314,13 @@ def test_renamed_review_skills_preserve_in_flight_compatibility() -> None:
 
     assert "final-deepgrill" in reviewit
     assert "deepgrillRan" in reviewit
-    assert "fail closed if legacy and current values conflict" in normalized_reviewit
+    # Pin the discriminator, not just the phrase: a legacy key with its current
+    # counterpart absent is ordinary migration input and must not fail closed.
+    assert "normalize it silently" in normalized_reviewit
+    assert (
+        "fail closed only on a genuine conflict — both spellings present with "
+        "different values" in normalized_reviewit
+    )
     assert "PR_GRILL_REVIEW_BASE_SHA" in pr_critique
     assert "set to different commits" in pr_critique
     assert "round-matched fix bias" in pr_critique

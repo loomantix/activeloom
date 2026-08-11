@@ -14,7 +14,7 @@ Operational skills you can install globally or sync into any repo:
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `refactorpass`        | PR-first cleanup pass; posts verified cleanup suggestions inline before applying, pushing, replying, and resolving.                                             |
 | `critique`            | PR-first adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass. |
-| `deepcritique`        | Opens or reuses a draft PR and orchestrates refactorpass plus `critique deep` with an inline finding ledger.                                                    |
+| `deepcritique`        | Opens or reuses a draft PR and orchestrates `critique deep` with an inline finding ledger, preceded by refactorpass on this engine's first pass only.           |
 | `pr-critique <pr>`    | Cross-engine deep review of an existing PR using the same inline finding, fix-reply, and resolution ledger.                                                     |
 | `reviewit <pr>`       | Optional hosted fallback for developers without local Claude Code. Orchestrates post-push Gemini Flash + Copilot review with bounded lean/deep modes.           |
 | `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                          |

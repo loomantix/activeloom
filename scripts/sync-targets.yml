@@ -212,10 +212,20 @@ targets:
   - destination: .codex/hooks/check-simplify-state.sh
     delete: true
   # The review chain moved from `grill` terminology to `critique`. Keep these
-  # deletes until every consumer has synced this manifest: the new paths and
-  # old-path removals must land together so duplicate model-invocable review
-  # skills do not survive a fleet sync unless a consumer explicitly skips a
-  # retired destination.
+  # deletes until every consumer has synced this manifest, so a fleet sync does
+  # not leave duplicate model-invocable review skills behind.
+  #
+  # This is ordered best-effort removal, not an atomic swap. The engine applies
+  # targets in one non-transactional pass, so a run that fails partway leaves
+  # the new skills written and these deletes unapplied. A retired destination is
+  # also left in place when a consumer explicitly lists it in `skip_targets`.
+  #
+  # Consumers with a non-empty `allowed_destinations` must add
+  # `.codex/skills/critique/**`, `.codex/skills/deepcritique/**`, and
+  # `.codex/skills/pr-critique/**` to that allowlist before taking the sync tag
+  # carrying this rename. Otherwise the new copy targets above fail the
+  # allowlist gate, the run aborts before reaching these deletes, and both
+  # naming families survive.
   - destination: .codex/skills/grill/SKILL.md
     delete: true
   - destination: .codex/skills/grill/scripts/review-ledger.py

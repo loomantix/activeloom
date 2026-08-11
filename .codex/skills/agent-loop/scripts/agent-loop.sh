@@ -210,10 +210,23 @@ if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; t
     echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
     exit 1
 fi
-if [[ "$CODEX_REVIEW_HOOK" == *deepgrill* ]]; then
-    echo "codex_review_hook uses retired deepgrill; migrate it to deepcritique before running agent-loop" >&2
-    exit 1
-fi
+# The grill-family review skills were renamed to critique/deepcritique/pr-critique
+# and the same sync deletes their old paths, including the review ledger helper.
+# A config still naming one is preserved by `create_if_missing`, so catch it here:
+# otherwise it fails inside a review pass, after the issue is claimed, the
+# worktree exists, the branch is pushed, and a draft PR is open. Both review
+# hooks are checked — the Claude chain was renamed in the same wave. The word
+# boundaries keep an unrelated path such as `grill-app/` from matching.
+for hook_key in claude_review_hook codex_review_hook; do
+    case "$hook_key" in
+        claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
+        *) hook_value="$CODEX_REVIEW_HOOK" ;;
+    esac
+    if [[ "$hook_value" =~ (^|[^[:alnum:]_-])(deepgrill|pr-grill|grill)([^[:alnum:]_-]|$) ]]; then
+        echo "$hook_key names a retired grill-family review skill or path; migrate it to critique, deepcritique, or pr-critique before running agent-loop" >&2
+        exit 1
+    fi
+done
 
 if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
     if [ ! -f "$REVIEW_LEDGER" ] || [ ! -r "$REVIEW_LEDGER" ]; then

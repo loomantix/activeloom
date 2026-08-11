@@ -23,8 +23,9 @@ review_contract_version = 3
 # validated and retained without restarting; convergence requires a complete
 # Codex-then-Claude round with no material fixes. The Codex hook must run
 # `deepcritique`; the Claude hook must perform a fresh adversarial review.
-# An existing config that still names the retired `deepgrill` command is rejected
-# during startup, before issue claim or worktree creation.
+# An existing config whose `claude_review_hook` or `codex_review_hook` still
+# names a retired `grill`-family skill or path is rejected during startup,
+# before issue claim or worktree creation.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
 # commit it, push without force, reply with the fix and validation, resolve the

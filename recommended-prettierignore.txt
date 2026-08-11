@@ -42,10 +42,10 @@
 .codex/skills/backlog-refinement/scripts/bail-report.py
 .codex/skills/backlog-refinement/scripts/candidates.py
 .codex/skills/copilot-review/SKILL.md
-.codex/skills/deepcritique/SKILL.md
-.codex/skills/feature-dev/SKILL.md
 .codex/skills/critique/SKILL.md
 .codex/skills/critique/scripts/review-ledger.py
+.codex/skills/deepcritique/SKILL.md
+.codex/skills/feature-dev/SKILL.md
 .codex/skills/issues/SKILL.md
 .codex/skills/issues/scripts/link.py
 .codex/skills/issues/scripts/ready.py

@@ -130,8 +130,10 @@ for target in "$SKILLS_DEST"/*; do
   current="$(readlink "$target")"
   name="$(basename "$target")"
   [ "$current" = "$SKILLS_SRC/$name" ] || continue
-  echo "  🧹 $(basename "$target") (retired upstream — removing dangling link)"
-  if [ "$DRY_RUN" -eq 0 ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "  🧹 $name (retired upstream — would prune dangling link)"
+  else
+    echo "  🧹 $name (retired upstream — removing dangling link)"
     rm "$target"
   fi
   pruned=$((pruned + 1))
@@ -145,6 +147,6 @@ else
   echo ""
   echo "Done: $installed installed, $replaced replaced, $pruned pruned, $skipped left alone."
   echo "Skills now resolve from $SKILLS_DEST → $SKILLS_SRC."
-  echo "Run \`git pull\` in $UPSTREAM_ROOT to update — no re-install needed."
-  echo "Re-run this script after a pull that renames or retires a skill."
+  echo "Run \`git pull\` in $UPSTREAM_ROOT to pick up in-place skill edits."
+  echo "Re-run this script after a pull that adds, renames, or retires a skill."
 fi

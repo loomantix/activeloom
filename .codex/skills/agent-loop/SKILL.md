@@ -117,8 +117,9 @@ the current templates manually before the synced wrapper can run:
 1. Update the Codex hook to run a fresh `deepcritique
 $AGENT_LOOP_PR_NUMBER`, then the Claude hook to run a fresh adversarial review
    on the same PR. Scope both to `$AGENT_LOOP_REVIEW_BASE_SHA`.
-   The wrapper rejects the retired `deepgrill` hook name during startup,
-   including in an existing version 3 config, before it claims an issue.
+   The wrapper rejects either review hook naming a retired `grill`-family skill
+   or path during startup, before it claims an issue. The check applies to
+   every accepted contract version, including an existing version 3 config.
 2. Make both hooks load `.codex/references/local-review-ledger.md`, read all
    prior threads, post confirmed findings inline before editing, commit and push
    fixes, reply with the fix and validation, resolve the threads, leave the
