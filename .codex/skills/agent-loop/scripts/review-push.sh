@@ -67,6 +67,22 @@ local_head="$("$real_git" rev-parse HEAD)"
     echo "review-push rejects non-forward review history" >&2
     exit 1
 }
+expected_remote_head="$AGENT_LOOP_PR_HEAD_SHA"
+if [ -n "${AGENT_LOOP_REVIEW_PUSH_STATE_FILE:-}" ]; then
+    if [ -L "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE" ] || \
+       [ ! -f "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE" ]; then
+        echo "review-push requires the wrapper-owned remote-head checkpoint" >&2
+        exit 1
+    fi
+    IFS= read -r expected_remote_head < "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE" || {
+        echo "review-push could not read the remote-head checkpoint" >&2
+        exit 1
+    }
+fi
+[[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "review-push found an invalid remote-head checkpoint" >&2
+    exit 1
+}
 require_origin_identity
 remote_line="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRANCH")"
 [ -n "$remote_line" ] || {
@@ -74,14 +90,14 @@ remote_line="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRAN
     exit 1
 }
 remote_head="${remote_line%%[[:space:]]*}"
-"$real_git" merge-base --is-ancestor "$AGENT_LOOP_PR_HEAD_SHA" "$remote_head" && \
-"$real_git" merge-base --is-ancestor "$remote_head" "$local_head" || {
+[ "$remote_head" = "$expected_remote_head" ] || {
     echo "review-push rejects a stale or uncertain remote head" >&2
     exit 1
 }
 
 require_origin_identity
 "$real_git" push origin \
+    "--force-with-lease=refs/heads/$AGENT_LOOP_BRANCH:$expected_remote_head" \
     "$local_head:refs/heads/$AGENT_LOOP_BRANCH"
 require_origin_identity
 observed="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRANCH")"
@@ -90,4 +106,13 @@ require_origin_identity
     echo "review-push could not attest the remote head" >&2
     exit 1
 }
+if [ -n "${AGENT_LOOP_REVIEW_PUSH_STATE_FILE:-}" ]; then
+    checkpoint_dir="$(dirname -- "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE")"
+    checkpoint_tmp="$(mktemp "$checkpoint_dir/.review-push-state.XXXXXX")"
+    trap 'rm -f -- "$checkpoint_tmp"' EXIT
+    chmod 600 "$checkpoint_tmp"
+    printf '%s\n' "$local_head" > "$checkpoint_tmp"
+    mv -f -- "$checkpoint_tmp" "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE"
+    trap - EXIT
+fi
 printf '%s\n' "$local_head"
