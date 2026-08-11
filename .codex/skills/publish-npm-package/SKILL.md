@@ -50,20 +50,26 @@ of “prepare,” “review,” or “verify.”
 
 ## Design the Trusted Publisher workflow
 
-Use a GitHub-hosted runner supported by npm and grant only `contents: read` and
-`id-token: write` unless the repository proves another permission is necessary.
-Reference a protected GitHub environment on the publish job. Configure that
-environment with required reviewers, prevent self-review when available, restrict
-deployment tags to the package's release-tag pattern, and disable administrator
-bypass when the repository's policy supports it.
+Use three jobs with forward-only artifact transfer: an unprivileged build job, a
+minimal protected publish job, and an unprivileged verification job. Use a
+GitHub-hosted runner supported by npm. Grant `id-token: write` only to the publish
+job; the build and verification jobs must explicitly omit it. Reference the
+protected GitHub environment only on the publish job. Configure that environment
+with required reviewers, prevent self-review when available, restrict deployment
+tags to the package's release-tag pattern, and disable administrator bypass when
+the repository's policy supports it.
 
-Pin `actions/checkout` and `actions/setup-node` to reviewed full commit SHAs while
-retaining release comments. Select Node and npm versions that satisfy the current
-npm Trusted Publisher documentation. This skill's verifier has a stricter npm
-floor: require npm 11.12.0 or newer so `npm audit signatures
---include-attestations` exists before the irreversible publish. Disable
-release-job package-manager caching unless the current upstream contract and
-repository threat model justify it.
+Pin every action, including `actions/checkout`, `actions/setup-node`, artifact
+upload, and artifact download, to reviewed full commit SHAs while retaining
+release comments. Select Node and npm versions that satisfy the current npm
+Trusted Publisher documentation. This skill's verifier has a stricter npm floor:
+require npm 11.12.0 or newer so `npm audit signatures --include-attestations`
+exists before the irreversible publish. The minimal publish job may execute only
+reviewed pinned platform actions, the selected npm CLI, and runner-provided
+checksum tooling. It must not check out the repository, install dependencies,
+run package lifecycle scripts, execute repository-controlled helpers, or accept a
+cache restored from another job. Establish its Node/npm toolchain without running
+package code while the OIDC request capability is present.
 
 Configure npm trust on the package settings page with the exact GitHub owner,
 repository, workflow filename, environment name, and allowed publish action. npm
@@ -73,7 +79,7 @@ traditional publish tokens when the current npm controls allow it. Keep any toke
 needed solely to install private dependencies read-only and expose it only to the
 install step, never the publish step.
 
-Build once in the release job:
+Build once in the unprivileged build job:
 
 1. Install from the committed lockfile.
 2. Run the repository's tests and build.
@@ -83,20 +89,27 @@ Build once in the release job:
    release tag. Ensure checkout fetched the annotated tag and configure the
    signer's public verification material so `git verify-tag` can succeed. Pass
    the approved signer fingerprint explicitly.
-5. Upload the tarball and preflight JSON as workflow artifacts before publishing.
-6. For a public source repository, publish the exact tarball path with
-   `--provenance`; this CLI argument must override repository or user
-   configuration that disables provenance. For a private source repository
-   publishing a public package, npm Trusted Publishing works but provenance is
-   unsupported: publish with `--provenance=false` and record that limitation
-   before publication. Do not run `npm publish` against a directory, rerun `npm
-pack`, or rebuild between inspection and publication.
-7. Run `verify-published-package.py --provenance required` for a public source,
-   or `--provenance unavailable` for the explicit private-source/public-package
-   branch, in the same protected job. Fail the job if it cannot verify the
-   artifact, registry signatures, applicable provenance certificate/workflow
-   binding, and live release tag. Upload the verification JSON as a workflow
-   artifact.
+5. Upload the tarball and preflight JSON together as a uniquely named workflow
+   artifact. Record their digests. The protected publish job must depend on this
+   job and download only that exact artifact from the same workflow run.
+
+In the protected publish job, verify the downloaded digests with runner-provided
+tooling and publish the exact tarball path with `--ignore-scripts`. For a public
+source repository also pass `--provenance`; this CLI argument must override
+repository or user configuration that disables provenance. For a private source
+repository publishing a public package, npm Trusted Publishing works but
+provenance is unsupported: pass `--provenance=false` and record that limitation
+before publication. Do not run `npm publish` against a directory, rerun `npm
+pack`, rebuild, install dependencies, or execute any file from the repository or
+package artifact in this job.
+
+Run `verify-published-package.py --provenance required` for a public source, or
+`--provenance unavailable` for the explicit private-source/public-package branch,
+in a separate verification job that depends on successful publication and has no
+`id-token: write`. That job may check out the tagged source and download the same
+build artifact. Fail it if it cannot verify the artifact, registry signatures,
+applicable provenance certificate/workflow binding, and live release tag. Upload
+the verification JSON as a workflow artifact.
 
 Do not provide `NODE_AUTH_TOKEN` to the OIDC publish step. Decide whether to set
 `actions/setup-node`'s `registry-url` only after reading its current documentation:

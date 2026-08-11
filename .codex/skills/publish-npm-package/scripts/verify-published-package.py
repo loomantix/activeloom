@@ -450,6 +450,16 @@ def github_workflow_identity(value: str) -> tuple[str, str, str]:
     return repository, "/".join(parts[2:]), ref
 
 
+def matches_github_workflow_identity(
+    value: str, expected: tuple[str, str, str]
+) -> bool:
+    """Treat unrelated SAN identities as non-matches, not fatal parse errors."""
+    try:
+        return github_workflow_identity(value) == expected
+    except RuntimeError:
+        return False
+
+
 def verify_slsa_candidate(
     attestation_bundle: dict[str, Any],
     *,
@@ -527,7 +537,10 @@ def verify_slsa_candidate(
     identities, issuer = certificate_claims(bundle)
     if issuer != GITHUB_ACTIONS_OIDC_ISSUER:
         fail("provenance signing certificate OIDC issuer is not GitHub Actions")
-    if not any(github_workflow_identity(identity) == expected_identity_parts for identity in identities):
+    if not any(
+        matches_github_workflow_identity(identity, expected_identity_parts)
+        for identity in identities
+    ):
         fail("provenance signing certificate identity does not match the expected workflow and tag")
     expected_identity = f"{expected_repository}/{workflow_path.lstrip('/')}@{expected_ref}"
     return {

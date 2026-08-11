@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parent.parent / ".codex/skills/publish-npm-package/scripts"
+SKILL = Path(__file__).resolve().parent.parent / ".codex/skills/publish-npm-package/SKILL.md"
 
 
 def _load_script(name: str) -> ModuleType:
@@ -115,6 +116,15 @@ def _replace_slsa_payload(entry: dict[str, object], payload: dict[str, Any]) -> 
     envelope = bundle["dsseEnvelope"]
     assert isinstance(envelope, dict)
     envelope["payload"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+
+def test_skill_isolates_oidc_publish_authority() -> None:
+    guidance = SKILL.read_text(encoding="utf-8")
+
+    assert "Grant `id-token: write` only to the publish" in guidance
+    assert "must not check out the repository" in guidance
+    assert "exact tarball path with `--ignore-scripts`" in guidance
+    assert "separate verification job" in guidance
 
 
 def test_release_preflight_inspects_identity_and_emits_stable_digests(
@@ -439,6 +449,38 @@ def test_slsa_verification_normalizes_repository_case_only(
         commit=commit,
     )
     assert result["repository"] == "https://github.com/example/packages"
+
+
+def test_slsa_verification_ignores_unrelated_certificate_sans(
+    published_package_verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    identity = (
+        "https://github.com/example/packages/.github/workflows/publish.yml"
+        "@refs/tags/example-package-v1.2.3"
+    )
+    monkeypatch.setattr(
+        published_package_verifier,
+        "certificate_claims",
+        lambda _bundle: (
+            {"https://example.invalid/unrelated", identity},
+            published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER,
+        ),
+    )
+
+    result = published_package_verifier.verify_slsa(
+        {"attestationBundles": [_slsa_entry(commit=commit)]},
+        artifact_sha512="artifact-digest",
+        package="@example/example-package",
+        version="1.2.3",
+        repository="https://github.com/example/packages.git",
+        workflow_path=".github/workflows/publish.yml",
+        tag="example-package-v1.2.3",
+        commit=commit,
+    )
+
+    assert result["certificate_identity"] == identity
 
 
 def test_slsa_verification_rejects_split_subject_and_unrelated_dependency(
