@@ -64,11 +64,12 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def digest(path: Path) -> dict[str, str]:
     data = path.read_bytes()
+    sha512 = hashlib.sha512(data)
     return {
         "sha1": hashlib.sha1(data).hexdigest(),
         "sha256": hashlib.sha256(data).hexdigest(),
-        "sha512": hashlib.sha512(data).hexdigest(),
-        "integrity": "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode("ascii"),
+        "sha512": sha512.hexdigest(),
+        "integrity": "sha512-" + base64.b64encode(sha512.digest()).decode("ascii"),
         "bytes": str(len(data)),
     }
 
@@ -102,7 +103,8 @@ def inspect_tarball(path: Path, expected_name: str, expected_version: str) -> di
             extracted = archive.extractfile(manifests[0])
             if extracted is None:
                 fail("cannot read package/package.json from tarball")
-            embedded = json.loads(extracted.read().decode("utf-8"))
+            with extracted:
+                embedded = json.loads(extracted.read().decode("utf-8"))
     except (OSError, tarfile.TarError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         fail(f"cannot inspect {path}: {exc}")
     if embedded.get("name") != expected_name or embedded.get("version") != expected_version:

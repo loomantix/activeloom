@@ -18,6 +18,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
+
 
 def fail(message: str) -> None:
     raise RuntimeError(message)
@@ -55,11 +57,12 @@ def credential_free_npm_env(config_dir: Path) -> dict[str, str]:
 
 
 def hashes(data: bytes) -> dict[str, str]:
+    sha512 = hashlib.sha512(data)
     return {
         "sha1": hashlib.sha1(data).hexdigest(),
         "sha256": hashlib.sha256(data).hexdigest(),
-        "sha512": hashlib.sha512(data).hexdigest(),
-        "integrity": "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode("ascii"),
+        "sha512": sha512.hexdigest(),
+        "integrity": "sha512-" + base64.b64encode(sha512.digest()).decode("ascii"),
         "bytes": str(len(data)),
     }
 
@@ -74,7 +77,8 @@ def embedded_identity(data: bytes) -> tuple[str | None, str | None]:
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     fail("cannot read package/package.json from registry tarball")
-                package_json = json.loads(extracted.read().decode("utf-8"))
+                with extracted:
+                    package_json = json.loads(extracted.read().decode("utf-8"))
         except (KeyError, OSError, tarfile.TarError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             fail(f"cannot inspect registry tarball: {exc}")
     return package_json.get("name"), package_json.get("version")
@@ -122,11 +126,11 @@ def verify_slsa(
     commit: str,
 ) -> dict[str, str]:
     bundles = entry.get("attestationBundles", [])
-    for item in bundles:
-        if item.get("predicateType") != "https://slsa.dev/provenance/v1":
+    for attestation_bundle in bundles:
+        if attestation_bundle.get("predicateType") != SLSA_PROVENANCE_V1:
             continue
         try:
-            encoded = item["bundle"]["dsseEnvelope"]["payload"]
+            encoded = attestation_bundle["bundle"]["dsseEnvelope"]["payload"]
             statement = json.loads(base64.b64decode(encoded, validate=True))
             subject = statement["subject"]
             predicate = statement["predicate"]
@@ -134,12 +138,15 @@ def verify_slsa(
             dependencies = predicate["buildDefinition"]["resolvedDependencies"]
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             fail(f"cannot decode SLSA provenance payload: {exc}")
-        if statement.get("predicateType") != "https://slsa.dev/provenance/v1":
+        if statement.get("predicateType") != SLSA_PROVENANCE_V1:
             continue
-        if not any(item.get("digest", {}).get("sha512") == artifact_sha512 for item in subject):
+        if not any(
+            subject_entry.get("digest", {}).get("sha512") == artifact_sha512
+            for subject_entry in subject
+        ):
             fail("SLSA subject SHA-512 does not match the published artifact")
         expected_subject = f"pkg:npm/{urllib.parse.quote(package, safe='/')}@{version}"
-        if not any(item.get("name") == expected_subject for item in subject):
+        if not any(subject_entry.get("name") == expected_subject for subject_entry in subject):
             fail("SLSA subject does not identify the target npm package and version")
         expected_repository = github_repository(repository)
         if github_repository(workflow.get("repository", "")) != expected_repository:
@@ -148,11 +155,14 @@ def verify_slsa(
             fail("SLSA workflow path does not match the expected publish workflow")
         if workflow.get("ref") != f"refs/tags/{tag}":
             fail("SLSA workflow ref does not match the expected release tag")
-        if not any(item.get("digest", {}).get("gitCommit") == commit for item in dependencies):
+        if not any(
+            dependency.get("digest", {}).get("gitCommit") == commit
+            for dependency in dependencies
+        ):
             fail("SLSA resolved dependencies do not contain the expected release commit")
         return {
             "commit": commit,
-            "predicate_type": "https://slsa.dev/provenance/v1",
+            "predicate_type": SLSA_PROVENANCE_V1,
             "repository": expected_repository,
             "tag": tag,
             "workflow_path": workflow_path,
@@ -234,10 +244,9 @@ def main() -> int:
             registry_data = response.read()
     except OSError as exc:
         fail(f"could not download registry tarball: {exc}")
-    registry_hashes = hashes(registry_data)
-
     if artifact_data != registry_data:
         fail("build-once artifact is not byte-identical to the registry tarball")
+    registry_hashes = artifact_hashes.copy()
     if artifact_hashes["sha1"] != shasum:
         fail("artifact SHA-1 does not match npm dist.shasum")
     if artifact_hashes["integrity"] != integrity:
@@ -251,6 +260,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="npm-signature-check-") as temp_dir:
         audit_dir = Path(temp_dir)
+        npm_env = credential_free_npm_env(audit_dir)
         (audit_dir / "package.json").write_text(
             json.dumps({"name": "npm-signature-check", "private": True, "version": "0.0.0"}) + "\n",
             encoding="utf-8",
@@ -266,7 +276,7 @@ def main() -> int:
                 f"{args.package}@{args.version}",
             ],
             audit_dir,
-            env=credential_free_npm_env(audit_dir),
+            env=npm_env,
         )
         audit_result = run(
             [
@@ -278,7 +288,7 @@ def main() -> int:
                 f"--registry={args.registry}",
             ],
             audit_dir,
-            env=credential_free_npm_env(audit_dir),
+            env=npm_env,
         )
 
     try:
