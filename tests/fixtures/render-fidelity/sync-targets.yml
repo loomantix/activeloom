@@ -1,0 +1,16 @@
+# Target list for the render-fidelity half of the `render-check` job. The job
+# copies this and `template.md` into a throwaway upstream tree so the engine
+# renders the fixture without the fixture ever shipping to a consumer.
+targets:
+  - source: template.md
+    destination: rendered.md
+    substitutions:
+      - FIXTURE_NAME
+      - FIXTURE_BODY
+      - FIXTURE_OPTIONAL_FILLED
+      - FIXTURE_OPTIONAL
+      - FIXTURE_OPTIONAL_SECOND
+    collapse_empty_substitutions:
+      - FIXTURE_OPTIONAL_FILLED
+      - FIXTURE_OPTIONAL
+      - FIXTURE_OPTIONAL_SECOND
