@@ -746,10 +746,11 @@ def _pseudo_v3_match(body: str) -> re.Match[str] | None:
         return None
     if (
         len(matches) != 1
-        or body.count("<!-- local-review:v3") != 1
+        or body.count("<!-- local-review") != 1
         or matches[0].start() == 0
         or body[matches[0].start() - 1] != "\n"
         or matches[0].end() != len(body)
+        or not body[: matches[0].start()].strip()
     ):
         _fail("actor-owned historical local-review:v3 marker is malformed")
     return matches[0]
@@ -806,6 +807,8 @@ def _thread_markers(
                 isinstance(reply, dict)
                 and isinstance(reply.get("author"), dict)
                 and reply["author"].get("login") == actor
+                and bool(str(reply.get("body", "")).strip())
+                and "<!-- local-review" not in str(reply.get("body", ""))
                 for reply in comments[index + 1 :]
             )
             if (
@@ -1005,40 +1008,143 @@ def _verify_review_base(repo: str, pr: int, base: str, before: str) -> None:
         _fail(f"PR base mismatch: expected {base}, found {pr_base or '<empty>'}")
 
 
-def _verify_result_evidence(
-    args: argparse.Namespace, data: dict[str, Any], actor: str
-) -> None:
-    _verify_review_base(args.repo, args.pr, args.base, args.before)
-    _verify_git_transition(args.before, args.head)
-    matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
-    evidence: set[str] = set()
-    fixed: set[str] = set()
+def _load_allowed_heads(args: argparse.Namespace) -> dict[str, int]:
+    path = Path(args.allowed_heads_file)
+    if path.is_symlink() or not path.is_file():
+        _fail("allowed transition heads must be a regular non-symlink file")
+    try:
+        values = json.loads(path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LedgerError(
+            "allowed transition heads must contain valid UTF-8 JSON"
+        ) from error
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(
+            not isinstance(value, str) or not SHA_RE.fullmatch(value)
+            for value in values
+        )
+        or len(set(values)) != len(values)
+        or values[0] != args.before
+        or values[-1] != args.head
+    ):
+        _fail("allowed transition heads do not match the observed review transition")
+    for before, after in zip(values, values[1:]):
+        comparison = _json_output(
+            ["api", f"repos/{args.repo}/compare/{before}...{after}"]
+        )
+        merge_base = (
+            comparison.get("merge_base_commit")
+            if isinstance(comparison, dict)
+            else None
+        )
+        if (
+            not isinstance(comparison, dict)
+            or comparison.get("status") != "ahead"
+            or not isinstance(merge_base, dict)
+            or merge_base.get("sha") != before
+        ):
+            _fail("allowed transition heads are not forward-only")
+    return {value: index for index, value in enumerate(values)}
+
+
+def _same_round_evidence(
+    args: argparse.Namespace,
+    matched: list[tuple[re.Match[str], re.Match[str]]],
+    allowed_heads: dict[str, int],
+) -> list[tuple[str, bool, bool]]:
+    evidence: dict[str, tuple[bool, bool]] = {}
     for finding, disposition in matched:
         if (
             finding.group("engine") != args.engine
             or int(finding.group("round")) != args.round
         ):
             continue
-        evidence.add(finding.group("fingerprint"))
-        if disposition.group("outcome") != "fixed":
-            continue
         finding_head = finding.group("head")
+        if finding_head not in allowed_heads:
+            continue
         disposition_head = disposition.group("head")
-        if finding_head == disposition_head:
+        if (
+            disposition.group("outcome") == "fixed"
+            and disposition_head == finding_head
+        ):
             _fail("fixed finding was not posted before its disposition head")
         if (
-            not _is_ancestor(args.before, finding_head)
-            or not _is_ancestor(finding_head, disposition_head)
-            or not _is_ancestor(disposition_head, args.head)
-        ):
-            _fail(
-                "fixed finding or disposition is outside the observed review transition"
+            disposition_head not in allowed_heads
+            or allowed_heads[disposition_head] < allowed_heads[finding_head]
+            or (
+                disposition.group("outcome") == "fixed"
+                and allowed_heads[disposition_head] == allowed_heads[finding_head]
             )
-        fixed.add(finding.group("fingerprint"))
-    expected = set(cast(list[str], data["findingFingerprints"]))
-    if evidence != expected:
+        ):
+            _fail("same-round finding disposition is outside the observed transition")
+        if (
+            finding.group("severity") == "blocking"
+            and disposition.group("outcome") != "fixed"
+        ):
+            _fail("blocking local-review findings must be fixed")
+        fingerprint = finding.group("fingerprint")
+        fixed = disposition.group("outcome") == "fixed"
+        fixed_major = fixed and finding.group("severity") in {"blocking", "major"}
+        previous = evidence.get(fingerprint, (False, False))
+        evidence[fingerprint] = (
+            previous[0] or fixed,
+            previous[1] or fixed_major,
+        )
+    return [
+        (fingerprint, *evidence[fingerprint]) for fingerprint in sorted(evidence)
+    ]
+
+
+def _transition_heads(
+    args: argparse.Namespace,
+    matched: list[tuple[re.Match[str], re.Match[str]]],
+) -> dict[str, int]:
+    if getattr(args, "allowed_heads_file", None) is not None:
+        return _load_allowed_heads(args)
+    if args.before == args.head:
+        return {args.before: 0}
+    comparison = subprocess.run(
+        [
+            "git",
+            "rev-list",
+            "--reverse",
+            "--ancestry-path",
+            f"{args.before}..{args.head}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if comparison.returncode != 0:
+        _fail("could not derive the forward review transition")
+    values = [args.before, *comparison.stdout.splitlines()]
+    if values[-1] != args.head or len(set(values)) != len(values):
+        _fail("review result transition is not forward-only")
+    return {value: index for index, value in enumerate(values)}
+
+
+def _verify_result_evidence(
+    args: argparse.Namespace, data: dict[str, Any], actor: str
+) -> None:
+    _verify_review_base(args.repo, args.pr, args.base, args.before)
+    _verify_git_transition(args.before, args.head)
+    matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
+    allowed_heads = _transition_heads(args, matched)
+    evidence = _same_round_evidence(args, matched, allowed_heads)
+    expected = sorted(cast(list[str], data["findingFingerprints"]))
+    if [row[0] for row in evidence] != expected:
         _fail("review result fingerprints do not equal the complete same-round disposition set")
-    if data["status"] == "changed" and not fixed:
+    if data["status"] == "clean":
+        if any(has_fix for _, has_fix, _ in evidence):
+            _fail("clean review results cannot have same-round fixes")
+        return
+    if not evidence:
+        _fail("changed review results require ledger evidence")
+    if any(has_major_fix for _, _, has_major_fix in evidence) and data["classification"] != "material":
+        _fail("fixed blocking or major findings require material classification")
+    if not any(has_fix for _, has_fix, _ in evidence):
         marker = (
             f"<!-- local-review-refactor:v1 engine={args.engine} "
             f"head={args.before} outcome=committed -->"
@@ -1339,7 +1445,7 @@ def _validate_result_data(
             args.before == args.head
             or classification not in {"minor", "material"}
             or (args.round >= 3 and classification != "material")
-            or (classification == "material" and not fingerprints)
+            or not fingerprints
             or data["finalLaneComplete"] is not True
             or "blocker" in data
         ):
@@ -1371,30 +1477,20 @@ def _write_result(args: argparse.Namespace) -> None:
     _verify_review_base(args.repo, args.pr, args.base, args.before)
     _verify_git_transition(args.before, args.head)
     matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
-    rows = sorted(
-        {
-            (
-                finding.group("fingerprint"),
-                disposition.group("outcome"),
-                finding.group("severity"),
-            )
-            for finding, disposition in matched
-            if finding.group("engine") == args.engine
-            and int(finding.group("round")) == args.round
-        }
-    )
+    rows = _same_round_evidence(args, matched, _transition_heads(args, matched))
     fingerprints = [fingerprint for fingerprint, _, _ in rows]
-    if len(fingerprints) != len(set(fingerprints)):
-        _fail("same-round finding fingerprint is duplicated")
     changed = args.before != args.head
-    fixed = [(fingerprint, severity) for fingerprint, outcome, severity in rows if outcome == "fixed"]
-    if not changed and fixed:
+    if not changed and any(has_fix for _, has_fix, _ in rows):
         _fail("clean review results cannot have same-round fixes")
     if changed and args.classification not in {"minor", "material"}:
         _fail("changed review result requires --classification")
     if not changed and args.classification is not None:
         _fail("clean review result cannot have a classification")
-    if any(severity in {"blocking", "major"} for _, severity in fixed) and args.classification != "material":
+    if changed and args.round >= 3 and args.classification != "material":
+        _fail("round 3+ changed review results require material classification")
+    if changed and not rows:
+        _fail("changed review results require ledger evidence")
+    if changed and any(has_major_fix for _, _, has_major_fix in rows) and args.classification != "material":
         _fail("fixed blocking or major findings require material classification")
     value = {
         "version": PROTOCOL_VERSION,
@@ -1766,8 +1862,14 @@ def _validate_args(args: argparse.Namespace) -> None:
         _fail("--round must be a positive integer")
     if getattr(args, "occurrence", 1) < 1:
         _fail("--occurrence must be a positive integer")
-    if args.command == "post-finding" and getattr(args, "content_file", None):
-        required = ("engine", "round", "fingerprint", "severity", "lens")
+    if getattr(args, "content_file", None) and args.command in {
+        "post-finding",
+        "reopen-occurrence",
+        "dispose",
+    }:
+        required = ["engine", "round", "fingerprint"]
+        if args.command == "post-finding":
+            required.extend(("severity", "lens"))
         missing = [name for name in required if getattr(args, name, None) is None]
         if missing:
             _fail(

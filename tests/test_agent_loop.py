@@ -309,7 +309,15 @@ elif args[0] == 'api' and any(value.startswith('repos/') for value in args):
     for record in records:
         record['user'] = {'login': author}
     endpoint_path = endpoint.split('?', 1)[0]
-    if endpoint_path.endswith('pulls/1/reviews'):
+    if '/compare/' in endpoint_path:
+        comparison = endpoint_path.split('/compare/', 1)[1]
+        before, after = comparison.split('...', 1)
+        print(json.dumps({
+            'status': 'ahead',
+            'merge_base_commit': {'sha': before},
+            'commits': [{'sha': after}],
+        }))
+    elif endpoint_path.endswith('pulls/1/reviews'):
         reviews_file = state / 'reviews.json'
         reviews = json.loads(reviews_file.read_text()) if reviews_file.exists() else []
         print(json.dumps([reviews] if '--slurp' in args else reviews))
@@ -437,6 +445,12 @@ def _config(tmp_path: Path, **overrides: str | int) -> str:
         "output_max_lines": 10,
     }
     values.update(overrides)
+    if values["review_contract_version"] == 3:
+        for key in ("codex_review_hook", "claude_review_hook"):
+            values[key] = (
+                ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
+                f'"$AGENT_LOOP_REVIEW_RESULT_FILE" write-result; {values[key]}'
+            )
     return "\n".join(f"{key} = {value}" for key, value in values.items()) + "\n"
 
 
@@ -495,6 +509,37 @@ def _run(
 def test_script_remains_executable_and_valid_bash() -> None:
     assert stat.S_IMODE(AGENT_LOOP.stat().st_mode) == 0o755
     subprocess.run(["bash", "-n", str(AGENT_LOOP)], check=True)
+
+
+@pytest.mark.parametrize(
+    ("missing_token", "expected_error"),
+    [
+        ("AGENT_LOOP_REVIEW_PUSH_HELPER", "must use AGENT_LOOP_REVIEW_PUSH_HELPER"),
+        ("AGENT_LOOP_REVIEW_RESULT_FILE", "must write AGENT_LOOP_REVIEW_RESULT_FILE"),
+        ("write-result", "must use review-ledger.py write-result"),
+    ],
+)
+def test_v3_hook_contract_is_preflighted_before_claim(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    missing_token: str,
+    expected_error: str,
+) -> None:
+    config = _config(
+        tmp_path,
+        review_contract_version=3,
+        codex_review_hook=_clean_v3_hook("codex"),
+        claude_review_hook=_clean_v3_hook("claude"),
+    ).replace(missing_token, "missing")
+    result = _run(
+        consumer,
+        ["--issues", "20"],
+        issues=[_issue(20)],
+        config=config,
+    )
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert not (consumer[3] / "claimed-20").exists()
 
 
 def test_v3_missing_structured_result_is_not_treated_as_clean(
@@ -587,7 +632,106 @@ def test_batch_resume_finalizes_interrupted_first_issue_then_processes_second(
     assert "issue-70" in branches and "issue-71" in branches
 
 
-def test_v3_cleanup_only_minor_transition_is_attestable(
+def test_batch_iteration_cap_pauses_with_durable_cursor(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "72,73", "--iterations", "1"],
+        issues=[_issue(72), _issue(73)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook=_clean_v3_hook("codex"),
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "paused cleanly at the 1-issue iteration cap" in result.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["cursor"] == 1
+    assert [row["status"] for row in batch["issues"]] == ["finalized", "pending"]
+
+
+def test_batch_cursor_issue_cannot_skip_to_a_later_ready_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    batch_file = tmp_path / "logs/manual-batch.json"
+    helper = consumer[0] / ".claude/skills/agent-loop/scripts/agent-loop-state.py"
+    created = subprocess.run(
+        [
+            "python3", str(helper), "batch-create", "--file", str(batch_file),
+            "--run-id", "manual", "--repo", "fixture/consumer",
+            "--base-branch", "main", "--issues", "74,75",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    result = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(74), _issue(75)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook=_clean_v3_hook("codex"),
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+        extra_env={"AGENT_READY_JSON": json.dumps([_issue(75)])},
+    )
+    assert result.returncode != 0
+    assert "Ordered batch cursor issue #74 is not ready" in result.stderr
+    assert "--expected-status 'pending' --status bailed" in result.stderr
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["cursor"] == 0
+    assert [row["status"] for row in batch["issues"]] == ["pending", "pending"]
+
+
+def test_batch_checkpoints_before_failed_worktree_cleanup(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        consumer[2] / "git",
+        """#!/usr/bin/env bash
+if [ "$1" = worktree ] && [ "$2" = remove ] && [ ! -e "$AGENT_STATE_DIR/cleanup-failed" ]; then
+    touch "$AGENT_STATE_DIR/cleanup-failed"
+    exit 75
+fi
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "76,77", "--iterations", "1"],
+        issues=[_issue(76), _issue(77)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook=_clean_v3_hook("codex"),
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+        extra_env={"AGENT_TEST_REAL_GIT": real_git},
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "cleanup failed and was preserved" in result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["cursor"] == 1
+    assert batch["issues"][0]["status"] == "finalized"
+    child_state = Path(batch["issues"][0]["childRunState"])
+    child = json.loads(child_state.read_text(encoding="utf-8"))
+    assert child["phase"] == "finalized"
+    assert Path(child["worktree"]).exists()
+
+
+def test_v3_cleanup_only_minor_transition_requires_ledger_evidence(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     result = _run(
@@ -601,11 +745,34 @@ def test_v3_cleanup_only_minor_transition_is_attestable(
             claude_review_hook=_clean_v3_hook("claude"),
         ),
     )
+    assert result.returncode != 0
+    assert "valid contract v3 result" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_v3_review_hook_cannot_self_authorize_direct_push(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    hook = (
+        "if AGENT_LOOP_SAFE_REVIEW_PUSH=1 git push origin "
+        '"HEAD:refs/heads/$AGENT_LOOP_BRANCH" '
+        '2> "$AGENT_STATE_DIR/direct-v3-push.stderr"; then exit 89; fi; '
+        + _clean_v3_hook("codex")
+    )
+    result = _run(
+        consumer,
+        ["--issues", "91"],
+        issues=[_issue(91)],
+        config=_config(
+            tmp_path,
+            review_contract_version=3,
+            codex_review_hook=hook,
+            claude_review_hook=_clean_v3_hook("claude"),
+        ),
+    )
     assert result.returncode == 0, result.stderr + result.stdout
-    assert (consumer[3] / "pr-ready").exists()
-    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
-    assert "local-review-refactor:v1 engine=codex" in comments
-    assert "local-review-complete:v3 engine=codex round=1" in comments
+    rejection = (consumer[3] / "direct-v3-push.stderr").read_text(encoding="utf-8")
+    assert "contract-v3 review hooks must publish" in rejection
 
 
 def test_v3_rejects_github_actor_drift_after_review_hook(

@@ -20,8 +20,11 @@ validation_hook =
 # the complete PR ledger, post confirmed findings inline before editing, commit
 # and publish fixes through $AGENT_LOOP_REVIEW_PUSH_HELPER, reply with the fix SHA and
 # validation, resolve completed threads, and leave local/remote/PR heads equal.
-# Every pass calls `review-ledger.py write-result`, which derives the complete
-# same-round disposition set and atomically writes $AGENT_LOOP_REVIEW_RESULT_FILE.
+# Every successfully completed clean or changed pass calls `review-ledger.py
+# write-result`, which derives the complete same-round disposition set and
+# atomically writes $AGENT_LOOP_REVIEW_RESULT_FILE. A blocked hook uses
+# deepcritique's deterministic blocked-result serializer and must not claim a
+# clean or changed pass.
 # Review hooks never post pass/completion markers because
 # the wrapper validates the result and owns those attestations.
 # Findings, replies, and attestations must be posted by the authenticated

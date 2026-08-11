@@ -15,6 +15,22 @@ fi
 : "${AGENT_LOOP_WORKTREE:?AGENT_LOOP_WORKTREE is required}"
 : "${AGENT_LOOP_BRANCH:?AGENT_LOOP_BRANCH is required}"
 : "${AGENT_LOOP_PR_HEAD_SHA:?AGENT_LOOP_PR_HEAD_SHA is required}"
+: "${AGENT_LOOP_REAL_GIT:?AGENT_LOOP_REAL_GIT is required}"
+: "${AGENT_LOOP_ORIGIN_FETCH_URLS:?AGENT_LOOP_ORIGIN_FETCH_URLS is required}"
+: "${AGENT_LOOP_ORIGIN_PUSH_URLS:?AGENT_LOOP_ORIGIN_PUSH_URLS is required}"
+
+real_git="$AGENT_LOOP_REAL_GIT"
+
+require_origin_identity() {
+    local fetch_urls push_urls
+    fetch_urls="$("$real_git" remote get-url --all origin)" || return 1
+    push_urls="$("$real_git" remote get-url --push --all origin)" || return 1
+    if [ "$fetch_urls" != "$AGENT_LOOP_ORIGIN_FETCH_URLS" ] || \
+       [ "$push_urls" != "$AGENT_LOOP_ORIGIN_PUSH_URLS" ]; then
+        echo "review-push rejects changed origin fetch/push identity" >&2
+        return 1
+    fi
+}
 
 case "$AGENT_LOOP_BRANCH" in
     refs/*|*:*|*' '*|*'~'*|*'^'*|*'?'*|*'['*|*\\*)
@@ -22,14 +38,14 @@ case "$AGENT_LOOP_BRANCH" in
         exit 1
         ;;
 esac
-git check-ref-format --branch "$AGENT_LOOP_BRANCH" >/dev/null
+"$real_git" check-ref-format --branch "$AGENT_LOOP_BRANCH" >/dev/null
 
-actual_root="$(git rev-parse --show-toplevel)"
+actual_root="$("$real_git" rev-parse --show-toplevel)"
 [ "$actual_root" = "$AGENT_LOOP_WORKTREE" ] || {
     echo "review-push must run from the captured issue worktree" >&2
     exit 1
 }
-actual_branch="$(git symbolic-ref --quiet --short HEAD)" || {
+actual_branch="$("$real_git" symbolic-ref --quiet --short HEAD)" || {
     echo "review-push rejects detached HEAD" >&2
     exit 1
 }
@@ -37,17 +53,18 @@ actual_branch="$(git symbolic-ref --quiet --short HEAD)" || {
     echo "review-push rejects a different checked-out branch" >&2
     exit 1
 }
-[ -z "$(git status --porcelain)" ] || {
+[ -z "$("$real_git" status --porcelain)" ] || {
     echo "review-push requires a clean committed worktree" >&2
     exit 1
 }
 
-local_head="$(git rev-parse HEAD)"
-git merge-base --is-ancestor "$AGENT_LOOP_PR_HEAD_SHA" "$local_head" || {
+local_head="$("$real_git" rev-parse HEAD)"
+"$real_git" merge-base --is-ancestor "$AGENT_LOOP_PR_HEAD_SHA" "$local_head" || {
     echo "review-push rejects non-forward review history" >&2
     exit 1
 }
-remote_line="$(git ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRANCH")"
+require_origin_identity
+remote_line="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRANCH")"
 [ -n "$remote_line" ] || {
     echo "review-push requires the captured remote issue branch" >&2
     exit 1
@@ -58,9 +75,12 @@ remote_head="${remote_line%%[[:space:]]*}"
     exit 1
 }
 
-AGENT_LOOP_SAFE_REVIEW_PUSH=1 git push origin \
+require_origin_identity
+"$real_git" push origin \
     "$local_head:refs/heads/$AGENT_LOOP_BRANCH"
-observed="$(git ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRANCH")"
+require_origin_identity
+observed="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRANCH")"
+require_origin_identity
 [ "${observed%%[[:space:]]*}" = "$local_head" ] || {
     echo "review-push could not attest the remote head" >&2
     exit 1
