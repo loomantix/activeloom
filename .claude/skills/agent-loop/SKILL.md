@@ -180,10 +180,10 @@ opened one summary PR at the end. That model is gone:
   Old hooks that compose their own pushes will fail closed because each fix must
   use `$AGENT_LOOP_REVIEW_PUSH_HELPER`, which owns the exact fully qualified
   draft-PR destination and rejects force, ambiguity, stale heads, and the wrong
-  branch. Every v3 hook must call `review-ledger.py write-result`; it must not
-  use `review-ledger.py write-blocked-result` for blocked results, or post
-  pass/completion attestations because the
-  wrapper validates the result and owns those markers.
+  branch. Every clean or changed v3 hook must call the ledger helper's
+  `write-result` command; a blocked hook must call `write-blocked-result`. Hooks
+  must not post pass/completion attestations because the wrapper validates the
+  result and owns those markers.
 
 ## Test Guidance
 
