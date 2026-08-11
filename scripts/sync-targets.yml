@@ -122,6 +122,16 @@ targets:
     substitutions: []
     mode: '0755'
 
+  - source: .codex/skills/agent-loop/scripts/review-push.sh
+    destination: .codex/skills/agent-loop/scripts/review-push.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/agent-loop/scripts/config-doctor.py
+    destination: .codex/skills/agent-loop/scripts/config-doctor.py
+    substitutions: []
+    mode: '0755'
+
   - source: .codex/skills/agent-loop/scripts/hook-git-guard
     destination: .codex/skills/agent-loop/scripts/hook-git-guard
     substitutions: []

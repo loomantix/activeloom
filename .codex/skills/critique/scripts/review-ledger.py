@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -757,10 +759,10 @@ def _validate_result_data(
         _fail("review result finalLaneComplete must be boolean")
     classification = data.get("classification")
     if status == "clean":
-        if args.before != _result_head(args) or classification is not None or fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
+        if args.before != _result_head(args) or classification is not None or data["finalLaneComplete"] is not True or "blocker" in data:
             _fail("clean review result conflicts with the observed pass")
     elif status == "changed":
-        if args.before == _result_head(args) or classification not in {"minor", "material"} or not fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
+        if args.before == _result_head(args) or classification not in {"minor", "material"} or (args.round >= 3 and classification != "material") or (classification == "material" and not fingerprints) or data["finalLaneComplete"] is not True or "blocker" in data:
             _fail("changed review result conflicts with the observed pass")
     else:
         blocker = data.get("blocker")
@@ -776,6 +778,130 @@ def _validate_result(args: argparse.Namespace) -> None:
     output["resultSha256"] = hashlib.sha256(raw).hexdigest()
     output["verified"] = True
     print(json.dumps(output, sort_keys=True))
+
+
+def _same_round_dispositions(
+    args: argparse.Namespace,
+    threads: list[dict[str, Any]],
+    allowed_heads: dict[str, int],
+) -> list[tuple[str, str, str]]:
+    """Return deterministic (fingerprint, outcome, severity) ledger evidence."""
+    evidence: dict[str, tuple[str, str]] = {}
+    for thread in threads:
+        findings, dispositions, _, _ = _thread_protocol_records(thread)
+        for finding_index, finding in findings:
+            if (
+                finding.group("engine") != args.engine
+                or int(finding.group("round")) != args.round
+            ):
+                continue
+            fingerprint = finding.group("fingerprint")
+            finding_head = finding.group("head")
+            if finding_head not in allowed_heads:
+                _fail("same-round finding is outside the observed review transition")
+            if fingerprint in evidence:
+                _fail("same-round finding fingerprint is duplicated")
+            matches = [
+                disposition
+                for disposition in _matching_dispositions(
+                    finding_index, finding, dispositions
+                )
+                if disposition.group("head") in allowed_heads
+                and allowed_heads[disposition.group("head")]
+                >= allowed_heads[finding_head]
+                and (
+                    disposition.group("outcome") != "fixed"
+                    or allowed_heads[disposition.group("head")]
+                    > allowed_heads[finding_head]
+                )
+            ]
+            if thread.get("isResolved") is not True or len(matches) != 1:
+                _fail("same-round finding lacks one resolved matching disposition")
+            disposition = matches[0]
+            if (
+                finding.group("severity") == "blocking"
+                and disposition.group("outcome") != "fixed"
+            ):
+                _fail("blocking local-review findings must be fixed")
+            evidence[fingerprint] = (
+                disposition.group("outcome"),
+                finding.group("severity"),
+            )
+    return [
+        (fingerprint, *evidence[fingerprint]) for fingerprint in sorted(evidence)
+    ]
+
+
+def _write_result(args: argparse.Namespace) -> None:
+    threads = _load_review_threads(args.threads_file)
+    _verify_thread_dispositions(threads)
+    if args.allowed_heads_file is None:
+        comparison = subprocess.run(
+            ["git", "rev-list", "--reverse", "--ancestry-path", f"{args.before}..{args.head}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if comparison.returncode != 0:
+            _fail("could not derive the forward review transition")
+        values = [args.before, *comparison.stdout.splitlines()]
+        if values[-1] != args.head or len(set(values)) != len(values):
+            _fail("review result transition is not forward-only")
+        allowed_heads = {value: index for index, value in enumerate(values)}
+    else:
+        allowed_heads = _load_allowed_heads(args)
+    dispositions = _same_round_dispositions(args, threads, allowed_heads)
+    changed = args.before != args.head
+    if not changed and any(outcome == "fixed" for _, outcome, _ in dispositions):
+        _fail("clean review results cannot have same-round fixes")
+    if changed and args.classification not in {"minor", "material"}:
+        _fail("changed review result requires --classification")
+    if not changed and args.classification is not None:
+        _fail("clean review result cannot have a classification")
+    if changed and args.round >= 3 and args.classification != "material":
+        _fail("round 3+ changed review results require material classification")
+    if changed and args.classification == "material" and not dispositions:
+        _fail("material changed review results require ledger evidence")
+    if (
+        changed
+        and args.classification != "material"
+        and any(
+            outcome == "fixed" and severity in {"blocking", "major"}
+            for _, outcome, severity in dispositions
+        )
+    ):
+        _fail("fixed blocking or major findings require material classification")
+    value = {
+        "version": PROTOCOL_VERSION,
+        "status": "changed" if changed else "clean",
+        "engine": args.engine,
+        "round": args.round,
+        "baseSha": args.base,
+        "beforeSha": args.before,
+        "afterSha": args.head,
+        "classification": args.classification if changed else None,
+        "findingFingerprints": [row[0] for row in dispositions],
+        "finalLaneComplete": True,
+    }
+    raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    path = Path(args.result_file)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        _fail("review result destination must be a regular non-symlink file")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    print(json.dumps({"resultSha256": hashlib.sha256(raw).hexdigest(), **value}, sort_keys=True))
 
 
 def _attest(args: argparse.Namespace) -> None:
@@ -1047,74 +1173,24 @@ def _verify_result_evidence(
 ) -> dict[str, Any]:
     if data is None:
         data = _validate_result_data(args)
-    if data["status"] == "clean":
-        for thread in threads:
-            findings, dispositions, _, _ = _thread_protocol_records(thread)
-            for finding_index, finding in findings:
-                if (
-                    finding.group("engine") != args.engine
-                    or int(finding.group("round")) != args.round
-                ):
-                    continue
-                matches = _matching_dispositions(
-                    finding_index, finding, dispositions
-                )
-                if any(match.group("outcome") == "fixed" for match in matches):
-                    _fail("clean review results cannot have same-round fixes")
-        return data
-    if data["status"] != "changed":
+    if data["status"] not in {"clean", "changed"}:
         _fail("ledger result evidence requires a changed review result")
     if allowed_heads is None:
         allowed_heads = _load_allowed_heads(args)
-    evidence: dict[str, tuple[re.Match[str], re.Match[str]]] = {}
-    for thread in threads:
-        findings, dispositions, _, _ = _thread_protocol_records(thread)
-        for finding_index, finding in findings:
-            if (
-                finding.group("engine") != args.engine
-                or int(finding.group("round")) != args.round
-            ):
-                continue
-            fingerprint = finding.group("fingerprint")
-            finding_head = finding.group("head")
-            if finding_head not in allowed_heads:
-                _fail("same-round finding is outside the observed review transition")
-            if fingerprint in evidence:
-                _fail("same-round finding fingerprint is duplicated")
-            matches = [
-                disposition
-                for disposition in _matching_dispositions(
-                    finding_index, finding, dispositions
-                )
-                if disposition.group("head") in allowed_heads
-                and allowed_heads[disposition.group("head")]
-                >= allowed_heads[finding_head]
-                and (
-                    disposition.group("outcome") != "fixed"
-                    or allowed_heads[disposition.group("head")]
-                    > allowed_heads[finding_head]
-                )
-            ]
-            if thread.get("isResolved") is not True or len(matches) != 1:
-                _fail("same-round finding lacks one resolved matching disposition")
-            evidence[fingerprint] = (finding, matches[0])
-    if set(evidence) != set(data["findingFingerprints"]):
+    evidence = _same_round_dispositions(args, threads, allowed_heads)
+    if [row[0] for row in evidence] != sorted(data["findingFingerprints"]):
         _fail("review result fingerprints do not exactly match same-round ledger evidence")
-    if not any(
-        disposition.group("outcome") == "fixed"
-        for _, disposition in evidence.values()
-    ):
-        _fail("changed review results require at least one fixed finding")
-    if any(
-        finding.group("severity") == "blocking"
-        and disposition.group("outcome") != "fixed"
-        for finding, disposition in evidence.values()
-    ):
-        _fail("blocking local-review findings must be fixed")
+    if data["status"] == "clean":
+        if any(outcome == "fixed" for _, outcome, _ in evidence):
+            _fail("clean review results cannot have same-round fixes")
+        return data
+    if args.round >= 3 and data["classification"] != "material":
+        _fail("round 3+ changed review results require material classification")
+    if data["classification"] == "material" and not evidence:
+        _fail("material changed review results require ledger evidence")
     fixed_major = any(
-        finding.group("severity") in {"blocking", "major"}
-        and disposition.group("outcome") == "fixed"
-        for finding, disposition in evidence.values()
+        severity in {"blocking", "major"} and outcome == "fixed"
+        for _, outcome, severity in evidence
     )
     if fixed_major and data["classification"] != "material":
         _fail("fixed blocking or major findings require material classification")
@@ -1228,6 +1304,16 @@ def _parser() -> argparse.ArgumentParser:
     validate = commands.add_parser("validate-result")
     _add_result_arguments(validate, github=False)
     validate.set_defaults(handler=_validate_result)
+
+    write_result = commands.add_parser("write-result")
+    _add_result_arguments(write_result, github=False)
+    write_result.add_argument("--repo", required=True)
+    write_result.add_argument("--pr", required=True, type=int)
+    write_result.add_argument("--threads-file", required=True)
+    write_result.add_argument("--allowed-heads-file")
+    write_result.add_argument("--actor")
+    write_result.add_argument("--classification", choices=("minor", "material"))
+    write_result.set_defaults(handler=_write_result)
 
     attest = commands.add_parser("attest")
     _add_result_arguments(attest, github=True)

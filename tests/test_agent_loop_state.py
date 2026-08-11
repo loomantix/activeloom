@@ -102,6 +102,56 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
     assert shown_value["reviewEngine"] == "codex"
 
 
+def test_batch_state_persists_order_cursor_statuses_and_child_paths(tmp_path: Path) -> None:
+    state = tmp_path / "private" / "batch-state.json"
+    created = _run(
+        "batch-create", "--file", str(state), "--run-id", "batch-1",
+        "--repo", "example/repository", "--base-branch", "main",
+        "--issues", "7,8",
+    )
+    assert created.returncode == 0, created.stderr
+    assert stat.S_IMODE(state.stat().st_mode) == 0o600
+    active = _run(
+        "batch-update", "--file", str(state), "--issue", "7", "--status", "active",
+        "--child-run-state", str(tmp_path / "child-7.json"),
+    )
+    assert active.returncode == 0, active.stderr
+    finalized = _run(
+        "batch-update", "--file", str(state), "--issue", "7", "--status", "finalized",
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    value = json.loads(state.read_text(encoding="utf-8"))
+    assert value["allowlist"] == [7, 8]
+    assert value["cursor"] == 1
+    assert value["issues"][0] == {
+        "issue": 7,
+        "status": "finalized",
+        "childRunState": str((tmp_path / "child-7.json").resolve()),
+    }
+    assert value["issues"][1]["status"] == "pending"
+
+
+def test_batch_never_skips_active_uncertain_issue(tmp_path: Path) -> None:
+    state = tmp_path / "batch-state.json"
+    assert _run(
+        "batch-create", "--file", str(state), "--run-id", "batch-1",
+        "--repo", "example/repository", "--base-branch", "main", "--issues", "7,8",
+    ).returncode == 0
+    assert _run(
+        "batch-update", "--file", str(state), "--issue", "7", "--status", "active"
+    ).returncode == 0
+    skipped = _run(
+        "batch-update", "--file", str(state), "--issue", "8", "--status", "active"
+    )
+    assert skipped.returncode != 0
+    assert "current cursor issue" in skipped.stderr
+    bailed = _run(
+        "batch-update", "--file", str(state), "--issue", "7", "--status", "bailed"
+    )
+    assert bailed.returncode == 0, bailed.stderr
+    assert json.loads(state.read_text())["cursor"] == 1
+
+
 def test_state_rejects_permissive_or_unknown_content(tmp_path: Path) -> None:
     state = tmp_path / "run-state.json"
     state.write_text("{}\n", encoding="utf-8")

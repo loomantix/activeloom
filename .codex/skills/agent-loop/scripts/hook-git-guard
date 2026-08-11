@@ -55,6 +55,10 @@ if [ "$subcommand" = push ]; then
         echo "git push is disabled inside non-review agent-loop hooks" >&2
         exit 1
     fi
+    if [ "${AGENT_LOOP_SAFE_REVIEW_PUSH:-}" != 1 ]; then
+        echo "review hooks must publish through the wrapper-owned review-push helper" >&2
+        exit 1
+    fi
     branch="${AGENT_LOOP_BRANCH:?AGENT_LOOP_BRANCH is required for review push}"
     push_args=("${args[@]:$((insertion_index + 1))}")
     refspec="${push_args[1]:-}"

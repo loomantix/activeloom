@@ -18,6 +18,7 @@ STATE_VERSION = 1
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
+BATCH_STATUSES = {"pending", "active", "finalized", "bailed"}
 
 
 class StateError(RuntimeError):
@@ -197,6 +198,138 @@ def _show(args: argparse.Namespace) -> None:
     print(json.dumps(_read(Path(args.file)), sort_keys=True))
 
 
+def _validate_batch(value: dict[str, Any]) -> None:
+    required = {"version", "kind", "runId", "repo", "baseBranch", "allowlist", "cursor", "issues"}
+    if set(value) != required or value.get("version") != STATE_VERSION or value.get("kind") != "batch":
+        _fail("batch state has missing, unknown, or unsupported fields")
+    for key in ("runId", "repo", "baseBranch"):
+        if not isinstance(value[key], str) or not value[key]:
+            _fail(f"batch state {key} must be a non-empty string")
+    allowlist = value["allowlist"]
+    if (
+        not isinstance(allowlist, list)
+        or not allowlist
+        or any(type(issue) is not int or issue < 1 for issue in allowlist)
+        or len(set(allowlist)) != len(allowlist)
+    ):
+        _fail("batch allowlist must contain unique positive issue numbers")
+    cursor = value["cursor"]
+    if type(cursor) is not int or not 0 <= cursor <= len(allowlist):
+        _fail("batch cursor is invalid")
+    rows = value["issues"]
+    if not isinstance(rows, list) or len(rows) != len(allowlist):
+        _fail("batch issue statuses do not match the allowlist")
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or set(row) != {"issue", "status", "childRunState"}:
+            _fail("batch issue status has an invalid shape")
+        if row["issue"] != allowlist[index] or row["status"] not in BATCH_STATUSES:
+            _fail("batch issue status does not match the ordered allowlist")
+        child = row["childRunState"]
+        if child is not None and (not isinstance(child, str) or not Path(child).is_absolute()):
+            _fail("batch child run-state path must be absolute or null")
+        if index < cursor and row["status"] not in {"finalized", "bailed"}:
+            _fail("completed batch entries must be finalized or bailed")
+        if index > cursor and row["status"] != "pending":
+            _fail("future batch entries must remain pending")
+    if cursor < len(rows) and rows[cursor]["status"] not in {"pending", "active"}:
+        _fail("current batch entry must be pending or active")
+
+
+def _read_batch(path: Path) -> dict[str, Any]:
+    metadata = os.lstat(path)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+        _fail("batch state must be an owner-controlled private regular file")
+    try:
+        value = json.loads(path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise StateError("batch state must contain valid UTF-8 JSON") from error
+    if not isinstance(value, dict):
+        _fail("batch state must be a JSON object")
+    _validate_batch(value)
+    return value
+
+
+def _atomic_write_batch(path: Path, value: dict[str, Any], *, replace: bool = True) -> None:
+    _validate_batch(value)
+    # Reuse the same fsync/private atomic writer after temporarily validating as
+    # batch state instead of child state.
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.parent.is_symlink():
+        _fail("batch state directory must not be a symlink")
+    os.chmod(path.parent, 0o700)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if replace:
+            os.replace(temporary, path)
+        else:
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                _fail("batch state already exists")
+            os.unlink(temporary)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _batch_create(args: argparse.Namespace) -> None:
+    allowlist = [int(value) for value in args.issues.split(",")]
+    value = {
+        "version": STATE_VERSION,
+        "kind": "batch",
+        "runId": args.run_id,
+        "repo": args.repo,
+        "baseBranch": args.base_branch,
+        "allowlist": allowlist,
+        "cursor": 0,
+        "issues": [
+            {"issue": issue, "status": "pending", "childRunState": None}
+            for issue in allowlist
+        ],
+    }
+    _atomic_write_batch(Path(args.file), value, replace=False)
+    print(json.dumps(value, sort_keys=True))
+
+
+def _batch_update(args: argparse.Namespace) -> None:
+    path = Path(args.file)
+    value = _read_batch(path)
+    cursor = value["cursor"]
+    if cursor >= len(value["issues"]) or value["issues"][cursor]["issue"] != args.issue:
+        _fail("batch update may target only the current cursor issue")
+    row = value["issues"][cursor]
+    if row["status"] == "pending" and args.status != "active":
+        _fail("pending batch issue must become active before completion")
+    if row["status"] == "active" and args.status not in {"active", "finalized", "bailed"}:
+        _fail("active batch issue has an invalid transition")
+    row["status"] = args.status
+    if args.child_run_state is not None:
+        row["childRunState"] = str(Path(args.child_run_state).resolve())
+    if args.status in {"finalized", "bailed"}:
+        if args.status == "finalized" and row["childRunState"] is None:
+            _fail("finalized batch issue requires a child run-state path")
+        value["cursor"] = cursor + 1
+    _atomic_write_batch(path, value)
+    print(json.dumps(value, sort_keys=True))
+
+
+def _batch_show(args: argparse.Namespace) -> None:
+    print(json.dumps(_read_batch(Path(args.file)), sort_keys=True))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-version", action="version", version=str(STATE_VERSION))
@@ -230,6 +363,22 @@ def _parser() -> argparse.ArgumentParser:
     show = commands.add_parser("show")
     show.add_argument("--file", required=True)
     show.set_defaults(handler=_show)
+    batch_create = commands.add_parser("batch-create")
+    batch_create.add_argument("--file", required=True)
+    batch_create.add_argument("--run-id", required=True)
+    batch_create.add_argument("--repo", required=True)
+    batch_create.add_argument("--base-branch", required=True)
+    batch_create.add_argument("--issues", required=True)
+    batch_create.set_defaults(handler=_batch_create)
+    batch_update = commands.add_parser("batch-update")
+    batch_update.add_argument("--file", required=True)
+    batch_update.add_argument("--issue", required=True, type=int)
+    batch_update.add_argument("--status", required=True, choices=sorted(BATCH_STATUSES))
+    batch_update.add_argument("--child-run-state")
+    batch_update.set_defaults(handler=_batch_update)
+    batch_show = commands.add_parser("batch-show")
+    batch_show.add_argument("--file", required=True)
+    batch_show.set_defaults(handler=_batch_show)
     return parser
 
 

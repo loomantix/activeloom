@@ -63,7 +63,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     script.parent.mkdir(parents=True)
     ready.parent.mkdir(parents=True)
     shutil.copy2(AGENT_LOOP, script)
-    for guard_name in ("hook-git-guard", "hook-gh-guard"):
+    for guard_name in ("hook-git-guard", "hook-gh-guard", "review-push.sh", "config-doctor.py"):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
     ledger_source = REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.py"
@@ -76,8 +76,10 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "import json, os, pathlib, sys\n"
         "state = pathlib.Path(os.environ['AGENT_STATE_DIR'])\n"
         "(state / 'ready-argv.json').write_text(json.dumps(sys.argv[1:]))\n"
-        "key = ('AGENT_POST_CLAIM_READY_JSON' "
-        "if any(state.glob('claimed-*')) else 'AGENT_READY_JSON')\n"
+        "with (state / 'ready-argv.log').open('a') as handle: handle.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "key = ('AGENT_POST_PR_READY_JSON' if (state / 'pr-branch').exists() "
+        "else ('AGENT_POST_CLAIM_READY_JSON' "
+        "if any(state.glob('claimed-*')) else 'AGENT_READY_JSON'))\n"
         "print(os.environ.get(key, os.environ.get('AGENT_READY_JSON', '[]')))\n",
     )
     (repo / "agent-loop-instructions.md").write_text(
@@ -123,7 +125,10 @@ elif args[:2] == ['issue', 'view']:
     view_count = int(view_counter.read_text() if view_counter.exists() else '0') + 1
     view_counter.write_text(str(view_count))
     final_issue = json.loads(os.environ.get('AGENT_FINAL_ISSUES_JSON', '{}')).get(number)
-    if view_count > 2 and final_issue is not None:
+    post_pr_issue = json.loads(os.environ.get('AGENT_POST_PR_ISSUES_JSON', '{}')).get(number)
+    if (state / 'pr-branch').exists() and post_pr_issue is not None:
+        issue = post_pr_issue
+    elif view_count > 2 and final_issue is not None:
         issue = final_issue
     elif claimed.exists() or view_count > 1:
         issue = json.loads(os.environ.get('AGENT_POST_CLAIM_ISSUES_JSON', '{}')).get(number, issue)
@@ -191,7 +196,13 @@ elif args[:2] == ['pr', 'view']:
         print(os.environ.get('AGENT_PR_HEAD_OID', remote_head))
     else:
         number = args[2]
-        row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
+        source = (
+            os.environ.get('AGENT_POST_PR_PRS_JSON', os.environ.get('AGENT_PRS_JSON', '{}'))
+            if (state / 'pr-branch').exists()
+            else os.environ.get('AGENT_PRS_JSON', '{}')
+        )
+        rows = json.loads(source)
+        row = rows.get(number)
         if row:
             print('\t'.join(str(value) for value in row))
         else:
@@ -433,7 +444,7 @@ def _config(
             f"{command}; hook_status=$?; "
             '[ "$hook_status" -eq 0 ] || exit "$hook_status"; '
             'if [ "$(git rev-parse HEAD)" != "$AGENT_LOOP_PR_HEAD_SHA" ]; then '
-            'git push origin HEAD:"refs/heads/$AGENT_LOOP_BRANCH"; '
+            '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
             f"{committed_evidence}; "
             f"else {clean_attestation}; fi"
         )
@@ -472,7 +483,7 @@ def _v3_changed_hook() -> str:
         "before=$AGENT_LOOP_PR_HEAD_SHA; fingerprint=minor-fix; "
         "printf 'review fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'fix: minor review correction'; "
-        "git push origin HEAD:\"refs/heads/$AGENT_LOOP_BRANCH\"; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
         "after=$(git rev-parse HEAD); "
         "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=$AGENT_LOOP_REVIEW_ENGINE "
         "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=$fingerprint "
@@ -1097,7 +1108,7 @@ def test_v3_resume_cannot_rerun_the_capped_round(
         "before=$AGENT_LOOP_PR_HEAD_SHA; "
         "printf 'codex round %s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" >> result.txt; "
         "git add result.txt; git commit -m \"fix: codex round $AGENT_LOOP_REVIEW_ROUND\"; "
-        "git push origin HEAD:\"refs/heads/$AGENT_LOOP_BRANCH\"; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
         "after=$(git rev-parse HEAD); fingerprint=cap-$AGENT_LOOP_REVIEW_ROUND; "
         "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex round=$AGENT_LOOP_REVIEW_ROUND "
         "head=$before fingerprint=$fingerprint occurrence=1 severity=major "
@@ -1719,7 +1730,6 @@ def test_review_contract_version_is_required_before_claim(
 @pytest.mark.parametrize(
     ("hook_key", "hook_value"),
     [
-        ("codex_review_hook", "codex exec --skill deepgrill"),
         ("codex_review_hook", "codex exec --skill grill"),
         ("codex_review_hook", "python3 .codex/skills/grill/scripts/review-ledger.py attest"),
         ("claude_review_hook", "claude -p /deepgrill"),
@@ -1729,11 +1739,10 @@ def test_review_contract_version_is_required_before_claim(
         # `[^[:alnum:]_-]` branch, so without these a regression that drops
         # `^|` still passes while accepting the shortest spelling of a stale
         # hook.
-        ("codex_review_hook", "deepgrill"),
         ("claude_review_hook", "grill"),
     ],
 )
-def test_retired_grill_hook_is_rejected_before_claim(
+def test_incorrect_reviewer_hook_is_rejected_before_claim(
     consumer: tuple[Path, Path, Path, Path],
     tmp_path: Path,
     hook_key: str,
@@ -1746,7 +1755,7 @@ def test_retired_grill_hook_is_rejected_before_claim(
         config=_config_v3(tmp_path, **{hook_key: hook_value}),
     )
     assert result.returncode != 0
-    assert f"{hook_key} names a retired grill-family review skill" in result.stderr
+    assert f"{hook_key} names an incorrect reviewer skill" in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
@@ -1762,7 +1771,7 @@ def test_grill_substring_in_unrelated_hook_path_is_not_rejected(
         issues=[_issue(20)],
         config=_config_v3(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
     )
-    assert "names a retired grill-family review skill" not in result.stderr
+    assert "names an incorrect reviewer skill" not in result.stderr
     # Absence of the message alone would also hold if the run died earlier for
     # an unrelated reason, or if the guard's wording changed. Assert the run
     # actually got past the preflight by checking it reached the claim and
@@ -3260,6 +3269,91 @@ def test_issue_context_change_before_publication_preserves_work_and_claim(
     assert match and Path(match.group(1)).exists()
 
 
+def test_final_re_attestation_excludes_only_the_captured_draft_pr(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "62"],
+        issues=[_issue(62)],
+        config=_config(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    ready_calls = [
+        json.loads(row)
+        for row in (consumer[3] / "ready-argv.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert any(
+        args[-2:] == ["--exclude-addressed-by-pr", "1"] for args in ready_calls
+    )
+    assert (consumer[3] / "pr-ready").exists()
+
+
+def test_final_re_attestation_blocks_a_competing_open_pr(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "63"],
+        issues=[_issue(63)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_POST_PR_READY_JSON": "[]"},
+    )
+    assert result.returncode != 0
+    assert "is no longer ready before publication" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+@pytest.mark.parametrize("change", ["title", "body", "labels", "assignee"])
+def test_final_re_attestation_blocks_changed_issue_contract(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, change: str
+) -> None:
+    original = _issue(64)
+    final = _issue(64, assigned=True)
+    if change == "title":
+        final["title"] = "Changed title"
+    elif change == "body":
+        final["body"] = "Changed requirements"
+    elif change == "labels":
+        final["labels"] = []
+    elif change == "assignee":
+        final["assignees"] = [{"login": "competitor"}]
+    result = _run(
+        consumer,
+        ["--issues", "64"],
+        issues=[original],
+        config=_config(tmp_path),
+        extra_env={"AGENT_POST_PR_ISSUES_JSON": json.dumps({"64": final})},
+    )
+    assert result.returncode != 0
+    assert "changed or is no longer eligible before publication" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_final_re_attestation_blocks_dependency_regression(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    base_sha = _run_git("rev-parse", "main", cwd=consumer[0]).stdout.strip()
+    issue = _issue(65, "Depends on PR #999")
+    result = _run(
+        consumer,
+        ["--issues", "65"],
+        issues=[issue],
+        config=_config(tmp_path, dependency_gate="merged-to-base"),
+        extra_env={
+            "AGENT_PRS_JSON": json.dumps({"999": ["MERGED", "main", base_sha]}),
+            "AGENT_POST_PR_PRS_JSON": json.dumps(
+                {"999": ["CLOSED", "main", ""]}
+            ),
+        },
+    )
+    assert result.returncode != 0
+    assert "Dependency pr #999: NOT merged" in result.stdout
+    assert not (consumer[3] / "pr-ready").exists()
+
+
 def test_default_shipped_prompt_does_not_depend_on_gh() -> None:
     # The shipped worker prompt runs inside the gh-masked hook, so it must not
     # instruct the worker to call `gh`. Regression guard for the prompt template.
@@ -3540,6 +3634,51 @@ def test_issue_branch_has_no_upstream_during_worker(
         _run_git("rev-parse", branch, cwd=consumer[0]).stdout.strip()
         == _run_git("rev-parse", branch, cwd=consumer[1]).stdout.strip()
     )
+
+
+@pytest.mark.parametrize(
+    ("interrupt_env", "interrupt_value"),
+    [
+        ("AGENT_INTERRUPT_AFTER_READY", "true"),
+        ("AGENT_INTERRUPT_AFTER_CHILD_FINALIZED", "1"),
+    ],
+)
+def test_batch_resume_finalizes_interrupted_first_issue_then_processes_second(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    interrupt_env: str,
+    interrupt_value: str,
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "70,71", "--iterations", "2"],
+        issues=[_issue(70), _issue(71)],
+        config=_config_v3(tmp_path),
+        extra_env={interrupt_env: interrupt_value},
+        timeout=120,
+    )
+    assert first.returncode != 0
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["cursor"] == 0
+    assert batch["issues"][0]["status"] == "active"
+    assert batch["issues"][0]["childRunState"]
+    assert batch["issues"][1]["status"] == "pending"
+
+    second = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(70, assigned=True), _issue(71)],
+        config=_config_v3(tmp_path),
+        timeout=120,
+    )
+    assert second.returncode == 0, second.stderr + second.stdout
+    final = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert final["cursor"] == 2
+    assert [row["status"] for row in final["issues"]] == ["finalized", "finalized"]
+    assert all(row["childRunState"] for row in final["issues"])
+    branches = _agent_loop_branches(consumer[1])
+    assert "issue-70" in branches and "issue-71" in branches
 
 
 def test_missing_default_codex_fails_before_claim(

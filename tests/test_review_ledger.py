@@ -1221,8 +1221,147 @@ def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
     result["findingFingerprints"] = ["minor-deferred"]
     result["classification"] = "minor"
     result_file.write_text(json.dumps(result), encoding="utf-8")
-    with pytest.raises(review_ledger.LedgerError, match="at least one fixed"):
-        review_ledger.main(args)
+    review_ledger.main(args)
+    assert json.loads(capsys.readouterr().out)["verified"] is True
+
+
+def test_write_result_derives_canonical_mixed_dispositions(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    rows = []
+    for fingerprint, outcome, severity in (
+        ("z-fixed", "fixed", "major"),
+        ("a-deferred", "deferred", "minor"),
+        ("m-dismissed", "dismissed", "nit"),
+    ):
+        rows.append(
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {"body": _finding_body(fingerprint, severity=severity), "author": {"login": "reviewer"}},
+                        {"body": _disposition_body(fingerprint, outcome=outcome), "author": {"login": "reviewer"}},
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            }
+        )
+    threads = _threads_file(tmp_path, rows)
+    heads = _heads_file(tmp_path, HEAD, AFTER)
+    result_file = tmp_path / "result.json"
+    monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
+    review_ledger.main(
+        [
+            "write-result", "--repo", REPO, "--pr", "7", "--head", AFTER,
+            "--engine", "codex", "--round", "2", "--base", "c" * 40,
+            "--before", HEAD, "--result-file", str(result_file),
+            "--threads-file", str(threads), "--allowed-heads-file", str(heads),
+            "--actor", "reviewer", "--classification", "material",
+        ]
+    )
+    value = json.loads(result_file.read_text(encoding="utf-8"))
+    assert value["findingFingerprints"] == ["a-deferred", "m-dismissed", "z-fixed"]
+    assert result_file.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_write_result_allows_minor_cleanup_without_manual_fingerprints(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    threads = _threads_file(tmp_path, [])
+    heads = _heads_file(tmp_path, HEAD, AFTER)
+    result_file = tmp_path / "result.json"
+    monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
+    review_ledger.main(
+        [
+            "write-result",
+            "--repo",
+            REPO,
+            "--pr",
+            "7",
+            "--head",
+            AFTER,
+            "--engine",
+            "codex",
+            "--round",
+            "2",
+            "--base",
+            "c" * 40,
+            "--before",
+            HEAD,
+            "--result-file",
+            str(result_file),
+            "--threads-file",
+            str(threads),
+            "--allowed-heads-file",
+            str(heads),
+            "--actor",
+            "reviewer",
+            "--classification",
+            "minor",
+        ]
+    )
+    value = json.loads(result_file.read_text(encoding="utf-8"))
+    assert value["status"] == "changed"
+    assert value["findingFingerprints"] == []
+
+
+@pytest.mark.parametrize(
+    ("threads_value", "message"),
+    [
+        (b"not-json", "valid UTF-8 JSON"),
+        (json.dumps([]).encode(), "unexpected shape"),
+    ],
+)
+def test_write_result_rejects_malformed_or_missing_ledger(
+    review_ledger: ModuleType,
+    tmp_path: Path,
+    threads_value: bytes,
+    message: str,
+) -> None:
+    threads = tmp_path / "threads.json"
+    threads.write_bytes(threads_value)
+    heads = _heads_file(tmp_path, HEAD)
+    with pytest.raises(review_ledger.LedgerError, match=message):
+        review_ledger.main(
+            [
+                    "write-result", "--repo", REPO, "--pr", "7", "--head", HEAD,
+                "--engine", "codex", "--round", "2", "--base", "c" * 40,
+                "--before", HEAD, "--result-file", str(tmp_path / "result.json"),
+                "--threads-file", str(threads), "--allowed-heads-file", str(heads),
+                "--actor", "reviewer",
+            ]
+        )
+
+
+def test_write_result_rejects_duplicate_same_round_fingerprint(
+    review_ledger: ModuleType, tmp_path: Path
+) -> None:
+    thread = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {"body": _finding_body("duplicate", severity="minor"), "author": {"login": "reviewer"}},
+                {"body": _disposition_body("duplicate", outcome="deferred", head=HEAD), "author": {"login": "reviewer"}},
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    threads = _threads_file(tmp_path, [thread, thread])
+    heads = _heads_file(tmp_path, HEAD)
+    with pytest.raises(review_ledger.LedgerError, match="duplicated"):
+        review_ledger.main(
+            [
+                "write-result", "--repo", REPO, "--pr", "7", "--head", HEAD,
+                "--engine", "codex", "--round", "2", "--base", "c" * 40,
+                "--before", HEAD, "--result-file", str(tmp_path / "result.json"),
+                "--threads-file", str(threads), "--allowed-heads-file", str(heads),
+                "--actor", "reviewer",
+            ]
+        )
 
 
 def test_verify_ledger_rejects_deferred_blockers_and_earlier_undisposed_findings(
@@ -1558,7 +1697,7 @@ def test_attest_rejects_clean_result_with_same_round_fix(
         ],
     )
     heads = _heads_file(tmp_path, HEAD)
-    with pytest.raises(review_ledger.LedgerError, match="cannot have same-round fixes"):
+    with pytest.raises(review_ledger.LedgerError, match="same-round finding"):
         review_ledger.main(
             [
                 "attest",
@@ -1606,7 +1745,7 @@ def test_clean_result_allows_same_round_minor_deferral(
                 "beforeSha": HEAD,
                 "afterSha": HEAD,
                 "classification": None,
-                "findingFingerprints": [],
+                "findingFingerprints": ["minor-deferral"],
                 "finalLaneComplete": True,
             }
         ),
@@ -1639,7 +1778,8 @@ def test_clean_result_allows_same_round_minor_deferral(
     )
     data = json.loads(result_file.read_text(encoding="utf-8"))
     assert review_ledger._verify_result_evidence(
-        SimpleNamespace(engine="codex", round=2),
-        review_ledger._load_review_threads(threads),
-        data=data,
-    )
+            SimpleNamespace(engine="codex", round=2),
+            review_ledger._load_review_threads(threads),
+            data=data,
+            allowed_heads={HEAD: 0},
+        )

@@ -227,7 +227,10 @@ def _pr_list(extra_args: list[str]) -> list[dict[str, Any]]:
     return prs
 
 
-def fetch_addressed_numbers(window_days: int = ADDRESSED_PR_WINDOW_DAYS) -> set[int]:
+def fetch_addressed_numbers(
+    window_days: int = ADDRESSED_PR_WINDOW_DAYS,
+    exclude_pr_numbers: set[int] | None = None,
+) -> set[int]:
     """Issue numbers already addressed by an open or recently-merged PR.
 
     Authoritative source is `PullRequest.closingIssuesReferences` — the link set
@@ -252,8 +255,11 @@ def fetch_addressed_numbers(window_days: int = ADDRESSED_PR_WINDOW_DAYS) -> set[
         sys.stderr.write(f"Could not check PR-addressed issues: {exc}\n")
         sys.exit(1)
 
+    excluded = exclude_pr_numbers or set()
     addressed: set[int] = set()
     for pr in prs:
+        if pr.get("number") in excluded:
+            continue
         refs = [
             ref for ref in (pr.get("closingIssuesReferences") or [])
             if _ref_repo(ref) == repo
@@ -332,6 +338,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--area", help='e.g. "backend", "frontend", "packages"')
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--json", action="store_true", help="output JSON instead of table")
+    parser.add_argument(
+        "--exclude-addressed-by-pr",
+        action="append",
+        type=int,
+        default=[],
+        metavar="N",
+        help="ignore only PR N when computing addressed issues (wrapper re-attestation)",
+    )
     return parser.parse_args()
 
 
@@ -355,7 +369,12 @@ def main() -> int:
     # Blocker resolution must consider *all* open issues, not just the filtered set,
     # otherwise a blocker outside the filter looks "closed" and its dependent appears ready.
     open_nums = fetch_all_open_numbers() if filters else {i["number"] for i in issues}
-    addressed = fetch_addressed_numbers()
+    excluded_prs = set(getattr(args, "exclude_addressed_by_pr", []))
+    addressed = (
+        fetch_addressed_numbers(exclude_pr_numbers=excluded_prs)
+        if excluded_prs
+        else fetch_addressed_numbers()
+    )
 
     ready: list[dict[str, Any]] = []
     for issue in issues:
