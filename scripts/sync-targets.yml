@@ -69,6 +69,29 @@ targets:
     destination: .codex/skills/actions-usage-audit/SKILL.md
     substitutions: []
 
+  # Secure npm package release and first-publication bootstrap workflow.
+  - source: .codex/skills/publish-npm-package/SKILL.md
+    destination: .codex/skills/publish-npm-package/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/publish-npm-package/agents/openai.yaml
+    destination: .codex/skills/publish-npm-package/agents/openai.yaml
+    substitutions: []
+
+  - source: .codex/skills/publish-npm-package/references/upstream-docs.md
+    destination: .codex/skills/publish-npm-package/references/upstream-docs.md
+    substitutions: []
+
+  - source: .codex/skills/publish-npm-package/scripts/release-preflight.py
+    destination: .codex/skills/publish-npm-package/scripts/release-preflight.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/publish-npm-package/scripts/verify-published-package.py
+    destination: .codex/skills/publish-npm-package/scripts/verify-published-package.py
+    substitutions: []
+    mode: '0755'
+
   - source: .codex/skills/ship-staging/SKILL.md
     destination: .codex/skills/ship-staging/SKILL.md
     substitutions: []

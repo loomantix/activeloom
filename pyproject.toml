@@ -30,7 +30,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
-source = ["scripts"]
+source = ["scripts", ".codex/skills/publish-npm-package/scripts"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
@@ -50,7 +50,9 @@ strict = true
 # in conftest.py — mypy needs the same view of the source tree to
 # type-check the script bodies in place.
 mypy_path = ["scripts"]
-files = ["scripts", "tests"]
+# Skill-bundled release helpers are security-sensitive and must be gated too;
+# they are loaded by tests via importlib, which mypy does not follow.
+files = ["scripts", "tests", ".codex/skills/publish-npm-package/scripts"]
 # Scripts use hyphens in filenames (sync-engine.py, create-signed-commit.py)
 # which aren't valid Python module names. Tests import them via importlib;
 # mypy follows the imports without needing module-name resolution.

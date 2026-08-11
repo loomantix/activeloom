@@ -51,6 +51,11 @@
 .codex/skills/issues/scripts/ready.py
 .codex/skills/phone-install/SKILL.md
 .codex/skills/pr-critique/SKILL.md
+.codex/skills/publish-npm-package/SKILL.md
+.codex/skills/publish-npm-package/agents/openai.yaml
+.codex/skills/publish-npm-package/references/upstream-docs.md
+.codex/skills/publish-npm-package/scripts/release-preflight.py
+.codex/skills/publish-npm-package/scripts/verify-published-package.py
 .codex/skills/refactorpass/SKILL.md
 .codex/skills/reviewit/SKILL.md
 .codex/skills/ship-staging/SKILL.md
