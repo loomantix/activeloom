@@ -47,7 +47,7 @@ jobs:
     # updates that match it. A bumped SHA without matching file content
     # fails the gate intentionally so a reviewer notices the drift.
     env:
-      CLAUDE_PIN_SHA: 3bd7dc0e97b5c7278913e04105741877e8a6c8b7
+      CLAUDE_PIN_SHA: da67234540072c03ad9884f8fea53523fcbc6d55
       CLAUDE_REPO: loomantix/claude-platform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,13 +61,19 @@ jobs:
           # "explicit > implicit" choice, but it does mean adding a
           # new test file requires updating this list too.
           files=(
+            scripts/lint-collapse-sites.py
             scripts/sync-engine.py
             scripts/create-signed-commit.py
             tests/__init__.py
             tests/conftest.py
+            tests/fixtures/render-fidelity/.platform-config.yml
+            tests/fixtures/render-fidelity/expected.md
+            tests/fixtures/render-fidelity/sync-targets.yml
+            tests/fixtures/render-fidelity/template.md
             tests/test_sync_engine.py
             tests/test_sync_engine_integration.py
             tests/test_create_signed_commit.py
+            tests/test_lint_collapse_sites.py
           )
           mkdir -p /tmp/upstream
           for f in "${files[@]}"; do
@@ -76,6 +82,21 @@ jobs:
           drift=0
           for f in "${files[@]}"; do
             up="/tmp/upstream/$(echo "$f" | tr '/' '_')"
+            # The shared test loader is byte-identical except for its
+            # agent-specific skill root. Keep the file in the parity surface,
+            # but compare against the explicit `.claude/` -> `.codex/`
+            # adaptation that makes its ready fixture usable in this repo.
+            if [ "$f" = "tests/conftest.py" ]; then
+              if [ "$(grep -o '"\.claude"' "$up" | wc -l)" -ne 1 ] || \
+                [ "$(grep -o '\.claude/' "$up" | wc -l)" -ne 1 ]; then
+                echo "::error file=$f::unexpected agent-root adaptation surface"
+                drift=1
+                continue
+              fi
+              sed -e 's#"\.claude"#".codex"#g' -e 's#\.claude/#.codex/#g' \
+                "$up" > "${up}.adapted"
+              up="${up}.adapted"
+            fi
             if ! diff -q "$f" "$up" > /dev/null; then
               echo "::error file=$f::diverges from ${CLAUDE_REPO}@${CLAUDE_PIN_SHA}"
               diff -u "$up" "$f" | head -60 || true
@@ -131,6 +152,10 @@ jobs:
         run: |
           test -f scripts/create-signed-commit.py
           python3 -m coverage report --include='scripts/create-signed-commit.py' --fail-under=80
+      - name: Coverage gate — lint-collapse-sites.py >=80%
+        run: |
+          test -f scripts/lint-collapse-sites.py
+          python3 -m coverage report --include='scripts/lint-collapse-sites.py' --fail-under=80
 
   shell:
     name: Shell syntax + shellcheck
@@ -193,6 +218,41 @@ jobs:
       - name: Prettier --check
         run: pnpm format:check
 
+  render-check:
+    name: Rendered template fidelity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.29.3
+      - run: python3 -m pip install 'pyyaml==6.0.2'
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Render fidelity fixture and compare against golden
+        run: |
+          set -euo pipefail
+          # Render from a throwaway upstream tree so the fixture template is
+          # never a real sync target and can never reach a consumer.
+          UPSTREAM=$(mktemp -d)
+          CONSUMER=$(mktemp -d)
+          mkdir -p "$UPSTREAM/scripts"
+          cp tests/fixtures/render-fidelity/sync-targets.yml "$UPSTREAM/scripts/"
+          cp tests/fixtures/render-fidelity/template.md "$UPSTREAM/"
+          cp tests/fixtures/render-fidelity/.platform-config.yml "$CONSUMER/"
+          python3 scripts/sync-engine.py \
+            --upstream-repo "$UPSTREAM" \
+            --consumer-dir "$CONSUMER"
+          diff -u tests/fixtures/render-fidelity/expected.md "$CONSUMER/rendered.md"
+          pnpm exec prettier --config .prettierrc --check \
+            "$CONSUMER/rendered.md"
+
   sync-targets:
     name: sync-targets.yml matches schema
     runs-on: ubuntu-latest
@@ -215,5 +275,59 @@ jobs:
                   assert 'destination' in t, f"delete target missing destination: {t!r}"
               else:
                   assert 'source' in t and 'destination' in t, f"copy target missing keys: {t!r}"
+                  substitutions = t.get('substitutions', [])
+                  assert isinstance(substitutions, list) and all(
+                      isinstance(key, str) for key in substitutions
+                  ), f"substitutions must be a string list: {t!r}"
+                  collapse = t.get('collapse_empty_substitutions', [])
+                  assert isinstance(collapse, list) and all(
+                      isinstance(key, str) for key in collapse
+                  ), f"collapse_empty_substitutions must be a string list: {t!r}"
+                  assert set(collapse) <= set(substitutions), (
+                      f"collapse_empty_substitutions must be declared substitutions: {t!r}"
+                  )
+          copilot = next(
+              t for t in targets if t.get('destination') == '.github/copilot-instructions.md'
+          )
+          assert set(copilot.get('collapse_empty_substitutions', [])) == {
+              'PROJECT_OVERVIEW',
+              'STACK_TABLE',
+              'CODE_RULES',
+              'DOMAIN_RULES',
+              'REVIEW_FOCUS',
+              'WHAT_NOT_TO_SUGGEST_EXTRA',
+          }, "Copilot template collapse opt-ins changed without updating the render contract"
           print(f"OK: {len(targets)} targets")
           PY
+
+      - name: Validate canonical manifest through the sync engine
+        run: |
+          set -euo pipefail
+          CONSUMER=$(mktemp -d)
+          python3 - "$CONSUMER" <<'PY'
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+          manifest = yaml.safe_load(Path('scripts/sync-targets.yml').read_text())
+          substitutions = {
+              key: '' if key in target.get('collapse_empty_substitutions', []) else 'fixture'
+              for target in manifest['targets']
+              for key in target.get('substitutions', [])
+          }
+          config = {'substitutions': substitutions, 'allowed_destinations': ['**']}
+          (Path(sys.argv[1]) / '.platform-config.yml').write_text(yaml.safe_dump(config))
+          PY
+          python3 scripts/sync-engine.py \
+            --upstream-repo . \
+            --consumer-dir "$CONSUMER" \
+            --dry-run
+
+      # The engine deliberately owns no Markdown knowledge, so nothing at render
+      # time stops a key opted into structural collapsing from deleting a line of
+      # a fenced block, a raw <pre>, or an indented code block. Enforce the
+      # "prose-only, whole-line" rule here instead, where reading the template is
+      # cheap and a violation is an authoring mistake rather than consumer churn.
+      - name: Lint collapse opt-ins against their template sites
+        run: python3 scripts/lint-collapse-sites.py

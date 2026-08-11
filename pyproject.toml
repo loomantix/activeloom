@@ -23,6 +23,7 @@ filterwarnings = [
   # third-party warnings stay informational so a transient external
   # deprecation can't break CI on a green PR.
   "error:::sync_engine",
+  "error:::lint_collapse_sites",
   "error:::create_signed_commit",
   "error:::ready",
 ]
