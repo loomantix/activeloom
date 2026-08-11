@@ -82,6 +82,21 @@ jobs:
           drift=0
           for f in "${files[@]}"; do
             up="/tmp/upstream/$(echo "$f" | tr '/' '_')"
+            # The shared test loader is byte-identical except for its
+            # agent-specific skill root. Keep the file in the parity surface,
+            # but compare against the explicit `.claude/` -> `.codex/`
+            # adaptation that makes its ready fixture usable in this repo.
+            if [ "$f" = "tests/conftest.py" ]; then
+              if [ "$(grep -o '"\.claude"' "$up" | wc -l)" -ne 1 ] || \
+                [ "$(grep -o '\.claude/' "$up" | wc -l)" -ne 1 ]; then
+                echo "::error file=$f::unexpected agent-root adaptation surface"
+                drift=1
+                continue
+              fi
+              sed -e 's#"\.claude"#".codex"#g' -e 's#\.claude/#.codex/#g' \
+                "$up" > "${up}.adapted"
+              up="${up}.adapted"
+            fi
             if ! diff -q "$f" "$up" > /dev/null; then
               echo "::error file=$f::diverges from ${CLAUDE_REPO}@${CLAUDE_PIN_SHA}"
               diff -u "$up" "$f" | head -60 || true

@@ -21,7 +21,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
-ISSUES_SCRIPTS_DIR = REPO_ROOT / ".claude" / "skills" / "issues" / "scripts"
+ISSUES_SCRIPTS_DIR = REPO_ROOT / ".codex" / "skills" / "issues" / "scripts"
 
 
 def _load_script(name: str, path: Path) -> ModuleType:
@@ -53,7 +53,7 @@ def create_signed_commit() -> ModuleType:
 
 @pytest.fixture(scope="session")
 def ready_mod() -> ModuleType:
-    """The `/issues ready` query script (.claude/skills/issues/scripts/ready.py)."""
+    """The `/issues ready` query script (.codex/skills/issues/scripts/ready.py)."""
     return _load_script("ready", ISSUES_SCRIPTS_DIR / "ready.py")
 
 
