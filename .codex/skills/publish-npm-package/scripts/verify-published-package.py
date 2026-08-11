@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -17,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
 GITHUB_ACTIONS_BUILD_TYPE = "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
@@ -25,9 +26,33 @@ GITHUB_HOSTED_BUILDER = "https://github.com/actions/runner/github-hosted"
 COMMAND_TIMEOUT_SECONDS = 300
 DOWNLOAD_TIMEOUT_SECONDS = 30
 MAX_REDIRECTS = 5
+# Registry bytes that differ in length from the local artifact can never satisfy
+# the byte-identity check, so a generous multiple is enough to bound memory.
+MAX_DOWNLOAD_MULTIPLE = 4
+MAX_DOWNLOAD_FLOOR_BYTES = 8 * 1024 * 1024
+# The child environment is built from this allowlist rather than by subtracting
+# known-bad names: npm and Node read TLS trust, proxy, and code-injection
+# settings (NODE_OPTIONS, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, *_PROXY) from an
+# open-ended namespace that a denylist cannot enumerate.
+ALLOWED_ENV_KEYS = frozenset(
+    {
+        "APPDATA",
+        "COMSPEC",
+        "HOME",
+        "LANG",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+    }
+)
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     raise RuntimeError(message)
 
 
@@ -58,18 +83,15 @@ def run(
 
 
 def credential_free_npm_env(config_dir: Path) -> dict[str, str]:
-    env = os.environ.copy()
-    for key in list(env):
-        if key.upper() in {"NODE_AUTH_TOKEN", "NPM_TOKEN", "NPM_OTP"} or key.lower().startswith(
-            "npm_config_"
-        ):
-            env.pop(key)
+    env = {key: value for key, value in os.environ.items() if key.upper() in ALLOWED_ENV_KEYS}
     user_config = config_dir / "empty-user.npmrc"
     global_config = config_dir / "empty-global.npmrc"
     user_config.write_text("", encoding="utf-8")
     global_config.write_text("", encoding="utf-8")
     env["NPM_CONFIG_USERCONFIG"] = str(user_config)
     env["NPM_CONFIG_GLOBALCONFIG"] = str(global_config)
+    # Isolate the cache so every check is a real registry read, not a replay.
+    env["NPM_CONFIG_CACHE"] = str(config_dir / "cache")
     return env
 
 
@@ -103,21 +125,45 @@ def embedded_identity(data: bytes) -> tuple[str | None, str | None]:
     return package_json.get("name"), package_json.get("version")
 
 
-def target_verification(
-    audit: dict[str, Any], package: str, version: str, *, require_attestation: bool = True
-) -> dict[str, Any] | None:
+def audit_entries(audit: dict[str, Any], field: str) -> list[dict[str, Any]]:
+    """Return one audit result list, refusing to read a missing key as clean."""
+    if field not in audit:
+        fail(f"npm audit signatures output does not contain a {field} list")
+    entries = audit[field]
+    if not isinstance(entries, list):
+        fail(f"npm audit signatures {field} result is not a list")
+    return entries
+
+
+def target_verification(audit: dict[str, Any], package: str, version: str) -> dict[str, Any]:
     for field in ("invalid", "missing"):
-        entries = audit.get(field, [])
-        if any(entry.get("name") == package and entry.get("version") == version for entry in entries):
+        entries = audit_entries(audit, field)
+        if any(
+            isinstance(entry, dict) and entry.get("name") == package and entry.get("version") == version
+            for entry in entries
+        ):
             fail(f"target package appears in npm audit signatures {field} results")
     matches = [
         entry
-        for entry in audit.get("verified", [])
-        if entry.get("name") == package and entry.get("version") == version
+        for entry in audit_entries(audit, "verified")
+        if isinstance(entry, dict) and entry.get("name") == package and entry.get("version") == version
     ]
-    if require_attestation and not matches:
+    if not matches:
         fail("npm audit signatures did not verify the exact target package and version")
-    return matches[0] if matches else None
+    return matches[0]
+
+
+def assert_no_provenance(entry: dict[str, Any]) -> None:
+    """Refuse to downgrade a present-but-unverified attestation to 'unavailable'."""
+    bundles = entry.get("attestationBundles") or []
+    if any(
+        isinstance(bundle, dict) and bundle.get("predicateType") == SLSA_PROVENANCE_V1
+        for bundle in bundles
+    ):
+        fail(
+            "package carries SLSA provenance; rerun with --provenance required "
+            "instead of recording it as unavailable"
+        )
 
 
 def github_repository(url: str) -> str:
@@ -132,7 +178,9 @@ def github_repository(url: str) -> str:
     path = path.removesuffix(".git").rstrip("/")
     if path.count("/") != 1:
         fail(f"source repository must identify one GitHub owner/repository: {url}")
-    return f"https://github.com/{path}"
+    # GitHub owner/repository names are case-insensitive and the three sources
+    # compared here are authored independently, so casing must not decide a release.
+    return f"https://github.com/{path.casefold()}"
 
 
 def normalize_fingerprint(value: str) -> str:
@@ -179,8 +227,16 @@ def verify_release_tag(
     tag: str,
     commit: str,
     signer_fingerprint: str,
+    source_repository: str,
 ) -> dict[str, str]:
-    repo_root = Path(run(["git", "rev-parse", "--show-toplevel"], repository_dir).stdout.strip())
+    repo_root = Path(
+        run(["git", "rev-parse", "--show-toplevel"], repository_dir).stdout.strip()
+    ).resolve()
+    # Bind the tag evidence to the published package's source repository, so tag
+    # facts cannot be collected from an unrelated clone carrying the same tag.
+    remote_url = run(["git", "remote", "get-url", remote], repo_root).stdout.strip()
+    if github_repository(remote_url) != github_repository(source_repository):
+        fail("release checkout remote does not match the expected source repository")
     tag_type = run(["git", "cat-file", "-t", f"refs/tags/{tag}"], repo_root).stdout.strip()
     if tag_type != "tag":
         fail(f"release tag is not annotated: {tag}")
@@ -225,16 +281,23 @@ class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def download_from_registry(tarball_url: str, registry: str) -> bytes:
+def download_from_registry(tarball_url: str, registry: str, max_bytes: int) -> bytes:
     expected_origin = registry_origin(registry)
     current_url = tarball_url
-    opener = urllib.request.build_opener(NoRedirectHandler())
+    # Pin registry TLS trust to the system store so it cannot be redirected by
+    # inherited SSL_CERT_FILE/SSL_CERT_DIR settings.
+    opener = urllib.request.build_opener(
+        NoRedirectHandler(), urllib.request.HTTPSHandler(context=ssl.create_default_context())
+    )
     for _ in range(MAX_REDIRECTS + 1):
         if registry_origin(current_url) != expected_origin:
             fail(f"refusing registry tarball URL outside the configured origin: {current_url}")
         try:
             with opener.open(current_url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
-                return response.read()
+                data: bytes = response.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    fail(f"registry tarball exceeds the {max_bytes}-byte verification bound")
+                return data
         except urllib.error.HTTPError as exc:
             if exc.code not in {301, 302, 303, 307, 308}:
                 fail(f"could not download registry tarball: HTTP {exc.code}")
@@ -247,9 +310,28 @@ def download_from_registry(tarball_url: str, registry: str) -> bytes:
     fail(f"registry tarball exceeded {MAX_REDIRECTS} redirects")
 
 
+def certificate_raw_bytes(material: dict[str, Any]) -> str:
+    """Return the signing certificate from either supported Sigstore bundle layout.
+
+    Bundle v0.3+ carries a singular ``certificate``; npm currently emits v0.2
+    bundles whose provenance material uses ``x509CertificateChain``.
+    """
+    certificate = material.get("certificate")
+    if isinstance(certificate, dict) and "rawBytes" in certificate:
+        return str(certificate["rawBytes"])
+    chain = material.get("x509CertificateChain")
+    if isinstance(chain, dict):
+        certificates = chain.get("certificates")
+        if isinstance(certificates, list) and certificates:
+            leaf = certificates[0]
+            if isinstance(leaf, dict) and "rawBytes" in leaf:
+                return str(leaf["rawBytes"])
+    fail("provenance bundle does not carry a signing certificate in a supported layout")
+
+
 def certificate_identities(bundle: dict[str, Any]) -> set[str]:
     try:
-        encoded = bundle["verificationMaterial"]["certificate"]["rawBytes"]
+        encoded = certificate_raw_bytes(bundle["verificationMaterial"])
         certificate = base64.b64decode(encoded, validate=True)
     except (KeyError, TypeError, ValueError) as exc:
         fail(f"cannot decode provenance signing certificate: {exc}")
@@ -408,20 +490,26 @@ def main() -> int:
         "--commit": args.commit,
         "--repository-dir": args.repository_dir,
         "--signer-fingerprint": args.signer_fingerprint,
+        # Always required: the tag evidence is bound to this repository in both
+        # provenance modes.
+        "--source-repository": args.source_repository,
     }
     if args.provenance == "required":
-        required.update(
-            {
-            "--source-repository": args.source_repository,
-            "--workflow-path": args.workflow_path,
-            }
-        )
+        required["--workflow-path"] = args.workflow_path
     missing = [flag for flag, value in required.items() if not value]
     if missing:
         fail(f"required release binding arguments are missing: {', '.join(missing)}")
     if not re.fullmatch(r"[0-9a-fA-F]{40}", args.commit):
         fail("release commit must be a full 40-character Git object ID")
     registry_origin(args.registry)
+    repository_dir = args.repository_dir.resolve()
+    repo_root = Path(
+        run(["git", "rev-parse", "--show-toplevel"], repository_dir).stdout.strip()
+    ).resolve()
+    if artifact.is_relative_to(repo_root):
+        fail("build-once artifact must be outside the Git worktree")
+    if output is not None and output.is_relative_to(repo_root):
+        fail("verification JSON output must be outside the Git worktree")
     artifact_data = artifact.read_bytes()
     artifact_hashes = hashes(artifact_data)
 
@@ -444,10 +532,14 @@ def main() -> int:
     if not isinstance(signatures, list) or not signatures:
         fail("npm distribution metadata does not contain registry signatures")
 
-    registry_data = download_from_registry(tarball_url, args.registry)
+    registry_data = download_from_registry(
+        tarball_url,
+        args.registry,
+        max(len(artifact_data) * MAX_DOWNLOAD_MULTIPLE, MAX_DOWNLOAD_FLOOR_BYTES),
+    )
+    registry_hashes = hashes(registry_data)
     if artifact_data != registry_data:
         fail("build-once artifact is not byte-identical to the registry tarball")
-    registry_hashes = artifact_hashes.copy()
     if artifact_hashes["sha1"] != shasum:
         fail("artifact SHA-1 does not match npm dist.shasum")
     if artifact_hashes["integrity"] != integrity:
@@ -496,16 +588,11 @@ def main() -> int:
         audit = json.loads(audit_result.stdout)
     except json.JSONDecodeError as exc:
         fail(f"npm audit signatures returned invalid JSON: {exc}")
-    target = target_verification(
-        audit,
-        args.package,
-        args.version,
-        require_attestation=args.provenance == "required",
-    )
+    # The exact target must be verified by npm in both modes; only the SLSA
+    # attestation itself is optional under --provenance unavailable.
+    target = target_verification(audit, args.package, args.version)
     provenance: dict[str, Any] | None = None
     if args.provenance == "required":
-        if target is None:
-            fail("required provenance target was not returned by npm audit signatures")
         provenance = verify_slsa(
             target,
             artifact_sha512=artifact_hashes["sha512"],
@@ -516,26 +603,34 @@ def main() -> int:
             tag=args.tag,
             commit=args.commit.lower(),
         )
+    else:
+        assert_no_provenance(target)
     tag_verification = verify_release_tag(
-        args.repository_dir.resolve(),
+        repository_dir,
         args.remote,
         args.tag,
         args.commit.lower(),
         args.signer_fingerprint,
+        args.source_repository,
     )
 
     result: dict[str, Any] = {
+        # Every registry read above ran credential-free, so a successful
+        # verification is itself the evidence for the asserted access mode.
+        "access": args.access,
         "artifact": str(artifact),
         "artifact_digests": artifact_hashes,
-        "byte_identical": True,
+        "byte_identical": artifact_data == registry_data,
+        "declared_registry_signatures": len(signatures),
         "npm_dist": {"integrity": integrity, "shasum": shasum, "tarball": tarball_url},
         "package": args.package,
-        "provenance": provenance if provenance else {"status": "unavailable"},
+        "provenance": (
+            {"status": "verified", **provenance} if provenance else {"status": "unavailable"}
+        ),
         "registry": args.registry,
         "registry_digests": registry_hashes,
         "release_tag": tag_verification,
         "verified_attestations": provenance.get("matching_bundles", 0) if provenance else 0,
-        "verified_registry_signatures": len(signatures),
         "version": args.version,
     }
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"

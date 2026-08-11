@@ -15,12 +15,32 @@ import tarfile
 import tempfile
 import urllib.parse
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NoReturn
 
 COMMAND_TIMEOUT_SECONDS = 300
+# The child environment is built from this allowlist rather than by subtracting
+# known-bad names: npm and Node read TLS trust, proxy, and code-injection
+# settings (NODE_OPTIONS, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, *_PROXY) from an
+# open-ended namespace that a denylist cannot enumerate.
+ALLOWED_ENV_KEYS = frozenset(
+    {
+        "APPDATA",
+        "COMSPEC",
+        "HOME",
+        "LANG",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+    }
+)
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     raise RuntimeError(message)
 
 
@@ -51,18 +71,15 @@ def run(
 
 
 def credential_free_npm_env(config_dir: Path) -> dict[str, str]:
-    env = os.environ.copy()
-    for key in list(env):
-        if key.upper() in {"NODE_AUTH_TOKEN", "NPM_TOKEN", "NPM_OTP"} or key.lower().startswith(
-            "npm_config_"
-        ):
-            env.pop(key)
+    env = {key: value for key, value in os.environ.items() if key.upper() in ALLOWED_ENV_KEYS}
     user_config = config_dir / "empty-user.npmrc"
     global_config = config_dir / "empty-global.npmrc"
     user_config.write_text("", encoding="utf-8")
     global_config.write_text("", encoding="utf-8")
     env["NPM_CONFIG_USERCONFIG"] = str(user_config)
     env["NPM_CONFIG_GLOBALCONFIG"] = str(global_config)
+    # Isolate the cache so version absence is proven by a real registry read.
+    env["NPM_CONFIG_CACHE"] = str(config_dir / "cache")
     return env
 
 
@@ -100,7 +117,8 @@ def github_repository(url: str) -> str:
     path = path.removesuffix(".git").rstrip("/")
     if path.count("/") != 1:
         fail(f"repository URL must identify one GitHub owner/repository: {url}")
-    return f"github.com/{path}"
+    # GitHub owner/repository names are case-insensitive; casing must not decide a release.
+    return f"github.com/{path.casefold()}"
 
 
 def inspect_tarball(path: Path, expected_name: str, expected_version: str) -> dict[str, Any]:
@@ -113,6 +131,9 @@ def inspect_tarball(path: Path, expected_name: str, expected_version: str) -> di
                     fail(f"unsafe tar entry: {member.name}")
                 if not member.isfile() and not member.isdir():
                     fail(f"unsafe tar entry type: {member.name}")
+                # npm only unpacks package/; anything outside it is uninspected content.
+                if member_path.parts[:1] != ("package",):
+                    fail(f"tar entry outside the package root: {member.name}")
             manifests = [member for member in members if member.name == "package/package.json"]
             if len(manifests) != 1:
                 fail("tarball must contain exactly one package/package.json")
@@ -242,12 +263,23 @@ def main() -> int:
         fail("registry must be an HTTPS URL without credentials, query, or fragment")
     if package_json.get("private") is True:
         fail("package.json is private and cannot be published")
+    publish_config = package_json.get("publishConfig")
+    declared_access = publish_config.get("access") if isinstance(publish_config, dict) else None
+    if declared_access is not None and declared_access != args.access:
+        fail(
+            f"package.json publishConfig.access is {declared_access}, "
+            f"not the requested {args.access}"
+        )
     repository = package_json.get("repository")
     repository_url = repository.get("url") if isinstance(repository, dict) else repository
     if not isinstance(repository_url, str) or not repository_url.strip():
         fail("package.json must declare a repository URL for provenance")
 
-    repo_root = Path(run(["git", "rev-parse", "--show-toplevel"], package_dir).stdout.strip())
+    # Resolve so the in-tree comparison holds when the checkout is reached
+    # through a symlinked parent; git reports the physical path.
+    repo_root = Path(
+        run(["git", "rev-parse", "--show-toplevel"], package_dir).stdout.strip()
+    ).resolve()
     if artifact.is_relative_to(repo_root):
         fail("build-once artifact must be outside the Git worktree")
     if output is not None and output.is_relative_to(repo_root):
@@ -261,6 +293,9 @@ def main() -> int:
     head = run(["git", "rev-parse", "HEAD"], repo_root).stdout.strip()
     run(["git", "check-ref-format", f"refs/tags/{args.tag}"], repo_root)
     local_tag = run(["git", "show-ref", "--verify", "--quiet", f"refs/tags/{args.tag}"], repo_root, False)
+    if local_tag.returncode not in (0, 1):
+        detail = local_tag.stderr.strip() or f"exit {local_tag.returncode}"
+        fail(f"could not determine local tag state: {detail}")
     remote_tag = remote_tag_object(args.remote, args.tag, repo_root)
 
     if args.phase == "prepare":
@@ -272,7 +307,7 @@ def main() -> int:
         if not args.signer_fingerprint:
             fail("tag and publish phases require --signer-fingerprint")
         if local_tag.returncode != 0:
-            fail(f"tag phase requires a local tag: {args.tag}")
+            fail(f"{args.phase} phase requires a local tag: {args.tag}")
         tag_type = run(["git", "cat-file", "-t", f"refs/tags/{args.tag}"], repo_root).stdout.strip()
         if tag_type != "tag":
             fail(f"release tag is not annotated: {args.tag}")

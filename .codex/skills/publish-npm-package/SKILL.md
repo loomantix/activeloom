@@ -171,7 +171,11 @@ verification helpers.
 8. Immediately verify artifact integrity with
    `scripts/verify-published-package.py --provenance unavailable`, configure the
    package's Trusted Publisher and GitHub environment, and restore the strongest
-   token restrictions available.
+   token restrictions available. `unavailable` waives only the SLSA attestation:
+   the full argument set below still applies, npm must still return the exact
+   name@version as verified, the signed annotated tag is still checked against
+   the approved signer and the remote, and verification fails if the package
+   turns out to carry provenance after all.
 9. If the login/session was created for bootstrap, run `npm logout
 --registry=<registry>` and confirm `npm whoami --registry=<registry>` no longer
    authenticates. Revoke any separately created token through the approved npm
@@ -206,14 +210,18 @@ Require all of these for a normal Trusted Publisher release:
 - The local build-once artifact, npm `dist.shasum`, npm `dist.integrity`, and the
   downloaded registry tarball agree.
 - The tarball's embedded `package.json` has the intended name and version.
-- `npm audit signatures` verifies at least one registry signature and at least one
-  attestation for the package installation graph.
+- npm distribution metadata declares at least one registry signature, and `npm
+audit signatures` returns the exact target name@version in its `verified`
+  results. This is required in both provenance modes.
 - The decoded SLSA statement binds the intended source repository, workflow,
   release tag, commit, package identity, artifact SHA-512, GitHub-hosted builder,
   and signing-certificate workflow identity. Confirm npm's UI shows the same
   source as a defense-in-depth manual check.
 - The remote tag remains the original signed annotated tag and targets the release
   commit.
+
+`--source-repository` is required in both provenance modes: it binds the release
+checkout used for tag verification to the published package's source repository.
 
 Provenance is available only under npm's current supported conditions. A manual
 bootstrap publication reports the unavailable control explicitly. Private
