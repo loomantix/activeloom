@@ -1305,6 +1305,41 @@ verify_converged_review_outcomes() {
     fi
 }
 
+recover_v3_review_pass() {
+    local engine="$1" slug="$2" round="$3" base_sha="$4"
+    local outcome_file outcome_signature classification boundary_status=0
+    outcome_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.result.json"
+    [ -f "$outcome_file" ] || return 2
+    outcome_signature="$(review_outcome_signature "$outcome_file")" || return 1
+    case "$outcome_signature" in
+        file:*) ;;
+        *) recovery_message "$engine interrupted review result is incomplete."; return 1 ;;
+    esac
+    REVIEW_ROUNDS_USED="$round"
+    REVIEWED_BASE_SHA="$base_sha"
+    require_review_outcome_signature "$engine" "$outcome_file" \
+        "$outcome_signature" "during interrupted-pass recovery" || return 1
+    verify_v3_result_attestation "$engine" "$slug" "$outcome_file" \
+        "$outcome_signature" || return 1
+    classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' \
+        "$outcome_file")" || return 1
+    run_validation "$slug-review-round-$round" || {
+        recovery_message "Validation after recovered $engine review failed in review round $round."
+        return 1
+    }
+    require_review_outcome_signature "$engine" "$outcome_file" \
+        "$outcome_signature" "during recovered validation in round $round" || return 1
+    attest_review_head "after recovered $engine review validation in round $round" \
+        "$base_sha" || boundary_status=$?
+    if [ "$boundary_status" -ne 0 ]; then
+        recovery_message "PR head attestation failed after recovered $engine review validation in round $round."
+        return 1
+    fi
+    REVIEW_PASS_CLASSIFICATION="$classification"
+    REVIEW_PASS_OUTCOME_FILE="$outcome_file"
+    REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
+}
+
 run_review_pass() {
     local engine="$1" slug="$2" hook="$3" round="$4"
     local hook_description="$5" hook_failure_description="$6"
@@ -1510,6 +1545,7 @@ require_fast_forward_base_advance() {
 
 run_review_convergence() {
     local round="${1:-1}" codex_classification claude_classification
+    local resume_engine="${2:-codex}"
     local codex_outcome_signature claude_outcome_signature
     local codex_outcome_file claude_outcome_file
     local round_base_sha latest_base_sha pass_status
@@ -1543,30 +1579,39 @@ run_review_convergence() {
                 return 1
             }
         fi
-        update_run_state reviewing "$round" "$round_base_sha" "$(git rev-parse HEAD)" \
-            "" "" codex || {
-            recovery_message "Could not checkpoint review round $round."
-            return 1
-        }
-        pass_status=0
-        run_review_pass Codex codex "$CODEX_REVIEW_HOOK" "$round" \
-            "configured Codex review hook" "Configured Codex review hook" \
-            "Configured Codex review hook" \
-            "the configured Codex review hook" || pass_status=$?
-        if [ "$pass_status" -eq 2 ]; then
-            require_fast_forward_base_advance "$round_base_sha" \
-                "during review round $round (Codex boundary)" || return 1
-            echo "   PR base advanced during Codex review; restart at Codex on the next round"
-            round=$((round + 1))
-            update_run_state reviewing "$round" \
-                "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
-                "" "" codex || {
-                recovery_message "Could not checkpoint the next review round."
+        if [ "$resume_engine" = claude ]; then
+            recover_v3_review_pass Codex codex "$round" "$round_base_sha" || {
+                recovery_message "Could not recover the completed Codex leg for final-round continuation."
                 return 1
             }
-            continue
-        elif [ "$pass_status" -ne 0 ]; then
-            return 1
+            echo "   Recovered authenticated Codex evidence; resuming the interrupted Claude leg"
+            resume_engine=codex
+        else
+            update_run_state reviewing "$round" "$round_base_sha" "$(git rev-parse HEAD)" \
+                "" "" codex || {
+                recovery_message "Could not checkpoint review round $round."
+                return 1
+            }
+            pass_status=0
+            run_review_pass Codex codex "$CODEX_REVIEW_HOOK" "$round" \
+                "configured Codex review hook" "Configured Codex review hook" \
+                "Configured Codex review hook" \
+                "the configured Codex review hook" || pass_status=$?
+            if [ "$pass_status" -eq 2 ]; then
+                require_fast_forward_base_advance "$round_base_sha" \
+                    "during review round $round (Codex boundary)" || return 1
+                echo "   PR base advanced during Codex review; restart at Codex on the next round"
+                round=$((round + 1))
+                update_run_state reviewing "$round" \
+                    "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
+                    "" "" codex || {
+                    recovery_message "Could not checkpoint the next review round."
+                    return 1
+                }
+                continue
+            elif [ "$pass_status" -ne 0 ]; then
+                return 1
+            fi
         fi
         codex_classification="$REVIEW_PASS_CLASSIFICATION"
         codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
@@ -1758,6 +1803,7 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     pullRequest(number:$number) {
       reviewThreads(first:100, after:$endCursor) {
         nodes {
+          id
           isResolved
           comments(first:100) {
             nodes { body databaseId author { login } }
@@ -2110,6 +2156,7 @@ resume_review_run() {
     local resume_boundary_status=0 checkpoint_base latest_base attestation_status
     local issue_title_sha256 issue_body_sha256
     local ready_finalization=false pr_draft_state state_review_engine
+    local restart_after_interrupted_pass=false resume_review_engine=codex
     local finalizing_head_drift=false
     SELECTED_ID="$(jq -r '.issue' <<<"$RESUME_STATE_JSON")"
     issue_json_value="$(issue_json "$SELECTED_ID")" || {
@@ -2237,7 +2284,7 @@ resume_review_run() {
         review_pass_identity_is_attested codex "$state_round" \
             "$checkpoint_base" "$state_head" || attestation_status=$?
         if [ "$attestation_status" -eq 0 ]; then
-            state_round=$((state_round + 1))
+            restart_after_interrupted_pass=true
         elif [ "$attestation_status" -ne 1 ]; then
             recovery_message "Could not reconcile the interrupted Codex pass attestation."
             return 1
@@ -2245,7 +2292,19 @@ resume_review_run() {
     fi
     if [ "$state_phase" = reviewing ] && \
        { [ "$state_review_engine" = claude ] || [ "$current_head" != "$state_head" ]; }; then
-        state_round=$((state_round + 1))
+        restart_after_interrupted_pass=true
+    fi
+    if [ "$restart_after_interrupted_pass" = true ]; then
+        if [ "$state_round" -lt "$REVIEW_MAX_ROUNDS" ]; then
+            state_round=$((state_round + 1))
+        else
+            if [ -f "$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json" ]; then
+                resume_review_engine=claude
+                echo "   Final configured review round was interrupted; resuming its remaining leg"
+            else
+                echo "   Final configured review round was interrupted; replaying it without consuming another round"
+            fi
+        fi
     fi
     if [ "$state_phase" = finalizing ]; then
         pr_draft_state="$(gh pr view "$AGENT_LOOP_PR_NUMBER" --json isDraft --jq '.isDraft')" || {
@@ -2339,7 +2398,7 @@ resume_review_run() {
         fi
         echo -e "${GREEN}✓${NC} Recovered converged review checkpoint at round $state_round"
     else
-        run_review_convergence "$state_round"
+        run_review_convergence "$state_round" "$resume_review_engine"
     fi
 
     inspect_publication_diff "$REVIEWED_BASE_SHA" || {

@@ -326,9 +326,17 @@ elif args[:2] == ['api', 'graphql']:
         pages = pages[:1]
     output = []
     for index, page_nodes in enumerate(pages):
+        selected_nodes = []
+        for node_index, node in enumerate(page_nodes):
+            selected_node = dict(node)
+            if '\n          id\n' in query:
+                selected_node.setdefault('id', f'THREAD-{index}-{node_index}')
+            else:
+                selected_node.pop('id', None)
+            selected_nodes.append(selected_node)
         has_next = index + 1 < len(pages)
         output.append({'data': {'repository': {'pullRequest': {
-            'reviewThreads': {'nodes': page_nodes, 'pageInfo': {
+            'reviewThreads': {'nodes': selected_nodes, 'pageInfo': {
                 'hasNextPage': has_next,
                 'endCursor': f'cursor-{index + 1}' if has_next else None,
             }}
@@ -1181,6 +1189,127 @@ def test_v3_resume_cannot_rerun_the_capped_round(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    config = _config_v3(tmp_path, validation_hook=validation, review_max_rounds=1)
+
+    first = _run(
+        consumer,
+        ["--issues", "94"],
+        issues=[_issue(94)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["phase"] == "reviewing"
+    assert state["round"] == 1
+    assert state["reviewEngine"] == "codex"
+
+    fail_marker.unlink()
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(94, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "resuming its remaining leg" in resumed.stdout
+    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
+    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-pass:v3 engine=claude round=1") == 1
+    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+
+
+def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    finding_hash = "4be82179d3761dd716ff1e62c19138fc105495b9a66528678e0e76e253adb577"
+    disposition_hash = "13079c2612a9ead4818ab21ef90bf6b7c457916144d8cbaeeff74befa4f4cc8d"
+    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    codex_hook = (
+        "printf 'codex-material\\n' >> \"$EVENT_LOG\"; "
+        "before=$AGENT_LOOP_PR_HEAD_SHA; "
+        "printf 'material fix\\n' > final-round-fix.txt; "
+        "git add final-round-fix.txt; git commit -m 'fix: final round finding'; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
+        "after=$(git rev-parse HEAD); "
+        "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex "
+        "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=final-round-material "
+        "occurrence=1 severity=major lens=recovery "
+        f"content-sha256={finding_hash} -->\" 'Finding.'; "
+        "printf -v disposition '%s\\n%s' \"<!-- local-review-disposition:v3 "
+        "engine=codex round=$AGENT_LOOP_REVIEW_ROUND head=$after "
+        "fingerprint=final-round-material occurrence=1 outcome=fixed "
+        f"content-sha256={disposition_hash} -->\" 'Fixed.'; "
+        "jq -n --arg finding \"$finding\" --arg disposition \"$disposition\" "
+        "'[{isResolved:true,comments:{nodes:["
+        "{body:$finding,databaseId:1,author:{login:\"tester\"}},"
+        "{body:$disposition,databaseId:2,author:{login:\"tester\"}}],"
+        "pageInfo:{hasNextPage:false}}}]' > \"$AGENT_STATE_DIR/review-threads.json\"; "
+        "jq -n --argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" --arg before \"$before\" "
+        "--arg after \"$after\" "
+        "'{version:3,status:\"changed\",engine:\"codex\",round:$round,"
+        "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"material\","
+        "findingFingerprints:[\"final-round-material\"],finalLaneComplete:true}' "
+        '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        codex_review_hook=codex_hook,
+        review_max_rounds=1,
+    )
+
+    first = _run(
+        consumer,
+        ["--issues", "95"],
+        issues=[_issue(95)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(95, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode != 0
+    assert "did not converge within 1 round(s)" in resumed.stderr
+    assert "resuming its remaining leg" in resumed.stdout
+    assert "Recovered authenticated Codex evidence" in resumed.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex-material\n") == 1
+    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
+    assert comments.count("local-review-complete:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-pass:v3 engine=claude round=1") == 1
+    assert "conflicting attestation" not in resumed.stderr
+
+
 def _thread_comment(
     database_id: int, body: str, login: str | None = "tester"
 ) -> dict[str, object]:
@@ -1933,6 +2062,14 @@ def test_v3_finalization_reuses_sealed_pseudo_v3_history(
     assert result.returncode == 0, result.stderr + result.stdout
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+    snapshot_file = next((tmp_path / "logs").glob("*/local-review-threads.json"))
+    snapshot = json.loads(snapshot_file.read_text(encoding="utf-8"))
+    assert snapshot[0]["data"]["repository"]["pullRequest"]["reviewThreads"][
+        "nodes"
+    ][0]["id"] == "PSEUDO-THREAD"
+    comments = json.loads((consumer[3] / "issue-comments.json").read_text())
+    assert len(comments) == 2
+    assert all("local-review-pass:v3" in row["body"] for row in comments)
 
 
 def test_v3_review_hook_cannot_self_authorize_direct_push(
