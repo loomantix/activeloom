@@ -43,8 +43,15 @@ def published_package_verifier() -> ModuleType:
     return _load_script("verify-published-package.py")
 
 
-def _tarball(path: Path, name: str = "example-package", version: str = "1.2.3") -> bytes:
-    manifest = json.dumps({"name": name, "version": version}).encode()
+def _tarball(
+    path: Path,
+    name: str = "example-package",
+    version: str = "1.2.3",
+    extra_manifest: dict[str, Any] | None = None,
+) -> bytes:
+    package_json: dict[str, Any] = {"name": name, "version": version}
+    package_json.update(extra_manifest or {})
+    manifest = json.dumps(package_json).encode()
     with tarfile.open(path, "w:gz") as archive:
         info = tarfile.TarInfo("package/package.json")
         info.size = len(manifest)
@@ -124,7 +131,12 @@ def test_skill_isolates_oidc_publish_authority() -> None:
     assert "Grant `id-token: write` only to the publish" in guidance
     assert "must not check out the repository" in guidance
     assert "exact tarball path with `--ignore-scripts`" in guidance
+    assert "`--registry=<preflight-approved-registry>`" in guidance
     assert "separate verification job" in guidance
+    assert (
+        "npm publish <built-package.tgz> --ignore-scripts --access public"
+        in guidance
+    )
 
 
 def test_release_preflight_inspects_identity_and_emits_stable_digests(
@@ -133,7 +145,9 @@ def test_release_preflight_inspects_identity_and_emits_stable_digests(
     artifact = tmp_path / "package.tgz"
     data = _tarball(artifact)
 
-    assert release_preflight.inspect_tarball(artifact, "example-package", "1.2.3") == {
+    assert release_preflight.inspect_tarball(
+        artifact, "example-package", "1.2.3", "https://registry.npmjs.org"
+    ) == {
         "entries": 1,
         "name": "example-package",
         "version": "1.2.3",
@@ -153,7 +167,9 @@ def test_release_preflight_rejects_embedded_identity_mismatch(
     _tarball(artifact)
 
     with pytest.raises(RuntimeError, match="identity mismatch"):
-        release_preflight.inspect_tarball(artifact, "other-package", "1.2.3")
+        release_preflight.inspect_tarball(
+            artifact, "other-package", "1.2.3", "https://registry.npmjs.org"
+        )
 
 
 def test_release_preflight_normalizes_supported_github_repository_urls(
@@ -617,7 +633,9 @@ def test_release_preflight_rejects_special_tar_entries(
         archive.addfile(link)
 
     with pytest.raises(RuntimeError, match="unsafe tar entry type"):
-        release_preflight.inspect_tarball(artifact, "example-package", "1.2.3")
+        release_preflight.inspect_tarball(
+            artifact, "example-package", "1.2.3", "https://registry.npmjs.org"
+        )
 
 
 def test_registry_absence_requires_structured_e404(
@@ -1509,7 +1527,24 @@ def test_preflight_rejects_tar_entry_outside_package_root(
         stray.size = 0
         archive.addfile(stray, io.BytesIO(b""))
     with pytest.raises(RuntimeError, match="outside the package root"):
-        release_preflight.inspect_tarball(artifact, "example-package", "1.2.3")
+        release_preflight.inspect_tarball(
+            artifact, "example-package", "1.2.3", "https://registry.npmjs.org"
+        )
+
+
+def test_preflight_rejects_tarball_registry_override(
+    release_preflight: ModuleType, tmp_path: Path
+) -> None:
+    artifact = tmp_path / "package.tgz"
+    _tarball(
+        artifact,
+        extra_manifest={"publishConfig": {"registry": "https://attacker.invalid"}},
+    )
+
+    with pytest.raises(RuntimeError, match="tarball publishConfig.registry"):
+        release_preflight.inspect_tarball(
+            artifact, "example-package", "1.2.3", "https://registry.npmjs.org"
+        )
 
 
 def test_preflight_rejects_publish_config_access_mismatch(
@@ -1548,6 +1583,46 @@ def test_preflight_rejects_publish_config_access_mismatch(
         ],
     )
     with pytest.raises(RuntimeError, match="publishConfig.access is restricted"):
+        release_preflight.main()
+
+
+def test_preflight_rejects_source_registry_override(
+    release_preflight: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    (package_dir / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "example-package",
+                "version": "1.2.3",
+                "publishConfig": {"registry": "https://attacker.invalid"},
+                "repository": "https://github.com/owner/repo",
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifact = tmp_path / "package.tgz"
+    _tarball(artifact)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release-preflight.py",
+            "--package-dir",
+            str(package_dir),
+            "--artifact",
+            str(artifact),
+            "--tag",
+            "v1.2.3",
+            "--access",
+            "public",
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="package.json publishConfig.registry"):
         release_preflight.main()
 
 

@@ -94,14 +94,17 @@ Build once in the unprivileged build job:
    job and download only that exact artifact from the same workflow run.
 
 In the protected publish job, verify the downloaded digests with runner-provided
-tooling and publish the exact tarball path with `--ignore-scripts`. For a public
-source repository also pass `--provenance`; this CLI argument must override
-repository or user configuration that disables provenance. For a private source
-repository publishing a public package, npm Trusted Publishing works but
-provenance is unsupported: pass `--provenance=false` and record that limitation
-before publication. Do not run `npm publish` against a directory, rerun `npm
-pack`, rebuild, install dependencies, or execute any file from the repository or
-package artifact in this job.
+tooling and publish the exact tarball path with `--ignore-scripts` and
+`--registry=<preflight-approved-registry>`. The registry CLI argument is mandatory:
+it must override repository, package, user, or runner configuration, and preflight
+must reject a conflicting `publishConfig.registry` in either the source manifest
+or packed tarball. For a public source repository also pass `--provenance`; this
+CLI argument must override repository or user configuration that disables
+provenance. For a private source repository publishing a public package, npm
+Trusted Publishing works but provenance is unsupported: pass `--provenance=false`
+and record that limitation before publication. Do not run `npm publish` against a
+directory, rerun `npm pack`, rebuild, install dependencies, or execute any file
+from the repository or package artifact in this job.
 
 Run `verify-published-package.py --provenance required` for a public source, or
 `--provenance unavailable` for the explicit private-source/public-package branch,
@@ -183,7 +186,7 @@ verification helpers.
    manual-publish gate:
 
    ```bash
-   npm publish <built-package.tgz> --access public --registry=<registry>
+   npm publish <built-package.tgz> --ignore-scripts --access public --registry=<registry>
    ```
 
 7. Publish only after explicit approval. Do not imply that a local manual publish

@@ -130,7 +130,30 @@ def github_repository(url: str) -> str:
     return f"github.com/{path.casefold()}"
 
 
-def inspect_tarball(path: Path, expected_name: str, expected_version: str) -> dict[str, Any]:
+def registry_identity(url: str, label: str = "registry") -> tuple[str, int, str]:
+    parsed = urllib.parse.urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        fail(f"invalid {label} URL port: {exc}")
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        fail(f"{label} must be an HTTPS URL without credentials, query, or fragment")
+    return parsed.hostname.casefold(), port or 443, parsed.path.rstrip("/")
+
+
+def inspect_tarball(
+    path: Path,
+    expected_name: str,
+    expected_version: str,
+    expected_registry: str,
+) -> dict[str, Any]:
     try:
         with tarfile.open(path, "r:gz") as archive:
             members = archive.getmembers()
@@ -161,6 +184,17 @@ def inspect_tarball(path: Path, expected_name: str, expected_version: str) -> di
             f"expected {expected_name}@{expected_version}, got "
             f"{embedded.get('name')}@{embedded.get('version')}"
         )
+    publish_config = embedded.get("publishConfig")
+    declared_registry = (
+        publish_config.get("registry") if isinstance(publish_config, dict) else None
+    )
+    if declared_registry is not None:
+        if not isinstance(declared_registry, str):
+            fail("tarball publishConfig.registry must be a string")
+        if registry_identity(
+            declared_registry, "tarball publishConfig.registry"
+        ) != registry_identity(expected_registry):
+            fail("tarball publishConfig.registry does not match the approved registry")
     return {"entries": len(members), "name": expected_name, "version": expected_version}
 
 
@@ -287,16 +321,7 @@ def main() -> int:
         fail("invalid npm package version")
     if args.remote.startswith("-"):
         fail("invalid Git remote name")
-    parsed_registry = urllib.parse.urlparse(args.registry)
-    if (
-        parsed_registry.scheme != "https"
-        or not parsed_registry.hostname
-        or parsed_registry.username
-        or parsed_registry.password
-        or parsed_registry.query
-        or parsed_registry.fragment
-    ):
-        fail("registry must be an HTTPS URL without credentials, query, or fragment")
+    approved_registry = registry_identity(args.registry)
     if package_json.get("private") is True:
         fail("package.json is private and cannot be published")
     publish_config = package_json.get("publishConfig")
@@ -306,6 +331,16 @@ def main() -> int:
             f"package.json publishConfig.access is {declared_access}, "
             f"not the requested {args.access}"
         )
+    declared_registry = (
+        publish_config.get("registry") if isinstance(publish_config, dict) else None
+    )
+    if declared_registry is not None:
+        if not isinstance(declared_registry, str):
+            fail("package.json publishConfig.registry must be a string")
+        if registry_identity(
+            declared_registry, "package.json publishConfig.registry"
+        ) != approved_registry:
+            fail("package.json publishConfig.registry does not match the approved registry")
     repository = package_json.get("repository")
     repository_url = repository.get("url") if isinstance(repository, dict) else repository
     if not isinstance(repository_url, str) or not repository_url.strip():
@@ -359,7 +394,7 @@ def main() -> int:
             fail("remote release tag does not match the verified local annotated tag object")
 
     registry_version_absent(package, version, args.registry)
-    tarball = inspect_tarball(artifact, package, version)
+    tarball = inspect_tarball(artifact, package, version, args.registry)
     result: dict[str, Any] = {
         "artifact": str(artifact),
         "commit": head,
