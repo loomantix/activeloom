@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 COMMAND_TIMEOUT_SECONDS = 300
+MINIMUM_NPM_VERSION = (11, 12, 0)
 # The child environment is built from this allowlist rather than by subtracting
 # known-bad names: npm and Node read TLS trust, proxy, and code-injection
 # settings (NODE_OPTIONS, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, *_PROXY) from an
@@ -109,12 +110,20 @@ def github_repository(url: str) -> str:
     value = url.removeprefix("git+")
     if value.startswith("git@github.com:"):
         path = value.removeprefix("git@github.com:")
+        if "?" in path or "#" in path:
+            fail(f"repository URL contains unsupported query or fragment: {url}")
     else:
         parsed = urllib.parse.urlparse(value)
-        if parsed.hostname != "github.com":
+        if (
+            parsed.hostname != "github.com"
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
             fail(f"repository URL is not hosted on github.com: {url}")
         path = parsed.path.lstrip("/")
-    path = path.removesuffix(".git").rstrip("/")
+    path = path.rstrip("/").removesuffix(".git")
     if path.count("/") != 1:
         fail(f"repository URL must identify one GitHub owner/repository: {url}")
     # GitHub owner/repository names are case-insensitive; casing must not decide a release.
@@ -185,13 +194,40 @@ def normalize_fingerprint(value: str) -> str:
 def verified_fingerprints(result: subprocess.CompletedProcess[str]) -> set[str]:
     fingerprints: set[str] = set()
     for line in (result.stdout + "\n" + result.stderr).splitlines():
-        valid_signature = re.search(r"\[GNUPG:\] VALIDSIG ([0-9A-Fa-f]+)", line)
-        if valid_signature:
-            fingerprints.add(normalize_fingerprint(valid_signature.group(1)))
-        for token in line.split():
-            if token.startswith("SHA256:"):
-                fingerprints.add(normalize_fingerprint(token))
+        fields = line.split()
+        if len(fields) >= 3 and fields[:2] == ["[GNUPG:]", "VALIDSIG"]:
+            for candidate in (fields[2], fields[-1]):
+                if re.fullmatch(r"[0-9A-Fa-f]{40,}", candidate):
+                    fingerprints.add(normalize_fingerprint(candidate))
+        ssh_signature = re.search(
+            r'Good "git" signature .* with [^\r\n]* key (SHA256:[A-Za-z0-9+/=]+)$',
+            line,
+        )
+        if ssh_signature:
+            fingerprints.add(normalize_fingerprint(ssh_signature.group(1)))
     return fingerprints
+
+
+def npm_version(cwd: Path) -> str:
+    with tempfile.TemporaryDirectory(prefix="npm-version-check-") as temp_dir:
+        config_dir = Path(temp_dir)
+        value = run(
+            ["npm", "--version"], cwd, env=credential_free_npm_env(config_dir)
+        ).stdout.strip()
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", value)
+    if not match:
+        fail(f"could not parse npm version: {value!r}")
+    parsed = tuple(int(part) for part in match.groups())
+    if parsed < MINIMUM_NPM_VERSION:
+        required = ".".join(str(part) for part in MINIMUM_NPM_VERSION)
+        fail(f"npm {required} or newer is required for attestation verification")
+    return value
+
+
+def validate_release_tag(tag: str, cwd: Path) -> None:
+    run(["git", "check-ref-format", f"refs/tags/{tag}"], cwd)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", tag):
+        fail("release tag contains characters that are unsafe in displayed shell commands")
 
 
 def verify_tag_signer(tag: str, expected_fingerprint: str, cwd: Path) -> str:
@@ -291,7 +327,8 @@ def main() -> int:
     if dirty:
         fail("release worktree is dirty; commit or remove every change before preflight")
     head = run(["git", "rev-parse", "HEAD"], repo_root).stdout.strip()
-    run(["git", "check-ref-format", f"refs/tags/{args.tag}"], repo_root)
+    validate_release_tag(args.tag, repo_root)
+    selected_npm_version = npm_version(repo_root)
     local_tag = run(["git", "show-ref", "--verify", "--quiet", f"refs/tags/{args.tag}"], repo_root, False)
     if local_tag.returncode not in (0, 1):
         detail = local_tag.stderr.strip() or f"exit {local_tag.returncode}"
@@ -330,7 +367,8 @@ def main() -> int:
         "package": package,
         "phase": args.phase,
         "registry": args.registry,
-        "repository": repository_url,
+        "npm_version": selected_npm_version,
+        "repository": "https://" + github_repository(repository_url),
         "tag": args.tag,
         "tarball": tarball,
         "version": version,

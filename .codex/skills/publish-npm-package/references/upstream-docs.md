@@ -16,11 +16,13 @@ GitHub Actions contracts change.
 
 Confirm and record:
 
-1. Minimum Node and npm CLI versions for Trusted Publishing.
+1. Minimum Node and npm CLI versions for Trusted Publishing, plus the stricter
+   npm 11.12.0 floor required by `--include-attestations` in this verifier.
 2. Supported CI providers and runner types.
 3. Required OIDC permissions and supported npm operations.
 4. Exact Trusted Publisher fields, allowed actions, and package-limit rules.
-5. Public/private repository and package limits for automatic provenance.
+5. Public/private repository and package limits for automatic provenance,
+   including the private-source/public-package unavailable branch.
 6. Whether `--provenance` is automatic, required, optional, or unsupported for
    the selected path.
 7. Current token restriction, staged-publish, two-factor, first-publication, and

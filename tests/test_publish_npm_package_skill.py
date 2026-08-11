@@ -12,7 +12,7 @@ import tarfile
 import urllib.error
 from email.message import Message
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -99,6 +99,24 @@ def _slsa_entry(
     }
 
 
+def _slsa_payload(entry: dict[str, object]) -> dict[str, Any]:
+    bundle = entry["bundle"]
+    assert isinstance(bundle, dict)
+    envelope = bundle["dsseEnvelope"]
+    assert isinstance(envelope, dict)
+    payload = json.loads(base64.b64decode(str(envelope["payload"])))
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _replace_slsa_payload(entry: dict[str, object], payload: dict[str, Any]) -> None:
+    bundle = entry["bundle"]
+    assert isinstance(bundle, dict)
+    envelope = bundle["dsseEnvelope"]
+    assert isinstance(envelope, dict)
+    envelope["payload"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+
 def test_release_preflight_inspects_identity_and_emits_stable_digests(
     release_preflight: ModuleType, tmp_path: Path
 ) -> None:
@@ -139,6 +157,25 @@ def test_release_preflight_normalizes_supported_github_repository_urls(
         release_preflight.github_repository("git@github.com:example/example-package.git")
         == "github.com/example/example-package"
     )
+    assert (
+        release_preflight.github_repository("https://github.com/example/example-package.git/")
+        == "github.com/example/example-package"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://secret@github.com/example/example-package.git",
+        "https://github.com/example/example-package.git?token=secret",
+        "https://github.com/example/example-package.git#secret",
+    ],
+)
+def test_release_preflight_rejects_repository_url_secrets(
+    release_preflight: ModuleType, url: str
+) -> None:
+    with pytest.raises(RuntimeError, match="github.com"):
+        release_preflight.github_repository(url)
 
 
 def test_helpers_remove_ambient_npm_credentials(
@@ -169,6 +206,78 @@ def test_helpers_remove_ambient_npm_credentials(
         assert Path(env["NPM_CONFIG_USERCONFIG"]).read_text() == ""
         assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).read_text() == ""
         assert env["NPM_CONFIG_USERCONFIG"] != env["NPM_CONFIG_GLOBALCONFIG"]
+
+
+def test_release_tag_rejects_shell_metacharacters(
+    release_preflight: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        release_preflight,
+        "run",
+        lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    with pytest.raises(RuntimeError, match="unsafe"):
+        release_preflight.validate_release_tag("v1;touch${IFS}pwn", tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("version", "error"),
+    [("11.13.0", None), ("11.11.9", "11.12.0 or newer"), ("unknown", "could not parse")],
+)
+def test_release_preflight_enforces_verifier_compatible_npm_version(
+    release_preflight: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    version: str,
+    error: str | None,
+) -> None:
+    monkeypatch.setattr(
+        release_preflight,
+        "run",
+        lambda command, cwd, env: subprocess.CompletedProcess(command, 0, version, ""),
+    )
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            release_preflight.npm_version(tmp_path)
+    else:
+        assert release_preflight.npm_version(tmp_path) == version
+
+
+def test_release_preflight_load_json_rejects_invalid_shapes(
+    release_preflight: ModuleType, tmp_path: Path
+) -> None:
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text("not json")
+    with pytest.raises(RuntimeError, match="cannot read JSON"):
+        release_preflight.load_json(invalid)
+    array = tmp_path / "array.json"
+    array.write_text("[]")
+    with pytest.raises(RuntimeError, match="expected a JSON object"):
+        release_preflight.load_json(array)
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "error"),
+    [(0, "only-one-field", "could not parse"), (3, "", "could not prove"), (2, "", None)],
+)
+def test_release_preflight_remote_tag_result_is_fail_closed(
+    release_preflight: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    returncode: int,
+    stdout: str,
+    error: str | None,
+) -> None:
+    monkeypatch.setattr(
+        release_preflight,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], returncode, stdout, ""),
+    )
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            release_preflight.remote_tag_object("origin", "v1.2.3", tmp_path)
+    else:
+        assert release_preflight.remote_tag_object("origin", "v1.2.3", tmp_path) is None
 
 
 def test_signature_audit_selects_exact_target(published_package_verifier: ModuleType) -> None:
@@ -212,7 +321,12 @@ def test_slsa_verification_binds_artifact_source_workflow_tag_and_commit(
         "@refs/tags/example-package-v1.2.3"
     )
     monkeypatch.setattr(
-        published_package_verifier, "certificate_identities", lambda _bundle: {identity}
+        published_package_verifier,
+        "certificate_claims",
+        lambda _bundle: (
+            {identity},
+            published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER,
+        ),
     )
     entry = {"attestationBundles": [_slsa_entry(commit=commit)]}
 
@@ -238,6 +352,95 @@ def test_slsa_verification_binds_artifact_source_workflow_tag_and_commit(
     }
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["repository", "workflow_path", "ref", "build_type", "builder", "identity", "issuer"],
+)
+def test_slsa_verification_rejects_each_trust_binding_mutation(
+    published_package_verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    commit = "a" * 40
+    identity = (
+        "https://github.com/example/packages/.github/workflows/publish.yml"
+        "@refs/tags/example-package-v1.2.3"
+    )
+    entry = _slsa_entry(commit=commit)
+    payload = _slsa_payload(entry)
+    workflow = payload["predicate"]["buildDefinition"]["externalParameters"]["workflow"]
+    claims = {identity}
+    issuer = published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER
+    if mutation == "repository":
+        workflow["repository"] = "https://github.com/attacker/repository"
+    elif mutation == "workflow_path":
+        workflow["path"] = ".github/workflows/other.yml"
+    elif mutation == "ref":
+        workflow["ref"] = "refs/tags/other"
+    elif mutation == "build_type":
+        payload["predicate"]["buildDefinition"]["buildType"] = "https://example.invalid/build"
+    elif mutation == "builder":
+        payload["predicate"]["runDetails"]["builder"]["id"] = "https://example.invalid/runner"
+    elif mutation == "identity":
+        claims = {"https://github.com/attacker/repository/.github/workflows/publish.yml@refs/tags/example-package-v1.2.3"}
+    else:
+        issuer = "https://issuer.example.invalid"
+    _replace_slsa_payload(entry, payload)
+    monkeypatch.setattr(
+        published_package_verifier, "certificate_claims", lambda _bundle: (claims, issuer)
+    )
+
+    with pytest.raises(RuntimeError):
+        published_package_verifier.verify_slsa(
+            {"attestationBundles": [entry]},
+            artifact_sha512="artifact-digest",
+            package="@example/example-package",
+            version="1.2.3",
+            repository="https://github.com/example/packages.git",
+            workflow_path=".github/workflows/publish.yml",
+            tag="example-package-v1.2.3",
+            commit=commit,
+        )
+
+
+def test_slsa_verification_normalizes_repository_case_only(
+    published_package_verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    entry = _slsa_entry(commit=commit)
+    payload = _slsa_payload(entry)
+    dependency = payload["predicate"]["buildDefinition"]["resolvedDependencies"][0]
+    dependency["uri"] = (
+        "git+https://github.com/Example/Packages@refs/tags/example-package-v1.2.3"
+    )
+    _replace_slsa_payload(entry, payload)
+    identity = (
+        "https://github.com/Example/Packages/.github/workflows/publish.yml"
+        "@refs/tags/example-package-v1.2.3"
+    )
+    monkeypatch.setattr(
+        published_package_verifier,
+        "certificate_claims",
+        lambda _bundle: (
+            {identity},
+            published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER,
+        ),
+    )
+
+    result = published_package_verifier.verify_slsa(
+        {"attestationBundles": [entry]},
+        artifact_sha512="artifact-digest",
+        package="@example/example-package",
+        version="1.2.3",
+        repository="https://github.com/example/packages.git",
+        workflow_path=".github/workflows/publish.yml",
+        tag="example-package-v1.2.3",
+        commit=commit,
+    )
+    assert result["repository"] == "https://github.com/example/packages"
+
+
 def test_slsa_verification_rejects_split_subject_and_unrelated_dependency(
     published_package_verifier: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -248,7 +451,12 @@ def test_slsa_verification_rejects_split_subject_and_unrelated_dependency(
         "@refs/tags/example-package-v1.2.3"
     )
     monkeypatch.setattr(
-        published_package_verifier, "certificate_identities", lambda _bundle: {identity}
+        published_package_verifier,
+        "certificate_claims",
+        lambda _bundle: (
+            {identity},
+            published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER,
+        ),
     )
     split_subjects = [
         {"name": "pkg:npm/wrong@1.2.3", "digest": {"sha512": "artifact-digest"}},
@@ -303,7 +511,12 @@ def test_slsa_verification_checks_all_candidate_bundles(
         "@refs/tags/example-package-v1.2.3"
     )
     monkeypatch.setattr(
-        published_package_verifier, "certificate_identities", lambda _bundle: {identity}
+        published_package_verifier,
+        "certificate_claims",
+        lambda _bundle: (
+            {identity},
+            published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER,
+        ),
     )
     wrong = _slsa_entry(
         commit=commit,
@@ -320,6 +533,23 @@ def test_slsa_verification_checks_all_candidate_bundles(
         commit=commit,
     )
     assert result["matching_bundles"] == 1
+
+
+@pytest.mark.parametrize("bundles", ["not-a-list", ["not-an-object"]])
+def test_slsa_verification_rejects_malformed_bundle_shapes(
+    published_package_verifier: ModuleType, bundles: object
+) -> None:
+    with pytest.raises(RuntimeError, match="attestation"):
+        published_package_verifier.verify_slsa(
+            {"attestationBundles": bundles},
+            artifact_sha512="artifact-digest",
+            package="@example/example-package",
+            version="1.2.3",
+            repository="https://github.com/example/packages.git",
+            workflow_path=".github/workflows/publish.yml",
+            tag="example-package-v1.2.3",
+            commit="a" * 40,
+        )
 
 
 def test_verifier_hashes_match_npm_integrity_shape(
@@ -426,6 +656,43 @@ def test_registry_redirect_is_rejected_before_second_request(
         is None
     ]
     assert redirect_handlers
+
+
+def test_verifier_uses_compiled_tls_paths_not_ssl_environment(
+    published_package_verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    system_cafile = tmp_path / "system.pem"
+    system_cafile.write_text("system")
+    system_capath = tmp_path / "system-certs"
+    system_capath.mkdir()
+    attacker = tmp_path / "attacker.pem"
+    attacker.write_text("attacker")
+    monkeypatch.setenv("SSL_CERT_FILE", str(attacker))
+    monkeypatch.setattr(
+        published_package_verifier.ssl,
+        "get_default_verify_paths",
+        lambda: SimpleNamespace(
+            cafile=str(attacker),
+            capath=None,
+            openssl_cafile=str(system_cafile),
+            openssl_capath=str(system_capath),
+        ),
+    )
+    loaded: list[tuple[str | None, str | None]] = []
+
+    class FakeContext:
+        def load_verify_locations(
+            self, *, cafile: str | None, capath: str | None
+        ) -> None:
+            loaded.append((cafile, capath))
+
+    monkeypatch.setattr(
+        published_package_verifier.ssl, "SSLContext", lambda _protocol: FakeContext()
+    )
+    published_package_verifier.system_ssl_context()
+    assert loaded == [(str(system_cafile), str(system_capath))]
 
 
 def test_registry_download_is_bounded(
@@ -538,6 +805,8 @@ def test_release_preflight_main_prepare_success(
             stdout = "https://github.com/example/packages.git"
         elif key == ("git", "rev-parse", "HEAD"):
             stdout = commit
+        elif command == ["npm", "--version"]:
+            stdout = "11.13.0"
         else:
             stdout = ""
         return subprocess.CompletedProcess(command, 1 if command[1:3] == ["show-ref", "--verify"] else 0, stdout, "")
@@ -566,6 +835,169 @@ def test_release_preflight_main_prepare_success(
     assert json.loads(output.read_text())["commit"] == commit
 
 
+@pytest.mark.parametrize("phase", ["tag", "publish"])
+def test_release_preflight_main_tag_and_publish_success(
+    release_preflight: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    repo = tmp_path / "repo"
+    package_dir = repo / "package"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "example-package",
+                "version": "1.2.3",
+                "repository": "https://github.com/example/packages.git",
+            }
+        )
+    )
+    artifact = tmp_path / "package.tgz"
+    _tarball(artifact)
+    commit = "a" * 40
+    tag_object = "b" * 40
+    fingerprint = "C" * 40
+
+    def fake_run(command: list[str], *_args: object, **_kwargs: object) -> object:
+        key = tuple(command[:3])
+        stdout = ""
+        if key == ("git", "rev-parse", "--show-toplevel"):
+            stdout = str(repo)
+        elif key == ("git", "remote", "get-url"):
+            stdout = "https://github.com/example/packages.git"
+        elif key == ("git", "rev-parse", "HEAD"):
+            stdout = commit
+        elif key == ("git", "cat-file", "-t"):
+            stdout = "tag"
+        elif key == ("git", "rev-list", "-n"):
+            stdout = commit
+        elif command[:2] == ["git", "rev-parse"]:
+            stdout = tag_object
+        elif command == ["npm", "--version"]:
+            stdout = "11.13.0"
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(release_preflight, "run", fake_run)
+    monkeypatch.setattr(
+        release_preflight,
+        "remote_tag_object",
+        lambda *_args: tag_object if phase == "publish" else None,
+    )
+    monkeypatch.setattr(release_preflight, "registry_version_absent", lambda *_args: None)
+    monkeypatch.setattr(
+        release_preflight, "verify_tag_signer", lambda *_args: fingerprint
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release-preflight.py",
+            "--package-dir",
+            str(package_dir),
+            "--artifact",
+            str(artifact),
+            "--tag",
+            "v1.2.3",
+            "--phase",
+            phase,
+            "--access",
+            "public",
+            "--signer-fingerprint",
+            fingerprint,
+        ],
+    )
+    assert release_preflight.main() == 0
+
+
+@pytest.mark.parametrize(
+    ("phase", "tag_type", "target", "remote_object", "signer", "error"),
+    [
+        ("tag", "tag", "head", "remote", "signer", "already exists"),
+        ("publish", "tag", "head", "wrong", "signer", "does not match"),
+        ("tag", "commit", "head", None, "signer", "not annotated"),
+        ("tag", "tag", "wrong", None, "signer", "targets"),
+        ("tag", "tag", "head", None, None, "require --signer-fingerprint"),
+    ],
+)
+def test_release_preflight_main_rejects_invalid_tag_phase_state(
+    release_preflight: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    phase: str,
+    tag_type: str,
+    target: str,
+    remote_object: str | None,
+    signer: str | None,
+    error: str,
+) -> None:
+    repo = tmp_path / "repo"
+    package_dir = repo / "package"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "example-package",
+                "version": "1.2.3",
+                "repository": "https://github.com/example/packages.git",
+            }
+        )
+    )
+    artifact = tmp_path / "package.tgz"
+    _tarball(artifact)
+    commit = "a" * 40
+    tag_object = "b" * 40
+
+    def fake_run(command: list[str], *_args: object, **_kwargs: object) -> object:
+        key = tuple(command[:3])
+        stdout = ""
+        if key == ("git", "rev-parse", "--show-toplevel"):
+            stdout = str(repo)
+        elif key == ("git", "remote", "get-url"):
+            stdout = "https://github.com/example/packages.git"
+        elif key == ("git", "rev-parse", "HEAD"):
+            stdout = commit
+        elif key == ("git", "cat-file", "-t"):
+            stdout = tag_type
+        elif key == ("git", "rev-list", "-n"):
+            stdout = commit if target == "head" else "d" * 40
+        elif command[:2] == ["git", "rev-parse"]:
+            stdout = tag_object
+        elif command == ["npm", "--version"]:
+            stdout = "11.13.0"
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(release_preflight, "run", fake_run)
+    monkeypatch.setattr(
+        release_preflight,
+        "remote_tag_object",
+        lambda *_args: tag_object if remote_object == "remote" else remote_object,
+    )
+    monkeypatch.setattr(release_preflight, "registry_version_absent", lambda *_args: None)
+    monkeypatch.setattr(
+        release_preflight, "verify_tag_signer", lambda *_args: "C" * 40
+    )
+    argv = [
+        "release-preflight.py",
+        "--package-dir",
+        str(package_dir),
+        "--artifact",
+        str(artifact),
+        "--tag",
+        "v1.2.3",
+        "--phase",
+        phase,
+        "--access",
+        "public",
+    ]
+    if signer:
+        argv.extend(["--signer-fingerprint", "C" * 40])
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(RuntimeError, match=error):
+        release_preflight.main()
+
+
 def test_verifier_main_unavailable_provenance_success(
     published_package_verifier: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -584,12 +1016,12 @@ def test_verifier_main_unavailable_provenance_success(
             "tarball": "https://registry.example/package.tgz",
         }
     }
-    seen_env: list[object] = []
+    seen_calls: list[tuple[list[str], object]] = []
 
     def fake_run(
         command: list[str], *_args: object, env: object = None, **_kwargs: object
     ) -> object:
-        seen_env.append(env)
+        seen_calls.append((command, env))
         stdout = ""
         if command[:3] == ["git", "rev-parse", "--show-toplevel"]:
             stdout = str(repository_dir)
@@ -600,7 +1032,7 @@ def test_verifier_main_unavailable_provenance_success(
                 {
                     "invalid": [],
                     "missing": [],
-                    "verified": [{"name": "example-package", "version": "1.2.3"}],
+                    "verified": [],
                 }
             )
         return subprocess.CompletedProcess(command, 0, stdout, "")
@@ -658,11 +1090,56 @@ def test_verifier_main_unavailable_provenance_success(
     assert result["release_tag"] == tag_result
     # Every npm subprocess must receive the scrubbed environment; without this
     # assertion, dropping env= from a call site is invisible.
-    npm_envs = [env for env in seen_env if isinstance(env, dict)]
-    assert npm_envs
-    for env in npm_envs:
+    npm_calls = [(command, env) for command, env in seen_calls if command[0] == "npm"]
+    assert len(npm_calls) == 3
+    for _command, env in npm_calls:
+        assert isinstance(env, dict)
         assert "NPM_CONFIG_USERCONFIG" in env
         assert "NPM_CONFIG_CACHE" in env
+    install = next(command for command, _env in npm_calls if command[:2] == ["npm", "install"])
+    assert "--ignore-scripts" in install
+    assert "example-package@1.2.3" in install
+    assert "--registry=https://registry.example" in install
+
+
+def test_verifier_rejects_workflow_path_in_unavailable_mode(
+    published_package_verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "package.tgz"
+    _tarball(artifact)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify-published-package.py",
+            "--package",
+            "example-package",
+            "--version",
+            "1.2.3",
+            "--artifact",
+            str(artifact),
+            "--access",
+            "public",
+            "--provenance",
+            "unavailable",
+            "--source-repository",
+            "https://github.com/owner/repo",
+            "--workflow-path",
+            ".github/workflows/publish.yml",
+            "--tag",
+            "v1.2.3",
+            "--commit",
+            "a" * 40,
+            "--repository-dir",
+            str(tmp_path),
+            "--signer-fingerprint",
+            "C" * 40,
+        ],
+    )
+    with pytest.raises(RuntimeError, match="only valid"):
+        published_package_verifier.main()
 
 
 def test_release_tag_verification_binds_signer_remote_object_and_commit(
@@ -763,7 +1240,11 @@ def test_release_tag_verification_rejects_unapproved_signer(
         )
 
 
-def _self_signed_der(tmp_path: Path, identity: str) -> bytes:
+def _self_signed_der(
+    tmp_path: Path,
+    identity: str,
+    issuer: str = "https://token.actions.githubusercontent.com",
+) -> bytes:
     """Build a real DER certificate carrying a SAN URI, for the parser tests."""
     key = tmp_path / "key.pem"
     cert = tmp_path / "cert.der"
@@ -787,6 +1268,8 @@ def _self_signed_der(tmp_path: Path, identity: str) -> bytes:
             "/CN=test",
             "-addext",
             f"subjectAltName=URI:{identity}",
+            "-addext",
+            f"1.3.6.1.4.1.57264.1.1=ASN1:UTF8String:{issuer}",
         ],
         check=True,
         capture_output=True,
@@ -807,9 +1290,22 @@ def test_certificate_identities_supports_both_bundle_layouts(
         material: dict[str, Any] = {"certificate": {"rawBytes": encoded}}
     else:
         material = {"x509CertificateChain": {"certificates": [{"rawBytes": encoded}]}}
-    assert published_package_verifier.certificate_identities(
-        {"verificationMaterial": material}
-    ) == {identity}
+    claims = published_package_verifier.certificate_claims({"verificationMaterial": material})
+    assert claims == ({identity}, published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER)
+
+
+def test_certificate_claims_rejects_wrong_oidc_issuer(
+    published_package_verifier: ModuleType, tmp_path: Path
+) -> None:
+    identity = "https://github.com/owner/repo/.github/workflows/publish.yml@refs/tags/v1.2.3"
+    encoded = base64.b64encode(
+        _self_signed_der(tmp_path, identity, "https://issuer.example.invalid")
+    ).decode("ascii")
+    identities, issuer = published_package_verifier.certificate_claims(
+        {"verificationMaterial": {"certificate": {"rawBytes": encoded}}}
+    )
+    assert identities == {identity}
+    assert issuer == "https://issuer.example.invalid"
 
 
 def test_certificate_identities_rejects_unknown_bundle_layout(
@@ -834,12 +1330,53 @@ def test_unavailable_provenance_rejects_present_attestation(
         published_package_verifier.assert_no_provenance(entry)
 
 
+@pytest.mark.parametrize("bundles", ["not-a-list", {"predicateType": "wrong"}, ["bad"]])
+def test_unavailable_provenance_rejects_malformed_attestation_bundles(
+    published_package_verifier: ModuleType, bundles: object
+) -> None:
+    with pytest.raises(RuntimeError, match="attestation"):
+        published_package_verifier.assert_no_provenance({"attestationBundles": bundles})
+
+
 def test_target_verification_requires_the_exact_verified_entry(
     published_package_verifier: ModuleType,
 ) -> None:
     audit = {"invalid": [], "missing": [], "verified": [{"name": "other", "version": "1.2.3"}]}
     with pytest.raises(RuntimeError, match="did not verify the exact target"):
         published_package_verifier.target_verification(audit, "example-package", "1.2.3")
+
+
+def test_unavailable_target_verification_accepts_clean_empty_verified_list(
+    published_package_verifier: ModuleType,
+) -> None:
+    audit: dict[str, Any] = {"invalid": [], "missing": [], "verified": []}
+    assert (
+        published_package_verifier.target_verification(
+            audit, "example-package", "1.2.3", required=False
+        )
+        is None
+    )
+
+
+def test_target_verification_rejects_duplicate_exact_entries(
+    published_package_verifier: ModuleType,
+) -> None:
+    target = {"name": "example-package", "version": "1.2.3"}
+    audit = {"invalid": [], "missing": [], "verified": [target, dict(target)]}
+    with pytest.raises(RuntimeError, match="duplicate"):
+        published_package_verifier.target_verification(audit, "example-package", "1.2.3")
+
+
+@pytest.mark.parametrize("field", ["invalid", "missing", "verified"])
+def test_target_verification_rejects_malformed_audit_entries(
+    published_package_verifier: ModuleType, field: str
+) -> None:
+    audit: dict[str, Any] = {"invalid": [], "missing": [], "verified": []}
+    audit[field] = ["not-an-object"]
+    with pytest.raises(RuntimeError, match="malformed package entry"):
+        published_package_verifier.target_verification(
+            audit, "example-package", "1.2.3", required=False
+        )
 
 
 @pytest.mark.parametrize("field", ["invalid", "missing", "verified"])
@@ -856,6 +1393,38 @@ def test_target_verification_rejects_missing_audit_lists(
     del audit[field]
     with pytest.raises(RuntimeError, match=f"does not contain a {field} list"):
         published_package_verifier.target_verification(audit, "example-package", "1.2.3")
+
+
+def test_verified_fingerprints_accepts_gpg_primary_and_subkey_only(
+    release_preflight: ModuleType,
+    published_package_verifier: ModuleType,
+) -> None:
+    subkey = "A" * 40
+    primary = "B" * 40
+    result = subprocess.CompletedProcess(
+        ["git", "verify-tag"],
+        0,
+        "",
+        f"[GNUPG:] VALIDSIG {subkey} 2026-01-01 0 4 0 1 10 00 {primary}\n",
+    )
+    for module in (release_preflight, published_package_verifier):
+        assert module.verified_fingerprints(result) == {subkey, primary}
+
+
+def test_verified_fingerprints_does_not_accept_ssh_principal_spoof(
+    release_preflight: ModuleType,
+    published_package_verifier: ModuleType,
+) -> None:
+    approved = "SHA256:approved"
+    actual = "SHA256:actual"
+    result = subprocess.CompletedProcess(
+        ["git", "verify-tag"],
+        0,
+        "",
+        f'Good "git" signature for {approved} with ED25519 key {actual}\n',
+    )
+    for module in (release_preflight, published_package_verifier):
+        assert module.verified_fingerprints(result) == {actual}
 
 
 def test_credential_free_env_drops_tls_and_injection_variables(

@@ -30,7 +30,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
-source = ["scripts"]
+source = ["scripts", ".codex/skills/publish-npm-package/scripts"]
 omit = ["tests/*"]
 
 [tool.coverage.report]

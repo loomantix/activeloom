@@ -23,6 +23,7 @@ from typing import Any, NoReturn
 SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
 GITHUB_ACTIONS_BUILD_TYPE = "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
 GITHUB_HOSTED_BUILDER = "https://github.com/actions/runner/github-hosted"
+GITHUB_ACTIONS_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 COMMAND_TIMEOUT_SECONDS = 300
 DOWNLOAD_TIMEOUT_SECONDS = 30
 MAX_REDIRECTS = 5
@@ -132,50 +133,71 @@ def audit_entries(audit: dict[str, Any], field: str) -> list[dict[str, Any]]:
     entries = audit[field]
     if not isinstance(entries, list):
         fail(f"npm audit signatures {field} result is not a list")
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("name"), str)
+            or not isinstance(entry.get("version"), str)
+        ):
+            fail(f"npm audit signatures {field} contains a malformed package entry")
     return entries
 
 
-def target_verification(audit: dict[str, Any], package: str, version: str) -> dict[str, Any]:
+def target_verification(
+    audit: dict[str, Any], package: str, version: str, *, required: bool = True
+) -> dict[str, Any] | None:
     for field in ("invalid", "missing"):
         entries = audit_entries(audit, field)
         if any(
-            isinstance(entry, dict) and entry.get("name") == package and entry.get("version") == version
+            entry.get("name") == package and entry.get("version") == version
             for entry in entries
         ):
             fail(f"target package appears in npm audit signatures {field} results")
     matches = [
         entry
         for entry in audit_entries(audit, "verified")
-        if isinstance(entry, dict) and entry.get("name") == package and entry.get("version") == version
+        if entry.get("name") == package and entry.get("version") == version
     ]
-    if not matches:
+    if len(matches) > 1:
+        fail("npm audit signatures returned duplicate exact-target verified entries")
+    if required and not matches:
         fail("npm audit signatures did not verify the exact target package and version")
-    return matches[0]
+    return matches[0] if matches else None
 
 
 def assert_no_provenance(entry: dict[str, Any]) -> None:
     """Refuse to downgrade a present-but-unverified attestation to 'unavailable'."""
-    bundles = entry.get("attestationBundles") or []
-    if any(
-        isinstance(bundle, dict) and bundle.get("predicateType") == SLSA_PROVENANCE_V1
-        for bundle in bundles
-    ):
-        fail(
-            "package carries SLSA provenance; rerun with --provenance required "
-            "instead of recording it as unavailable"
-        )
+    bundles = entry.get("attestationBundles", [])
+    if not isinstance(bundles, list):
+        fail("npm audit signatures attestationBundles result is not a list")
+    for bundle in bundles:
+        if not isinstance(bundle, dict) or not isinstance(bundle.get("predicateType"), str):
+            fail("npm audit signatures contains a malformed attestation bundle")
+        if bundle["predicateType"] == SLSA_PROVENANCE_V1:
+            fail(
+                "package carries SLSA provenance; rerun with --provenance required "
+                "instead of recording it as unavailable"
+            )
 
 
 def github_repository(url: str) -> str:
     value = url.removeprefix("git+")
     if value.startswith("git@github.com:"):
         path = value.removeprefix("git@github.com:")
+        if "?" in path or "#" in path:
+            fail(f"source repository contains unsupported query or fragment: {url}")
     else:
         parsed = urllib.parse.urlparse(value)
-        if parsed.hostname != "github.com":
+        if (
+            parsed.hostname != "github.com"
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
             fail(f"source repository is not hosted on github.com: {url}")
         path = parsed.path.lstrip("/")
-    path = path.removesuffix(".git").rstrip("/")
+    path = path.rstrip("/").removesuffix(".git")
     if path.count("/") != 1:
         fail(f"source repository must identify one GitHub owner/repository: {url}")
     # GitHub owner/repository names are case-insensitive and the three sources
@@ -193,12 +215,17 @@ def normalize_fingerprint(value: str) -> str:
 def verified_fingerprints(result: subprocess.CompletedProcess[str]) -> set[str]:
     fingerprints: set[str] = set()
     for line in (result.stdout + "\n" + result.stderr).splitlines():
-        valid_signature = re.search(r"\[GNUPG:\] VALIDSIG ([0-9A-Fa-f]+)", line)
-        if valid_signature:
-            fingerprints.add(normalize_fingerprint(valid_signature.group(1)))
-        for token in line.split():
-            if token.startswith("SHA256:"):
-                fingerprints.add(normalize_fingerprint(token))
+        fields = line.split()
+        if len(fields) >= 3 and fields[:2] == ["[GNUPG:]", "VALIDSIG"]:
+            for candidate in (fields[2], fields[-1]):
+                if re.fullmatch(r"[0-9A-Fa-f]{40,}", candidate):
+                    fingerprints.add(normalize_fingerprint(candidate))
+        ssh_signature = re.search(
+            r'Good "git" signature .* with [^\r\n]* key (SHA256:[A-Za-z0-9+/=]+)$',
+            line,
+        )
+        if ssh_signature:
+            fingerprints.add(normalize_fingerprint(ssh_signature.group(1)))
     return fingerprints
 
 
@@ -281,13 +308,30 @@ class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def system_ssl_context() -> ssl.SSLContext:
+    """Load OpenSSL's compiled trust paths without consulting SSL_* environment variables."""
+    defaults = ssl.get_default_verify_paths()
+    cafile = defaults.openssl_cafile
+    capath = defaults.openssl_capath
+    usable_cafile = cafile if cafile and Path(cafile).is_file() else None
+    usable_capath = capath if capath and Path(capath).is_dir() else None
+    if usable_cafile is None and usable_capath is None:
+        fail("compiled OpenSSL trust paths are unavailable")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    try:
+        context.load_verify_locations(cafile=usable_cafile, capath=usable_capath)
+    except (OSError, ssl.SSLError) as exc:
+        fail(f"cannot load compiled OpenSSL trust paths: {exc}")
+    return context
+
+
 def download_from_registry(tarball_url: str, registry: str, max_bytes: int) -> bytes:
     expected_origin = registry_origin(registry)
     current_url = tarball_url
     # Pin registry TLS trust to the system store so it cannot be redirected by
     # inherited SSL_CERT_FILE/SSL_CERT_DIR settings.
     opener = urllib.request.build_opener(
-        NoRedirectHandler(), urllib.request.HTTPSHandler(context=ssl.create_default_context())
+        NoRedirectHandler(), urllib.request.HTTPSHandler(context=system_ssl_context())
     )
     for _ in range(MAX_REDIRECTS + 1):
         if registry_origin(current_url) != expected_origin:
@@ -329,7 +373,7 @@ def certificate_raw_bytes(material: dict[str, Any]) -> str:
     fail("provenance bundle does not carry a signing certificate in a supported layout")
 
 
-def certificate_identities(bundle: dict[str, Any]) -> set[str]:
+def certificate_claims(bundle: dict[str, Any]) -> tuple[set[str], str]:
     try:
         encoded = certificate_raw_bytes(bundle["verificationMaterial"])
         certificate = base64.b64decode(encoded, validate=True)
@@ -339,15 +383,54 @@ def certificate_identities(bundle: dict[str, Any]) -> set[str]:
         cert_path = Path(temp_dir) / "certificate.der"
         cert_path.write_bytes(certificate)
         result = run(
-            ["openssl", "x509", "-inform", "DER", "-in", str(cert_path), "-noout", "-ext", "subjectAltName"],
+            ["openssl", "x509", "-inform", "DER", "-in", str(cert_path), "-noout", "-text"],
             Path(temp_dir),
         )
-    identities: set[str] = set()
-    for part in result.stdout.replace("\n", ",").split(","):
-        value = part.strip()
-        if value.startswith("URI:"):
-            identities.add(value.removeprefix("URI:"))
-    return identities
+    identities = set(re.findall(r"URI:([^,\s]+)", result.stdout))
+    lines = result.stdout.splitlines()
+    issuer = ""
+    for index, line in enumerate(lines[:-1]):
+        if line.strip().startswith("1.3.6.1.4.1.57264.1.1:"):
+            issuer_match = re.search(r"https://[^\s]+", lines[index + 1])
+            issuer = issuer_match.group(0) if issuer_match else ""
+            break
+    if not issuer:
+        fail("provenance signing certificate does not carry an OIDC issuer")
+    return identities, issuer
+
+
+def certificate_identities(bundle: dict[str, Any]) -> set[str]:
+    return certificate_claims(bundle)[0]
+
+
+def github_dependency(value: str) -> tuple[str, str] | None:
+    if not value.startswith("git+") or "@" not in value:
+        return None
+    repository, ref = value.rsplit("@", 1)
+    try:
+        return github_repository(repository), ref
+    except RuntimeError:
+        return None
+
+
+def github_workflow_identity(value: str) -> tuple[str, str, str]:
+    if "@" not in value:
+        fail("provenance certificate identity does not carry a workflow ref")
+    workflow_url, ref = value.rsplit("@", 1)
+    parsed = urllib.parse.urlparse(workflow_url)
+    parts = parsed.path.strip("/").split("/")
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or len(parts) < 3
+    ):
+        fail("provenance certificate identity is not a GitHub workflow URI")
+    repository = github_repository(f"https://github.com/{parts[0]}/{parts[1]}")
+    return repository, "/".join(parts[2:]), ref
 
 
 def verify_slsa_candidate(
@@ -391,10 +474,10 @@ def verify_slsa_candidate(
         fail("SLSA workflow path does not match the expected publish workflow")
     if workflow.get("ref") != expected_ref:
         fail("SLSA workflow ref does not match the expected release tag")
-    expected_dependency = f"git+{expected_repository}@{expected_ref}"
     if not any(
         isinstance(dependency, dict)
-        and dependency.get("uri") == expected_dependency
+        and isinstance(dependency.get("uri"), str)
+        and github_dependency(dependency["uri"]) == (expected_repository, expected_ref)
         and dependency.get("digest", {}).get("gitCommit") == commit
         for dependency in dependencies
     ):
@@ -403,9 +486,13 @@ def verify_slsa_candidate(
         fail("SLSA build type is not the supported GitHub Actions workflow type")
     if builder.get("id") != GITHUB_HOSTED_BUILDER:
         fail("SLSA builder is not the GitHub-hosted Actions runner")
-    expected_identity = f"{expected_repository}/{workflow_path.lstrip('/')}@{expected_ref}"
-    if expected_identity not in certificate_identities(bundle):
+    expected_identity_parts = (expected_repository, workflow_path.lstrip("/"), expected_ref)
+    identities, issuer = certificate_claims(bundle)
+    if issuer != GITHUB_ACTIONS_OIDC_ISSUER:
+        fail("provenance signing certificate OIDC issuer is not GitHub Actions")
+    if not any(github_workflow_identity(identity) == expected_identity_parts for identity in identities):
         fail("provenance signing certificate identity does not match the expected workflow and tag")
+    expected_identity = f"{expected_repository}/{workflow_path.lstrip('/')}@{expected_ref}"
     return {
         "builder": GITHUB_HOSTED_BUILDER,
         "build_type": GITHUB_ACTIONS_BUILD_TYPE,
@@ -431,7 +518,14 @@ def verify_slsa(
 ) -> dict[str, Any]:
     matches: list[dict[str, Any]] = []
     errors: list[str] = []
-    for attestation_bundle in entry.get("attestationBundles", []):
+    bundles = entry.get("attestationBundles")
+    if not isinstance(bundles, list):
+        fail("npm audit signatures attestationBundles result is not a list")
+    for attestation_bundle in bundles:
+        if not isinstance(attestation_bundle, dict) or not isinstance(
+            attestation_bundle.get("predicateType"), str
+        ):
+            fail("npm audit signatures contains a malformed attestation bundle")
         if attestation_bundle.get("predicateType") != SLSA_PROVENANCE_V1:
             continue
         try:
@@ -496,6 +590,8 @@ def main() -> int:
     }
     if args.provenance == "required":
         required["--workflow-path"] = args.workflow_path
+    elif args.workflow_path:
+        fail("--workflow-path is only valid with --provenance required")
     missing = [flag for flag, value in required.items() if not value]
     if missing:
         fail(f"required release binding arguments are missing: {', '.join(missing)}")
@@ -588,11 +684,19 @@ def main() -> int:
         audit = json.loads(audit_result.stdout)
     except json.JSONDecodeError as exc:
         fail(f"npm audit signatures returned invalid JSON: {exc}")
-    # The exact target must be verified by npm in both modes; only the SLSA
-    # attestation itself is optional under --provenance unavailable.
-    target = target_verification(audit, args.package, args.version)
+    if not isinstance(audit, dict):
+        fail("npm audit signatures did not return a JSON object")
+    # npm's `verified` output contains attested packages, not packages carrying
+    # only registry signatures. Require the exact entry for provenance policy;
+    # the unavailable path instead relies on the successful signature audit,
+    # exact isolated install, and absence of dist attestation metadata.
+    target = target_verification(
+        audit, args.package, args.version, required=args.provenance == "required"
+    )
     provenance: dict[str, Any] | None = None
     if args.provenance == "required":
+        if target is None:  # narrowed explicitly for mypy and future refactors
+            fail("npm audit signatures did not return the required target evidence")
         provenance = verify_slsa(
             target,
             artifact_sha512=artifact_hashes["sha512"],
@@ -604,7 +708,13 @@ def main() -> int:
             commit=args.commit.lower(),
         )
     else:
-        assert_no_provenance(target)
+        if "attestations" in dist:
+            fail(
+                "package distribution metadata declares attestations; rerun with "
+                "--provenance required"
+            )
+        if target is not None:
+            assert_no_provenance(target)
     tag_verification = verify_release_tag(
         repository_dir,
         args.remote,
