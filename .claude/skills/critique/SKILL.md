@@ -119,8 +119,8 @@ Before presenting or editing a surviving finding:
    marker and content contract from the ledger.
 
 The inline comment must exist before the corresponding edit. If no defensible
-diff anchor exists, keep it out of the automated fix loop or track a genuinely
-architectural follow-up as the ledger requires.
+diff anchor exists, keep it out of the automated fix loop. Track it separately
+only when it clears the urgent-follow-up bar in Phase 3.
 
 If no new confirmed finding survives and the enclosing review hook did not move
 the head, finalize a `clean` v3 result per the ledger. When deepcritique's earlier
@@ -132,30 +132,47 @@ helper before reporting completion.
 
 ## Phase 3: Disposition and fixes
 
-In an adversarial round, apply the fix-everything-valid bias:
+Treat validity and actionability as separate decisions. A technically real
+concern is not automatically worth changing the PR or growing the backlog.
 
-- Fix a confirmed finding in this PR.
-- Dismiss only a false positive or a change that would make the code worse.
-  Reply with evidence and resolve the thread without editing.
-- Defer only a genuinely architectural change. File an issue, reply with its
-  link and rationale, then resolve the thread.
+Fix a confirmed finding only when the expected harm avoided clearly outweighs
+the churn and regression risk of the fix. Judge that from how likely a user is
+to reach the path, the impact and breadth when they do, recoverability,
+confidence in the root cause and correction, and the change's size, complexity,
+compatibility cost, and regression risk.
 
-In a convergence round, the bias inverts toward landing the change. Change the PR
-only for a **blocking** defect — one that ships wrong behavior, loses or corrupts
-data, opens a security or privacy hole, breaks a public contract, or breaks
-deploy or rollout:
+For security findings, require a credible exploit path: identify the reachable
+boundary, attacker capability and preconditions, missing or bypassable control,
+and resulting impact. A theoretical weakness, generic hardening opportunity, or
+severity label without a plausible path to discovery and exploitation does not
+by itself justify churn.
+
+Create a GitHub issue only for an urgent follow-up: a concrete, high-impact
+defect that is important enough to schedule within roughly the next two weeks,
+but whose safe fix should not land in this PR. Ordinary deferred backlog,
+speculative hardening, cleanup, and low-likelihood edge cases get no issue. If
+already posted, reply with `outcome=deferred` and the no-issue rationale; keep a
+concern that does not clear the actionable finding bar out of the PR ledger.
+
+In a convergence round, the bar tightens further toward landing the change.
+Change the PR only for a **blocking** defect that also clears the bar above — one
+that is realistically reachable and ships materially wrong behavior, loses or
+corrupts data, exposes a credible security or privacy exploit, breaks a public
+contract, or breaks deploy or rollout:
 
 - Fix a blocking finding with the smallest edit that clears it. No refactor, no
   rename, no new abstraction, no test or comment hardening alongside it.
-- Defer every confirmed non-blocking finding. File the issue, reply with
-  `outcome=deferred` plus the link, and resolve the thread. Deferral here is the
-  expected disposition, not an admission of scope creep.
-- Dismiss false positives exactly as above.
+- Defer every confirmed non-blocking finding and resolve its thread. Create and
+  link an issue only when it clears the urgent-follow-up bar above; otherwise
+  reply with `outcome=deferred` and a concise no-issue rationale. Deferral here
+  is the expected disposition, not an admission of scope creep.
+- Dismiss false positives or suggestions that would make the code worse with
+  concrete evidence and resolve the thread without editing.
 
-The findings a convergence round defers are usually real. Fixing them in this PR
-is still the wrong call: each one moves the head, re-stales the other engine's
-attestation, and buys another round of the same. Land the change and let the
-issue carry the work.
+The findings a convergence round defers may still be real. Fixing them in this
+PR is the wrong call when the expected benefit does not justify moving the head
+and re-staling the other engine's attestation. Land the change; let only urgent
+follow-ups grow the backlog.
 
 For confirmed fixes:
 
@@ -194,7 +211,7 @@ disposition/thread counts, validation, fix SHAs, and whether material fixes
 require another local-engine pass.
 
 A convergence round that found no blocking defect ends the loop: record a clean
-result, recommend the ship step, and list the deferred issues.
+result, recommend the ship step, and list any urgent deferred issues.
 
 If this Claude pass made a material fix, restart the bounded round at
 `/codex-review <pr-number>` in a fresh session. Otherwise it completes the
