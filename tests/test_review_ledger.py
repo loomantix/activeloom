@@ -1936,6 +1936,72 @@ def test_attest_rejects_changed_results_without_ledger_evidence(
         )
 
 
+def test_attest_accepts_custom_content_file(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "clean",
+                "engine": "codex",
+                "round": 2,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": HEAD,
+                "classification": None,
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    threads = _threads_file(tmp_path, [])
+    heads = _heads_file(tmp_path, HEAD)
+    content = tmp_path / "attestation.md"
+    content.write_text("Custom completion evidence.", encoding="utf-8")
+    posted: dict[str, str] = {}
+
+    def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        if args[:2] == ["pr", "view"]:
+            return HEAD + "\n"
+        endpoint = args[-1]
+        if endpoint.endswith("/comments?per_page=100"):
+            return json.dumps([[]])
+        if endpoint == f"repos/{REPO}/issues/7/comments":
+            assert payload is not None
+            posted["body"] = cast(str, payload["body"])
+            return json.dumps({"id": 123})
+        if endpoint == f"repos/{REPO}/issues/comments/123":
+            return json.dumps(
+                {
+                    "body": posted["body"],
+                    "user": {"login": "reviewer"},
+                }
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
+    review_ledger.main(
+        [
+            "attest", "--repo", REPO, "--pr", "7", "--head", HEAD,
+            "--engine", "codex", "--round", "2", "--base", "c" * 40,
+            "--before", HEAD, "--result-file", str(result_file),
+            "--threads-file", str(threads), "--allowed-heads-file", str(heads),
+            "--actor", "reviewer", "--expected-result-sha256",
+            hashlib.sha256(result_file.read_bytes()).hexdigest(),
+            "--content-file", str(content),
+        ]
+    )
+
+    assert posted["body"].endswith("\nCustom completion evidence.")
+    assert json.loads(capsys.readouterr().out)["verified"] is True
+
+
 def test_allowed_heads_reject_non_forward_transition(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,

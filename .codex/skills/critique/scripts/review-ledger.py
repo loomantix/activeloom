@@ -1574,7 +1574,11 @@ def _validate_args(args: argparse.Namespace) -> None:
         _fail("--round must be a positive integer")
     if getattr(args, "occurrence", 1) < 1:
         _fail("--occurrence must be a positive integer")
-    if getattr(args, "content_file", None):
+    if getattr(args, "content_file", None) and args.command in {
+        "post-finding",
+        "reopen-occurrence",
+        "dispose",
+    }:
         required = ["engine", "round", "fingerprint"]
         if args.command == "post-finding":
             required.extend(("severity", "lens"))
