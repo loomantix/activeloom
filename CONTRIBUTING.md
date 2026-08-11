@@ -25,7 +25,7 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 **In scope:**
 
 - New Codex skills that have value across multiple consumers (avoid skills that are tightly coupled to a single project's conventions — those belong in that project's repo).
-- Improvements to existing skills (`/grill`, `/refactorpass`, `/reviewit`, `/issues`, `/feature-dev`, `/copilot-review`, `/agent-loop`, `/deepgrill`, `/phone-install`, `/task-packet`).
+- Improvements to existing skills (`/critique`, `/refactorpass`, `/reviewit`, `/issues`, `/feature-dev`, `/copilot-review`, `/agent-loop`, `/deepcritique`, `/phone-install`, `/task-packet`).
 - Improvements to the sync engine (`scripts/sync-engine.py`, `scripts/create-signed-commit.py`) that make it more robust, more portable, or safer to operate.
 - Improvements to the consumer-side workflow template (`.github/workflows/sync-from-upstream.yml.template`).
 - Documentation, examples, contract clarifications.

@@ -18,7 +18,7 @@ Never force-push during a review relay. A moved remote head ends the pass.
 
 ## Classify the changeset
 
-`refactorpass`, `grill`, and `deepgrill` skip docs/config-only changesets. This
+`refactorpass`, `critique`, and `deepcritique` skip docs/config-only changesets. This
 is the shared definition for the pinned review range:
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
@@ -78,7 +78,7 @@ Output: findings only, each with severity and file:line evidence; NO FINDINGS if
 END_REVIEW_PACKET_V1
 ```
 
-Reuse the packet unchanged for `refactorpass`, `grill`, and every lane in the
+Reuse the packet unchanged for `refactorpass`, `critique`, and every lane in the
 same pass. If the head moves after a fix, end that review pass; build a new
 packet for the new head rather than mutating the old one.
 
@@ -230,7 +230,7 @@ finding into the PR.
 
 ### Use the deterministic ledger helper
 
-Use `.codex/skills/grill/scripts/review-ledger.py` for every local-review
+Use `.codex/skills/critique/scripts/review-ledger.py` for every local-review
 finding, disposition reply, thread resolution, and pass marker. The legacy v1
 refactor latch is the one explicit marker-construction exception: post it with
 the helper's `post-pr-comment` command until that informational latch moves to
@@ -254,11 +254,11 @@ preserves literal backticks, dollar expressions, quotes, Unicode, CRLF, and a
 missing final newline:
 
 ```bash
-python3 .codex/skills/grill/scripts/review-ledger.py preflight-anchor \
+python3 .codex/skills/critique/scripts/review-ledger.py preflight-anchor \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line>
 
-python3 .codex/skills/grill/scripts/review-ledger.py post-finding \
+python3 .codex/skills/critique/scripts/review-ledger.py post-finding \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line> \
   --engine <codex|claude> --round <n> --fingerprint <stable-id> \
@@ -271,7 +271,7 @@ occurrence to its existing root comment, then reopen that thread as a resumable,
 idempotent sequence:
 
 ```bash
-python3 .codex/skills/grill/scripts/review-ledger.py reopen-occurrence \
+python3 .codex/skills/critique/scripts/review-ledger.py reopen-occurrence \
   --repo <owner/repo> --pr <number> --head <reviewed-sha> \
   --engine <codex|claude> --round <n> --fingerprint <stable-id> \
   --occurrence <next-number> --severity <severity> --lens <lens> \
@@ -288,7 +288,7 @@ the final state. If the reply succeeds but resolution fails, running the same
 command again reuses the reply and completes only the missing resolution:
 
 ```bash
-python3 .codex/skills/grill/scripts/review-ledger.py dispose \
+python3 .codex/skills/critique/scripts/review-ledger.py dispose \
   --repo <owner/repo> --pr <number> --head <full-fix-sha> \
   --engine <codex|claude> --round <n> --fingerprint <stable-id> \
   --occurrence <number> --outcome <fixed|dismissed|deferred> \

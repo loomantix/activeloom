@@ -1,13 +1,13 @@
 ---
-name: deepgrill
-description: High-fidelity PR-first Codex review chain. Opens or reuses a draft PR, records verified findings inline before fixes, and runs grill deep — preceded by refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use for complex or high-risk changes such as auth, crypto, secrets, data migrations, GitHub Actions, sync tooling, .codex/skills, large refactors, or when the user asks for a deep review.
+name: deepcritique
+description: High-fidelity PR-first Codex review chain. Opens or reuses a draft PR, records verified findings inline before fixes, and runs critique deep — preceded by refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use for complex or high-risk changes such as auth, crypto, secrets, data migrations, GitHub Actions, sync tooling, .codex/skills, large refactors, or when the user asks for a deep review.
 ---
 
-# Deep Grill
+# Deep Critique
 
 ## Context Window Check
 
-Run this check before anything else. `deepgrill` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `grill deep` (six core independent review lanes, plus a conditional tenant-coupling lane). When subagents/delegation are available, the lanes run in parallel, each inheriting cache state from this session; when subagents are not available they run as serial local passes against the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.
+Run this check before anything else. `deepcritique` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `critique deep` (six core independent review lanes, plus a conditional tenant-coupling lane). When subagents/delegation are available, the lanes run in parallel, each inheriting cache state from this session; when subagents are not available they run as serial local passes against the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.
 
 Assess honestly:
 
@@ -16,7 +16,7 @@ Assess honestly:
 
 If either is yes, stop and tell the user:
 
-> Your context is heavy from the implementation work. Start a new Codex session and run `deepgrill` there. `deepgrill` spawns up to seven review lanes and is the chain that benefits most from cache headroom. A fresh session makes the chain materially cheaper.
+> Your context is heavy from the implementation work. Start a new Codex session and run `deepcritique` there. `deepcritique` spawns up to seven review lanes and is the chain that benefits most from cache headroom. A fresh session makes the chain materially cheaper.
 
 Do not proceed in the current session unless the user explicitly overrides.
 
@@ -48,12 +48,12 @@ adversarial stance holds for two rounds and then gives way to landing the change
    entirely and report `refactor pass: already spent at <sha>` or
    `refactor pass: skipped (convergence round)`.
 2. Reload the PR head and review ledger.
-3. Execute `grill <pr-number> deep`, passing the resolved round so the lane picks
+3. Execute `critique <pr-number> deep`, passing the resolved round so the lane picks
    the matching stance. An adversarial round runs all six core independent review
    lanes and the conditional tenant-coupling lane when customer-variable behavior
    is present. A convergence round runs only the code reviewer, silent failure
    hunter, and security reviewer when its signal is present, and changes the PR
-   only for a blocking defect. `grill` owns those rules; do not restate or relax
+   only for a blocking defect. `critique` owns those rules; do not restate or relax
    them here.
 4. Require every confirmed finding to have been posted inline before its fix,
    replied to after push, and resolved.
@@ -67,13 +67,16 @@ any explicitly requested fetch. Verify the value with
 `git rev-parse --verify '<sha>^{commit}'` and retain the resulting full object
 ID for the entire pass.
 
-Resolve the reviewed head SHA, changed-file list, and diff stat once from the
-pinned range. Build the immutable review packet required by the ledger and reuse
-it unchanged for `refactorpass`, `grill`, and every lane. Give them the literal
-`<review-base-sha>..<reviewed-head-sha>` range; do not use a mutable `HEAD` token
-inside the packet. No lane may re-resolve `@{u}`, a default branch, or a
-remote-tracking ref independently. Report both pinned SHAs in the handoff so the
-Claude reviewer can reconstruct the same range for the round.
+Resolve the reviewed head SHA, changed-file list, and diff stat once for the
+initial `refactorpass` packet. Reuse that packet unchanged while its head is
+current. If `refactorpass` moves the PR head, end that packet and build a new
+immutable review packet from the same pinned base and the resulting full head SHA,
+including a fresh changed-file list and diff stat; reuse the new packet
+unchanged for `critique` and every lane. Give each packet the literal
+`<review-base-sha>..<reviewed-head-sha>` range; do not use a mutable `HEAD`
+token inside it. No lane may re-resolve `@{u}`, a default branch, or a
+remote-tracking ref independently. Report the pinned base plus each reviewed
+head in the handoff so the Claude reviewer can reconstruct the ranges.
 
 Keep the packet as the byte-identical prefix of every spawned review prompt and
 append only the lane lens and exact file scope. Spawn with no inherited
@@ -82,9 +85,9 @@ choice. The ledger governs scoped diff reads, bounded output, and PR-ledger
 deduplication; do not paste the whole diff or the implementation conversation
 into lane prompts.
 
-Deep grill is not a single generalized review. If the active Codex runtime permits subagents/delegation, use independent reviewers for every applicable lane. If subagents are unavailable or not permitted, run a separate local pass for every applicable lane and disclose the downgrade in the final output.
+Deep critique is not a single generalized review. If the active Codex runtime permits subagents/delegation, use independent reviewers for every applicable lane. If subagents are unavailable or not permitted, run a separate local pass for every applicable lane and disclose the downgrade in the final output.
 
-Invoking `deepgrill` is an explicit request to use independent subagents for the
+Invoking `deepcritique` is an explicit request to use independent subagents for the
 six core review lanes, plus the conditional tenant-coupling lane when signaled,
 whenever the active runtime exposes subagent/delegation tools. Do not require the
 user to separately say "use subagents" before spawning those lane reviewers.
@@ -110,7 +113,7 @@ Use this path when the change touches:
 Read `.codex/REVIEW_WORKFLOW.md` and the consumer's instructions to determine
 which cross-model path the developer selected.
 
-When invoked as the final sub-skill inside `reviewit`, return the deepgrill
+When invoked as the final sub-skill inside `reviewit`, return the deepcritique
 result directly to that orchestrator. Do not start local convergence, recommend
 another `reviewit`, push, or emit a terminal workflow summary; `reviewit` owns
 the hosted-path summary.
@@ -126,7 +129,7 @@ outer wrapper validates the observed transition and posts the canonical
 attestation; this skill must not post a pass/completion marker itself.
 
 ```text
-Codex deepgrill pass complete.
+Codex deepcritique pass complete.
 PR: #<pr-number>
 Reviewed head: <sha>
 Round: <n> (<adversarial | convergence>)
@@ -157,9 +160,9 @@ Next:
   reviewit <pr-number> deep
 
 Run `reviewit <pr-number> deep` in a FRESH Codex session.
-The current session has absorbed refactorpass output, all deep-grill review
+The current session has absorbed refactorpass output, all deep-critique review
 lanes, and any fix commits — cache pressure is high. `reviewit deep` runs
-up to four review iterations and a final deepgrill against the PR; each
+up to four review iterations and a final deepcritique against the PR; each
 step needs cache headroom. A fresh session for `reviewit deep` makes the
 full chain materially cheaper.
 ```

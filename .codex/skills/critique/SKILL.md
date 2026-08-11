@@ -1,9 +1,9 @@
 ---
-name: grill
-description: PR-first adversarial code review for Codex. Use after implementation or refactorpass on an open draft PR, especially when the user asks to grill, review hard, find bugs, or run the platform review chain. Posts verified findings inline before fixing, then replies and resolves. Supports lean and deep modes.
+name: critique
+description: PR-first adversarial code review for Codex. Use after implementation or refactorpass on an open draft PR, especially when the user asks to critique, review hard, find bugs, or run the platform review chain. Posts verified findings inline before fixing, then replies and resolves. Supports lean and deep modes.
 ---
 
-# Grill
+# Critique
 
 Review an open draft PR adversarially. The goal is to catch bugs, missing tests,
 security issues, and convention violations while preserving every verified
@@ -11,16 +11,16 @@ finding and disposition in the PR.
 
 ## Context Window Check
 
-Run this check before anything else. `grill` runs adversarial review lanes—two in lean mode, six core lanes in deep mode, plus a conditional tenant-coupling lane—each of which reads the diff, reads changed files, and produces structured findings. When subagents/delegation are available the lanes run in parallel, and each subagent inherits cache state from this session; when subagents are not available the lanes run as serial local passes that compete for the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and `grill` (especially `grill deep`) runs slower and more expensively.
+Run this check before anything else. `critique` runs adversarial review lanes—two in lean mode, six core lanes in deep mode, plus a conditional tenant-coupling lane—each of which reads the diff, reads changed files, and produces structured findings. When subagents/delegation are available the lanes run in parallel, and each subagent inherits cache state from this session; when subagents are not available the lanes run as serial local passes that compete for the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and `critique` (especially `critique deep`) runs slower and more expensively.
 
 Assess honestly:
 
-- Has this session been writing/editing the feature about to be grilled? Long conversation, many file edits, dense planning?
+- Has this session been writing/editing the feature about to be critiqued? Long conversation, many file edits, dense planning?
 - Is the conversation about to brush against compaction territory?
 
 If either is yes, stop and tell the user:
 
-> Your context is heavy from the implementation work. Start a new Codex session and run `grill` (or `deepgrill`) there. `grill deep`'s full matrix especially needs cache headroom and a fresh session makes the chain materially cheaper.
+> Your context is heavy from the implementation work. Start a new Codex session and run `critique` (or `deepcritique`) there. `critique deep`'s full matrix especially needs cache headroom and a fresh session makes the chain materially cheaper.
 
 Do not proceed in the current session unless the user explicitly overrides.
 
@@ -28,7 +28,7 @@ Do not proceed in the current session unless the user explicitly overrides.
 
 Resolve this engine's round number per `.codex/references/local-review-ledger.md`
 before selecting lanes: use `$AGENT_LOOP_REVIEW_ROUND` when the runner set it,
-take it from an invoking `deepgrill`, or count the `local-review-pass:v3` and
+take it from an invoking `deepcritique`, or count the `local-review-pass:v3` and
 `local-review-complete:v3` markers on the PR naming `engine=codex` and add one.
 
 - **Rounds 1–2 run adversarially.** The stance, matrices, and fix bias below
@@ -67,7 +67,7 @@ deferral time rather than leaving the suggestion as an undocumented todo. A
 
 Reason: every valid finding that ships becomes the floor for the next PR in
 this area. Letting them accrue as "deferred" turns the backlog into review
-noise and makes future grills more expensive.
+noise and makes future critiques more expensive.
 
 ## Convergence Rounds
 
@@ -151,7 +151,7 @@ Deep mode must cover six core independent lanes, plus the conditional tenant-cou
 
 Run these lanes as independently as the active runtime permits:
 
-- Invoking `grill deep` is an explicit request to use independent subagents for
+- Invoking `critique deep` is an explicit request to use independent subagents for
   every applicable lane whenever the active runtime exposes subagent/delegation tools.
   Do not require the user to separately say "use subagents" before spawning
   those lane reviewers.
@@ -227,5 +227,5 @@ End with:
   the local Codex/Claude convergence loop after completing the PR ledger, or use
   `reviewit <pr>` / `reviewit <pr> deep` on the hosted
   fallback path. When recommending `reviewit`, recommend a fresh Codex session;
-  the current session has absorbed grill findings, fix commits, and (in deep
+  the current session has absorbed critique findings, fix commits, and (in deep
   mode) the full review matrix.

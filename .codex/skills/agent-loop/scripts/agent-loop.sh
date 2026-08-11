@@ -22,7 +22,7 @@ DIM='\033[2m'
 NC='\033[0m'
 
 # Review context is owned by this wrapper. Do not leak state from an outer
-# agent-loop/deepgrill invocation into setup, worker, or worker validation.
+# agent-loop/deepcritique invocation into setup, worker, or worker validation.
 unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
@@ -127,7 +127,7 @@ CONFIG_FILE="$PROJECT_DIR/.codex/skills/agent-loop/agent-loop.config"
 PROMPT_FILE="$PROJECT_DIR/.codex/skills/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
 ISSUES_READY="$PROJECT_DIR/.codex/skills/issues/scripts/ready.py"
-REVIEW_LEDGER="$PROJECT_DIR/.codex/skills/grill/scripts/review-ledger.py"
+REVIEW_LEDGER="$PROJECT_DIR/.codex/skills/critique/scripts/review-ledger.py"
 RUN_STATE_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop-state.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
@@ -210,6 +210,24 @@ if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; t
     echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
     exit 1
 fi
+# The grill-family review skills were renamed to critique/deepcritique/pr-critique
+# and the same sync deletes their old paths, including the review ledger helper.
+# A config still naming one is preserved by `create_if_missing`, so catch it here:
+# otherwise it fails inside a review pass, after the issue is claimed, the
+# worktree exists, the branch is pushed, and a draft PR is open. Both review
+# hooks are checked — the Claude chain was renamed in the same wave. The word
+# boundaries keep an unrelated path such as `grill-app/` from matching.
+for hook_key in claude_review_hook codex_review_hook; do
+    case "$hook_key" in
+        claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
+        codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
+        *) echo "unhandled hook key in retired-name preflight: $hook_key" >&2; exit 1 ;;
+    esac
+    if [[ "$hook_value" =~ (^|[^[:alnum:]_-])(deepgrill|pr-grill|grill)([^[:alnum:]_-]|$) ]]; then
+        echo "$hook_key names a retired grill-family review skill or path; migrate it to critique, deepcritique, or pr-critique before running agent-loop" >&2
+        exit 1
+    fi
+done
 
 if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
     if [ ! -f "$REVIEW_LEDGER" ] || [ ! -r "$REVIEW_LEDGER" ]; then

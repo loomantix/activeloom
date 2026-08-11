@@ -13,7 +13,7 @@ with the fix and validation, then resolve the thread. Every pass must read
 resolved as well as unresolved threads before reviewing the current head.
 
 Load [the local review ledger](references/local-review-ledger.md) before running
-`refactorpass`, `grill`, `deepgrill`, `pr-grill`, or local review hooks.
+`refactorpass`, `critique`, `deepcritique`, `pr-critique`, or local review hooks.
 
 ## Select One Cross-Model Path
 
@@ -39,7 +39,7 @@ Use this path when both local engines are available:
 3. Fetch the target base, record its immutable commit SHA, and give that exact
    SHA to both reviewers for the round. Neither reviewer may re-resolve a
    mutable remote-tracking ref independently.
-4. In a fresh Codex session, run `deepgrill <pr-number>`. Read the PR ledger,
+4. In a fresh Codex session, run `deepcritique <pr-number>`. Read the PR ledger,
    post every confirmed finding inline before editing, fix, validate, commit,
    push, reply, and resolve.
 5. On that resulting HEAD, run a fresh adversarial Claude review against the
@@ -98,7 +98,7 @@ Use this path when local Claude Code is unavailable.
 
 1. Make the local change, create a clean commit, and open a draft PR.
 2. Run `refactorpass <pr-number>` for source changes.
-3. Run `grill <pr-number>`. Lean mode executes the code-reviewer and silent
+3. Run `critique <pr-number>`. Lean mode executes the code-reviewer and silent
    failure-hunter lanes, using independent subagents when available.
 4. Run `reviewit <pr-number>`. It triggers Gemini Flash and Copilot, verifies and
    deduplicates their findings, fixes confirmed issues, pushes, replies, and
@@ -106,12 +106,12 @@ Use this path when local Claude Code is unavailable.
 
 ### Deep
 
-1. Open a draft PR, then run `deepgrill <pr-number>`. It executes `grill deep`'s
+1. Open a draft PR, then run `deepcritique <pr-number>`. It executes `critique deep`'s
    six core lanes and the conditional tenant-coupling lane, preceded by
    `refactorpass` on this engine's first pass over the PR.
 2. Run `reviewit <pr-number> deep`. Deep mode uses the same hosted reviewers
-   with its larger cap, early-exit rules, and final fresh Codex `deepgrill`.
-   That tail `deepgrill` skips the refactor pass — step 1 already spent this
+   with its larger cap, early-exit rules, and final fresh Codex `deepcritique`.
+   That tail `deepcritique` skips the refactor pass — step 1 already spent this
    engine's cleanup latch on the PR.
 
 Choose deep when the change touches auth, crypto, secret handling, schema/data
@@ -127,7 +127,7 @@ extensions such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
 
 ## Cross-Engine Relay
 
-When a different engine reviews the PR, run `pr-grill <pr-number>` from its
+When a different engine reviews the PR, run `pr-critique <pr-number>` from its
 isolated worktree. It reads the existing ledger, runs the deep matrix, posts
 confirmed findings inline, applies fixes, and completes those same threads. The
 hand-back is mandatory: the originating engine reads the updated ledger and

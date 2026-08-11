@@ -115,7 +115,7 @@ def review_ledger() -> ModuleType:
         Path(__file__).resolve().parent.parent
         / ".codex"
         / "skills"
-        / "grill"
+        / "critique"
         / "scripts"
         / "review-ledger.py"
     )

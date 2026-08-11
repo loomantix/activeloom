@@ -13,9 +13,9 @@ Operational skills you can install globally or sync into any repo:
 | Skill                 | What it does                                                                                                                                                    |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `refactorpass`        | PR-first cleanup pass; posts verified cleanup suggestions inline before applying, pushing, replying, and resolving.                                             |
-| `grill`               | PR-first adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass. |
-| `deepgrill`           | Opens or reuses a draft PR and orchestrates refactorpass plus `grill deep` with an inline finding ledger.                                                       |
-| `pr-grill <pr>`       | Cross-engine deep review of an existing PR using the same inline finding, fix-reply, and resolution ledger.                                                     |
+| `critique`            | PR-first adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass. |
+| `deepcritique`        | Opens or reuses a draft PR and orchestrates `critique deep` with an inline finding ledger, preceded by refactorpass on this engine's first pass only.           |
+| `pr-critique <pr>`    | Cross-engine deep review of an existing PR using the same inline finding, fix-reply, and resolution ledger.                                                     |
 | `reviewit <pr>`       | Optional hosted fallback for developers without local Claude Code. Orchestrates post-push Gemini Flash + Copilot review with bounded lean/deep modes.           |
 | `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                          |
 | `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                                                                |
@@ -61,7 +61,7 @@ The sync engine is intentionally agent-agnostic:
 
 ## Install
 
-Install the skills once per developer machine before expecting slash-skill commands such as `deepgrill`, `reviewit`, or `agent-loop` to resolve:
+Install the skills once per developer machine before expecting slash-skill commands such as `deepcritique`, `reviewit`, or `agent-loop` to resolve:
 
 ```bash
 git clone https://github.com/loomantix/codex-platform.git
@@ -71,9 +71,16 @@ cd codex-platform
 ./scripts/install-skills.sh --force   # replace existing entries after backup
 ```
 
-Updates flow through `git pull` in this checkout. Existing symlinks pick up edits automatically.
+Existing symlinks pick up in-place edits after `git pull`. After pulling a
+version that adds, renames, or retires skills, rerun
+`./scripts/install-skills.sh --dry-run`, then the normal installer so new links
+are created and retired owned links are pruned. Restart Codex after changing the
+installed skill set so discovery reloads.
 
-If a skill command is not found in a Codex session, run the dry-run check from this checkout. Use the normal installer for missing links; use `--force` only when the dry-run reports stale symlinks or regular files that should be replaced. Start a fresh Codex session after changing installed skills so discovery reloads.
+If a skill command is not found in a Codex session, run the dry-run check from
+this checkout. Use the normal installer for missing links; use `--force` only
+when the dry-run reports stale symlinks or regular files that should be
+replaced.
 
 Consumer-owned `create_if_missing` targets are intentionally not upgraded by a
 sync. Existing `agent-loop` consumers must manually merge the current config,

@@ -13,7 +13,7 @@ This repo is public-facing. Keep all issues, PRs, comments, and docs suitable fo
 
 ## Working Rules
 
-- At the start of work in this repo, verify local skill bootstrap with `./scripts/install-skills.sh --dry-run`. If it reports missing skills, run `./scripts/install-skills.sh` before relying on commands such as `deepgrill`, `reviewit`, or `agent-loop`.
+- At the start of work in this repo, verify local skill bootstrap with `./scripts/install-skills.sh --dry-run`. If it reports missing skills, run `./scripts/install-skills.sh` before relying on commands such as `deepcritique`, `reviewit`, or `agent-loop`.
 - If a documented skill command is not found, rerun the bootstrap check. Use `./scripts/install-skills.sh --force` only to repair stale or conflicting local entries after confirming replacement is intended.
 - Preserve the agent-agnostic sync engine unless a Codex feature genuinely requires a schema change.
 - Do not do implementation work directly on `main`; create a topic branch and PR back to `main`.

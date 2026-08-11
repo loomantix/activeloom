@@ -22,8 +22,11 @@ review_contract_version = 3
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
 # Codex-then-Claude round with no material fixes. The Codex hook must run
-# `deepgrill`; the Claude hook must perform a fresh adversarial review. Each
-# wrapper opens a draft PR before either hook. Each hook must read all prior PR
+# `deepcritique`; the Claude hook must perform a fresh adversarial review.
+# An existing config whose `claude_review_hook` or `codex_review_hook` still
+# names a retired `grill`-family skill or path is rejected during startup,
+# before issue claim or worktree creation.
+# Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
 # commit it, push without force, reply with the fix and validation, resolve the
 # thread, and fail if any valid finding or local-review thread remains. Hooks
