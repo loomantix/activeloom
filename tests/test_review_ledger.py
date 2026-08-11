@@ -1470,7 +1470,9 @@ def test_attestation_rejects_result_fingerprints_without_ledger_evidence(
         "classification": "material",
         "findingFingerprints": ["missing"],
     }
-    with pytest.raises(review_ledger.LedgerError, match="complete fixed-finding set"):
+    with pytest.raises(
+        review_ledger.LedgerError, match="complete same-round disposition set"
+    ):
         review_ledger._verify_result_evidence(args, data, ACTOR)
 
 

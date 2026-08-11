@@ -7,6 +7,8 @@ An issue is excluded from the ready list when any of these hold:
     integration branch, awaiting release/promotion; done-but-pending, not
     actionable. An opt-in convention: repos that never apply it see no matching
     issues, so the exclusion is a harmless no-op there.
+  - Any `agent-bail:*` label — refinement or a prior loop run explicitly marked
+    the issue unsuitable, even if a stale `dev: agent` label remains.
   - Body refs matching `Blocked by #N` or `Depends on #N` where #N is still open
   - It is the target of a closing reference from an OPEN pull request, or from a
     pull request MERGED within the last ADDRESSED_PR_WINDOW_DAYS days. This keeps
@@ -67,30 +69,63 @@ BLOCKER_RE = re.compile(
 # populated `closingIssuesReferences` (e.g. a link GitHub didn't auto-resolve).
 # Mirrors the keyword set GitHub itself honors. A bare `#N` is same-repo.
 CLOSING_KEYWORD_RE = re.compile(
-    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[:\s]+#(\d+)\b"
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b"
+    r"(?:[ \t]*:[ \t]*|[ \t]+)#(\d+)\b"
 )
+FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)")
+INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 
 # How far back a MERGED PR still counts as having "addressed" an issue.
 ADDRESSED_PR_WINDOW_DAYS = 30
+GH_LIST_LIMIT = 1000
 
 LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "source:", "status:")
+
+
+def run_gh_json(cmd: list[str], action: str, timeout: int = 60) -> Any:
+    """Run a required GitHub JSON query with a controlled, fail-closed error."""
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            f"Timed out after {timeout}s while running `gh {action}`. "
+            "Check GitHub auth/network connectivity and retry.\n"
+        )
+        sys.exit(1)
+    except OSError as exc:
+        sys.stderr.write(f"Could not run `gh {action}`: {exc}\n")
+        sys.exit(1)
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        sys.exit(result.returncode)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(f"Invalid JSON from `gh {action}`: {exc}\n")
+        sys.exit(1)
 
 
 def fetch_issues(extra_args: list[str]) -> list[dict[str, Any]]:
     cmd = [
         "gh", "issue", "list",
         "--state", "open",
-        "--limit", "1000",
+        "--limit", str(GH_LIST_LIMIT),
         "--json", "number,title,body,labels,assignees,url",
         *extra_args,
     ]
-    # 60s timeout: a hung GitHub API can otherwise stall callers (e.g.
-    # /agent-loop) that depend on this probe to advance.
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        sys.stderr.write(result.stderr)
-        sys.exit(result.returncode)
-    return json.loads(result.stdout)
+    issues = run_gh_json(cmd, "issue list")
+    if len(issues) >= GH_LIST_LIMIT:
+        sys.stderr.write(
+            f"Issue query reached the {GH_LIST_LIMIT}-item gh limit; "
+            "refusing a possibly truncated ready queue.\n"
+        )
+        sys.exit(1)
+    return issues
 
 
 def fetch_all_open_numbers() -> set[int]:
@@ -100,32 +135,40 @@ def fetch_all_open_numbers() -> set[int]:
     subset, so a dependent with e.g. `--agent` doesn't look ready when its
     blocker lacks the `dev: agent` label.
     """
-    result = subprocess.run(
+    issues = run_gh_json(
         [
             "gh", "issue", "list",
-            "--state", "open", "--limit", "1000",
+            "--state", "open", "--limit", str(GH_LIST_LIMIT),
             "--json", "number",
         ],
-        capture_output=True, text=True, timeout=60,
+        "issue list",
     )
-    if result.returncode != 0:
-        sys.stderr.write(result.stderr)
-        sys.exit(result.returncode)
-    return {issue["number"] for issue in json.loads(result.stdout)}
+    if len(issues) >= GH_LIST_LIMIT:
+        sys.stderr.write(
+            f"Open-issue query reached the {GH_LIST_LIMIT}-item gh limit; "
+            "refusing incomplete blocker resolution.\n"
+        )
+        sys.exit(1)
+    return {issue["number"] for issue in issues}
 
 
-def _current_repo() -> str | None:
-    """Return the current repo as `owner/name`, or None if it can't be resolved."""
+def _current_repo() -> str:
+    """Return the current repo as `owner/name`, failing if it can't be resolved."""
     try:
         result = subprocess.run(
             ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
             capture_output=True, text=True, timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"could not resolve current repository: {exc}") from exc
     if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
+        raise RuntimeError(
+            result.stderr.strip() or "could not resolve current repository"
+        )
+    repo = result.stdout.strip()
+    if not repo:
+        raise RuntimeError("current repository query returned an empty name")
+    return repo
 
 
 def _ref_repo(ref: dict[str, Any]) -> str | None:
@@ -135,11 +178,40 @@ def _ref_repo(ref: dict[str, Any]) -> str | None:
     return f"{owner}/{name}" if owner and name else None
 
 
+def parse_closing_keywords(body: str | None) -> set[int]:
+    """Parse closing directives from prose, ignoring quoted or code examples."""
+    prose: list[str] = []
+    in_fence = False
+    in_comment = False
+    for line in (body or "").splitlines():
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        stripped = line.lstrip()
+        if in_comment:
+            if "-->" in stripped:
+                in_comment = False
+            continue
+        if stripped.startswith("<!--"):
+            if "-->" not in stripped:
+                in_comment = True
+            continue
+        if stripped.startswith(">"):
+            continue
+        prose.append(INLINE_CODE_RE.sub("", line))
+    return {
+        int(match.group(1))
+        for match in CLOSING_KEYWORD_RE.finditer("\n".join(prose))
+    }
+
+
 def _pr_list(extra_args: list[str]) -> list[dict[str, Any]]:
     result = subprocess.run(
         [
             "gh", "pr", "list",
-            "--limit", "1000",
+            "--limit", str(GH_LIST_LIMIT),
             "--json", "number,body,closingIssuesReferences",
             *extra_args,
         ],
@@ -147,10 +219,18 @@ def _pr_list(extra_args: list[str]) -> list[dict[str, Any]]:
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "gh pr list failed")
-    return json.loads(result.stdout)
+    prs = json.loads(result.stdout)
+    if len(prs) >= GH_LIST_LIMIT:
+        raise RuntimeError(
+            f"PR query reached the {GH_LIST_LIMIT}-item gh limit; results may be truncated"
+        )
+    return prs
 
 
-def fetch_addressed_numbers(window_days: int = ADDRESSED_PR_WINDOW_DAYS) -> set[int]:
+def fetch_addressed_numbers(
+    window_days: int = ADDRESSED_PR_WINDOW_DAYS,
+    exclude_pr_numbers: set[int] | None = None,
+) -> set[int]:
     """Issue numbers already addressed by an open or recently-merged PR.
 
     Authoritative source is `PullRequest.closingIssuesReferences` — the link set
@@ -162,33 +242,32 @@ def fetch_addressed_numbers(window_days: int = ADDRESSED_PR_WINDOW_DAYS) -> set[
     References are filtered to the current repo so a cross-repo PR closing its
     own `#N` can't shadow an unrelated local issue with the same number.
 
-    Degrades to an empty set (with a stderr warning) if the PR API is
-    unreachable: a transient PR-list failure must not stop ready issues from
-    listing.
+    Fails closed if repository identity or PR data cannot be resolved. Returning
+    a partial queue would let automation claim work already covered by a PR or
+    hide an unrelated same-number issue through a cross-repository reference.
     """
     since = (datetime.now(timezone.utc).date() - timedelta(days=window_days)).isoformat()
-    repo = _current_repo()
     try:
+        repo = _current_repo()
         prs = _pr_list(["--state", "open"])
         prs += _pr_list(["--state", "merged", "--search", f"merged:>={since}"])
     except (OSError, subprocess.SubprocessError, RuntimeError, json.JSONDecodeError) as exc:
-        sys.stderr.write(
-            f"warning: could not check PR-addressed issues ({exc}); excluding none\n"
-        )
-        return set()
+        sys.stderr.write(f"Could not check PR-addressed issues: {exc}\n")
+        sys.exit(1)
 
+    excluded = exclude_pr_numbers or set()
     addressed: set[int] = set()
     for pr in prs:
+        if pr.get("number") in excluded:
+            continue
         refs = [
             ref for ref in (pr.get("closingIssuesReferences") or [])
-            if repo is None or _ref_repo(ref) in (None, repo)
+            if _ref_repo(ref) == repo
         ]
         if refs:
             addressed.update(ref["number"] for ref in refs)
         else:
-            addressed.update(
-                int(m.group(1)) for m in CLOSING_KEYWORD_RE.finditer(pr.get("body") or "")
-            )
+            addressed.update(parse_closing_keywords(pr.get("body")))
     return addressed
 
 
@@ -204,8 +283,7 @@ def label_names(issue: dict[str, Any]) -> list[str]:
 #                            just wastes an agent iteration rediscovering it is
 #                            already shipped
 #   - agent-bail:*        -> explicitly excluded by refinement or a prior loop
-#                            run, even if a stale `dev: agent` label remains
-# All are opt-in conventions — a repo that never applies them has no matching
+# Both are opt-in conventions — a repo that never applies them has no matching
 # issues, so this exclusion is a harmless no-op there.
 HARD_EXCLUDE_LABELS = frozenset({"status: blocked", "status: on-staging"})
 BAIL_LABEL_PREFIX = "agent-bail:"
@@ -260,6 +338,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--area", help='e.g. "backend", "frontend", "packages"')
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--json", action="store_true", help="output JSON instead of table")
+    parser.add_argument(
+        "--exclude-addressed-by-pr",
+        action="append",
+        type=int,
+        default=[],
+        metavar="N",
+        help="ignore only PR N when computing addressed issues (wrapper re-attestation)",
+    )
     return parser.parse_args()
 
 
@@ -283,7 +369,12 @@ def main() -> int:
     # Blocker resolution must consider *all* open issues, not just the filtered set,
     # otherwise a blocker outside the filter looks "closed" and its dependent appears ready.
     open_nums = fetch_all_open_numbers() if filters else {i["number"] for i in issues}
-    addressed = fetch_addressed_numbers()
+    excluded_prs = set(getattr(args, "exclude_addressed_by_pr", []))
+    addressed = (
+        fetch_addressed_numbers(exclude_pr_numbers=excluded_prs)
+        if excluded_prs
+        else fetch_addressed_numbers()
+    )
 
     ready: list[dict[str, Any]] = []
     for issue in issues:

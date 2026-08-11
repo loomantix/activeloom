@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -879,13 +880,16 @@ def _verify_result_evidence(
     _verify_review_base(args.repo, args.pr, args.base, args.before)
     _verify_git_transition(args.before, args.head)
     matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
+    evidence: set[str] = set()
     fixed: set[str] = set()
     for finding, disposition in matched:
         if (
             finding.group("engine") != args.engine
             or int(finding.group("round")) != args.round
-            or disposition.group("outcome") != "fixed"
         ):
+            continue
+        evidence.add(finding.group("fingerprint"))
+        if disposition.group("outcome") != "fixed":
             continue
         finding_head = finding.group("head")
         disposition_head = disposition.group("head")
@@ -901,8 +905,8 @@ def _verify_result_evidence(
             )
         fixed.add(finding.group("fingerprint"))
     expected = set(cast(list[str], data["findingFingerprints"]))
-    if fixed != expected:
-        _fail("review result fingerprints do not equal the complete fixed-finding set")
+    if evidence != expected:
+        _fail("review result fingerprints do not equal the complete same-round disposition set")
     if data["status"] == "changed" and not fixed:
         marker = (
             f"<!-- local-review-refactor:v1 engine={args.engine} "
@@ -919,8 +923,16 @@ def _verify_result_evidence(
 
 def _verify_ledger(args: argparse.Namespace) -> None:
     actor = _current_login()
+    if getattr(args, "actor", None) is not None and args.actor != actor:
+        _fail("authenticated GitHub actor changed before ledger verification")
     _verify_head(args.repo, args.pr, args.head)
     matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
+    if getattr(args, "result_file", None) is not None:
+        live_head = args.head
+        args.head = args.result_head
+        data = _validate_result_data(args)
+        _verify_result_evidence(args, data, actor)
+        args.head = live_head
     _verify_head(args.repo, args.pr, args.head)
     print(json.dumps({"actor": actor, "dispositions": len(matched), "verified": True}))
 
@@ -1181,7 +1193,6 @@ def _validate_result_data(
         if (
             args.before != args.head
             or classification is not None
-            or fingerprints
             or data["finalLaneComplete"] is not True
             or "blocker" in data
         ):
@@ -1218,13 +1229,85 @@ def _validate_result(args: argparse.Namespace) -> None:
     print(json.dumps(output, sort_keys=True))
 
 
+def _write_result(args: argparse.Namespace) -> None:
+    actor = _current_login()
+    _verify_review_base(args.repo, args.pr, args.base, args.before)
+    _verify_git_transition(args.before, args.head)
+    matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
+    rows = sorted(
+        {
+            (
+                finding.group("fingerprint"),
+                disposition.group("outcome"),
+                finding.group("severity"),
+            )
+            for finding, disposition in matched
+            if finding.group("engine") == args.engine
+            and int(finding.group("round")) == args.round
+        }
+    )
+    fingerprints = [fingerprint for fingerprint, _, _ in rows]
+    if len(fingerprints) != len(set(fingerprints)):
+        _fail("same-round finding fingerprint is duplicated")
+    changed = args.before != args.head
+    fixed = [(fingerprint, severity) for fingerprint, outcome, severity in rows if outcome == "fixed"]
+    if not changed and fixed:
+        _fail("clean review results cannot have same-round fixes")
+    if changed and args.classification not in {"minor", "material"}:
+        _fail("changed review result requires --classification")
+    if not changed and args.classification is not None:
+        _fail("clean review result cannot have a classification")
+    if any(severity in {"blocking", "major"} for _, severity in fixed) and args.classification != "material":
+        _fail("fixed blocking or major findings require material classification")
+    value = {
+        "version": PROTOCOL_VERSION,
+        "status": "changed" if changed else "clean",
+        "engine": args.engine,
+        "round": args.round,
+        "baseSha": args.base,
+        "beforeSha": args.before,
+        "afterSha": args.head,
+        "classification": args.classification if changed else None,
+        "findingFingerprints": fingerprints,
+        "finalLaneComplete": True,
+    }
+    _validate_result_data(args, (json.dumps(value) + "\n").encode())
+    _verify_result_evidence(args, value, actor)
+    raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    path = Path(args.result_file)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        _fail("review result destination must be a regular non-symlink file")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    print(json.dumps({"resultSha256": hashlib.sha256(raw).hexdigest(), **value}, sort_keys=True))
+
+
 def _attest(args: argparse.Namespace) -> None:
     result_bytes = _read_result_bytes(args)
     data = _validate_result_data(args, result_bytes)
     actor = _current_login()
+    if getattr(args, "actor", None) is not None and args.actor != actor:
+        _fail("authenticated GitHub actor changed before review result attestation")
     args.actor = actor
     _verify_result_evidence(args, data, actor)
     result_hash = hashlib.sha256(result_bytes).hexdigest()
+    if (
+        getattr(args, "expected_result_sha256", None) is not None
+        and args.expected_result_sha256 != result_hash
+    ):
+        _fail("review result bytes changed before attestation")
     if data["status"] == "blocked":
         _fail("blocked review results cannot be attested as complete")
     content = (
@@ -1495,13 +1578,31 @@ def _parser() -> argparse.ArgumentParser:
     _add_result_arguments(validate, github=False)
     validate.set_defaults(handler=_validate_result)
 
+    write_result = commands.add_parser("write-result")
+    _add_result_arguments(write_result, github=True)
+    write_result.add_argument("--classification", choices=("minor", "material"))
+    write_result.set_defaults(handler=_write_result)
+
     attest = commands.add_parser("attest")
     _add_result_arguments(attest, github=True)
     attest.add_argument("--content-file")
+    attest.add_argument("--threads-file")
+    attest.add_argument("--allowed-heads-file")
+    attest.add_argument("--actor")
+    attest.add_argument("--expected-result-sha256")
     attest.set_defaults(handler=_attest)
 
     verify_ledger = commands.add_parser("verify-ledger")
     _add_common(verify_ledger)
+    verify_ledger.add_argument("--result-head")
+    verify_ledger.add_argument("--threads-file")
+    verify_ledger.add_argument("--actor")
+    verify_ledger.add_argument("--engine", choices=("codex", "claude"))
+    verify_ledger.add_argument("--round", type=int)
+    verify_ledger.add_argument("--base")
+    verify_ledger.add_argument("--before")
+    verify_ledger.add_argument("--result-file")
+    verify_ledger.add_argument("--allowed-heads-file")
     verify_ledger.set_defaults(handler=_verify_ledger)
 
     resolve = commands.add_parser("resolve")

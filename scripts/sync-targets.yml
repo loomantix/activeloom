@@ -141,6 +141,31 @@ targets:
     substitutions: []
     mode: '0755'
 
+  - source: .claude/skills/agent-loop/scripts/agent-loop-state.py
+    destination: .claude/skills/agent-loop/scripts/agent-loop-state.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .claude/skills/agent-loop/scripts/review-push.sh
+    destination: .claude/skills/agent-loop/scripts/review-push.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .claude/skills/agent-loop/scripts/config-doctor.py
+    destination: .claude/skills/agent-loop/scripts/config-doctor.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .claude/skills/agent-loop/scripts/hook-git-guard
+    destination: .claude/skills/agent-loop/scripts/hook-git-guard
+    substitutions: []
+    mode: '0755'
+
+  - source: .claude/skills/agent-loop/scripts/hook-gh-guard
+    destination: .claude/skills/agent-loop/scripts/hook-gh-guard
+    substitutions: []
+    mode: '0755'
+
   # Consumer-owned overrides for the loop (e.g. base_branch for repos whose
   # integration branch != default branch). `create_if_missing: true` so each
   # repo customizes it once; the hash-locked agent-loop.sh stays a verbatim
