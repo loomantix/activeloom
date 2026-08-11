@@ -229,10 +229,15 @@ def test_main_excludes_non_actionable_issues_without_hiding_unrelated(
         area=None,
         limit=20,
         json=True,
+        exclude_addressed_by_pr=[],
     )
     monkeypatch.setattr(ready_mod, "parse_args", lambda: args)
     monkeypatch.setattr(ready_mod, "fetch_issues", lambda filters: issues)
-    monkeypatch.setattr(ready_mod, "fetch_addressed_numbers", lambda: {3})
+    monkeypatch.setattr(
+        ready_mod,
+        "fetch_addressed_numbers",
+        lambda *, exclude_pr_numbers=None: {3},
+    )
 
     assert ready_mod.main() == 0
     rows = json.loads(capsys.readouterr().out)

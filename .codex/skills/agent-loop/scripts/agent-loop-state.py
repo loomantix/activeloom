@@ -10,6 +10,7 @@ import re
 import stat
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -29,19 +30,24 @@ def _fail(message: str) -> NoReturn:
     raise StateError(message)
 
 
-def _read(path: Path) -> dict[str, Any]:
+def _read_state(
+    path: Path,
+    *,
+    label: str,
+    validator: Callable[[dict[str, Any]], None],
+) -> dict[str, Any]:
     metadata = os.lstat(path)
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
-        _fail("run state must be an owner-controlled regular file")
+        _fail(f"{label} must be an owner-controlled regular file")
     if metadata.st_mode & 0o077:
-        _fail("run state permissions must not grant group or other access")
+        _fail(f"{label} permissions must not grant group or other access")
     try:
         value = json.loads(path.read_bytes())
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise StateError("run state must contain valid UTF-8 JSON") from error
+        raise StateError(f"{label} must contain valid UTF-8 JSON") from error
     if not isinstance(value, dict):
-        _fail("run state must be a JSON object")
-    _validate(value)
+        _fail(f"{label} must be a JSON object")
+    validator(value)
     return value
 
 
@@ -108,13 +114,22 @@ def _validate(value: dict[str, Any]) -> None:
         _fail("run state paths must be absolute")
 
 
-def _atomic_write(
-    path: Path, value: dict[str, Any], *, replace: bool = True
+def _read(path: Path) -> dict[str, Any]:
+    return _read_state(path, label="run state", validator=_validate)
+
+
+def _atomic_write_state(
+    path: Path,
+    value: dict[str, Any],
+    *,
+    label: str,
+    validator: Callable[[dict[str, Any]], None],
+    replace: bool = True,
 ) -> None:
-    _validate(value)
+    validator(value)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.parent.is_symlink():
-        _fail("run state directory must not be a symlink")
+        _fail(f"{label} directory must not be a symlink")
     os.chmod(path.parent, 0o700)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -130,7 +145,7 @@ def _atomic_write(
             try:
                 os.link(temporary, path)
             except FileExistsError:
-                _fail("run state already exists")
+                _fail(f"{label} already exists")
             os.unlink(temporary)
         directory = os.open(path.parent, os.O_RDONLY)
         try:
@@ -142,6 +157,16 @@ def _atomic_write(
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def _atomic_write(path: Path, value: dict[str, Any], *, replace: bool = True) -> None:
+    _atomic_write_state(
+        path,
+        value,
+        label="run state",
+        validator=_validate,
+        replace=replace,
+    )
 
 
 def _create(args: argparse.Namespace) -> None:
@@ -236,53 +261,19 @@ def _validate_batch(value: dict[str, Any]) -> None:
 
 
 def _read_batch(path: Path) -> dict[str, Any]:
-    metadata = os.lstat(path)
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
-        _fail("batch state must be an owner-controlled private regular file")
-    try:
-        value = json.loads(path.read_bytes())
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise StateError("batch state must contain valid UTF-8 JSON") from error
-    if not isinstance(value, dict):
-        _fail("batch state must be a JSON object")
-    _validate_batch(value)
-    return value
+    return _read_state(path, label="batch state", validator=_validate_batch)
 
 
-def _atomic_write_batch(path: Path, value: dict[str, Any], *, replace: bool = True) -> None:
-    _validate_batch(value)
-    # Reuse the same fsync/private atomic writer after temporarily validating as
-    # batch state instead of child state.
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if path.parent.is_symlink():
-        _fail("batch state directory must not be a symlink")
-    os.chmod(path.parent, 0o700)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        if replace:
-            os.replace(temporary, path)
-        else:
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                _fail("batch state already exists")
-            os.unlink(temporary)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+def _atomic_write_batch(
+    path: Path, value: dict[str, Any], *, replace: bool = True
+) -> None:
+    _atomic_write_state(
+        path,
+        value,
+        label="batch state",
+        validator=_validate_batch,
+        replace=replace,
+    )
 
 
 def _batch_create(args: argparse.Namespace) -> None:

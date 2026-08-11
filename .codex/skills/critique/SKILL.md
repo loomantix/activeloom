@@ -214,19 +214,21 @@ Run these lanes as independently as the active runtime permits:
 10. Apply the Disposition Bar. Fix only findings whose expected harm reduction
     justifies the churn. Defer the rest, and create an issue only for an urgent
     follow-up that should be scheduled within roughly two weeks.
-11. Run targeted validation, commit, and push with no force.
+11. Run targeted validation and commit. Publish through
+    `$AGENT_LOOP_REVIEW_PUSH_HELPER` when it is set; otherwise push normally
+    with no force.
 12. Use the ledger helper's resumable `dispose` transaction for every posted
     finding. Stop on any posting, push, disposition, or resolution failure; on
     an uncertain helper response, retry only the identical command.
-13. Always write the v3 structured result to
-    `$AGENT_LOOP_REVIEW_RESULT_FILE` when set. The outer wrapper validates it
-    and owns the pass/completion attestation. Outside agent-loop, create the
-    same result, complete review-thread export, and ordered forward-only
-    before-to-after head list as private temporary files, then use the helper's
-    `attest --threads-file <path> --allowed-heads-file <path>` command. `attest`
-    verifies the ledger and requires `--expected-result-sha256` from
-    `validate-result` before publishing, so manual and automated passes share
-    one protocol.
+13. Always use the ledger helper's `write-result` command to create the v3
+    structured result at `$AGENT_LOOP_REVIEW_RESULT_FILE` when set. The outer
+    wrapper validates it and owns the pass/completion attestation. Outside
+    agent-loop, create the complete review-thread export and ordered
+    forward-only before-to-after head list as private temporary files, use
+    `write-result`, then use `attest --threads-file <path>
+--allowed-heads-file <path>`. `attest` verifies the ledger and requires
+    `--expected-result-sha256` from `validate-result` before publishing, so
+    manual and automated passes share one protocol.
 
 ## Output
 

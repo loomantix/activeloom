@@ -310,7 +310,9 @@ never improvise an API mutation. A preflight rejection performs no mutation.
 For each published finding:
 
 1. Apply the correction and run the smallest relevant validation.
-2. Commit and push with a normal, non-force push.
+2. Commit the correction. When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke
+   that wrapper-owned helper with no arguments; otherwise push normally without
+   force.
 3. Put the fix SHA, validation result, and concise rationale in a content file.
    Use `dispose` with the matching fingerprint and occurrence. For dismissal or
    tracked deferral, use `outcome=dismissed` or `outcome=deferred` and the exact
@@ -323,8 +325,12 @@ report the exact unresolved thread; do not silently continue.
 ## Record clean passes and convergence
 
 Every pass writes `$AGENT_LOOP_REVIEW_RESULT_FILE` when that variable is set.
-The file is always present, including clean and blocked passes, and contains
-exactly this contract:
+For a clean or changed pass, export the complete review threads and ordered
+forward-only transition heads, then use the ledger helper's `write-result`
+command so it derives the exact same-round fingerprint set from dispositions.
+For a blocked pass, use a deterministic serializer because there is no complete
+ledger result to derive. The file is always present and contains exactly this
+contract:
 
 ```json
 {
@@ -341,11 +347,11 @@ exactly this contract:
 }
 ```
 
-For `changed`, classification is `minor` or `material`, fingerprints is the
-non-empty set dispositioned by the pass, and `finalLaneComplete` is true. For
-`blocked`, classification is null, `finalLaneComplete` is false, and the object
-also contains a short safe `blocker` string. Use a file-editing tool or a
-deterministic serializer; do not construct JSON with shell interpolation.
+For `changed`, classification is `minor` or `material`, fingerprints is the set
+derived from every disposition in the observed pass, and `finalLaneComplete` is
+true. For `blocked`, classification is null, `finalLaneComplete` is false, and
+the object also contains a short safe `blocker` string. Do not construct JSON
+with shell interpolation.
 
 The automated wrapper validates this file against the pinned base and observed
 before/after Git state, verifies every changed fingerprint against resolved v3
@@ -354,9 +360,9 @@ threads, and then posts the canonical `local-review-pass:v3` or
 pass/completion markers. A missing or invalid result and a valid `blocked`
 result both stop clearly even when the reviewer process exits zero.
 
-Outside agent-loop, create the same result and complete review-thread export as
-private temporary files. Also serialize the ordered forward-only transition
-heads (`beforeSha` through `afterSha`) as a JSON array. Then use
+Outside agent-loop, create the complete review-thread export and ordered
+forward-only transition heads (`beforeSha` through `afterSha`) as private
+temporary files, then use `write-result` to create the same result. Then use
 `attest --threads-file <path> --allowed-heads-file <path>`. The command verifies
 every thread and the changed-result evidence itself before publishing; pass the
 digest returned by `validate-result` as `--expected-result-sha256`.

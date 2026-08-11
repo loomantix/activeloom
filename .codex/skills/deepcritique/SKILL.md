@@ -121,11 +121,12 @@ the hosted-path summary.
 When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
 return control after pushing reviewed fixes and completing their PR threads:
 
-If `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, always write the v3 structured
-result after the final lane. Use `clean` when the head did not move, `changed`
-with `minor` or `material` plus every dispositioned finding fingerprint when it
-did, or `blocked` with a short safe blocker when the pass cannot complete. The
-outer wrapper validates the observed transition and posts the canonical
+If `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, always create the v3 structured
+result after the final lane. For `clean` or `changed`, export the complete
+threads and ordered transition heads and call the ledger helper's
+`write-result`; use `minor` or `material` classification when the head moved.
+For `blocked`, write the safe blocker contract with a deterministic serializer.
+The outer wrapper validates the observed transition and posts the canonical
 attestation; this skill must not post a pass/completion marker itself.
 
 ```text
