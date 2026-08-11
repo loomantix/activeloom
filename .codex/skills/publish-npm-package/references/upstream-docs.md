@@ -7,6 +7,8 @@ GitHub Actions contracts change.
 ## npm
 
 - Trusted Publishers: <https://docs.npmjs.com/trusted-publishers/>
+- Staged publishing: <https://docs.npmjs.com/staged-publishing/>
+- `npm stage`: <https://docs.npmjs.com/cli/commands/npm-stage/>
 - Provenance statements and verification: <https://docs.npmjs.com/generating-provenance-statements/>
 - `npm publish`: <https://docs.npmjs.com/cli/commands/npm-publish/>
 - `npm audit signatures`: <https://docs.npmjs.com/cli/commands/npm-audit/>
@@ -25,8 +27,8 @@ Confirm and record:
    including the private-source/public-package unavailable branch.
 6. Whether `--provenance` is automatic, required, optional, or unsupported for
    the selected path.
-7. Current token restriction, staged-publish, two-factor, first-publication, and
-   unpublish behavior.
+7. Current token restriction, staged-publish CLI version, exact-tarball and flag
+   behavior, two-factor approval, first-publication, and unpublish behavior.
 8. Current signature and attestation verification command/output.
 
 ## GitHub Actions

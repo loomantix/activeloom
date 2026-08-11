@@ -50,30 +50,52 @@ of “prepare,” “review,” or “verify.”
 
 ## Design the Trusted Publisher workflow
 
-Use three jobs with forward-only artifact transfer: an unprivileged build job, a
-minimal protected publish job, and an unprivileged verification job. Use a
-GitHub-hosted runner supported by npm. Grant `id-token: write` only to the publish
-job; the build and verification jobs must explicitly omit it. Reference the
-protected GitHub environment only on the publish job. Configure that environment
-with required reviewers, prevent self-review when available, restrict deployment
-tags to the package's release-tag pattern, and disable administrator bypass when
-the repository's policy supports it.
+Prefer staged publishing for every existing package when the live npm contracts
+support the required artifact, provenance, and registry controls. Use an
+unprivileged build job and a minimal protected stage job with forward-only
+artifact transfer, then stop for an independent maintainer to inspect and
+approve the staged artifact with 2FA. Run unprivileged verification only after
+the approval makes the package public. Use direct publishing only for a
+brand-new package or when a recorded live-contract discrepancy makes staging
+unavailable without weakening the build-once or no-package-code guarantees.
+
+Use a GitHub-hosted runner supported by npm. Grant `id-token: write` only to the
+protected stage or publish job; the build and verification jobs must explicitly
+omit it. Reference the protected GitHub environment only on that OIDC job.
+Configure the environment with required reviewers, prevent self-review when
+available, restrict deployment tags to the package's release-tag pattern, and
+disable administrator bypass when the repository's policy supports it. The
+release author must never be the sole human approver. Treat the npm staged-package
+approval as an additional proof-of-presence gate, not as a replacement for the
+independent environment review.
 
 Pin every action, including `actions/checkout`, `actions/setup-node`, artifact
 upload, and artifact download, to reviewed full commit SHAs while retaining
 release comments. Select Node and npm versions that satisfy the current npm
 Trusted Publisher documentation. This skill's verifier has a stricter npm floor:
 require npm 11.12.0 or newer so `npm audit signatures --include-attestations`
-exists before the irreversible publish. The minimal publish job may execute only
-reviewed pinned platform actions, the selected npm CLI, and runner-provided
+exists before the irreversible publish. Staged publishing currently requires a
+still newer CLI; select a version that satisfies the live `npm stage`
+documentation rather than treating the verifier floor as sufficient. The minimal
+stage or publish job may execute only reviewed pinned platform actions, the
+selected npm CLI, and runner-provided
 checksum tooling. It must not check out the repository, install dependencies,
 run package lifecycle scripts, execute repository-controlled helpers, or accept a
 cache restored from another job. Establish its Node/npm toolchain without running
 package code while the OIDC request capability is present.
 
+Treat the runner image, executable search path, Git installation, npm CLI,
+OpenSSL binary, Git configuration, keyring, and approved signer material as the
+trusted computing base. Use a trusted ephemeral host, resolve the selected
+executables from a reviewed toolchain, and record their paths and versions before
+relying on helper output. The helpers scrub credential and TLS-related ambient
+configuration; they do not sandbox or authenticate the host tools they invoke.
+
 Configure npm trust on the package settings page with the exact GitHub owner,
-repository, workflow filename, environment name, and allowed publish action. npm
-fields are exact and case-sensitive, and npm may not validate them until publish.
+repository, workflow filename, environment name, and allowed action. For an
+existing package, allow `npm stage publish` and disallow direct `npm publish`.
+Permit direct publish only for the explicit fallback above. npm fields are exact
+and case-sensitive, and npm may not validate them until publish.
 After a successful OIDC release, require two-factor authentication and disallow
 traditional publish tokens when the current npm controls allow it. Keep any token
 needed solely to install private dependencies read-only and expose it only to the
@@ -90,32 +112,72 @@ Build once in the unprivileged build job:
    signer's public verification material so `git verify-tag` can succeed. Pass
    the approved signer fingerprint explicitly.
 5. Upload the tarball and preflight JSON together as a uniquely named workflow
-   artifact. Record their digests. The protected publish job must depend on this
-   job and download only that exact artifact from the same workflow run.
+   artifact. Record their digests. The protected stage or publish job must depend
+   on this job and download only that exact artifact from the same workflow run.
 
-In the protected publish job, verify the downloaded digests with runner-provided
-tooling and publish the exact tarball path with `--ignore-scripts` and
-`--registry=<preflight-approved-registry>`. The registry CLI argument is mandatory:
+In the protected stage job, verify the downloaded digests with runner-provided
+tooling and stage the exact tarball path with `npm stage publish`,
+`--ignore-scripts`, and `--registry=<preflight-approved-registry>`. Confirm the
+current CLI accepts the tarball path and flags before granting OIDC. The registry
+CLI argument is mandatory:
 it must override repository, package, user, or runner configuration, and preflight
 must reject a conflicting `publishConfig.registry` in either the source manifest
 or packed tarball. For a public source repository also pass `--provenance`; this
 CLI argument must override repository or user configuration that disables
 provenance. For a private source repository publishing a public package, npm
 Trusted Publishing works but provenance is unsupported: pass `--provenance=false`
-and record that limitation before publication. Do not run `npm publish` against a
-directory, rerun `npm pack`, rebuild, install dependencies, or execute any file
-from the repository or package artifact in this job.
+and record that limitation before staging. Do not run the stage or publish
+command against a directory, rerun `npm pack`, rebuild, install dependencies, or
+execute any file from the repository or package artifact in this job.
+
+```bash
+npm stage publish <built-package.tgz> \
+  --ignore-scripts \
+  --access public \
+  --registry=<preflight-approved-registry> \
+  --provenance
+```
+
+After staging, stop and report the package, version, stage identifier, registry,
+release tag and commit, workflow run, original artifact digests, and exact review
+steps. An independent maintainer must inspect the staged metadata, download the
+staged tarball, prove it is byte-identical to the build-once artifact, and then
+approve it through npm with 2FA. The release author must not approve alone. Reject
+instead of approve on any mismatch, but obtain explicit authorization before
+either irreversible npm action. Never copy or transmit an OTP.
+
+```bash
+npm stage view <stage-id> --json --registry=<preflight-approved-registry>
+npm stage download <stage-id> --registry=<preflight-approved-registry>
+# Compare the downloaded bytes with the recorded build-once artifact.
+npm stage approve <stage-id> --registry=<preflight-approved-registry>
+```
+
+Show the exact approval command and stop for authorization before running it.
+Let npm prompt the authorized maintainer for 2FA; never put the OTP on the command
+line or into agent-visible input.
+
+Because approval happens outside the OIDC workflow, start verification as a
+separate credential-free workflow or explicitly authorized local check after the
+version becomes public. Bind it to the original run, artifact digests, tag, and
+commit. Do not keep a privileged job polling for approval.
 
 Run `verify-published-package.py --provenance required` for a public source, or
 `--provenance unavailable` for the explicit private-source/public-package branch,
-in a separate verification job that depends on successful publication and has no
-`id-token: write`. That job may check out the tagged source and download the same
-build artifact. Fail it if it cannot verify the artifact, registry signatures,
-applicable provenance certificate/workflow binding, and live release tag. Upload
-the verification JSON as a workflow artifact.
+in that separate verification path with no `id-token: write`. It may check out
+the tagged source and download the same build artifact. Fail it if it cannot
+verify the artifact, registry signatures, applicable provenance
+certificate/workflow binding, and live release tag. Upload the verification JSON
+as a workflow artifact.
 
-Do not provide `NODE_AUTH_TOKEN` to the OIDC publish step. Decide whether to set
-`actions/setup-node`'s `registry-url` only after reading its current documentation:
+For the explicit direct-publish fallback, retain the same privilege separation:
+use an unprivileged build job, a minimal independently approved publish job, and
+an unprivileged verification job. Publish the exact tarball with
+`npm publish <built-package.tgz> --ignore-scripts --access public
+--registry=<preflight-approved-registry>` plus the required provenance flag.
+
+Do not provide `NODE_AUTH_TOKEN` to the OIDC stage or publish step. Decide whether
+to set `actions/setup-node`'s `registry-url` only after reading its current documentation:
 that input writes package-manager authentication configuration, and its behavior
 has changed between action releases. Pass `--registry` to npm commands explicitly
 when that avoids ambiguous ambient configuration.

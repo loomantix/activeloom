@@ -128,11 +128,18 @@ def _replace_slsa_payload(entry: dict[str, object], payload: dict[str, Any]) -> 
 def test_skill_isolates_oidc_publish_authority() -> None:
     guidance = SKILL.read_text(encoding="utf-8")
 
-    assert "Grant `id-token: write` only to the publish" in guidance
+    assert "Grant `id-token: write` only to the" in guidance
     assert "must not check out the repository" in guidance
-    assert "exact tarball path with `--ignore-scripts`" in guidance
+    assert "stage the exact tarball path with `npm stage publish`" in guidance
+    assert "npm stage publish <built-package.tgz>" in guidance
+    assert "npm stage download <stage-id>" in guidance
+    assert "npm stage approve <stage-id>" in guidance
     assert "`--registry=<preflight-approved-registry>`" in guidance
-    assert "separate verification job" in guidance
+    assert "separate credential-free workflow" in guidance
+    assert "release author must never be the sole human approver" in guidance
+    assert "The release author must not approve alone" in guidance
+    assert "trusted computing base" in guidance
+    assert "they do not sandbox or authenticate the host tools" in guidance
     assert (
         "npm publish <built-package.tgz> --ignore-scripts --access public"
         in guidance
