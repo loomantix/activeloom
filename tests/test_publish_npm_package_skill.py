@@ -10,6 +10,8 @@ import tarfile
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / ".codex/skills/publish-npm-package/scripts"
@@ -73,7 +75,9 @@ def test_release_preflight_normalizes_supported_github_repository_urls() -> None
     )
 
 
-def test_helpers_remove_ambient_npm_credentials(monkeypatch, tmp_path: Path) -> None:
+def test_helpers_remove_ambient_npm_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     preflight = _load_script("release-preflight.py")
     verifier = _load_script("verify-published-package.py")
     monkeypatch.setenv("NODE_AUTH_TOKEN", "do-not-use")
