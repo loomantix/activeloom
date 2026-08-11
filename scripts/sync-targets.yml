@@ -69,6 +69,19 @@ targets:
     destination: .claude/references/local-review-ledger.md
     substitutions: []
 
+  # /artifact — publish a deliverable as a hosted Artifact page. Generic:
+  # the only org-specific content is the house token sheet, which travels
+  # with it. Both entries move together — the skill tells the model to inline
+  # `house-tokens.css`, so a consumer that receives one without the other
+  # gets a skill pointing at a path that isn't there.
+  - source: .claude/skills/artifact/SKILL.md
+    destination: .claude/skills/artifact/SKILL.md
+    substitutions: []
+
+  - source: .claude/references/house-tokens.css
+    destination: .claude/references/house-tokens.css
+    substitutions: []
+
   # /actions-usage-audit — read-only org Actions-minute cost analysis. Generic
   # by design; org-specific baselines live in a consumer-owned, non-synced
   # `.claude/actions-usage-audit.local.md` the skill reads if present.

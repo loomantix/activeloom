@@ -1,0 +1,118 @@
+/*
+ * Loomantix house tokens for published Artifacts. Copy these declarations
+ * into a <style> block in the page — the artifact CSP blocks every external
+ * request, so a <link href> to this file leaves the page unstyled, with no
+ * error anywhere.
+ *
+ * Three theme states: bare :root holds the base definition of every color,
+ * the media block covers the system default, the [data-theme] block covers
+ * an explicit choice. The lower two only redefine.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Type — system stacks only; a webfont is an external request. */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Inter, Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', 'JetBrains Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  /* Ramps — theme-independent raw values. Semantics below point at these. */
+  --n-0: #ffffff;
+  --n-50: #f6f7f9;
+  --n-100: #eceef2;
+  --n-200: #dcdfe6;
+  --n-400: #98a0b0;
+  --n-500: #6b7484;
+  --n-700: #3a4150;
+  --n-800: #262b36;
+  --n-900: #181c24;
+  --n-950: #0f1218;
+  --indigo-300: #a9b4f5;
+  --indigo-500: #4f5ed4;
+  --indigo-600: #3f4cbb;
+  --teal-300: #6fd8cb;
+  --teal-600: #10796e;
+  --amber-400: #d99a2b;
+  --amber-500: #b87a12;
+  --red-400: #e8776f;
+  --red-600: #c03a30;
+  --green-400: #5fbf8a;
+  --green-600: #22815a;
+
+  /* Shape */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 14px;
+  --radius-full: 999px;
+  --shadow-sm: 0 1px 2px rgb(15 18 24 / 8%);
+  --shadow-md: 0 2px 8px rgb(15 18 24 / 10%);
+
+  /* Semantics — light. Every color token is first defined here. */
+  --bg: var(--n-50);
+  --surface: var(--n-0);
+  --surface-sunken: var(--n-100);
+  --border: var(--n-200);
+  --border-strong: var(--n-400);
+  --text: var(--n-900);
+  --text-muted: var(--n-500);
+  --accent: var(--indigo-600);
+  --accent-hover: var(--indigo-500);
+  --accent-contrast: var(--n-0);
+  --accent-soft: color-mix(in srgb, var(--indigo-500) 12%, transparent);
+  --secondary: var(--teal-600);
+  --success: var(--green-600);
+  --warning: var(--amber-500);
+  --danger: var(--red-600);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: var(--n-950);
+    --surface: var(--n-900);
+    --surface-sunken: var(--n-800);
+    --border: var(--n-700);
+    --border-strong: var(--n-500);
+    --text: var(--n-50);
+    --text-muted: var(--n-400);
+    --accent: var(--indigo-300);
+    --accent-hover: var(--n-0);
+    --accent-contrast: var(--n-950);
+    --accent-soft: color-mix(in srgb, var(--indigo-300) 16%, transparent);
+    --secondary: var(--teal-300);
+    --success: var(--green-400);
+    --warning: var(--amber-400);
+    --danger: var(--red-400);
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-md: 0 2px 8px rgb(0 0 0 / 45%);
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: var(--n-950);
+  --surface: var(--n-900);
+  --surface-sunken: var(--n-800);
+  --border: var(--n-700);
+  --border-strong: var(--n-500);
+  --text: var(--n-50);
+  --text-muted: var(--n-400);
+  --accent: var(--indigo-300);
+  --accent-hover: var(--n-0);
+  --accent-contrast: var(--n-950);
+  --accent-soft: color-mix(in srgb, var(--indigo-300) 16%, transparent);
+  --secondary: var(--teal-300);
+  --success: var(--green-400);
+  --warning: var(--amber-400);
+  --danger: var(--red-400);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-md: 0 2px 8px rgb(0 0 0 / 45%);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
