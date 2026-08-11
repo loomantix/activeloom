@@ -90,8 +90,8 @@ def doctor(project: Path, claude_effort: str | None) -> None:
             raise DoctorError(f"{engine}_review_hook must use helper-owned contract-v3 results")
         if "AGENT_LOOP_REVIEW_PUSH_HELPER" not in hook or re.search(r"\bgit\s+push\b", hook):
             raise DoctorError(f"{engine}_review_hook must use the wrapper-owned review push helper")
-    if not re.search(r"(?:^|[ /])deepgrill(?:[ $\"']|$)", hooks["codex"]):
-        raise DoctorError("codex_review_hook must invoke deepgrill")
+    if not re.search(r"(?:^|[ /])deepcritique(?:[ $\"']|$)", hooks["codex"]):
+        raise DoctorError("codex_review_hook must invoke deepcritique")
     if not re.search(r"(?:^|[ /])deepcritique(?:[ $\"']|$)", hooks["claude"]):
         raise DoctorError("claude_review_hook must invoke deepcritique")
     if claude_effort and not re.search(

@@ -28,7 +28,7 @@ validation_hook =
 # GitHub actor running this wrapper; evidence from other accounts is ignored.
 # Validation hooks must also leave a clean tree.
 # They must not force-push, merge, or invoke hosted AI reviewers.
-# Codex runs `deepgrill`; Claude runs `deepcritique` with the consumer's literal
+# Codex runs `deepcritique`; Claude runs `deepcritique` with the consumer's literal
 # effort policy (for example `claude --effort low /deepcritique ...`).
 review_contract_version = 3
 config_doctor = true

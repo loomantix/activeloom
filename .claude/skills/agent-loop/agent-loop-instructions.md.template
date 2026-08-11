@@ -46,7 +46,7 @@ target a frontend test as `pnpm --filter frontend test:run TestName`. Do not add
 - Use the repository's commit convention and targeted staging.
 - Leave a clean worktree with at least one local commit.
 - **Never push or create a PR.** After you stop, the wrapper integrates a fresh
-  base, validates, pushes, opens a draft PR, then runs local Codex `deepgrill`
+  base, validates, pushes, opens a draft PR, then runs local Codex `deepcritique`
   followed by Claude `deepcritique` with the configured literal effort policy
   through inline PR threads.
 - Never bypass hooks with `--no-verify`.
