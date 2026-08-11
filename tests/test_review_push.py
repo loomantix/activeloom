@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -43,6 +44,13 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
             "AGENT_LOOP_WORKTREE": str(repo),
             "AGENT_LOOP_BRANCH": "agent-loop/issue-7",
             "AGENT_LOOP_PR_HEAD_SHA": start,
+            "AGENT_LOOP_REAL_GIT": shutil.which("git") or "git",
+            "AGENT_LOOP_ORIGIN_FETCH_URLS": _git(
+                repo, "remote", "get-url", "--all", "origin"
+            ),
+            "AGENT_LOOP_ORIGIN_PUSH_URLS": _git(
+                repo, "remote", "get-url", "--push", "--all", "origin"
+            ),
         }
     )
     return repo, env, start
@@ -119,3 +127,71 @@ def test_rejects_stale_remote_head(review_repo: tuple[Path, dict[str, str], str]
         ).split()[0]
         == competing_head
     )
+
+
+def test_rejects_changed_origin_before_push(
+    review_repo: tuple[Path, dict[str, str], str]
+) -> None:
+    repo, env, _ = review_repo
+    redirected = repo.parent / "redirected.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(redirected)],
+        check=True,
+        capture_output=True,
+    )
+    _git(repo, "remote", "set-url", "--push", "origin", str(redirected))
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "changed origin fetch/push identity" in result.stderr
+    assert not _git(repo, "ls-remote", "--heads", str(redirected))
+
+
+def test_v3_guard_rejects_self_authorized_direct_push(tmp_path: Path) -> None:
+    guard = ROOT / ".codex/skills/agent-loop/scripts/hook-git-guard"
+    env = os.environ.copy()
+    env.update(
+        {
+            "AGENT_LOOP_REAL_GIT": "/bin/echo",
+            "AGENT_LOOP_ALLOW_REVIEW_MUTATIONS": "true",
+            "AGENT_LOOP_REVIEW_CONTRACT_VERSION": "3",
+            "AGENT_LOOP_SAFE_REVIEW_PUSH": "1",
+            "AGENT_LOOP_BRANCH": "agent-loop/issue-7",
+        }
+    )
+
+    result = subprocess.run(
+        [str(guard), "push", "origin", "HEAD:refs/heads/agent-loop/issue-7"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "contract-v3 review hooks must publish" in result.stderr
+
+
+def test_v2_guard_preserves_explicit_staged_review_push(tmp_path: Path) -> None:
+    guard = ROOT / ".codex/skills/agent-loop/scripts/hook-git-guard"
+    env = os.environ.copy()
+    env.update(
+        {
+            "AGENT_LOOP_REAL_GIT": "/bin/echo",
+            "AGENT_LOOP_ALLOW_REVIEW_MUTATIONS": "true",
+            "AGENT_LOOP_REVIEW_CONTRACT_VERSION": "2",
+            "AGENT_LOOP_BRANCH": "agent-loop/issue-7",
+        }
+    )
+
+    result = subprocess.run(
+        [str(guard), "push", "origin", "HEAD:refs/heads/agent-loop/issue-7"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "push origin HEAD:refs/heads/agent-loop/issue-7" in result.stdout

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -112,12 +115,14 @@ def test_batch_state_persists_order_cursor_statuses_and_child_paths(tmp_path: Pa
     assert created.returncode == 0, created.stderr
     assert stat.S_IMODE(state.stat().st_mode) == 0o600
     active = _run(
-        "batch-update", "--file", str(state), "--issue", "7", "--status", "active",
+        "batch-update", "--file", str(state), "--issue", "7",
+        "--expected-status", "pending", "--status", "active",
         "--child-run-state", str(tmp_path / "child-7.json"),
     )
     assert active.returncode == 0, active.stderr
     finalized = _run(
-        "batch-update", "--file", str(state), "--issue", "7", "--status", "finalized",
+        "batch-update", "--file", str(state), "--issue", "7",
+        "--expected-status", "active", "--status", "finalized",
     )
     assert finalized.returncode == 0, finalized.stderr
     value = json.loads(state.read_text(encoding="utf-8"))
@@ -138,18 +143,66 @@ def test_batch_never_skips_active_uncertain_issue(tmp_path: Path) -> None:
         "--repo", "example/repository", "--base-branch", "main", "--issues", "7,8",
     ).returncode == 0
     assert _run(
-        "batch-update", "--file", str(state), "--issue", "7", "--status", "active"
+        "batch-update", "--file", str(state), "--issue", "7",
+        "--expected-status", "pending", "--status", "active"
     ).returncode == 0
     skipped = _run(
-        "batch-update", "--file", str(state), "--issue", "8", "--status", "active"
+        "batch-update", "--file", str(state), "--issue", "8",
+        "--expected-status", "pending", "--status", "active"
     )
     assert skipped.returncode != 0
     assert "current cursor issue" in skipped.stderr
     bailed = _run(
-        "batch-update", "--file", str(state), "--issue", "7", "--status", "bailed"
+        "batch-update", "--file", str(state), "--issue", "7",
+        "--expected-status", "active", "--status", "bailed"
     )
     assert bailed.returncode == 0, bailed.stderr
     assert json.loads(state.read_text())["cursor"] == 1
+
+
+def test_batch_pending_issue_can_be_explicitly_bailed(tmp_path: Path) -> None:
+    state = tmp_path / "batch-state.json"
+    assert _run(
+        "batch-create", "--file", str(state), "--run-id", "batch-1",
+        "--repo", "example/repository", "--base-branch", "main", "--issues", "7,8",
+    ).returncode == 0
+    bailed = _run(
+        "batch-update", "--file", str(state), "--issue", "7",
+        "--expected-status", "pending", "--status", "bailed",
+    )
+    assert bailed.returncode == 0, bailed.stderr
+    value = json.loads(state.read_text(encoding="utf-8"))
+    assert value["cursor"] == 1
+    assert value["issues"][0]["status"] == "bailed"
+
+
+def test_batch_expected_status_is_atomic_across_concurrent_updates(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "batch-state.json"
+    assert _run(
+        "batch-create", "--file", str(state), "--run-id", "batch-1",
+        "--repo", "example/repository", "--base-branch", "main", "--issues", "7",
+    ).returncode == 0
+    lock_descriptor = os.open(f"{state}.lock", os.O_RDWR)
+    fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+    command = [
+        "python3", str(HELPER), "batch-update", "--file", str(state),
+        "--issue", "7", "--expected-status", "pending", "--status", "active",
+    ]
+    processes = [
+        subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(2)
+    ]
+    try:
+        time.sleep(0.1)
+        assert all(process.poll() is None for process in processes)
+    finally:
+        fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        os.close(lock_descriptor)
+    results = [process.communicate(timeout=10) for process in processes]
+    assert sorted(process.returncode for process in processes) == [0, 1]
+    assert any("expected pending, found active" in stderr for _, stderr in results)
 
 
 def test_state_rejects_permissive_or_unknown_content(tmp_path: Path) -> None:

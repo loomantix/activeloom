@@ -360,10 +360,11 @@ def _pseudo_v3_match(body: str) -> re.Match[str] | None:
         return None
     if (
         len(matches) != 1
-        or body.count("<!-- local-review:v3") != 1
+        or body.count("<!-- local-review") != 1
         or matches[0].start() == 0
         or body[matches[0].start() - 1] != "\n"
         or matches[0].end() != len(body)
+        or not body[: matches[0].start()].strip()
     ):
         _fail("authenticated historical local-review:v3 record is malformed")
     return matches[0]
@@ -797,7 +798,7 @@ def _validate_result_data(
         if args.before != _result_head(args) or classification is not None or data["finalLaneComplete"] is not True or "blocker" in data:
             _fail("clean review result conflicts with the observed pass")
     elif status == "changed":
-        if args.before == _result_head(args) or classification not in {"minor", "material"} or (args.round >= 3 and classification != "material") or (classification == "material" and not fingerprints) or data["finalLaneComplete"] is not True or "blocker" in data:
+        if args.before == _result_head(args) or classification not in {"minor", "material"} or (args.round >= 3 and classification != "material") or not fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
             _fail("changed review result conflicts with the observed pass")
     else:
         blocker = data.get("blocker")
@@ -819,10 +820,11 @@ def _same_round_dispositions(
     args: argparse.Namespace,
     threads: list[dict[str, Any]],
     allowed_heads: dict[str, int],
-) -> list[tuple[str, str, str]]:
-    """Return deterministic (fingerprint, outcome, severity) ledger evidence."""
-    evidence: dict[str, tuple[str, str]] = {}
-    for thread in threads:
+) -> list[tuple[str, bool, bool]]:
+    """Return unique (fingerprint, has-fix, has-major-fix) ledger evidence."""
+    evidence: dict[str, tuple[bool, bool]] = {}
+    fingerprint_threads: dict[str, int] = {}
+    for thread_index, thread in enumerate(threads):
         findings, dispositions, _, _ = _thread_protocol_records(thread)
         for finding_index, finding in findings:
             if (
@@ -832,10 +834,25 @@ def _same_round_dispositions(
                 continue
             fingerprint = finding.group("fingerprint")
             finding_head = finding.group("head")
+            prior_thread = fingerprint_threads.setdefault(fingerprint, thread_index)
+            if prior_thread != thread_index:
+                _fail("same-round finding fingerprint has duplicate root threads")
             if finding_head not in allowed_heads:
-                _fail("same-round finding is outside the observed review transition")
-            if fingerprint in evidence:
-                _fail("same-round finding fingerprint is duplicated")
+                historical_matches = _matching_dispositions(
+                    finding_index, finding, dispositions
+                )
+                if thread.get("isResolved") is not True or len(historical_matches) != 1:
+                    _fail(
+                        "same-round finding outside the observed transition is not settled"
+                    )
+                if (
+                    finding.group("severity") == "blocking"
+                    and historical_matches[0].group("outcome") != "fixed"
+                ):
+                    _fail("blocking local-review findings must be fixed")
+                # Settled historical occurrences are not evidence for this
+                # before-to-after transition.
+                continue
             matches = [
                 disposition
                 for disposition in _matching_dispositions(
@@ -858,9 +875,15 @@ def _same_round_dispositions(
                 and disposition.group("outcome") != "fixed"
             ):
                 _fail("blocking local-review findings must be fixed")
+            fixed = disposition.group("outcome") == "fixed"
+            fixed_major = fixed and finding.group("severity") in {
+                "blocking",
+                "major",
+            }
+            previous = evidence.get(fingerprint, (False, False))
             evidence[fingerprint] = (
-                disposition.group("outcome"),
-                finding.group("severity"),
+                previous[0] or fixed,
+                previous[1] or fixed_major,
             )
     return [
         (fingerprint, *evidence[fingerprint]) for fingerprint in sorted(evidence)
@@ -887,7 +910,7 @@ def _write_result(args: argparse.Namespace) -> None:
         allowed_heads = _load_allowed_heads(args)
     dispositions = _same_round_dispositions(args, threads, allowed_heads)
     changed = args.before != args.head
-    if not changed and any(outcome == "fixed" for _, outcome, _ in dispositions):
+    if not changed and any(has_fix for _, has_fix, _ in dispositions):
         _fail("clean review results cannot have same-round fixes")
     if changed and args.classification not in {"minor", "material"}:
         _fail("changed review result requires --classification")
@@ -895,15 +918,12 @@ def _write_result(args: argparse.Namespace) -> None:
         _fail("clean review result cannot have a classification")
     if changed and args.round >= 3 and args.classification != "material":
         _fail("round 3+ changed review results require material classification")
-    if changed and args.classification == "material" and not dispositions:
-        _fail("material changed review results require ledger evidence")
+    if changed and not dispositions:
+        _fail("changed review results require ledger evidence")
     if (
         changed
         and args.classification != "material"
-        and any(
-            outcome == "fixed" and severity in {"blocking", "major"}
-            for _, outcome, severity in dispositions
-        )
+        and any(has_major_fix for _, _, has_major_fix in dispositions)
     ):
         _fail("fixed blocking or major findings require material classification")
     value = {
@@ -1194,6 +1214,8 @@ def _verify_pseudo_v3_history(threads: list[dict[str, Any]]) -> None:
                 isinstance(reply, dict)
                 and isinstance(reply.get("author"), dict)
                 and reply["author"].get("login") == actor
+                and bool(str(reply.get("body", "")).strip())
+                and "<!-- local-review" not in str(reply.get("body", ""))
                 for reply in nodes[index + 1 :]
             )
             if (
@@ -1258,10 +1280,10 @@ def _thread_protocol_records(
     for index, row in enumerate(comments):
         if not isinstance(row, dict):
             _fail("GitHub review comment has an unexpected shape")
+        body = str(row.get("body", ""))
         author = row.get("author")
         if not isinstance(author, dict) or author.get("login") != _current_actor():
             continue
-        body = str(row.get("body", ""))
         if _pseudo_v3_match(body) is not None:
             continue
         finding_v3 = _finding_match(body)
@@ -1303,10 +1325,39 @@ def _matching_dispositions(
 
 def _verify_thread_dispositions(threads: list[dict[str, Any]]) -> int:
     verified = 0
-    for thread in threads:
+    fingerprint_threads: dict[str, int] = {}
+    for thread_index, thread in enumerate(threads):
         findings_v3, dispositions_v3, findings_v1, dispositions_v1 = (
             _thread_protocol_records(thread)
         )
+        grouped_v3: dict[str, list[tuple[int, re.Match[str]]]] = {}
+        for finding_index, finding in findings_v3:
+            fingerprint = finding.group("fingerprint")
+            prior_thread = fingerprint_threads.setdefault(fingerprint, thread_index)
+            if prior_thread != thread_index:
+                _fail("local-review fingerprint has duplicated root threads")
+            grouped_v3.setdefault(fingerprint, []).append((finding_index, finding))
+        for fingerprint, occurrences in grouped_v3.items():
+            numbers = [int(finding.group("occurrence")) for _, finding in occurrences]
+            if numbers != list(range(1, len(numbers) + 1)):
+                _fail(
+                    f"local-review fingerprint {fingerprint} occurrences are not sequential"
+                )
+            for position, (finding_index, finding) in enumerate(occurrences[:-1]):
+                matches = [
+                    (index, disposition)
+                    for index, disposition in dispositions_v3
+                    if index > finding_index
+                    and all(
+                        disposition.group(field) == finding.group(field)
+                        for field in ("engine", "round", "fingerprint", "occurrence")
+                    )
+                ]
+                next_finding_index = occurrences[position + 1][0]
+                if len(matches) != 1 or matches[0][0] >= next_finding_index:
+                    _fail(
+                        f"local-review fingerprint {fingerprint} recurrence is not sequentially disposed"
+                    )
         findings: list[tuple[int, re.Match[str], list[tuple[int, re.Match[str]]]]] = [
             (index, finding, dispositions_v3) for index, finding in findings_v3
         ] + [(index, finding, dispositions_v1) for index, finding in findings_v1]
@@ -1345,17 +1396,14 @@ def _verify_result_evidence(
     if [row[0] for row in evidence] != sorted(data["findingFingerprints"]):
         _fail("review result fingerprints do not exactly match same-round ledger evidence")
     if data["status"] == "clean":
-        if any(outcome == "fixed" for _, outcome, _ in evidence):
+        if any(has_fix for _, has_fix, _ in evidence):
             _fail("clean review results cannot have same-round fixes")
         return data
     if args.round >= 3 and data["classification"] != "material":
         _fail("round 3+ changed review results require material classification")
-    if data["classification"] == "material" and not evidence:
-        _fail("material changed review results require ledger evidence")
-    fixed_major = any(
-        severity in {"blocking", "major"} and outcome == "fixed"
-        for _, outcome, severity in evidence
-    )
+    if not evidence:
+        _fail("changed review results require ledger evidence")
+    fixed_major = any(has_major_fix for _, _, has_major_fix in evidence)
     if fixed_major and data["classification"] != "material":
         _fail("fixed blocking or major findings require material classification")
     return data

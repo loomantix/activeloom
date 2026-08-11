@@ -90,10 +90,12 @@ fetch, `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_ENGINE`, and
 contract v3. Both hooks must scope against the SHA so a
 mid-round remote update cannot give the engines different bases.
 
-Every v3 review hook calls `review-ledger.py write-result`; the helper derives
-the complete same-engine/same-round fingerprint set, including fixed,
-deferred, and dismissed dispositions, and atomically writes the structured
-`clean` or `changed` result. The wrapper validates the engine, round, pinned base, observed
+Every successfully completed clean or changed v3 review hook calls
+`review-ledger.py write-result`; the helper derives the complete
+same-engine/same-round fingerprint set, including fixed, deferred, and
+dismissed dispositions, and atomically writes the structured result. A blocked
+hook instead uses deepcritique's deterministic blocked-result serializer and
+must not claim a clean or changed pass. The wrapper validates the engine, round, pinned base, observed
 before/after SHAs, classification, finding fingerprints, and final-lane status;
 verifies changed fingerprints against resolved v3 dispositions; and posts the
 canonical pass/completion marker itself. Material means any substantive
@@ -134,8 +136,10 @@ $AGENT_LOOP_PR_NUMBER`, then the Claude hook to run a fresh adversarial review
    fixes, reply with the fix and validation, resolve the threads, leave the
    issue branch attached and clean, and exit nonzero if findings remain.
 3. Configure a non-mutating `validation_hook`, add
-   `review_contract_version = 3`, make every hook write the v3 result to
-   `$AGENT_LOOP_REVIEW_RESULT_FILE` through `review-ledger.py write-result`, and optionally override
+   `review_contract_version = 3`, make every successfully completed clean or
+   changed hook write the v3 result to `$AGENT_LOOP_REVIEW_RESULT_FILE` through
+   `review-ledger.py write-result`, use deepcritique's deterministic serializer
+   for blocked results, and optionally override
    `review_max_rounds = 4` with another positive cap.
 4. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync

@@ -26,7 +26,8 @@ NC='\033[0m'
 unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
-    AGENT_LOOP_PR_HEAD_SHA
+    AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
+    AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -252,6 +253,29 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         echo "review contract v3 requires review-ledger.py protocol version 3" >&2
         exit 1
     }
+    for hook_key in claude_review_hook codex_review_hook; do
+        case "$hook_key" in
+            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
+            codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
+            *) echo "unhandled hook key in contract-v3 preflight: $hook_key" >&2; exit 1 ;;
+        esac
+        [ -n "$hook_value" ] || {
+            echo "$hook_key must be configured for review contract v3" >&2
+            exit 1
+        }
+        [[ "$hook_value" == *AGENT_LOOP_REVIEW_PUSH_HELPER* ]] || {
+            echo "$hook_key must use AGENT_LOOP_REVIEW_PUSH_HELPER for review contract v3" >&2
+            exit 1
+        }
+        [[ "$hook_value" == *AGENT_LOOP_REVIEW_RESULT_FILE* ]] || {
+            echo "$hook_key must write AGENT_LOOP_REVIEW_RESULT_FILE for review contract v3" >&2
+            exit 1
+        }
+        [[ "$hook_value" == *write-result* ]] || {
+            echo "$hook_key must use review-ledger.py write-result for review contract v3" >&2
+            exit 1
+        }
+    done
 fi
 
 BASE_BRANCH="${AGENT_LOOP_BASE_BRANCH:-$BASE_BRANCH}"
@@ -352,7 +376,6 @@ ORIGIN_PUSH_URLS="$(git remote get-url --push --all origin)" || {
     echo "could not capture origin push identity" >&2
     exit 1
 }
-
 require_origin_identity() {
     local fetch_urls push_urls
     fetch_urls="$(git remote get-url --all origin)" || return 1
@@ -393,6 +416,7 @@ RECOVERY_EMITTED=false
 PROCESSED_ISSUES=()
 AGENT_LOOP_RUN_STATE_FILE=""
 AGENT_LOOP_RUN_LOCK_FD=""
+AGENT_LOOP_BATCH_LOCK_FD=""
 RESUME_STATE_JSON=""
 
 acquire_run_lock() {
@@ -404,6 +428,28 @@ acquire_run_lock() {
     exec {AGENT_LOOP_RUN_LOCK_FD}<"$log_dir" || return 1
     flock -n "$AGENT_LOOP_RUN_LOCK_FD" || {
         echo "another process already owns this agent-loop run" >&2
+        return 1
+    }
+}
+
+acquire_batch_lock() {
+    local state_file="$1" lock_file="${1}.lock"
+    if [ -L "$lock_file" ]; then
+        echo "batch lock is unsafe: $lock_file" >&2
+        return 1
+    fi
+    if [ ! -e "$lock_file" ]; then
+        (umask 077; set -o noclobber; : > "$lock_file") 2>/dev/null || true
+    fi
+    if [ ! -f "$lock_file" ] || [ -L "$lock_file" ]; then
+        echo "batch lock is unavailable or unsafe: $lock_file" >&2
+        return 1
+    fi
+    chmod 600 "$lock_file" || return 1
+    exec {AGENT_LOOP_BATCH_LOCK_FD}<>"$lock_file" || return 1
+    export AGENT_LOOP_BATCH_LOCK_FD
+    flock -n "$AGENT_LOOP_BATCH_LOCK_FD" || {
+        echo "another process already owns this agent-loop batch: $state_file" >&2
         return 1
     }
 }
@@ -467,6 +513,11 @@ recovery_message() {
     if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
         echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
     fi
+}
+
+print_batch_bail_command() {
+    local issue="$1" expected_status="$2"
+    echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$issue' --expected-status '$expected_status' --status bailed" >&2
 }
 
 update_run_state() {
@@ -617,6 +668,39 @@ select_next_issue() {
             return 2
         }
         IFS=',' read -r -a candidates <<< "$ISSUE_ALLOWLIST"
+        if [ -n "$BATCH_STATE_FILE" ]; then
+            local batch_selection_json batch_selection_cursor batch_selection_count
+            local batch_selection_status
+            batch_selection_json="$(python3 "$RUN_STATE_HELPER" batch-show \
+                --file "$BATCH_STATE_FILE")" || return 2
+            batch_selection_cursor="$(jq -r '.cursor' <<<"$batch_selection_json")"
+            batch_selection_count="$(jq -r '.issues | length' <<<"$batch_selection_json")"
+            [ "$batch_selection_cursor" -lt "$batch_selection_count" ] || return 1
+            number="$(jq -r --argjson cursor "$batch_selection_cursor" \
+                '.issues[$cursor].issue' <<<"$batch_selection_json")"
+            batch_selection_status="$(jq -r --argjson cursor "$batch_selection_cursor" \
+                '.issues[$cursor].status' <<<"$batch_selection_json")"
+            [ "$batch_selection_status" = pending ] || {
+                echo "ordered batch cursor issue #$number is not pending" >&2
+                return 2
+            }
+            if ! jq -e --argjson number "$number" 'any(.number == $number)' \
+                <<< "$allowlist_ready_json" >/dev/null; then
+                echo -e "${DIM}○${NC} Ordered batch cursor issue #$number is not ready." >&2
+                print_batch_bail_command "$number" pending
+                return 1
+            fi
+            json="$(issue_json "$number")" || return 2
+            if ! issue_is_selectable "$number" "$json"; then
+                echo -e "${DIM}○${NC} Ordered batch cursor issue #$number is not open, agent-labeled, or safely assignable." >&2
+                print_batch_bail_command "$number" pending
+                return 1
+            fi
+            SELECTED_ID="$number"
+            set_selected_issue_context "$json" || return 2
+            [ "$(jq '.assignees | length' <<<"$json")" -gt 0 ] && SELECTED_ASSIGNED=true
+            return 0
+        fi
         for number in "${candidates[@]}"; do
             already_processed "$number" && continue
             if ! jq -e --argjson number "$number" 'any(.number == $number)' \
@@ -956,6 +1040,14 @@ run_bounded_hook() {
         # attested by the wrapper after the hook returns.
         export AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN"
         export AGENT_LOOP_REAL_GH="$REAL_GH_BIN"
+        if [ "$allow_review_mutations" = true ]; then
+            export AGENT_LOOP_REVIEW_CONTRACT_VERSION="$REVIEW_CONTRACT_VERSION"
+            export AGENT_LOOP_ORIGIN_FETCH_URLS="$ORIGIN_FETCH_URLS"
+            export AGENT_LOOP_ORIGIN_PUSH_URLS="$ORIGIN_PUSH_URLS"
+        else
+            unset AGENT_LOOP_REVIEW_CONTRACT_VERSION AGENT_LOOP_ORIGIN_FETCH_URLS \
+                AGENT_LOOP_ORIGIN_PUSH_URLS
+        fi
         export AGENT_LOOP_HOOK_COMMAND="$hook_command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
@@ -2061,9 +2153,13 @@ resume_review_run() {
             return 1
         }
         cd "$PROJECT_DIR"
-        git worktree remove "$ACTIVE_WORKTREE"
+        if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
+            git worktree remove "$ACTIVE_WORKTREE"
+            ACTIVE_WORKTREE=""
+        else
+            echo "   Finalized worktree preserved for parent batch checkpointing: $ACTIVE_WORKTREE"
+        fi
         echo -e "${GREEN}✓${NC} Re-attested finalized issue #$SELECTED_ID; local branch retained at $AGENT_LOOP_BRANCH"
-        ACTIVE_WORKTREE=""
         return 0
     fi
     if [ "$state_phase" = reviewing ] && [ "$state_review_engine" = codex ] && \
@@ -2247,9 +2343,13 @@ resume_review_run() {
         finalize_pr
     fi
     cd "$PROJECT_DIR"
-    git worktree remove "$ACTIVE_WORKTREE"
+    if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
+        git worktree remove "$ACTIVE_WORKTREE"
+        ACTIVE_WORKTREE=""
+    else
+        echo "   Finalized worktree preserved for parent batch checkpointing: $ACTIVE_WORKTREE"
+    fi
     echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID recovery complete; local branch retained at $AGENT_LOOP_BRANCH"
-    ACTIVE_WORKTREE=""
 }
 
 if [ -n "$RESUME_RUN_FILE" ]; then
@@ -2262,6 +2362,7 @@ fi
 if [ -n "$RESUME_BATCH_FILE" ]; then
     BATCH_STATE_FILE="$(realpath -- "$RESUME_BATCH_FILE")" || exit 1
     case "$BATCH_STATE_FILE" in "$LOG_ROOT"/*) ;; *) echo "batch state is outside configured log_root" >&2; exit 1 ;; esac
+    acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
     [ "$(jq -r '.repo' <<<"$batch_json")" = "$GH_REPO" ] || { echo "batch state repository mismatch" >&2; exit 1; }
     [ "$(jq -r '.baseBranch' <<<"$batch_json")" = "$BASE_BRANCH" ] || { echo "batch state base branch mismatch" >&2; exit 1; }
@@ -2273,15 +2374,22 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
         child_state="$(jq -r --argjson cursor "$batch_cursor" '.issues[$cursor].childRunState // empty' <<<"$batch_json")"
         [ -n "$child_state" ] || {
             recovery_message "Batch issue #$batch_issue is active without a child review checkpoint; inspect its worktree, remote branch, PR, and ledger before explicitly bailing it."
-            echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$batch_issue' --status bailed" >&2
+            echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$batch_issue' --expected-status active --status bailed" >&2
             exit 1
         }
-        "$SCRIPT_DIR/agent-loop.sh" --resume-run "$child_state" || {
+        child_json="$(python3 "$RUN_STATE_HELPER" show --file "$child_state")" || exit 1
+        child_worktree="$(jq -r '.worktree' <<<"$child_json")"
+        AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" \
+            "$SCRIPT_DIR/agent-loop.sh" --resume-run "$child_state" || {
             recovery_message "Current batch issue #$batch_issue did not resume to a safely finalized state."
             exit 1
         }
         python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
-            --issue "$batch_issue" --status finalized >/dev/null || exit 1
+            --issue "$batch_issue" --expected-status active \
+            --status finalized >/dev/null || exit 1
+        git worktree remove "$child_worktree" || {
+            echo "warning: finalized batch child worktree cleanup failed and was preserved: $child_worktree" >&2
+        }
         batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
         batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
     fi
@@ -2301,6 +2409,7 @@ elif [[ "$ISSUE_ALLOWLIST" == *,* ]] && [ "$DRY_RUN" = false ] && \
     python3 "$RUN_STATE_HELPER" batch-create --file "$BATCH_STATE_FILE" \
         --run-id "$RUN_TAG" --repo "$GH_REPO" --base-branch "$BASE_BRANCH" \
         --issues "$ISSUE_ALLOWLIST" >/dev/null || exit 1
+    acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     echo "   Batch recovery state: $BATCH_STATE_FILE"
 fi
 
@@ -2346,6 +2455,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             ACTIVE_WORKTREE=""
             if [ -n "$BATCH_STATE_FILE" ]; then
                 recovery_message "Ordered batch stopped at dependency-blocked issue #$SELECTED_ID."
+                print_batch_bail_command "$SELECTED_ID" pending
                 exit 1
             fi
             continue
@@ -2368,7 +2478,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     if [ -n "$BATCH_STATE_FILE" ]; then
         python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
-            --issue "$SELECTED_ID" --status active >/dev/null || exit 1
+            --issue "$SELECTED_ID" --expected-status pending \
+            --status active >/dev/null || exit 1
     fi
 
     mkdir -p "$WORKTREE_ROOT"
@@ -2419,6 +2530,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         ACTIVE_WORKTREE=""
         if [ -n "$BATCH_STATE_FILE" ]; then
             recovery_message "Batch issue #$SELECTED_ID lost eligibility after claim verification; explicitly bail it before continuing."
+            print_batch_bail_command "$SELECTED_ID" active
             exit 1
         fi
         [ "$refreshed_status" -eq 2 ] && exit 1
@@ -2509,7 +2621,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         }
         if [ -n "$BATCH_STATE_FILE" ]; then
             python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
-                --issue "$SELECTED_ID" --status active \
+                --issue "$SELECTED_ID" --expected-status active --status active \
                 --child-run-state "$AGENT_LOOP_RUN_STATE_FILE" >/dev/null || {
                 recovery_message "Could not attach the child review checkpoint to batch state."
                 exit 1
@@ -2560,14 +2672,17 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
     if [ -n "$BATCH_STATE_FILE" ]; then
         python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
-            --issue "$SELECTED_ID" --status finalized >/dev/null || {
-            recovery_message "Issue finalized but the batch cursor could not be checkpointed."
+            --issue "$SELECTED_ID" --expected-status active \
+            --status finalized >/dev/null || {
+            recovery_message "Issue finalized but the batch cursor could not be checkpointed; the worktree was preserved."
             exit 1
         }
     fi
-    git worktree remove "$ACTIVE_WORKTREE"
-    echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID complete; local branch retained at $branch"
+    git worktree remove "$ACTIVE_WORKTREE" || {
+        echo "warning: finalized issue worktree cleanup failed and was preserved: $ACTIVE_WORKTREE" >&2
+    }
     ACTIVE_WORKTREE=""
+    echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID complete; local branch retained at $branch"
 done
 
 if [ -n "$BATCH_STATE_FILE" ]; then
@@ -2575,6 +2690,11 @@ if [ -n "$BATCH_STATE_FILE" ]; then
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
     batch_count="$(jq -r '.issues | length' <<<"$batch_json")"
     if [ "$batch_cursor" -lt "$batch_count" ]; then
+        if [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
+            echo -e "${YELLOW}○${NC} Ordered batch paused cleanly at the $MAX_ITERATIONS-issue iteration cap."
+            echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+            exit 0
+        fi
         recovery_message "Ordered batch stopped before every issue reached a finalized or explicitly bailed state."
         exit 1
     fi

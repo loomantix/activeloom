@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -11,8 +12,9 @@ import stat
 import sys
 import tempfile
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Iterator, NoReturn
 
 
 STATE_VERSION = 1
@@ -276,6 +278,54 @@ def _atomic_write_batch(
     )
 
 
+def _validate_batch_lock(path: Path, descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    path_metadata = os.lstat(path)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or metadata.st_mode & 0o077
+        or (metadata.st_dev, metadata.st_ino)
+        != (path_metadata.st_dev, path_metadata.st_ino)
+    ):
+        _fail("batch lock must be an owner-controlled private regular file")
+
+
+@contextmanager
+def _batch_lock(path: Path) -> Iterator[None]:
+    """Serialize batch reads and compare-and-set updates on a stable inode."""
+    lock_path = Path(f"{path}.lock")
+    inherited = os.environ.get("AGENT_LOOP_BATCH_LOCK_FD")
+    if inherited is not None:
+        try:
+            descriptor = int(inherited)
+        except ValueError as error:
+            raise StateError("inherited batch lock descriptor is invalid") from error
+        _validate_batch_lock(lock_path, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+        return
+
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if lock_path.parent.is_symlink():
+        _fail("batch lock directory must not be a symlink")
+    os.chmod(lock_path.parent, 0o700)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        _validate_batch_lock(lock_path, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
 def _batch_create(args: argparse.Namespace) -> None:
     allowlist = [int(value) for value in args.issues.split(",")]
     value = {
@@ -291,34 +341,47 @@ def _batch_create(args: argparse.Namespace) -> None:
             for issue in allowlist
         ],
     }
-    _atomic_write_batch(Path(args.file), value, replace=False)
+    path = Path(args.file)
+    with _batch_lock(path):
+        _atomic_write_batch(path, value, replace=False)
     print(json.dumps(value, sort_keys=True))
 
 
 def _batch_update(args: argparse.Namespace) -> None:
     path = Path(args.file)
-    value = _read_batch(path)
-    cursor = value["cursor"]
-    if cursor >= len(value["issues"]) or value["issues"][cursor]["issue"] != args.issue:
-        _fail("batch update may target only the current cursor issue")
-    row = value["issues"][cursor]
-    if row["status"] == "pending" and args.status != "active":
-        _fail("pending batch issue must become active before completion")
-    if row["status"] == "active" and args.status not in {"active", "finalized", "bailed"}:
-        _fail("active batch issue has an invalid transition")
-    row["status"] = args.status
-    if args.child_run_state is not None:
-        row["childRunState"] = str(Path(args.child_run_state).resolve())
-    if args.status in {"finalized", "bailed"}:
-        if args.status == "finalized" and row["childRunState"] is None:
-            _fail("finalized batch issue requires a child run-state path")
-        value["cursor"] = cursor + 1
-    _atomic_write_batch(path, value)
+    with _batch_lock(path):
+        value = _read_batch(path)
+        cursor = value["cursor"]
+        if cursor >= len(value["issues"]) or value["issues"][cursor]["issue"] != args.issue:
+            _fail("batch update may target only the current cursor issue")
+        row = value["issues"][cursor]
+        if row["status"] != args.expected_status:
+            _fail(
+                "batch update status changed: "
+                f"expected {args.expected_status}, found {row['status']}"
+            )
+        allowed_transitions = {
+            "pending": {"active", "bailed"},
+            "active": {"active", "finalized", "bailed"},
+        }
+        if args.status not in allowed_transitions.get(args.expected_status, set()):
+            _fail("batch issue has an invalid status transition")
+        row["status"] = args.status
+        if args.child_run_state is not None:
+            row["childRunState"] = str(Path(args.child_run_state).resolve())
+        if args.status in {"finalized", "bailed"}:
+            if args.status == "finalized" and row["childRunState"] is None:
+                _fail("finalized batch issue requires a child run-state path")
+            value["cursor"] = cursor + 1
+        _atomic_write_batch(path, value)
     print(json.dumps(value, sort_keys=True))
 
 
 def _batch_show(args: argparse.Namespace) -> None:
-    print(json.dumps(_read_batch(Path(args.file)), sort_keys=True))
+    path = Path(args.file)
+    with _batch_lock(path):
+        value = _read_batch(path)
+    print(json.dumps(value, sort_keys=True))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -364,6 +427,9 @@ def _parser() -> argparse.ArgumentParser:
     batch_update = commands.add_parser("batch-update")
     batch_update.add_argument("--file", required=True)
     batch_update.add_argument("--issue", required=True, type=int)
+    batch_update.add_argument(
+        "--expected-status", required=True, choices=sorted(BATCH_STATUSES)
+    )
     batch_update.add_argument("--status", required=True, choices=sorted(BATCH_STATUSES))
     batch_update.add_argument("--child-run-state")
     batch_update.set_defaults(handler=_batch_update)

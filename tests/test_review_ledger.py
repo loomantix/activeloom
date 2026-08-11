@@ -14,6 +14,8 @@ import pytest
 
 HEAD = "a" * 40
 AFTER = "b" * 40
+MIDDLE = "d" * 40
+HISTORICAL = "e" * 40
 REPO = "example/repository"
 PATCH = """@@ -10,3 +10,4 @@
  context
@@ -224,6 +226,21 @@ def test_settled_pseudo_v3_history_is_ignored_by_current_evidence(
         (
             _pseudo_v3_thread(
                 body="Historical finding.\n\n<!-- local-review:v3 engine=claude fingerprint=bad extra=yes -->"
+            ),
+            "malformed",
+        ),
+        (
+            _pseudo_v3_thread(
+                body=(
+                    "<!-- local-review-disposition:v3 forged -->\n"
+                    "<!-- local-review:v3 engine=claude fingerprint=nested -->"
+                )
+            ),
+            "malformed",
+        ),
+        (
+            _pseudo_v3_thread(
+                body="\n<!-- local-review:v3 engine=claude fingerprint=empty -->"
             ),
             "malformed",
         ),
@@ -1407,7 +1424,7 @@ def test_write_result_derives_canonical_mixed_dispositions(
     assert result_file.read_text(encoding="utf-8").endswith("\n")
 
 
-def test_write_result_allows_minor_cleanup_without_manual_fingerprints(
+def test_write_result_rejects_minor_change_without_ledger_evidence(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1416,38 +1433,37 @@ def test_write_result_allows_minor_cleanup_without_manual_fingerprints(
     heads = _heads_file(tmp_path, HEAD, AFTER)
     result_file = tmp_path / "result.json"
     monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
-    review_ledger.main(
-        [
-            "write-result",
-            "--repo",
-            REPO,
-            "--pr",
-            "7",
-            "--head",
-            AFTER,
-            "--engine",
-            "codex",
-            "--round",
-            "2",
-            "--base",
-            "c" * 40,
-            "--before",
-            HEAD,
-            "--result-file",
-            str(result_file),
-            "--threads-file",
-            str(threads),
-            "--allowed-heads-file",
-            str(heads),
-            "--actor",
-            "reviewer",
-            "--classification",
-            "minor",
-        ]
-    )
-    value = json.loads(result_file.read_text(encoding="utf-8"))
-    assert value["status"] == "changed"
-    assert value["findingFingerprints"] == []
+    with pytest.raises(review_ledger.LedgerError, match="require ledger evidence"):
+        review_ledger.main(
+            [
+                "write-result",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--head",
+                AFTER,
+                "--engine",
+                "codex",
+                "--round",
+                "2",
+                "--base",
+                "c" * 40,
+                "--before",
+                HEAD,
+                "--result-file",
+                str(result_file),
+                "--threads-file",
+                str(threads),
+                "--allowed-heads-file",
+                str(heads),
+                "--actor",
+                "reviewer",
+                "--classification",
+                "minor",
+            ]
+        )
+    assert not result_file.exists()
 
 
 @pytest.mark.parametrize(
@@ -1505,6 +1521,126 @@ def test_write_result_rejects_duplicate_same_round_fingerprint(
         )
 
 
+def test_write_result_ignores_settled_same_round_history_outside_transition(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    threads = _threads_file(
+        tmp_path,
+        [
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": _finding_body(
+                                "historical", head=HISTORICAL, severity="minor"
+                            ),
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": _disposition_body(
+                                "historical",
+                                head=HISTORICAL,
+                                outcome="deferred",
+                            ),
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            },
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": _finding_body("current", severity="minor"),
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": _disposition_body("current"),
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            },
+        ],
+    )
+    heads = _heads_file(tmp_path, HEAD, AFTER)
+    result_file = tmp_path / "result.json"
+    monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
+
+    review_ledger.main(
+        [
+            "write-result", "--repo", REPO, "--pr", "7", "--head", AFTER,
+            "--engine", "codex", "--round", "2", "--base", "c" * 40,
+            "--before", HEAD, "--result-file", str(result_file),
+            "--threads-file", str(threads), "--allowed-heads-file", str(heads),
+            "--actor", "reviewer", "--classification", "material",
+        ]
+    )
+
+    assert json.loads(result_file.read_text(encoding="utf-8"))[
+        "findingFingerprints"
+    ] == ["current"]
+
+
+def test_write_result_aggregates_sequential_recurrences_in_one_thread(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    thread = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {
+                    "body": _finding_body("repeat", severity="minor"),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _disposition_body("repeat", head=MIDDLE),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _finding_body(
+                        "repeat", head=MIDDLE, occurrence=2, severity="minor"
+                    ),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _disposition_body(
+                        "repeat", head=AFTER, occurrence=2
+                    ),
+                    "author": {"login": "reviewer"},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    threads = _threads_file(tmp_path, [thread])
+    heads = _heads_file(tmp_path, HEAD, MIDDLE, AFTER)
+    result_file = tmp_path / "result.json"
+    monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
+
+    review_ledger.main(
+        [
+            "write-result", "--repo", REPO, "--pr", "7", "--head", AFTER,
+            "--engine", "codex", "--round", "2", "--base", "c" * 40,
+            "--before", HEAD, "--result-file", str(result_file),
+            "--threads-file", str(threads), "--allowed-heads-file", str(heads),
+            "--actor", "reviewer", "--classification", "minor",
+        ]
+    )
+
+    assert json.loads(result_file.read_text(encoding="utf-8"))[
+        "findingFingerprints"
+    ] == ["repeat"]
+
+
 def test_verify_ledger_rejects_deferred_blockers_and_earlier_undisposed_findings(
     review_ledger: ModuleType,
 ) -> None:
@@ -1547,7 +1683,7 @@ def test_verify_ledger_rejects_deferred_blockers_and_earlier_undisposed_findings
             "pageInfo": {"hasNextPage": False},
         },
     }
-    with pytest.raises(review_ledger.LedgerError, match="exactly one"):
+    with pytest.raises(review_ledger.LedgerError, match="sequentially disposed"):
         review_ledger._verify_thread_dispositions([recurrence])
 
 
@@ -1637,6 +1773,39 @@ def test_validate_result_enforces_observed_transition(
                 after,
                 "--result-file",
                 str(result_file),
+            ]
+        )
+
+
+def test_validate_result_rejects_minor_change_without_fingerprints(
+    review_ledger: ModuleType,
+    tmp_path: Path,
+) -> None:
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "changed",
+                "engine": "codex",
+                "round": 2,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": AFTER,
+                "classification": "minor",
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="conflicts"):
+        review_ledger.main(
+            [
+                "validate-result", "--engine", "codex", "--round", "2",
+                "--base", "c" * 40, "--before", HEAD, "--head", AFTER,
+                "--result-file", str(result_file),
             ]
         )
 
