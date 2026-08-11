@@ -307,9 +307,11 @@ elif args[:2] == ['api', 'graphql']:
     if os.environ.get('AGENT_MUTATE_RESULT_ON_THREADS_FETCH') == 'true':
         marker = state / 'result-mutated'
         if not marker.exists():
-            for result_file in (state.parent / 'logs').glob('*/*.result.json'):
+            result_files = list((state.parent / 'logs').glob('*/*.result.json'))
+            for result_file in result_files:
                 result_file.write_text(result_file.read_text() + '\n')
-            marker.touch()
+            if result_files:
+                marker.touch()
     threads_file = state / 'review-threads.json'
     nodes = json.loads(
         threads_file.read_text()
