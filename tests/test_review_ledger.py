@@ -109,6 +109,40 @@ def _heads_file(tmp_path: Path, *heads: str) -> Path:
     return path
 
 
+def _pseudo_v3_thread(
+    *, resolved: bool = True, reply: bool = True, body: str | None = None
+) -> dict[str, Any]:
+    marker_body = body or (
+        "Historical finding.\n\n"
+        "<!-- local-review:v3 engine=claude fingerprint=historical-finding -->"
+    )
+    nodes = [
+        {"databaseId": 1, "body": marker_body, "author": {"login": "reviewer"}}
+    ]
+    if reply:
+        nodes.append(
+            {
+                "databaseId": 2,
+                "body": "Fixed before contract v3 was finalized.",
+                "author": {"login": "reviewer"},
+            }
+        )
+    return {
+        "id": "PSEUDO-THREAD",
+        "isResolved": resolved,
+        "comments": {
+            "nodes": nodes,
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+
+
+def _unowned_pseudo_v3_thread() -> dict[str, Any]:
+    thread = _pseudo_v3_thread()
+    del thread["comments"]["nodes"][0]["author"]
+    return thread
+
+
 @pytest.fixture(scope="session")
 def review_ledger() -> ModuleType:
     path = (
@@ -133,6 +167,78 @@ def authenticated_actor(
     review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(review_ledger, "_current_actor", lambda: "reviewer")
+
+
+def test_settled_pseudo_v3_history_is_ignored_by_current_evidence(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    thread = _pseudo_v3_thread()
+    deferred = _pseudo_v3_thread(
+        body="Historical finding.\n\n"
+        "<!-- local-review:v3 engine=claude fingerprint=historical-deferred outcome=deferred -->"
+    )
+    assert review_ledger._verify_thread_dispositions([thread, deferred]) == 0
+    threads = _threads_file(tmp_path, [thread])
+    result_file = tmp_path / "result.json"
+    heads = _heads_file(tmp_path, HEAD)
+    monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
+    review_ledger.main(
+        [
+            "write-result",
+            "--repo",
+            REPO,
+            "--pr",
+            "7",
+            "--head",
+            HEAD,
+            "--engine",
+            "claude",
+            "--round",
+            "1",
+            "--base",
+            "c" * 40,
+            "--before",
+            HEAD,
+            "--result-file",
+            str(result_file),
+            "--threads-file",
+            str(threads),
+            "--allowed-heads-file",
+            str(heads),
+            "--actor",
+            "reviewer",
+        ]
+    )
+    assert json.loads(result_file.read_text(encoding="utf-8"))[
+        "findingFingerprints"
+    ] == []
+
+
+@pytest.mark.parametrize(
+    ("thread", "message"),
+    [
+        (_pseudo_v3_thread(resolved=False), "not settled"),
+        (_pseudo_v3_thread(reply=False), "not settled"),
+        (
+            _pseudo_v3_thread(
+                body="Historical finding.\n\n<!-- local-review:v3 engine=claude fingerprint=bad extra=yes -->"
+            ),
+            "malformed",
+        ),
+        (
+            _pseudo_v3_thread(body=_finding_body("hash-check").replace("Finding.", "Edited.")),
+            "invalid content hash",
+        ),
+        (_unowned_pseudo_v3_thread(), "ownership"),
+    ],
+)
+def test_pseudo_v3_history_fails_closed(
+    review_ledger: ModuleType, thread: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(review_ledger.LedgerError, match=message):
+        review_ledger._verify_pseudo_v3_history([thread])
 
 
 def test_diff_lines_tracks_both_sides(review_ledger: ModuleType) -> None:
@@ -593,6 +699,41 @@ def test_v3_helper_owns_marker_and_preserves_hostile_markdown(
         f"lens=security content-sha256={expected_hash} -->\n"
     )
     assert posted["body"].endswith(content_text)
+
+
+def test_v3_post_finding_proceeds_past_settled_pseudo_history(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "finding.md"
+    content.write_text("New current finding.", encoding="utf-8")
+    pseudo_thread = _pseudo_v3_thread()
+    pseudo_row = _review_row(
+        1, cast(str, pseudo_thread["comments"]["nodes"][0]["body"])
+    )
+    posted: dict[str, Any] = {}
+
+    def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        if args[:2] == ["pr", "view"]:
+            return HEAD + "\n"
+        endpoint = args[-1]
+        if endpoint.endswith("/files?per_page=100"):
+            return json.dumps([[{"filename": "changed.ts", "patch": PATCH}]])
+        if endpoint.endswith("/comments?per_page=100"):
+            return json.dumps([[pseudo_row]])
+        if endpoint == f"repos/{REPO}/pulls/7/comments":
+            assert payload is not None
+            posted.update(payload)
+            return json.dumps({"id": 123})
+        if endpoint == f"repos/{REPO}/pulls/comments/123":
+            return json.dumps(_review_row(123, cast(str, posted["body"])))
+        raise AssertionError(args)
+
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [pseudo_thread])
+    monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
+    review_ledger.main(_v3_finding_args(content))
+    assert "fingerprint=hostile-content" in cast(str, posted["body"])
 
 
 def test_v3_rejects_model_authored_markers_before_github(

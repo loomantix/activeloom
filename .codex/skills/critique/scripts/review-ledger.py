@@ -41,6 +41,12 @@ FINDING_V3_RE = re.compile(
     r"content-sha256=(?P<content_sha>[0-9a-f]{64}) -->$",
     re.MULTILINE,
 )
+PSEUDO_V3_RE = re.compile(
+    r"^<!-- local-review:v3 engine=claude "
+    r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+)"
+    r"(?: outcome=deferred)? -->$",
+    re.MULTILINE,
+)
 DISPOSITION_V3_RE = re.compile(
     r"^<!-- local-review-disposition:v3 "
     r"engine=(?P<engine>codex|claude) "
@@ -348,7 +354,24 @@ def _protocol_match(
     return match
 
 
+def _pseudo_v3_match(body: str) -> re.Match[str] | None:
+    matches = list(PSEUDO_V3_RE.finditer(body))
+    if not matches:
+        return None
+    if (
+        len(matches) != 1
+        or body.count("<!-- local-review:v3") != 1
+        or matches[0].start() == 0
+        or body[matches[0].start() - 1] != "\n"
+        or matches[0].end() != len(body)
+    ):
+        _fail("authenticated historical local-review:v3 record is malformed")
+    return matches[0]
+
+
 def _finding_match(body: str) -> re.Match[str] | None:
+    if _pseudo_v3_match(body) is not None:
+        return None
     return _protocol_match(body, FINDING_V3_RE, "<!-- local-review:v3")
 
 
@@ -367,6 +390,12 @@ def _finding_records(
         if match is not None and match.group("fingerprint") == fingerprint:
             records.append((row, match))
     return records
+
+
+def _rows_have_pseudo_v3(rows: list[dict[str, Any]]) -> bool:
+    return any(
+        PSEUDO_V3_RE.search(str(row.get("body", ""))) is not None for row in rows
+    )
 
 
 def _require_disposition_consistency(
@@ -622,6 +651,8 @@ def _post_finding(args: argparse.Namespace) -> None:
     _validate_anchor(files, args.path, line, side)
     if args.content_file:
         rows = _review_comments(args.repo, args.pr)
+        if _rows_have_pseudo_v3(rows):
+            _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
         existing = _matching_body(rows, marker, body)
         records = _finding_records(rows, args.fingerprint)
         if existing is None and records:
@@ -650,6 +681,8 @@ def _reopen_occurrence(args: argparse.Namespace) -> None:
     marker, body = _finding_body(args)
     _verify_head(args.repo, args.pr, args.head)
     rows = _review_comments(args.repo, args.pr)
+    if _rows_have_pseudo_v3(rows):
+        _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
     records = _finding_records(rows, args.fingerprint)
     existing = _matching_body(rows, marker, body)
     if args.occurrence < 2:
@@ -673,6 +706,8 @@ def _dispose(args: argparse.Namespace) -> None:
     marker, body = _disposition_body(args)
     _verify_head(args.repo, args.pr, args.head)
     rows = _review_comments(args.repo, args.pr)
+    if _rows_have_pseudo_v3(rows):
+        _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
     _require_finding_occurrence(rows, args)
     _require_disposition_consistency(rows, args, body)
     _thread_state(args)
@@ -954,6 +989,8 @@ def _resolve(args: argparse.Namespace) -> None:
 def _reconcile(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
     comments = _review_comments(args.repo, args.pr)
+    if _rows_have_pseudo_v3(comments):
+        _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
     finding_rows: list[dict[str, Any]] = []
     disposition_rows: list[dict[str, Any]] = []
     for row in comments:
@@ -1046,6 +1083,130 @@ def _load_review_threads(path_value: str) -> list[dict[str, Any]]:
     return threads
 
 
+def _review_threads(repo: str, pr: int) -> list[dict[str, Any]]:
+    try:
+        owner, name = repo.split("/", 1)
+    except ValueError as error:
+        raise LedgerError("--repo must be OWNER/REPO") from error
+    query = """
+query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100, after:$endCursor) {
+        nodes {
+          id
+          isResolved
+          comments(first:100) {
+            nodes { databaseId body author { login } }
+            pageInfo { hasNextPage }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+""".strip()
+    pages = _json_output(
+        [
+            "api",
+            "graphql",
+            "--paginate",
+            "--slurp",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={pr}",
+        ]
+    )
+    if not isinstance(pages, list) or not pages:
+        _fail("GitHub review-thread response has an unexpected shape")
+    threads: list[dict[str, Any]] = []
+    for page_index, page in enumerate(pages):
+        if not isinstance(page, dict) or page.get("errors"):
+            _fail("GitHub review-thread response is incomplete")
+        try:
+            connection = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+            nodes = connection["nodes"]
+            page_info = connection["pageInfo"]
+        except (KeyError, TypeError) as error:
+            raise LedgerError(
+                "GitHub review-thread response has an unexpected shape"
+            ) from error
+        if not isinstance(nodes, list) or not isinstance(page_info, dict):
+            _fail("GitHub review-thread nodes have an unexpected shape")
+        expected_more = page_index < len(pages) - 1
+        if page_info.get("hasNextPage") is not expected_more:
+            _fail("GitHub review-thread pagination is incomplete")
+        if expected_more and not isinstance(page_info.get("endCursor"), str):
+            _fail("GitHub review-thread pagination omitted its cursor")
+        for thread in nodes:
+            if not isinstance(thread, dict):
+                _fail("GitHub review thread has an unexpected shape")
+            comments = thread.get("comments")
+            if (
+                not isinstance(comments, dict)
+                or not isinstance(comments.get("nodes"), list)
+                or not isinstance(comments.get("pageInfo"), dict)
+                or comments["pageInfo"].get("hasNextPage") is not False
+            ):
+                _fail("GitHub review-thread comments are incomplete")
+            threads.append(thread)
+    return threads
+
+
+def _verify_pseudo_v3_history(threads: list[dict[str, Any]]) -> None:
+    actor = _current_actor()
+    for thread in threads:
+        comments = thread.get("comments")
+        if not isinstance(comments, dict):
+            _fail("GitHub review thread omitted comments")
+        nodes = comments.get("nodes")
+        page_info = comments.get("pageInfo")
+        if (
+            not isinstance(nodes, list)
+            or not isinstance(page_info, dict)
+            or page_info.get("hasNextPage") is not False
+        ):
+            _fail("GitHub review thread comments are incomplete")
+        for index, row in enumerate(nodes):
+            if not isinstance(row, dict):
+                _fail("GitHub review comment has an unexpected shape")
+            body = str(row.get("body", ""))
+            author = row.get("author")
+            if not isinstance(author, dict) or not isinstance(author.get("login"), str):
+                if "<!-- local-review" in body:
+                    _fail("could not establish local-review comment ownership")
+                continue
+            if author.get("login") != actor:
+                continue
+            if "<!-- local-review:v3" not in body:
+                continue
+            pseudo = _pseudo_v3_match(body)
+            if pseudo is None:
+                _protocol_match(body, FINDING_V3_RE, "<!-- local-review:v3")
+                continue
+            later_same_actor = any(
+                isinstance(reply, dict)
+                and isinstance(reply.get("author"), dict)
+                and reply["author"].get("login") == actor
+                for reply in nodes[index + 1 :]
+            )
+            if (
+                index != 0
+                or not isinstance(thread.get("id"), str)
+                or thread.get("isResolved") is not True
+                or not later_same_actor
+            ):
+                _fail(
+                    "historical local-review:v3 finding is not settled actor-owned history"
+                )
+
+
 def _load_allowed_heads(args: argparse.Namespace) -> dict[str, int]:
     path = Path(args.allowed_heads_file)
     if path.is_symlink() or not path.is_file():
@@ -1088,6 +1249,7 @@ def _thread_protocol_records(
     list[tuple[int, re.Match[str]]],
     list[tuple[int, re.Match[str]]],
 ]:
+    _verify_pseudo_v3_history([thread])
     comments = cast(dict[str, Any], thread["comments"])["nodes"]
     findings_v3: list[tuple[int, re.Match[str]]] = []
     dispositions_v3: list[tuple[int, re.Match[str]]] = []
@@ -1100,6 +1262,8 @@ def _thread_protocol_records(
         if not isinstance(author, dict) or author.get("login") != _current_actor():
             continue
         body = str(row.get("body", ""))
+        if _pseudo_v3_match(body) is not None:
+            continue
         finding_v3 = _finding_match(body)
         disposition_v3 = _disposition_match(body)
         if finding_v3 is not None:
