@@ -219,8 +219,13 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
 
 def test_sync_replaces_retired_review_skill_paths_on_success(tmp_path: Path) -> None:
     consumer = tmp_path / "consumer"
+    # `.codex/skills/grill/SKILL.md` is retired AND reissued: the old review
+    # skill is deleted and the new pre-code interview skill is written to the
+    # same path. So the contract here is "the retired CONTENT is gone", not
+    # "the path is absent" — the other three paths do go away entirely.
+    reissued = consumer / ".codex/skills/grill/SKILL.md"
     old_paths = [
-        consumer / ".codex/skills/grill/SKILL.md",
+        reissued,
         consumer / ".codex/skills/grill/scripts/review-ledger.py",
         consumer / ".codex/skills/deepgrill/SKILL.md",
         consumer / ".codex/skills/pr-grill/SKILL.md",
@@ -236,7 +241,11 @@ def test_sync_replaces_retired_review_skill_paths_on_success(tmp_path: Path) -> 
         text=True,
     )
 
-    assert not any(path.exists() for path in old_paths)
+    assert not any(path.exists() for path in old_paths if path != reissued)
+    # Written after the delete, not clobbered by it.
+    assert reissued.is_file()
+    assert reissued.read_text(encoding="utf-8") != "retired\n"
+    assert _frontmatter(reissued)["name"] == "grill"
     for skill in ("critique", "deepcritique", "pr-critique"):
         assert (consumer / f".codex/skills/{skill}/SKILL.md").is_file()
     ledger = consumer / ".codex/skills/critique/scripts/review-ledger.py"
@@ -349,3 +358,38 @@ def test_ship_staging_marks_drafts_ready_and_verifies_the_transition() -> None:
     assert ready_command < refetch < merge_command
     assert '.headRefOid == $head' in text
     assert ".isDraft == false" in text
+
+
+def test_reissued_destinations_are_deleted_before_they_are_written() -> None:
+    """A destination that is both retired and reissued must have its
+    `delete: true` entry BEFORE its copy entry in the manifest.
+
+    `sync-engine.py` applies targets in list order and does not dedup by
+    destination, so a copy placed before the delete is written and then
+    unlinked in the same run — the consumer silently never receives the
+    file, and the sync log still reads as a success. `grill` is the live
+    case: the old review skill is retired at the same path the new
+    pre-code interview skill is written to.
+    """
+    first_copy: dict[str, int] = {}
+    last_delete: dict[str, int] = {}
+    for index, target in enumerate(_manifest_targets()):
+        dest = target.get("destination")
+        if not dest:
+            continue
+        if target.get("delete"):
+            last_delete[dest] = index
+        elif dest not in first_copy:
+            first_copy[dest] = index
+
+    clobbered = sorted(
+        dest
+        for dest, copy_index in first_copy.items()
+        if dest in last_delete and last_delete[dest] > copy_index
+    )
+
+    assert not clobbered, (
+        "these destinations are written and then deleted in the same sync run, "
+        "so consumers never receive them — move the copy entry below the "
+        "`delete: true` entry: " + "; ".join(clobbered)
+    )

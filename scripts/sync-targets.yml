@@ -104,6 +104,13 @@ targets:
     destination: .codex/skills/feature-dev/SKILL.md
     substitutions: []
 
+  # diagnosing-bugs — debugging discipline gated on a tight, deterministic
+  # feedback loop that goes red on the user's exact symptom before any
+  # hypothesis is entertained.
+  - source: .codex/skills/diagnosing-bugs/SKILL.md
+    destination: .codex/skills/diagnosing-bugs/SKILL.md
+    substitutions: []
+
   - source: .codex/skills/task-packet/SKILL.md
     destination: .codex/skills/task-packet/SKILL.md
     substitutions: []
@@ -263,6 +270,25 @@ targets:
     delete: true
   - destination: .codex/skills/pr-grill/SKILL.md
     delete: true
+
+  # ORDER-DEPENDENT — this entry must stay BELOW the `.codex/skills/grill/`
+  # deletes above. The engine applies targets in list order with no dedup by
+  # destination, so a copy placed before that delete is written and then
+  # unlinked in the same run, and the consumer never receives the skill.
+  #
+  # `grill` is the one destination in this manifest that is both retired and
+  # reissued: the old review skill is deleted, then this new pre-code
+  # interview skill is written to the same path. The caveats on the retirement
+  # block above apply here too — the pass is not transactional, so a run that
+  # aborts partway can leave the old skill in place with the new one unwritten.
+  # `tests/test_skill_surface.py` asserts the ordering so a future reshuffle of
+  # this file cannot silently reintroduce the collision.
+  #
+  # Front end of the arc feature-dev and task-packet finish; the adversarial
+  # review skills are critique / deepcritique / pr-critique.
+  - source: .codex/skills/grill/SKILL.md
+    destination: .codex/skills/grill/SKILL.md
+    substitutions: []
 
   # Copilot instructions — generated from the template using the consumer's
   # placeholder values. Result lands at `.github/copilot-instructions.md`.
