@@ -1892,6 +1892,49 @@ def test_v3_wrapper_owns_clean_attestations_and_finalizes_state(
     assert all("local-review-pass:v3" in row["body"] for row in comments)
 
 
+def test_v3_finalization_reuses_sealed_pseudo_v3_history(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    historical_threads = [
+        {
+            "id": "PSEUDO-THREAD",
+            "isResolved": True,
+            "comments": {
+                "nodes": [
+                    {
+                        "body": (
+                            "Historical finding.\n\n"
+                            "<!-- local-review:v3 engine=claude "
+                            "fingerprint=historical-finding -->"
+                        ),
+                        "databaseId": 101,
+                        "author": {"login": "tester"},
+                    },
+                    {
+                        "body": "Fixed before contract v3 was finalized.",
+                        "databaseId": 102,
+                        "author": {"login": "tester"},
+                    },
+                ],
+                "pageInfo": {"hasNextPage": False},
+            },
+        }
+    ]
+
+    result = _run(
+        consumer,
+        ["--issues", "92"],
+        issues=[_issue(92)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps(historical_threads)},
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+
+
 def test_v3_review_hook_cannot_self_authorize_direct_push(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
