@@ -217,7 +217,7 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     assert "unchanged" in result.stdout.lower() or "no changes" in result.stdout.lower()
 
 
-def test_sync_atomically_replaces_retired_review_skill_paths(tmp_path: Path) -> None:
+def test_sync_replaces_retired_review_skill_paths_on_success(tmp_path: Path) -> None:
     consumer = tmp_path / "consumer"
     old_paths = [
         consumer / ".codex/skills/grill/SKILL.md",
@@ -322,7 +322,8 @@ def test_renamed_review_skills_preserve_in_flight_compatibility() -> None:
         "different values" in normalized_reviewit
     )
     assert "PR_GRILL_REVIEW_BASE_SHA" in pr_critique
-    assert "set to different commits" in pr_critique
+    assert "AGENT_LOOP_REVIEW_BASE_SHA" in pr_critique
+    assert "review base overrides are set to different commits" in pr_critique
     assert "round-matched fix bias" in pr_critique
 
 

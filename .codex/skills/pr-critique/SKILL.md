@@ -61,8 +61,9 @@ cd ../review-pr-<pr-number>
 Resolve the PR identity and review scope once. Prefer the immutable base SHA
 supplied by the convergence wrapper, then an explicit
 `$PR_CRITIQUE_REVIEW_BASE_SHA`. During the rename transition, also accept the
-legacy `$PR_GRILL_REVIEW_BASE_SHA`; fail closed when both are set to different
-commits. Only a standalone invocation without either override may snapshot the
+legacy `$PR_GRILL_REVIEW_BASE_SHA`; resolve every non-empty override and fail
+closed when any pair names different commits. Only a standalone invocation
+without an override may snapshot the
 PR's current `baseRefOid`. Never let individual lanes re-resolve a mutable ref:
 
 ```bash
@@ -75,13 +76,18 @@ HEAD_REPO=$(jq -r .headRepository.nameWithOwner <<<"$PR_DATA")
 HEAD_REPO_URL="https://github.com/$HEAD_REPO.git"
 test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
 
-if [ -n "${PR_CRITIQUE_REVIEW_BASE_SHA:-}" ] &&
-   [ -n "${PR_GRILL_REVIEW_BASE_SHA:-}" ] &&
-   [ "$PR_CRITIQUE_REVIEW_BASE_SHA" != "$PR_GRILL_REVIEW_BASE_SHA" ]; then
-  echo "PR_CRITIQUE_REVIEW_BASE_SHA and PR_GRILL_REVIEW_BASE_SHA are set to different commits" >&2
-  exit 1
-fi
-REVIEW_BASE_SHA=${AGENT_LOOP_REVIEW_BASE_SHA:-${PR_CRITIQUE_REVIEW_BASE_SHA:-${PR_GRILL_REVIEW_BASE_SHA:-}}}
+REVIEW_BASE_SHA=
+for candidate in "${AGENT_LOOP_REVIEW_BASE_SHA:-}" \
+                 "${PR_CRITIQUE_REVIEW_BASE_SHA:-}" \
+                 "${PR_GRILL_REVIEW_BASE_SHA:-}"; do
+  [ -n "$candidate" ] || continue
+  candidate=$(git rev-parse --verify "$candidate^{commit}") || exit 1
+  if [ -n "$REVIEW_BASE_SHA" ] && [ "$REVIEW_BASE_SHA" != "$candidate" ]; then
+    echo "review base overrides are set to different commits" >&2
+    exit 1
+  fi
+  REVIEW_BASE_SHA=$candidate
+done
 if [ -z "$REVIEW_BASE_SHA" ]; then
   REVIEW_BASE_SHA=$(jq -r .baseRefOid <<<"$PR_DATA")
   git fetch -q origin "$BASE"

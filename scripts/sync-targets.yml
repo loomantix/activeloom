@@ -224,8 +224,8 @@ targets:
   # `.codex/skills/critique/**`, `.codex/skills/deepcritique/**`, and
   # `.codex/skills/pr-critique/**` to that allowlist before taking the sync tag
   # carrying this rename. Otherwise the new copy targets above fail the
-  # allowlist gate, the run aborts before reaching these deletes, and both
-  # naming families survive.
+  # allowlist gate and the run aborts before reaching these deletes. Retired
+  # paths survive, along with any earlier new copy targets already written.
   - destination: .codex/skills/grill/SKILL.md
     delete: true
   - destination: .codex/skills/grill/scripts/review-ledger.py
