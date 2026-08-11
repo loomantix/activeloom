@@ -41,6 +41,12 @@ FINDING_V3_RE = re.compile(
     r"content-sha256=(?P<content_sha>[0-9a-f]{64}) -->$",
     re.MULTILINE,
 )
+PSEUDO_V3_RE = re.compile(
+    r"^<!-- local-review:v3 engine=claude "
+    r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+)"
+    r"(?: outcome=deferred)? -->$",
+    re.MULTILINE,
+)
 DISPOSITION_V3_RE = re.compile(
     r"^<!-- local-review-disposition:v3 "
     r"engine=(?P<engine>codex|claude) "
@@ -55,6 +61,23 @@ DISPOSITION_V3_RE = re.compile(
 PROTOCOL_THREAD_MARKER_RE = re.compile(r"^<!--[ \t]*local-review(?=[: \t-])")
 LEGACY_THREAD_MARKER_RE = re.compile(
     r"^<!--[ \t]*local-review(?:-disposition)?:v1(?=[ \t]|-->)"
+)
+FINDING_V1_RE = re.compile(
+    r"^<!-- local-review:v1 "
+    r"engine=(?P<engine>codex|claude) "
+    r"round=(?P<round>[1-9][0-9]*) "
+    r"head=(?P<head>[0-9a-f]{40}) "
+    r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) -->$",
+    re.MULTILINE,
+)
+DISPOSITION_V1_RE = re.compile(
+    r"^<!-- local-review-disposition:v1 "
+    r"engine=(?P<engine>codex|claude) "
+    r"round=(?P<round>[1-9][0-9]*) "
+    r"head=(?P<head>[0-9a-f]{40}) "
+    r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) "
+    r"outcome=(?P<outcome>fixed|dismissed|deferred) -->$",
+    re.MULTILINE,
 )
 
 
@@ -397,6 +420,16 @@ def _disposition_records(
     return records
 
 
+def _rows_have_historical_markers(rows: list[dict[str, Any]]) -> bool:
+    for row in rows:
+        body = str(row.get("body", ""))
+        if FINDING_V1 in body or DISPOSITION_V1 in body:
+            return True
+        if "<!-- local-review:v3" in body and FINDING_V3_RE.search(body) is None:
+            return True
+    return False
+
+
 def _require_finding_occurrence(
     rows: list[dict[str, Any]], args: argparse.Namespace
 ) -> tuple[int, int, re.Match[str]]:
@@ -707,29 +740,59 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     return threads
 
 
+def _pseudo_v3_match(body: str) -> re.Match[str] | None:
+    matches = list(PSEUDO_V3_RE.finditer(body))
+    if not matches:
+        return None
+    if (
+        len(matches) != 1
+        or body.count("<!-- local-review:v3") != 1
+        or matches[0].start() == 0
+        or body[matches[0].start() - 1] != "\n"
+        or matches[0].end() != len(body)
+    ):
+        _fail("actor-owned historical local-review:v3 marker is malformed")
+    return matches[0]
+
+
+def _verify_v1_marker(body: str, marker: re.Match[str], label: str) -> None:
+    if marker.start() != 0 or body[marker.end() : marker.end() + 1] != "\n":
+        _fail(f"actor-owned v1 {label} marker is malformed")
+    if not body[marker.end() + 1 :].strip():
+        _fail(f"actor-owned v1 {label} content is empty")
+
+
 def _thread_markers(
     thread: dict[str, Any], actor: str
 ) -> tuple[list[tuple[int, re.Match[str]]], list[tuple[int, re.Match[str]]]]:
     comments = cast(dict[str, Any], thread["comments"])["nodes"]
     findings: list[tuple[int, re.Match[str]]] = []
     dispositions: list[tuple[int, re.Match[str]]] = []
+    findings_v1: list[tuple[int, re.Match[str]]] = []
+    dispositions_v1: list[tuple[int, re.Match[str]]] = []
     for index, comment in enumerate(comments):
         if not isinstance(comment, dict):
             _fail("GitHub review comment has an unexpected shape")
-        author = comment.get("author")
-        if not isinstance(author, dict) or author.get("login") != actor:
-            continue
         body = str(comment.get("body", ""))
+        author = comment.get("author")
+        if not isinstance(author, dict) or not isinstance(author.get("login"), str):
+            if "<!-- local-review" in body:
+                _fail("could not establish local-review comment ownership")
+            continue
+        if author.get("login") != actor:
+            continue
         first_line = body.partition("\n")[0].removesuffix("\r")
-        legacy_marker = LEGACY_THREAD_MARKER_RE.match(first_line)
-        if FINDING_V1 in body or DISPOSITION_V1 in body or legacy_marker is not None:
-            _fail("actor-owned legacy local-review marker is incompatible with v3")
         finding = FINDING_V3_RE.search(body)
         disposition = DISPOSITION_V3_RE.search(body)
+        pseudo = _pseudo_v3_match(body)
+        if "<!-- local-review:v3" in body and finding is None and pseudo is None:
+            _fail("actor-owned local-review:v3 marker is malformed or unsupported")
         if (
             PROTOCOL_THREAD_MARKER_RE.match(first_line) is not None
             and finding is None
             and disposition is None
+            and FINDING_V1_RE.search(body) is None
+            and DISPOSITION_V1_RE.search(body) is None
         ):
             _fail("actor-owned local-review marker is malformed or unsupported")
         if finding is not None:
@@ -738,6 +801,60 @@ def _thread_markers(
         if disposition is not None:
             _verify_marker_content(body, disposition, "disposition")
             dispositions.append((index, disposition))
+        if pseudo is not None:
+            later_same_actor = any(
+                isinstance(reply, dict)
+                and isinstance(reply.get("author"), dict)
+                and reply["author"].get("login") == actor
+                for reply in comments[index + 1 :]
+            )
+            if (
+                index != 0
+                or not isinstance(thread.get("id"), str)
+                or thread.get("isResolved") is not True
+                or not later_same_actor
+            ):
+                _fail(
+                    "historical local-review:v3 finding is not settled actor-owned history"
+                )
+        finding_v1 = FINDING_V1_RE.search(body)
+        disposition_v1 = DISPOSITION_V1_RE.search(body)
+        legacy_marker = LEGACY_THREAD_MARKER_RE.match(first_line)
+        if (
+            FINDING_V1 in body
+            or DISPOSITION_V1 in body
+            or legacy_marker is not None
+        ) and finding_v1 is None and disposition_v1 is None:
+            _fail("actor-owned legacy local-review marker is malformed")
+        if finding_v1 is not None:
+            _verify_v1_marker(body, finding_v1, "finding")
+            findings_v1.append((index, finding_v1))
+        if disposition_v1 is not None:
+            _verify_v1_marker(body, disposition_v1, "disposition")
+            dispositions_v1.append((index, disposition_v1))
+    if findings_v1 or dispositions_v1:
+        if thread.get("isResolved") is not True:
+            _fail("legacy local-review finding thread is unresolved")
+        used: set[int] = set()
+        for finding_index, finding_v1 in findings_v1:
+            matches = [
+                (disposition_index, disposition_v1)
+                for disposition_index, disposition_v1 in dispositions_v1
+                if disposition_index > finding_index
+                and disposition_v1.group("engine") == finding_v1.group("engine")
+                and disposition_v1.group("round") == finding_v1.group("round")
+                and disposition_v1.group("fingerprint")
+                == finding_v1.group("fingerprint")
+            ]
+            if len(matches) != 1:
+                _fail(
+                    "legacy local-review finding lacks exactly one matching disposition"
+                )
+            if matches[0][0] in used:
+                _fail("legacy local-review disposition matches multiple findings")
+            used.add(matches[0][0])
+        if len(used) != len(dispositions_v1):
+            _fail("legacy local-review ledger contains an orphan disposition")
     return findings, dispositions
 
 
@@ -828,6 +945,20 @@ def _verify_complete_v3_threads(
         ):
             _fail("local-review fingerprint topology is invalid")
     return matched
+
+
+def _verify_historical_threads(repo: str, pr: int, actor: str) -> None:
+    for thread in _review_threads(repo, pr):
+        repository = thread.get("repository")
+        pull_request = thread.get("pullRequest")
+        if (
+            not isinstance(repository, dict)
+            or repository.get("nameWithOwner") != repo
+            or not isinstance(pull_request, dict)
+            or pull_request.get("number") != pr
+        ):
+            _fail("GitHub returned a review thread outside the requested PR")
+        _thread_markers(thread, actor)
 
 
 def _is_ancestor(ancestor: str, descendant: str) -> bool:
@@ -968,6 +1099,8 @@ def _post_finding(args: argparse.Namespace) -> None:
     _validate_anchor(files, args.path, line, side)
     if args.content_file:
         rows = _actor_rows(_review_comments(args.repo, args.pr), args.actor)
+        if _rows_have_historical_markers(rows):
+            _verify_historical_threads(args.repo, args.pr, args.actor)
         existing = _matching_body(rows, marker, body)
         records = _finding_records(rows, args.fingerprint)
         if existing is None and records:
@@ -1004,6 +1137,8 @@ def _reopen_occurrence(args: argparse.Namespace) -> None:
     args.actor = _current_login()
     _verify_head(args.repo, args.pr, args.head)
     rows = _actor_rows(_review_comments(args.repo, args.pr), args.actor)
+    if _rows_have_historical_markers(rows):
+        _verify_historical_threads(args.repo, args.pr, args.actor)
     records = _finding_records(rows, args.fingerprint)
     existing = _matching_body(rows, marker, body)
     if args.occurrence < 2:
@@ -1044,6 +1179,8 @@ def _dispose(args: argparse.Namespace) -> None:
     args.actor = _current_login()
     _verify_head(args.repo, args.pr, args.head)
     rows = _actor_rows(_review_comments(args.repo, args.pr), args.actor)
+    if _rows_have_historical_markers(rows):
+        _verify_historical_threads(args.repo, args.pr, args.actor)
     root_id, occurrence_id, finding = _require_finding_occurrence(rows, args)
     if finding.group("severity") == "blocking" and args.outcome == "deferred":
         _fail("blocking local-review findings cannot be deferred")
@@ -1397,6 +1534,8 @@ def _reconcile(args: argparse.Namespace) -> None:
     actor = _current_login()
     _verify_head(args.repo, args.pr, args.head)
     comments = _actor_rows(_review_comments(args.repo, args.pr), actor)
+    if _rows_have_historical_markers(comments):
+        _verify_historical_threads(args.repo, args.pr, actor)
     finding_rows: list[dict[str, Any]] = []
     disposition_rows: list[dict[str, Any]] = []
     for row in comments:
