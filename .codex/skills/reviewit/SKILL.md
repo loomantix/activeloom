@@ -35,6 +35,11 @@ Create the directory if needed. The state file is local agent bookkeeping; do no
 - `lastPollAt`: UTC timestamp of the most recent poll
 - `deepcritiqueRan` (deep mode only): boolean — set once the final `deepcritique` invocation has returned
 
+On state load, normalize the legacy `phase=final-deepgrill` value to
+`final-deepcritique` and the legacy `deepgrillRan` key to `deepcritiqueRan`,
+then rewrite the normalized state before continuing. Fail closed if legacy and
+current values conflict; do not guess which final review ran.
+
 If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate ignore file before writing state.
 
 ## Process
@@ -54,6 +59,8 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
 5. Bias toward fixing every valid finding in this PR, including nits and cleanup items. Dismiss only invalid findings, false positives, or suggestions that would make the code worse. Defer only valid but extremely large follow-up refactors, roughly 300+ lines or cross-cutting rewrites, and create/link a GitHub issue for each deferral.
 6. If `--resume` is present:
    - Load `.codex/reviewit-state/<pr>.json` if present.
+   - Normalize the legacy final-deepgrill phase/key as described above before
+     branching on state, and persist the normalized form.
    - If no state file exists, reconstruct enough state from `gh pr view`, PR reviews, PR review comments, issue comments, and workflow runs. Use the current PR head SHA as `headSha`.
    - If the current PR head SHA differs from the saved `headSha`, ask whether to start a new iteration. Do not silently process stale reviewer output.
    - Do not trigger Gemini or request Copilot again unless the saved reviewer request clearly failed or the user explicitly asks to rerun.

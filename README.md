@@ -71,9 +71,16 @@ cd codex-platform
 ./scripts/install-skills.sh --force   # replace existing entries after backup
 ```
 
-Updates flow through `git pull` in this checkout. Existing symlinks pick up edits automatically.
+Existing symlinks pick up in-place edits after `git pull`. After pulling a
+version that adds, renames, or retires skills, rerun
+`./scripts/install-skills.sh --dry-run`, then the normal installer so new links
+are created and retired owned links are pruned. Restart Codex after changing the
+installed skill set so discovery reloads.
 
-If a skill command is not found in a Codex session, run the dry-run check from this checkout. Use the normal installer for missing links; use `--force` only when the dry-run reports stale symlinks or regular files that should be replaced. Start a fresh Codex session after changing installed skills so discovery reloads.
+If a skill command is not found in a Codex session, run the dry-run check from
+this checkout. Use the normal installer for missing links; use `--force` only
+when the dry-run reports stale symlinks or regular files that should be
+replaced.
 
 Consumer-owned `create_if_missing` targets are intentionally not upgraded by a
 sync. Existing `agent-loop` consumers must manually merge the current config,

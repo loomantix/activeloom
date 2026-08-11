@@ -210,6 +210,10 @@ if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; t
     echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
     exit 1
 fi
+if [[ "$CODEX_REVIEW_HOOK" == *deepgrill* ]]; then
+    echo "codex_review_hook uses retired deepgrill; migrate it to deepcritique before running agent-loop" >&2
+    exit 1
+fi
 
 if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
     if [ ! -f "$REVIEW_LEDGER" ] || [ ! -r "$REVIEW_LEDGER" ]; then

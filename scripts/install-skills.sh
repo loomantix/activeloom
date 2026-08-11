@@ -44,6 +44,8 @@ if [ ! -d "$SKILLS_SRC" ]; then
   echo "❌ no skills found at $SKILLS_SRC — is this checkout complete?" >&2
   exit 2
 fi
+UPSTREAM_ROOT="$(cd "$UPSTREAM_ROOT" && pwd)"
+SKILLS_SRC="$UPSTREAM_ROOT/.codex/skills"
 
 if [ "$DRY_RUN" -eq 0 ]; then
   mkdir -p "$SKILLS_DEST"
@@ -118,17 +120,16 @@ done
 # that stale entry prevents the retired name from being reused locally.
 #
 # Keep this deliberately narrow: remove only a symlink whose literal target is
-# under this checkout's skills directory and no longer exists. Never touch a
-# real local skill or a link owned by another checkout.
+# the same-name path this installer would create under this checkout's skills
+# directory, and whose source no longer exists. Never touch a real local skill,
+# a differently named alias, or a link owned by another checkout.
 pruned=0
 for target in "$SKILLS_DEST"/*; do
   [ -L "$target" ] || continue
   [ -e "$target" ] && continue
   current="$(readlink "$target")"
-  case "$current" in
-    "$SKILLS_SRC"/*) ;;
-    *) continue ;;
-  esac
+  name="$(basename "$target")"
+  [ "$current" = "$SKILLS_SRC/$name" ] || continue
   echo "  🧹 $(basename "$target") (retired upstream — removing dangling link)"
   if [ "$DRY_RUN" -eq 0 ]; then
     rm "$target"

@@ -60,8 +60,10 @@ cd ../review-pr-<pr-number>
 
 Resolve the PR identity and review scope once. Prefer the immutable base SHA
 supplied by the convergence wrapper, then an explicit
-`$PR_CRITIQUE_REVIEW_BASE_SHA`; only a standalone invocation may snapshot the PR's
-current `baseRefOid`. Never let individual lanes re-resolve a mutable ref:
+`$PR_CRITIQUE_REVIEW_BASE_SHA`. During the rename transition, also accept the
+legacy `$PR_GRILL_REVIEW_BASE_SHA`; fail closed when both are set to different
+commits. Only a standalone invocation without either override may snapshot the
+PR's current `baseRefOid`. Never let individual lanes re-resolve a mutable ref:
 
 ```bash
 PR_DATA=$(gh pr view <pr-number> \
@@ -73,7 +75,13 @@ HEAD_REPO=$(jq -r .headRepository.nameWithOwner <<<"$PR_DATA")
 HEAD_REPO_URL="https://github.com/$HEAD_REPO.git"
 test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
 
-REVIEW_BASE_SHA=${AGENT_LOOP_REVIEW_BASE_SHA:-${PR_CRITIQUE_REVIEW_BASE_SHA:-}}
+if [ -n "${PR_CRITIQUE_REVIEW_BASE_SHA:-}" ] &&
+   [ -n "${PR_GRILL_REVIEW_BASE_SHA:-}" ] &&
+   [ "$PR_CRITIQUE_REVIEW_BASE_SHA" != "$PR_GRILL_REVIEW_BASE_SHA" ]; then
+  echo "PR_CRITIQUE_REVIEW_BASE_SHA and PR_GRILL_REVIEW_BASE_SHA are set to different commits" >&2
+  exit 1
+fi
+REVIEW_BASE_SHA=${AGENT_LOOP_REVIEW_BASE_SHA:-${PR_CRITIQUE_REVIEW_BASE_SHA:-${PR_GRILL_REVIEW_BASE_SHA:-}}}
 if [ -z "$REVIEW_BASE_SHA" ]; then
   REVIEW_BASE_SHA=$(jq -r .baseRefOid <<<"$PR_DATA")
   git fetch -q origin "$BASE"
@@ -128,14 +136,14 @@ exists.
 
 Verify and deduplicate every finding against the full PR ledger. Post one inline
 comment per confirmed root cause before editing, using the local-review marker
-and an exact diff anchor. Apply `critique`'s fix bias to `$RANGE`: fix every valid
-finding, including nits.
-Dismiss invalid findings or suggestions that would make the code worse, with the
-evidence that disproves them. Defer only valid but extremely large follow-ups
-(roughly 300+ lines or cross-cutting rewrites) and open or link a GitHub issue
-for each deferral. Critical correctness/security findings must not be silently
-dropped. Run the smallest relevant formatter/test command the repo documents for
-the files you touched.
+and an exact diff anchor. Apply `critique`'s round-matched fix bias to `$RANGE`:
+in adversarial rounds, fix every valid finding including nits and defer only
+extremely large follow-ups; in convergence rounds, fix only blocking defects
+and defer every confirmed non-blocker to a linked issue. Dismiss invalid
+findings or suggestions that would make the code worse with the evidence that
+disproves them. Critical correctness/security findings must not be silently
+dropped. Run the smallest relevant formatter/test command the repo documents
+for the files you touched.
 
 ## Phase 3: Commit and push (automatic)
 

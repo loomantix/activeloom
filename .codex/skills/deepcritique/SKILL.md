@@ -67,13 +67,16 @@ any explicitly requested fetch. Verify the value with
 `git rev-parse --verify '<sha>^{commit}'` and retain the resulting full object
 ID for the entire pass.
 
-Resolve the reviewed head SHA, changed-file list, and diff stat once from the
-pinned range. Build the immutable review packet required by the ledger and reuse
-it unchanged for `refactorpass`, `critique`, and every lane. Give them the literal
-`<review-base-sha>..<reviewed-head-sha>` range; do not use a mutable `HEAD` token
-inside the packet. No lane may re-resolve `@{u}`, a default branch, or a
-remote-tracking ref independently. Report both pinned SHAs in the handoff so the
-Claude reviewer can reconstruct the same range for the round.
+Resolve the reviewed head SHA, changed-file list, and diff stat once for the
+initial `refactorpass` packet. Reuse that packet unchanged while its head is
+current. If `refactorpass` moves the PR head, end that packet and build a new
+immutable review packet from the same pinned base and the resulting full head SHA,
+including a fresh changed-file list and diff stat; reuse the new packet
+unchanged for `critique` and every lane. Give each packet the literal
+`<review-base-sha>..<reviewed-head-sha>` range; do not use a mutable `HEAD`
+token inside it. No lane may re-resolve `@{u}`, a default branch, or a
+remote-tracking ref independently. Report the pinned base plus each reviewed
+head in the handoff so the Claude reviewer can reconstruct the ranges.
 
 Keep the packet as the byte-identical prefix of every spawned review prompt and
 append only the lane lens and exact file scope. Spawn with no inherited

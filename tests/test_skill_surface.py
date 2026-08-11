@@ -112,7 +112,9 @@ def test_recommended_prettierignore_mirrors_static_sync_targets() -> None:
     assert actual == desired
 
 
-def test_install_skills_prunes_only_retired_owned_links(tmp_path: Path) -> None:
+def test_install_skills_prunes_only_retired_owned_links(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     upstream = tmp_path / "upstream"
     skills = upstream / ".codex/skills"
     active = skills / "active"
@@ -122,6 +124,8 @@ def test_install_skills_prunes_only_retired_owned_links(tmp_path: Path) -> None:
 
     owned_stale = destination / "retired"
     owned_stale.symlink_to(skills / "retired")
+    mismatched_alias = destination / "alias"
+    mismatched_alias.symlink_to(skills / "retired")
     foreign_stale = destination / "foreign"
     foreign_stale.symlink_to(tmp_path / "elsewhere/missing")
     local_skill = destination / "local"
@@ -129,10 +133,11 @@ def test_install_skills_prunes_only_retired_owned_links(tmp_path: Path) -> None:
 
     env = {
         **os.environ,
-        "UPSTREAM_ROOT_OVERRIDE": str(upstream),
+        "UPSTREAM_ROOT_OVERRIDE": "upstream",
         "CODEX_SKILLS_DIR": str(destination),
     }
     script = REPO_ROOT / "scripts/install-skills.sh"
+    monkeypatch.chdir(tmp_path)
 
     dry_run = subprocess.run(
         [str(script), "--dry-run"],
@@ -146,6 +151,7 @@ def test_install_skills_prunes_only_retired_owned_links(tmp_path: Path) -> None:
 
     subprocess.run([str(script)], check=True, capture_output=True, text=True, env=env)
     assert not owned_stale.is_symlink()
+    assert mismatched_alias.is_symlink()
     assert foreign_stale.is_symlink()
     assert local_skill.is_dir()
     assert (destination / "active").resolve() == active.resolve()
@@ -277,8 +283,24 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
         assert "no inherited conversation history" in skill
 
     assert "changed-file list, and diff stat once" in normalized["deepcritique"]
+    assert "end that packet and build a new immutable review packet" in normalized[
+        "deepcritique"
+    ]
     assert "Do not make each lane reload the PR ledger" in normalized["critique"]
     assert "do not hand every lane a whole-diff artifact" in normalized["refactorpass"]
+
+
+def test_renamed_review_skills_preserve_in_flight_compatibility() -> None:
+    reviewit = (SKILLS_ROOT / "reviewit/SKILL.md").read_text(encoding="utf-8")
+    pr_critique = (SKILLS_ROOT / "pr-critique/SKILL.md").read_text(encoding="utf-8")
+    normalized_reviewit = " ".join(reviewit.lower().split())
+
+    assert "final-deepgrill" in reviewit
+    assert "deepgrillRan" in reviewit
+    assert "fail closed if legacy and current values conflict" in normalized_reviewit
+    assert "PR_GRILL_REVIEW_BASE_SHA" in pr_critique
+    assert "set to different commits" in pr_critique
+    assert "round-matched fix bias" in pr_critique
 
 
 def test_parallel_review_lanes_delegate_validation_to_orchestrator() -> None:
