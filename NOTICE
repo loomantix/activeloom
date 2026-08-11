@@ -25,6 +25,20 @@ words, and the pruning tests -- originates there. The text has been
 rewritten for this repo and its examples are our own, but the ideas and
 their organization are not.
 
+`.claude/skills/grill/SKILL.md` is derived from the "grilling" skill in that
+repository. The interview stance, the design-tree framing, and the rule that
+questions are asked in dependency-ordered rounds originate there. The text
+has been rewritten, and the frontier model, the "facts are your job,
+decisions are theirs" rule, and the handoffs to the skills in this repo are
+our own.
+
+`.claude/skills/diagnosing-bugs/SKILL.md` is derived from the
+"diagnosing-bugs" skill in that repository. The phase structure and its
+central claim -- that a tight, red-capable feedback loop is the whole skill
+and no hypothesis may precede it -- originate there. The text has been
+rewritten, and its generic redaction guidance has been replaced with
+default-deny telemetry rules.
+
 MIT License
 
 Copyright (c) 2026 Matt Pocock
