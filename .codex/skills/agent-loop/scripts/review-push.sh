@@ -83,6 +83,10 @@ fi
     echo "review-push found an invalid remote-head checkpoint" >&2
     exit 1
 }
+"$real_git" merge-base --is-ancestor "$expected_remote_head" "$local_head" || {
+    echo "review-push rejects history that drops a previously published review commit" >&2
+    exit 1
+}
 require_origin_identity
 remote_line="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRANCH")"
 [ -n "$remote_line" ] || {
