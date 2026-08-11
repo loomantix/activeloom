@@ -110,6 +110,38 @@ def test_rejects_external_head_incorporated_after_helper_push(
     )
 
 
+def test_rejects_divergent_history_after_helper_push(
+    review_repo: tuple[Path, dict[str, str], str]
+) -> None:
+    repo, env, start = review_repo
+    first = _run(repo, env)
+    assert first.returncode == 0, first.stderr
+    helper_head = first.stdout.strip()
+
+    _git(repo, "reset", "--hard", start)
+    (repo / "divergent.txt").write_text("divergent review fix\n", encoding="utf-8")
+    _git(repo, "add", "divergent.txt")
+    _git(repo, "commit", "-m", "fix: divergent review")
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "drops a previously published review commit" in result.stderr
+    assert Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(
+        encoding="utf-8"
+    ) == f"{helper_head}\n"
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == helper_head
+    )
+
+
 def test_rejects_changed_origin_before_push(
     review_repo: tuple[Path, dict[str, str], str],
 ) -> None:
