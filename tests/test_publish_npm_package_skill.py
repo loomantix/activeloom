@@ -1537,3 +1537,532 @@ def test_subprocess_helpers_pass_the_timeout_constant(
     release_preflight.run(["git", "status"], tmp_path)
     assert seen["timeout"] == release_preflight.COMMAND_TIMEOUT_SECONDS
     assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def _self_signed_der_with_crl_uri(tmp_path: Path, san: str, crl_uri: str) -> bytes:
+    """A certificate whose workflow-shaped URI lives outside the SAN extension."""
+    key = tmp_path / "crl-key.pem"
+    cert = tmp_path / "crl-cert.der"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-outform",
+            "DER",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=test",
+            "-addext",
+            f"subjectAltName=URI:{san}",
+            "-addext",
+            f"crlDistributionPoints=URI:{crl_uri}",
+            "-addext",
+            "1.3.6.1.4.1.57264.1.1=ASN1:UTF8String:"
+            "https://token.actions.githubusercontent.com",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return cert.read_bytes()
+
+
+def test_certificate_claims_reads_identities_only_from_the_san(
+    published_package_verifier: ModuleType, tmp_path: Path
+) -> None:
+    """A workflow URI outside the SAN must never satisfy the identity policy."""
+    workflow = "https://github.com/owner/repo/.github/workflows/publish.yml@refs/tags/v1.2.3"
+    encoded = base64.b64encode(
+        _self_signed_der_with_crl_uri(tmp_path, "https://example.invalid/unrelated", workflow)
+    ).decode("ascii")
+    identities, _issuer = published_package_verifier.certificate_claims(
+        {"verificationMaterial": {"certificate": {"rawBytes": encoded}}}
+    )
+    assert identities == {"https://example.invalid/unrelated"}
+    assert workflow not in identities
+
+
+def test_verify_slsa_skips_a_malformed_bundle_and_verifies_the_valid_one(
+    published_package_verifier: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """attestationBundles ordering is registry-controlled; junk must not abort the loop."""
+    commit = "a" * 40
+    malformed = _slsa_entry(commit=commit)
+    payload = _slsa_payload(malformed)
+    payload["predicate"]["buildDefinition"]["externalParameters"]["workflow"] = "not-an-object"
+    _replace_slsa_payload(malformed, payload)
+    valid = _slsa_entry(commit=commit)
+    identity = (
+        "https://github.com/example/packages/.github/workflows/publish.yml"
+        "@refs/tags/example-package-v1.2.3"
+    )
+    monkeypatch.setattr(
+        published_package_verifier,
+        "certificate_claims",
+        lambda _bundle: ({identity}, published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER),
+    )
+    result = published_package_verifier.verify_slsa(
+        {"attestationBundles": [malformed, valid]},
+        artifact_sha512="artifact-digest",
+        package="@example/example-package",
+        version="1.2.3",
+        repository="https://github.com/example/packages",
+        workflow_path=".github/workflows/publish.yml",
+        tag="example-package-v1.2.3",
+        commit=commit,
+    )
+    assert result["matching_bundles"] == 1
+    assert result["commit"] == commit
+
+
+@pytest.mark.parametrize(
+    "payload_mutation",
+    [
+        {"subject": "not-a-list"},
+        {"predicate": "not-an-object"},
+    ],
+)
+def test_verify_slsa_reports_malformed_payloads_as_clean_failures(
+    published_package_verifier: ModuleType, payload_mutation: dict[str, Any]
+) -> None:
+    entry = _slsa_entry(commit="a" * 40)
+    payload = _slsa_payload(entry)
+    payload.update(payload_mutation)
+    _replace_slsa_payload(entry, payload)
+    with pytest.raises(RuntimeError):
+        published_package_verifier.verify_slsa(
+            {"attestationBundles": [entry]},
+            artifact_sha512="artifact-digest",
+            package="@example/example-package",
+            version="1.2.3",
+            repository="https://github.com/example/packages",
+            workflow_path=".github/workflows/publish.yml",
+            tag="example-package-v1.2.3",
+            commit="a" * 40,
+        )
+
+
+@pytest.mark.parametrize(
+    "registry",
+    [
+        "http://registry.example",
+        "https://user:pass@registry.example",
+        "https://registry.example?token=x",
+        "https://registry.example#frag",
+        "https://registry.example:notaport",
+    ],
+)
+def test_verifier_registry_origin_rejects_unsafe_urls(
+    published_package_verifier: ModuleType, registry: str
+) -> None:
+    """Deleting the HTTPS/credential check must fail here."""
+    with pytest.raises(RuntimeError):
+        published_package_verifier.registry_origin(registry)
+
+
+def test_verifier_registry_origin_accepts_https_and_defaults_the_port(
+    published_package_verifier: ModuleType,
+) -> None:
+    assert published_package_verifier.registry_origin("https://Registry.Example/path") == (
+        "registry.example",
+        443,
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (
+            "ab cd ef 01 23 45 67 89 ab cd ef 01 23 45 67 89 ab cd ef 01",
+            "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+        ),
+        ("abcdef0123456789abcdef0123456789abcdef01", "ABCDEF0123456789ABCDEF0123456789ABCDEF01"),
+        ("sha256:AbC+/dEf=", "SHA256:AbC+/dEf="),
+        ("SHA256:AbC+/dEf=", "SHA256:AbC+/dEf="),
+    ],
+)
+def test_normalize_fingerprint_strips_spaces_and_folds_case(
+    published_package_verifier: ModuleType,
+    release_preflight: ModuleType,
+    value: str,
+    expected: str,
+) -> None:
+    """Replacing the body with `return value` must fail this test in both helpers."""
+    assert published_package_verifier.normalize_fingerprint(value) == expected
+    assert release_preflight.normalize_fingerprint(value) == expected
+
+
+def test_embedded_identity_reads_the_archive_from_memory(
+    published_package_verifier: ModuleType, tmp_path: Path
+) -> None:
+    data = _tarball(tmp_path / "package.tgz", "@example/example-package", "1.2.3")
+    assert published_package_verifier.embedded_identity(data) == (
+        "@example/example-package",
+        "1.2.3",
+    )
+
+
+def test_embedded_identity_rejects_bytes_that_are_not_a_tarball(
+    published_package_verifier: ModuleType,
+) -> None:
+    with pytest.raises(RuntimeError, match="cannot inspect registry tarball"):
+        published_package_verifier.embedded_identity(b"not a tarball")
+
+
+def _verifier_cli_harness(
+    verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    package: str,
+    audit: dict[str, Any],
+    dist_extra: dict[str, Any] | None = None,
+) -> tuple[Path, Path, dict[str, str]]:
+    """Wire main() to fake subprocesses and return (artifact, repository_dir, digests)."""
+    repository_dir = tmp_path / "checkout"
+    repository_dir.mkdir(exist_ok=True)
+    artifact = tmp_path / "package.tgz"
+    data = _tarball(artifact, package, "1.2.3")
+    digests = verifier.hashes(data)
+    dist = {
+        "integrity": digests["integrity"],
+        "shasum": digests["sha1"],
+        "signatures": [{"keyid": "test", "sig": "test"}],
+        "tarball": "https://registry.example/package.tgz",
+        **(dist_extra or {}),
+    }
+
+    def fake_run(
+        command: list[str], *_args: object, env: object = None, **_kwargs: object
+    ) -> object:
+        stdout = ""
+        if command[:3] == ["git", "rev-parse", "--show-toplevel"]:
+            stdout = str(repository_dir)
+        elif command[:2] == ["npm", "view"]:
+            stdout = json.dumps({"dist": dist})
+        elif command[:3] == ["npm", "audit", "signatures"]:
+            stdout = json.dumps(audit)
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(verifier, "run", fake_run)
+    monkeypatch.setattr(verifier, "download_from_registry", lambda *_args: data)
+    monkeypatch.setattr(
+        verifier,
+        "verify_release_tag",
+        lambda *_args: {"object": "b" * 40, "signer_fingerprint": "C" * 40, "target": "a" * 40},
+    )
+    return artifact, repository_dir, digests
+
+
+def _verifier_argv(
+    artifact: Path, repository_dir: Path, output: Path, package: str, *extra: str
+) -> list[str]:
+    return [
+        "verify-published-package.py",
+        "--package",
+        package,
+        "--version",
+        "1.2.3",
+        "--artifact",
+        str(artifact),
+        "--registry",
+        "https://registry.example",
+        "--access",
+        "public",
+        "--tag",
+        "example-package-v1.2.3",
+        "--commit",
+        "a" * 40,
+        "--repository-dir",
+        str(repository_dir),
+        "--signer-fingerprint",
+        "C" * 40,
+        "--output",
+        str(output),
+        *extra,
+    ]
+
+
+def test_verifier_main_refuses_to_downgrade_a_package_declaring_attestations(
+    published_package_verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Deleting the dist.attestations guard must fail this test."""
+    artifact, repository_dir, _digests = _verifier_cli_harness(
+        published_package_verifier,
+        monkeypatch,
+        tmp_path,
+        package="example-package",
+        audit={"invalid": [], "missing": [], "verified": []},
+        dist_extra={"attestations": {"url": "https://registry.example/attestations"}},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _verifier_argv(
+            artifact,
+            repository_dir,
+            tmp_path / "verification.json",
+            "example-package",
+            "--provenance",
+            "unavailable",
+            "--source-repository",
+            "https://github.com/owner/repo",
+        ),
+    )
+    with pytest.raises(RuntimeError, match="declares attestations"):
+        published_package_verifier.main()
+
+
+def test_verifier_main_required_provenance_success(
+    published_package_verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The mode every Trusted Publisher release uses needs an end-to-end backstop."""
+    package = "@example/example-package"
+    commit = "a" * 40
+    artifact, repository_dir, digests = _verifier_cli_harness(
+        published_package_verifier,
+        monkeypatch,
+        tmp_path,
+        package=package,
+        audit={"invalid": [], "missing": [], "verified": []},
+    )
+    entry = _slsa_entry(
+        commit=commit,
+        subjects=[
+            {
+                "name": "pkg:npm/%40example/example-package@1.2.3",
+                "digest": {"sha512": digests["sha512"]},
+            }
+        ],
+    )
+    audit = {
+        "invalid": [],
+        "missing": [],
+        "verified": [{"name": package, "version": "1.2.3", "attestationBundles": [entry]}],
+    }
+    artifact, repository_dir, digests = _verifier_cli_harness(
+        published_package_verifier,
+        monkeypatch,
+        tmp_path,
+        package=package,
+        audit=audit,
+    )
+    identity = (
+        "https://github.com/example/packages/.github/workflows/publish.yml"
+        "@refs/tags/example-package-v1.2.3"
+    )
+    monkeypatch.setattr(
+        published_package_verifier,
+        "certificate_claims",
+        lambda _bundle: ({identity}, published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER),
+    )
+    output = tmp_path / "verification.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _verifier_argv(
+            artifact,
+            repository_dir,
+            output,
+            package,
+            "--provenance",
+            "required",
+            "--source-repository",
+            "https://github.com/example/packages",
+            "--workflow-path",
+            ".github/workflows/publish.yml",
+        ),
+    )
+    assert published_package_verifier.main() == 0
+    result = json.loads(output.read_text())
+    assert result["provenance"]["status"] == "verified"
+    assert result["provenance"]["repository"] == "https://github.com/example/packages"
+    assert result["provenance"]["commit"] == commit
+    assert result["verified_attestations"] == 1
+
+
+def test_verifier_main_status_discriminant_is_not_shadowed_by_the_payload(
+    published_package_verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A provenance payload key named status must not overwrite the marker."""
+    package = "example-package"
+    artifact, repository_dir, _digests = _verifier_cli_harness(
+        published_package_verifier,
+        monkeypatch,
+        tmp_path,
+        package=package,
+        audit={
+            "invalid": [],
+            "missing": [],
+            "verified": [{"name": package, "version": "1.2.3", "attestationBundles": []}],
+        },
+    )
+    monkeypatch.setattr(
+        published_package_verifier,
+        "verify_slsa",
+        lambda *_args, **_kwargs: {"status": "attacker-controlled", "matching_bundles": 1},
+    )
+    output = tmp_path / "verification.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _verifier_argv(
+            artifact,
+            repository_dir,
+            output,
+            package,
+            "--provenance",
+            "required",
+            "--source-repository",
+            "https://github.com/owner/repo",
+            "--workflow-path",
+            ".github/workflows/publish.yml",
+        ),
+    )
+    assert published_package_verifier.main() == 0
+    assert json.loads(output.read_text())["provenance"]["status"] == "verified"
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "error"),
+    [
+        ("--remote", "--upload-pack=touch owned", "invalid Git remote name"),
+        ("--tag", "v1.2.3;rm -rf /", "unsafe in displayed shell commands"),
+    ],
+)
+def test_verifier_main_rejects_option_shaped_remote_and_unsafe_tag(
+    published_package_verifier: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    flag: str,
+    value: str,
+    error: str,
+) -> None:
+    """The verifier must apply the same argument-shape contract as the preflight."""
+    artifact, repository_dir, _digests = _verifier_cli_harness(
+        published_package_verifier,
+        monkeypatch,
+        tmp_path,
+        package="example-package",
+        audit={"invalid": [], "missing": [], "verified": []},
+    )
+    argv = _verifier_argv(
+        artifact,
+        repository_dir,
+        tmp_path / "verification.json",
+        "example-package",
+        "--provenance",
+        "unavailable",
+        "--source-repository",
+        "https://github.com/owner/repo",
+    )
+    if flag == "--tag":
+        argv[argv.index("--tag") + 1] = value
+    else:
+        argv.extend([flag, value])
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(RuntimeError, match=error):
+        published_package_verifier.main()
+
+
+@pytest.mark.parametrize(
+    "registry",
+    [
+        "http://registry.example",
+        "https://user:pass@registry.example",
+        "https://registry.example?token=x",
+        "https://registry.example#frag",
+    ],
+)
+def test_release_preflight_main_rejects_unsafe_registry_urls(
+    release_preflight: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    registry: str,
+) -> None:
+    """Deleting the HTTPS/credential check in the preflight must fail this test."""
+    package_dir = tmp_path / "repo" / "package"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "example-package",
+                "version": "1.2.3",
+                "repository": "https://github.com/example/packages.git",
+            }
+        )
+    )
+    artifact = tmp_path / "package.tgz"
+    _tarball(artifact)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release-preflight.py",
+            "--package-dir",
+            str(package_dir),
+            "--artifact",
+            str(artifact),
+            "--tag",
+            "v1.2.3",
+            "--access",
+            "public",
+            "--registry",
+            registry,
+        ],
+    )
+    with pytest.raises(RuntimeError, match="registry must be an HTTPS URL"):
+        release_preflight.main()
+
+
+def test_certificate_claims_returns_no_identities_without_a_san(
+    published_package_verifier: ModuleType, tmp_path: Path
+) -> None:
+    """A certificate with no SAN must yield an empty identity set, not a parse error."""
+    key = tmp_path / "nosan-key.pem"
+    cert = tmp_path / "nosan-cert.der"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-outform",
+            "DER",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=test",
+            "-addext",
+            "1.3.6.1.4.1.57264.1.1=ASN1:UTF8String:"
+            "https://token.actions.githubusercontent.com",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    encoded = base64.b64encode(cert.read_bytes()).decode("ascii")
+    identities, issuer = published_package_verifier.certificate_claims(
+        {"verificationMaterial": {"certificate": {"rawBytes": encoded}}}
+    )
+    assert identities == set()
+    assert issuer == published_package_verifier.GITHUB_ACTIONS_OIDC_ISSUER

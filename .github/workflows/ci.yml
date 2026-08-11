@@ -141,9 +141,10 @@ jobs:
         run: python3 -m pytest tests/ --cov --cov-report=term-missing -ra
       # Per-file gate matches the security contract: a future refactor
       # that spikes one file's coverage can't paper over a regression
-      # in the other. The `test -f` precondition is load-bearing —
-      # `coverage report --include=<missing>` exits 0 with "No data to
-      # report", silently passing the gate if a file gets renamed.
+      # in the other. `coverage report --include=<pattern>` already exits
+      # non-zero when the pattern matches no measured file, so a rename
+      # fails the gate on its own; the `test -f` precondition just names
+      # the missing file instead of reporting "No data to report."
       - name: Coverage gate — sync-engine.py >=80%
         run: |
           test -f scripts/sync-engine.py

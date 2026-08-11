@@ -176,14 +176,38 @@ verification helpers.
 7. Publish only after explicit approval. Do not imply that a local manual publish
    has CI SLSA provenance. Registry signatures and provenance are different
    claims.
-8. Immediately verify artifact integrity with
-   `scripts/verify-published-package.py --provenance unavailable`, configure the
-   package's Trusted Publisher and GitHub environment, and restore the strongest
-   token restrictions available. `unavailable` waives only the SLSA attestation:
-   the full argument set below still applies, npm must still return the exact
-   name@version as verified, the signed annotated tag is still checked against
-   the approved signer and the remote, and verification fails if the package
-   turns out to carry provenance after all.
+8. Immediately verify artifact integrity with the `unavailable` invocation
+   below, configure the package's Trusted Publisher and GitHub environment, and
+   restore the strongest token restrictions available. `unavailable` waives only
+   the SLSA attestation. Everything else still applies: the artifact must be
+   byte-identical to the registry tarball, npm distribution metadata must
+   declare at least one registry signature, the isolated signature audit must
+   not report the target as `invalid` or `missing`, the signed annotated tag is
+   still checked against the approved signer and the remote, and verification
+   fails if the package turns out to carry provenance after all. It does not
+   require the target in npm's `verified` list — npm populates that only for
+   attested packages — so this mode proves integrity and tag provenance, not a
+   verified registry signature for the exact name@version.
+
+   Use the `required` command block below minus `--workflow-path`, which the
+   verifier rejects outside `--provenance required`:
+
+   ```bash
+   python3 <skill-dir>/scripts/verify-published-package.py \
+     --package <package-name> \
+     --version <version> \
+     --artifact <built-package.tgz> \
+     --access public \
+     --provenance unavailable \
+     --source-repository https://github.com/<owner>/<repository> \
+     --tag <release-tag> \
+     --commit <release-commit> \
+     --repository-dir <release-checkout> \
+     --remote origin \
+     --signer-fingerprint <approved-fingerprint> \
+     --output <verification.json>
+   ```
+
 9. If the login/session was created for bootstrap, run `npm logout
 --registry=<registry>` and confirm `npm whoami --registry=<registry>` no longer
    authenticates. Revoke any separately created token through the approved npm
@@ -219,8 +243,12 @@ Require all of these for a normal Trusted Publisher release:
   downloaded registry tarball agree.
 - The tarball's embedded `package.json` has the intended name and version.
 - npm distribution metadata declares at least one registry signature, and `npm
-audit signatures` returns the exact target name@version in its `verified`
-  results. This is required in both provenance modes.
+audit signatures` completes without reporting the target as `invalid` or
+  `missing`. With `--provenance required` the exact target name@version must
+  also appear in the `verified` results. With `--provenance unavailable` an
+  empty `verified` list is accepted: npm lists a package there only once it
+  carries attestations, so requiring it would reject every genuinely
+  unprovenanced release the mode exists for.
 - The decoded SLSA statement binds the intended source repository, workflow,
   release tag, commit, package identity, artifact SHA-512, GitHub-hosted builder,
   and signing-certificate workflow identity plus the GitHub Actions OIDC issuer.

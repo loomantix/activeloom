@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -83,8 +84,13 @@ def run(
     return result
 
 
+def allowlisted_env() -> dict[str, str]:
+    """Build a child environment from the allowlist above, dropping everything else."""
+    return {key: value for key, value in os.environ.items() if key.upper() in ALLOWED_ENV_KEYS}
+
+
 def credential_free_npm_env(config_dir: Path) -> dict[str, str]:
-    env = {key: value for key, value in os.environ.items() if key.upper() in ALLOWED_ENV_KEYS}
+    env = allowlisted_env()
     user_config = config_dir / "empty-user.npmrc"
     global_config = config_dir / "empty-global.npmrc"
     user_config.write_text("", encoding="utf-8")
@@ -108,21 +114,20 @@ def hashes(data: bytes) -> dict[str, str]:
 
 
 def embedded_identity(data: bytes) -> tuple[str | None, str | None]:
-    with tempfile.NamedTemporaryFile(suffix=".tgz") as handle:
-        handle.write(data)
-        handle.flush()
-        try:
-            with tarfile.open(handle.name, "r:gz") as archive:
-                member = archive.getmember("package/package.json")
-                if not member.isfile():
-                    fail("package/package.json in registry tarball must be a regular file")
-                extracted = archive.extractfile(member)
-                if extracted is None:
-                    fail("cannot read package/package.json from registry tarball")
-                with extracted:
-                    package_json = json.loads(extracted.read().decode("utf-8"))
-        except (KeyError, OSError, tarfile.TarError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            fail(f"cannot inspect registry tarball: {exc}")
+    # Read the archive straight from memory. Reopening a still-open
+    # NamedTemporaryFile by name fails on Windows, which this script supports.
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            member = archive.getmember("package/package.json")
+            if not member.isfile():
+                fail("package/package.json in registry tarball must be a regular file")
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                fail("cannot read package/package.json from registry tarball")
+            with extracted:
+                package_json = json.loads(extracted.read().decode("utf-8"))
+    except (KeyError, OSError, tarfile.TarError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        fail(f"cannot inspect registry tarball: {exc}")
     return package_json.get("name"), package_json.get("version")
 
 
@@ -227,6 +232,12 @@ def verified_fingerprints(result: subprocess.CompletedProcess[str]) -> set[str]:
         if ssh_signature:
             fingerprints.add(normalize_fingerprint(ssh_signature.group(1)))
     return fingerprints
+
+
+def validate_release_tag(tag: str, cwd: Path) -> None:
+    run(["git", "check-ref-format", f"refs/tags/{tag}"], cwd)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", tag):
+        fail("release tag contains characters that are unsafe in displayed shell commands")
 
 
 def verify_tag_signer(tag: str, expected_fingerprint: str, cwd: Path) -> str:
@@ -382,11 +393,17 @@ def certificate_claims(bundle: dict[str, Any]) -> tuple[set[str], str]:
     with tempfile.TemporaryDirectory(prefix="npm-provenance-cert-") as temp_dir:
         cert_path = Path(temp_dir) / "certificate.der"
         cert_path.write_bytes(certificate)
-        result = run(
-            ["openssl", "x509", "-inform", "DER", "-in", str(cert_path), "-noout", "-text"],
-            Path(temp_dir),
-        )
-    identities = set(re.findall(r"URI:([^,\s]+)", result.stdout))
+        base = ["openssl", "x509", "-inform", "DER", "-in", str(cert_path), "-noout"]
+        # openssl parses attacker-supplied bytes here, so it gets the same
+        # allowlisted environment as npm: OPENSSL_CONF alone can load an
+        # arbitrary provider into the process that renders the policy input.
+        cert_env = allowlisted_env()
+        # Sigstore identity is the SAN, so read only that extension. The full
+        # -text dump also renders URIs from AIA, CRL distribution points, and
+        # any other GeneralName-valued extension, none of which are identities.
+        san = run(base + ["-ext", "subjectAltName"], Path(temp_dir), env=cert_env)
+        result = run(base + ["-text"], Path(temp_dir), env=cert_env)
+    identities = set(re.findall(r"URI:([^,\s]+)", san.stdout))
     lines = result.stdout.splitlines()
     issuer = ""
     for index, line in enumerate(lines[:-1]):
@@ -456,19 +473,38 @@ def verify_slsa_candidate(
         builder = predicate["runDetails"]["builder"]
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         fail(f"cannot decode SLSA provenance payload: {exc}")
+    # Shape-check before dereferencing. `attestationBundles` ordering is
+    # registry-controlled, so a malformed candidate must raise RuntimeError and
+    # be recorded as one candidate's error, never abort the enclosing loop.
+    for label, value in (
+        ("statement", statement),
+        ("predicate", predicate),
+        ("buildDefinition", build_definition),
+        ("externalParameters.workflow", workflow),
+        ("runDetails.builder", builder),
+    ):
+        if not isinstance(value, dict):
+            fail(f"SLSA provenance {label} is not an object")
+    for label, value in (("subject", subject), ("resolvedDependencies", dependencies)):
+        if not isinstance(value, list):
+            fail(f"SLSA provenance {label} is not a list")
     if statement.get("predicateType") != SLSA_PROVENANCE_V1:
         fail("SLSA statement predicate type does not match provenance v1")
     expected_subject = f"pkg:npm/{urllib.parse.quote(package, safe='/')}@{version}"
     if not any(
         isinstance(subject_entry, dict)
         and subject_entry.get("name") == expected_subject
-        and subject_entry.get("digest", {}).get("sha512") == artifact_sha512
+        and isinstance(subject_entry.get("digest"), dict)
+        and subject_entry["digest"].get("sha512") == artifact_sha512
         for subject_entry in subject
     ):
         fail("no SLSA subject binds the target package identity to the artifact SHA-512")
     expected_repository = github_repository(repository)
     expected_ref = f"refs/tags/{tag}"
-    if github_repository(workflow.get("repository", "")) != expected_repository:
+    workflow_repository = workflow.get("repository")
+    if not isinstance(workflow_repository, str):
+        fail("SLSA workflow repository is not a string")
+    if github_repository(workflow_repository) != expected_repository:
         fail("SLSA workflow repository does not match the expected source")
     if workflow.get("path") != workflow_path:
         fail("SLSA workflow path does not match the expected publish workflow")
@@ -478,7 +514,8 @@ def verify_slsa_candidate(
         isinstance(dependency, dict)
         and isinstance(dependency.get("uri"), str)
         and github_dependency(dependency["uri"]) == (expected_repository, expected_ref)
-        and dependency.get("digest", {}).get("gitCommit") == commit
+        and isinstance(dependency.get("digest"), dict)
+        and dependency["digest"].get("gitCommit") == commit
         for dependency in dependencies
     ):
         fail("no SLSA dependency binds the expected repository, tag, and release commit")
@@ -597,11 +634,16 @@ def main() -> int:
         fail(f"required release binding arguments are missing: {', '.join(missing)}")
     if not re.fullmatch(r"[0-9a-fA-F]{40}", args.commit):
         fail("release commit must be a full 40-character Git object ID")
+    # Same argument-shape contract as release-preflight.py: neither value may
+    # reach git as an option. `git ls-remote` accepts --upload-pack.
+    if args.remote.startswith("-"):
+        fail("invalid Git remote name")
     registry_origin(args.registry)
     repository_dir = args.repository_dir.resolve()
     repo_root = Path(
         run(["git", "rev-parse", "--show-toplevel"], repository_dir).stdout.strip()
     ).resolve()
+    validate_release_tag(args.tag, repo_root)
     if artifact.is_relative_to(repo_root):
         fail("build-once artifact must be outside the Git worktree")
     if output is not None and output.is_relative_to(repo_root):
@@ -735,7 +777,8 @@ def main() -> int:
         "npm_dist": {"integrity": integrity, "shasum": shasum, "tarball": tarball_url},
         "package": args.package,
         "provenance": (
-            {"status": "verified", **provenance} if provenance else {"status": "unavailable"}
+            # Discriminant last: it must not be shadowable by the payload.
+            {**provenance, "status": "verified"} if provenance else {"status": "unavailable"}
         ),
         "registry": args.registry,
         "registry_digests": registry_hashes,
