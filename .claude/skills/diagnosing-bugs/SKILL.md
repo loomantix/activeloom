@@ -140,4 +140,4 @@ Before declaring done:
 
 ---
 
-Adapted from the `diagnosing-bugs` skill in [mattpocock/skills](https://github.com/mattpocock/skills) (MIT), with default-deny PHI and telemetry rules replacing its generic redaction guidance — see [NOTICE](../../../NOTICE).
+Adapted from the `diagnosing-bugs` skill in [mattpocock/skills](https://github.com/mattpocock/skills) (MIT), with default-deny telemetry rules replacing its generic redaction guidance — see [NOTICE](../../../NOTICE).

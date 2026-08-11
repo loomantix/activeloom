@@ -94,13 +94,6 @@ targets:
     destination: .claude/skills/feature-dev/SKILL.md
     substitutions: []
 
-  # /grill — pre-code interview primitive. User-invoked, so it costs no
-  # always-loaded description context; it is the front end of the same arc
-  # /feature-dev and /task-packet finish.
-  - source: .claude/skills/grill/SKILL.md
-    destination: .claude/skills/grill/SKILL.md
-    substitutions: []
-
   # /diagnosing-bugs — model-invoked debugging discipline. Deliberately
   # model-invoked: its whole value is firing on "this is broken" before the
   # session has already guessed at a cause.
@@ -281,6 +274,25 @@ targets:
     delete: true
   - destination: .claude/skills/deepgrill/SKILL.md
     delete: true
+
+  # ORDER-DEPENDENT — this entry must stay BELOW the `.claude/skills/grill/`
+  # deletes above. The engine walks targets in list order with no dedup by
+  # destination, so a copy placed before that delete is written and then
+  # unlinked in the same run, and the consumer never receives the skill.
+  #
+  # `/grill` is the one destination in this manifest that is both retired and
+  # reissued: the old review skill is deleted, then this new pre-code
+  # interview skill is written to the same path. Ordered this way the
+  # handover is atomic — a consumer is never left holding a `/grill` that
+  # still claims to be the review chain. `tests/test_skill_frontmatter.py`
+  # asserts the ordering so a future reshuffle of this file cannot silently
+  # reintroduce the collision.
+  #
+  # User-invoked, so it costs no always-loaded description context; it is the
+  # front end of the same arc /feature-dev and /task-packet finish.
+  - source: .claude/skills/grill/SKILL.md
+    destination: .claude/skills/grill/SKILL.md
+    substitutions: []
 
   # Copilot instructions — generated from the template using the consumer's
   # placeholder values. Result lands at `.github/copilot-instructions.md`.

@@ -118,3 +118,40 @@ def test_skill_tool_targets_remain_model_invoked() -> None:
         "these skills invoke a user-invoked skill via the Skill tool, which "
         "will not fire: " + "; ".join(sorted(violations))
     )
+
+
+def test_reissued_destinations_are_deleted_before_they_are_written() -> None:
+    """A destination that is both retired and reissued must have its
+    `delete: true` entry BEFORE its copy entry in the manifest.
+
+    `sync-engine.py` walks targets in list order and does not dedup by
+    destination, so a copy placed before the delete is written and then
+    unlinked in the same run — the consumer silently never receives the
+    file, and the sync log reads as a success. `/grill` is the live case:
+    the old review skill is retired at the same path the new pre-code
+    interview skill is written to.
+    """
+    manifest = yaml.safe_load((REPO_ROOT / "scripts" / "sync-targets.yml").read_text())
+
+    first_copy: dict[str, int] = {}
+    last_delete: dict[str, int] = {}
+    for index, target in enumerate(manifest["targets"]):
+        dest = target.get("destination")
+        if not dest:
+            continue
+        if target.get("delete"):
+            last_delete[dest] = index
+        elif dest not in first_copy:
+            first_copy[dest] = index
+
+    clobbered = sorted(
+        dest
+        for dest, copy_index in first_copy.items()
+        if dest in last_delete and last_delete[dest] > copy_index
+    )
+
+    assert not clobbered, (
+        "these destinations are written and then deleted in the same sync run, "
+        "so consumers never receive them — move the copy entry below the "
+        "`delete: true` entry: " + "; ".join(clobbered)
+    )
