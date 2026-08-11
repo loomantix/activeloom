@@ -66,8 +66,8 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     for guard_name in ("hook-git-guard", "hook-gh-guard"):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
-    ledger_source = REPO_ROOT / ".codex/skills/grill/scripts/review-ledger.py"
-    ledger_target = repo / ".codex/skills/grill/scripts/review-ledger.py"
+    ledger_source = REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.py"
+    ledger_target = repo / ".codex/skills/critique/scripts/review-ledger.py"
     ledger_target.parent.mkdir(parents=True)
     shutil.copy2(ledger_source, ledger_target)
     _write_executable(
@@ -716,7 +716,7 @@ def test_per_issue_worktrees_and_hook_order(
         assert "reported no material fixes in a complete round" in body
         assert "Configured Codex and Claude review hooks reported" in body
         assert "configured non-mutating local validation hook" in body
-        assert "local Claude deep grill" not in body
+        assert "local Claude deep critique" not in body
 
 
 def test_outer_review_environment_is_not_leaked_to_worker(

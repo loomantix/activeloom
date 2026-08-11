@@ -38,21 +38,21 @@ targets:
     destination: .codex/skills/refactorpass/SKILL.md
     substitutions: []
 
-  - source: .codex/skills/grill/SKILL.md
-    destination: .codex/skills/grill/SKILL.md
+  - source: .codex/skills/critique/SKILL.md
+    destination: .codex/skills/critique/SKILL.md
     substitutions: []
 
-  - source: .codex/skills/grill/scripts/review-ledger.py
-    destination: .codex/skills/grill/scripts/review-ledger.py
+  - source: .codex/skills/critique/scripts/review-ledger.py
+    destination: .codex/skills/critique/scripts/review-ledger.py
     substitutions: []
     mode: '0755'
 
-  - source: .codex/skills/deepgrill/SKILL.md
-    destination: .codex/skills/deepgrill/SKILL.md
+  - source: .codex/skills/deepcritique/SKILL.md
+    destination: .codex/skills/deepcritique/SKILL.md
     substitutions: []
 
-  - source: .codex/skills/pr-grill/SKILL.md
-    destination: .codex/skills/pr-grill/SKILL.md
+  - source: .codex/skills/pr-critique/SKILL.md
+    destination: .codex/skills/pr-critique/SKILL.md
     substitutions: []
 
   - source: .codex/skills/reviewit/SKILL.md
@@ -210,6 +210,18 @@ targets:
   - destination: .codex/skills/review-cycle/SKILL.md
     delete: true
   - destination: .codex/hooks/check-simplify-state.sh
+    delete: true
+  # The review chain moved from `grill` terminology to `critique`. Keep these
+  # deletes until every consumer has synced this manifest: the new paths and
+  # old-path removals must land together so duplicate model-invocable review
+  # skills cannot survive a fleet sync.
+  - destination: .codex/skills/grill/SKILL.md
+    delete: true
+  - destination: .codex/skills/grill/scripts/review-ledger.py
+    delete: true
+  - destination: .codex/skills/deepgrill/SKILL.md
+    delete: true
+  - destination: .codex/skills/pr-grill/SKILL.md
     delete: true
 
   # Copilot instructions — generated from the template using the consumer's

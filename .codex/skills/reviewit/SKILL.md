@@ -1,6 +1,6 @@
 ---
 name: reviewit
-description: Post-push AI review orchestrator for pull requests. Use when the user asks Codex to run AI review on a PR, address Gemini or Copilot findings, dedupe reviewer comments, push fixes, reply in PR threads, or complete the platform review chain. Both modes fire Gemini Flash + Copilot only — no in-skill local review during the loop. Accepts a PR number, optional `deep` (4-iter cap + early-exit on no-fix iters + final `deepgrill`), and optional `--resume`.
+description: Post-push AI review orchestrator for pull requests. Use when the user asks Codex to run AI review on a PR, address Gemini or Copilot findings, dedupe reviewer comments, push fixes, reply in PR threads, or complete the platform review chain. Both modes fire Gemini Flash + Copilot only — no in-skill local review during the loop. Accepts a PR number, optional `deep` (4-iter cap + early-exit on no-fix iters + final `deepcritique`), and optional `--resume`.
 ---
 
 # Reviewit
@@ -10,8 +10,8 @@ Run the post-push review cycle for an open PR.
 ## Modes
 
 - **Lean**: default. Fire Gemini Flash and request Copilot review, but use staggered handling: fix Gemini first, then fold in Copilot when it finishes. Cap at 2 iterations.
-- **Deep**: if the argument includes `deep`. Same two reviewers as lean — no in-loop local Codex review. Cap at 4 iterations with an **early-exit when an iteration produces no `fix` resolutions** (defer/dismiss-only iterations don't justify re-firing reviewers on an unchanged HEAD — they'd just re-post the same findings). After the loop exits for any reason — clean, early-exit, or iter cap — invoke the `deepgrill` skill so fresh subagents review the PR's current state in a separate session. This replaces the prior pattern of running `codex review` inline during the polling loop, which routinely caused the orchestrator to drop out early because the inline-review sub-skill's prompt was self-contained.
-- **Resume**: if the argument includes `--resume`, do not fire reviewers again. Load or reconstruct the review state for the current PR head, poll existing reviewer output, then fix/reply (and, in deep mode, run the final `deepgrill` if it didn't yet).
+- **Deep**: if the argument includes `deep`. Same two reviewers as lean — no in-loop local Codex review. Cap at 4 iterations with an **early-exit when an iteration produces no `fix` resolutions** (defer/dismiss-only iterations don't justify re-firing reviewers on an unchanged HEAD — they'd just re-post the same findings). After the loop exits for any reason — clean, early-exit, or iter cap — invoke the `deepcritique` skill so fresh subagents review the PR's current state in a separate session. This replaces the prior pattern of running `codex review` inline during the polling loop, which routinely caused the orchestrator to drop out early because the inline-review sub-skill's prompt was self-contained.
+- **Resume**: if the argument includes `--resume`, do not fire reviewers again. Load or reconstruct the review state for the current PR head, poll existing reviewer output, then fix/reply (and, in deep mode, run the final `deepcritique` if it didn't yet).
 
 ## State
 
@@ -30,10 +30,10 @@ Create the directory if needed. The state file is local agent bookkeeping; do no
 - `iteration`: current iteration number
 - `geminiRunId`: workflow run id when discoverable
 - `copilotRequested`: boolean
-- `phase`: current reviewer phase, such as `awaiting-gemini`, `handling-fast-findings`, `awaiting-copilot`, `final-deepgrill` (deep mode only), or `complete`
+- `phase`: current reviewer phase, such as `awaiting-gemini`, `handling-fast-findings`, `awaiting-copilot`, `final-deepcritique` (deep mode only), or `complete`
 - `handledCommentIds`: inline/review/issue comment ids already fixed or replied to
 - `lastPollAt`: UTC timestamp of the most recent poll
-- `deepgrillRan` (deep mode only): boolean — set once the final `deepgrill` invocation has returned
+- `deepcritiqueRan` (deep mode only): boolean — set once the final `deepcritique` invocation has returned
 
 If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate ignore file before writing state.
 
@@ -57,7 +57,7 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
    - If no state file exists, reconstruct enough state from `gh pr view`, PR reviews, PR review comments, issue comments, and workflow runs. Use the current PR head SHA as `headSha`.
    - If the current PR head SHA differs from the saved `headSha`, ask whether to start a new iteration. Do not silently process stale reviewer output.
    - Do not trigger Gemini or request Copilot again unless the saved reviewer request clearly failed or the user explicitly asks to rerun.
-   - Continue at the polling/dedupe/fix/reply step. If the saved `phase` is `final-deepgrill` and `deepgrillRan` is false, resume by invoking the `deepgrill` skill directly (skip the bot polling loop).
+   - Continue at the polling/dedupe/fix/reply step. If the saved `phase` is `final-deepcritique` and `deepcritiqueRan` is false, resume by invoking the `deepcritique` skill directly (skip the bot polling loop).
 7. For each iteration up to the cap:
    - Capture current PR head SHA and timestamp before firing reviewers.
    - Write the initial state file.
@@ -103,7 +103,7 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
      - **Lean**: continue to the next iteration if any reviewer found new findings on the post-fix HEAD and the cap is not reached. Otherwise exit the loop.
      - **Deep**: continue to the next iteration only if this iteration produced ≥1 `fix` resolution (a commit was pushed) and the cap is not reached. If the iteration produced only defer/dismiss findings (or none at all), **early-exit** the loop — re-firing reviewers on an unchanged HEAD just re-posts the same findings.
 
-8. **Deep mode only — final `deepgrill`.** After the loop exits for any reason (clean, early-exit, or iter cap), set `phase: final-deepgrill` and invoke `deepgrill <pr-number>`. It loads the existing PR ledger, runs `grill deep`'s six core lanes (code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, security reviewer) and the conditional tenant-coupling lane when signaled, posts verified findings inline before fixes, then replies and resolves. It runs `refactorpass` first only when this engine has not already spent its once-per-PR cleanup latch — on a PR that ran the pre-push chain it normally has, so expect a grill-only tail pass. If the PR is already three or more Codex rounds deep, `deepgrill` selects its convergence stance: narrowed lanes, blocking-defects-only fixes, and issues for the rest. Both decisions come from the PR ledger; do not override them from here. When control returns from the sub-skill, set `deepgrillRan: true`, capture the sub-skill's output, and continue to the summary step. **Do not stop after `deepgrill` returns** — `reviewit` owns the final summary.
+8. **Deep mode only — final `deepcritique`.** After the loop exits for any reason (clean, early-exit, or iter cap), set `phase: final-deepcritique` and invoke `deepcritique <pr-number>`. It loads the existing PR ledger, runs `critique deep`'s six core lanes (code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, security reviewer) and the conditional tenant-coupling lane when signaled, posts verified findings inline before fixes, then replies and resolves. It runs `refactorpass` first only when this engine has not already spent its once-per-PR cleanup latch — on a PR that ran the pre-push chain it normally has, so expect a critique-only tail pass. If the PR is already three or more Codex rounds deep, `deepcritique` selects its convergence stance: narrowed lanes, blocking-defects-only fixes, and issues for the rest. Both decisions come from the PR ledger; do not override them from here. When control returns from the sub-skill, set `deepcritiqueRan: true`, capture the sub-skill's output, and continue to the summary step. **Do not stop after `deepcritique` returns** — `reviewit` owns the final summary.
 
 ## Important Details
 
@@ -115,8 +115,8 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
 - Do not reply before pushing fixes; replies should reference the real commit SHA.
 - If a reviewer times out in `--wait` mode, continue with findings received and state the timeout in the summary.
 - Keep `.codex/reviewit-state/*.json` out of commits.
-- The final `deepgrill` in deep mode is **always** run after the loop exits — clean, early-exit, or iter cap. Fresh subagents are most useful precisely when the bot reviewer loop didn't fully converge, so do not gate `deepgrill` on the loop's exit reason.
-- If `deepgrill` fails or is interrupted, record the failure in the summary and continue — the bot reviewer loop's output is still valid. Do not auto-retry.
+- The final `deepcritique` in deep mode is **always** run after the loop exits — clean, early-exit, or iter cap. Fresh subagents are most useful precisely when the bot reviewer loop didn't fully converge, so do not gate `deepcritique` on the loop's exit reason.
+- If `deepcritique` fails or is interrupted, record the failure in the summary and continue — the bot reviewer loop's output is still valid. Do not auto-retry.
 
 ## Output
 
@@ -126,7 +126,7 @@ Summarize:
 - findings fixed / deferred / dismissed counts and links
 - commits pushed
 - replies posted (and any failed reply targets)
-- deep-mode `deepgrill` result: the round it resolved and whether it ran adversarially or in convergence mode, whether `refactorpass` ran at all and if so whether it produced a commit, and the count of `grill deep` findings the user chose to fix / defer / ignore
+- deep-mode `deepcritique` result: the round it resolved and whether it ran adversarially or in convergence mode, whether `refactorpass` ran at all and if so whether it produced a commit, and the count of `critique deep` findings the user chose to fix / defer / ignore
 - state file path if still waiting
 - resume command if applicable
 - any remaining risks

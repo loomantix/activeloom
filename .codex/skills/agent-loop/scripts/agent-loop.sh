@@ -22,7 +22,7 @@ DIM='\033[2m'
 NC='\033[0m'
 
 # Review context is owned by this wrapper. Do not leak state from an outer
-# agent-loop/deepgrill invocation into setup, worker, or worker validation.
+# agent-loop/deepcritique invocation into setup, worker, or worker validation.
 unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
@@ -127,7 +127,7 @@ CONFIG_FILE="$PROJECT_DIR/.codex/skills/agent-loop/agent-loop.config"
 PROMPT_FILE="$PROJECT_DIR/.codex/skills/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
 ISSUES_READY="$PROJECT_DIR/.codex/skills/issues/scripts/ready.py"
-REVIEW_LEDGER="$PROJECT_DIR/.codex/skills/grill/scripts/review-ledger.py"
+REVIEW_LEDGER="$PROJECT_DIR/.codex/skills/critique/scripts/review-ledger.py"
 RUN_STATE_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop-state.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"

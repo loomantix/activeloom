@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import stat
 import subprocess
@@ -93,6 +94,45 @@ def test_recommended_prettierignore_mirrors_static_sync_targets() -> None:
     assert actual == desired
 
 
+def test_install_skills_prunes_only_retired_owned_links(tmp_path: Path) -> None:
+    upstream = tmp_path / "upstream"
+    skills = upstream / ".codex/skills"
+    active = skills / "active"
+    active.mkdir(parents=True)
+    destination = tmp_path / "installed"
+    destination.mkdir()
+
+    owned_stale = destination / "retired"
+    owned_stale.symlink_to(skills / "retired")
+    foreign_stale = destination / "foreign"
+    foreign_stale.symlink_to(tmp_path / "elsewhere/missing")
+    local_skill = destination / "local"
+    local_skill.mkdir()
+
+    env = {
+        **os.environ,
+        "UPSTREAM_ROOT_OVERRIDE": str(upstream),
+        "CODEX_SKILLS_DIR": str(destination),
+    }
+    script = REPO_ROOT / "scripts/install-skills.sh"
+
+    dry_run = subprocess.run(
+        [str(script), "--dry-run"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert "1 would prune" in dry_run.stdout
+    assert owned_stale.is_symlink()
+
+    subprocess.run([str(script)], check=True, capture_output=True, text=True, env=env)
+    assert not owned_stale.is_symlink()
+    assert foreign_stale.is_symlink()
+    assert local_skill.is_dir()
+    assert (destination / "active").resolve() == active.resolve()
+
+
 def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -152,6 +192,49 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     assert "unchanged" in result.stdout.lower() or "no changes" in result.stdout.lower()
 
 
+def test_sync_atomically_replaces_retired_review_skill_paths(tmp_path: Path) -> None:
+    consumer = tmp_path / "consumer"
+    old_paths = [
+        consumer / ".codex/skills/grill/SKILL.md",
+        consumer / ".codex/skills/grill/scripts/review-ledger.py",
+        consumer / ".codex/skills/deepgrill/SKILL.md",
+        consumer / ".codex/skills/pr-grill/SKILL.md",
+    ]
+    for path in old_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("retired\n", encoding="utf-8")
+
+    config = consumer / ".codex-platform-config.yml"
+    config.write_text(
+        "substitutions: {}\n"
+        "skip_targets:\n"
+        "  - .github/copilot-instructions.md\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(SYNC_ENGINE),
+            "--upstream-repo",
+            str(REPO_ROOT),
+            "--consumer-dir",
+            str(consumer),
+            "--config",
+            str(config),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert not any(path.exists() for path in old_paths)
+    for skill in ("critique", "deepcritique", "pr-critique"):
+        assert (consumer / f".codex/skills/{skill}/SKILL.md").is_file()
+    ledger = consumer / ".codex/skills/critique/scripts/review-ledger.py"
+    assert ledger.is_file()
+    assert stat.S_IMODE(ledger.stat().st_mode) == 0o755
+
+
 def test_new_script_modes_are_executable() -> None:
     expected = {
         ".codex/skills/agent-loop/scripts/agent-loop.sh": 0o755,
@@ -160,7 +243,7 @@ def test_new_script_modes_are_executable() -> None:
         ".codex/skills/agent-loop/scripts/hook-git-guard": 0o755,
         ".codex/skills/backlog-refinement/scripts/bail-report.py": 0o755,
         ".codex/skills/backlog-refinement/scripts/candidates.py": 0o755,
-        ".codex/skills/grill/scripts/review-ledger.py": 0o755,
+        ".codex/skills/critique/scripts/review-ledger.py": 0o755,
         ".codex/skills/issues/scripts/ready.py": 0o755,
     }
     assert {
@@ -173,15 +256,15 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     ledger = (REPO_ROOT / ".codex/references/local-review-ledger.md").read_text(
         encoding="utf-8"
     )
-    deepgrill = (SKILLS_ROOT / "deepgrill/SKILL.md").read_text(encoding="utf-8")
-    grill = (SKILLS_ROOT / "grill/SKILL.md").read_text(encoding="utf-8")
+    deepcritique = (SKILLS_ROOT / "deepcritique/SKILL.md").read_text(encoding="utf-8")
+    critique = (SKILLS_ROOT / "critique/SKILL.md").read_text(encoding="utf-8")
     refactorpass = (SKILLS_ROOT / "refactorpass/SKILL.md").read_text(encoding="utf-8")
     normalized = {
         name: " ".join(text.split())
         for name, text in {
             "ledger": ledger,
-            "deepgrill": deepgrill,
-            "grill": grill,
+            "deepcritique": deepcritique,
+            "critique": critique,
             "refactorpass": refactorpass,
         }.items()
     }
@@ -199,21 +282,21 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     assert "`attest --threads-file <path> --allowed-heads-file <path>`" in ledger
 
     for skill in (
-        normalized["deepgrill"],
-        normalized["grill"],
+        normalized["deepcritique"],
+        normalized["critique"],
         normalized["refactorpass"],
     ):
         assert "immutable review packet" in skill
         assert "scoped diff" in skill.lower()
         assert "no inherited conversation history" in skill
 
-    assert "changed-file list, and diff stat once" in normalized["deepgrill"]
-    assert "Do not make each lane reload the PR ledger" in normalized["grill"]
+    assert "changed-file list, and diff stat once" in normalized["deepcritique"]
+    assert "Do not make each lane reload the PR ledger" in normalized["critique"]
     assert "do not hand every lane a whole-diff artifact" in normalized["refactorpass"]
 
 
 def test_parallel_review_lanes_delegate_validation_to_orchestrator() -> None:
-    for skill_name in ("grill", "pr-grill"):
+    for skill_name in ("critique", "pr-critique"):
         text = (SKILLS_ROOT / skill_name / "SKILL.md").read_text(encoding="utf-8")
         normalized = " ".join(text.split())
 
