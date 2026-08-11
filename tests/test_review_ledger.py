@@ -185,6 +185,8 @@ def test_settled_pseudo_v3_history_is_ignored_by_current_evidence(
     threads = _threads_file(tmp_path, [thread])
     result_file = tmp_path / "result.json"
     heads = _heads_file(tmp_path, HEAD)
+    historical_ids = tmp_path / "historical-comment-ids.json"
+    historical_ids.write_text("[1]\n", encoding="utf-8")
     monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
     review_ledger.main(
         [
@@ -211,6 +213,8 @@ def test_settled_pseudo_v3_history_is_ignored_by_current_evidence(
             str(heads),
             "--actor",
             "reviewer",
+            "--historical-comment-ids-file",
+            str(historical_ids),
         ]
     )
     assert json.loads(result_file.read_text(encoding="utf-8"))[

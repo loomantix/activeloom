@@ -820,12 +820,15 @@ def _same_round_dispositions(
     args: argparse.Namespace,
     threads: list[dict[str, Any]],
     allowed_heads: dict[str, int],
+    historical_comment_ids: set[int] | None = None,
 ) -> list[tuple[str, bool, bool]]:
     """Return unique (fingerprint, has-fix, has-major-fix) ledger evidence."""
     evidence: dict[str, tuple[bool, bool]] = {}
     fingerprint_threads: dict[str, int] = {}
     for thread_index, thread in enumerate(threads):
-        findings, dispositions, _, _ = _thread_protocol_records(thread)
+        findings, dispositions, _, _ = _thread_protocol_records(
+            thread, historical_comment_ids
+        )
         for finding_index, finding in findings:
             if (
                 finding.group("engine") != args.engine
@@ -923,7 +926,8 @@ def _write_result(args: argparse.Namespace) -> None:
         if args.threads_file is not None
         else _review_threads(args.repo, args.pr)
     )
-    _verify_thread_dispositions(threads)
+    historical_comment_ids = _historical_comment_ids(args)
+    _verify_thread_dispositions(threads, historical_comment_ids)
     if args.allowed_heads_file is None:
         comparison = subprocess.run(
             ["git", "rev-list", "--reverse", "--ancestry-path", f"{args.before}..{args.head}"],
@@ -939,7 +943,9 @@ def _write_result(args: argparse.Namespace) -> None:
         allowed_heads = {value: index for index, value in enumerate(values)}
     else:
         allowed_heads = _load_allowed_heads(args)
-    dispositions = _same_round_dispositions(args, threads, allowed_heads)
+    dispositions = _same_round_dispositions(
+        args, threads, allowed_heads, historical_comment_ids
+    )
     changed = args.before != args.head
     if not changed and any(has_fix for _, has_fix, _ in dispositions):
         _fail("clean review results cannot have same-round fixes")
@@ -1027,8 +1033,11 @@ def _attest(args: argparse.Namespace) -> None:
     if data["status"] == "blocked":
         _fail("blocked review results cannot be attested as complete")
     threads = _load_review_threads(args.threads_file)
-    _verify_thread_dispositions(threads)
-    _verify_result_evidence(args, threads, data=data)
+    historical_comment_ids = _historical_comment_ids(args)
+    _verify_thread_dispositions(threads, historical_comment_ids)
+    _verify_result_evidence(
+        args, threads, data=data, historical_comment_ids=historical_comment_ids
+    )
     content = _read_content(args.content_file) if args.content_file else (
         "No new material findings." if data["status"] == "clean" else "Review fixes completed and ledger dispositions verified."
     )
@@ -1238,7 +1247,33 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
     return threads
 
 
-def _verify_pseudo_v3_history(threads: list[dict[str, Any]]) -> None:
+def _historical_comment_ids(args: argparse.Namespace) -> set[int]:
+    path_value = getattr(args, "historical_comment_ids_file", None) or os.environ.get(
+        "AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE"
+    )
+    if not path_value:
+        return set()
+    path = Path(path_value)
+    if path.is_symlink() or not path.is_file():
+        _fail("historical comment IDs must be a regular non-symlink file")
+    try:
+        values = json.loads(path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LedgerError(
+            "historical comment IDs must contain valid UTF-8 JSON"
+        ) from error
+    if (
+        not isinstance(values, list)
+        or any(type(value) is not int or value < 1 for value in values)
+        or len(set(values)) != len(values)
+    ):
+        _fail("historical comment IDs must be unique positive integers")
+    return set(values)
+
+
+def _verify_pseudo_v3_history(
+    threads: list[dict[str, Any]], historical_comment_ids: set[int] | None = None
+) -> None:
     actor = _current_actor()
     for thread in threads:
         comments = thread.get("comments")
@@ -1269,6 +1304,13 @@ def _verify_pseudo_v3_history(threads: list[dict[str, Any]]) -> None:
             if pseudo is None:
                 _protocol_match(body, FINDING_V3_RE, "<!-- local-review:v3")
                 continue
+            if (
+                historical_comment_ids is not None
+                and row.get("databaseId") not in historical_comment_ids
+            ):
+                _fail(
+                    "historical local-review:v3 finding was not captured before the current pass"
+                )
             later_same_actor = any(
                 isinstance(reply, dict)
                 and isinstance(reply.get("author"), dict)
@@ -1323,14 +1365,14 @@ def _load_allowed_heads(args: argparse.Namespace) -> dict[str, int]:
 
 
 def _thread_protocol_records(
-    thread: dict[str, Any]
+    thread: dict[str, Any], historical_comment_ids: set[int] | None = None
 ) -> tuple[
     list[tuple[int, re.Match[str]]],
     list[tuple[int, re.Match[str]]],
     list[tuple[int, re.Match[str]]],
     list[tuple[int, re.Match[str]]],
 ]:
-    _verify_pseudo_v3_history([thread])
+    _verify_pseudo_v3_history([thread], historical_comment_ids)
     comments = cast(dict[str, Any], thread["comments"])["nodes"]
     findings_v3: list[tuple[int, re.Match[str]]] = []
     dispositions_v3: list[tuple[int, re.Match[str]]] = []
@@ -1382,12 +1424,14 @@ def _matching_dispositions(
     return matches
 
 
-def _verify_thread_dispositions(threads: list[dict[str, Any]]) -> int:
+def _verify_thread_dispositions(
+    threads: list[dict[str, Any]], historical_comment_ids: set[int] | None = None
+) -> int:
     verified = 0
     fingerprint_threads: dict[str, int] = {}
     for thread_index, thread in enumerate(threads):
         findings_v3, dispositions_v3, findings_v1, dispositions_v1 = (
-            _thread_protocol_records(thread)
+            _thread_protocol_records(thread, historical_comment_ids)
         )
         grouped_v3: dict[str, list[tuple[int, re.Match[str]]]] = {}
         for finding_index, finding in findings_v3:
@@ -1444,6 +1488,7 @@ def _verify_result_evidence(
     *,
     data: dict[str, Any] | None = None,
     allowed_heads: dict[str, int] | None = None,
+    historical_comment_ids: set[int] | None = None,
 ) -> dict[str, Any]:
     if data is None:
         data = _validate_result_data(args)
@@ -1451,7 +1496,9 @@ def _verify_result_evidence(
         _fail("ledger result evidence requires a changed review result")
     if allowed_heads is None:
         allowed_heads = _load_allowed_heads(args)
-    evidence = _same_round_dispositions(args, threads, allowed_heads)
+    evidence = _same_round_dispositions(
+        args, threads, allowed_heads, historical_comment_ids
+    )
     if [row[0] for row in evidence] != sorted(data["findingFingerprints"]):
         _fail("review result fingerprints do not exactly match same-round ledger evidence")
     if data["status"] == "clean":
@@ -1473,10 +1520,13 @@ def _verify_result_evidence(
 def _verify_ledger(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
     threads = _load_review_threads(args.threads_file)
-    thread_count = _verify_thread_dispositions(threads)
+    historical_comment_ids = _historical_comment_ids(args)
+    thread_count = _verify_thread_dispositions(threads, historical_comment_ids)
     data = None
     if args.result_file is not None:
-        data = _verify_result_evidence(args, threads)
+        data = _verify_result_evidence(
+            args, threads, historical_comment_ids=historical_comment_ids
+        )
     print(
         json.dumps(
             {
@@ -1585,6 +1635,7 @@ def _parser() -> argparse.ArgumentParser:
     write_result.add_argument("--threads-file")
     write_result.add_argument("--allowed-heads-file")
     write_result.add_argument("--actor")
+    write_result.add_argument("--historical-comment-ids-file")
     write_result.add_argument("--classification", choices=("minor", "material"))
     write_result.set_defaults(handler=_write_result)
 
@@ -1598,6 +1649,7 @@ def _parser() -> argparse.ArgumentParser:
     attest.add_argument("--threads-file", required=True)
     attest.add_argument("--allowed-heads-file", required=True)
     attest.add_argument("--actor")
+    attest.add_argument("--historical-comment-ids-file")
     attest.add_argument("--expected-result-sha256", required=True)
     attest.add_argument("--content-file")
     attest.set_defaults(handler=_attest)
@@ -1616,6 +1668,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_common(verify_ledger)
     verify_ledger.add_argument("--threads-file", required=True)
     verify_ledger.add_argument("--actor")
+    verify_ledger.add_argument("--historical-comment-ids-file")
     verify_ledger.add_argument("--engine", choices=("codex", "claude"))
     verify_ledger.add_argument("--round", type=int)
     verify_ledger.add_argument("--base")
