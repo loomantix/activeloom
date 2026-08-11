@@ -74,7 +74,10 @@ PR_HEAD_SHA=$(jq -r .headRefOid <<<"$PR_DATA")
 HEAD_BRANCH=$(jq -r .headRefName <<<"$PR_DATA")
 HEAD_REPO=$(jq -r .headRepository.nameWithOwner <<<"$PR_DATA")
 HEAD_REPO_URL="https://github.com/$HEAD_REPO.git"
-test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA" || {
+  echo "worktree is not at the PR head — fetch it in isolation first" >&2
+  exit 1
+}
 
 REVIEW_BASE_SHA=
 for candidate in "${AGENT_LOOP_REVIEW_BASE_SHA:-}" \
@@ -89,10 +92,11 @@ for candidate in "${AGENT_LOOP_REVIEW_BASE_SHA:-}" \
   REVIEW_BASE_SHA=$candidate
 done
 if [ -z "$REVIEW_BASE_SHA" ]; then
-  REVIEW_BASE_SHA=$(jq -r .baseRefOid <<<"$PR_DATA")
+  REVIEW_BASE_SHA=$(jq -r '.baseRefOid // empty' <<<"$PR_DATA")
+  [ -n "$REVIEW_BASE_SHA" ] || { echo "PR baseRefOid is unavailable" >&2; exit 1; }
   git fetch -q origin "$BASE"
 fi
-REVIEW_BASE_SHA=$(git rev-parse --verify "$REVIEW_BASE_SHA^{commit}")
+REVIEW_BASE_SHA=$(git rev-parse --verify "$REVIEW_BASE_SHA^{commit}") || exit 1
 RANGE="$REVIEW_BASE_SHA..HEAD"
 ```
 
