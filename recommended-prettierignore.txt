@@ -54,7 +54,9 @@
 .claude/skills/critique/SKILL.md
 .claude/skills/critique/scripts/review-ledger.py
 .claude/skills/deepcritique/SKILL.md
+.claude/skills/diagnosing-bugs/SKILL.md
 .claude/skills/feature-dev/SKILL.md
+.claude/skills/grill/SKILL.md
 .claude/skills/issues/SKILL.md
 .claude/skills/issues/scripts/link.py
 .claude/skills/issues/scripts/ready.py

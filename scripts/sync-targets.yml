@@ -94,6 +94,20 @@ targets:
     destination: .claude/skills/feature-dev/SKILL.md
     substitutions: []
 
+  # /grill — pre-code interview primitive. User-invoked, so it costs no
+  # always-loaded description context; it is the front end of the same arc
+  # /feature-dev and /task-packet finish.
+  - source: .claude/skills/grill/SKILL.md
+    destination: .claude/skills/grill/SKILL.md
+    substitutions: []
+
+  # /diagnosing-bugs — model-invoked debugging discipline. Deliberately
+  # model-invoked: its whole value is firing on "this is broken" before the
+  # session has already guessed at a cause.
+  - source: .claude/skills/diagnosing-bugs/SKILL.md
+    destination: .claude/skills/diagnosing-bugs/SKILL.md
+    substitutions: []
+
   - source: .claude/skills/task-packet/SKILL.md
     destination: .claude/skills/task-packet/SKILL.md
     substitutions: []
