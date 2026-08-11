@@ -229,6 +229,10 @@ if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; t
     echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
     exit 1
 fi
+if [ -n "$RESUME_BATCH_FILE" ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; then
+    echo "--resume-batch requires review_contract_version = 3" >&2
+    exit 1
+fi
 # Catch retired reviewer names before any issue mutation. Both local engines
 # use the canonical deepcritique skill name.
 for hook_key in claude_review_hook codex_review_hook; do
@@ -1033,6 +1037,10 @@ run_bounded_hook() {
         set +e
         if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then
             exec {AGENT_LOOP_RUN_LOCK_FD}<&-
+        fi
+        if [ -n "$AGENT_LOOP_BATCH_LOCK_FD" ]; then
+            exec {AGENT_LOOP_BATCH_LOCK_FD}<&-
+            unset AGENT_LOOP_BATCH_LOCK_FD
         fi
         # Setup, worker, and validation hooks remain local-only. Review hooks run
         # after the wrapper opens a draft PR and must be able to post inline
@@ -2378,6 +2386,12 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             exit 1
         }
         child_json="$(python3 "$RUN_STATE_HELPER" show --file "$child_state")" || exit 1
+        [ "$(jq -r '.issue' <<<"$child_json")" = "$batch_issue" ] && \
+        [ "$(jq -r '.repo' <<<"$child_json")" = "$GH_REPO" ] && \
+        [ "$(jq -r '.baseBranch' <<<"$child_json")" = "$BASE_BRANCH" ] || {
+            recovery_message "Batch issue #$batch_issue does not match its child review checkpoint."
+            exit 1
+        }
         child_worktree="$(jq -r '.worktree' <<<"$child_json")"
         AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" \
             "$SCRIPT_DIR/agent-loop.sh" --resume-run "$child_state" || {

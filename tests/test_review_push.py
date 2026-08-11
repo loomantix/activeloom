@@ -78,6 +78,32 @@ def test_exact_fully_qualified_review_push_succeeds(review_repo: tuple[Path, dic
     assert _git(repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7").split()[0] == result.stdout.strip()
 
 
+def test_two_sequential_review_pushes_succeed(
+    review_repo: tuple[Path, dict[str, str], str]
+) -> None:
+    repo, env, _ = review_repo
+    first = _run(repo, env)
+    assert first.returncode == 0, first.stderr
+
+    (repo / "second.txt").write_text("second review fix\n", encoding="utf-8")
+    _git(repo, "add", "second.txt")
+    _git(repo, "commit", "-m", "fix: second review")
+    second = _run(repo, env)
+
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.strip() == _git(repo, "rev-parse", "HEAD")
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == second.stdout.strip()
+    )
+
+
 @pytest.mark.parametrize("argument", ["origin", "HEAD", "HEAD:other", "--force"])
 def test_rejects_bare_ambiguous_wrong_destination_and_force_arguments(
     review_repo: tuple[Path, dict[str, str], str], argument: str

@@ -328,9 +328,33 @@ Every pass writes `$AGENT_LOOP_REVIEW_RESULT_FILE` when that variable is set.
 For a clean or changed pass, export the complete review threads and ordered
 forward-only transition heads, then use the ledger helper's `write-result`
 command so it derives the exact same-round fingerprint set from dispositions.
-For a blocked pass, use a deterministic serializer because there is no complete
-ledger result to derive. The file is always present and contains exactly this
-contract:
+Inside agent-loop, omit `--threads-file` so the helper fetches the complete
+thread ledger itself; omit `--allowed-heads-file` so it derives the local
+forward-only transition. Supply `--classification minor|material` only when
+the head moved:
+
+```bash
+python3 .codex/skills/critique/scripts/review-ledger.py write-result \
+  --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
+  --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
+  --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
+  --before "$AGENT_LOOP_PR_HEAD_SHA" \
+  --result-file "$AGENT_LOOP_REVIEW_RESULT_FILE"
+```
+
+For a blocked pass, put one short public-safe blocker in an owner-only regular
+file and call the deterministic helper instead of constructing JSON:
+
+```bash
+python3 .codex/skills/critique/scripts/review-ledger.py write-blocked-result \
+  --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
+  --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
+  --before "$AGENT_LOOP_PR_HEAD_SHA" \
+  --result-file "$AGENT_LOOP_REVIEW_RESULT_FILE" \
+  --blocker-file "$AGENT_LOOP_LOG_DIR/blocked-review.txt"
+```
+
+The file is always present and contains exactly this contract:
 
 ```json
 {

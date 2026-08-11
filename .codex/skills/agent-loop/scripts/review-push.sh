@@ -70,7 +70,8 @@ remote_line="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRAN
     exit 1
 }
 remote_head="${remote_line%%[[:space:]]*}"
-[ "$remote_head" = "$AGENT_LOOP_PR_HEAD_SHA" ] || {
+"$real_git" merge-base --is-ancestor "$AGENT_LOOP_PR_HEAD_SHA" "$remote_head" && \
+"$real_git" merge-base --is-ancestor "$remote_head" "$local_head" || {
     echo "review-push rejects a stale or uncertain remote head" >&2
     exit 1
 }

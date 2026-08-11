@@ -3779,6 +3779,59 @@ def test_batch_resume_finalizes_interrupted_first_issue_then_processes_second(
     assert "issue-70" in branches and "issue-71" in branches
 
 
+def test_batch_hooks_do_not_inherit_the_batch_lock(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    setup_hook = (
+        'test -z "${AGENT_LOOP_BATCH_LOCK_FD:-}"; '
+        'for fd in /proc/self/fd/*; do '
+        'case "$(readlink "$fd" 2>/dev/null || true)" in '
+        '*-batch-*.json.lock) exit 71 ;; esac; done'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "78,79", "--iterations", "1"],
+        issues=[_issue(78), _issue(79)],
+        config=_config_v3(tmp_path, setup_hook=setup_hook),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "paused cleanly at the 1-issue iteration cap" in result.stdout
+
+
+def test_batch_resume_rejects_a_child_checkpoint_for_another_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "80,81", "--iterations", "2"],
+        issues=[_issue(80), _issue(81)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_INTERRUPT_AFTER_READY": "true"},
+        timeout=120,
+    )
+    assert first.returncode != 0
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["issues"][0]["childRunState"]
+    batch["allowlist"][0] = 82
+    batch["issues"][0]["issue"] = 82
+    batch_file.write_text(json.dumps(batch), encoding="utf-8")
+
+    resumed = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(80, assigned=True), _issue(82)],
+        config=_config_v3(tmp_path),
+        timeout=30,
+    )
+    assert resumed.returncode != 0
+    assert "Batch issue #82 does not match its child review checkpoint" in resumed.stderr
+    preserved = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert preserved["cursor"] == 0
+    assert preserved["issues"][0]["status"] == "active"
+
+
 def test_batch_iteration_cap_pauses_cleanly_and_only_one_resume_process_owns_it(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -3885,6 +3938,46 @@ def test_batch_cursor_issue_cannot_be_skipped_for_a_later_ready_issue(
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
     assert batch["cursor"] == 0
     assert [row["status"] for row in batch["issues"]] == ["pending", "pending"]
+
+
+def test_batch_resume_rejects_contract_v2_before_state_mutation(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    batch_file = tmp_path / "logs/contract-drift-batch.json"
+    helper = consumer[0] / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
+    created = subprocess.run(
+        [
+            "python3",
+            str(helper),
+            "batch-create",
+            "--file",
+            str(batch_file),
+            "--run-id",
+            "contract-drift",
+            "--repo",
+            "fixture/consumer",
+            "--base-branch",
+            "main",
+            "--issues",
+            "74,75",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    before = batch_file.read_bytes()
+
+    result = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(74), _issue(75)],
+        config=_config(tmp_path, review_contract_version=2),
+    )
+
+    assert result.returncode != 0
+    assert "--resume-batch requires review_contract_version = 3" in result.stderr
+    assert batch_file.read_bytes() == before
 
 
 def test_dependency_blocked_batch_cursor_prints_pending_bail_command(

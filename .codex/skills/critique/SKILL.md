@@ -222,8 +222,11 @@ Run these lanes as independently as the active runtime permits:
     an uncertain helper response, retry only the identical command.
 13. Always use the ledger helper's `write-result` command to create the v3
     structured result at `$AGENT_LOOP_REVIEW_RESULT_FILE` when set. The outer
-    wrapper validates it and owns the pass/completion attestation. Outside
-    agent-loop, create the complete review-thread export and ordered
+    wrapper validates it and owns the pass/completion attestation. Inside
+    agent-loop, omit thread and transition files so the helper fetches and
+    derives them. For a blocked pass, call `write-blocked-result` with an
+    owner-only blocker file. Outside agent-loop, create the complete
+    review-thread export and ordered
     forward-only before-to-after head list as private temporary files, use
     `write-result`, then use `attest --threads-file <path>
 --allowed-heads-file <path>`. `attest` verifies the ledger and requires

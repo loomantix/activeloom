@@ -850,6 +850,33 @@ def _same_round_dispositions(
                     and historical_matches[0].group("outcome") != "fixed"
                 ):
                     _fail("blocking local-review findings must be fixed")
+                historical_disposition = historical_matches[0]
+                if historical_disposition.group("outcome") == "fixed":
+                    disposition_head = historical_disposition.group("head")
+                    if disposition_head == finding_head:
+                        _fail(
+                            "historical fixed disposition is not a forward transition"
+                        )
+                    comparison = _json_output(
+                        [
+                            "api",
+                            f"repos/{args.repo}/compare/{finding_head}...{disposition_head}",
+                        ]
+                    )
+                    merge_base = (
+                        comparison.get("merge_base_commit")
+                        if isinstance(comparison, dict)
+                        else None
+                    )
+                    if (
+                        not isinstance(comparison, dict)
+                        or comparison.get("status") != "ahead"
+                        or not isinstance(merge_base, dict)
+                        or merge_base.get("sha") != finding_head
+                    ):
+                        _fail(
+                            "historical fixed disposition is not a forward transition"
+                        )
                 # Settled historical occurrences are not evidence for this
                 # before-to-after transition.
                 continue
@@ -891,7 +918,11 @@ def _same_round_dispositions(
 
 
 def _write_result(args: argparse.Namespace) -> None:
-    threads = _load_review_threads(args.threads_file)
+    threads = (
+        _load_review_threads(args.threads_file)
+        if args.threads_file is not None
+        else _review_threads(args.repo, args.pr)
+    )
     _verify_thread_dispositions(threads)
     if args.allowed_heads_file is None:
         comparison = subprocess.run(
@@ -920,6 +951,8 @@ def _write_result(args: argparse.Namespace) -> None:
         _fail("round 3+ changed review results require material classification")
     if changed and not dispositions:
         _fail("changed review results require ledger evidence")
+    if changed and not any(has_fix for _, has_fix, _ in dispositions):
+        _fail("changed review results require a fixed ledger finding")
     if (
         changed
         and args.classification != "material"
@@ -938,8 +971,14 @@ def _write_result(args: argparse.Namespace) -> None:
         "findingFingerprints": [row[0] for row in dispositions],
         "finalLaneComplete": True,
     }
+    _write_result_file(args.result_file, value)
+    raw = _read_result_bytes(args.result_file)
+    print(json.dumps({"resultSha256": hashlib.sha256(raw).hexdigest(), **value}, sort_keys=True))
+
+
+def _write_result_file(path_value: str, value: dict[str, Any]) -> None:
     raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    path = Path(args.result_file)
+    path = Path(path_value)
     if path.is_symlink() or (path.exists() and not path.is_file()):
         _fail("review result destination must be a regular non-symlink file")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -956,6 +995,26 @@ def _write_result(args: argparse.Namespace) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def _write_blocked_result(args: argparse.Namespace) -> None:
+    blocker = _read_content(args.blocker_file).strip()
+    value = {
+        "version": PROTOCOL_VERSION,
+        "status": "blocked",
+        "engine": args.engine,
+        "round": args.round,
+        "baseSha": args.base,
+        "beforeSha": args.before,
+        "afterSha": args.head,
+        "classification": None,
+        "findingFingerprints": [],
+        "finalLaneComplete": False,
+        "blocker": blocker,
+    }
+    raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    _validate_result_data(args, raw)
+    _write_result_file(args.result_file, value)
     print(json.dumps({"resultSha256": hashlib.sha256(raw).hexdigest(), **value}, sort_keys=True))
 
 
@@ -1403,6 +1462,8 @@ def _verify_result_evidence(
         _fail("round 3+ changed review results require material classification")
     if not evidence:
         _fail("changed review results require ledger evidence")
+    if not any(has_fix for _, has_fix, _ in evidence):
+        _fail("changed review results require a fixed ledger finding")
     fixed_major = any(has_major_fix for _, _, has_major_fix in evidence)
     if fixed_major and data["classification"] != "material":
         _fail("fixed blocking or major findings require material classification")
@@ -1521,11 +1582,16 @@ def _parser() -> argparse.ArgumentParser:
     _add_result_arguments(write_result, github=False)
     write_result.add_argument("--repo", required=True)
     write_result.add_argument("--pr", required=True, type=int)
-    write_result.add_argument("--threads-file", required=True)
+    write_result.add_argument("--threads-file")
     write_result.add_argument("--allowed-heads-file")
     write_result.add_argument("--actor")
     write_result.add_argument("--classification", choices=("minor", "material"))
     write_result.set_defaults(handler=_write_result)
+
+    write_blocked = commands.add_parser("write-blocked-result")
+    _add_result_arguments(write_blocked, github=False)
+    write_blocked.add_argument("--blocker-file", required=True)
+    write_blocked.set_defaults(handler=_write_blocked_result)
 
     attest = commands.add_parser("attest")
     _add_result_arguments(attest, github=True)

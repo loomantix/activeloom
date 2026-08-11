@@ -95,7 +95,8 @@ Every successfully completed clean or changed v3 review hook calls
 `review-ledger.py write-result`; the helper derives the complete
 same-engine/same-round fingerprint set, including fixed, deferred, and
 dismissed dispositions, and atomically writes the structured result. A blocked
-hook instead uses deepcritique's deterministic blocked-result serializer and
+hook instead uses `review-ledger.py write-blocked-result` with an owner-only
+blocker file and
 must not claim a clean or changed pass. The wrapper validates the engine, round, pinned base, observed
 before/after SHAs, classification, finding fingerprints, and final-lane status;
 verifies changed fingerprints against resolved v3 dispositions; and posts the
@@ -125,9 +126,9 @@ The wrapper is upstream-owned, but config, worker instructions, and the prompt
 are `create_if_missing` consumer files. Existing consumers must therefore merge
 the current templates manually before the synced wrapper can run:
 
-1. Update the Codex hook to run a fresh `deepcritique
-$AGENT_LOOP_PR_NUMBER`, then the Claude hook to run a fresh adversarial review
-   on the same PR. Scope both to `$AGENT_LOOP_REVIEW_BASE_SHA`.
+1. Update both hooks to run a fresh `deepcritique
+$AGENT_LOOP_PR_NUMBER` with their respective local engine. Scope both to
+   `$AGENT_LOOP_REVIEW_BASE_SHA`.
    The wrapper rejects either review hook naming a retired `grill`-family skill
    or path during startup, before it claims an issue. The check applies to
    every accepted contract version, including an existing version 3 config.
@@ -139,8 +140,8 @@ $AGENT_LOOP_PR_NUMBER`, then the Claude hook to run a fresh adversarial review
 3. Configure a non-mutating `validation_hook`, add
    `review_contract_version = 3`, make every successfully completed clean or
    changed hook write the v3 result to `$AGENT_LOOP_REVIEW_RESULT_FILE` through
-   `review-ledger.py write-result`, use deepcritique's deterministic serializer
-   for blocked results, and optionally override
+   `review-ledger.py write-result`, use `review-ledger.py
+write-blocked-result` for blocked results, and optionally override
    `review_max_rounds = 4` with another positive cap.
 4. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync

@@ -1379,8 +1379,8 @@ def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
     result["findingFingerprints"] = ["minor-deferred"]
     result["classification"] = "minor"
     result_file.write_text(json.dumps(result), encoding="utf-8")
-    review_ledger.main(args)
-    assert json.loads(capsys.readouterr().out)["verified"] is True
+    with pytest.raises(review_ledger.LedgerError, match="fixed ledger finding"):
+        review_ledger.main(args)
 
 
 def test_write_result_derives_canonical_mixed_dispositions(
@@ -1407,21 +1407,58 @@ def test_write_result_derives_canonical_mixed_dispositions(
             }
         )
     threads = _threads_file(tmp_path, rows)
+    live_threads = review_ledger._load_review_threads(str(threads))
     heads = _heads_file(tmp_path, HEAD, AFTER)
     result_file = tmp_path / "result.json"
     monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda _repo, _pr: live_threads)
     review_ledger.main(
         [
             "write-result", "--repo", REPO, "--pr", "7", "--head", AFTER,
             "--engine", "codex", "--round", "2", "--base", "c" * 40,
             "--before", HEAD, "--result-file", str(result_file),
-            "--threads-file", str(threads), "--allowed-heads-file", str(heads),
+            "--allowed-heads-file", str(heads),
             "--actor", "reviewer", "--classification", "material",
         ]
     )
     value = json.loads(result_file.read_text(encoding="utf-8"))
     assert value["findingFingerprints"] == ["a-deferred", "m-dismissed", "z-fixed"]
     assert result_file.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_write_blocked_result_uses_canonical_private_serialization(
+    review_ledger: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    blocker = tmp_path / "blocker.txt"
+    blocker.write_text("Reviewer could not verify the final lane.\n", encoding="utf-8")
+    result_file = tmp_path / "result.json"
+
+    review_ledger.main(
+        [
+            "write-blocked-result", "--head", HEAD, "--engine", "codex",
+            "--round", "2", "--base", "c" * 40, "--before", HEAD,
+            "--result-file", str(result_file), "--blocker-file", str(blocker),
+        ]
+    )
+
+    value = json.loads(result_file.read_text(encoding="utf-8"))
+    assert value == {
+        "version": 3,
+        "status": "blocked",
+        "engine": "codex",
+        "round": 2,
+        "baseSha": "c" * 40,
+        "beforeSha": HEAD,
+        "afterSha": HEAD,
+        "classification": None,
+        "findingFingerprints": [],
+        "finalLaneComplete": False,
+        "blocker": "Reviewer could not verify the final lane.",
+    }
+    assert result_file.stat().st_mode & 0o077 == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
 
 
 def test_write_result_rejects_minor_change_without_ledger_evidence(
@@ -1586,6 +1623,83 @@ def test_write_result_ignores_settled_same_round_history_outside_transition(
     assert json.loads(result_file.read_text(encoding="utf-8"))[
         "findingFingerprints"
     ] == ["current"]
+
+
+def test_same_round_history_rejects_fixed_disposition_at_finding_head(
+    review_ledger: ModuleType,
+    tmp_path: Path,
+) -> None:
+    threads = _threads_file(
+        tmp_path,
+        [
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": _finding_body(
+                                "historical-fixed", head=HISTORICAL
+                            ),
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": _disposition_body(
+                                "historical-fixed", head=HISTORICAL
+                            ),
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            }
+        ],
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="forward transition"):
+        review_ledger._same_round_dispositions(
+            SimpleNamespace(engine="codex", round=2, repo=REPO),
+            review_ledger._load_review_threads(threads),
+            {HEAD: 0},
+        )
+
+
+def test_same_round_history_accepts_strictly_forward_fixed_disposition(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    threads = _threads_file(
+        tmp_path,
+        [
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": _finding_body(
+                                "historical-fixed", head=HISTORICAL
+                            ),
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": _disposition_body(
+                                "historical-fixed", head=MIDDLE
+                            ),
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
+
+    assert review_ledger._same_round_dispositions(
+        SimpleNamespace(engine="codex", round=2, repo=REPO),
+        review_ledger._load_review_threads(threads),
+        {HEAD: 0},
+    ) == []
 
 
 def test_write_result_aggregates_sequential_recurrences_in_one_thread(
