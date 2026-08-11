@@ -1724,6 +1724,13 @@ def test_review_contract_version_is_required_before_claim(
         ("codex_review_hook", "python3 .codex/skills/grill/scripts/review-ledger.py attest"),
         ("claude_review_hook", "claude -p /deepgrill"),
         ("claude_review_hook", "claude -p /pr-grill"),
+        # Bare command names pin the `^` branch of the guard's word-boundary
+        # pattern. Every case above matches through the leading
+        # `[^[:alnum:]_-]` branch, so without these a regression that drops
+        # `^|` still passes while accepting the shortest spelling of a stale
+        # hook.
+        ("codex_review_hook", "deepgrill"),
+        ("claude_review_hook", "grill"),
     ],
 )
 def test_retired_grill_hook_is_rejected_before_claim(
@@ -1756,6 +1763,13 @@ def test_grill_substring_in_unrelated_hook_path_is_not_rejected(
         config=_config_v3(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
     )
     assert "names a retired grill-family review skill" not in result.stderr
+    # Absence of the message alone would also hold if the run died earlier for
+    # an unrelated reason, or if the guard's wording changed. Assert the run
+    # actually got past the preflight by checking it reached the claim and
+    # worktree stage — the mirror of what the rejection cases assert is absent.
+    gh_log = consumer[3] / "gh.log"
+    assert gh_log.exists() and "issue edit" in gh_log.read_text(encoding="utf-8")
+    assert (tmp_path / "worktrees").exists()
 
 
 def test_unscoped_include_assigned_controls_ready_helper_filter(

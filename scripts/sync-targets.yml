@@ -226,6 +226,12 @@ targets:
   # carrying this rename. Otherwise the new copy targets above fail the
   # allowlist gate and the run aborts before reaching these deletes. Retired
   # paths survive, along with any earlier new copy targets already written.
+  #
+  # Add the new patterns, but do not drop the retired ones yet. The allowlist
+  # gate applies to delete targets as well as copies, so a consumer that swaps
+  # `grill`/`deepgrill`/`pr-grill` out of the allowlist aborts on the deletes
+  # below and ends up with both naming families installed. Keep the three
+  # retired patterns allowlisted until these delete entries leave the manifest.
   - destination: .codex/skills/grill/SKILL.md
     delete: true
   - destination: .codex/skills/grill/scripts/review-ledger.py

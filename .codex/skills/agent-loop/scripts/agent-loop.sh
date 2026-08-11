@@ -220,7 +220,8 @@ fi
 for hook_key in claude_review_hook codex_review_hook; do
     case "$hook_key" in
         claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
-        *) hook_value="$CODEX_REVIEW_HOOK" ;;
+        codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
+        *) echo "unhandled hook key in retired-name preflight: $hook_key" >&2; exit 1 ;;
     esac
     if [[ "$hook_value" =~ (^|[^[:alnum:]_-])(deepgrill|pr-grill|grill)([^[:alnum:]_-]|$) ]]; then
         echo "$hook_key names a retired grill-family review skill or path; migrate it to critique, deepcritique, or pr-critique before running agent-loop" >&2

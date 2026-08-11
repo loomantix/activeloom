@@ -58,12 +58,12 @@ cd ../review-pr-<pr-number>
 # re-run pr-critique <pr-number> here
 ```
 
-Resolve the PR identity and review scope once. Prefer the immutable base SHA
-supplied by the convergence wrapper, then an explicit
-`$PR_CRITIQUE_REVIEW_BASE_SHA`. During the rename transition, also accept the
-legacy `$PR_GRILL_REVIEW_BASE_SHA`; resolve every non-empty override and fail
-closed when any pair names different commits. Only a standalone invocation
-without an override may snapshot the
+Resolve the PR identity and review scope once. The immutable base SHA may be
+supplied by the convergence wrapper as `$AGENT_LOOP_REVIEW_BASE_SHA`, as an
+explicit `$PR_CRITIQUE_REVIEW_BASE_SHA`, or — during the rename transition — as
+the legacy `$PR_GRILL_REVIEW_BASE_SHA`. There is no precedence between them:
+resolve every non-empty override and fail closed when any pair names different
+commits. Only a standalone invocation without an override may snapshot the
 PR's current `baseRefOid`. Never let individual lanes re-resolve a mutable ref:
 
 ```bash
