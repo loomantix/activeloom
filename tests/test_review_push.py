@@ -104,6 +104,38 @@ def test_two_sequential_review_pushes_succeed(
     )
 
 
+def test_rejects_failed_worktree_status_inspection(
+    review_repo: tuple[Path, dict[str, str], str], tmp_path: Path
+) -> None:
+    repo, env, start = review_repo
+    real_git = env["AGENT_LOOP_REAL_GIT"]
+    failing_git = tmp_path / "git-with-failing-status"
+    failing_git.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = status ]; then exit 42; fi\n'
+        'exec "$REAL_GIT_FOR_TEST" "$@"\n',
+        encoding="utf-8",
+    )
+    failing_git.chmod(0o700)
+    env["REAL_GIT_FOR_TEST"] = real_git
+    env["AGENT_LOOP_REAL_GIT"] = str(failing_git)
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "could not inspect worktree cleanliness" in result.stderr
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == start
+    )
+
+
 @pytest.mark.parametrize("argument", ["origin", "HEAD", "HEAD:other", "--force"])
 def test_rejects_bare_ambiguous_wrong_destination_and_force_arguments(
     review_repo: tuple[Path, dict[str, str], str], argument: str

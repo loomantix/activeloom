@@ -3799,6 +3799,38 @@ def test_batch_hooks_do_not_inherit_the_batch_lock(
     assert "paused cleanly at the 1-issue iteration cap" in result.stdout
 
 
+def test_batch_resume_hooks_do_not_inherit_the_batch_lock(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    validation_hook = (
+        'test -z "${AGENT_LOOP_BATCH_LOCK_FD:-}"; '
+        'for fd in /proc/self/fd/*; do '
+        'case "$(readlink "$fd" 2>/dev/null || true)" in '
+        '*-batch-*.json.lock) exit 71 ;; esac; done'
+    )
+    config = _config_v3(tmp_path, validation_hook=validation_hook)
+    first = _run(
+        consumer,
+        ["--issues", "83,84", "--iterations", "2"],
+        issues=[_issue(83), _issue(84)],
+        config=config,
+        extra_env={"AGENT_INTERRUPT_AFTER_READY": "true"},
+        timeout=120,
+    )
+    assert first.returncode != 0
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+
+    resumed = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(83, assigned=True), _issue(84)],
+        config=config,
+        timeout=120,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+
+
 def test_batch_resume_rejects_a_child_checkpoint_for_another_issue(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

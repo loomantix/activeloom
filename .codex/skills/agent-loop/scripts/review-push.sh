@@ -53,7 +53,11 @@ actual_branch="$("$real_git" symbolic-ref --quiet --short HEAD)" || {
     echo "review-push rejects a different checked-out branch" >&2
     exit 1
 }
-[ -z "$("$real_git" status --porcelain)" ] || {
+worktree_status="$("$real_git" status --porcelain)" || {
+    echo "review-push could not inspect worktree cleanliness" >&2
+    exit 1
+}
+[ -z "$worktree_status" ] || {
     echo "review-push requires a clean committed worktree" >&2
     exit 1
 }
