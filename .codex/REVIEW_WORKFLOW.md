@@ -62,8 +62,9 @@ Use this path when both local engines are available:
      Once both engines have read the change cold twice, the remaining findings
      are mostly about the review's own artifacts. A convergence round runs only
      the lanes that can find a reason not to deploy, changes the PR only for a
-     blocking defect, defers everything else to a linked issue, and ends the loop
-     as soon as it finds no blocker. Lanes still report everything they find —
+     realistically reachable blocking defect, defers everything else, creates
+     an issue only for an urgent high-impact follow-up, and ends the loop as soon
+     as it finds no blocker. Lanes still report everything they find —
      the narrowing is a disposition rule applied when consolidating lane output,
      never an instruction to a lane to withhold what it found.
 
@@ -137,10 +138,13 @@ re-reviews the new head.
 
 - Treat every generated finding as a hypothesis. Verify it against code, tests,
   and documented constraints before posting or changing anything.
-- Fix every valid in-scope finding, including nits. Dismiss false positives with
-  a concrete rationale in the thread.
-- Defer only genuinely large follow-up work, roughly 300+ lines or a
-  cross-cutting rewrite, and track it explicitly.
+- Fix a confirmed finding only when the likelihood and impact of real user harm,
+  or a credible path to security exploitation, justify the fix's churn and
+  regression risk.
+- Create a follow-up issue only for a concrete, high-impact defect that should
+  be scheduled within roughly two weeks. Record ordinary deferrals without an
+  issue; do not turn speculative hardening, cleanup, or low-likelihood edge cases
+  into backlog.
 - A review fix without a preceding inline finding, a finding without a reply,
   or a resolved thread without a visible disposition is a failed review pass.
 - Never copy sensitive source, credentials, private data, or model logs into PR
