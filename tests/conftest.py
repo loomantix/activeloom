@@ -1,16 +1,14 @@
 """Shared fixtures + an `importlib` loader that lets the test modules
 import the hyphenated script files (`sync-engine.py`,
-`lint-collapse-sites.py`, `create-signed-commit.py`, `release-preflight.py`,
-`verify-published-package.py`) as Python modules
+`lint-collapse-sites.py`, `create-signed-commit.py`) as Python modules
 without renaming them on disk.
 
 The scripts are designed to be run from CI as `python3 scripts/foo.py`,
 so they don't need to be importable from the source tree. The tests use
 `importlib.util.spec_from_file_location` via `_load_script` below to
 load them as pseudo-modules under the bare names `sync_engine`,
-`lint_collapse_sites`, `create_signed_commit`, `release_preflight`, and
-`verify_published_package` — cleaner than spawning subprocesses for every
-function-level unit test.
+`lint_collapse_sites`, and `create_signed_commit` — cleaner than spawning
+subprocesses for every function-level unit test.
 """
 from __future__ import annotations
 
@@ -24,7 +22,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 ISSUES_SCRIPTS_DIR = REPO_ROOT / ".codex" / "skills" / "issues" / "scripts"
-NPM_PUBLISH_SCRIPTS_DIR = REPO_ROOT / ".codex" / "skills" / "publish-npm-package" / "scripts"
 
 
 def _load_script(name: str, path: Path) -> ModuleType:
@@ -58,18 +55,6 @@ def create_signed_commit() -> ModuleType:
 def ready_mod() -> ModuleType:
     """The `/issues ready` query script (.codex/skills/issues/scripts/ready.py)."""
     return _load_script("ready", ISSUES_SCRIPTS_DIR / "ready.py")
-
-
-@pytest.fixture(scope="session")
-def release_preflight() -> ModuleType:
-    return _load_script("release_preflight", NPM_PUBLISH_SCRIPTS_DIR / "release-preflight.py")
-
-
-@pytest.fixture(scope="session")
-def published_package_verifier() -> ModuleType:
-    return _load_script(
-        "verify_published_package", NPM_PUBLISH_SCRIPTS_DIR / "verify-published-package.py"
-    )
 
 
 @pytest.fixture

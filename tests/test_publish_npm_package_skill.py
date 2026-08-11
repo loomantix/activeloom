@@ -3,13 +3,39 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 import io
 import json
+import sys
 import tarfile
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+SCRIPTS = Path(__file__).resolve().parent.parent / ".codex/skills/publish-npm-package/scripts"
+
+
+def _load_script(name: str) -> ModuleType:
+    path = SCRIPTS / name
+    module_name = name.removesuffix(".py").replace("-", "_")
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="session")
+def release_preflight() -> ModuleType:
+    return _load_script("release-preflight.py")
+
+
+@pytest.fixture(scope="session")
+def published_package_verifier() -> ModuleType:
+    return _load_script("verify-published-package.py")
 
 
 def _tarball(path: Path, name: str = "example-package", version: str = "1.2.3") -> bytes:
