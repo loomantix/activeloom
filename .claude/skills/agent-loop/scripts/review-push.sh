@@ -53,7 +53,11 @@ actual_branch="$("$real_git" symbolic-ref --quiet --short HEAD)" || {
     echo "review-push rejects a different checked-out branch" >&2
     exit 1
 }
-[ -z "$("$real_git" status --porcelain)" ] || {
+worktree_status="$("$real_git" status --porcelain)" || {
+    echo "review-push could not inspect worktree cleanliness" >&2
+    exit 1
+}
+[ -z "$worktree_status" ] || {
     echo "review-push requires a clean committed worktree" >&2
     exit 1
 }
@@ -70,7 +74,8 @@ remote_line="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRAN
     exit 1
 }
 remote_head="${remote_line%%[[:space:]]*}"
-[ "$remote_head" = "$AGENT_LOOP_PR_HEAD_SHA" ] || {
+"$real_git" merge-base --is-ancestor "$AGENT_LOOP_PR_HEAD_SHA" "$remote_head" && \
+"$real_git" merge-base --is-ancestor "$remote_head" "$local_head" || {
     echo "review-push rejects a stale or uncertain remote head" >&2
     exit 1
 }

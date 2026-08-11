@@ -217,6 +217,8 @@ If this Claude pass made a material fix, restart the bounded round at
 `/codex-review <pr-number>` in a fresh session. Otherwise it completes the
 Claude half of the current round. Always finalize `clean`, `changed`, or
 `blocked` per the ledger's wrapper/standalone ownership rule before returning.
+Use `write-result` for `clean` or `changed`, and use
+`write-blocked-result` with an owner-only blocker file for `blocked`.
 
 ## Boundaries
 

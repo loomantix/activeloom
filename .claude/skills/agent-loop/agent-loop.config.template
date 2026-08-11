@@ -23,8 +23,8 @@ validation_hook =
 # Every successfully completed clean or changed pass calls `review-ledger.py
 # write-result`, which derives the complete same-round disposition set and
 # atomically writes $AGENT_LOOP_REVIEW_RESULT_FILE. A blocked hook uses
-# deepcritique's deterministic blocked-result serializer and must not claim a
-# clean or changed pass.
+# `review-ledger.py write-blocked-result` with an owner-only blocker file and
+# must not claim a clean or changed pass.
 # Review hooks never post pass/completion markers because
 # the wrapper validates the result and owns those attestations.
 # Findings, replies, and attestations must be posted by the authenticated

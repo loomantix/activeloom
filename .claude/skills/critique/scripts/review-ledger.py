@@ -763,8 +763,34 @@ def _verify_v1_marker(body: str, marker: re.Match[str], label: str) -> None:
         _fail(f"actor-owned v1 {label} content is empty")
 
 
+def _historical_comment_ids(args: argparse.Namespace) -> set[int]:
+    path_value = getattr(args, "historical_comment_ids_file", None) or os.environ.get(
+        "AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE"
+    )
+    if not path_value:
+        return set()
+    path = Path(path_value)
+    if path.is_symlink() or not path.is_file():
+        _fail("historical comment IDs must be a regular non-symlink file")
+    try:
+        values = json.loads(path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LedgerError(
+            "historical comment IDs must contain valid UTF-8 JSON"
+        ) from error
+    if (
+        not isinstance(values, list)
+        or any(type(value) is not int or value < 1 for value in values)
+        or len(set(values)) != len(values)
+    ):
+        _fail("historical comment IDs must be unique positive integers")
+    return set(values)
+
+
 def _thread_markers(
-    thread: dict[str, Any], actor: str
+    thread: dict[str, Any],
+    actor: str,
+    historical_comment_ids: set[int] | None = None,
 ) -> tuple[list[tuple[int, re.Match[str]]], list[tuple[int, re.Match[str]]]]:
     comments = cast(dict[str, Any], thread["comments"])["nodes"]
     findings: list[tuple[int, re.Match[str]]] = []
@@ -803,6 +829,13 @@ def _thread_markers(
             _verify_marker_content(body, disposition, "disposition")
             dispositions.append((index, disposition))
         if pseudo is not None:
+            if (
+                historical_comment_ids is not None
+                and comment.get("databaseId") not in historical_comment_ids
+            ):
+                _fail(
+                    "historical local-review:v3 finding was not captured before the current pass"
+                )
             later_same_actor = any(
                 isinstance(reply, dict)
                 and isinstance(reply.get("author"), dict)
@@ -824,10 +857,10 @@ def _thread_markers(
         disposition_v1 = DISPOSITION_V1_RE.search(body)
         legacy_marker = LEGACY_THREAD_MARKER_RE.match(first_line)
         if (
-            FINDING_V1 in body
-            or DISPOSITION_V1 in body
-            or legacy_marker is not None
-        ) and finding_v1 is None and disposition_v1 is None:
+            (FINDING_V1 in body or DISPOSITION_V1 in body or legacy_marker is not None)
+            and finding_v1 is None
+            and disposition_v1 is None
+        ):
             _fail("actor-owned legacy local-review marker is malformed")
         if finding_v1 is not None:
             _verify_v1_marker(body, finding_v1, "finding")
@@ -905,7 +938,10 @@ def _matching_dispositions(
 
 
 def _verify_complete_v3_threads(
-    repo: str, pr: int, actor: str
+    repo: str,
+    pr: int,
+    actor: str,
+    historical_comment_ids: set[int] | None = None,
 ) -> list[tuple[re.Match[str], re.Match[str]]]:
     matched: list[tuple[re.Match[str], re.Match[str]]] = []
     topology: dict[str, list[tuple[str, int, re.Match[str]]]] = {}
@@ -919,7 +955,7 @@ def _verify_complete_v3_threads(
             or pull_request.get("number") != pr
         ):
             _fail("GitHub returned a review thread outside the requested PR")
-        findings, dispositions = _thread_markers(thread, actor)
+        findings, dispositions = _thread_markers(thread, actor, historical_comment_ids)
         if not findings and not dispositions:
             continue
         if not findings:
@@ -938,7 +974,9 @@ def _verify_complete_v3_threads(
         matched.extend(_matching_dispositions(findings, dispositions))
     for records in topology.values():
         thread_ids = {thread_id for thread_id, _, _ in records}
-        occurrences = sorted(int(finding.group("occurrence")) for _, _, finding in records)
+        occurrences = sorted(
+            int(finding.group("occurrence")) for _, _, finding in records
+        )
         roots = [record for record in records if record[2].group("occurrence") == "1"]
         if (
             len(thread_ids) != 1
@@ -1063,12 +1101,31 @@ def _same_round_evidence(
             continue
         finding_head = finding.group("head")
         if finding_head not in allowed_heads:
+            if disposition.group("outcome") == "fixed":
+                disposition_head = disposition.group("head")
+                if disposition_head == finding_head:
+                    _fail("historical fixed disposition is not a forward transition")
+                comparison = _json_output(
+                    [
+                        "api",
+                        f"repos/{args.repo}/compare/{finding_head}...{disposition_head}",
+                    ]
+                )
+                merge_base = (
+                    comparison.get("merge_base_commit")
+                    if isinstance(comparison, dict)
+                    else None
+                )
+                if (
+                    not isinstance(comparison, dict)
+                    or comparison.get("status") != "ahead"
+                    or not isinstance(merge_base, dict)
+                    or merge_base.get("sha") != finding_head
+                ):
+                    _fail("historical fixed disposition is not a forward transition")
             continue
         disposition_head = disposition.group("head")
-        if (
-            disposition.group("outcome") == "fixed"
-            and disposition_head == finding_head
-        ):
+        if disposition.group("outcome") == "fixed" and disposition_head == finding_head:
             _fail("fixed finding was not posted before its disposition head")
         if (
             disposition_head not in allowed_heads
@@ -1092,9 +1149,7 @@ def _same_round_evidence(
             previous[0] or fixed,
             previous[1] or fixed_major,
         )
-    return [
-        (fingerprint, *evidence[fingerprint]) for fingerprint in sorted(evidence)
-    ]
+    return [(fingerprint, *evidence[fingerprint]) for fingerprint in sorted(evidence)]
 
 
 def _transition_heads(
@@ -1130,32 +1185,29 @@ def _verify_result_evidence(
 ) -> None:
     _verify_review_base(args.repo, args.pr, args.base, args.before)
     _verify_git_transition(args.before, args.head)
-    matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
+    matched = _verify_complete_v3_threads(
+        args.repo, args.pr, actor, _historical_comment_ids(args)
+    )
     allowed_heads = _transition_heads(args, matched)
     evidence = _same_round_evidence(args, matched, allowed_heads)
     expected = sorted(cast(list[str], data["findingFingerprints"]))
     if [row[0] for row in evidence] != expected:
-        _fail("review result fingerprints do not equal the complete same-round disposition set")
+        _fail(
+            "review result fingerprints do not equal the complete same-round disposition set"
+        )
     if data["status"] == "clean":
         if any(has_fix for _, has_fix, _ in evidence):
             _fail("clean review results cannot have same-round fixes")
         return
     if not evidence:
         _fail("changed review results require ledger evidence")
-    if any(has_major_fix for _, _, has_major_fix in evidence) and data["classification"] != "material":
+    if (
+        any(has_major_fix for _, _, has_major_fix in evidence)
+        and data["classification"] != "material"
+    ):
         _fail("fixed blocking or major findings require material classification")
     if not any(has_fix for _, has_fix, _ in evidence):
-        marker = (
-            f"<!-- local-review-refactor:v1 engine={args.engine} "
-            f"head={args.before} outcome=committed -->"
-        )
-        comments = _actor_rows(_issue_comments(args.repo, args.pr), actor)
-        if data["classification"] != "minor" or not any(
-            marker in str(comment.get("body", "")) for comment in comments
-        ):
-            _fail(
-                "changed review result has no fixed finding or verified cleanup latch"
-            )
+        _fail("changed review results require a fixed ledger finding")
 
 
 def _verify_ledger(args: argparse.Namespace) -> None:
@@ -1163,7 +1215,9 @@ def _verify_ledger(args: argparse.Namespace) -> None:
     if getattr(args, "actor", None) is not None and args.actor != actor:
         _fail("authenticated GitHub actor changed before ledger verification")
     _verify_head(args.repo, args.pr, args.head)
-    matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
+    matched = _verify_complete_v3_threads(
+        args.repo, args.pr, actor, _historical_comment_ids(args)
+    )
     if getattr(args, "result_file", None) is not None:
         live_head = args.head
         args.head = args.result_head
@@ -1476,7 +1530,9 @@ def _write_result(args: argparse.Namespace) -> None:
     actor = _current_login()
     _verify_review_base(args.repo, args.pr, args.base, args.before)
     _verify_git_transition(args.before, args.head)
-    matched = _verify_complete_v3_threads(args.repo, args.pr, actor)
+    matched = _verify_complete_v3_threads(
+        args.repo, args.pr, actor, _historical_comment_ids(args)
+    )
     rows = _same_round_evidence(args, matched, _transition_heads(args, matched))
     fingerprints = [fingerprint for fingerprint, _, _ in rows]
     changed = args.before != args.head
@@ -1490,7 +1546,13 @@ def _write_result(args: argparse.Namespace) -> None:
         _fail("round 3+ changed review results require material classification")
     if changed and not rows:
         _fail("changed review results require ledger evidence")
-    if changed and any(has_major_fix for _, _, has_major_fix in rows) and args.classification != "material":
+    if changed and not any(has_fix for _, has_fix, _ in rows):
+        _fail("changed review results require a fixed ledger finding")
+    if (
+        changed
+        and any(has_major_fix for _, _, has_major_fix in rows)
+        and args.classification != "material"
+    ):
         _fail("fixed blocking or major findings require material classification")
     value = {
         "version": PROTOCOL_VERSION,
@@ -1506,8 +1568,19 @@ def _write_result(args: argparse.Namespace) -> None:
     }
     _validate_result_data(args, (json.dumps(value) + "\n").encode())
     _verify_result_evidence(args, value, actor)
+    _write_result_file(args.result_file, value)
+    raw = _read_result_bytes(args)
+    print(
+        json.dumps(
+            {"resultSha256": hashlib.sha256(raw).hexdigest(), **value},
+            sort_keys=True,
+        )
+    )
+
+
+def _write_result_file(path_value: str, value: dict[str, Any]) -> None:
     raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    path = Path(args.result_file)
+    path = Path(path_value)
     if path.is_symlink() or (path.exists() and not path.is_file()):
         _fail("review result destination must be a regular non-symlink file")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1524,7 +1597,32 @@ def _write_result(args: argparse.Namespace) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
-    print(json.dumps({"resultSha256": hashlib.sha256(raw).hexdigest(), **value}, sort_keys=True))
+
+
+def _write_blocked_result(args: argparse.Namespace) -> None:
+    blocker = _read_content(args.blocker_file).strip()
+    value = {
+        "version": PROTOCOL_VERSION,
+        "status": "blocked",
+        "engine": args.engine,
+        "round": args.round,
+        "baseSha": args.base,
+        "beforeSha": args.before,
+        "afterSha": args.head,
+        "classification": None,
+        "findingFingerprints": [],
+        "finalLaneComplete": False,
+        "blocker": blocker,
+    }
+    raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    _validate_result_data(args, raw)
+    _write_result_file(args.result_file, value)
+    print(
+        json.dumps(
+            {"resultSha256": hashlib.sha256(raw).hexdigest(), **value},
+            sort_keys=True,
+        )
+    )
 
 
 def _attest(args: argparse.Namespace) -> None:
@@ -1815,8 +1913,14 @@ def _parser() -> argparse.ArgumentParser:
 
     write_result = commands.add_parser("write-result")
     _add_result_arguments(write_result, github=True)
+    write_result.add_argument("--historical-comment-ids-file")
     write_result.add_argument("--classification", choices=("minor", "material"))
     write_result.set_defaults(handler=_write_result)
+
+    write_blocked = commands.add_parser("write-blocked-result")
+    _add_result_arguments(write_blocked, github=False)
+    write_blocked.add_argument("--blocker-file", required=True)
+    write_blocked.set_defaults(handler=_write_blocked_result)
 
     attest = commands.add_parser("attest")
     _add_result_arguments(attest, github=True)
@@ -1824,6 +1928,7 @@ def _parser() -> argparse.ArgumentParser:
     attest.add_argument("--threads-file")
     attest.add_argument("--allowed-heads-file")
     attest.add_argument("--actor")
+    attest.add_argument("--historical-comment-ids-file")
     attest.add_argument("--expected-result-sha256")
     attest.set_defaults(handler=_attest)
 
@@ -1838,6 +1943,7 @@ def _parser() -> argparse.ArgumentParser:
     verify_ledger.add_argument("--before")
     verify_ledger.add_argument("--result-file")
     verify_ledger.add_argument("--allowed-heads-file")
+    verify_ledger.add_argument("--historical-comment-ids-file")
     verify_ledger.set_defaults(handler=_verify_ledger)
 
     resolve = commands.add_parser("resolve")

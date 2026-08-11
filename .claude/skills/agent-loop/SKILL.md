@@ -84,8 +84,9 @@ fresh fetch plus `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 `AGENT_LOOP_REVIEW_PUSH_HELPER`. Every successfully completed clean or changed
 hook calls `review-ledger.py write-result`, which derives the complete
 same-engine/same-round fixed, deferred, and dismissed fingerprint set and writes
-the canonical result. A blocked hook instead uses deepcritique's deterministic
-blocked-result serializer and must not claim a clean or changed pass. The wrapper validates its exact
+the canonical result. A changed result requires at least one fixed finding. A
+blocked hook instead uses `review-ledger.py write-blocked-result` with an
+owner-only blocker file and must not claim a clean or changed pass. The wrapper validates its exact
 SHAs and finding fingerprints, verifies resolved v3 dispositions, and owns the
 canonical pass/completion attestation. A missing, invalid, or blocked result
 stops even when the hook exits zero. Validation hooks
@@ -180,7 +181,8 @@ opened one summary PR at the end. That model is gone:
   use `$AGENT_LOOP_REVIEW_PUSH_HELPER`, which owns the exact fully qualified
   draft-PR destination and rejects force, ambiguity, stale heads, and the wrong
   branch. Every v3 hook must call `review-ledger.py write-result`; it must not
-  post pass/completion attestations because the
+  use `review-ledger.py write-blocked-result` for blocked results, or post
+  pass/completion attestations because the
   wrapper validates the result and owns those markers.
 
 ## Test Guidance

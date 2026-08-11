@@ -24,8 +24,12 @@ def _git(repo: Path, *args: str) -> str:
 def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
     remote = tmp_path / "remote.git"
     repo = tmp_path / "repo"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
-    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repo)], check=True, capture_output=True
+    )
     _git(repo, "config", "user.name", "Test")
     _git(repo, "config", "user.email", "test@example.invalid")
     (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
@@ -57,7 +61,7 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
 
 
 def test_rejects_changed_origin_before_push(
-    review_repo: tuple[Path, dict[str, str], str]
+    review_repo: tuple[Path, dict[str, str], str],
 ) -> None:
     repo, env, _ = review_repo
     redirected = repo.parent / "redirected.git"
@@ -124,7 +128,9 @@ def test_v2_guard_preserves_explicit_staged_review_push(tmp_path: Path) -> None:
     assert "push origin HEAD:refs/heads/agent-loop/issue-7" in result.stdout
 
 
-def _run(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    repo: Path, env: dict[str, str], *args: str
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(HELPER), *args], cwd=repo, env=env, capture_output=True, text=True
     )
@@ -138,12 +144,77 @@ def test_reports_review_push_protocol_version() -> None:
     assert result.stdout == "1\n"
 
 
-def test_exact_fully_qualified_review_push_succeeds(review_repo: tuple[Path, dict[str, str], str]) -> None:
+def test_exact_fully_qualified_review_push_succeeds(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
     repo, env, _ = review_repo
     result = _run(repo, env)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == _git(repo, "rev-parse", "HEAD")
-    assert _git(repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7").split()[0] == result.stdout.strip()
+    assert (
+        _git(
+            repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7"
+        ).split()[0]
+        == result.stdout.strip()
+    )
+
+
+def test_two_sequential_review_pushes_succeed(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, _ = review_repo
+    first = _run(repo, env)
+    assert first.returncode == 0, first.stderr
+
+    (repo / "second.txt").write_text("second review fix\n", encoding="utf-8")
+    _git(repo, "add", "second.txt")
+    _git(repo, "commit", "-m", "fix: second review")
+    second = _run(repo, env)
+
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.strip() == _git(repo, "rev-parse", "HEAD")
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == second.stdout.strip()
+    )
+
+
+def test_rejects_failed_worktree_status_inspection(
+    review_repo: tuple[Path, dict[str, str], str], tmp_path: Path
+) -> None:
+    repo, env, start = review_repo
+    real_git = env["AGENT_LOOP_REAL_GIT"]
+    failing_git = tmp_path / "git-with-failing-status"
+    failing_git.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = status ]; then exit 42; fi\n'
+        'exec "$REAL_GIT_FOR_TEST" "$@"\n',
+        encoding="utf-8",
+    )
+    failing_git.chmod(0o700)
+    env["REAL_GIT_FOR_TEST"] = real_git
+    env["AGENT_LOOP_REAL_GIT"] = str(failing_git)
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "could not inspect worktree cleanliness" in result.stderr
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == start
+    )
 
 
 @pytest.mark.parametrize("argument", ["origin", "HEAD", "HEAD:other", "--force"])
@@ -156,7 +227,9 @@ def test_rejects_bare_ambiguous_wrong_destination_and_force_arguments(
     assert "accepts no arguments" in result.stderr
 
 
-def test_rejects_wrong_checked_out_branch(review_repo: tuple[Path, dict[str, str], str]) -> None:
+def test_rejects_wrong_checked_out_branch(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
     repo, env, _ = review_repo
     _git(repo, "switch", "-c", "other")
     result = _run(repo, env)
@@ -164,7 +237,9 @@ def test_rejects_wrong_checked_out_branch(review_repo: tuple[Path, dict[str, str
     assert "different checked-out branch" in result.stderr
 
 
-def test_rejects_stale_remote_head(review_repo: tuple[Path, dict[str, str], str]) -> None:
+def test_rejects_stale_remote_head(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
     repo, env, start = review_repo
     competing = repo.parent / "competing"
     subprocess.run(

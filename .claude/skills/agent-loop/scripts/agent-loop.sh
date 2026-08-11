@@ -28,7 +28,8 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
-    AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS
+    AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
+    AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -230,6 +231,10 @@ if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; t
     echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
     exit 1
 fi
+if [ -n "$RESUME_BATCH_FILE" ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; then
+    echo "--resume-batch requires review_contract_version = 3" >&2
+    exit 1
+fi
 # Catch retired reviewer names before any issue mutation. Both local engines
 # use the canonical deepcritique skill name.
 for hook_key in claude_review_hook codex_review_hook; do
@@ -419,7 +424,7 @@ RECOVERY_EMITTED=false
 PROCESSED_ISSUES=()
 AGENT_LOOP_RUN_STATE_FILE=""
 AGENT_LOOP_RUN_LOCK_FD=""
-AGENT_LOOP_BATCH_LOCK_FD=""
+AGENT_LOOP_BATCH_LOCK_FD="${AGENT_LOOP_BATCH_LOCK_FD:-}"
 RESUME_STATE_JSON=""
 
 acquire_run_lock() {
@@ -1037,6 +1042,10 @@ run_bounded_hook() {
         if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then
             exec {AGENT_LOOP_RUN_LOCK_FD}<&-
         fi
+        if [ -n "$AGENT_LOOP_BATCH_LOCK_FD" ]; then
+            exec {AGENT_LOOP_BATCH_LOCK_FD}<&-
+            unset AGENT_LOOP_BATCH_LOCK_FD
+        fi
         # Setup, worker, and validation hooks remain local-only. Review hooks run
         # after the wrapper opens a draft PR and must be able to post inline
         # comments, push fixes, reply, and resolve; their remote mutations are
@@ -1305,6 +1314,8 @@ run_review_pass() {
     local review_description="$7" validation_description="$8"
     local before_sha after_sha status classification outcome_signature outcome_file
     local result_file result_json result_status result_hash allowed_heads_file blocker
+    local pre_pass_threads_file historical_comment_ids_file
+    local historical_comment_ids_signature
     local boundary_status
 
     export AGENT_LOOP_REVIEW_ENGINE="$slug"
@@ -1330,11 +1341,35 @@ run_review_pass() {
         recovery_message "PR head attestation failed before $engine review round $round."
         return 1
     fi
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        pre_pass_threads_file="$(fetch_local_review_threads)" || {
+            recovery_message "Could not snapshot review history before $engine round $round."
+            return 1
+        }
+        historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-historical-comment-ids.json"
+        jq '[.[].data.repository.pullRequest.reviewThreads.nodes[].comments.nodes[].databaseId | select(type == "number")] | unique | sort' \
+            "$pre_pass_threads_file" > "$historical_comment_ids_file" || {
+            recovery_message "Could not pin review history before $engine round $round."
+            return 1
+        }
+        historical_comment_ids_signature="$(review_outcome_signature "$historical_comment_ids_file")" || {
+            recovery_message "Could not seal review history before $engine round $round."
+            return 1
+        }
+        export AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE="$historical_comment_ids_file"
+    else
+        unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE
+    fi
     run_bounded_hook "$hook_description (round $round)" "$hook" \
         "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
         recovery_message "$hook_failure_description failed in review round $round."
         return 1
     }
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        require_review_outcome_signature "$engine pre-pass history" \
+            "$historical_comment_ids_file" "$historical_comment_ids_signature" \
+            "after review round $round" || return 1
+    fi
     status="$(git status --porcelain)" || {
         recovery_message "Could not inspect Git status after the $hook_description in round $round."
         return 1
@@ -1584,7 +1619,7 @@ run_review_convergence() {
             }
             unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
                 AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
-                AGENT_LOOP_REVIEW_RESULT_FILE
+                AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE
             echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reported no material fixes in a complete round after $round round(s)"
             return 0
         fi
@@ -1604,7 +1639,7 @@ run_review_convergence() {
 
     unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
         AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
-        AGENT_LOOP_REVIEW_RESULT_FILE
+        AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE
     recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
     return 1
 }
@@ -2406,6 +2441,12 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             exit 1
         }
         child_json="$(python3 "$RUN_STATE_HELPER" show --file "$child_state")" || exit 1
+        [ "$(jq -r '.issue' <<<"$child_json")" = "$batch_issue" ] && \
+        [ "$(jq -r '.repo' <<<"$child_json")" = "$GH_REPO" ] && \
+        [ "$(jq -r '.baseBranch' <<<"$child_json")" = "$BASE_BRANCH" ] || {
+            recovery_message "Batch issue #$batch_issue does not match its child review checkpoint."
+            exit 1
+        }
         child_worktree="$(jq -r '.worktree' <<<"$child_json")"
         AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" \
             "$SCRIPT_DIR/agent-loop.sh" --resume-run "$child_state" || {
