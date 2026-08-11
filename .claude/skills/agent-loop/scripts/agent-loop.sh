@@ -2138,6 +2138,7 @@ resume_review_run() {
     local resume_boundary_status=0 checkpoint_base latest_base attestation_status
     local issue_title_sha256 issue_body_sha256
     local ready_finalization=false pr_draft_state state_review_engine
+    local restart_after_interrupted_pass=false
     local finalizing_head_drift=false
     SELECTED_ID="$(jq -r '.issue' <<<"$RESUME_STATE_JSON")"
     issue_json_value="$(issue_json "$SELECTED_ID")" || {
@@ -2265,7 +2266,7 @@ resume_review_run() {
         review_pass_identity_is_attested codex "$state_round" \
             "$checkpoint_base" "$state_head" || attestation_status=$?
         if [ "$attestation_status" -eq 0 ]; then
-            state_round=$((state_round + 1))
+            restart_after_interrupted_pass=true
         elif [ "$attestation_status" -ne 1 ]; then
             recovery_message "Could not reconcile the interrupted Codex pass attestation."
             return 1
@@ -2273,7 +2274,14 @@ resume_review_run() {
     fi
     if [ "$state_phase" = reviewing ] && \
        { [ "$state_review_engine" = claude ] || [ "$current_head" != "$state_head" ]; }; then
-        state_round=$((state_round + 1))
+        restart_after_interrupted_pass=true
+    fi
+    if [ "$restart_after_interrupted_pass" = true ]; then
+        if [ "$state_round" -lt "$REVIEW_MAX_ROUNDS" ]; then
+            state_round=$((state_round + 1))
+        else
+            echo "   Final configured review round was interrupted; replaying it without consuming another round"
+        fi
     fi
     if [ "$state_phase" = finalizing ]; then
         pr_draft_state="$(gh pr view "$AGENT_LOOP_PR_NUMBER" --json isDraft --jq '.isDraft')" || {
