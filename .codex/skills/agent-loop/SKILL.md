@@ -60,7 +60,7 @@ with the issue worktree as the current directory.
 | `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.                                    |
 | `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                                               |
 | `claude_review_hook`                             | Required fresh local Claude review on the draft PR. It must post confirmed findings inline before fixes, push, reply, resolve, and fail on undisposed findings. |
-| `codex_review_hook`                              | Required fresh Codex `deepgrill` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                          |
+| `codex_review_hook`                              | Required fresh Codex `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                          |
 | `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                             |
 | `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.                                         |
 | `claude_effort_policy`                           | Optional literal Claude effort policy checked by the doctor, such as `low`.                                                                                     |
@@ -122,7 +122,7 @@ The wrapper is upstream-owned, but config, worker instructions, and the prompt
 are `create_if_missing` consumer files. Existing consumers must therefore merge
 the current templates manually before the synced wrapper can run:
 
-1. Update the Codex hook to run a fresh `deepgrill
+1. Update the Codex hook to run a fresh `deepcritique
 $AGENT_LOOP_PR_NUMBER`, then the Claude hook to run a fresh adversarial review
    on the same PR. Scope both to `$AGENT_LOOP_REVIEW_BASE_SHA`.
    The wrapper rejects either review hook naming a retired `grill`-family skill
@@ -160,7 +160,7 @@ and never copies issue bodies, model logs, or findings into GitHub.
 4. Run the isolated setup hook.
 5. Run the worker and require a clean local commit.
 6. Integrate the fresh base, validate, push, and open a draft PR.
-7. Run a fresh Codex `deepgrill` followed by a fresh Claude review on that PR,
+7. Run a fresh Codex `deepcritique` followed by a fresh Claude review on that PR,
    validating and attesting the PR head after each pass.
 8. If either reviewer commits a material fix, restart at Codex. Minor-only fixes
    are validated and retained without restarting. Convergence requires one

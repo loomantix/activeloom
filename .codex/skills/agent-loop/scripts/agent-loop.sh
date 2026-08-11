@@ -228,19 +228,17 @@ if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; t
     echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
     exit 1
 fi
-# Catch reviewer names that belong to the other engine or retired shallow paths
-# before any issue mutation. Codex retains the consumer-facing deepgrill name;
-# Claude uses deepcritique.
+# Catch retired reviewer names before any issue mutation. Both local engines
+# use the canonical deepcritique skill name.
 for hook_key in claude_review_hook codex_review_hook; do
     case "$hook_key" in
         claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
         codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
         *) echo "unhandled hook key in retired-name preflight: $hook_key" >&2; exit 1 ;;
     esac
-    invalid_pattern='(^|[^[:alnum:]_-])(grill|pr-grill)([^[:alnum:]_-]|$)'
-    [ "$hook_key" = claude_review_hook ] && invalid_pattern='(^|[^[:alnum:]_-])(deepgrill|pr-grill|grill)([^[:alnum:]_-]|$)'
+    invalid_pattern='(^|[^[:alnum:]_-])(deepgrill|pr-grill|grill)([^[:alnum:]_-]|$)'
     if [[ "$hook_value" =~ $invalid_pattern ]]; then
-        echo "$hook_key names an incorrect reviewer skill; Codex uses deepgrill and Claude uses deepcritique" >&2
+        echo "$hook_key names an incorrect reviewer skill; Codex and Claude use deepcritique" >&2
         exit 1
     fi
 done

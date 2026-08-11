@@ -25,7 +25,7 @@ claude_effort_policy =
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
 # Codex-then-Claude round with no material fixes. The Codex hook must run
-# `deepgrill`; the Claude hook must run `deepcritique`.
+# `deepcritique`; the Claude hook must run `deepcritique`.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
 # commit it, call `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply with the fix and validation, resolve the

@@ -33,7 +33,7 @@ def _project(tmp_path: Path) -> Path:
     )
     (skill / "agent-loop.config").write_text(
         "review_contract_version = 3\n"
-        "codex_review_hook = deepgrill $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.py write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n"
+        "codex_review_hook = deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.py write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n"
         "claude_review_hook = claude --effort low /deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.py write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n",
         encoding="utf-8",
     )

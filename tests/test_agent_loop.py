@@ -1732,6 +1732,7 @@ def test_review_contract_version_is_required_before_claim(
     [
         ("codex_review_hook", "codex exec --skill grill"),
         ("codex_review_hook", "python3 .codex/skills/grill/scripts/review-ledger.py attest"),
+        ("codex_review_hook", "codex exec --skill deepgrill"),
         ("claude_review_hook", "claude -p /deepgrill"),
         ("claude_review_hook", "claude -p /pr-grill"),
         # Bare command names pin the `^` branch of the guard's word-boundary
