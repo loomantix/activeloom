@@ -109,6 +109,14 @@ six core review lanes, plus the conditional tenant-coupling lane when signaled,
 whenever the active runtime exposes subagent/delegation tools. Do not require the
 user to separately say "use subagents" before spawning those lane reviewers.
 
+Review lanes are read-only analysis workers. Every spawned lane prompt must say
+that the lane may inspect source, diffs, existing tests, and existing CI results,
+but must not run test suites, linters, formatters, builds, coverage, package
+installation, or CI polling. If dynamic evidence is necessary, the lane returns
+the smallest proposed probe to the orchestrator instead of executing it. The
+orchestrator alone runs one consolidated validation pass against the final head
+after findings are deduplicated and any fixes are complete.
+
 **Cross-engine emphasis.** You are reviewing another engine's work. Beyond
 line-level bugs, scrutinize the _design decisions_ the author made and did not
 question: chosen abstractions, latency/UX tradeoffs, removed or added special

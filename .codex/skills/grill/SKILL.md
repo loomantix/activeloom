@@ -111,6 +111,19 @@ deferred issues.
 
 If the diff touches customer/tenant-variable behavior—vendor integrations, per-tenant configuration, prompt/output generation, or data normalization—recommend deep mode. The tenant-coupling lens that catches one customer's values hardcoded into shared logic is intentionally not part of the lean two-lane set.
 
+## Lane Execution Ownership
+
+Review lanes are read-only analysis workers. Every spawned lane prompt must say
+that the lane may inspect source, diffs, existing tests, and existing CI results,
+but must not run test suites, linters, formatters, builds, coverage, package
+installation, or CI polling. If dynamic evidence is necessary, the lane returns
+the smallest proposed probe to the orchestrator instead of executing it.
+
+The orchestrator owns command execution. After all lanes finish, deduplicate and
+verify their hypotheses, apply any fixes, then run one consolidated validation
+pass against the final head. Do not multiply the same validation across parallel
+lanes.
+
 ## Lean Review Matrix
 
 Lean mode must cover two independent lanes:

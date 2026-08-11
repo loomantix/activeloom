@@ -212,6 +212,18 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     assert "do not hand every lane a whole-diff artifact" in normalized["refactorpass"]
 
 
+def test_parallel_review_lanes_delegate_validation_to_orchestrator() -> None:
+    for skill_name in ("grill", "pr-grill"):
+        text = (SKILLS_ROOT / skill_name / "SKILL.md").read_text(encoding="utf-8")
+        normalized = " ".join(text.split())
+
+        assert "Review lanes are read-only analysis workers" in normalized
+        assert "must not run test suites, linters, formatters, builds" in normalized
+        assert "package installation, or CI polling" in normalized
+        assert "smallest proposed probe to the orchestrator" in normalized
+        assert "one consolidated validation pass" in normalized
+
+
 def test_ship_staging_marks_drafts_ready_and_verifies_the_transition() -> None:
     text = (SKILLS_ROOT / "ship-staging/SKILL.md").read_text(encoding="utf-8")
 
