@@ -48,6 +48,7 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
             "AGENT_LOOP_WORKTREE": str(repo),
             "AGENT_LOOP_BRANCH": "agent-loop/issue-7",
             "AGENT_LOOP_PR_HEAD_SHA": start,
+            "AGENT_LOOP_REVIEW_PUSH_STATE_FILE": str(tmp_path / "review-push-state"),
             "AGENT_LOOP_REAL_GIT": shutil.which("git") or "git",
             "AGENT_LOOP_ORIGIN_FETCH_URLS": _git(
                 repo, "remote", "get-url", "--all", "origin"
@@ -57,7 +58,56 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
             ),
         }
     )
+    (tmp_path / "review-push-state").write_text(f"{start}\n", encoding="utf-8")
     return repo, env, start
+
+
+def test_rejects_external_head_incorporated_after_helper_push(
+    review_repo: tuple[Path, dict[str, str], str]
+) -> None:
+    repo, env, _ = review_repo
+    first = _run(repo, env)
+    assert first.returncode == 0, first.stderr
+    helper_head = first.stdout.strip()
+
+    competing = repo.parent / "competing-after-push"
+    subprocess.run(
+        ["git", "clone", str(repo.parent / "remote.git"), str(competing)],
+        check=True,
+        capture_output=True,
+    )
+    _git(competing, "config", "user.name", "Competing")
+    _git(competing, "config", "user.email", "competing@example.invalid")
+    _git(competing, "switch", "agent-loop/issue-7")
+    (competing / "competing.txt").write_text("external\n", encoding="utf-8")
+    _git(competing, "add", "competing.txt")
+    _git(competing, "commit", "-m", "fix: external review change")
+    competing_head = _git(competing, "rev-parse", "HEAD")
+    _git(competing, "push", "origin", "HEAD:refs/heads/agent-loop/issue-7")
+
+    _git(repo, "fetch", "origin", "agent-loop/issue-7")
+    _git(repo, "merge", "--ff-only", "FETCH_HEAD")
+    (repo / "third.txt").write_text("third review fix\n", encoding="utf-8")
+    _git(repo, "add", "third.txt")
+    _git(repo, "commit", "-m", "fix: third review")
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "stale or uncertain remote head" in result.stderr
+    assert Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(
+        encoding="utf-8"
+    ) == f"{helper_head}\n"
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == competing_head
+    )
 
 
 def test_rejects_changed_origin_before_push(

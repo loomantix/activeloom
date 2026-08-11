@@ -29,7 +29,8 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
     AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
-    AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE
+    AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
+    AGENT_LOOP_REVIEW_PUSH_STATE_FILE
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -1314,7 +1315,7 @@ run_review_pass() {
     local review_description="$7" validation_description="$8"
     local before_sha after_sha status classification outcome_signature outcome_file
     local result_file result_json result_status result_hash allowed_heads_file blocker
-    local pre_pass_threads_file historical_comment_ids_file
+    local pre_pass_threads_file historical_comment_ids_file review_push_state_file
     local historical_comment_ids_signature
     local boundary_status
 
@@ -1357,8 +1358,19 @@ run_review_pass() {
             return 1
         }
         export AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE="$historical_comment_ids_file"
+        review_push_state_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-push-state"
+        printf '%s\n' "$before_sha" > "$review_push_state_file" || {
+            recovery_message "Could not initialize the $engine review push checkpoint."
+            return 1
+        }
+        chmod 600 "$review_push_state_file" || {
+            recovery_message "Could not secure the $engine review push checkpoint."
+            return 1
+        }
+        export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
     else
-        unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE
+        unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
+            AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
     run_bounded_hook "$hook_description (round $round)" "$hook" \
         "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
@@ -1387,6 +1399,12 @@ run_review_pass() {
         recovery_message "$review_description rewrote or dropped previously reviewed commits in round $round."
         return 1
     }
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        [ "$(cat "$review_push_state_file")" = "$after_sha" ] || {
+            recovery_message "$engine review push checkpoint did not match its final head in round $round."
+            return 1
+        }
+    fi
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         result_json="$(python3 "$REVIEW_LEDGER" validate-result \
             --engine "$slug" --round "$round" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
@@ -1619,7 +1637,8 @@ run_review_convergence() {
             }
             unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
                 AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
-                AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE
+                AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
+                AGENT_LOOP_REVIEW_PUSH_STATE_FILE
             echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reported no material fixes in a complete round after $round round(s)"
             return 0
         fi
@@ -1639,7 +1658,8 @@ run_review_convergence() {
 
     unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
         AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
-        AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE
+        AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
+        AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
     return 1
 }
