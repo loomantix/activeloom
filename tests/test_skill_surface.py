@@ -41,6 +41,24 @@ def _snapshot(root: Path) -> dict[str, tuple[str, int]]:
     return out
 
 
+def _canonical_sync_command(consumer: Path) -> list[str]:
+    config = consumer / ".codex-platform-config.yml"
+    config.write_text(
+        "substitutions: {}\nskip_targets:\n  - .github/copilot-instructions.md\n",
+        encoding="utf-8",
+    )
+    return [
+        sys.executable,
+        str(SYNC_ENGINE),
+        "--upstream-repo",
+        str(REPO_ROOT),
+        "--consumer-dir",
+        str(consumer),
+        "--config",
+        str(config),
+    ]
+
+
 def test_every_skill_passes_current_frontmatter_rules() -> None:
     skills = sorted(SKILLS_ROOT.glob("*/SKILL.md"))
     assert skills
@@ -138,23 +156,7 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
 ) -> None:
     consumer = tmp_path / "consumer"
     consumer.mkdir()
-    config = consumer / ".codex-platform-config.yml"
-    config.write_text(
-        "substitutions: {}\n"
-        "skip_targets:\n"
-        "  - .github/copilot-instructions.md\n",
-        encoding="utf-8",
-    )
-    cmd = [
-        sys.executable,
-        str(SYNC_ENGINE),
-        "--upstream-repo",
-        str(REPO_ROOT),
-        "--consumer-dir",
-        str(consumer),
-        "--config",
-        str(config),
-    ]
+    cmd = _canonical_sync_command(consumer)
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
     consumer_owned = [
@@ -204,24 +206,8 @@ def test_sync_atomically_replaces_retired_review_skill_paths(tmp_path: Path) -> 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("retired\n", encoding="utf-8")
 
-    config = consumer / ".codex-platform-config.yml"
-    config.write_text(
-        "substitutions: {}\n"
-        "skip_targets:\n"
-        "  - .github/copilot-instructions.md\n",
-        encoding="utf-8",
-    )
     subprocess.run(
-        [
-            sys.executable,
-            str(SYNC_ENGINE),
-            "--upstream-repo",
-            str(REPO_ROOT),
-            "--consumer-dir",
-            str(consumer),
-            "--config",
-            str(config),
-        ],
+        _canonical_sync_command(consumer),
         check=True,
         capture_output=True,
         text=True,

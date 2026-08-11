@@ -5,7 +5,7 @@
 # retires a skill so new links are installed and stale owned links are pruned.
 #
 # Usage:
-#   ./scripts/install-skills.sh           # safe: only install missing skills
+#   ./scripts/install-skills.sh           # install missing skills and prune retired owned links
 #   ./scripts/install-skills.sh --force   # replace existing entries (backed up)
 #   ./scripts/install-skills.sh --dry-run # report what would happen, write nothing
 #
