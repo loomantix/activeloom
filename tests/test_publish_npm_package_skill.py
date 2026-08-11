@@ -180,20 +180,21 @@ def test_release_preflight_rejects_embedded_identity_mismatch(
 
 
 def test_release_preflight_normalizes_supported_github_repository_urls(
-    release_preflight: ModuleType,
+    release_preflight: ModuleType, published_package_verifier: ModuleType
 ) -> None:
-    assert (
-        release_preflight.github_repository("git+https://github.com/example/example-package.git")
-        == "github.com/example/example-package"
+    urls = (
+        "git+https://github.com/example/example-package.git",
+        "git@github.com:example/example-package.git",
+        "https://github.com/example/example-package.git/",
+        "ssh://git@github.com/example/example-package.git",
+        "git+ssh://git@github.com:22/example/example-package.git",
     )
-    assert (
-        release_preflight.github_repository("git@github.com:example/example-package.git")
-        == "github.com/example/example-package"
-    )
-    assert (
-        release_preflight.github_repository("https://github.com/example/example-package.git/")
-        == "github.com/example/example-package"
-    )
+    for url in urls:
+        assert release_preflight.github_repository(url) == "github.com/example/example-package"
+        assert (
+            published_package_verifier.github_repository(url)
+            == "https://github.com/example/example-package"
+        )
 
 
 @pytest.mark.parametrize(
@@ -202,13 +203,20 @@ def test_release_preflight_normalizes_supported_github_repository_urls(
         "https://secret@github.com/example/example-package.git",
         "https://github.com/example/example-package.git?token=secret",
         "https://github.com/example/example-package.git#secret",
+        "file://github.com/example/example-package.git",
+        "https://github.com:444/example/example-package.git",
+        "ssh://other@github.com/example/example-package.git",
+        "ssh://git@github.com:2222/example/example-package.git",
+        "git://github.com/example/example-package.git",
     ],
 )
 def test_release_preflight_rejects_repository_url_secrets(
-    release_preflight: ModuleType, url: str
+    release_preflight: ModuleType, published_package_verifier: ModuleType, url: str
 ) -> None:
     with pytest.raises(RuntimeError, match="github.com"):
         release_preflight.github_repository(url)
+    with pytest.raises(RuntimeError, match="github.com"):
+        published_package_verifier.github_repository(url)
 
 
 def test_helpers_remove_ambient_npm_credentials(
@@ -239,6 +247,9 @@ def test_helpers_remove_ambient_npm_credentials(
         assert Path(env["NPM_CONFIG_USERCONFIG"]).read_text() == ""
         assert Path(env["NPM_CONFIG_GLOBALCONFIG"]).read_text() == ""
         assert env["NPM_CONFIG_USERCONFIG"] != env["NPM_CONFIG_GLOBALCONFIG"]
+        if module is published_package_verifier:
+            assert Path(env["HOME"]).parent == config_dir
+            assert env["HOME"] == env["USERPROFILE"]
 
 
 def test_release_tag_rejects_shell_metacharacters(
@@ -1073,7 +1084,12 @@ def test_verifier_main_unavailable_provenance_success(
     repository_dir = tmp_path / "checkout"
     repository_dir.mkdir()
     artifact = tmp_path / "package.tgz"
-    data = _tarball(artifact)
+    data = _tarball(
+        artifact,
+        extra_manifest={
+            "dependencies": {"untrusted-git-dependency": "git+ssh://example.invalid/repo.git"}
+        },
+    )
     digests = published_package_verifier.hashes(data)
     metadata = {
         "dist": {
@@ -1084,6 +1100,7 @@ def test_verifier_main_unavailable_provenance_success(
         }
     }
     seen_calls: list[tuple[list[str], object]] = []
+    audit_tree: dict[str, Any] = {}
 
     def fake_run(
         command: list[str], *_args: object, env: object = None, **_kwargs: object
@@ -1095,6 +1112,11 @@ def test_verifier_main_unavailable_provenance_success(
         elif command[:2] == ["npm", "view"]:
             stdout = json.dumps(metadata)
         elif command[:3] == ["npm", "audit", "signatures"]:
+            audit_dir = Path(str(_args[0]))
+            audit_tree["root"] = json.loads((audit_dir / "package.json").read_text())
+            audit_tree["target"] = json.loads(
+                (audit_dir / "node_modules/example-package/package.json").read_text()
+            )
             stdout = json.dumps(
                 {
                     "invalid": [],
@@ -1158,15 +1180,15 @@ def test_verifier_main_unavailable_provenance_success(
     # Every npm subprocess must receive the scrubbed environment; without this
     # assertion, dropping env= from a call site is invisible.
     npm_calls = [(command, env) for command, env in seen_calls if command[0] == "npm"]
-    assert len(npm_calls) == 3
+    assert len(npm_calls) == 2
     for _command, env in npm_calls:
         assert isinstance(env, dict)
         assert "NPM_CONFIG_USERCONFIG" in env
         assert "NPM_CONFIG_CACHE" in env
-    install = next(command for command, _env in npm_calls if command[:2] == ["npm", "install"])
-    assert "--ignore-scripts" in install
-    assert "example-package@1.2.3" in install
-    assert "--registry=https://registry.example" in install
+    assert all(command[:2] != ["npm", "install"] for command, _env in npm_calls)
+    assert audit_tree["root"]["dependencies"] == {"example-package": "1.2.3"}
+    assert audit_tree["target"] == {"name": "example-package", "version": "1.2.3"}
+    assert "untrusted-git-dependency" not in json.dumps(audit_tree)
 
 
 def test_verifier_rejects_workflow_path_in_unavailable_mode(

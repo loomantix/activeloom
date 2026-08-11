@@ -114,14 +114,23 @@ def github_repository(url: str) -> str:
             fail(f"repository URL contains unsupported query or fragment: {url}")
     else:
         parsed = urllib.parse.urlparse(value)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            fail(f"repository URL has an invalid port: {exc}")
+        supported_transport = (
+            parsed.scheme == "https" and parsed.username is None and port in (None, 443)
+        ) or (
+            parsed.scheme == "ssh" and parsed.username == "git" and port in (None, 22)
+        )
         if (
             parsed.hostname != "github.com"
-            or parsed.username
             or parsed.password
             or parsed.query
             or parsed.fragment
+            or not supported_transport
         ):
-            fail(f"repository URL is not hosted on github.com: {url}")
+            fail(f"repository URL is not a supported github.com transport: {url}")
         path = parsed.path.lstrip("/")
     path = path.rstrip("/").removesuffix(".git")
     if path.count("/") != 1:

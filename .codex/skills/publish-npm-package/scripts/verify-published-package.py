@@ -93,8 +93,16 @@ def credential_free_npm_env(config_dir: Path) -> dict[str, str]:
     env = allowlisted_env()
     user_config = config_dir / "empty-user.npmrc"
     global_config = config_dir / "empty-global.npmrc"
+    isolated_home = config_dir / "home"
+    isolated_home.mkdir(exist_ok=True)
     user_config.write_text("", encoding="utf-8")
     global_config.write_text("", encoding="utf-8")
+    # npm should not discover user Git/SSH helpers or other per-user state while
+    # verifying registry evidence from an untrusted package manifest.
+    env["HOME"] = str(isolated_home)
+    env["USERPROFILE"] = str(isolated_home)
+    env["APPDATA"] = str(isolated_home)
+    env["LOCALAPPDATA"] = str(isolated_home)
     env["NPM_CONFIG_USERCONFIG"] = str(user_config)
     env["NPM_CONFIG_GLOBALCONFIG"] = str(global_config)
     # Isolate the cache so every check is a real registry read, not a replay.
@@ -193,14 +201,23 @@ def github_repository(url: str) -> str:
             fail(f"source repository contains unsupported query or fragment: {url}")
     else:
         parsed = urllib.parse.urlparse(value)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            fail(f"source repository has an invalid URL port: {exc}")
+        supported_transport = (
+            parsed.scheme == "https" and parsed.username is None and port in (None, 443)
+        ) or (
+            parsed.scheme == "ssh" and parsed.username == "git" and port in (None, 22)
+        )
         if (
             parsed.hostname != "github.com"
-            or parsed.username
             or parsed.password
             or parsed.query
             or parsed.fragment
+            or not supported_transport
         ):
-            fail(f"source repository is not hosted on github.com: {url}")
+            fail(f"source repository is not a supported github.com transport: {url}")
         path = parsed.path.lstrip("/")
     path = path.rstrip("/").removesuffix(".git")
     if path.count("/") != 1:
@@ -215,6 +232,38 @@ def normalize_fingerprint(value: str) -> str:
     if compact.lower().startswith("sha256:"):
         return "SHA256:" + compact.split(":", 1)[1]
     return compact.upper()
+
+
+def create_minimal_audit_tree(root: Path, package: str, version: str) -> None:
+    """Represent only the exact registry target without installing its dependencies."""
+    parts = package.split("/")
+    scoped = package.startswith("@")
+    if (
+        (scoped and (len(parts) != 2 or len(parts[0]) == 1))
+        or (not scoped and len(parts) != 1)
+        or any(not part or part in {".", ".."} or "\\" in part for part in parts)
+    ):
+        fail("invalid npm package name")
+    installed = root / "node_modules"
+    for part in parts:
+        installed /= part
+    installed.mkdir(parents=True)
+    (root / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "npm-signature-check",
+                "private": True,
+                "version": "0.0.0",
+                "dependencies": {package: version},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (installed / "package.json").write_text(
+        json.dumps({"name": package, "version": version}) + "\n",
+        encoding="utf-8",
+    )
 
 
 def verified_fingerprints(result: subprocess.CompletedProcess[str]) -> set[str]:
@@ -705,23 +754,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="npm-signature-check-") as temp_dir:
         audit_dir = Path(temp_dir)
         npm_env = credential_free_npm_env(audit_dir)
-        (audit_dir / "package.json").write_text(
-            json.dumps({"name": "npm-signature-check", "private": True, "version": "0.0.0"}) + "\n",
-            encoding="utf-8",
-        )
-        run(
-            [
-                "npm",
-                "install",
-                "--ignore-scripts",
-                "--no-audit",
-                "--no-fund",
-                f"--registry={args.registry}",
-                f"{args.package}@{args.version}",
-            ],
-            audit_dir,
-            env=npm_env,
-        )
+        create_minimal_audit_tree(audit_dir, args.package, args.version)
         audit_result = run(
             [
                 "npm",
