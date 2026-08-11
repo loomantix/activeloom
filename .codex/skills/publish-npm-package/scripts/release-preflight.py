@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""Fail-closed preflight for an already-built npm release tarball and Git tag."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.parse
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+
+def fail(message: str) -> None:
+    raise RuntimeError(message)
+
+
+def run(
+    command: list[str],
+    cwd: Path,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, env=env)
+    if check and result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        fail(f"command failed: {' '.join(command)}: {detail}")
+    return result
+
+
+def credential_free_npm_env(config_dir: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    for key in list(env):
+        lowered = key.lower()
+        if key.upper() in {"NODE_AUTH_TOKEN", "NPM_TOKEN"} or (
+            lowered.startswith("npm_config_")
+            and any(fragment in lowered for fragment in ("auth", "password", "token"))
+        ):
+            env.pop(key)
+    user_config = config_dir / "empty-user.npmrc"
+    global_config = config_dir / "empty-global.npmrc"
+    user_config.write_text("", encoding="utf-8")
+    global_config.write_text("", encoding="utf-8")
+    env["NPM_CONFIG_USERCONFIG"] = str(user_config)
+    env["NPM_CONFIG_GLOBALCONFIG"] = str(global_config)
+    return env
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read JSON from {path}: {exc}")
+    if not isinstance(value, dict):
+        fail(f"expected a JSON object in {path}")
+    return value
+
+
+def digest(path: Path) -> dict[str, str]:
+    data = path.read_bytes()
+    return {
+        "sha1": hashlib.sha1(data).hexdigest(),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "sha512": hashlib.sha512(data).hexdigest(),
+        "integrity": "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode("ascii"),
+        "bytes": str(len(data)),
+    }
+
+
+def github_repository(url: str) -> str:
+    value = url.removeprefix("git+")
+    if value.startswith("git@github.com:"):
+        path = value.removeprefix("git@github.com:")
+    else:
+        parsed = urllib.parse.urlparse(value)
+        if parsed.hostname != "github.com":
+            fail(f"repository URL is not hosted on github.com: {url}")
+        path = parsed.path.lstrip("/")
+    path = path.removesuffix(".git").rstrip("/")
+    if path.count("/") != 1:
+        fail(f"repository URL must identify one GitHub owner/repository: {url}")
+    return f"github.com/{path}"
+
+
+def inspect_tarball(path: Path, expected_name: str, expected_version: str) -> dict[str, Any]:
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            members = archive.getmembers()
+            for member in members:
+                member_path = PurePosixPath(member.name)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    fail(f"unsafe tar entry: {member.name}")
+            manifests = [member for member in members if member.name == "package/package.json"]
+            if len(manifests) != 1:
+                fail("tarball must contain exactly one package/package.json")
+            extracted = archive.extractfile(manifests[0])
+            if extracted is None:
+                fail("cannot read package/package.json from tarball")
+            embedded = json.loads(extracted.read().decode("utf-8"))
+    except (OSError, tarfile.TarError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        fail(f"cannot inspect {path}: {exc}")
+    if embedded.get("name") != expected_name or embedded.get("version") != expected_version:
+        fail(
+            "tarball package identity mismatch: "
+            f"expected {expected_name}@{expected_version}, got "
+            f"{embedded.get('name')}@{embedded.get('version')}"
+        )
+    return {"entries": len(members), "name": expected_name, "version": expected_version}
+
+
+def registry_version_absent(package: str, version: str, registry: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="npm-release-preflight-") as temp_dir:
+        npm_dir = Path(temp_dir)
+        result = run(
+            ["npm", "view", f"{package}@{version}", "version", "--json", f"--registry={registry}"],
+            npm_dir,
+            check=False,
+            env=credential_free_npm_env(npm_dir),
+        )
+    if result.returncode == 0:
+        fail(f"registry already contains immutable version {package}@{version}")
+    combined = (result.stdout + "\n" + result.stderr).lower()
+    if "e404" not in combined and "404 not found" not in combined:
+        fail("could not prove registry version absence; npm view did not return a not-found result")
+
+
+def remote_tag_object(remote: str, tag: str, cwd: Path) -> str | None:
+    result = run(
+        ["git", "ls-remote", "--exit-code", "--tags", remote, f"refs/tags/{tag}"],
+        cwd,
+        check=False,
+    )
+    if result.returncode == 0:
+        fields = result.stdout.split()
+        if len(fields) != 2:
+            fail("could not parse remote tag result")
+        return fields[0]
+    if result.returncode != 2:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        fail(f"could not prove remote tag absence: {detail}")
+    return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--package-dir", type=Path, required=True)
+    parser.add_argument("--artifact", type=Path, required=True)
+    parser.add_argument("--tag", required=True)
+    parser.add_argument("--phase", choices=("prepare", "tag", "publish"), default="prepare")
+    parser.add_argument("--remote", default="origin")
+    parser.add_argument("--registry", default="https://registry.npmjs.org")
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+
+    package_dir = args.package_dir.resolve()
+    artifact = args.artifact.resolve()
+    if not artifact.is_file():
+        fail(f"build-once artifact does not exist: {artifact}")
+    package_json = load_json(package_dir / "package.json")
+    package = package_json.get("name")
+    version = package_json.get("version")
+    if not isinstance(package, str) or not package or not isinstance(version, str) or not version:
+        fail("package.json must contain non-empty string name and version fields")
+    if package.startswith("-") or any(character.isspace() for character in package):
+        fail("invalid npm package name")
+    if version.startswith("-") or any(character.isspace() for character in version):
+        fail("invalid npm package version")
+    if args.remote.startswith("-"):
+        fail("invalid Git remote name")
+    parsed_registry = urllib.parse.urlparse(args.registry)
+    if (
+        parsed_registry.scheme != "https"
+        or not parsed_registry.hostname
+        or parsed_registry.username
+        or parsed_registry.password
+        or parsed_registry.query
+        or parsed_registry.fragment
+    ):
+        fail("registry must be an HTTPS URL without credentials, query, or fragment")
+    if package_json.get("private") is True:
+        fail("package.json is private and cannot be published")
+    repository = package_json.get("repository")
+    repository_url = repository.get("url") if isinstance(repository, dict) else repository
+    if not isinstance(repository_url, str) or not repository_url.strip():
+        fail("package.json must declare a repository URL for provenance")
+
+    repo_root = Path(run(["git", "rev-parse", "--show-toplevel"], package_dir).stdout.strip())
+    remote_url = run(["git", "remote", "get-url", args.remote], repo_root).stdout.strip()
+    if github_repository(repository_url) != github_repository(remote_url):
+        fail("package.json repository does not exactly match the Git release remote")
+    dirty = run(["git", "status", "--porcelain", "--untracked-files=all"], repo_root).stdout
+    if dirty:
+        fail("release worktree is dirty; commit or remove every change before preflight")
+    head = run(["git", "rev-parse", "HEAD"], repo_root).stdout.strip()
+    run(["git", "check-ref-format", f"refs/tags/{args.tag}"], repo_root)
+    local_tag = run(["git", "show-ref", "--verify", "--quiet", f"refs/tags/{args.tag}"], repo_root, False)
+    remote_tag = remote_tag_object(args.remote, args.tag, repo_root)
+
+    if args.phase == "prepare":
+        if local_tag.returncode == 0:
+            fail(f"prospective tag already exists locally: {args.tag}")
+        if remote_tag is not None:
+            fail(f"remote tag already exists and must never be moved: {args.remote}/{args.tag}")
+    else:
+        if local_tag.returncode != 0:
+            fail(f"tag phase requires a local tag: {args.tag}")
+        tag_type = run(["git", "cat-file", "-t", f"refs/tags/{args.tag}"], repo_root).stdout.strip()
+        if tag_type != "tag":
+            fail(f"release tag is not annotated: {args.tag}")
+        run(["git", "verify-tag", args.tag], repo_root)
+        target = run(["git", "rev-list", "-n", "1", args.tag], repo_root).stdout.strip()
+        if target != head:
+            fail(f"release tag targets {target}, not current HEAD {head}")
+        local_tag_object = run(["git", "rev-parse", f"refs/tags/{args.tag}"], repo_root).stdout.strip()
+        if args.phase == "tag" and remote_tag is not None:
+            fail(f"remote tag already exists and must never be moved: {args.remote}/{args.tag}")
+        if args.phase == "publish" and remote_tag != local_tag_object:
+            fail("remote release tag does not match the verified local annotated tag object")
+
+    registry_version_absent(package, version, args.registry)
+    tarball = inspect_tarball(artifact, package, version)
+    result: dict[str, Any] = {
+        "artifact": str(artifact),
+        "commit": head,
+        "digests": digest(artifact),
+        "package": package,
+        "phase": args.phase,
+        "registry": args.registry,
+        "repository": repository_url,
+        "tag": args.tag,
+        "tarball": tarball,
+        "version": version,
+    }
+    rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        args.output.write_text(rendered, encoding="utf-8")
+    sys.stdout.write(rendered)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except RuntimeError as exc:
+        print(f"release-preflight: {exc}", file=sys.stderr)
+        raise SystemExit(1)

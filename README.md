@@ -23,6 +23,7 @@ Operational skills you can install globally or sync into any repo:
 | `backlog-refinement`  | Curate and harden the autonomous queue: verify issues against the integration branch, rewrite agent-ready work, classify exclusions, and learn from loop bails. |
 | `agent-loop`          | Experimental Codex relay that opens a draft PR before bounded Codex/Claude convergence and records every finding, reply, and resolution there.                  |
 | `actions-usage-audit` | Read-only GitHub Actions billing and workflow-usage analysis with month-over-month attribution.                                                                 |
+| `publish-npm-package` | Prepare, bootstrap, publish, and verify npm releases with Trusted Publishing, immutable tags, artifact checks, and provenance.                                  |
 | `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                                                      |
 | `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                       |
 | `ship-staging <pr>`   | Merge a ready staging PR, mark linked issues on-staging, refresh the local staging reference, and notify Google Chat.                                           |
