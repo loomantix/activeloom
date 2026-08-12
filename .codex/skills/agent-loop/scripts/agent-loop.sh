@@ -1307,7 +1307,8 @@ verify_converged_review_outcomes() {
 
 recover_v3_review_pass() {
     local engine="$1" slug="$2" round="$3" base_sha="$4"
-    local outcome_file outcome_signature classification boundary_status=0
+    local outcome_file outcome_signature classification result_head current_head
+    local boundary_status=0
     outcome_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.result.json"
     [ -f "$outcome_file" ] || return 2
     outcome_signature="$(review_outcome_signature "$outcome_file")" || return 1
@@ -1315,6 +1316,12 @@ recover_v3_review_pass() {
         file:*) ;;
         *) recovery_message "$engine interrupted review result is incomplete."; return 1 ;;
     esac
+    result_head="$(jq -r '.afterSha // empty' "$outcome_file")" || return 1
+    current_head="$(git rev-parse HEAD)" || return 1
+    [ "$result_head" = "$current_head" ] || {
+        recovery_message "$engine interrupted review result does not match the current review head."
+        return 1
+    }
     REVIEW_ROUNDS_USED="$round"
     REVIEWED_BASE_SHA="$base_sha"
     require_review_outcome_signature "$engine" "$outcome_file" \

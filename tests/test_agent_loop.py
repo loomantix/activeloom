@@ -1232,6 +1232,51 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
 
+def test_v3_final_round_recovery_rejects_stale_codex_result(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    config = _config_v3(tmp_path, validation_hook=validation, review_max_rounds=1)
+
+    first = _run(
+        consumer,
+        ["--issues", "96"],
+        issues=[_issue(96)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    worktree = Path(state["worktree"])
+    (worktree / "external-update.txt").write_text("advanced\n", encoding="utf-8")
+    _run_git("add", "external-update.txt", cwd=worktree)
+    _run_git("commit", "-m", "fix: external update", cwd=worktree)
+    _run_git("push", "origin", f"HEAD:refs/heads/{state['branch']}", cwd=worktree)
+    fail_marker.unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(96, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode != 0
+    assert "result does not match the current review head" in resumed.stderr
+    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
+    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
+    assert "local-review-pass:v3 engine=claude round=1" not in comments
+    assert not (consumer[3] / "pr-ready").exists()
+
+
 def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
