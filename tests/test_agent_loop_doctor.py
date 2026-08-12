@@ -54,6 +54,9 @@ def test_doctor_accepts_current_contract_without_mutation(tmp_path: Path) -> Non
     assert "config_doctor = true" in (
         ROOT / ".claude/skills/agent-loop/agent-loop.config.template"
     ).read_text(encoding="utf-8")
+    assert "CONFIG_DOCTOR=true" in (
+        ROOT / ".claude/skills/agent-loop/scripts/agent-loop.sh"
+    ).read_text(encoding="utf-8")
     before = sorted(path.relative_to(project) for path in project.rglob("*"))
     result = _run(project)
     assert result.returncode == 0, result.stderr

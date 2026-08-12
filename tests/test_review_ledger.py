@@ -204,6 +204,35 @@ def test_current_pass_pseudo_v3_is_not_accepted_as_historical_evidence(
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR, set())
 
 
+def test_standalone_write_result_accepts_settled_pseudo_v3_history(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        review_ledger, "_review_threads", lambda *_args: [_pseudo_v3_thread()]
+    )
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    result_file = tmp_path / "result.json"
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        base="c" * 40,
+        before=HEAD,
+        head=HEAD,
+        engine="claude",
+        round=1,
+        result_file=str(result_file),
+        historical_comment_ids_file=None,
+        classification=None,
+    )
+
+    review_ledger._write_result(args)
+
+    assert json.loads(result_file.read_text(encoding="utf-8"))["status"] == "clean"
+
+
 def test_write_result_ignores_settled_same_round_history_outside_transition(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -289,6 +318,39 @@ def test_same_round_history_rejects_fixed_disposition_at_finding_head(
 
     with pytest.raises(review_ledger.LedgerError, match="forward transition"):
         review_ledger._same_round_evidence(args, [(finding, disposition)], {HEAD: 0})
+
+
+def test_resumed_round_includes_current_transition_disposition(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding_head = "d" * 40
+    disposition_head = "b" * 40
+    finding = review_ledger.FINDING_V3_RE.search(
+        _v3_finding_body(
+            head=finding_head, round_number=4, fingerprint="resumed-material"
+        )
+    )
+    disposition = review_ledger.DISPOSITION_V3_RE.search(
+        _v3_disposition_body(
+            head=disposition_head,
+            round_number=4,
+            fingerprint="resumed-material",
+        )
+    )
+    assert finding is not None and disposition is not None
+    args = argparse.Namespace(engine="codex", round=4, repo=REPO)
+    monkeypatch.setattr(
+        review_ledger,
+        "_json_output",
+        lambda *_args: {
+            "status": "ahead",
+            "merge_base_commit": {"sha": finding_head},
+        },
+    )
+
+    assert review_ledger._same_round_evidence(
+        args, [(finding, disposition)], {HEAD: 0, disposition_head: 1}
+    ) == [("resumed-material", True, True)]
 
 
 def test_write_result_aggregates_sequential_same_fingerprint_recurrences(
@@ -1815,7 +1877,7 @@ def test_complete_ledger_rejects_invalid_fingerprint_topology(
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
 
-def test_complete_ledger_uses_supplied_snapshot_instead_of_live_query(
+def test_complete_ledger_uses_sealed_snapshot_instead_of_live_query(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1858,16 +1920,31 @@ def test_complete_ledger_uses_supplied_snapshot_instead_of_live_query(
         raise AssertionError("a pinned review-thread snapshot must not refetch live data")
 
     monkeypatch.setattr(review_ledger, "_json_output", unexpected_live_query)
+    digest = hashlib.sha256(snapshot.read_bytes()).hexdigest()
     assert review_ledger._verify_complete_v3_threads(
-        REPO, 7, ACTOR, threads_file=str(snapshot)
+        REPO, 7, ACTOR, threads_file=str(snapshot), expected_threads_sha256=digest
     ) == []
+
+    snapshot.write_text("[]", encoding="utf-8")
+    with pytest.raises(review_ledger.LedgerError, match="changed after it was sealed"):
+        review_ledger._verify_complete_v3_threads(
+            REPO,
+            7,
+            ACTOR,
+            threads_file=str(snapshot),
+            expected_threads_sha256=digest,
+        )
 
     with pytest.raises(
         review_ledger.LedgerError,
         match="review-thread snapshot must be a regular non-symlink file",
     ):
         review_ledger._verify_complete_v3_threads(
-            REPO, 7, ACTOR, threads_file=str(tmp_path / "missing.json")
+            REPO,
+            7,
+            ACTOR,
+            threads_file=str(tmp_path / "missing.json"),
+            expected_threads_sha256=digest,
         )
 
 

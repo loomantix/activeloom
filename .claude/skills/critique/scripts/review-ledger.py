@@ -661,7 +661,10 @@ mutation($threadId: ID!) {{
 
 
 def _review_threads(
-    repo: str, pr: int, threads_file: str | None = None
+    repo: str,
+    pr: int,
+    threads_file: str | None = None,
+    expected_threads_sha256: str | None = None,
 ) -> list[dict[str, Any]]:
     try:
         owner, name = repo.split("/", 1)
@@ -709,8 +712,16 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
         path = Path(threads_file)
         if path.is_symlink() or not path.is_file():
             _fail("review-thread snapshot must be a regular non-symlink file")
+        expected_digest = expected_threads_sha256 or os.environ.get(
+            "AGENT_LOOP_REVIEW_THREADS_SHA256"
+        )
+        if expected_digest is None or not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+            _fail("review-thread snapshot requires a sealed SHA-256 digest")
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected_digest:
+            _fail("review-thread snapshot changed after it was sealed")
         try:
-            pages = json.loads(path.read_bytes())
+            pages = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise LedgerError(
                 "review-thread snapshot must contain valid UTF-8 JSON"
@@ -776,12 +787,12 @@ def _verify_v1_marker(body: str, marker: re.Match[str], label: str) -> None:
         _fail(f"actor-owned v1 {label} content is empty")
 
 
-def _historical_comment_ids(args: argparse.Namespace) -> set[int]:
+def _historical_comment_ids(args: argparse.Namespace) -> set[int] | None:
     path_value = getattr(args, "historical_comment_ids_file", None) or os.environ.get(
         "AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE"
     )
     if not path_value:
-        return set()
+        return None
     path = Path(path_value)
     if path.is_symlink() or not path.is_file():
         _fail("historical comment IDs must be a regular non-symlink file")
@@ -956,10 +967,11 @@ def _verify_complete_v3_threads(
     actor: str,
     historical_comment_ids: set[int] | None = None,
     threads_file: str | None = None,
+    expected_threads_sha256: str | None = None,
 ) -> list[tuple[re.Match[str], re.Match[str]]]:
     matched: list[tuple[re.Match[str], re.Match[str]]] = []
     topology: dict[str, list[tuple[str, int, re.Match[str]]]] = {}
-    for thread in _review_threads(repo, pr, threads_file):
+    for thread in _review_threads(repo, pr, threads_file, expected_threads_sha256):
         repository = thread.get("repository")
         pull_request = thread.get("pullRequest")
         if (
@@ -1122,7 +1134,8 @@ def _same_round_evidence(
         ):
             continue
         finding_head = finding.group("head")
-        if finding_head not in allowed_heads:
+        finding_position = allowed_heads.get(finding_head)
+        if finding_position is None:
             if disposition.group("outcome") == "fixed":
                 disposition_head = disposition.group("head")
                 if disposition_head == finding_head:
@@ -1145,16 +1158,20 @@ def _same_round_evidence(
                     or merge_base.get("sha") != finding_head
                 ):
                     _fail("historical fixed disposition is not a forward transition")
-            continue
+                if disposition_head not in allowed_heads:
+                    continue
+                finding_position = -1
+            else:
+                continue
         disposition_head = disposition.group("head")
         if disposition.group("outcome") == "fixed" and disposition_head == finding_head:
             _fail("fixed finding was not posted before its disposition head")
         if (
             disposition_head not in allowed_heads
-            or allowed_heads[disposition_head] < allowed_heads[finding_head]
+            or allowed_heads[disposition_head] < finding_position
             or (
                 disposition.group("outcome") == "fixed"
-                and allowed_heads[disposition_head] == allowed_heads[finding_head]
+                and allowed_heads[disposition_head] == finding_position
             )
         ):
             _fail("same-round finding disposition is outside the observed transition")
@@ -1214,6 +1231,7 @@ def _verify_result_evidence(
         actor,
         _historical_comment_ids(args),
         getattr(args, "threads_file", None),
+        getattr(args, "expected_threads_sha256", None),
     )
     allowed_heads = _transition_heads(args, matched)
     evidence = _same_round_evidence(args, matched, allowed_heads)
@@ -1248,6 +1266,7 @@ def _verify_ledger(args: argparse.Namespace) -> None:
         actor,
         _historical_comment_ids(args),
         getattr(args, "threads_file", None),
+        getattr(args, "expected_threads_sha256", None),
     )
     if getattr(args, "result_file", None) is not None:
         data = _validate_result_data(args)
@@ -1954,6 +1973,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_result_arguments(attest, github=True)
     attest.add_argument("--content-file")
     attest.add_argument("--threads-file")
+    attest.add_argument("--expected-threads-sha256")
     attest.add_argument("--allowed-heads-file")
     attest.add_argument("--actor")
     attest.add_argument("--historical-comment-ids-file")
@@ -1964,6 +1984,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_common(verify_ledger)
     verify_ledger.add_argument("--result-head")
     verify_ledger.add_argument("--threads-file")
+    verify_ledger.add_argument("--expected-threads-sha256")
     verify_ledger.add_argument("--actor")
     verify_ledger.add_argument("--engine", choices=("codex", "claude"))
     verify_ledger.add_argument("--round", type=int)

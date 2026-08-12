@@ -455,6 +455,7 @@ def _config(tmp_path: Path, **overrides: str | int) -> str:
         "worker_timeout_seconds": 5,
         "hook_timeout_seconds": 10,
         "review_contract_version": 2,
+        "config_doctor": "false",
         "review_max_rounds": 4,
         "retry_on_timeout": "true",
         "retry_delay_seconds": 0,

@@ -162,7 +162,7 @@ WORKER_RETRIES=1
 WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
 REVIEW_CONTRACT_VERSION=""
-CONFIG_DOCTOR=false
+CONFIG_DOCTOR=true
 CLAUDE_EFFORT_POLICY=""
 REVIEW_MAX_ROUNDS=4
 RETRY_ON_TIMEOUT=true
@@ -1907,16 +1907,18 @@ verify_v3_committed_pass_evidence() {
     local engine="$1" round="$2" before_sha="$3" after_sha="$4" result_file="$5"
     local allowed_heads_file="$6" base_sha="${7:-${AGENT_LOOP_REVIEW_BASE_SHA:-}}"
     local historical_comment_ids_file="${8:-${AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE:-}}"
-    local ledger_file live_head
+    local ledger_file ledger_signature live_head
     [ -n "$base_sha" ] || return 1
     [ -n "$historical_comment_ids_file" ] || return 1
     live_head="$(git rev-parse HEAD)" || return 1
     git merge-base --is-ancestor "$after_sha" "$live_head" || return 1
     ledger_file="$(fetch_local_review_threads)" || return 1
+    ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
     python3 "$REVIEW_LEDGER" verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$live_head" \
         --result-head "$after_sha" \
         --threads-file "$ledger_file" --actor "$CURRENT_LOGIN" \
+        --expected-threads-sha256 "${ledger_signature#file:}" \
         --engine "$engine" --round "$round" \
         --base "$base_sha" --before "$before_sha" \
         --result-file "$result_file" --allowed-heads-file "$allowed_heads_file" \
@@ -1937,13 +1939,15 @@ write_review_transition_heads() {
 attest_v3_review_result() {
     local engine="$1" round="$2" base_sha="$3" before_sha="$4" after_sha="$5" result_file="$6"
     local expected_result_hash="$7" allowed_heads_file="$8"
-    local ledger_file attestation_json observed_result_hash
+    local ledger_file ledger_signature attestation_json observed_result_hash
     ledger_file="$(fetch_local_review_threads)" || return 1
+    ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
     attestation_json="$(python3 "$REVIEW_LEDGER" attest \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$after_sha" \
         --engine "$engine" --round "$round" --base "$base_sha" \
         --before "$before_sha" --result-file "$result_file" \
         --threads-file "$ledger_file" --actor "$CURRENT_LOGIN" \
+        --expected-threads-sha256 "${ledger_signature#file:}" \
         --allowed-heads-file "$allowed_heads_file" \
         --expected-result-sha256 "$expected_result_hash")" || return 1
     observed_result_hash="$(jq -r '.result_sha256' <<<"$attestation_json")" || return 1
@@ -1954,9 +1958,10 @@ attest_v3_review_result() {
 }
 
 verify_local_review_threads() {
-    local ledger_file historical_comment_ids_file=""
+    local ledger_file ledger_signature historical_comment_ids_file=""
     local -a historical_args=()
     ledger_file="$(fetch_local_review_threads)" || return 1
+    ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         if [ "${REVIEW_ROUNDS_USED:-0}" -gt 0 ]; then
             historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/codex-review-round-$REVIEW_ROUNDS_USED-historical-comment-ids.json"
@@ -2001,6 +2006,7 @@ verify_local_review_threads() {
     python3 "$REVIEW_LEDGER" verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
         --head "$(git rev-parse HEAD)" --threads-file "$ledger_file" \
+        --expected-threads-sha256 "${ledger_signature#file:}" \
         --actor "$CURRENT_LOGIN" "${historical_args[@]}" >/dev/null || {
         echo "local-review threads must contain a disposition reply and be resolved" >&2
         return 1
