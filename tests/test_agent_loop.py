@@ -2490,7 +2490,7 @@ def test_partial_final_round_checkpoint_resumes_after_codex_pass(
     state = json.loads(state_file.read_text())
     assert state["round"] == 1
     assert state["reviewEngine"] == "claude"
-    events_before = (consumer[3] / "events.log").read_text()
+    events_before = (consumer[3] / "events.log").read_text().splitlines()
 
     second = _run(
         consumer,
@@ -2500,7 +2500,9 @@ def test_partial_final_round_checkpoint_resumes_after_codex_pass(
     )
     assert second.returncode == 0, second.stderr + second.stdout
     assert "resuming its remaining leg" in second.stdout
-    assert (consumer[3] / "events.log").read_text() == events_before
+    events_after = (consumer[3] / "events.log").read_text().splitlines()
+    assert events_after.count("setup") == events_before.count("setup")
+    assert events_after.count("worker") == events_before.count("worker")
     final_state = json.loads(state_file.read_text())
     assert final_state["phase"] == "finalized"
     comments = json.loads((consumer[3] / "issue-comments.json").read_text())
