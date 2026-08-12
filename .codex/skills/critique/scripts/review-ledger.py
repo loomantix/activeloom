@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -37,6 +39,12 @@ FINDING_V3_RE = re.compile(
     r"severity=(?P<severity>blocking|major|minor|nit) "
     r"lens=(?P<lens>[A-Za-z0-9._:/-]+) "
     r"content-sha256=(?P<content_sha>[0-9a-f]{64}) -->$",
+    re.MULTILINE,
+)
+PSEUDO_V3_RE = re.compile(
+    r"^<!-- local-review:v3 engine=claude "
+    r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+)"
+    r"(?: outcome=deferred)? -->$",
     re.MULTILINE,
 )
 DISPOSITION_V3_RE = re.compile(
@@ -346,7 +354,25 @@ def _protocol_match(
     return match
 
 
+def _pseudo_v3_match(body: str) -> re.Match[str] | None:
+    matches = list(PSEUDO_V3_RE.finditer(body))
+    if not matches:
+        return None
+    if (
+        len(matches) != 1
+        or body.count("<!-- local-review") != 1
+        or matches[0].start() == 0
+        or body[matches[0].start() - 1] != "\n"
+        or matches[0].end() != len(body)
+        or not body[: matches[0].start()].strip()
+    ):
+        _fail("authenticated historical local-review:v3 record is malformed")
+    return matches[0]
+
+
 def _finding_match(body: str) -> re.Match[str] | None:
+    if _pseudo_v3_match(body) is not None:
+        return None
     return _protocol_match(body, FINDING_V3_RE, "<!-- local-review:v3")
 
 
@@ -365,6 +391,12 @@ def _finding_records(
         if match is not None and match.group("fingerprint") == fingerprint:
             records.append((row, match))
     return records
+
+
+def _rows_have_pseudo_v3(rows: list[dict[str, Any]]) -> bool:
+    return any(
+        PSEUDO_V3_RE.search(str(row.get("body", ""))) is not None for row in rows
+    )
 
 
 def _require_disposition_consistency(
@@ -620,6 +652,8 @@ def _post_finding(args: argparse.Namespace) -> None:
     _validate_anchor(files, args.path, line, side)
     if args.content_file:
         rows = _review_comments(args.repo, args.pr)
+        if _rows_have_pseudo_v3(rows):
+            _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
         existing = _matching_body(rows, marker, body)
         records = _finding_records(rows, args.fingerprint)
         if existing is None and records:
@@ -648,6 +682,8 @@ def _reopen_occurrence(args: argparse.Namespace) -> None:
     marker, body = _finding_body(args)
     _verify_head(args.repo, args.pr, args.head)
     rows = _review_comments(args.repo, args.pr)
+    if _rows_have_pseudo_v3(rows):
+        _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
     records = _finding_records(rows, args.fingerprint)
     existing = _matching_body(rows, marker, body)
     if args.occurrence < 2:
@@ -671,6 +707,8 @@ def _dispose(args: argparse.Namespace) -> None:
     marker, body = _disposition_body(args)
     _verify_head(args.repo, args.pr, args.head)
     rows = _review_comments(args.repo, args.pr)
+    if _rows_have_pseudo_v3(rows):
+        _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
     _require_finding_occurrence(rows, args)
     _require_disposition_consistency(rows, args, body)
     _thread_state(args)
@@ -757,10 +795,10 @@ def _validate_result_data(
         _fail("review result finalLaneComplete must be boolean")
     classification = data.get("classification")
     if status == "clean":
-        if args.before != _result_head(args) or classification is not None or fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
+        if args.before != _result_head(args) or classification is not None or data["finalLaneComplete"] is not True or "blocker" in data:
             _fail("clean review result conflicts with the observed pass")
     elif status == "changed":
-        if args.before == _result_head(args) or classification not in {"minor", "material"} or not fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
+        if args.before == _result_head(args) or classification not in {"minor", "material"} or (args.round >= 3 and classification != "material") or not fingerprints or data["finalLaneComplete"] is not True or "blocker" in data:
             _fail("changed review result conflicts with the observed pass")
     else:
         blocker = data.get("blocker")
@@ -778,6 +816,220 @@ def _validate_result(args: argparse.Namespace) -> None:
     print(json.dumps(output, sort_keys=True))
 
 
+def _same_round_dispositions(
+    args: argparse.Namespace,
+    threads: list[dict[str, Any]],
+    allowed_heads: dict[str, int],
+    historical_comment_ids: set[int] | None = None,
+) -> list[tuple[str, bool, bool, bool]]:
+    """Return unique fingerprint, fix, major-fix, and nonblocking-fix evidence."""
+    evidence: dict[str, tuple[bool, bool, bool]] = {}
+    fingerprint_threads: dict[str, int] = {}
+    for thread_index, thread in enumerate(threads):
+        findings, dispositions, _, _ = _thread_protocol_records(
+            thread, historical_comment_ids
+        )
+        for finding_index, finding in findings:
+            if (
+                finding.group("engine") != args.engine
+                or int(finding.group("round")) != args.round
+            ):
+                continue
+            fingerprint = finding.group("fingerprint")
+            finding_head = finding.group("head")
+            prior_thread = fingerprint_threads.setdefault(fingerprint, thread_index)
+            if prior_thread != thread_index:
+                _fail("same-round finding fingerprint has duplicate root threads")
+            if finding_head not in allowed_heads:
+                historical_matches = _matching_dispositions(
+                    finding_index, finding, dispositions
+                )
+                if thread.get("isResolved") is not True or len(historical_matches) != 1:
+                    _fail(
+                        "same-round finding outside the observed transition is not settled"
+                    )
+                if (
+                    finding.group("severity") == "blocking"
+                    and historical_matches[0].group("outcome") != "fixed"
+                ):
+                    _fail("blocking local-review findings must be fixed")
+                historical_disposition = historical_matches[0]
+                if historical_disposition.group("outcome") == "fixed":
+                    disposition_head = historical_disposition.group("head")
+                    if disposition_head == finding_head:
+                        _fail(
+                            "historical fixed disposition is not a forward transition"
+                        )
+                    comparison = _json_output(
+                        [
+                            "api",
+                            f"repos/{args.repo}/compare/{finding_head}...{disposition_head}",
+                        ]
+                    )
+                    merge_base = (
+                        comparison.get("merge_base_commit")
+                        if isinstance(comparison, dict)
+                        else None
+                    )
+                    if (
+                        not isinstance(comparison, dict)
+                        or comparison.get("status") != "ahead"
+                        or not isinstance(merge_base, dict)
+                        or merge_base.get("sha") != finding_head
+                    ):
+                        _fail(
+                            "historical fixed disposition is not a forward transition"
+                        )
+                # Settled historical occurrences are not evidence for this
+                # before-to-after transition.
+                continue
+            matches = [
+                disposition
+                for disposition in _matching_dispositions(
+                    finding_index, finding, dispositions
+                )
+                if disposition.group("head") in allowed_heads
+                and allowed_heads[disposition.group("head")]
+                >= allowed_heads[finding_head]
+                and (
+                    disposition.group("outcome") != "fixed"
+                    or allowed_heads[disposition.group("head")]
+                    > allowed_heads[finding_head]
+                )
+            ]
+            if thread.get("isResolved") is not True or len(matches) != 1:
+                _fail("same-round finding lacks one resolved matching disposition")
+            disposition = matches[0]
+            if (
+                finding.group("severity") == "blocking"
+                and disposition.group("outcome") != "fixed"
+            ):
+                _fail("blocking local-review findings must be fixed")
+            fixed = disposition.group("outcome") == "fixed"
+            fixed_major = fixed and finding.group("severity") in {
+                "blocking",
+                "major",
+            }
+            fixed_nonblocking = fixed and finding.group("severity") != "blocking"
+            previous = evidence.get(fingerprint, (False, False, False))
+            evidence[fingerprint] = (
+                previous[0] or fixed,
+                previous[1] or fixed_major,
+                previous[2] or fixed_nonblocking,
+            )
+    return [
+        (fingerprint, *evidence[fingerprint]) for fingerprint in sorted(evidence)
+    ]
+
+
+def _write_result(args: argparse.Namespace) -> None:
+    threads = (
+        _load_review_threads(args.threads_file)
+        if args.threads_file is not None
+        else _review_threads(args.repo, args.pr)
+    )
+    historical_comment_ids = _historical_comment_ids(args)
+    _verify_thread_dispositions(threads, historical_comment_ids)
+    if args.allowed_heads_file is None:
+        comparison = subprocess.run(
+            ["git", "rev-list", "--reverse", "--ancestry-path", f"{args.before}..{args.head}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if comparison.returncode != 0:
+            _fail("could not derive the forward review transition")
+        values = [args.before, *comparison.stdout.splitlines()]
+        if values[-1] != args.head or len(set(values)) != len(values):
+            _fail("review result transition is not forward-only")
+        allowed_heads = {value: index for index, value in enumerate(values)}
+    else:
+        allowed_heads = _load_allowed_heads(args)
+    dispositions = _same_round_dispositions(
+        args, threads, allowed_heads, historical_comment_ids
+    )
+    changed = args.before != args.head
+    if not changed and any(has_fix for _, has_fix, _, _ in dispositions):
+        _fail("clean review results cannot have same-round fixes")
+    if changed and args.classification not in {"minor", "material"}:
+        _fail("changed review result requires --classification")
+    if not changed and args.classification is not None:
+        _fail("clean review result cannot have a classification")
+    if changed and args.round >= 3 and args.classification != "material":
+        _fail("round 3+ changed review results require material classification")
+    if changed and not dispositions:
+        _fail("changed review results require ledger evidence")
+    if changed and not any(has_fix for _, has_fix, _, _ in dispositions):
+        _fail("changed review results require a fixed ledger finding")
+    if changed and args.round >= 3 and any(
+        has_nonblocking_fix for _, _, _, has_nonblocking_fix in dispositions
+    ):
+        _fail("convergence review results cannot fix non-blocking findings")
+    if (
+        changed
+        and args.classification != "material"
+        and any(has_major_fix for _, _, has_major_fix, _ in dispositions)
+    ):
+        _fail("fixed blocking or major findings require material classification")
+    value = {
+        "version": PROTOCOL_VERSION,
+        "status": "changed" if changed else "clean",
+        "engine": args.engine,
+        "round": args.round,
+        "baseSha": args.base,
+        "beforeSha": args.before,
+        "afterSha": args.head,
+        "classification": args.classification if changed else None,
+        "findingFingerprints": [row[0] for row in dispositions],
+        "finalLaneComplete": True,
+    }
+    _write_result_file(args.result_file, value)
+    raw = _read_result_bytes(args.result_file)
+    print(json.dumps({"resultSha256": hashlib.sha256(raw).hexdigest(), **value}, sort_keys=True))
+
+
+def _write_result_file(path_value: str, value: dict[str, Any]) -> None:
+    raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    path = Path(path_value)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        _fail("review result destination must be a regular non-symlink file")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _write_blocked_result(args: argparse.Namespace) -> None:
+    blocker = _read_content(args.blocker_file).strip()
+    value = {
+        "version": PROTOCOL_VERSION,
+        "status": "blocked",
+        "engine": args.engine,
+        "round": args.round,
+        "baseSha": args.base,
+        "beforeSha": args.before,
+        "afterSha": args.head,
+        "classification": None,
+        "findingFingerprints": [],
+        "finalLaneComplete": False,
+        "blocker": blocker,
+    }
+    raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    _validate_result_data(args, raw)
+    _write_result_file(args.result_file, value)
+    print(json.dumps({"resultSha256": hashlib.sha256(raw).hexdigest(), **value}, sort_keys=True))
+
+
 def _attest(args: argparse.Namespace) -> None:
     raw = _read_result_bytes(args.result_file)
     data = _validate_result_data(args, raw)
@@ -787,8 +1039,11 @@ def _attest(args: argparse.Namespace) -> None:
     if data["status"] == "blocked":
         _fail("blocked review results cannot be attested as complete")
     threads = _load_review_threads(args.threads_file)
-    _verify_thread_dispositions(threads)
-    _verify_result_evidence(args, threads, data=data)
+    historical_comment_ids = _historical_comment_ids(args)
+    _verify_thread_dispositions(threads, historical_comment_ids)
+    _verify_result_evidence(
+        args, threads, data=data, historical_comment_ids=historical_comment_ids
+    )
     content = _read_content(args.content_file) if args.content_file else (
         "No new material findings." if data["status"] == "clean" else "Review fixes completed and ledger dispositions verified."
     )
@@ -828,6 +1083,8 @@ def _resolve(args: argparse.Namespace) -> None:
 def _reconcile(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
     comments = _review_comments(args.repo, args.pr)
+    if _rows_have_pseudo_v3(comments):
+        _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
     finding_rows: list[dict[str, Any]] = []
     disposition_rows: list[dict[str, Any]] = []
     for row in comments:
@@ -920,6 +1177,165 @@ def _load_review_threads(path_value: str) -> list[dict[str, Any]]:
     return threads
 
 
+def _review_threads(repo: str, pr: int) -> list[dict[str, Any]]:
+    try:
+        owner, name = repo.split("/", 1)
+    except ValueError as error:
+        raise LedgerError("--repo must be OWNER/REPO") from error
+    query = """
+query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100, after:$endCursor) {
+        nodes {
+          id
+          isResolved
+          comments(first:100) {
+            nodes { databaseId body author { login } }
+            pageInfo { hasNextPage }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+""".strip()
+    pages = _json_output(
+        [
+            "api",
+            "graphql",
+            "--paginate",
+            "--slurp",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={pr}",
+        ]
+    )
+    if not isinstance(pages, list) or not pages:
+        _fail("GitHub review-thread response has an unexpected shape")
+    threads: list[dict[str, Any]] = []
+    for page_index, page in enumerate(pages):
+        if not isinstance(page, dict) or page.get("errors"):
+            _fail("GitHub review-thread response is incomplete")
+        try:
+            connection = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+            nodes = connection["nodes"]
+            page_info = connection["pageInfo"]
+        except (KeyError, TypeError) as error:
+            raise LedgerError(
+                "GitHub review-thread response has an unexpected shape"
+            ) from error
+        if not isinstance(nodes, list) or not isinstance(page_info, dict):
+            _fail("GitHub review-thread nodes have an unexpected shape")
+        expected_more = page_index < len(pages) - 1
+        if page_info.get("hasNextPage") is not expected_more:
+            _fail("GitHub review-thread pagination is incomplete")
+        if expected_more and not isinstance(page_info.get("endCursor"), str):
+            _fail("GitHub review-thread pagination omitted its cursor")
+        for thread in nodes:
+            if not isinstance(thread, dict):
+                _fail("GitHub review thread has an unexpected shape")
+            comments = thread.get("comments")
+            if (
+                not isinstance(comments, dict)
+                or not isinstance(comments.get("nodes"), list)
+                or not isinstance(comments.get("pageInfo"), dict)
+                or comments["pageInfo"].get("hasNextPage") is not False
+            ):
+                _fail("GitHub review-thread comments are incomplete")
+            threads.append(thread)
+    return threads
+
+
+def _historical_comment_ids(args: argparse.Namespace) -> set[int]:
+    path_value = getattr(args, "historical_comment_ids_file", None) or os.environ.get(
+        "AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE"
+    )
+    if not path_value:
+        return set()
+    path = Path(path_value)
+    if path.is_symlink() or not path.is_file():
+        _fail("historical comment IDs must be a regular non-symlink file")
+    try:
+        values = json.loads(path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LedgerError(
+            "historical comment IDs must contain valid UTF-8 JSON"
+        ) from error
+    if (
+        not isinstance(values, list)
+        or any(type(value) is not int or value < 1 for value in values)
+        or len(set(values)) != len(values)
+    ):
+        _fail("historical comment IDs must be unique positive integers")
+    return set(values)
+
+
+def _verify_pseudo_v3_history(
+    threads: list[dict[str, Any]], historical_comment_ids: set[int] | None = None
+) -> None:
+    actor = _current_actor()
+    for thread in threads:
+        comments = thread.get("comments")
+        if not isinstance(comments, dict):
+            _fail("GitHub review thread omitted comments")
+        nodes = comments.get("nodes")
+        page_info = comments.get("pageInfo")
+        if (
+            not isinstance(nodes, list)
+            or not isinstance(page_info, dict)
+            or page_info.get("hasNextPage") is not False
+        ):
+            _fail("GitHub review thread comments are incomplete")
+        for index, row in enumerate(nodes):
+            if not isinstance(row, dict):
+                _fail("GitHub review comment has an unexpected shape")
+            body = str(row.get("body", ""))
+            author = row.get("author")
+            if not isinstance(author, dict) or not isinstance(author.get("login"), str):
+                if "<!-- local-review" in body:
+                    _fail("could not establish local-review comment ownership")
+                continue
+            if author.get("login") != actor:
+                continue
+            if "<!-- local-review:v3" not in body:
+                continue
+            pseudo = _pseudo_v3_match(body)
+            if pseudo is None:
+                _protocol_match(body, FINDING_V3_RE, "<!-- local-review:v3")
+                continue
+            if (
+                historical_comment_ids is not None
+                and row.get("databaseId") not in historical_comment_ids
+            ):
+                _fail(
+                    "historical local-review:v3 finding was not captured before the current pass"
+                )
+            later_same_actor = any(
+                isinstance(reply, dict)
+                and isinstance(reply.get("author"), dict)
+                and reply["author"].get("login") == actor
+                and bool(str(reply.get("body", "")).strip())
+                and "<!-- local-review" not in str(reply.get("body", ""))
+                for reply in nodes[index + 1 :]
+            )
+            if (
+                index != 0
+                or not isinstance(thread.get("id"), str)
+                or thread.get("isResolved") is not True
+                or not later_same_actor
+            ):
+                _fail(
+                    "historical local-review:v3 finding is not settled actor-owned history"
+                )
+
+
 def _load_allowed_heads(args: argparse.Namespace) -> dict[str, int]:
     path = Path(args.allowed_heads_file)
     if path.is_symlink() or not path.is_file():
@@ -955,13 +1371,14 @@ def _load_allowed_heads(args: argparse.Namespace) -> dict[str, int]:
 
 
 def _thread_protocol_records(
-    thread: dict[str, Any]
+    thread: dict[str, Any], historical_comment_ids: set[int] | None = None
 ) -> tuple[
     list[tuple[int, re.Match[str]]],
     list[tuple[int, re.Match[str]]],
     list[tuple[int, re.Match[str]]],
     list[tuple[int, re.Match[str]]],
 ]:
+    _verify_pseudo_v3_history([thread], historical_comment_ids)
     comments = cast(dict[str, Any], thread["comments"])["nodes"]
     findings_v3: list[tuple[int, re.Match[str]]] = []
     dispositions_v3: list[tuple[int, re.Match[str]]] = []
@@ -970,10 +1387,12 @@ def _thread_protocol_records(
     for index, row in enumerate(comments):
         if not isinstance(row, dict):
             _fail("GitHub review comment has an unexpected shape")
+        body = str(row.get("body", ""))
         author = row.get("author")
         if not isinstance(author, dict) or author.get("login") != _current_actor():
             continue
-        body = str(row.get("body", ""))
+        if _pseudo_v3_match(body) is not None:
+            continue
         finding_v3 = _finding_match(body)
         disposition_v3 = _disposition_match(body)
         if finding_v3 is not None:
@@ -1011,12 +1430,43 @@ def _matching_dispositions(
     return matches
 
 
-def _verify_thread_dispositions(threads: list[dict[str, Any]]) -> int:
+def _verify_thread_dispositions(
+    threads: list[dict[str, Any]], historical_comment_ids: set[int] | None = None
+) -> int:
     verified = 0
-    for thread in threads:
+    fingerprint_threads: dict[str, int] = {}
+    for thread_index, thread in enumerate(threads):
         findings_v3, dispositions_v3, findings_v1, dispositions_v1 = (
-            _thread_protocol_records(thread)
+            _thread_protocol_records(thread, historical_comment_ids)
         )
+        grouped_v3: dict[str, list[tuple[int, re.Match[str]]]] = {}
+        for finding_index, finding in findings_v3:
+            fingerprint = finding.group("fingerprint")
+            prior_thread = fingerprint_threads.setdefault(fingerprint, thread_index)
+            if prior_thread != thread_index:
+                _fail("local-review fingerprint has duplicated root threads")
+            grouped_v3.setdefault(fingerprint, []).append((finding_index, finding))
+        for fingerprint, occurrences in grouped_v3.items():
+            numbers = [int(finding.group("occurrence")) for _, finding in occurrences]
+            if numbers != list(range(1, len(numbers) + 1)):
+                _fail(
+                    f"local-review fingerprint {fingerprint} occurrences are not sequential"
+                )
+            for position, (finding_index, finding) in enumerate(occurrences[:-1]):
+                matches = [
+                    (index, disposition)
+                    for index, disposition in dispositions_v3
+                    if index > finding_index
+                    and all(
+                        disposition.group(field) == finding.group(field)
+                        for field in ("engine", "round", "fingerprint", "occurrence")
+                    )
+                ]
+                next_finding_index = occurrences[position + 1][0]
+                if len(matches) != 1 or matches[0][0] >= next_finding_index:
+                    _fail(
+                        f"local-review fingerprint {fingerprint} recurrence is not sequentially disposed"
+                    )
         findings: list[tuple[int, re.Match[str], list[tuple[int, re.Match[str]]]]] = [
             (index, finding, dispositions_v3) for index, finding in findings_v3
         ] + [(index, finding, dispositions_v1) for index, finding in findings_v1]
@@ -1044,78 +1494,34 @@ def _verify_result_evidence(
     *,
     data: dict[str, Any] | None = None,
     allowed_heads: dict[str, int] | None = None,
+    historical_comment_ids: set[int] | None = None,
 ) -> dict[str, Any]:
     if data is None:
         data = _validate_result_data(args)
-    if data["status"] == "clean":
-        for thread in threads:
-            findings, dispositions, _, _ = _thread_protocol_records(thread)
-            for finding_index, finding in findings:
-                if (
-                    finding.group("engine") != args.engine
-                    or int(finding.group("round")) != args.round
-                ):
-                    continue
-                matches = _matching_dispositions(
-                    finding_index, finding, dispositions
-                )
-                if any(match.group("outcome") == "fixed" for match in matches):
-                    _fail("clean review results cannot have same-round fixes")
-        return data
-    if data["status"] != "changed":
+    if data["status"] not in {"clean", "changed"}:
         _fail("ledger result evidence requires a changed review result")
     if allowed_heads is None:
         allowed_heads = _load_allowed_heads(args)
-    evidence: dict[str, tuple[re.Match[str], re.Match[str]]] = {}
-    for thread in threads:
-        findings, dispositions, _, _ = _thread_protocol_records(thread)
-        for finding_index, finding in findings:
-            if (
-                finding.group("engine") != args.engine
-                or int(finding.group("round")) != args.round
-            ):
-                continue
-            fingerprint = finding.group("fingerprint")
-            finding_head = finding.group("head")
-            if finding_head not in allowed_heads:
-                _fail("same-round finding is outside the observed review transition")
-            if fingerprint in evidence:
-                _fail("same-round finding fingerprint is duplicated")
-            matches = [
-                disposition
-                for disposition in _matching_dispositions(
-                    finding_index, finding, dispositions
-                )
-                if disposition.group("head") in allowed_heads
-                and allowed_heads[disposition.group("head")]
-                >= allowed_heads[finding_head]
-                and (
-                    disposition.group("outcome") != "fixed"
-                    or allowed_heads[disposition.group("head")]
-                    > allowed_heads[finding_head]
-                )
-            ]
-            if thread.get("isResolved") is not True or len(matches) != 1:
-                _fail("same-round finding lacks one resolved matching disposition")
-            evidence[fingerprint] = (finding, matches[0])
-    if set(evidence) != set(data["findingFingerprints"]):
-        _fail("review result fingerprints do not exactly match same-round ledger evidence")
-    if not any(
-        disposition.group("outcome") == "fixed"
-        for _, disposition in evidence.values()
-    ):
-        _fail("changed review results require at least one fixed finding")
-    if any(
-        finding.group("severity") == "blocking"
-        and disposition.group("outcome") != "fixed"
-        for finding, disposition in evidence.values()
-    ):
-        _fail("blocking local-review findings must be fixed")
-    fixed_major = any(
-        finding.group("severity") in {"blocking", "major"}
-        and disposition.group("outcome") == "fixed"
-        for finding, disposition in evidence.values()
+    evidence = _same_round_dispositions(
+        args, threads, allowed_heads, historical_comment_ids
     )
+    if [row[0] for row in evidence] != sorted(data["findingFingerprints"]):
+        _fail("review result fingerprints do not exactly match same-round ledger evidence")
+    if data["status"] == "clean":
+        if any(has_fix for _, has_fix, _, _ in evidence):
+            _fail("clean review results cannot have same-round fixes")
+        return data
+    if args.round >= 3 and data["classification"] != "material":
+        _fail("round 3+ changed review results require material classification")
+    if not evidence:
+        _fail("changed review results require ledger evidence")
+    if not any(has_fix for _, has_fix, _, _ in evidence):
+        _fail("changed review results require a fixed ledger finding")
+    if args.round >= 3 and any(
+        has_nonblocking_fix for _, _, _, has_nonblocking_fix in evidence
+    ):
+        _fail("convergence review results cannot fix non-blocking findings")
+    fixed_major = any(has_major_fix for _, _, has_major_fix, _ in evidence)
     if fixed_major and data["classification"] != "material":
         _fail("fixed blocking or major findings require material classification")
     return data
@@ -1124,10 +1530,13 @@ def _verify_result_evidence(
 def _verify_ledger(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
     threads = _load_review_threads(args.threads_file)
-    thread_count = _verify_thread_dispositions(threads)
+    historical_comment_ids = _historical_comment_ids(args)
+    thread_count = _verify_thread_dispositions(threads, historical_comment_ids)
     data = None
     if args.result_file is not None:
-        data = _verify_result_evidence(args, threads)
+        data = _verify_result_evidence(
+            args, threads, historical_comment_ids=historical_comment_ids
+        )
     print(
         json.dumps(
             {
@@ -1229,11 +1638,28 @@ def _parser() -> argparse.ArgumentParser:
     _add_result_arguments(validate, github=False)
     validate.set_defaults(handler=_validate_result)
 
+    write_result = commands.add_parser("write-result")
+    _add_result_arguments(write_result, github=False)
+    write_result.add_argument("--repo", required=True)
+    write_result.add_argument("--pr", required=True, type=int)
+    write_result.add_argument("--threads-file")
+    write_result.add_argument("--allowed-heads-file")
+    write_result.add_argument("--actor")
+    write_result.add_argument("--historical-comment-ids-file")
+    write_result.add_argument("--classification", choices=("minor", "material"))
+    write_result.set_defaults(handler=_write_result)
+
+    write_blocked = commands.add_parser("write-blocked-result")
+    _add_result_arguments(write_blocked, github=False)
+    write_blocked.add_argument("--blocker-file", required=True)
+    write_blocked.set_defaults(handler=_write_blocked_result)
+
     attest = commands.add_parser("attest")
     _add_result_arguments(attest, github=True)
     attest.add_argument("--threads-file", required=True)
     attest.add_argument("--allowed-heads-file", required=True)
     attest.add_argument("--actor")
+    attest.add_argument("--historical-comment-ids-file")
     attest.add_argument("--expected-result-sha256", required=True)
     attest.add_argument("--content-file")
     attest.set_defaults(handler=_attest)
@@ -1252,6 +1678,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_common(verify_ledger)
     verify_ledger.add_argument("--threads-file", required=True)
     verify_ledger.add_argument("--actor")
+    verify_ledger.add_argument("--historical-comment-ids-file")
     verify_ledger.add_argument("--engine", choices=("codex", "claude"))
     verify_ledger.add_argument("--round", type=int)
     verify_ledger.add_argument("--base")
@@ -1276,7 +1703,11 @@ def _validate_args(args: argparse.Namespace) -> None:
         _fail("--round must be a positive integer")
     if getattr(args, "occurrence", 1) < 1:
         _fail("--occurrence must be a positive integer")
-    if getattr(args, "content_file", None):
+    if getattr(args, "content_file", None) and args.command in {
+        "post-finding",
+        "reopen-occurrence",
+        "dispose",
+    }:
         required = ["engine", "round", "fingerprint"]
         if args.command == "post-finding":
             required.extend(("severity", "lens"))

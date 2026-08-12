@@ -148,6 +148,24 @@ def test_fetch_addressed_uses_closing_references_and_falls_back_to_keywords(
     assert calls[1][3].startswith("merged:>=")
 
 
+def test_fetch_addressed_excludes_only_wrapper_captured_pr(
+    ready_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prs = [
+        {"number": 100, "body": "closes #10", "closingIssuesReferences": []},
+        {"number": 101, "body": "closes #10 and closes #11", "closingIssuesReferences": []},
+    ]
+    monkeypatch.setattr(ready_mod, "_current_repo", lambda: "acme/platform")
+    monkeypatch.setattr(
+        ready_mod,
+        "_pr_list",
+        lambda extra_args: prs if "open" in extra_args else [],
+    )
+
+    assert ready_mod.fetch_addressed_numbers(exclude_pr_numbers={100}) == {10, 11}
+    assert ready_mod.fetch_addressed_numbers(exclude_pr_numbers={100, 101}) == set()
+
+
 def test_fetch_addressed_fails_closed_on_api_error(
     ready_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -211,10 +229,15 @@ def test_main_excludes_non_actionable_issues_without_hiding_unrelated(
         area=None,
         limit=20,
         json=True,
+        exclude_addressed_by_pr=[],
     )
     monkeypatch.setattr(ready_mod, "parse_args", lambda: args)
     monkeypatch.setattr(ready_mod, "fetch_issues", lambda filters: issues)
-    monkeypatch.setattr(ready_mod, "fetch_addressed_numbers", lambda: {3})
+    monkeypatch.setattr(
+        ready_mod,
+        "fetch_addressed_numbers",
+        lambda *, exclude_pr_numbers=None: {3},
+    )
 
     assert ready_mod.main() == 0
     rows = json.loads(capsys.readouterr().out)

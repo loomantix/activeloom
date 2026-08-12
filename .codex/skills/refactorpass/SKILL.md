@@ -77,8 +77,9 @@ Run these lanes as independently as the active runtime permits:
 9. Keep scope tight: touch only code changed by the current branch unless a tiny adjacent edit is required to finish the cleanup safely.
 10. Do not introduce feature behavior, broad rewrites, unrelated style churn, formatting-only commits, or speculative abstraction.
 11. Run the smallest relevant formatter/test command if the repo documents one.
-12. If changes were made, commit them as `refactor: codex cleanup pass - <summary>`
-    and push without force. Reply to each cleanup thread with the commit and
+12. If changes were made, commit them as `refactor: codex cleanup pass - <summary>`.
+    Publish through `$AGENT_LOOP_REVIEW_PUSH_HELPER` when it is set; otherwise
+    push without force. Reply to each cleanup thread with the commit and
     validation, then resolve it.
 13. Whether or not the lanes produced changes, post one informational PR comment
     closing the latch for this engine, carrying the ledger's marker:

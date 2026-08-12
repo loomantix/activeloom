@@ -26,12 +26,17 @@ NC='\033[0m'
 unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE \
     AGENT_LOOP_REVIEW_OUTCOME_FILE AGENT_LOOP_REVIEW_RESULT_FILE \
     AGENT_LOOP_REVIEW_ROUND AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL \
-    AGENT_LOOP_PR_HEAD_SHA
+    AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
+    AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
+    AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
+    AGENT_LOOP_REVIEW_PUSH_STATE_FILE
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
 INCLUDE_ASSIGNED=false
 RESUME_RUN_FILE=""
+RESUME_BATCH_FILE=""
+BATCH_STATE_FILE=""
 DRY_RUN=false
 LEGACY_ITERATIONS_SEEN=false
 
@@ -45,6 +50,7 @@ Options:
   --include-assigned   Include eligible issues assigned only to @me.
   --resume             Deprecated alias for --include-assigned.
   --resume-run FILE    Resume review/finalization from a private run-state file.
+  --resume-batch FILE  Resume an ordered multi-issue batch from durable state.
   --dry-run            Show selection, gates, paths, hooks, and publication only.
   -h, --help           Show this help.
 
@@ -72,6 +78,11 @@ while [ "$#" -gt 0 ]; do
         --resume-run)
             [ "$#" -ge 2 ] || { echo "--resume-run requires a state file" >&2; exit 2; }
             RESUME_RUN_FILE="$2"
+            shift 2
+            ;;
+        --resume-batch)
+            [ "$#" -ge 2 ] || { echo "--resume-batch requires a state file" >&2; exit 2; }
+            RESUME_BATCH_FILE="$2"
             shift 2
             ;;
         --dry-run)
@@ -111,6 +122,10 @@ if [ -n "$RESUME_RUN_FILE" ] && { [ -n "$ISSUE_ALLOWLIST" ] || [ "$DRY_RUN" = tr
     echo "--resume-run cannot be combined with --issues or --dry-run" >&2
     exit 2
 fi
+if [ -n "$RESUME_BATCH_FILE" ] && { [ -n "$RESUME_RUN_FILE" ] || [ -n "$ISSUE_ALLOWLIST" ] || [ "$DRY_RUN" = true ]; }; then
+    echo "--resume-batch cannot be combined with --resume-run, --issues, or --dry-run" >&2
+    exit 2
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -n "${AGENT_LOOP_PROJECT_DIR:-}" ]; then
@@ -129,6 +144,8 @@ INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
 ISSUES_READY="$PROJECT_DIR/.codex/skills/issues/scripts/ready.py"
 REVIEW_LEDGER="$PROJECT_DIR/.codex/skills/critique/scripts/review-ledger.py"
 RUN_STATE_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop-state.py"
+REVIEW_PUSH_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/review-push.sh"
+CONFIG_DOCTOR_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/config-doctor.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
 
@@ -144,6 +161,8 @@ WORKER_RETRIES=1
 WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
 REVIEW_CONTRACT_VERSION=""
+CONFIG_DOCTOR=false
+CLAUDE_EFFORT_POLICY=""
 REVIEW_MAX_ROUNDS=4
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
@@ -169,6 +188,8 @@ assign_config() {
         worker_timeout_seconds) WORKER_TIMEOUT_SECONDS="$value" ;;
         hook_timeout_seconds) HOOK_TIMEOUT_SECONDS="$value" ;;
         review_contract_version) REVIEW_CONTRACT_VERSION="$value" ;;
+        config_doctor) CONFIG_DOCTOR="$value" ;;
+        claude_effort_policy) CLAUDE_EFFORT_POLICY="$value" ;;
         review_max_rounds) REVIEW_MAX_ROUNDS="$value" ;;
         retry_on_timeout) RETRY_ON_TIMEOUT="$value" ;;
         retry_delay_seconds) RETRY_DELAY_SECONDS="$value" ;;
@@ -210,21 +231,21 @@ if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; t
     echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
     exit 1
 fi
-# The grill-family review skills were renamed to critique/deepcritique/pr-critique
-# and the same sync deletes their old paths, including the review ledger helper.
-# A config still naming one is preserved by `create_if_missing`, so catch it here:
-# otherwise it fails inside a review pass, after the issue is claimed, the
-# worktree exists, the branch is pushed, and a draft PR is open. Both review
-# hooks are checked — the Claude chain was renamed in the same wave. The word
-# boundaries keep an unrelated path such as `grill-app/` from matching.
+if [ -n "$RESUME_BATCH_FILE" ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; then
+    echo "--resume-batch requires review_contract_version = 3" >&2
+    exit 1
+fi
+# Catch retired reviewer names before any issue mutation. Both local engines
+# use the canonical deepcritique skill name.
 for hook_key in claude_review_hook codex_review_hook; do
     case "$hook_key" in
         claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
         codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
         *) echo "unhandled hook key in retired-name preflight: $hook_key" >&2; exit 1 ;;
     esac
-    if [[ "$hook_value" =~ (^|[^[:alnum:]_-])(deepgrill|pr-grill|grill)([^[:alnum:]_-]|$) ]]; then
-        echo "$hook_key names a retired grill-family review skill or path; migrate it to critique, deepcritique, or pr-critique before running agent-loop" >&2
+    invalid_pattern='(^|[^[:alnum:]_-])(deepgrill|pr-grill|grill)([^[:alnum:]_-]|$)'
+    if [[ "$hook_value" =~ $invalid_pattern ]]; then
+        echo "$hook_key names an incorrect reviewer skill; Codex and Claude use deepcritique" >&2
         exit 1
     fi
 done
@@ -238,6 +259,29 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         echo "review contract v3 requires review-ledger.py protocol version 3" >&2
         exit 1
     }
+    for hook_key in claude_review_hook codex_review_hook; do
+        case "$hook_key" in
+            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
+            codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
+            *) echo "unhandled hook key in contract-v3 preflight: $hook_key" >&2; exit 1 ;;
+        esac
+        [ -n "$hook_value" ] || {
+            echo "$hook_key must be configured for review contract v3" >&2
+            exit 1
+        }
+        [[ "$hook_value" == *AGENT_LOOP_REVIEW_PUSH_HELPER* ]] || {
+            echo "$hook_key must use AGENT_LOOP_REVIEW_PUSH_HELPER for review contract v3" >&2
+            exit 1
+        }
+        [[ "$hook_value" == *AGENT_LOOP_REVIEW_RESULT_FILE* ]] || {
+            echo "$hook_key must write AGENT_LOOP_REVIEW_RESULT_FILE for review contract v3" >&2
+            exit 1
+        }
+        [[ "$hook_value" == *write-result* ]] || {
+            echo "$hook_key must use review-ledger.py write-result for review contract v3" >&2
+            exit 1
+        }
+    done
 fi
 
 BASE_BRANCH="${AGENT_LOOP_BASE_BRANCH:-$BASE_BRANCH}"
@@ -266,6 +310,7 @@ done
 [ "$HOOK_TIMEOUT_SECONDS" -gt 0 ] || { echo "hook_timeout_seconds must be a positive integer" >&2; exit 1; }
 [ "$REVIEW_MAX_ROUNDS" -gt 0 ] || { echo "review_max_rounds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
+case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
 for cmd in git gh jq python3 timeout flock realpath; do
@@ -286,10 +331,20 @@ fi
 [ -x "$HOOK_GH_GUARD" ] || { echo "hook gh guard not found or not executable: $HOOK_GH_GUARD" >&2; exit 1; }
 [ -x "$ISSUES_READY" ] || { echo "issues ready.py not found or not executable: $ISSUES_READY" >&2; exit 1; }
 [ -x "$RUN_STATE_HELPER" ] || { echo "agent-loop run-state helper not found or not executable: $RUN_STATE_HELPER" >&2; exit 1; }
+[ -x "$REVIEW_PUSH_HELPER" ] || { echo "agent-loop review push helper not found or not executable: $REVIEW_PUSH_HELPER" >&2; exit 1; }
+[ -x "$CONFIG_DOCTOR_HELPER" ] || { echo "agent-loop config doctor not found or not executable: $CONFIG_DOCTOR_HELPER" >&2; exit 1; }
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
 [ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CODEX_REVIEW_HOOK" ] || { echo "codex_review_hook must be configured before running agent-loop" >&2; exit 1; }
+
+if [ "$CONFIG_DOCTOR" = true ]; then
+    doctor_command=(python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR")
+    if [ -n "$CLAUDE_EFFORT_POLICY" ]; then
+        doctor_command+=(--claude-effort "$CLAUDE_EFFORT_POLICY")
+    fi
+    "${doctor_command[@]}" || exit 1
+fi
 
 if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
     PROMPT_TEMPLATE="$(<"$PROMPT_FILE")"
@@ -327,7 +382,6 @@ ORIGIN_PUSH_URLS="$(git remote get-url --push --all origin)" || {
     echo "could not capture origin push identity" >&2
     exit 1
 }
-
 require_origin_identity() {
     local fetch_urls push_urls
     fetch_urls="$(git remote get-url --all origin)" || return 1
@@ -368,6 +422,7 @@ RECOVERY_EMITTED=false
 PROCESSED_ISSUES=()
 AGENT_LOOP_RUN_STATE_FILE=""
 AGENT_LOOP_RUN_LOCK_FD=""
+AGENT_LOOP_BATCH_LOCK_FD="${AGENT_LOOP_BATCH_LOCK_FD:-}"
 RESUME_STATE_JSON=""
 
 acquire_run_lock() {
@@ -379,6 +434,28 @@ acquire_run_lock() {
     exec {AGENT_LOOP_RUN_LOCK_FD}<"$log_dir" || return 1
     flock -n "$AGENT_LOOP_RUN_LOCK_FD" || {
         echo "another process already owns this agent-loop run" >&2
+        return 1
+    }
+}
+
+acquire_batch_lock() {
+    local state_file="$1" lock_file="${1}.lock"
+    if [ -L "$lock_file" ]; then
+        echo "batch lock is unsafe: $lock_file" >&2
+        return 1
+    fi
+    if [ ! -e "$lock_file" ]; then
+        (umask 077; set -o noclobber; : > "$lock_file") 2>/dev/null || true
+    fi
+    if [ ! -f "$lock_file" ] || [ -L "$lock_file" ]; then
+        echo "batch lock is unavailable or unsafe: $lock_file" >&2
+        return 1
+    fi
+    chmod 600 "$lock_file" || return 1
+    exec {AGENT_LOOP_BATCH_LOCK_FD}<>"$lock_file" || return 1
+    export AGENT_LOOP_BATCH_LOCK_FD
+    flock -n "$AGENT_LOOP_BATCH_LOCK_FD" || {
+        echo "another process already owns this agent-loop batch: $state_file" >&2
         return 1
     }
 }
@@ -418,8 +495,7 @@ print(path.resolve(strict=True))
     case "$resume_worktree" in "$WORKTREE_ROOT"/*) ;; *) echo "run state worktree is outside configured worktree_root" >&2; exit 1 ;; esac
     resume_phase="$(jq -r '.phase' <<<"$RESUME_STATE_JSON")"
     case "$resume_phase" in
-        draft-open|reviewing|converged|finalizing) ;;
-        finalized) echo "run state is already finalized" >&2; exit 1 ;;
+        draft-open|reviewing|converged|finalizing|finalized) ;;
         *) echo "run state is not resumable" >&2; exit 1 ;;
     esac
 fi
@@ -428,15 +504,26 @@ recovery_message() {
     local reason="$1"
     RECOVERY_EMITTED=true
     echo -e "${RED}✗${NC} $reason" >&2
-    if [ -n "$ACTIVE_WORKTREE" ]; then
+    if [ -n "$ACTIVE_WORKTREE" ] && [ -e "$ACTIVE_WORKTREE/.git" ]; then
         echo "Worktree preserved: $ACTIVE_WORKTREE" >&2
         echo "Inspect with: git -C '$ACTIVE_WORKTREE' status --short --branch" >&2
         echo "Recover commits with: git -C '$ACTIVE_WORKTREE' log --oneline --decorate -10" >&2
         echo "Do not reset, reuse, or remove it until the work is recovered." >&2
+    elif [ -n "$ACTIVE_WORKTREE" ]; then
+        echo "No worktree exists at $ACTIVE_WORKTREE (creation did not complete)." >&2
+        echo "If issue #${SELECTED_ID:-?} was claimed, unassign it before it is re-selected." >&2
     fi
     if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
         echo "Resume review with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
     fi
+    if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
+        echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
+    fi
+}
+
+print_batch_bail_command() {
+    local issue="$1" expected_status="$2"
+    echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$issue' --expected-status '$expected_status' --status bailed" >&2
 }
 
 update_run_state() {
@@ -587,6 +674,39 @@ select_next_issue() {
             return 2
         }
         IFS=',' read -r -a candidates <<< "$ISSUE_ALLOWLIST"
+        if [ -n "$BATCH_STATE_FILE" ]; then
+            local batch_selection_json batch_selection_cursor batch_selection_count
+            local batch_selection_status
+            batch_selection_json="$(python3 "$RUN_STATE_HELPER" batch-show \
+                --file "$BATCH_STATE_FILE")" || return 2
+            batch_selection_cursor="$(jq -r '.cursor' <<<"$batch_selection_json")"
+            batch_selection_count="$(jq -r '.issues | length' <<<"$batch_selection_json")"
+            [ "$batch_selection_cursor" -lt "$batch_selection_count" ] || return 1
+            number="$(jq -r --argjson cursor "$batch_selection_cursor" \
+                '.issues[$cursor].issue' <<<"$batch_selection_json")"
+            batch_selection_status="$(jq -r --argjson cursor "$batch_selection_cursor" \
+                '.issues[$cursor].status' <<<"$batch_selection_json")"
+            [ "$batch_selection_status" = pending ] || {
+                echo "ordered batch cursor issue #$number is not pending" >&2
+                return 2
+            }
+            if ! jq -e --argjson number "$number" 'any(.number == $number)' \
+                <<< "$allowlist_ready_json" >/dev/null; then
+                echo -e "${DIM}○${NC} Ordered batch cursor issue #$number is not ready." >&2
+                print_batch_bail_command "$number" pending
+                return 1
+            fi
+            json="$(issue_json "$number")" || return 2
+            if ! issue_is_selectable "$number" "$json"; then
+                echo -e "${DIM}○${NC} Ordered batch cursor issue #$number is not open, agent-labeled, or safely assignable." >&2
+                print_batch_bail_command "$number" pending
+                return 1
+            fi
+            SELECTED_ID="$number"
+            set_selected_issue_context "$json" || return 2
+            [ "$(jq '.assignees | length' <<<"$json")" -gt 0 ] && SELECTED_ASSIGNED=true
+            return 0
+        fi
         for number in "${candidates[@]}"; do
             already_processed "$number" && continue
             if ! jq -e --argjson number "$number" 'any(.number == $number)' \
@@ -626,6 +746,7 @@ select_next_issue() {
         issue_is_selectable "$number" "$json" || continue
         SELECTED_ID="$number"
         set_selected_issue_context "$json" || return 2
+        [ "$(jq '.assignees | length' <<<"$json")" -gt 0 ] && SELECTED_ASSIGNED=true
         return 0
     done <<< "$ready_numbers"
     return 1
@@ -713,8 +834,12 @@ check_dependencies() {
 }
 
 ready_queue_contains_issue() {
-    local number="$1" ready_json status=0
-    ready_json="$("$ISSUES_READY" --agent --limit 1000 --json)" || {
+    local number="$1" excluded_pr="${2:-}" ready_json status=0
+    local -a ready_command=("$ISSUES_READY" --agent --limit 1000 --json)
+    if [ -n "$excluded_pr" ]; then
+        ready_command+=(--exclude-addressed-by-pr "$excluded_pr")
+    fi
+    ready_json="$("${ready_command[@]}")" || {
         echo "could not refresh ready-queue eligibility for issue #$number" >&2
         return 2
     }
@@ -799,7 +924,7 @@ claim_issue() {
 }
 
 verify_issue_for_publication() {
-    local number="$1" current_json issue_status=0 readiness_status=0
+    local number="$1" captured_pr="${2:-}" current_json issue_status=0 readiness_status=0
     current_json="$(issue_json "$number")" || {
         echo "could not refresh issue #$number before publication" >&2
         return 2
@@ -828,7 +953,7 @@ verify_issue_for_publication() {
             ;;
     esac
 
-    ready_queue_contains_issue "$number" || readiness_status=$?
+    ready_queue_contains_issue "$number" "$captured_pr" || readiness_status=$?
     if [ "$readiness_status" -eq 0 ] && [ "$DEPENDENCY_GATE" = merged-to-base ]; then
         check_dependencies "$SELECTED_BODY" || readiness_status=$?
     fi
@@ -868,7 +993,7 @@ require_issue_branch_head() {
 }
 
 run_bounded_hook() {
-    local phase="$1" command="$2" timeout_seconds="$3" log_file="$4"
+    local phase="$1" hook_command="$2" timeout_seconds="$3" log_file="$4"
     local allow_review_mutations="${5:-false}"
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0
     local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
@@ -915,13 +1040,25 @@ run_bounded_hook() {
         if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then
             exec {AGENT_LOOP_RUN_LOCK_FD}<&-
         fi
+        if [ -n "$AGENT_LOOP_BATCH_LOCK_FD" ]; then
+            exec {AGENT_LOOP_BATCH_LOCK_FD}<&-
+            unset AGENT_LOOP_BATCH_LOCK_FD
+        fi
         # Setup, worker, and validation hooks remain local-only. Review hooks run
         # after the wrapper opens a draft PR and must be able to post inline
         # comments, push fixes, reply, and resolve; their remote mutations are
         # attested by the wrapper after the hook returns.
         export AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN"
         export AGENT_LOOP_REAL_GH="$REAL_GH_BIN"
-        export AGENT_LOOP_HOOK_COMMAND="$command"
+        if [ "$allow_review_mutations" = true ]; then
+            export AGENT_LOOP_REVIEW_CONTRACT_VERSION="$REVIEW_CONTRACT_VERSION"
+            export AGENT_LOOP_ORIGIN_FETCH_URLS="$ORIGIN_FETCH_URLS"
+            export AGENT_LOOP_ORIGIN_PUSH_URLS="$ORIGIN_PUSH_URLS"
+        else
+            unset AGENT_LOOP_REVIEW_CONTRACT_VERSION AGENT_LOOP_ORIGIN_FETCH_URLS \
+                AGENT_LOOP_ORIGIN_PUSH_URLS
+        fi
+        export AGENT_LOOP_HOOK_COMMAND="$hook_command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
         # shellcheck disable=SC2016 # expanded by the bounded login shell
@@ -950,13 +1087,13 @@ worker_command() {
         return
     fi
     printf -v codex_command '%q' "$DEFAULT_CODEX_BIN"
-    local command="$codex_command exec --dangerously-bypass-approvals-and-sandbox -C \"\$AGENT_LOOP_WORKTREE\""
+    local rendered_command="$codex_command exec --dangerously-bypass-approvals-and-sandbox -C \"\$AGENT_LOOP_WORKTREE\""
     if [ -n "$model" ]; then
         printf -v model_arg '%q' "$model"
-        command+=" -m $model_arg"
+        rendered_command+=" -m $model_arg"
     fi
-    command+=" \"\$AGENT_LOOP_PROMPT\""
-    printf '%s' "$command"
+    rendered_command+=" \"\$AGENT_LOOP_PROMPT\""
+    printf '%s' "$rendered_command"
 }
 
 run_worker() {
@@ -1112,7 +1249,7 @@ require_review_outcome_signature() {
 verify_v3_result_attestation() {
     local engine="$1" slug="$2" outcome_file="$3" expected_signature="$4"
     local before_sha after_sha result_status classification fingerprints result_hash
-    local marker bodies_file allowed_heads_file
+    local marker bodies_file allowed_heads_file historical_comment_ids_file
     case "$expected_signature" in
         file:*) result_hash="${expected_signature#file:}" ;;
         *) recovery_message "$engine converged review result is missing."; return 1 ;;
@@ -1128,9 +1265,10 @@ verify_v3_result_attestation() {
     }
     result_status="$(jq -r '.status' "$outcome_file")" || return 1
     allowed_heads_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$REVIEW_ROUNDS_USED-heads.json"
+    historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$REVIEW_ROUNDS_USED-historical-comment-ids.json"
     verify_v3_committed_pass_evidence "$slug" "$REVIEW_ROUNDS_USED" \
         "$before_sha" "$after_sha" "$outcome_file" "$allowed_heads_file" \
-        "$REVIEWED_BASE_SHA" || {
+        "$REVIEWED_BASE_SHA" "$historical_comment_ids_file" || {
         recovery_message "$engine converged review result no longer has matching ledger evidence."
         return 1
     }
@@ -1167,12 +1305,60 @@ verify_converged_review_outcomes() {
     fi
 }
 
+recover_v3_review_pass() {
+    local engine="$1" slug="$2" round="$3" base_sha="$4"
+    local allow_descendant="${5:-false}"
+    local outcome_file outcome_signature classification result_head current_head
+    local boundary_status=0
+    outcome_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.result.json"
+    [ -f "$outcome_file" ] || return 2
+    outcome_signature="$(review_outcome_signature "$outcome_file")" || return 1
+    case "$outcome_signature" in
+        file:*) ;;
+        *) recovery_message "$engine interrupted review result is incomplete."; return 1 ;;
+    esac
+    result_head="$(jq -r '.afterSha // empty' "$outcome_file")" || return 1
+    current_head="$(git rev-parse HEAD)" || return 1
+    if [ "$result_head" != "$current_head" ]; then
+        [ "$allow_descendant" = true ] && \
+            git merge-base --is-ancestor "$result_head" "$current_head" || {
+            recovery_message "$engine interrupted review result does not match the current review head."
+            return 1
+        }
+    fi
+    REVIEW_ROUNDS_USED="$round"
+    REVIEWED_BASE_SHA="$base_sha"
+    require_review_outcome_signature "$engine" "$outcome_file" \
+        "$outcome_signature" "during interrupted-pass recovery" || return 1
+    verify_v3_result_attestation "$engine" "$slug" "$outcome_file" \
+        "$outcome_signature" || return 1
+    classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' \
+        "$outcome_file")" || return 1
+    run_validation "$slug-review-round-$round" || {
+        recovery_message "Validation after recovered $engine review failed in review round $round."
+        return 1
+    }
+    require_review_outcome_signature "$engine" "$outcome_file" \
+        "$outcome_signature" "during recovered validation in round $round" || return 1
+    attest_review_head "after recovered $engine review validation in round $round" \
+        "$base_sha" || boundary_status=$?
+    if [ "$boundary_status" -ne 0 ]; then
+        recovery_message "PR head attestation failed after recovered $engine review validation in round $round."
+        return 1
+    fi
+    REVIEW_PASS_CLASSIFICATION="$classification"
+    REVIEW_PASS_OUTCOME_FILE="$outcome_file"
+    REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
+}
+
 run_review_pass() {
     local engine="$1" slug="$2" hook="$3" round="$4"
     local hook_description="$5" hook_failure_description="$6"
     local review_description="$7" validation_description="$8"
     local before_sha after_sha status classification outcome_signature outcome_file
     local result_file result_json result_status result_hash allowed_heads_file blocker
+    local pre_pass_threads_file historical_comment_ids_file review_push_state_file
+    local historical_comment_ids_signature
     local boundary_status
 
     export AGENT_LOOP_REVIEW_ENGINE="$slug"
@@ -1198,11 +1384,46 @@ run_review_pass() {
         recovery_message "PR head attestation failed before $engine review round $round."
         return 1
     fi
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        pre_pass_threads_file="$(fetch_local_review_threads)" || {
+            recovery_message "Could not snapshot review history before $engine round $round."
+            return 1
+        }
+        historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-historical-comment-ids.json"
+        jq '[.[].data.repository.pullRequest.reviewThreads.nodes[].comments.nodes[].databaseId | select(type == "number")] | unique | sort' \
+            "$pre_pass_threads_file" > "$historical_comment_ids_file" || {
+            recovery_message "Could not pin review history before $engine round $round."
+            return 1
+        }
+        historical_comment_ids_signature="$(review_outcome_signature "$historical_comment_ids_file")" || {
+            recovery_message "Could not seal review history before $engine round $round."
+            return 1
+        }
+        export AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE="$historical_comment_ids_file"
+        review_push_state_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-push-state"
+        printf '%s\n' "$before_sha" > "$review_push_state_file" || {
+            recovery_message "Could not initialize the $engine review push checkpoint."
+            return 1
+        }
+        chmod 600 "$review_push_state_file" || {
+            recovery_message "Could not secure the $engine review push checkpoint."
+            return 1
+        }
+        export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
+    else
+        unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
+            AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+    fi
     run_bounded_hook "$hook_description (round $round)" "$hook" \
         "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
         recovery_message "$hook_failure_description failed in review round $round."
         return 1
     }
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        require_review_outcome_signature "$engine pre-pass history" \
+            "$historical_comment_ids_file" "$historical_comment_ids_signature" \
+            "after review round $round" || return 1
+    fi
     status="$(git status --porcelain)" || {
         recovery_message "Could not inspect Git status after the $hook_description in round $round."
         return 1
@@ -1220,16 +1441,12 @@ run_review_pass() {
         recovery_message "$review_description rewrote or dropped previously reviewed commits in round $round."
         return 1
     }
-    boundary_status=0
-    attest_review_head "after $engine review round $round" \
-        "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
-    if [ "$boundary_status" -eq 2 ]; then
-        return 2
-    elif [ "$boundary_status" -ne 0 ]; then
-        recovery_message "$review_description did not leave local, remote, and PR heads aligned in round $round."
-        return 1
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        [ "$(cat "$review_push_state_file")" = "$after_sha" ] || {
+            recovery_message "$engine review push checkpoint did not match its final head in round $round."
+            return 1
+        }
     fi
-    export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         result_json="$(python3 "$REVIEW_LEDGER" validate-result \
             --engine "$slug" --round "$round" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
@@ -1244,6 +1461,18 @@ run_review_pass() {
             recovery_message "$engine review blocked in round $round: $blocker"
             return 1
         fi
+    fi
+    boundary_status=0
+    attest_review_head "after $engine review round $round" \
+        "$AGENT_LOOP_REVIEW_BASE_SHA" || boundary_status=$?
+    if [ "$boundary_status" -eq 2 ]; then
+        return 2
+    elif [ "$boundary_status" -ne 0 ]; then
+        recovery_message "$review_description did not leave local, remote, and PR heads aligned in round $round."
+        return 1
+    fi
+    export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$result_json")"
         allowed_heads_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-heads.json"
         write_review_transition_heads "$before_sha" "$after_sha" \
@@ -1327,11 +1556,14 @@ require_fast_forward_base_advance() {
 
 run_review_convergence() {
     local round="${1:-1}" codex_classification claude_classification
+    local resume_engine="${2:-codex}"
+    local recovered_complete_round=false
     local codex_outcome_signature claude_outcome_signature
     local codex_outcome_file claude_outcome_file
     local round_base_sha latest_base_sha pass_status
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
+        recovered_complete_round=false
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
         export AGENT_LOOP_REVIEW_ROUND="$round"
 
@@ -1360,62 +1592,91 @@ run_review_convergence() {
                 return 1
             }
         fi
-        update_run_state reviewing "$round" "$round_base_sha" "$(git rev-parse HEAD)" \
-            "" "" codex || {
-            recovery_message "Could not checkpoint review round $round."
-            return 1
-        }
-        pass_status=0
-        run_review_pass Codex codex "$CODEX_REVIEW_HOOK" "$round" \
-            "configured Codex review hook" "Configured Codex review hook" \
-            "Configured Codex review hook" \
-            "the configured Codex review hook" || pass_status=$?
-        if [ "$pass_status" -eq 2 ]; then
-            require_fast_forward_base_advance "$round_base_sha" \
-                "during review round $round (Codex boundary)" || return 1
-            echo "   PR base advanced during Codex review; restart at Codex on the next round"
-            round=$((round + 1))
-            update_run_state reviewing "$round" \
-                "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
-                "" "" codex || {
-                recovery_message "Could not checkpoint the next review round."
+        if [ "$resume_engine" = complete ]; then
+            recover_v3_review_pass Codex codex "$round" "$round_base_sha" true || {
+                recovery_message "Could not recover the completed Codex leg for final-round completion."
                 return 1
             }
-            continue
-        elif [ "$pass_status" -ne 0 ]; then
-            return 1
+            codex_classification="$REVIEW_PASS_CLASSIFICATION"
+            codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+            recover_v3_review_pass Claude claude "$round" "$round_base_sha" || {
+                recovery_message "Could not recover the completed Claude leg for final-round completion."
+                return 1
+            }
+            claude_classification="$REVIEW_PASS_CLASSIFICATION"
+            claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+            recovered_complete_round=true
+            resume_engine=codex
+            echo "   Recovered authenticated Codex and Claude evidence for the interrupted final round"
+        elif [ "$resume_engine" = claude ]; then
+            recover_v3_review_pass Codex codex "$round" "$round_base_sha" || {
+                recovery_message "Could not recover the completed Codex leg for final-round continuation."
+                return 1
+            }
+            echo "   Recovered authenticated Codex evidence; resuming the interrupted Claude leg"
+            resume_engine=codex
+        else
+            update_run_state reviewing "$round" "$round_base_sha" "$(git rev-parse HEAD)" \
+                "" "" codex || {
+                recovery_message "Could not checkpoint review round $round."
+                return 1
+            }
+            pass_status=0
+            run_review_pass Codex codex "$CODEX_REVIEW_HOOK" "$round" \
+                "configured Codex review hook" "Configured Codex review hook" \
+                "Configured Codex review hook" \
+                "the configured Codex review hook" || pass_status=$?
+            if [ "$pass_status" -eq 2 ]; then
+                require_fast_forward_base_advance "$round_base_sha" \
+                    "during review round $round (Codex boundary)" || return 1
+                echo "   PR base advanced during Codex review; restart at Codex on the next round"
+                round=$((round + 1))
+                update_run_state reviewing "$round" \
+                    "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
+                    "" "" codex || {
+                    recovery_message "Could not checkpoint the next review round."
+                    return 1
+                }
+                continue
+            elif [ "$pass_status" -ne 0 ]; then
+                return 1
+            fi
         fi
-        codex_classification="$REVIEW_PASS_CLASSIFICATION"
-        codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
-        codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
-        update_run_state reviewing "$round" "$round_base_sha" \
-            "$(git rev-parse HEAD)" "" "" claude || {
-            recovery_message "Could not checkpoint the Claude leg after Codex completed round $round."
-            return 1
-        }
+        if [ "$recovered_complete_round" != true ]; then
+            codex_classification="$REVIEW_PASS_CLASSIFICATION"
+            codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+            update_run_state reviewing "$round" "$round_base_sha" \
+                "$(git rev-parse HEAD)" "" "" claude || {
+                recovery_message "Could not checkpoint the Claude leg after Codex completed round $round."
+                return 1
+            }
 
-        pass_status=0
-        run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
-            "configured Claude review hook" "Claude review hook" "Claude review" \
-            "Claude review" || pass_status=$?
-        if [ "$pass_status" -eq 2 ]; then
-            require_fast_forward_base_advance "$round_base_sha" \
-                "during review round $round (Claude boundary)" || return 1
-            echo "   PR base advanced during Claude review; restart at Codex on the next round"
-            round=$((round + 1))
-            update_run_state reviewing "$round" \
-                "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
-                "" "" codex || {
-                recovery_message "Could not checkpoint the next review round."
+            pass_status=0
+            run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
+                "configured Claude review hook" "Claude review hook" "Claude review" \
+                "Claude review" || pass_status=$?
+            if [ "$pass_status" -eq 2 ]; then
+                require_fast_forward_base_advance "$round_base_sha" \
+                    "during review round $round (Claude boundary)" || return 1
+                echo "   PR base advanced during Claude review; restart at Codex on the next round"
+                round=$((round + 1))
+                update_run_state reviewing "$round" \
+                    "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
+                    "" "" codex || {
+                    recovery_message "Could not checkpoint the next review round."
+                    return 1
+                }
+                continue
+            elif [ "$pass_status" -ne 0 ]; then
                 return 1
-            }
-            continue
-        elif [ "$pass_status" -ne 0 ]; then
-            return 1
+            fi
+            claude_classification="$REVIEW_PASS_CLASSIFICATION"
+            claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
         fi
-        claude_classification="$REVIEW_PASS_CLASSIFICATION"
-        claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
-        claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
         require_review_outcome_signature Codex "$codex_outcome_file" \
             "$codex_outcome_signature" "before the round decision" || return 1
         require_review_outcome_signature Claude "$claude_outcome_file" \
@@ -1450,7 +1711,8 @@ run_review_convergence() {
             }
             unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
                 AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
-                AGENT_LOOP_REVIEW_RESULT_FILE
+                AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
+                AGENT_LOOP_REVIEW_PUSH_STATE_FILE
             echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reported no material fixes in a complete round after $round round(s)"
             return 0
         fi
@@ -1470,7 +1732,8 @@ run_review_convergence() {
 
     unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
         AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
-        AGENT_LOOP_REVIEW_RESULT_FILE
+        AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
+        AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
     return 1
 }
@@ -1566,12 +1829,14 @@ fetch_local_review_threads() {
     local owner="${GH_REPO%%/*}" name="${GH_REPO#*/}"
     local ledger_file="$AGENT_LOOP_LOG_DIR/local-review-threads.json"
     local query
+    # shellcheck disable=SC2016 # GraphQL variables are expanded by GitHub, not Bash.
     query='
 query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
   repository(owner:$owner, name:$name) {
     pullRequest(number:$number) {
       reviewThreads(first:100, after:$endCursor) {
         nodes {
+          id
           isResolved
           comments(first:100) {
             nodes { body databaseId author { login } }
@@ -1667,8 +1932,10 @@ verify_committed_pass_evidence() {
 verify_v3_committed_pass_evidence() {
     local engine="$1" round="$2" before_sha="$3" after_sha="$4" result_file="$5"
     local allowed_heads_file="$6" base_sha="${7:-${AGENT_LOOP_REVIEW_BASE_SHA:-}}"
+    local historical_comment_ids_file="${8:-${AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE:-}}"
     local ledger_file live_head
     [ -n "$base_sha" ] || return 1
+    [ -n "$historical_comment_ids_file" ] || return 1
     live_head="$(git rev-parse HEAD)" || return 1
     git merge-base --is-ancestor "$after_sha" "$live_head" || return 1
     ledger_file="$(fetch_local_review_threads)" || return 1
@@ -1678,7 +1945,8 @@ verify_v3_committed_pass_evidence() {
         --threads-file "$ledger_file" --actor "$CURRENT_LOGIN" \
         --engine "$engine" --round "$round" \
         --base "$base_sha" --before "$before_sha" \
-        --result-file "$result_file" --allowed-heads-file "$allowed_heads_file" >/dev/null
+        --result-file "$result_file" --allowed-heads-file "$allowed_heads_file" \
+        --historical-comment-ids-file "$historical_comment_ids_file" >/dev/null
 }
 
 write_review_transition_heads() {
@@ -1712,8 +1980,18 @@ attest_v3_review_result() {
 }
 
 verify_local_review_threads() {
-    local ledger_file
+    local ledger_file historical_comment_ids_file=""
+    local -a historical_args=()
     ledger_file="$(fetch_local_review_threads)" || return 1
+    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        if [ "${REVIEW_ROUNDS_USED:-0}" -gt 0 ]; then
+            historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/codex-review-round-$REVIEW_ROUNDS_USED-historical-comment-ids.json"
+        else
+            historical_comment_ids_file="${AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE:-}"
+        fi
+        [ -n "$historical_comment_ids_file" ] || return 1
+        historical_args=(--historical-comment-ids-file "$historical_comment_ids_file")
+    fi
     # Check comment pagination across every thread *before* filtering by marker.
     # A thread whose marker sits past the first comment page carries no marker in
     # `comments.nodes`, so filtering first would silently drop exactly the threads
@@ -1726,7 +2004,7 @@ verify_local_review_threads() {
     python3 "$REVIEW_LEDGER" verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
         --head "$(git rev-parse HEAD)" --threads-file "$ledger_file" \
-        --actor "$CURRENT_LOGIN" >/dev/null || {
+        --actor "$CURRENT_LOGIN" "${historical_args[@]}" >/dev/null || {
         echo "local-review threads must contain a disposition reply and be resolved" >&2
         return 1
     }
@@ -1854,7 +2132,10 @@ finalize_pr() {
         echo
         echo "Closes #$AGENT_LOOP_ISSUE_ID"
     } > "$body_file"
-    gh pr edit "$AGENT_LOOP_PR_NUMBER" --body-file "$body_file" || return 1
+    gh pr edit "$AGENT_LOOP_PR_NUMBER" --body-file "$body_file" || {
+        recovery_message "Could not update the PR body; remote PR mutation state is uncertain."
+        return 1
+    }
     attest_review_head "immediately before marking ready" "$REVIEWED_BASE_SHA" || return 1
     verify_local_review_threads || return 1
     verify_converged_review_outcomes || return 1
@@ -1908,6 +2189,7 @@ resume_review_run() {
     local resume_boundary_status=0 checkpoint_base latest_base attestation_status
     local issue_title_sha256 issue_body_sha256
     local ready_finalization=false pr_draft_state state_review_engine
+    local restart_after_interrupted_pass=false resume_review_engine=codex
     local finalizing_head_drift=false
     SELECTED_ID="$(jq -r '.issue' <<<"$RESUME_STATE_JSON")"
     issue_json_value="$(issue_json "$SELECTED_ID")" || {
@@ -1970,6 +2252,7 @@ resume_review_run() {
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
+    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
     AGENT_LOOP_PR_NUMBER="$(jq -r '.prNumber' <<<"$RESUME_STATE_JSON")" || return 1
     AGENT_LOOP_PR_URL="$(jq -r '.prUrl' <<<"$RESUME_STATE_JSON")" || return 1
     export AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL
@@ -1983,13 +2266,58 @@ resume_review_run() {
     CONVERGED_CLAUDE_OUTCOME_SIGNATURE=""
 
     checkpoint_base="$(jq -r '.baseSha' <<<"$RESUME_STATE_JSON")"
+    if [ "$state_phase" = finalized ]; then
+        [ "$current_head" = "$state_head" ] || {
+            recovery_message "Finalized recovery worktree head no longer matches its exact checkpoint."
+            return 1
+        }
+        REVIEW_ROUNDS_USED="$state_round"
+        REVIEWED_BASE_SHA="$checkpoint_base"
+        CONVERGED_CODEX_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json"
+        CONVERGED_CLAUDE_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/claude-review-round-$state_round.result.json"
+        CONVERGED_CODEX_OUTCOME_SIGNATURE="file:$(jq -r '.codexResultSha256' <<<"$RESUME_STATE_JSON")"
+        CONVERGED_CLAUDE_OUTCOME_SIGNATURE="file:$(jq -r '.claudeResultSha256' <<<"$RESUME_STATE_JSON")"
+        attest_ready_pr_head "$state_head" "$checkpoint_base" \
+            "before finalized batch recovery" || {
+            recovery_message "Finalized PR no longer matches its exact ready checkpoint."
+            return 1
+        }
+        verify_converged_review_outcomes || return 1
+        verify_local_review_threads || return 1
+        verify_issue_for_publication "$SELECTED_ID" "$AGENT_LOOP_PR_NUMBER" || {
+            recovery_message "Issue requirements or readiness changed after the finalized checkpoint."
+            return 1
+        }
+        inspect_publication_diff "$checkpoint_base" || {
+            recovery_message "Finalized reviewed diff inspection failed during batch recovery."
+            return 1
+        }
+        run_validation "finalized-batch-recovery" || {
+            recovery_message "Finalized reviewed-head validation failed during batch recovery."
+            return 1
+        }
+        attest_ready_pr_head "$state_head" "$checkpoint_base" \
+            "after finalized batch recovery validation" || {
+            recovery_message "Finalized PR changed during batch recovery validation."
+            return 1
+        }
+        cd "$PROJECT_DIR"
+        if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
+            git worktree remove "$ACTIVE_WORKTREE"
+            ACTIVE_WORKTREE=""
+        else
+            echo "   Finalized worktree preserved for parent batch checkpointing: $ACTIVE_WORKTREE"
+        fi
+        echo -e "${GREEN}✓${NC} Re-attested finalized issue #$SELECTED_ID; local branch retained at $AGENT_LOOP_BRANCH"
+        return 0
+    fi
     if [ "$state_phase" = reviewing ] && [ "$state_review_engine" = codex ] && \
        [ "$current_head" = "$state_head" ]; then
         attestation_status=0
         review_pass_identity_is_attested codex "$state_round" \
             "$checkpoint_base" "$state_head" || attestation_status=$?
         if [ "$attestation_status" -eq 0 ]; then
-            state_round=$((state_round + 1))
+            restart_after_interrupted_pass=true
         elif [ "$attestation_status" -ne 1 ]; then
             recovery_message "Could not reconcile the interrupted Codex pass attestation."
             return 1
@@ -1997,7 +2325,22 @@ resume_review_run() {
     fi
     if [ "$state_phase" = reviewing ] && \
        { [ "$state_review_engine" = claude ] || [ "$current_head" != "$state_head" ]; }; then
-        state_round=$((state_round + 1))
+        restart_after_interrupted_pass=true
+    fi
+    if [ "$restart_after_interrupted_pass" = true ]; then
+        if [ "$state_round" -lt "$REVIEW_MAX_ROUNDS" ]; then
+            state_round=$((state_round + 1))
+        else
+            if [ -f "$AGENT_LOOP_LOG_DIR/claude-review-round-$state_round.result.json" ]; then
+                resume_review_engine=complete
+                echo "   Final configured review round was interrupted; recovering its completed legs"
+            elif [ -f "$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json" ]; then
+                resume_review_engine=claude
+                echo "   Final configured review round was interrupted; resuming its remaining leg"
+            else
+                echo "   Final configured review round was interrupted; replaying it without consuming another round"
+            fi
+        fi
     fi
     if [ "$state_phase" = finalizing ]; then
         pr_draft_state="$(gh pr view "$AGENT_LOOP_PR_NUMBER" --json isDraft --jq '.isDraft')" || {
@@ -2091,7 +2434,7 @@ resume_review_run() {
         fi
         echo -e "${GREEN}✓${NC} Recovered converged review checkpoint at round $state_round"
     else
-        run_review_convergence "$state_round"
+        run_review_convergence "$state_round" "$resume_review_engine"
     fi
 
     inspect_publication_diff "$REVIEWED_BASE_SHA" || {
@@ -2138,7 +2481,7 @@ resume_review_run() {
         fi
         return 1
     fi
-    verify_issue_for_publication "$SELECTED_ID" || {
+    verify_issue_for_publication "$SELECTED_ID" "$AGENT_LOOP_PR_NUMBER" || {
         if [ "$ready_finalization" = true ]; then
             restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
                 "issue readiness changed during recovered finalization" || return 1
@@ -2164,9 +2507,13 @@ resume_review_run() {
         finalize_pr
     fi
     cd "$PROJECT_DIR"
-    git worktree remove "$ACTIVE_WORKTREE"
+    if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
+        git worktree remove "$ACTIVE_WORKTREE"
+        ACTIVE_WORKTREE=""
+    else
+        echo "   Finalized worktree preserved for parent batch checkpointing: $ACTIVE_WORKTREE"
+    fi
     echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID recovery complete; local branch retained at $AGENT_LOOP_BRANCH"
-    ACTIVE_WORKTREE=""
 }
 
 if [ -n "$RESUME_RUN_FILE" ]; then
@@ -2174,6 +2521,66 @@ if [ -n "$RESUME_RUN_FILE" ]; then
     resume_review_run
     echo -e "${GREEN}■${NC} agent-loop recovery finished"
     exit 0
+fi
+
+if [ -n "$RESUME_BATCH_FILE" ]; then
+    BATCH_STATE_FILE="$(realpath -- "$RESUME_BATCH_FILE")" || exit 1
+    case "$BATCH_STATE_FILE" in "$LOG_ROOT"/*) ;; *) echo "batch state is outside configured log_root" >&2; exit 1 ;; esac
+    acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
+    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+    [ "$(jq -r '.repo' <<<"$batch_json")" = "$GH_REPO" ] || { echo "batch state repository mismatch" >&2; exit 1; }
+    [ "$(jq -r '.baseBranch' <<<"$batch_json")" = "$BASE_BRANCH" ] || { echo "batch state base branch mismatch" >&2; exit 1; }
+    batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
+    batch_count="$(jq -r '.issues | length' <<<"$batch_json")"
+    if [ "$batch_cursor" -lt "$batch_count" ] && \
+       [ "$(jq -r --argjson cursor "$batch_cursor" '.issues[$cursor].status' <<<"$batch_json")" = active ]; then
+        batch_issue="$(jq -r --argjson cursor "$batch_cursor" '.issues[$cursor].issue' <<<"$batch_json")"
+        child_state="$(jq -r --argjson cursor "$batch_cursor" '.issues[$cursor].childRunState // empty' <<<"$batch_json")"
+        [ -n "$child_state" ] || {
+            recovery_message "Batch issue #$batch_issue is active without a child review checkpoint; inspect its worktree, remote branch, PR, and ledger before explicitly bailing it."
+            echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$batch_issue' --expected-status active --status bailed" >&2
+            exit 1
+        }
+        child_json="$(python3 "$RUN_STATE_HELPER" show --file "$child_state")" || exit 1
+        [ "$(jq -r '.issue' <<<"$child_json")" = "$batch_issue" ] && \
+        [ "$(jq -r '.repo' <<<"$child_json")" = "$GH_REPO" ] && \
+        [ "$(jq -r '.baseBranch' <<<"$child_json")" = "$BASE_BRANCH" ] || {
+            recovery_message "Batch issue #$batch_issue does not match its child review checkpoint."
+            exit 1
+        }
+        child_worktree="$(jq -r '.worktree' <<<"$child_json")"
+        AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" \
+            "$SCRIPT_DIR/agent-loop.sh" --resume-run "$child_state" || {
+            recovery_message "Current batch issue #$batch_issue did not resume to a safely finalized state."
+            exit 1
+        }
+        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+            --issue "$batch_issue" --expected-status active \
+            --status finalized >/dev/null || exit 1
+        git worktree remove "$child_worktree" || {
+            echo "warning: finalized batch child worktree cleanup failed and was preserved: $child_worktree" >&2
+        }
+        batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+        batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
+    fi
+    ISSUE_ALLOWLIST="$(jq -r --argjson cursor "$batch_cursor" '.allowlist[$cursor:] | map(tostring) | join(",")' <<<"$batch_json")"
+    if [ -z "$ISSUE_ALLOWLIST" ]; then
+        echo -e "${GREEN}■${NC} agent-loop batch already complete"
+        exit 0
+    fi
+    remaining_count="$(jq -r --argjson cursor "$batch_cursor" '.allowlist[$cursor:] | length' <<<"$batch_json")"
+    [ "$MAX_ITERATIONS" -le "$remaining_count" ] || MAX_ITERATIONS="$remaining_count"
+elif [[ "$ISSUE_ALLOWLIST" == *,* ]] && [ "$DRY_RUN" = false ] && \
+     [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    mkdir -p "$LOG_ROOT"
+    chmod 700 "$LOG_ROOT"
+    safe_repo="${REPO_NAME//[^A-Za-z0-9._-]/-}"
+    BATCH_STATE_FILE="$LOG_ROOT/$safe_repo-batch-$RUN_TAG.json"
+    python3 "$RUN_STATE_HELPER" batch-create --file "$BATCH_STATE_FILE" \
+        --run-id "$RUN_TAG" --repo "$GH_REPO" --base-branch "$BASE_BRANCH" \
+        --issues "$ISSUE_ALLOWLIST" >/dev/null || exit 1
+    acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
+    echo "   Batch recovery state: $BATCH_STATE_FILE"
 fi
 
 echo -e "${CYAN}→${NC} agent-loop repository: $PROJECT_DIR"
@@ -2216,6 +2623,11 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         if [ "$dependency_status" -eq 1 ]; then
             echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID blocked by dependency gate"
             ACTIVE_WORKTREE=""
+            if [ -n "$BATCH_STATE_FILE" ]; then
+                recovery_message "Ordered batch stopped at dependency-blocked issue #$SELECTED_ID."
+                print_batch_bail_command "$SELECTED_ID" pending
+                exit 1
+            fi
             continue
         fi
         echo "dependency gate failed for issue #$SELECTED_ID" >&2
@@ -2232,6 +2644,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         echo -e "${GREEN}✓${NC} Dry-run only: no claim, worktree, hook, push, or PR mutation"
         ACTIVE_WORKTREE=""
         continue
+    fi
+
+    if [ -n "$BATCH_STATE_FILE" ]; then
+        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+            --issue "$SELECTED_ID" --expected-status pending \
+            --status active >/dev/null || exit 1
     fi
 
     mkdir -p "$WORKTREE_ROOT"
@@ -2251,6 +2669,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     claim_status=0
     claim_issue "$SELECTED_ID" || claim_status=$?
     if [ "$claim_status" -ne 0 ]; then
+        if [ -n "$BATCH_STATE_FILE" ]; then
+            recovery_message "Batch claim for issue #$SELECTED_ID did not complete safely."
+            exit 1
+        fi
         echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID could not be claimed; skipping"
         rmdir "$proposed_log_dir" 2>/dev/null || true
         ACTIVE_WORKTREE=""
@@ -2276,6 +2698,11 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         fi
         rmdir "$proposed_log_dir" 2>/dev/null || true
         ACTIVE_WORKTREE=""
+        if [ -n "$BATCH_STATE_FILE" ]; then
+            recovery_message "Batch issue #$SELECTED_ID lost eligibility after claim verification; explicitly bail it before continuing."
+            print_batch_bail_command "$SELECTED_ID" active
+            exit 1
+        fi
         [ "$refreshed_status" -eq 2 ] && exit 1
         continue
     fi
@@ -2296,7 +2723,6 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
-
     start_sha="$(git rev-parse HEAD)"
     if [ -n "$SETUP_HOOK" ]; then
         run_bounded_hook "isolated dependency bootstrap" "$SETUP_HOOK" "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/setup.log" || {
@@ -2311,6 +2737,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
 
     run_worker "$start_sha" || exit 1
+    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
 
@@ -2362,6 +2789,14 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             recovery_message "Could not acquire the private review run lock."
             exit 1
         }
+        if [ -n "$BATCH_STATE_FILE" ]; then
+            python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+                --issue "$SELECTED_ID" --expected-status active --status active \
+                --child-run-state "$AGENT_LOOP_RUN_STATE_FILE" >/dev/null || {
+                recovery_message "Could not attach the child review checkpoint to batch state."
+                exit 1
+            }
+        fi
         echo "   Review recovery state: $AGENT_LOOP_RUN_STATE_FILE"
     fi
 
@@ -2393,7 +2828,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     verify_local_review_threads || exit 1
 
     publication_readiness_status=0
-    verify_issue_for_publication "$SELECTED_ID" || publication_readiness_status=$?
+    verify_issue_for_publication "$SELECTED_ID" "$AGENT_LOOP_PR_NUMBER" || publication_readiness_status=$?
     if [ "$publication_readiness_status" -ne 0 ]; then
         recovery_message "Issue requirements or readiness changed before publication; completed work was preserved and the claim was retained."
         exit 1
@@ -2401,10 +2836,39 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     finalize_pr
 
     cd "$PROJECT_DIR"
-    git worktree remove "$ACTIVE_WORKTREE"
-    echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID complete; local branch retained at $branch"
+    if [ "${AGENT_INTERRUPT_AFTER_CHILD_FINALIZED:-0}" = 1 ]; then
+        recovery_message "Synthetic interruption after child finalization checkpoint."
+        exit 92
+    fi
+    if [ -n "$BATCH_STATE_FILE" ]; then
+        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+            --issue "$SELECTED_ID" --expected-status active \
+            --status finalized >/dev/null || {
+            recovery_message "Issue finalized but the batch cursor could not be checkpointed; the worktree was preserved."
+            exit 1
+        }
+    fi
+    git worktree remove "$ACTIVE_WORKTREE" || {
+        echo "warning: finalized issue worktree cleanup failed and was preserved: $ACTIVE_WORKTREE" >&2
+    }
     ACTIVE_WORKTREE=""
+    echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID complete; local branch retained at $branch"
 done
+
+if [ -n "$BATCH_STATE_FILE" ]; then
+    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+    batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
+    batch_count="$(jq -r '.issues | length' <<<"$batch_json")"
+    if [ "$batch_cursor" -lt "$batch_count" ]; then
+        if [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
+            echo -e "${YELLOW}○${NC} Ordered batch paused cleanly at the $MAX_ITERATIONS-issue iteration cap."
+            echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+            exit 0
+        fi
+        recovery_message "Ordered batch stopped before every issue reached a finalized or explicitly bailed state."
+        exit 1
+    fi
+fi
 
 if [ "$ITERATION" -eq 0 ]; then
     echo -e "${DIM}○${NC} No selectable issues."

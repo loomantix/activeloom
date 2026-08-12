@@ -17,20 +17,20 @@ validation_hook =
 # Required acknowledgement of the current review-hook contract. Existing
 # consumer configs must migrate the hooks below before adding this marker.
 review_contract_version = 3
+config_doctor = true
+# Optional literal policy enforced by the doctor, for example `low`.
+claude_effort_policy =
 
 # Both review hooks are required. The wrapper runs Codex first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
 # Codex-then-Claude round with no material fixes. The Codex hook must run
-# `deepcritique`; the Claude hook must perform a fresh adversarial review.
-# An existing config whose `claude_review_hook` or `codex_review_hook` still
-# names a retired `grill`-family skill or path is rejected during startup,
-# before issue claim or worktree creation.
+# `deepcritique`; the Claude hook must run `deepcritique`.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
-# commit it, push without force, reply with the fix and validation, resolve the
+# commit it, call `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply with the fix and validation, resolve the
 # thread, and fail if any valid finding or local-review thread remains. Hooks
-# may use `git push` and `gh` only for that draft PR review contract; they must
+# may use `gh` only for that draft PR review contract; direct `git push` is rejected. They must
 # not mutate the base branch, other issues/PRs, or invoke hosted reviewers.
 # Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
 # round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
@@ -38,8 +38,12 @@ review_contract_version = 3
 # engine an arbitrary command launches; these commands own that guarantee.
 # Hooks also receive `$AGENT_LOOP_PR_NUMBER`, `$AGENT_LOOP_PR_URL`, and
 # `$AGENT_LOOP_PR_HEAD_SHA`. The last value is the exact head at pass start.
-# Every hook must write the v3 JSON result contract to
-# `$AGENT_LOOP_REVIEW_RESULT_FILE`, including clean and blocked passes. Hooks use
+# Every successfully completed clean or changed hook must call `review-ledger.py
+# write-result` to create the canonical `$AGENT_LOOP_REVIEW_RESULT_FILE`; reviewers
+# never copy fingerprint arrays. A blocked hook must use the deterministic
+# `review-ledger.py write-blocked-result` command documented by deepcritique and
+# return without claiming a clean
+# or changed pass. Hooks use
 # the deterministic ledger helper for findings and the resumable `dispose`
 # transaction, but never post pass/completion markers; the wrapper validates the
 # result and posts those attestations. Later hooks and final validation must not

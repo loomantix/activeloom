@@ -63,7 +63,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     script.parent.mkdir(parents=True)
     ready.parent.mkdir(parents=True)
     shutil.copy2(AGENT_LOOP, script)
-    for guard_name in ("hook-git-guard", "hook-gh-guard"):
+    for guard_name in ("hook-git-guard", "hook-gh-guard", "review-push.sh", "config-doctor.py"):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
     ledger_source = REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.py"
@@ -76,8 +76,10 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "import json, os, pathlib, sys\n"
         "state = pathlib.Path(os.environ['AGENT_STATE_DIR'])\n"
         "(state / 'ready-argv.json').write_text(json.dumps(sys.argv[1:]))\n"
-        "key = ('AGENT_POST_CLAIM_READY_JSON' "
-        "if any(state.glob('claimed-*')) else 'AGENT_READY_JSON')\n"
+        "with (state / 'ready-argv.log').open('a') as handle: handle.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "key = ('AGENT_POST_PR_READY_JSON' if (state / 'pr-branch').exists() "
+        "else ('AGENT_POST_CLAIM_READY_JSON' "
+        "if any(state.glob('claimed-*')) else 'AGENT_READY_JSON'))\n"
         "print(os.environ.get(key, os.environ.get('AGENT_READY_JSON', '[]')))\n",
     )
     (repo / "agent-loop-instructions.md").write_text(
@@ -123,7 +125,10 @@ elif args[:2] == ['issue', 'view']:
     view_count = int(view_counter.read_text() if view_counter.exists() else '0') + 1
     view_counter.write_text(str(view_count))
     final_issue = json.loads(os.environ.get('AGENT_FINAL_ISSUES_JSON', '{}')).get(number)
-    if view_count > 2 and final_issue is not None:
+    post_pr_issue = json.loads(os.environ.get('AGENT_POST_PR_ISSUES_JSON', '{}')).get(number)
+    if (state / 'pr-branch').exists() and post_pr_issue is not None:
+        issue = post_pr_issue
+    elif view_count > 2 and final_issue is not None:
         issue = final_issue
     elif claimed.exists() or view_count > 1:
         issue = json.loads(os.environ.get('AGENT_POST_CLAIM_ISSUES_JSON', '{}')).get(number, issue)
@@ -191,7 +196,13 @@ elif args[:2] == ['pr', 'view']:
         print(os.environ.get('AGENT_PR_HEAD_OID', remote_head))
     else:
         number = args[2]
-        row = json.loads(os.environ.get('AGENT_PRS_JSON', '{}')).get(number)
+        source = (
+            os.environ.get('AGENT_POST_PR_PRS_JSON', os.environ.get('AGENT_PRS_JSON', '{}'))
+            if (state / 'pr-branch').exists()
+            else os.environ.get('AGENT_PRS_JSON', '{}')
+        )
+        rows = json.loads(source)
+        row = rows.get(number)
         if row:
             print('\t'.join(str(value) for value in row))
         else:
@@ -296,9 +307,11 @@ elif args[:2] == ['api', 'graphql']:
     if os.environ.get('AGENT_MUTATE_RESULT_ON_THREADS_FETCH') == 'true':
         marker = state / 'result-mutated'
         if not marker.exists():
-            for result_file in (state.parent / 'logs').glob('*/*.result.json'):
+            result_files = list((state.parent / 'logs').glob('*/*.result.json'))
+            for result_file in result_files:
                 result_file.write_text(result_file.read_text() + '\n')
-            marker.touch()
+            if result_files:
+                marker.touch()
     threads_file = state / 'review-threads.json'
     nodes = json.loads(
         threads_file.read_text()
@@ -313,9 +326,17 @@ elif args[:2] == ['api', 'graphql']:
         pages = pages[:1]
     output = []
     for index, page_nodes in enumerate(pages):
+        selected_nodes = []
+        for node_index, node in enumerate(page_nodes):
+            selected_node = dict(node)
+            if '\n          id\n' in query:
+                selected_node.setdefault('id', f'THREAD-{index}-{node_index}')
+            else:
+                selected_node.pop('id', None)
+            selected_nodes.append(selected_node)
         has_next = index + 1 < len(pages)
         output.append({'data': {'repository': {'pullRequest': {
-            'reviewThreads': {'nodes': page_nodes, 'pageInfo': {
+            'reviewThreads': {'nodes': selected_nodes, 'pageInfo': {
                 'hasNextPage': has_next,
                 'endCursor': f'cursor-{index + 1}' if has_next else None,
             }}
@@ -433,7 +454,7 @@ def _config(
             f"{command}; hook_status=$?; "
             '[ "$hook_status" -eq 0 ] || exit "$hook_status"; '
             'if [ "$(git rev-parse HEAD)" != "$AGENT_LOOP_PR_HEAD_SHA" ]; then '
-            'git push origin HEAD:"refs/heads/$AGENT_LOOP_BRANCH"; '
+            '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
             f"{committed_evidence}; "
             f"else {clean_attestation}; fi"
         )
@@ -457,6 +478,11 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
         "claude_review_hook": result_command,
     }
     values.update(overrides)
+    for key in ("codex_review_hook", "claude_review_hook"):
+        values[key] = (
+            ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
+            f'"$AGENT_LOOP_REVIEW_RESULT_FILE" write-result; {values[key]}'
+        )
     return _config(
         tmp_path,
         auto_clean_attestation=False,
@@ -472,7 +498,7 @@ def _v3_changed_hook() -> str:
         "before=$AGENT_LOOP_PR_HEAD_SHA; fingerprint=minor-fix; "
         "printf 'review fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'fix: minor review correction'; "
-        "git push origin HEAD:\"refs/heads/$AGENT_LOOP_BRANCH\"; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
         "after=$(git rev-parse HEAD); "
         "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=$AGENT_LOOP_REVIEW_ENGINE "
         "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=$fingerprint "
@@ -498,24 +524,13 @@ def _v3_changed_hook() -> str:
     )
 
 
-def _run(
+def _agent_loop_env(
     fixture: tuple[Path, Path, Path, Path],
-    args: list[str],
     *,
     issues: list[dict[str, object]],
-    config: str,
     extra_env: dict[str, str] | None = None,
-    timeout: int = 30,
-) -> subprocess.CompletedProcess[str]:
-    repo, _, bin_dir, state_dir = fixture
-    for state_file in [
-        *state_dir.glob("claimed-*"),
-        *state_dir.glob("issue-views-*"),
-    ]:
-        state_file.unlink()
-    (repo / ".codex/skills/agent-loop/agent-loop.config").write_text(
-        config, encoding="utf-8"
-    )
+) -> dict[str, str]:
+    _, _, bin_dir, state_dir = fixture
     env = os.environ.copy()
     # The temporary ready.py/gh fixtures are black-box shell dependencies, not
     # coverage targets. pytest-cov exports COV_CORE_* for subprocess collection;
@@ -536,6 +551,28 @@ def _run(
     )
     if extra_env:
         env.update(extra_env)
+    return env
+
+
+def _run(
+    fixture: tuple[Path, Path, Path, Path],
+    args: list[str],
+    *,
+    issues: list[dict[str, object]],
+    config: str,
+    extra_env: dict[str, str] | None = None,
+    timeout: int = 30,
+) -> subprocess.CompletedProcess[str]:
+    repo, _, _, state_dir = fixture
+    for state_file in [
+        *state_dir.glob("claimed-*"),
+        *state_dir.glob("issue-views-*"),
+    ]:
+        state_file.unlink()
+    (repo / ".codex/skills/agent-loop/agent-loop.config").write_text(
+        config, encoding="utf-8"
+    )
+    env = _agent_loop_env(fixture, issues=issues, extra_env=extra_env)
     return subprocess.run(
         [str(repo / ".codex/skills/agent-loop/scripts/agent-loop.sh"), *args],
         cwd=repo,
@@ -1097,7 +1134,7 @@ def test_v3_resume_cannot_rerun_the_capped_round(
         "before=$AGENT_LOOP_PR_HEAD_SHA; "
         "printf 'codex round %s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" >> result.txt; "
         "git add result.txt; git commit -m \"fix: codex round $AGENT_LOOP_REVIEW_ROUND\"; "
-        "git push origin HEAD:\"refs/heads/$AGENT_LOOP_BRANCH\"; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
         "after=$(git rev-parse HEAD); fingerprint=cap-$AGENT_LOOP_REVIEW_ROUND; "
         "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex round=$AGENT_LOOP_REVIEW_ROUND "
         "head=$before fingerprint=$fingerprint occurrence=1 severity=major "
@@ -1150,6 +1187,220 @@ def test_v3_resume_cannot_rerun_the_capped_round(
     assert "did not converge within 2 round(s)" in second.stderr
     assert (consumer[3] / "events.log").read_text() == events_before
     assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    config = _config_v3(tmp_path, validation_hook=validation, review_max_rounds=1)
+
+    first = _run(
+        consumer,
+        ["--issues", "94"],
+        issues=[_issue(94)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["phase"] == "reviewing"
+    assert state["round"] == 1
+    assert state["reviewEngine"] == "codex"
+
+    fail_marker.unlink()
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(94, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "resuming its remaining leg" in resumed.stdout
+    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
+    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-pass:v3 engine=claude round=1") == 1
+    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+
+
+def test_v3_final_round_recovery_rejects_stale_codex_result(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    config = _config_v3(tmp_path, validation_hook=validation, review_max_rounds=1)
+
+    first = _run(
+        consumer,
+        ["--issues", "96"],
+        issues=[_issue(96)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    worktree = Path(state["worktree"])
+    (worktree / "external-update.txt").write_text("advanced\n", encoding="utf-8")
+    _run_git("add", "external-update.txt", cwd=worktree)
+    _run_git("commit", "-m", "fix: external update", cwd=worktree)
+    _run_git("push", "origin", f"HEAD:refs/heads/{state['branch']}", cwd=worktree)
+    fail_marker.unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(96, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode != 0
+    assert "result does not match the current review head" in resumed.stderr
+    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
+    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
+    assert "local-review-pass:v3 engine=claude round=1" not in comments
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_v3_final_round_recovery_accepts_completed_claude_transition(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-claude-review-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/claude-review-round-1-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        claude_review_hook=_v3_changed_hook(),
+        review_max_rounds=1,
+    )
+
+    first = _run(
+        consumer,
+        ["--issues", "97"],
+        issues=[_issue(97)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["phase"] == "reviewing"
+    assert state["reviewEngine"] == "claude"
+    fail_marker.unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(97, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "recovering its completed legs" in resumed.stdout
+    assert "Recovered authenticated Codex and Claude evidence" in resumed.stdout
+    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
+    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-complete:v3 engine=claude round=1") == 1
+    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+
+
+def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    finding_hash = "4be82179d3761dd716ff1e62c19138fc105495b9a66528678e0e76e253adb577"
+    disposition_hash = "13079c2612a9ead4818ab21ef90bf6b7c457916144d8cbaeeff74befa4f4cc8d"
+    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    codex_hook = (
+        "printf 'codex-material\\n' >> \"$EVENT_LOG\"; "
+        "before=$AGENT_LOOP_PR_HEAD_SHA; "
+        "printf 'material fix\\n' > final-round-fix.txt; "
+        "git add final-round-fix.txt; git commit -m 'fix: final round finding'; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
+        "after=$(git rev-parse HEAD); "
+        "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex "
+        "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=final-round-material "
+        "occurrence=1 severity=major lens=recovery "
+        f"content-sha256={finding_hash} -->\" 'Finding.'; "
+        "printf -v disposition '%s\\n%s' \"<!-- local-review-disposition:v3 "
+        "engine=codex round=$AGENT_LOOP_REVIEW_ROUND head=$after "
+        "fingerprint=final-round-material occurrence=1 outcome=fixed "
+        f"content-sha256={disposition_hash} -->\" 'Fixed.'; "
+        "jq -n --arg finding \"$finding\" --arg disposition \"$disposition\" "
+        "'[{isResolved:true,comments:{nodes:["
+        "{body:$finding,databaseId:1,author:{login:\"tester\"}},"
+        "{body:$disposition,databaseId:2,author:{login:\"tester\"}}],"
+        "pageInfo:{hasNextPage:false}}}]' > \"$AGENT_STATE_DIR/review-threads.json\"; "
+        "jq -n --argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" --arg before \"$before\" "
+        "--arg after \"$after\" "
+        "'{version:3,status:\"changed\",engine:\"codex\",round:$round,"
+        "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"material\","
+        "findingFingerprints:[\"final-round-material\"],finalLaneComplete:true}' "
+        '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        codex_review_hook=codex_hook,
+        review_max_rounds=1,
+    )
+
+    first = _run(
+        consumer,
+        ["--issues", "95"],
+        issues=[_issue(95)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(95, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode != 0
+    assert "did not converge within 1 round(s)" in resumed.stderr
+    assert "resuming its remaining leg" in resumed.stdout
+    assert "Recovered authenticated Codex evidence" in resumed.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex-material\n") == 1
+    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
+    assert comments.count("local-review-complete:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-pass:v3 engine=claude round=1") == 1
+    assert "conflicting attestation" not in resumed.stderr
 
 
 def _thread_comment(
@@ -1717,11 +1968,52 @@ def test_review_contract_version_is_required_before_claim(
 
 
 @pytest.mark.parametrize(
+    ("missing_token", "expected_error"),
+    [
+        ("AGENT_LOOP_REVIEW_PUSH_HELPER", "must use AGENT_LOOP_REVIEW_PUSH_HELPER"),
+        ("AGENT_LOOP_REVIEW_RESULT_FILE", "must write AGENT_LOOP_REVIEW_RESULT_FILE"),
+        ("write-result", "must use review-ledger.py write-result"),
+    ],
+)
+def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    missing_token: str,
+    expected_error: str,
+) -> None:
+    complete = (
+        ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
+        '"$AGENT_LOOP_REVIEW_RESULT_FILE" write-result'
+    )
+    config = _config(
+        tmp_path,
+        review_contract_version=3,
+        config_doctor="false",
+        codex_review_hook=complete,
+        claude_review_hook=complete,
+    )
+    config = config.replace(missing_token, "missing")
+
+    result = _run(
+        consumer,
+        ["--issues", "20"],
+        issues=[_issue(20)],
+        config=config,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    gh_log = consumer[3] / "gh.log"
+    assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+    assert not (tmp_path / "worktrees").exists()
+
+
+@pytest.mark.parametrize(
     ("hook_key", "hook_value"),
     [
-        ("codex_review_hook", "codex exec --skill deepgrill"),
         ("codex_review_hook", "codex exec --skill grill"),
         ("codex_review_hook", "python3 .codex/skills/grill/scripts/review-ledger.py attest"),
+        ("codex_review_hook", "codex exec --skill deepgrill"),
         ("claude_review_hook", "claude -p /deepgrill"),
         ("claude_review_hook", "claude -p /pr-grill"),
         # Bare command names pin the `^` branch of the guard's word-boundary
@@ -1729,11 +2021,10 @@ def test_review_contract_version_is_required_before_claim(
         # `[^[:alnum:]_-]` branch, so without these a regression that drops
         # `^|` still passes while accepting the shortest spelling of a stale
         # hook.
-        ("codex_review_hook", "deepgrill"),
         ("claude_review_hook", "grill"),
     ],
 )
-def test_retired_grill_hook_is_rejected_before_claim(
+def test_incorrect_reviewer_hook_is_rejected_before_claim(
     consumer: tuple[Path, Path, Path, Path],
     tmp_path: Path,
     hook_key: str,
@@ -1746,7 +2037,7 @@ def test_retired_grill_hook_is_rejected_before_claim(
         config=_config_v3(tmp_path, **{hook_key: hook_value}),
     )
     assert result.returncode != 0
-    assert f"{hook_key} names a retired grill-family review skill" in result.stderr
+    assert f"{hook_key} names an incorrect reviewer skill" in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
@@ -1762,7 +2053,7 @@ def test_grill_substring_in_unrelated_hook_path_is_not_rejected(
         issues=[_issue(20)],
         config=_config_v3(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
     )
-    assert "names a retired grill-family review skill" not in result.stderr
+    assert "names an incorrect reviewer skill" not in result.stderr
     # Absence of the message alone would also hold if the run died earlier for
     # an unrelated reason, or if the guard's wording changed. Assert the run
     # actually got past the preflight by checking it reached the claim and
@@ -1821,6 +2112,97 @@ def test_v3_wrapper_owns_clean_attestations_and_finalizes_state(
     comments = json.loads((consumer[3] / "issue-comments.json").read_text())
     assert len(comments) == 2
     assert all("local-review-pass:v3" in row["body"] for row in comments)
+
+
+def test_v3_finalization_reuses_sealed_pseudo_v3_history(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    historical_threads = [
+        {
+            "id": "PSEUDO-THREAD",
+            "isResolved": True,
+            "comments": {
+                "nodes": [
+                    {
+                        "body": (
+                            "Historical finding.\n\n"
+                            "<!-- local-review:v3 engine=claude "
+                            "fingerprint=historical-finding -->"
+                        ),
+                        "databaseId": 101,
+                        "author": {"login": "tester"},
+                    },
+                    {
+                        "body": "Fixed before contract v3 was finalized.",
+                        "databaseId": 102,
+                        "author": {"login": "tester"},
+                    },
+                ],
+                "pageInfo": {"hasNextPage": False},
+            },
+        }
+    ]
+
+    result = _run(
+        consumer,
+        ["--issues", "92"],
+        issues=[_issue(92)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_REVIEW_THREADS_JSON": json.dumps(historical_threads)},
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+    snapshot_file = next((tmp_path / "logs").glob("*/local-review-threads.json"))
+    snapshot = json.loads(snapshot_file.read_text(encoding="utf-8"))
+    assert snapshot[0]["data"]["repository"]["pullRequest"]["reviewThreads"][
+        "nodes"
+    ][0]["id"] == "PSEUDO-THREAD"
+    comments = json.loads((consumer[3] / "issue-comments.json").read_text())
+    assert len(comments) == 2
+    assert all("local-review-pass:v3" in row["body"] for row in comments)
+
+
+def test_v3_review_hook_cannot_self_authorize_direct_push(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    clean_result = (
+        "jq -n --arg engine \"$AGENT_LOOP_REVIEW_ENGINE\" "
+        "--argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" "
+        "--arg head \"$AGENT_LOOP_PR_HEAD_SHA\" "
+        "'{version:3,status:\"clean\",engine:$engine,round:$round,"
+        "baseSha:$base,beforeSha:$head,afterSha:$head,classification:null,"
+        "findingFingerprints:[],finalLaneComplete:true}' "
+        '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
+    )
+    codex_hook = (
+        "if AGENT_LOOP_SAFE_REVIEW_PUSH=1 git push origin "
+        '"HEAD:refs/heads/$AGENT_LOOP_BRANCH" '
+        '2> "$AGENT_STATE_DIR/direct-v3-push.stderr"; then exit 89; fi; '
+        f"{clean_result}"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "91"],
+        issues=[_issue(91)],
+        config=_config_v3(tmp_path, codex_review_hook=codex_hook),
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    rejection = (consumer[3] / "direct-v3-push.stderr").read_text(encoding="utf-8")
+    assert "contract-v3 review hooks must publish" in rejection
+    branch = _agent_loop_branches(consumer[1]).strip()
+    assert "issue-91" in branch
+    assert (
+        _run_git("rev-parse", branch, cwd=consumer[0]).stdout.strip()
+        == _run_git("rev-parse", branch, cwd=consumer[1]).stdout.strip()
+    )
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
 
 def test_v3_finalization_revalidates_historical_codex_head_after_claude_minor_fix(
@@ -2090,7 +2472,7 @@ def test_resume_run_rejects_a_concurrent_owner(
         locker.wait(timeout=5)
 
 
-def test_partial_round_checkpoint_advances_after_codex_pass(
+def test_partial_final_round_checkpoint_resumes_after_codex_pass(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     first = _run(
@@ -2108,7 +2490,7 @@ def test_partial_round_checkpoint_advances_after_codex_pass(
     state = json.loads(state_file.read_text())
     assert state["round"] == 1
     assert state["reviewEngine"] == "claude"
-    events_before = (consumer[3] / "events.log").read_text()
+    events_before = (consumer[3] / "events.log").read_text().splitlines()
 
     second = _run(
         consumer,
@@ -2116,9 +2498,22 @@ def test_partial_round_checkpoint_advances_after_codex_pass(
         issues=[_issue(33, assigned=True)],
         config=_config_v3(tmp_path, review_max_rounds=1),
     )
-    assert second.returncode != 0
-    assert "did not converge within 1 round(s)" in second.stderr
-    assert (consumer[3] / "events.log").read_text() == events_before
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert "resuming its remaining leg" in second.stdout
+    events_after = (consumer[3] / "events.log").read_text().splitlines()
+    assert events_after.count("setup") == events_before.count("setup")
+    assert events_after.count("worker") == events_before.count("worker")
+    final_state = json.loads(state_file.read_text())
+    assert final_state["phase"] == "finalized"
+    comments = json.loads((consumer[3] / "issue-comments.json").read_text())
+    assert sum(
+        "local-review-pass:v3 engine=codex round=1" in row["body"]
+        for row in comments
+    ) == 1
+    assert sum(
+        "local-review-pass:v3 engine=claude round=1" in row["body"]
+        for row in comments
+    ) == 1
 
 
 def test_v3_result_digest_is_pinned_before_attestation(
@@ -3260,6 +3655,91 @@ def test_issue_context_change_before_publication_preserves_work_and_claim(
     assert match and Path(match.group(1)).exists()
 
 
+def test_final_re_attestation_excludes_only_the_captured_draft_pr(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "62"],
+        issues=[_issue(62)],
+        config=_config(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    ready_calls = [
+        json.loads(row)
+        for row in (consumer[3] / "ready-argv.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert any(
+        args[-2:] == ["--exclude-addressed-by-pr", "1"] for args in ready_calls
+    )
+    assert (consumer[3] / "pr-ready").exists()
+
+
+def test_final_re_attestation_blocks_a_competing_open_pr(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "63"],
+        issues=[_issue(63)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_POST_PR_READY_JSON": "[]"},
+    )
+    assert result.returncode != 0
+    assert "is no longer ready before publication" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+@pytest.mark.parametrize("change", ["title", "body", "labels", "assignee"])
+def test_final_re_attestation_blocks_changed_issue_contract(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, change: str
+) -> None:
+    original = _issue(64)
+    final = _issue(64, assigned=True)
+    if change == "title":
+        final["title"] = "Changed title"
+    elif change == "body":
+        final["body"] = "Changed requirements"
+    elif change == "labels":
+        final["labels"] = []
+    elif change == "assignee":
+        final["assignees"] = [{"login": "competitor"}]
+    result = _run(
+        consumer,
+        ["--issues", "64"],
+        issues=[original],
+        config=_config(tmp_path),
+        extra_env={"AGENT_POST_PR_ISSUES_JSON": json.dumps({"64": final})},
+    )
+    assert result.returncode != 0
+    assert "changed or is no longer eligible before publication" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_final_re_attestation_blocks_dependency_regression(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    base_sha = _run_git("rev-parse", "main", cwd=consumer[0]).stdout.strip()
+    issue = _issue(65, "Depends on PR #999")
+    result = _run(
+        consumer,
+        ["--issues", "65"],
+        issues=[issue],
+        config=_config(tmp_path, dependency_gate="merged-to-base"),
+        extra_env={
+            "AGENT_PRS_JSON": json.dumps({"999": ["MERGED", "main", base_sha]}),
+            "AGENT_POST_PR_PRS_JSON": json.dumps(
+                {"999": ["CLOSED", "main", ""]}
+            ),
+        },
+    )
+    assert result.returncode != 0
+    assert "Dependency pr #999: NOT merged" in result.stdout
+    assert not (consumer[3] / "pr-ready").exists()
+
+
 def test_default_shipped_prompt_does_not_depend_on_gh() -> None:
     # The shipped worker prompt runs inside the gh-masked hook, so it must not
     # instruct the worker to call `gh`. Regression guard for the prompt template.
@@ -3540,6 +4020,368 @@ def test_issue_branch_has_no_upstream_during_worker(
         _run_git("rev-parse", branch, cwd=consumer[0]).stdout.strip()
         == _run_git("rev-parse", branch, cwd=consumer[1]).stdout.strip()
     )
+
+
+@pytest.mark.parametrize(
+    ("interrupt_env", "interrupt_value"),
+    [
+        ("AGENT_INTERRUPT_AFTER_READY", "true"),
+        ("AGENT_INTERRUPT_AFTER_CHILD_FINALIZED", "1"),
+    ],
+)
+def test_batch_resume_finalizes_interrupted_first_issue_then_processes_second(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    interrupt_env: str,
+    interrupt_value: str,
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "70,71", "--iterations", "2"],
+        issues=[_issue(70), _issue(71)],
+        config=_config_v3(tmp_path),
+        extra_env={interrupt_env: interrupt_value},
+        timeout=120,
+    )
+    assert first.returncode != 0
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["cursor"] == 0
+    assert batch["issues"][0]["status"] == "active"
+    assert batch["issues"][0]["childRunState"]
+    assert batch["issues"][1]["status"] == "pending"
+
+    second = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(70, assigned=True), _issue(71)],
+        config=_config_v3(tmp_path),
+        timeout=120,
+    )
+    assert second.returncode == 0, second.stderr + second.stdout
+    final = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert final["cursor"] == 2
+    assert [row["status"] for row in final["issues"]] == ["finalized", "finalized"]
+    assert all(row["childRunState"] for row in final["issues"])
+    branches = _agent_loop_branches(consumer[1])
+    assert "issue-70" in branches and "issue-71" in branches
+
+
+def test_batch_hooks_do_not_inherit_the_batch_lock(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    setup_hook = (
+        'test -z "${AGENT_LOOP_BATCH_LOCK_FD:-}"; '
+        'for fd in /proc/self/fd/*; do '
+        'case "$(readlink "$fd" 2>/dev/null || true)" in '
+        '*-batch-*.json.lock) exit 71 ;; esac; done'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "78,79", "--iterations", "1"],
+        issues=[_issue(78), _issue(79)],
+        config=_config_v3(tmp_path, setup_hook=setup_hook),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "paused cleanly at the 1-issue iteration cap" in result.stdout
+
+
+def test_batch_resume_hooks_do_not_inherit_the_batch_lock(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    validation_hook = (
+        'test -z "${AGENT_LOOP_BATCH_LOCK_FD:-}"; '
+        'for fd in /proc/self/fd/*; do '
+        'case "$(readlink "$fd" 2>/dev/null || true)" in '
+        '*-batch-*.json.lock) exit 71 ;; esac; done'
+    )
+    config = _config_v3(tmp_path, validation_hook=validation_hook)
+    first = _run(
+        consumer,
+        ["--issues", "83,84", "--iterations", "2"],
+        issues=[_issue(83), _issue(84)],
+        config=config,
+        extra_env={"AGENT_INTERRUPT_AFTER_READY": "true"},
+        timeout=120,
+    )
+    assert first.returncode != 0
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+
+    resumed = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(83, assigned=True), _issue(84)],
+        config=config,
+        timeout=120,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+
+
+def test_batch_resume_rejects_a_child_checkpoint_for_another_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "80,81", "--iterations", "2"],
+        issues=[_issue(80), _issue(81)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_INTERRUPT_AFTER_READY": "true"},
+        timeout=120,
+    )
+    assert first.returncode != 0
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["issues"][0]["childRunState"]
+    batch["allowlist"][0] = 82
+    batch["issues"][0]["issue"] = 82
+    batch_file.write_text(json.dumps(batch), encoding="utf-8")
+
+    resumed = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(80, assigned=True), _issue(82)],
+        config=_config_v3(tmp_path),
+        timeout=30,
+    )
+    assert resumed.returncode != 0
+    assert "Batch issue #82 does not match its child review checkpoint" in resumed.stderr
+    preserved = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert preserved["cursor"] == 0
+    assert preserved["issues"][0]["status"] == "active"
+
+
+def test_batch_iteration_cap_pauses_cleanly_and_only_one_resume_process_owns_it(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "72,73", "--iterations", "1"],
+        issues=[_issue(72), _issue(73)],
+        config=_config_v3(tmp_path),
+        timeout=120,
+    )
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert "paused cleanly at the 1-issue iteration cap" in first.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["cursor"] == 1
+    assert [row["status"] for row in batch["issues"]] == ["finalized", "pending"]
+    branches = _agent_loop_branches(consumer[1])
+    assert "issue-72" in branches and "issue-73" not in branches
+    initial_gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    initial_pr_creates = initial_gh_log.count("pr create --draft")
+
+    blocking_config = _config_v3(
+        tmp_path,
+        setup_hook=(
+            'touch "$AGENT_STATE_DIR/resume-owned"; '
+            'while [ ! -e "$AGENT_STATE_DIR/release-resume" ]; do sleep 0.05; done'
+        ),
+    )
+    config_path = consumer[0] / ".codex/skills/agent-loop/agent-loop.config"
+    config_path.write_text(blocking_config, encoding="utf-8")
+    env = _agent_loop_env(consumer, issues=[_issue(73)])
+    command = [
+        str(consumer[0] / ".codex/skills/agent-loop/scripts/agent-loop.sh"),
+        "--resume-batch",
+        str(batch_file),
+    ]
+    owner = subprocess.Popen(
+        command,
+        cwd=consumer[0],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    owned_marker = consumer[3] / "resume-owned"
+    deadline = time.monotonic() + 20
+    while not owned_marker.exists() and owner.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert owned_marker.exists(), owner.communicate(timeout=5)
+    try:
+        contender = subprocess.run(
+            command,
+            cwd=consumer[0],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        (consumer[3] / "release-resume").touch()
+    owner_stdout, owner_stderr = owner.communicate(timeout=120)
+    assert owner.returncode == 0, owner_stderr + owner_stdout
+    assert contender.returncode != 0
+    assert "another process already owns this agent-loop batch" in contender.stderr
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert gh_log.count("issue edit 73 --add-assignee @me") == 1
+    assert gh_log.count("pr create --draft") == initial_pr_creates + 1
+    assert owner_stdout.count("Worktree:") == 1
+    assert "Worktree:" not in contender.stdout
+    assert _agent_loop_branches(consumer[1]).count("issue-73") == 1
+
+
+def test_batch_cursor_issue_cannot_be_skipped_for_a_later_ready_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    batch_file = tmp_path / "logs/manual-batch.json"
+    helper = consumer[0] / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
+    created = subprocess.run(
+        [
+            "python3", str(helper), "batch-create", "--file", str(batch_file),
+            "--run-id", "manual", "--repo", "fixture/consumer",
+            "--base-branch", "main", "--issues", "74,75",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    result = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(74), _issue(75)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_READY_JSON": json.dumps([_issue(75)])},
+    )
+    assert result.returncode != 0
+    assert "Ordered batch cursor issue #74 is not ready" in result.stderr
+    assert (
+        f"batch-update --file '{batch_file}' --issue '74' "
+        "--expected-status 'pending' --status bailed"
+    ) in result.stderr
+    assert "issue-74" not in _agent_loop_branches(consumer[1])
+    assert "issue-75" not in _agent_loop_branches(consumer[1])
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["cursor"] == 0
+    assert [row["status"] for row in batch["issues"]] == ["pending", "pending"]
+
+
+def test_batch_resume_rejects_contract_v2_before_state_mutation(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    batch_file = tmp_path / "logs/contract-drift-batch.json"
+    helper = consumer[0] / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
+    created = subprocess.run(
+        [
+            "python3",
+            str(helper),
+            "batch-create",
+            "--file",
+            str(batch_file),
+            "--run-id",
+            "contract-drift",
+            "--repo",
+            "fixture/consumer",
+            "--base-branch",
+            "main",
+            "--issues",
+            "74,75",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    before = batch_file.read_bytes()
+
+    result = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(74), _issue(75)],
+        config=_config(tmp_path, review_contract_version=2),
+    )
+
+    assert result.returncode != 0
+    assert "--resume-batch requires review_contract_version = 3" in result.stderr
+    assert batch_file.read_bytes() == before
+
+
+def test_dependency_blocked_batch_cursor_prints_pending_bail_command(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    batch_file = tmp_path / "logs/dependency-batch.json"
+    helper = consumer[0] / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
+    created = subprocess.run(
+        [
+            "python3", str(helper), "batch-create", "--file", str(batch_file),
+            "--run-id", "dependency", "--repo", "fixture/consumer",
+            "--base-branch", "main", "--issues", "78,79",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    issue = _issue(78, "Depends on PR #999")
+    result = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[issue, _issue(79)],
+        config=_config_v3(tmp_path, dependency_gate="merged-to-base"),
+        extra_env={"AGENT_PRS_JSON": json.dumps({"999": ["CLOSED", "main", ""]})},
+    )
+    assert result.returncode != 0
+    assert "Ordered batch stopped at dependency-blocked issue #78" in result.stderr
+    assert (
+        f"batch-update --file '{batch_file}' --issue '78' "
+        "--expected-status 'pending' --status bailed"
+    ) in result.stderr
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["cursor"] == 0
+    assert batch["issues"][0]["status"] == "pending"
+
+
+def test_batch_advances_cursor_and_preserves_leaked_worktree_when_cleanup_fails(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        consumer[2] / "git",
+        """#!/usr/bin/env bash
+if [ "$1" = worktree ] && [ "$2" = remove ] && [ ! -e "$AGENT_STATE_DIR/cleanup-failed" ]; then
+    touch "$AGENT_STATE_DIR/cleanup-failed"
+    exit 75
+fi
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "76,77", "--iterations", "1"],
+        issues=[_issue(76), _issue(77)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_TEST_REAL_GIT": real_git},
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "finalized issue worktree cleanup failed and was preserved" in result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert batch["cursor"] == 1
+    assert batch["issues"][0]["status"] == "finalized"
+    child_state = Path(batch["issues"][0]["childRunState"])
+    child = json.loads(child_state.read_text(encoding="utf-8"))
+    assert child["phase"] == "finalized"
+    assert Path(child["worktree"]).exists()
+
+    resumed = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(76, assigned=True), _issue(77)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_TEST_REAL_GIT": real_git},
+        timeout=120,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    final = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert final["cursor"] == 2
+    assert [row["status"] for row in final["issues"]] == ["finalized", "finalized"]
+    assert Path(child["worktree"]).exists()
 
 
 def test_missing_default_codex_fails_before_claim(
