@@ -274,11 +274,27 @@ elif args[:2] == ['api', 'graphql']:
         nodes = json.loads(threads_file.read_text())
     else:
         nodes = json.loads(os.environ.get('AGENT_REVIEW_THREADS_JSON', '[]'))
-    if os.environ.get('AGENT_PROJECT_REVIEW_THREAD_ID'):
+    if os.environ.get('AGENT_PROJECT_REVIEW_THREAD_TOPOLOGY'):
         query_arg = next((value for value in args if value.startswith('query=')), '')
-        if not re.search(r'reviewThreads\s*\([^)]*\)\s*\{\s*nodes\s*\{\s*id\b', query_arg, re.S):
-            for node in nodes:
+        selection = re.search(
+            r'reviewThreads\s*\([^)]*\)\s*\{\s*nodes\s*\{(?P<fields>.*?)comments\s*\(',
+            query_arg,
+            re.S,
+        )
+        fields = selection.group('fields') if selection else ''
+        for node in nodes:
+            if not re.search(r'\bid\b', fields):
                 node.pop('id', None)
+            if not re.search(r'repository\s*\{\s*nameWithOwner\b', fields):
+                node.pop('repository', None)
+            if not re.search(r'pullRequest\s*\{\s*number\b', fields):
+                node.pop('pullRequest', None)
+        if not re.search(r'repository\s*\{\s*nameWithOwner\s*\}', query_arg):
+            for node in nodes:
+                node.pop('repository', None)
+        if not re.search(r'pullRequest\s*\{\s*number\s*\}', query_arg):
+            for node in nodes:
+                node.pop('pullRequest', None)
     default_author = os.environ.get('AGENT_THREAD_AUTHOR', 'tester')
     for node in nodes:
         for comment in node.get('comments', {}).get('nodes', []):
@@ -940,7 +956,7 @@ def test_v3_finalization_reuses_sealed_pseudo_v3_history(
         config=_config_v3(tmp_path),
         extra_env={
             "AGENT_REVIEW_THREADS_JSON": json.dumps(historical_threads),
-            "AGENT_PROJECT_REVIEW_THREAD_ID": "1",
+            "AGENT_PROJECT_REVIEW_THREAD_TOPOLOGY": "1",
         },
         timeout=60,
     )

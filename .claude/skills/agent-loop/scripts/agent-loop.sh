@@ -1810,6 +1810,8 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
         nodes {
           id
           isResolved
+          repository { nameWithOwner }
+          pullRequest { number }
           comments(first:100) {
             nodes { body databaseId author { login } }
             pageInfo { hasNextPage }

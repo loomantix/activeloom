@@ -660,7 +660,9 @@ mutation($threadId: ID!) {{
     return False
 
 
-def _review_threads(repo: str, pr: int) -> list[dict[str, Any]]:
+def _review_threads(
+    repo: str, pr: int, threads_file: str | None = None
+) -> list[dict[str, Any]]:
     try:
         owner, name = repo.split("/", 1)
     except ValueError as error:
@@ -686,22 +688,33 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
   }
 }
 """.strip()
-    pages = _json_output(
-        [
-            "api",
-            "graphql",
-            "--paginate",
-            "--slurp",
-            "-f",
-            f"query={query}",
-            "-f",
-            f"owner={owner}",
-            "-f",
-            f"name={name}",
-            "-F",
-            f"number={pr}",
-        ]
-    )
+    if threads_file is None:
+        pages = _json_output(
+            [
+                "api",
+                "graphql",
+                "--paginate",
+                "--slurp",
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"name={name}",
+                "-F",
+                f"number={pr}",
+            ]
+        )
+    else:
+        path = Path(threads_file)
+        if path.is_symlink() or not path.is_file():
+            _fail("review-thread snapshot must be a regular non-symlink file")
+        try:
+            pages = json.loads(path.read_bytes())
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise LedgerError(
+                "review-thread snapshot must contain valid UTF-8 JSON"
+            ) from error
     if not isinstance(pages, list):
         _fail("GitHub review-thread response has an unexpected shape")
     threads: list[dict[str, Any]] = []
@@ -942,10 +955,11 @@ def _verify_complete_v3_threads(
     pr: int,
     actor: str,
     historical_comment_ids: set[int] | None = None,
+    threads_file: str | None = None,
 ) -> list[tuple[re.Match[str], re.Match[str]]]:
     matched: list[tuple[re.Match[str], re.Match[str]]] = []
     topology: dict[str, list[tuple[str, int, re.Match[str]]]] = {}
-    for thread in _review_threads(repo, pr):
+    for thread in _review_threads(repo, pr, threads_file):
         repository = thread.get("repository")
         pull_request = thread.get("pullRequest")
         if (
@@ -1186,7 +1200,11 @@ def _verify_result_evidence(
     _verify_review_base(args.repo, args.pr, args.base, args.before)
     _verify_git_transition(args.before, args.head)
     matched = _verify_complete_v3_threads(
-        args.repo, args.pr, actor, _historical_comment_ids(args)
+        args.repo,
+        args.pr,
+        actor,
+        _historical_comment_ids(args),
+        getattr(args, "threads_file", None),
     )
     allowed_heads = _transition_heads(args, matched)
     evidence = _same_round_evidence(args, matched, allowed_heads)
@@ -1216,7 +1234,11 @@ def _verify_ledger(args: argparse.Namespace) -> None:
         _fail("authenticated GitHub actor changed before ledger verification")
     _verify_head(args.repo, args.pr, args.head)
     matched = _verify_complete_v3_threads(
-        args.repo, args.pr, actor, _historical_comment_ids(args)
+        args.repo,
+        args.pr,
+        actor,
+        _historical_comment_ids(args),
+        getattr(args, "threads_file", None),
     )
     if getattr(args, "result_file", None) is not None:
         live_head = args.head

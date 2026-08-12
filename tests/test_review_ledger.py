@@ -1815,6 +1815,62 @@ def test_complete_ledger_rejects_invalid_fingerprint_topology(
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
 
+def test_complete_ledger_uses_supplied_snapshot_instead_of_live_query(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    thread = {
+        "id": "THREAD",
+        "isResolved": True,
+        "repository": {"nameWithOwner": REPO},
+        "pullRequest": {"number": 7},
+        "comments": {
+            "nodes": [],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    snapshot = tmp_path / "threads.json"
+    snapshot.write_text(
+        json.dumps(
+            [
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {
+                                    "nodes": [thread],
+                                    "pageInfo": {
+                                        "hasNextPage": False,
+                                        "endCursor": None,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def unexpected_live_query(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a pinned review-thread snapshot must not refetch live data")
+
+    monkeypatch.setattr(review_ledger, "_json_output", unexpected_live_query)
+    assert review_ledger._verify_complete_v3_threads(
+        REPO, 7, ACTOR, threads_file=str(snapshot)
+    ) == []
+
+    with pytest.raises(
+        review_ledger.LedgerError,
+        match="review-thread snapshot must be a regular non-symlink file",
+    ):
+        review_ledger._verify_complete_v3_threads(
+            REPO, 7, ACTOR, threads_file=str(tmp_path / "missing.json")
+        )
+
+
 def test_changed_minor_result_rejects_empty_fingerprint_set(
     review_ledger: ModuleType, tmp_path: Path
 ) -> None:
