@@ -1307,6 +1307,7 @@ verify_converged_review_outcomes() {
 
 recover_v3_review_pass() {
     local engine="$1" slug="$2" round="$3" base_sha="$4"
+    local allow_descendant="${5:-false}"
     local outcome_file outcome_signature classification result_head current_head
     local boundary_status=0
     outcome_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.result.json"
@@ -1318,10 +1319,13 @@ recover_v3_review_pass() {
     esac
     result_head="$(jq -r '.afterSha // empty' "$outcome_file")" || return 1
     current_head="$(git rev-parse HEAD)" || return 1
-    [ "$result_head" = "$current_head" ] || {
-        recovery_message "$engine interrupted review result does not match the current review head."
-        return 1
-    }
+    if [ "$result_head" != "$current_head" ]; then
+        [ "$allow_descendant" = true ] && \
+            git merge-base --is-ancestor "$result_head" "$current_head" || {
+            recovery_message "$engine interrupted review result does not match the current review head."
+            return 1
+        }
+    fi
     REVIEW_ROUNDS_USED="$round"
     REVIEWED_BASE_SHA="$base_sha"
     require_review_outcome_signature "$engine" "$outcome_file" \
@@ -1553,11 +1557,13 @@ require_fast_forward_base_advance() {
 run_review_convergence() {
     local round="${1:-1}" codex_classification claude_classification
     local resume_engine="${2:-codex}"
+    local recovered_complete_round=false
     local codex_outcome_signature claude_outcome_signature
     local codex_outcome_file claude_outcome_file
     local round_base_sha latest_base_sha pass_status
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
+        recovered_complete_round=false
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
         export AGENT_LOOP_REVIEW_ROUND="$round"
 
@@ -1586,7 +1592,25 @@ run_review_convergence() {
                 return 1
             }
         fi
-        if [ "$resume_engine" = claude ]; then
+        if [ "$resume_engine" = complete ]; then
+            recover_v3_review_pass Codex codex "$round" "$round_base_sha" true || {
+                recovery_message "Could not recover the completed Codex leg for final-round completion."
+                return 1
+            }
+            codex_classification="$REVIEW_PASS_CLASSIFICATION"
+            codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+            recover_v3_review_pass Claude claude "$round" "$round_base_sha" || {
+                recovery_message "Could not recover the completed Claude leg for final-round completion."
+                return 1
+            }
+            claude_classification="$REVIEW_PASS_CLASSIFICATION"
+            claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+            recovered_complete_round=true
+            resume_engine=codex
+            echo "   Recovered authenticated Codex and Claude evidence for the interrupted final round"
+        elif [ "$resume_engine" = claude ]; then
             recover_v3_review_pass Codex codex "$round" "$round_base_sha" || {
                 recovery_message "Could not recover the completed Codex leg for final-round continuation."
                 return 1
@@ -1620,37 +1644,39 @@ run_review_convergence() {
                 return 1
             fi
         fi
-        codex_classification="$REVIEW_PASS_CLASSIFICATION"
-        codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
-        codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
-        update_run_state reviewing "$round" "$round_base_sha" \
-            "$(git rev-parse HEAD)" "" "" claude || {
-            recovery_message "Could not checkpoint the Claude leg after Codex completed round $round."
-            return 1
-        }
-
-        pass_status=0
-        run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
-            "configured Claude review hook" "Claude review hook" "Claude review" \
-            "Claude review" || pass_status=$?
-        if [ "$pass_status" -eq 2 ]; then
-            require_fast_forward_base_advance "$round_base_sha" \
-                "during review round $round (Claude boundary)" || return 1
-            echo "   PR base advanced during Claude review; restart at Codex on the next round"
-            round=$((round + 1))
-            update_run_state reviewing "$round" \
-                "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
-                "" "" codex || {
-                recovery_message "Could not checkpoint the next review round."
+        if [ "$recovered_complete_round" != true ]; then
+            codex_classification="$REVIEW_PASS_CLASSIFICATION"
+            codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+            update_run_state reviewing "$round" "$round_base_sha" \
+                "$(git rev-parse HEAD)" "" "" claude || {
+                recovery_message "Could not checkpoint the Claude leg after Codex completed round $round."
                 return 1
             }
-            continue
-        elif [ "$pass_status" -ne 0 ]; then
-            return 1
+
+            pass_status=0
+            run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
+                "configured Claude review hook" "Claude review hook" "Claude review" \
+                "Claude review" || pass_status=$?
+            if [ "$pass_status" -eq 2 ]; then
+                require_fast_forward_base_advance "$round_base_sha" \
+                    "during review round $round (Claude boundary)" || return 1
+                echo "   PR base advanced during Claude review; restart at Codex on the next round"
+                round=$((round + 1))
+                update_run_state reviewing "$round" \
+                    "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
+                    "" "" codex || {
+                    recovery_message "Could not checkpoint the next review round."
+                    return 1
+                }
+                continue
+            elif [ "$pass_status" -ne 0 ]; then
+                return 1
+            fi
+            claude_classification="$REVIEW_PASS_CLASSIFICATION"
+            claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
         fi
-        claude_classification="$REVIEW_PASS_CLASSIFICATION"
-        claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
-        claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
         require_review_outcome_signature Codex "$codex_outcome_file" \
             "$codex_outcome_signature" "before the round decision" || return 1
         require_review_outcome_signature Claude "$claude_outcome_file" \
@@ -2305,7 +2331,10 @@ resume_review_run() {
         if [ "$state_round" -lt "$REVIEW_MAX_ROUNDS" ]; then
             state_round=$((state_round + 1))
         else
-            if [ -f "$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json" ]; then
+            if [ -f "$AGENT_LOOP_LOG_DIR/claude-review-round-$state_round.result.json" ]; then
+                resume_review_engine=complete
+                echo "   Final configured review round was interrupted; recovering its completed legs"
+            elif [ -f "$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json" ]; then
                 resume_review_engine=claude
                 echo "   Final configured review round was interrupted; resuming its remaining leg"
             else

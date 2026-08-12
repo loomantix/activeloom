@@ -1277,6 +1277,54 @@ def test_v3_final_round_recovery_rejects_stale_codex_result(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def test_v3_final_round_recovery_accepts_completed_claude_transition(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-claude-review-validation"
+    fail_marker.touch()
+    validation = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/claude-review-round-1-validation.log" ]; '
+        "then exit 71; fi"
+    )
+    config = _config_v3(
+        tmp_path,
+        validation_hook=validation,
+        claude_review_hook=_v3_changed_hook(),
+        review_max_rounds=1,
+    )
+
+    first = _run(
+        consumer,
+        ["--issues", "97"],
+        issues=[_issue(97)],
+        config=config,
+        timeout=60,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["phase"] == "reviewing"
+    assert state["reviewEngine"] == "claude"
+    fail_marker.unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(97, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "recovering its completed legs" in resumed.stdout
+    assert "Recovered authenticated Codex and Claude evidence" in resumed.stdout
+    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
+    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-complete:v3 engine=claude round=1") == 1
+    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+
+
 def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -2424,7 +2472,7 @@ def test_resume_run_rejects_a_concurrent_owner(
         locker.wait(timeout=5)
 
 
-def test_partial_round_checkpoint_advances_after_codex_pass(
+def test_partial_final_round_checkpoint_resumes_after_codex_pass(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     first = _run(
@@ -2450,9 +2498,20 @@ def test_partial_round_checkpoint_advances_after_codex_pass(
         issues=[_issue(33, assigned=True)],
         config=_config_v3(tmp_path, review_max_rounds=1),
     )
-    assert second.returncode != 0
-    assert "did not converge within 1 round(s)" in second.stderr
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert "resuming its remaining leg" in second.stdout
     assert (consumer[3] / "events.log").read_text() == events_before
+    final_state = json.loads(state_file.read_text())
+    assert final_state["phase"] == "finalized"
+    comments = json.loads((consumer[3] / "issue-comments.json").read_text())
+    assert sum(
+        "local-review-pass:v3 engine=codex round=1" in row["body"]
+        for row in comments
+    ) == 1
+    assert sum(
+        "local-review-pass:v3 engine=claude round=1" in row["body"]
+        for row in comments
+    ) == 1
 
 
 def test_v3_result_digest_is_pinned_before_attestation(

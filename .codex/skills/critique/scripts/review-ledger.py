@@ -821,9 +821,9 @@ def _same_round_dispositions(
     threads: list[dict[str, Any]],
     allowed_heads: dict[str, int],
     historical_comment_ids: set[int] | None = None,
-) -> list[tuple[str, bool, bool]]:
-    """Return unique (fingerprint, has-fix, has-major-fix) ledger evidence."""
-    evidence: dict[str, tuple[bool, bool]] = {}
+) -> list[tuple[str, bool, bool, bool]]:
+    """Return unique fingerprint, fix, major-fix, and nonblocking-fix evidence."""
+    evidence: dict[str, tuple[bool, bool, bool]] = {}
     fingerprint_threads: dict[str, int] = {}
     for thread_index, thread in enumerate(threads):
         findings, dispositions, _, _ = _thread_protocol_records(
@@ -910,10 +910,12 @@ def _same_round_dispositions(
                 "blocking",
                 "major",
             }
-            previous = evidence.get(fingerprint, (False, False))
+            fixed_nonblocking = fixed and finding.group("severity") != "blocking"
+            previous = evidence.get(fingerprint, (False, False, False))
             evidence[fingerprint] = (
                 previous[0] or fixed,
                 previous[1] or fixed_major,
+                previous[2] or fixed_nonblocking,
             )
     return [
         (fingerprint, *evidence[fingerprint]) for fingerprint in sorted(evidence)
@@ -947,7 +949,7 @@ def _write_result(args: argparse.Namespace) -> None:
         args, threads, allowed_heads, historical_comment_ids
     )
     changed = args.before != args.head
-    if not changed and any(has_fix for _, has_fix, _ in dispositions):
+    if not changed and any(has_fix for _, has_fix, _, _ in dispositions):
         _fail("clean review results cannot have same-round fixes")
     if changed and args.classification not in {"minor", "material"}:
         _fail("changed review result requires --classification")
@@ -957,12 +959,16 @@ def _write_result(args: argparse.Namespace) -> None:
         _fail("round 3+ changed review results require material classification")
     if changed and not dispositions:
         _fail("changed review results require ledger evidence")
-    if changed and not any(has_fix for _, has_fix, _ in dispositions):
+    if changed and not any(has_fix for _, has_fix, _, _ in dispositions):
         _fail("changed review results require a fixed ledger finding")
+    if changed and args.round >= 3 and any(
+        has_nonblocking_fix for _, _, _, has_nonblocking_fix in dispositions
+    ):
+        _fail("convergence review results cannot fix non-blocking findings")
     if (
         changed
         and args.classification != "material"
-        and any(has_major_fix for _, _, has_major_fix in dispositions)
+        and any(has_major_fix for _, _, has_major_fix, _ in dispositions)
     ):
         _fail("fixed blocking or major findings require material classification")
     value = {
@@ -1502,16 +1508,20 @@ def _verify_result_evidence(
     if [row[0] for row in evidence] != sorted(data["findingFingerprints"]):
         _fail("review result fingerprints do not exactly match same-round ledger evidence")
     if data["status"] == "clean":
-        if any(has_fix for _, has_fix, _ in evidence):
+        if any(has_fix for _, has_fix, _, _ in evidence):
             _fail("clean review results cannot have same-round fixes")
         return data
     if args.round >= 3 and data["classification"] != "material":
         _fail("round 3+ changed review results require material classification")
     if not evidence:
         _fail("changed review results require ledger evidence")
-    if not any(has_fix for _, has_fix, _ in evidence):
+    if not any(has_fix for _, has_fix, _, _ in evidence):
         _fail("changed review results require a fixed ledger finding")
-    fixed_major = any(has_major_fix for _, _, has_major_fix in evidence)
+    if args.round >= 3 and any(
+        has_nonblocking_fix for _, _, _, has_nonblocking_fix in evidence
+    ):
+        _fail("convergence review results cannot fix non-blocking findings")
+    fixed_major = any(has_major_fix for _, _, has_major_fix, _ in evidence)
     if fixed_major and data["classification"] != "material":
         _fail("fixed blocking or major findings require material classification")
     return data

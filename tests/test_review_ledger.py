@@ -1759,6 +1759,53 @@ def test_write_result_aggregates_sequential_recurrences_in_one_thread(
     ] == ["repeat"]
 
 
+@pytest.mark.parametrize("severity", ["major", "minor", "nit"])
+def test_write_result_rejects_nonblocking_fixes_in_convergence_rounds(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    severity: str,
+) -> None:
+    thread = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {
+                    "body": _finding_body(
+                        "convergence-churn",
+                        round_number=3,
+                        severity=severity,
+                    ),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _disposition_body(
+                        "convergence-churn",
+                        round_number=3,
+                    ),
+                    "author": {"login": "reviewer"},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    threads = _threads_file(tmp_path, [thread])
+    heads = _heads_file(tmp_path, HEAD, AFTER)
+    result_file = tmp_path / "result.json"
+    monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
+
+    with pytest.raises(review_ledger.LedgerError, match="non-blocking"):
+        review_ledger.main(
+            [
+                "write-result", "--repo", REPO, "--pr", "7", "--head", AFTER,
+                "--engine", "codex", "--round", "3", "--base", "c" * 40,
+                "--before", HEAD, "--result-file", str(result_file),
+                "--threads-file", str(threads), "--allowed-heads-file", str(heads),
+                "--actor", "reviewer", "--classification", "material",
+            ]
+        )
+
+
 def test_verify_ledger_rejects_deferred_blockers_and_earlier_undisposed_findings(
     review_ledger: ModuleType,
 ) -> None:
