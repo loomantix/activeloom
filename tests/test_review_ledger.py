@@ -1871,6 +1871,66 @@ def test_complete_ledger_uses_supplied_snapshot_instead_of_live_query(
         )
 
 
+def test_verify_ledger_accepts_result_head_behind_live_head(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    live_head = "b" * 40
+    base = "c" * 40
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "clean",
+                "engine": "codex",
+                "round": 1,
+                "baseSha": base,
+                "beforeSha": HEAD,
+                "afterSha": HEAD,
+                "classification": None,
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=live_head,
+        result_head=HEAD,
+        base=base,
+        before=HEAD,
+        engine="codex",
+        round=1,
+        result_file=str(result_file),
+        threads_file=None,
+        actor=ACTOR,
+        allowed_heads_file=None,
+        historical_comment_ids_file=None,
+    )
+    monkeypatch.setattr(review_ledger, "_current_login", lambda: ACTOR)
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger, "_verify_complete_v3_threads", lambda *_args: []
+    )
+    monkeypatch.setattr(
+        review_ledger,
+        "_run_git",
+        lambda command: live_head if command == ["rev-parse", "HEAD"] else "",
+    )
+    monkeypatch.setattr(review_ledger, "_is_ancestor", lambda *_args: True)
+
+    review_ledger._verify_ledger(args)
+
+    assert args.head == live_head
+    assert json.loads(capsys.readouterr().out)["verified"] is True
+
+
 def test_changed_minor_result_rejects_empty_fingerprint_set(
     review_ledger: ModuleType, tmp_path: Path
 ) -> None:

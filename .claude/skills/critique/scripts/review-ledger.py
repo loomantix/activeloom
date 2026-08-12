@@ -1029,12 +1029,20 @@ def _is_ancestor(ancestor: str, descendant: str) -> bool:
     return result.returncode == 0
 
 
-def _verify_git_transition(before: str, head: str) -> None:
+def _result_head(args: argparse.Namespace) -> str:
+    return cast(str, getattr(args, "result_head", None) or args.head)
+
+
+def _verify_git_transition(before: str, result_head: str, live_head: str) -> None:
     local_head = _run_git(["rev-parse", "HEAD"]).strip()
-    if local_head != head:
-        _fail(f"local HEAD mismatch: expected {head}, found {local_head or '<empty>'}")
-    if not _is_ancestor(before, head):
+    if local_head != live_head:
+        _fail(
+            f"local HEAD mismatch: expected {live_head}, found {local_head or '<empty>'}"
+        )
+    if not _is_ancestor(before, result_head):
         _fail("review result rewrites or does not descend from beforeSha")
+    if not _is_ancestor(result_head, live_head):
+        _fail("review result head is not an ancestor of the live head")
 
 
 def _verify_review_base(repo: str, pr: int, base: str, before: str) -> None:
@@ -1079,7 +1087,7 @@ def _load_allowed_heads(args: argparse.Namespace) -> dict[str, int]:
         )
         or len(set(values)) != len(values)
         or values[0] != args.before
-        or values[-1] != args.head
+        or values[-1] != _result_head(args)
     ):
         _fail("allowed transition heads do not match the observed review transition")
     for before, after in zip(values, values[1:]):
@@ -1172,7 +1180,8 @@ def _transition_heads(
 ) -> dict[str, int]:
     if getattr(args, "allowed_heads_file", None) is not None:
         return _load_allowed_heads(args)
-    if args.before == args.head:
+    result_head = _result_head(args)
+    if args.before == result_head:
         return {args.before: 0}
     comparison = subprocess.run(
         [
@@ -1180,7 +1189,7 @@ def _transition_heads(
             "rev-list",
             "--reverse",
             "--ancestry-path",
-            f"{args.before}..{args.head}",
+            f"{args.before}..{result_head}",
         ],
         capture_output=True,
         text=True,
@@ -1189,7 +1198,7 @@ def _transition_heads(
     if comparison.returncode != 0:
         _fail("could not derive the forward review transition")
     values = [args.before, *comparison.stdout.splitlines()]
-    if values[-1] != args.head or len(set(values)) != len(values):
+    if values[-1] != result_head or len(set(values)) != len(values):
         _fail("review result transition is not forward-only")
     return {value: index for index, value in enumerate(values)}
 
@@ -1198,7 +1207,7 @@ def _verify_result_evidence(
     args: argparse.Namespace, data: dict[str, Any], actor: str
 ) -> None:
     _verify_review_base(args.repo, args.pr, args.base, args.before)
-    _verify_git_transition(args.before, args.head)
+    _verify_git_transition(args.before, _result_head(args), args.head)
     matched = _verify_complete_v3_threads(
         args.repo,
         args.pr,
@@ -1241,11 +1250,8 @@ def _verify_ledger(args: argparse.Namespace) -> None:
         getattr(args, "threads_file", None),
     )
     if getattr(args, "result_file", None) is not None:
-        live_head = args.head
-        args.head = args.result_head
         data = _validate_result_data(args)
         _verify_result_evidence(args, data, actor)
-        args.head = live_head
     _verify_head(args.repo, args.pr, args.head)
     print(json.dumps({"actor": actor, "dispositions": len(matched), "verified": True}))
 
@@ -1487,7 +1493,7 @@ def _validate_result_data(
         "round": args.round,
         "baseSha": args.base,
         "beforeSha": args.before,
-        "afterSha": args.head,
+        "afterSha": _result_head(args),
     }
     for key, value in expected.items():
         if data.get(key) != value:
@@ -1510,7 +1516,7 @@ def _validate_result_data(
     classification = data.get("classification")
     if status == "clean":
         if (
-            args.before != args.head
+            args.before != _result_head(args)
             or classification is not None
             or data["finalLaneComplete"] is not True
             or "blocker" in data
@@ -1518,7 +1524,7 @@ def _validate_result_data(
             _fail("clean review result conflicts with the observed pass")
     elif status == "changed":
         if (
-            args.before == args.head
+            args.before == _result_head(args)
             or classification not in {"minor", "material"}
             or (args.round >= 3 and classification != "material")
             or not fingerprints
@@ -1551,7 +1557,7 @@ def _validate_result(args: argparse.Namespace) -> None:
 def _write_result(args: argparse.Namespace) -> None:
     actor = _current_login()
     _verify_review_base(args.repo, args.pr, args.base, args.before)
-    _verify_git_transition(args.before, args.head)
+    _verify_git_transition(args.before, args.head, args.head)
     matched = _verify_complete_v3_threads(
         args.repo, args.pr, actor, _historical_comment_ids(args)
     )
@@ -1981,7 +1987,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    for name in ("head", "base", "before"):
+    for name in ("head", "base", "before", "result_head"):
         value = getattr(args, name, None)
         if value is not None and not SHA_RE.fullmatch(value):
             _fail(f"--{name} must be a full 40-character lowercase commit SHA")
