@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Preserve ordinary Git access while denying non-review publication and
+# constraining review pushes to the exact issue branch.
+# These command shims are not credential isolation; that redesign is tracked at
+# https://github.com/loomantix/codex-platform/issues/37.
+
+set -euo pipefail
+
+real_git="${AGENT_LOOP_REAL_GIT:?AGENT_LOOP_REAL_GIT is required}"
+args=("$@")
+index=0
+subcommand=""
+insertion_index=${#args[@]}
+git_global_args=()
+
+# Find Git's subcommand after the global options that consume a following value.
+# Reject unknown pre-command flags: a future value-taking global option must not
+# let its value hide a following `push` token from this guard.
+while [ "$index" -lt "${#args[@]}" ]; do
+    argument="${args[$index]}"
+    case "$argument" in
+        -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source|--shallow-file)
+            git_global_args+=("$argument")
+            if [ $((index + 1)) -ge "${#args[@]}" ]; then
+                echo "incomplete Git global option inside agent-loop hook: $argument" >&2
+                exit 1
+            fi
+            git_global_args+=("${args[$((index + 1))]}")
+            index=$((index + 2))
+            ;;
+        -C?*|-c?*|-*=*|--bare|--no-pager|--paginate|-p|-P|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-lazy-fetch|--no-advice|--version|-v|--help|-h|--html-path|--man-path|--info-path|--exec-path|--build-options)
+            git_global_args+=("$argument")
+            index=$((index + 1))
+            ;;
+        --)
+            insertion_index=$index
+            index=$((index + 1))
+            [ "$index" -lt "${#args[@]}" ] && subcommand="${args[$index]}"
+            break
+            ;;
+        -*)
+            echo "unsupported Git global option inside agent-loop hook: $argument" >&2
+            exit 1
+            ;;
+        *)
+            subcommand="$argument"
+            insertion_index=$index
+            break
+            ;;
+    esac
+done
+
+if [ "$subcommand" = push ]; then
+    if [ "${AGENT_LOOP_ALLOW_REVIEW_MUTATIONS:-false}" != true ]; then
+        echo "git push is disabled inside non-review agent-loop hooks" >&2
+        exit 1
+    fi
+    if [ "${AGENT_LOOP_REVIEW_CONTRACT_VERSION:-}" = 3 ]; then
+        echo "contract-v3 review hooks must publish through the wrapper-owned review-push helper" >&2
+        exit 1
+    fi
+    branch="${AGENT_LOOP_BRANCH:?AGENT_LOOP_BRANCH is required for review push}"
+    push_args=("${args[@]:$((insertion_index + 1))}")
+    refspec="${push_args[1]:-}"
+    source_ref="${refspec%%:*}"
+    destination_ref="${refspec#*:}"
+    if [ "${#push_args[@]}" -ne 2 ] || [ "${push_args[0]}" != origin ] || \
+       [ "$destination_ref" != "refs/heads/$branch" ] || \
+       ! [[ "$source_ref" = HEAD || "$source_ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        echo "review hooks may push one explicit non-force refspec only to refs/heads/$branch" >&2
+        exit 1
+    fi
+    exec "$real_git" "${args[@]:0:insertion_index}" -c help.autocorrect=0 \
+        "${args[@]:insertion_index}"
+fi
+
+# Git expands configured aliases only after this wrapper has inspected the
+# literal subcommand. Reject aliases in the same config and -C context so a
+# normal `publish = push` (or shell/recursive alias) cannot bypass the guard.
+if [ -n "$subcommand" ]; then
+    alias_status=0
+    alias_definition="$("$real_git" "${git_global_args[@]}" \
+        -c help.autocorrect=0 config --get "alias.$subcommand" 2>/dev/null)" || alias_status=$?
+    if [ "$alias_status" -gt 1 ]; then
+        echo "could not inspect Git alias inside agent-loop hook" >&2
+        exit 1
+    fi
+    if [ -n "$alias_definition" ]; then
+        echo "git aliases are disabled inside agent-loop hooks; use canonical git subcommands" >&2
+        exit 1
+    fi
+fi
+
+if [ -z "$subcommand" ]; then
+    exec "$real_git" "$@"
+fi
+
+# Disable executing autocorrection after every caller-supplied global option so
+# neither repository config nor `-c help.autocorrect=immediate` can turn a typo
+# such as `git pus` into an uninspected push.
+exec "$real_git" "${args[@]:0:insertion_index}" -c help.autocorrect=0 \
+    "${args[@]:insertion_index}"

@@ -1,7 +1,8 @@
 # Agent-loop instructions
 
 You're working autonomously on a single GitHub issue in this repository. Read
-this file fully, then read the issue with `gh issue view <N>`. Implement,
+this file fully, then read the exact issue from `AGENT_LOOP_ISSUE_TITLE` and
+`AGENT_LOOP_ISSUE_BODY`. Implement,
 validate, refactor, and **create a local commit. Stop after the commit.** Do
 not push, open a pull request, or invoke Gemini, Copilot, `reviewit`, or any
 GitHub-hosted AI reviewer — the wrapper owns fresh-base integration, draft PR
@@ -45,8 +46,9 @@ target a frontend test as `pnpm --filter frontend test:run TestName`. Do not add
 - Use the repository's commit convention and targeted staging.
 - Leave a clean worktree with at least one local commit.
 - **Never push or create a PR.** After you stop, the wrapper integrates a fresh
-  base, validates, pushes, opens a draft PR, then runs local Codex followed by
-  local Claude review through inline PR threads.
+  base, validates, pushes, opens a draft PR, then runs local Codex `deepcritique`
+  followed by Claude `deepcritique` with the configured literal effort policy
+  through inline PR threads.
 - Never bypass hooks with `--no-verify`.
 - **Never `git stash` with uncommitted edits or mid-merge — it silently drops
   your work.** To peek at another revision's file use `git show <ref>:<path>`;
@@ -85,9 +87,10 @@ Common synced surfaces:
 - `.claude/settings.json`
 - `.github/copilot-instructions.md`
 
-If your issue requires changing any of these, **stop, comment on the issue that
-the change belongs upstream, classify the bail (below), and exit without a
-commit.** Don't edit the consumer copy — it'll be reverted on the next sync.
+If your issue requires changing any of these, **stop, record an operator
+handoff that the change belongs upstream, classify the bail (below), and exit
+without a commit.** Don't edit the consumer copy — it'll be reverted on the
+next sync.
 
 ## Filesystem hygiene
 
@@ -96,8 +99,8 @@ commit.** Don't edit the consumer copy — it'll be reverted on the next sync.
 
 ## Out-of-scope guardrails
 
-If you discover any of these mid-issue, **stop, comment on the issue, classify
-the bail (see below), and exit without a commit**:
+If you discover any of these mid-issue, **stop, record an operator handoff,
+classify the bail (see below), and exit without a commit**:
 
 - **Issue title starts with `Epic:`, contains `extractable as @`, or otherwise
   reads as cross-repo coordination work.** Epics are tracking issues, not
@@ -142,11 +145,12 @@ commit_, before exiting:
      transient infra).
    - _(plus any repo-specific sensitive-path category your `RUBRIC.md` §3
      defines.)_
-2. **Relabel:** `gh issue edit <N> --add-label "agent-bail: <category>" --add-label "agent: refined" --remove-label "dev: agent"`.
-   (Removing `dev: agent` stops the loop re-picking it and is itself a
-   high-signal RCA trigger.)
-3. **End your issue comment with the RCA stub** so the post-run
-   `/backlog-refinement rca` pass can aggregate it:
+2. **Write a local operator handoff** that requests adding the selected
+   `agent-bail:` label and `agent: refined`, removing `dev: agent`, and posting
+   the reason on the issue. (Removing `dev: agent` stops the loop re-picking it
+   and is itself a high-signal RCA trigger.)
+3. **End the handoff's proposed issue comment with the RCA stub** so the
+   post-run `/backlog-refinement rca` pass can aggregate it:
 
    ```
    <!-- agent-loop-rca
@@ -161,8 +165,8 @@ commit_, before exiting:
 Bucket **A** (`stale` / `spec-gap` / `loop-mechanics`) = preventable; a bail
 here means refinement or the loop should have caught it. Bucket **B** (the rest)
 = inherent; the issue is correctly not agent-shaped. Be honest about which. (If
-`/backlog-refinement` isn't installed in this repo, still comment and exit; just
-skip the relabel.)
+`/backlog-refinement` isn't installed in this repo, still include the proposed
+comment and label changes in the operator handoff.)
 
 ## Recovery
 

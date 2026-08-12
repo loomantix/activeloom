@@ -86,9 +86,11 @@ through the helper before reporting completion.
 
 The final result covers the entire enclosing deepcritique transition, beginning
 at the head recorded before refactorpass. If refactorpass committed and critique made
-no later fix, serialize `changed` with classification `minor`, an empty finding
-set, and that original before SHA; the committed refactor latch supplies the
-evidence. Do not emit `clean` for a cleanup-moved enclosing hook.
+no later fix, serialize `changed` with classification `minor`, the fixed
+refactor finding set, and that original before SHA. A changed result without at
+least one fixed finding fails closed. Do not emit `clean` for a cleanup-moved enclosing hook.
+For a blocked pass, put the safe blocker in an owner-only
+regular file and call `write-blocked-result`.
 
 ## Phase 3: Handoff
 

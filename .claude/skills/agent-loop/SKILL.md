@@ -1,7 +1,7 @@
 ---
 name: agent-loop
 description: Autonomous issue implementation loop with strict issue allowlisting, one linked worktree and draft PR per issue, bounded local Codex/Claude review rounds, inline thread traceability, and fresh-base validation. Use for a bounded GitHub issue queue without hosted AI reviewers.
-argument-hint: '[iterations] [--iterations N] [--issues N,N,...] [--include-assigned|--resume] [--dry-run]'
+argument-hint: '[iterations] [--iterations N] [--issues N,N,...] [--include-assigned|--resume] [--resume-run FILE|--resume-batch FILE] [--dry-run]'
 disable-model-invocation: true
 ---
 
@@ -21,12 +21,14 @@ substituted via `worker_hook`.
 .claude/skills/agent-loop/scripts/agent-loop.sh --issues 5105,5106 --dry-run
 ```
 
-| Option               | Behavior                                                                                                                                                                      |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--issues N,N,...`   | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
-| `--iterations N`     | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
-| `--include-assigned` | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
-| `--dry-run`          | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
+| Option                | Behavior                                                                                                                                                                      |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--issues N,N,...`    | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
+| `--iterations N`      | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
+| `--include-assigned`  | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
+| `--resume-run FILE`   | Resume one contract-v3 review/finalization checkpoint.                                                                                                                        |
+| `--resume-batch FILE` | Resume an ordered contract-v3 allowlist from its private batch-state file. It cannot be combined with `--resume-run`, `--issues`, or `--dry-run`.                             |
+| `--dry-run`           | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
 
 Omitting `--issues` retains the ready-queue behavior for backward
 compatibility. Use an allowlist for every scoped or retrospective-driven run.
@@ -52,23 +54,25 @@ The config is parsed as literal `key = value` lines and is never sourced.
 Unknown or duplicate keys fail closed. Hook values are shell commands executed
 with the issue worktree as the current directory.
 
-| Key                                              | Purpose                                                                                                     |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                              |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories. |
-| `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                   |
-| `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility. |
-| `review_max_rounds`                              | Maximum complete Codex→Claude rounds. Default `4`; cap exhaustion preserves the draft PR.                   |
-| `claude_review_hook`                             | Required local Claude PR review. Reads the ledger, comments before fixes, pushes, replies, and resolves.    |
-| `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                               |
-| `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.               |
-| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                |
-| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                 |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                     |
-| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                       |
-| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                       |
-| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                 |
-| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                            |
+| Key                                              | Purpose                                                                                                                                              |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                       |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                                          |
+| `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                                            |
+| `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility.                                          |
+| `config_doctor`                                  | Run the non-mutating compatibility preflight before issue selection or claim.                                                                        |
+| `claude_effort_policy`                           | Optional literal Claude effort policy enforced by the doctor.                                                                                        |
+| `review_max_rounds`                              | Maximum complete Codex→Claude rounds. Default `4`; cap exhaustion preserves the draft PR.                                                            |
+| `claude_review_hook`                             | Required local Claude PR review. Reads the ledger, comments before fixes, publishes through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, replies, and resolves. |
+| `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                                                                        |
+| `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                                        |
+| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                         |
+| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                          |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                              |
+| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                |
+| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                                |
+| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                          |
+| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                     |
 
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_BASE_BRANCH`,
 `AGENT_LOOP_BRANCH`, `AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and
@@ -76,8 +80,13 @@ Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_BASE_BRANCH`,
 fresh fetch plus `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 `AGENT_LOOP_PR_HEAD_SHA`, `AGENT_LOOP_REVIEW_ENGINE`, and
 `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_BASE_SHA`, and under contract v3
-`AGENT_LOOP_REVIEW_ACTOR` plus `AGENT_LOOP_REVIEW_RESULT_FILE`. Every hook writes
-a structured clean, changed, or blocked result. The wrapper validates its exact
+`AGENT_LOOP_REVIEW_ACTOR`, `AGENT_LOOP_REVIEW_RESULT_FILE`, and
+`AGENT_LOOP_REVIEW_PUSH_HELPER`. Every successfully completed clean or changed
+hook calls `review-ledger.py write-result`, which derives the complete
+same-engine/same-round fixed, deferred, and dismissed fingerprint set and writes
+the canonical result. A changed result requires at least one fixed finding. A
+blocked hook instead uses `review-ledger.py write-blocked-result` with an
+owner-only blocker file and must not claim a clean or changed pass. The wrapper validates its exact
 SHAs and finding fingerprints, verifies resolved v3 dispositions, and owns the
 canonical pass/completion attestation. A missing, invalid, or blocked result
 stops even when the hook exits zero. Validation hooks
@@ -119,12 +128,15 @@ is not required on `PATH`.
 5. Run the worker and require a clean local commit.
 6. Fetch and merge the base, inspect the diff, validate, push, and open a draft PR.
 7. Run a Codex pass and then a Claude pass against the PR ledger. Each hook
-   comments before fixes, pushes normally, posts structured fix and final-lane
+   comments before fixes, publishes committed fixes only through the wrapper-owned
+   safe-push helper, posts structured fix and final-lane
    completion evidence, then resolves.
 8. If either engine made material fixes, restart from Codex. Stop after
    `review_max_rounds` and preserve the draft.
-9. Require a complete clean round plus replies and resolutions on every marked
-   thread, then mark the PR ready.
+9. Re-attest the exact issue contract and dependencies, excluding only the
+   wrapper-captured PR from the addressed-by-open-PR check. Require a complete
+   clean round plus replies and resolutions on every marked thread, then mark
+   the PR ready.
 
 Do not invoke Gemini, Copilot, `reviewit`, or any GitHub-hosted AI reviewer.
 
@@ -147,7 +159,10 @@ setup, integration, and validation failures also preserve the worktree. Never
 reset, reuse, clean, or delete a dirty recovery worktree.
 
 Successful publication removes the clean linked worktree but retains the local
-branch. Interrupted runs preserve the active worktree.
+branch. Contract-v3 allowlist batches persist their ordered issues, cursor,
+per-issue statuses, and child run-state paths. Recovery advances only after the
+current issue is safely finalized or explicitly bailed; uncertain push, PR, or
+ledger mutation stops the batch.
 
 ## Migration From the Collection-Branch Loop
 
@@ -162,10 +177,13 @@ opened one summary PR at the end. That model is gone:
   `create_if_missing` targets, so existing consumers keep their old copies. They
   must be migrated by hand: set `review_contract_version = 3`, add
   `review_max_rounds`, and update both review hooks to the PR-ledger contract.
-  Old hooks that prohibit all pushes will fail closed because each fix must be
-  pushed normally to the exact draft-PR branch. Every v3 hook must write its
-  structured result; it must not post pass/completion attestations because the
-  wrapper validates the result and owns those markers.
+  Old hooks that compose their own pushes will fail closed because each fix must
+  use `$AGENT_LOOP_REVIEW_PUSH_HELPER`, which owns the exact fully qualified
+  draft-PR destination and rejects force, ambiguity, stale heads, and the wrong
+  branch. Every clean or changed v3 hook must call the ledger helper's
+  `write-result` command; a blocked hook must call `write-blocked-result`. Hooks
+  must not post pass/completion attestations because the wrapper validates the
+  result and owns those markers.
 
 ## Test Guidance
 

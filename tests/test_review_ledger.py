@@ -62,6 +62,70 @@ def _v3_disposition_body(
     )
 
 
+def _pseudo_v3_thread(
+    *, resolved: bool = True, reply: bool = True, body: str | None = None
+) -> dict[str, Any]:
+    marker_body = body or (
+        "Historical finding.\n\n"
+        "<!-- local-review:v3 engine=claude fingerprint=historical-finding -->"
+    )
+    nodes = [{"databaseId": 1, "body": marker_body, "author": {"login": ACTOR}}]
+    if reply:
+        nodes.append(
+            {
+                "databaseId": 2,
+                "body": "Fixed before contract v3 was finalized.",
+                "author": {"login": ACTOR},
+            }
+        )
+    return {
+        "id": "PSEUDO-THREAD",
+        "isResolved": resolved,
+        "repository": {"nameWithOwner": REPO},
+        "pullRequest": {"number": 7},
+        "comments": {
+            "nodes": nodes,
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+
+
+def _v1_thread(*, resolved: bool = True, disposition: bool = True) -> dict[str, Any]:
+    nodes = [
+        {
+            "databaseId": 10,
+            "body": "<!-- local-review:v1 engine=codex round=1 "
+            f"head={HEAD} fingerprint=legacy -->\nLegacy finding.",
+            "author": {"login": ACTOR},
+        }
+    ]
+    if disposition:
+        nodes.append(
+            {
+                "databaseId": 11,
+                "body": "<!-- local-review-disposition:v1 engine=codex round=1 "
+                f"head={HEAD} fingerprint=legacy outcome=fixed -->\nFixed.",
+                "author": {"login": ACTOR},
+            }
+        )
+    return {
+        "id": "V1-THREAD",
+        "isResolved": resolved,
+        "repository": {"nameWithOwner": REPO},
+        "pullRequest": {"number": 7},
+        "comments": {
+            "nodes": nodes,
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+
+
+def _unowned_pseudo_v3_thread() -> dict[str, Any]:
+    thread = _pseudo_v3_thread()
+    del thread["comments"]["nodes"][0]["author"]
+    return thread
+
+
 @pytest.fixture(scope="session")
 def review_ledger() -> ModuleType:
     path = (
@@ -86,6 +150,403 @@ def authenticated_actor(
     review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(review_ledger, "_current_login", lambda: ACTOR)
+
+
+def test_settled_pseudo_v3_and_v1_history_are_not_current_evidence(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deferred = _pseudo_v3_thread(
+        body="Historical finding.\n\n"
+        "<!-- local-review:v3 engine=claude fingerprint=historical-deferred outcome=deferred -->"
+    )
+    threads = [_pseudo_v3_thread(), deferred, _v1_thread()]
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: threads)
+    assert review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR) == []
+
+
+def test_settled_history_is_ignored_by_write_result_and_attestation_evidence(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    threads = [_pseudo_v3_thread(), _v1_thread()]
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: threads)
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    result_file = tmp_path / "result.json"
+    historical_ids = tmp_path / "historical-ids.json"
+    historical_ids.write_text("[1]\n", encoding="utf-8")
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        base="c" * 40,
+        before=HEAD,
+        head=HEAD,
+        engine="claude",
+        round=1,
+        result_file=str(result_file),
+        historical_comment_ids_file=str(historical_ids),
+        classification=None,
+    )
+    review_ledger._write_result(args)
+    data = json.loads(result_file.read_text(encoding="utf-8"))
+    assert data["findingFingerprints"] == []
+    review_ledger._verify_result_evidence(args, data, ACTOR)
+
+
+def test_current_pass_pseudo_v3_is_not_accepted_as_historical_evidence(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    threads = [_pseudo_v3_thread()]
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: threads)
+
+    with pytest.raises(review_ledger.LedgerError, match="before the current pass"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR, set())
+
+
+def test_standalone_write_result_accepts_settled_pseudo_v3_history(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        review_ledger, "_review_threads", lambda *_args: [_pseudo_v3_thread()]
+    )
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    result_file = tmp_path / "result.json"
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        base="c" * 40,
+        before=HEAD,
+        head=HEAD,
+        engine="claude",
+        round=1,
+        result_file=str(result_file),
+        historical_comment_ids_file=None,
+        classification=None,
+    )
+
+    review_ledger._write_result(args)
+
+    assert json.loads(result_file.read_text(encoding="utf-8"))["status"] == "clean"
+
+
+def test_write_result_ignores_settled_same_round_history_outside_transition(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    after = "b" * 40
+    old_head = "d" * 40
+    old_finding = review_ledger.FINDING_V3_RE.search(
+        _v3_finding_body(head=old_head, round_number=1, fingerprint="reused")
+    )
+    old_disposition = review_ledger.DISPOSITION_V3_RE.search(
+        _v3_disposition_body(head="e" * 40, round_number=1, fingerprint="reused")
+    )
+    current_finding = review_ledger.FINDING_V3_RE.search(
+        _v3_finding_body(head=HEAD, round_number=1, fingerprint="current")
+    )
+    current_disposition = review_ledger.DISPOSITION_V3_RE.search(
+        _v3_disposition_body(head=after, round_number=1, fingerprint="current")
+    )
+    assert all(
+        marker is not None
+        for marker in (
+            old_finding,
+            old_disposition,
+            current_finding,
+            current_disposition,
+        )
+    )
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger,
+        "_verify_complete_v3_threads",
+        lambda *_args: [
+            (old_finding, old_disposition),
+            (current_finding, current_disposition),
+        ],
+    )
+    monkeypatch.setattr(
+        review_ledger, "_load_allowed_heads", lambda _args: {HEAD: 0, after: 1}
+    )
+    monkeypatch.setattr(
+        review_ledger,
+        "_json_output",
+        lambda *_args, **_kwargs: {
+            "status": "ahead",
+            "merge_base_commit": {"sha": old_head},
+        },
+    )
+    result_file = tmp_path / "result.json"
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        base="c" * 40,
+        before=HEAD,
+        head=after,
+        engine="codex",
+        round=1,
+        result_file=str(result_file),
+        allowed_heads_file="heads.json",
+        classification="material",
+    )
+    review_ledger._write_result(args)
+    assert json.loads(result_file.read_text(encoding="utf-8"))[
+        "findingFingerprints"
+    ] == ["current"]
+
+
+def test_same_round_history_rejects_fixed_disposition_at_finding_head(
+    review_ledger: ModuleType,
+) -> None:
+    old_head = "d" * 40
+    finding = review_ledger.FINDING_V3_RE.search(
+        _v3_finding_body(head=old_head, round_number=1, fingerprint="historical-fixed")
+    )
+    disposition = review_ledger.DISPOSITION_V3_RE.search(
+        _v3_disposition_body(
+            head=old_head, round_number=1, fingerprint="historical-fixed"
+        )
+    )
+    assert finding is not None and disposition is not None
+    args = argparse.Namespace(engine="codex", round=1, repo=REPO)
+
+    with pytest.raises(review_ledger.LedgerError, match="forward transition"):
+        review_ledger._same_round_evidence(args, [(finding, disposition)], {HEAD: 0})
+
+
+def test_resumed_round_includes_current_transition_disposition(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding_head = "d" * 40
+    disposition_head = "b" * 40
+    finding = review_ledger.FINDING_V3_RE.search(
+        _v3_finding_body(
+            head=finding_head, round_number=4, fingerprint="resumed-material"
+        )
+    )
+    disposition = review_ledger.DISPOSITION_V3_RE.search(
+        _v3_disposition_body(
+            head=disposition_head,
+            round_number=4,
+            fingerprint="resumed-material",
+        )
+    )
+    assert finding is not None and disposition is not None
+    args = argparse.Namespace(engine="codex", round=4, repo=REPO)
+    monkeypatch.setattr(
+        review_ledger,
+        "_json_output",
+        lambda *_args: {
+            "status": "ahead",
+            "merge_base_commit": {"sha": finding_head},
+        },
+    )
+
+    assert review_ledger._same_round_evidence(
+        args, [(finding, disposition)], {HEAD: 0, disposition_head: 1}
+    ) == [("resumed-material", True, True)]
+
+
+def test_write_result_aggregates_sequential_same_fingerprint_recurrences(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    middle = "b" * 40
+    after = "c" * 40
+    pairs = []
+    for occurrence, finding_head, disposition_head in (
+        (1, HEAD, middle),
+        (2, middle, after),
+    ):
+        finding = review_ledger.FINDING_V3_RE.search(
+            _v3_finding_body(
+                head=finding_head,
+                round_number=1,
+                fingerprint="recurred",
+                occurrence=occurrence,
+            )
+        )
+        disposition = review_ledger.DISPOSITION_V3_RE.search(
+            _v3_disposition_body(
+                head=disposition_head,
+                round_number=1,
+                fingerprint="recurred",
+                occurrence=occurrence,
+            )
+        )
+        assert finding is not None and disposition is not None
+        pairs.append((finding, disposition))
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger, "_verify_complete_v3_threads", lambda *_args: pairs
+    )
+    monkeypatch.setattr(
+        review_ledger,
+        "_load_allowed_heads",
+        lambda _args: {HEAD: 0, middle: 1, after: 2},
+    )
+    result_file = tmp_path / "result.json"
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        base="d" * 40,
+        before=HEAD,
+        head=after,
+        engine="codex",
+        round=1,
+        result_file=str(result_file),
+        allowed_heads_file="heads.json",
+        classification="material",
+    )
+    review_ledger._write_result(args)
+    assert json.loads(result_file.read_text(encoding="utf-8"))[
+        "findingFingerprints"
+    ] == ["recurred"]
+
+
+def test_write_result_rejects_changed_transition_without_ledger_evidence(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    after = "b" * 40
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_complete_v3_threads", lambda *_args: [])
+    monkeypatch.setattr(
+        review_ledger, "_load_allowed_heads", lambda _args: {HEAD: 0, after: 1}
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        base="c" * 40,
+        before=HEAD,
+        head=after,
+        engine="codex",
+        round=1,
+        result_file=str(tmp_path / "result.json"),
+        allowed_heads_file="heads.json",
+        classification="minor",
+    )
+    with pytest.raises(review_ledger.LedgerError, match="require ledger evidence"):
+        review_ledger._write_result(args)
+
+
+def test_write_result_rejects_changed_transition_without_fixed_finding(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    after = "b" * 40
+    finding = review_ledger.FINDING_V3_RE.search(
+        _v3_finding_body(head=HEAD, round_number=1, severity="minor")
+    )
+    disposition = review_ledger.DISPOSITION_V3_RE.search(
+        _v3_disposition_body(head=after, round_number=1, outcome="deferred")
+    )
+    assert finding is not None and disposition is not None
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger,
+        "_verify_complete_v3_threads",
+        lambda *_args: [(finding, disposition)],
+    )
+    monkeypatch.setattr(
+        review_ledger, "_load_allowed_heads", lambda _args: {HEAD: 0, after: 1}
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        base="c" * 40,
+        before=HEAD,
+        head=after,
+        engine="codex",
+        round=1,
+        result_file=str(tmp_path / "result.json"),
+        allowed_heads_file="heads.json",
+        classification="minor",
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="fixed ledger finding"):
+        review_ledger._write_result(args)
+
+
+def test_write_blocked_result_uses_canonical_private_serialization(
+    review_ledger: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    blocker = tmp_path / "blocker.txt"
+    blocker.write_text("Reviewer could not verify the final lane.\n", encoding="utf-8")
+    result_file = tmp_path / "result.json"
+    review_ledger.main(
+        [
+            "write-blocked-result",
+            "--head",
+            HEAD,
+            "--engine",
+            "codex",
+            "--round",
+            "2",
+            "--base",
+            "c" * 40,
+            "--before",
+            HEAD,
+            "--result-file",
+            str(result_file),
+            "--blocker-file",
+            str(blocker),
+        ]
+    )
+
+    value = json.loads(result_file.read_text(encoding="utf-8"))
+    assert value["status"] == "blocked"
+    assert value["blocker"] == "Reviewer could not verify the final lane."
+    assert value["finalLaneComplete"] is False
+    assert result_file.stat().st_mode & 0o077 == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+
+
+@pytest.mark.parametrize(
+    ("thread", "message"),
+    [
+        (_pseudo_v3_thread(resolved=False), "not settled"),
+        (_pseudo_v3_thread(reply=False), "not settled"),
+        (
+            _pseudo_v3_thread(
+                body="Historical finding.\n\n<!-- local-review:v3 engine=claude fingerprint=bad extra=yes -->"
+            ),
+            "malformed or unsupported",
+        ),
+        (
+            _pseudo_v3_thread(
+                body=_v3_finding_body().replace("Finding.", "Edited finding.")
+            ),
+            "content hash mismatch",
+        ),
+        (_v1_thread(resolved=False), "unresolved"),
+        (_v1_thread(disposition=False), "matching disposition"),
+        (_unowned_pseudo_v3_thread(), "ownership"),
+    ],
+)
+def test_historical_review_records_fail_closed(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    thread: dict[str, Any],
+    message: str,
+) -> None:
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+    with pytest.raises(review_ledger.LedgerError, match=message):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
 
 def test_diff_lines_tracks_both_sides(review_ledger: ModuleType) -> None:
@@ -630,6 +1091,50 @@ def test_v3_helper_owns_marker_and_preserves_hostile_markdown(
         f"lens=security content-sha256={expected_hash} -->\n"
     )
     assert posted["body"].endswith(content_text)
+
+
+def test_v3_post_finding_proceeds_past_settled_history(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "finding.md"
+    content.write_text("New current finding.", encoding="utf-8")
+    pseudo_thread = _pseudo_v3_thread()
+    pseudo_body = cast(str, pseudo_thread["comments"]["nodes"][0]["body"])
+    legacy_body = cast(str, _v1_thread()["comments"]["nodes"][0]["body"])
+    rows = [
+        {"id": 1, "body": pseudo_body, "user": {"login": ACTOR}},
+        {"id": 10, "body": legacy_body, "user": {"login": ACTOR}},
+    ]
+    posted: dict[str, Any] = {}
+
+    def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        if args[:2] == ["pr", "view"]:
+            return HEAD + "\n"
+        endpoint = args[-1]
+        if endpoint.endswith("/files?per_page=100"):
+            return json.dumps([[{"filename": "changed.ts", "patch": PATCH}]])
+        if endpoint.endswith("/comments?per_page=100"):
+            return json.dumps([rows])
+        if endpoint == f"repos/{REPO}/pulls/7/comments":
+            assert payload is not None
+            posted.update(payload)
+            return json.dumps({"id": 123})
+        if endpoint == f"repos/{REPO}/pulls/comments/123":
+            return json.dumps(
+                {"id": 123, "body": posted["body"], "user": {"login": ACTOR}}
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(
+        review_ledger,
+        "_review_threads",
+        lambda *_args: [pseudo_thread, _v1_thread()],
+    )
+    monkeypatch.setattr(review_ledger, "_run_gh", fake_gh)
+    review_ledger.main(_v3_finding_args(content))
+    assert "fingerprint=hostile-content" in cast(str, posted["body"])
 
 
 def test_v3_rejects_model_authored_markers_before_github(
@@ -1215,9 +1720,7 @@ def test_dispose_rejects_blocking_deferral_before_thread_mutation(
         {
             "id": 88,
             "user": {"login": ACTOR},
-            "body": _v3_finding_body(
-                fingerprint="blocker", severity="blocking"
-            ),
+            "body": _v3_finding_body(fingerprint="blocker", severity="blocking"),
         }
     ]
     monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
@@ -1374,7 +1877,138 @@ def test_complete_ledger_rejects_invalid_fingerprint_topology(
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
 
-def test_changed_minor_result_allows_cleanup_only_fingerprint_set(
+def test_complete_ledger_uses_sealed_snapshot_instead_of_live_query(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    thread = {
+        "id": "THREAD",
+        "isResolved": True,
+        "repository": {"nameWithOwner": REPO},
+        "pullRequest": {"number": 7},
+        "comments": {
+            "nodes": [],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+    snapshot = tmp_path / "threads.json"
+    snapshot.write_text(
+        json.dumps(
+            [
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {
+                                    "nodes": [thread],
+                                    "pageInfo": {
+                                        "hasNextPage": False,
+                                        "endCursor": None,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def unexpected_live_query(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a pinned review-thread snapshot must not refetch live data")
+
+    monkeypatch.setattr(review_ledger, "_json_output", unexpected_live_query)
+    digest = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    assert review_ledger._verify_complete_v3_threads(
+        REPO, 7, ACTOR, threads_file=str(snapshot), expected_threads_sha256=digest
+    ) == []
+
+    snapshot.write_text("[]", encoding="utf-8")
+    with pytest.raises(review_ledger.LedgerError, match="changed after it was sealed"):
+        review_ledger._verify_complete_v3_threads(
+            REPO,
+            7,
+            ACTOR,
+            threads_file=str(snapshot),
+            expected_threads_sha256=digest,
+        )
+
+    with pytest.raises(
+        review_ledger.LedgerError,
+        match="review-thread snapshot must be a regular non-symlink file",
+    ):
+        review_ledger._verify_complete_v3_threads(
+            REPO,
+            7,
+            ACTOR,
+            threads_file=str(tmp_path / "missing.json"),
+            expected_threads_sha256=digest,
+        )
+
+
+def test_verify_ledger_accepts_result_head_behind_live_head(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    live_head = "b" * 40
+    base = "c" * 40
+    result_file = tmp_path / "result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "clean",
+                "engine": "codex",
+                "round": 1,
+                "baseSha": base,
+                "beforeSha": HEAD,
+                "afterSha": HEAD,
+                "classification": None,
+                "findingFingerprints": [],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        repo=REPO,
+        pr=7,
+        head=live_head,
+        result_head=HEAD,
+        base=base,
+        before=HEAD,
+        engine="codex",
+        round=1,
+        result_file=str(result_file),
+        threads_file=None,
+        actor=ACTOR,
+        allowed_heads_file=None,
+        historical_comment_ids_file=None,
+    )
+    monkeypatch.setattr(review_ledger, "_current_login", lambda: ACTOR)
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
+    monkeypatch.setattr(
+        review_ledger, "_verify_complete_v3_threads", lambda *_args: []
+    )
+    monkeypatch.setattr(
+        review_ledger,
+        "_run_git",
+        lambda command: live_head if command == ["rev-parse", "HEAD"] else "",
+    )
+    monkeypatch.setattr(review_ledger, "_is_ancestor", lambda *_args: True)
+
+    review_ledger._verify_ledger(args)
+
+    assert args.head == live_head
+    assert json.loads(capsys.readouterr().out)["verified"] is True
+
+
+def test_changed_minor_result_rejects_empty_fingerprint_set(
     review_ledger: ModuleType, tmp_path: Path
 ) -> None:
     after = "b" * 40
@@ -1404,8 +2038,11 @@ def test_changed_minor_result_allows_cleanup_only_fingerprint_set(
         before=HEAD,
         head=after,
     )
-    data = review_ledger._validate_result_data(args)
-    assert data["findingFingerprints"] == []
+    with pytest.raises(
+        review_ledger.LedgerError,
+        match="changed review result conflicts with the observed pass",
+    ):
+        review_ledger._validate_result_data(args)
 
 
 def test_convergence_round_rejects_minor_changed_result(
@@ -1456,6 +2093,11 @@ def test_attestation_rejects_result_fingerprints_without_ledger_evidence(
     monkeypatch.setattr(review_ledger, "_verify_review_base", lambda *_args: None)
     monkeypatch.setattr(review_ledger, "_verify_git_transition", lambda *_args: None)
     monkeypatch.setattr(review_ledger, "_verify_complete_v3_threads", lambda *_args: [])
+    monkeypatch.setattr(
+        review_ledger,
+        "_load_allowed_heads",
+        lambda _args: {HEAD: 0, "b" * 40: 1},
+    )
     args = argparse.Namespace(
         repo=REPO,
         pr=7,
@@ -1464,13 +2106,16 @@ def test_attestation_rejects_result_fingerprints_without_ledger_evidence(
         base="c" * 40,
         engine="codex",
         round=1,
+        allowed_heads_file="heads.json",
     )
     data = {
         "status": "changed",
         "classification": "material",
         "findingFingerprints": ["missing"],
     }
-    with pytest.raises(review_ledger.LedgerError, match="complete fixed-finding set"):
+    with pytest.raises(
+        review_ledger.LedgerError, match="complete same-round disposition set"
+    ):
         review_ledger._verify_result_evidence(args, data, ACTOR)
 
 
@@ -1529,9 +2174,7 @@ def test_complete_ledger_rejects_tampered_malformed_and_orphan_records(
             ],
             "pageInfo": {"hasNextPage": False},
         }
-        with pytest.raises(
-            review_ledger.LedgerError, match="malformed or unsupported"
-        ):
+        with pytest.raises(review_ledger.LedgerError, match="malformed or unsupported"):
             review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
     orphan = dict(base_thread)
@@ -1547,22 +2190,6 @@ def test_complete_ledger_rejects_tampered_malformed_and_orphan_records(
     }
     monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [orphan])
     with pytest.raises(review_ledger.LedgerError, match="without a finding"):
-        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
-
-    legacy = dict(base_thread)
-    legacy["comments"] = {
-        "nodes": [
-            {
-                "databaseId": 3,
-                "body": "<!-- local-review:v1 engine=codex round=1 "
-                f"head={HEAD} fingerprint=legacy -->\nFinding.",
-                "author": {"login": ACTOR},
-            }
-        ],
-        "pageInfo": {"hasNextPage": False},
-    }
-    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [legacy])
-    with pytest.raises(review_ledger.LedgerError, match="incompatible with v3"):
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
 
@@ -1635,6 +2262,11 @@ def test_fixed_finding_must_precede_final_head(
         lambda *_args: [(finding, disposition)],
     )
     monkeypatch.setattr(review_ledger, "_is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(
+        review_ledger,
+        "_load_allowed_heads",
+        lambda _args: {HEAD: 0, final_head: 1},
+    )
     args = argparse.Namespace(
         repo=REPO,
         pr=7,
@@ -1643,6 +2275,7 @@ def test_fixed_finding_must_precede_final_head(
         head=final_head,
         engine="codex",
         round=2,
+        allowed_heads_file="heads.json",
     )
     data = {
         "status": "changed",
@@ -1681,6 +2314,16 @@ def test_fixed_finding_accepts_intermediate_disposition_head(
     monkeypatch.setattr(
         review_ledger, "_is_ancestor", lambda pair, child: (pair, child) in ancestry
     )
+    monkeypatch.setattr(
+        review_ledger,
+        "_load_allowed_heads",
+        lambda _args: {
+            HEAD: 0,
+            finding_head: 1,
+            disposition_head: 2,
+            final_head: 3,
+        },
+    )
     args = argparse.Namespace(
         repo=REPO,
         pr=7,
@@ -1689,6 +2332,7 @@ def test_fixed_finding_accepts_intermediate_disposition_head(
         head=final_head,
         engine="codex",
         round=2,
+        allowed_heads_file="heads.json",
     )
     data = {
         "status": "changed",
@@ -1942,9 +2586,7 @@ def test_attest_rolls_back_new_evidence_and_allows_same_round_retry(
         _repo: str, comment_id: int, body: str, actor: str | None = None
     ) -> None:
         assert actor == ACTOR
-        assert any(
-            row["id"] == comment_id and row["body"] == body for row in comments
-        )
+        assert any(row["id"] == comment_id and row["body"] == body for row in comments)
 
     def verify_base(*_args: Any) -> None:
         nonlocal base_checks

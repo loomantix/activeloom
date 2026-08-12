@@ -326,6 +326,36 @@ report the exact unresolved thread; do not silently continue.
 ## Record clean passes and convergence
 
 Every pass writes `$AGENT_LOOP_REVIEW_RESULT_FILE` when that variable is set.
+For a clean or changed pass, call the ledger helper's `write-result` command so
+it fetches the complete thread ledger, derives the forward transition, and
+atomically writes the canonical result. Supply `--classification
+minor|material` only when the head moved:
+
+```bash
+python3 .claude/skills/critique/scripts/review-ledger.py write-result \
+  --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
+  --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
+  --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
+  --before "$AGENT_LOOP_PR_HEAD_SHA" \
+  --result-file "$AGENT_LOOP_REVIEW_RESULT_FILE"
+```
+
+The wrapper snapshots and seals the pre-pass review-comment IDs and exports the
+owner-only file to the helper. A pseudo-v3 marker absent from that snapshot is
+current-pass data and fails closed instead of becoming historical evidence.
+
+For a blocked pass, put one short public-safe blocker in an owner-only regular
+file and call `write-blocked-result` instead of constructing JSON:
+
+```bash
+python3 .claude/skills/critique/scripts/review-ledger.py write-blocked-result \
+  --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
+  --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
+  --before "$AGENT_LOOP_PR_HEAD_SHA" \
+  --result-file "$AGENT_LOOP_REVIEW_RESULT_FILE" \
+  --blocker-file "$AGENT_LOOP_LOG_DIR/blocked-review.txt"
+```
+
 The file is always present, including clean and blocked passes, and contains
 exactly this contract:
 
@@ -345,14 +375,10 @@ exactly this contract:
 ```
 
 For `changed`, classification is `minor` or `material`, fingerprints is the
-complete set of findings fixed by the pass, and `finalLaneComplete` is true. A
-minor cleanup-only transition may have an empty fingerprint set when the same
-actor's committed refactor latch proves that transition; a material transition
-always has at least one fixed fingerprint. Dismissed and deferred occurrences
-stay out of this list and are verified by the complete-ledger gate. For
-`blocked`, classification is null, `finalLaneComplete` is false, and the object
-also contains a short safe `blocker` string. Use a file-editing tool or a
-deterministic serializer; do not construct JSON with shell interpolation.
+complete same-round disposition set, at least one disposition is `fixed`, and
+`finalLaneComplete` is true. For `blocked`, classification is null,
+`finalLaneComplete` is false, and the object also contains a short safe
+`blocker` string.
 
 The deterministic helper validates this file against the observed before/after
 Git state, verifies that its fingerprint set exactly matches the actor-owned

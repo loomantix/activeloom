@@ -43,6 +43,11 @@
 .claude/skills/agent-loop/agent-loop.config
 .claude/skills/agent-loop/prompt.txt
 .claude/skills/agent-loop/scripts/agent-loop.sh
+.claude/skills/agent-loop/scripts/agent-loop-state.py
+.claude/skills/agent-loop/scripts/config-doctor.py
+.claude/skills/agent-loop/scripts/hook-gh-guard
+.claude/skills/agent-loop/scripts/hook-git-guard
+.claude/skills/agent-loop/scripts/review-push.sh
 .claude/skills/aws-infra-migration/SKILL.md
 .claude/skills/backlog-refinement/LEARNINGS.md
 .claude/skills/backlog-refinement/RUBRIC.md
