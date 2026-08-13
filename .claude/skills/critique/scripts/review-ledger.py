@@ -947,11 +947,6 @@ def _matching_dispositions(
         if len(candidates) != 1:
             _fail("local-review finding lacks exactly one matching disposition")
         disposition_index, disposition = candidates[0]
-        if (
-            finding.group("severity") == "blocking"
-            and disposition.group("outcome") == "deferred"
-        ):
-            _fail("blocking local-review findings cannot be deferred")
         if disposition_index in used_dispositions:
             _fail("local-review disposition matches multiple findings")
         used_dispositions.add(disposition_index)
@@ -959,6 +954,39 @@ def _matching_dispositions(
     if len(used_dispositions) != len(dispositions):
         _fail("local-review ledger contains an orphan disposition")
     return matched
+
+
+def _verify_blocking_not_deferred(
+    matched: list[tuple[re.Match[str], re.Match[str]]],
+) -> None:
+    """Enforce the blocking-is-not-deferred rule on the latest occurrence only.
+
+    A fingerprint's occurrences are an ordered history of one root cause: a
+    later occurrence is the same defect found again on a later head, and its
+    disposition supersedes the earlier one. Evaluating every occurrence
+    independently makes a blocking finding that was deferred once and then
+    fixed permanently unattestable, no matter how thoroughly it was closed --
+    and because a recorded disposition is immutable by design, the only ways
+    out are rewriting history or forging the marker, which are the two things
+    this helper exists to prevent.
+
+    `_verify_complete_v3_threads` has already established that a fingerprint's
+    occurrences are contiguous 1..n within a single thread, so the highest
+    occurrence number is the current state of that root cause.
+    """
+    latest: dict[str, tuple[int, re.Match[str], re.Match[str]]] = {}
+    for finding, disposition in matched:
+        fingerprint = finding.group("fingerprint")
+        occurrence = int(finding.group("occurrence"))
+        current = latest.get(fingerprint)
+        if current is None or occurrence > current[0]:
+            latest[fingerprint] = (occurrence, finding, disposition)
+    for _, finding, disposition in latest.values():
+        if (
+            finding.group("severity") == "blocking"
+            and disposition.group("outcome") == "deferred"
+        ):
+            _fail("blocking local-review findings cannot be deferred")
 
 
 def _verify_complete_v3_threads(
@@ -1011,6 +1039,7 @@ def _verify_complete_v3_threads(
             or roots[0][1] != 0
         ):
             _fail("local-review fingerprint topology is invalid")
+    _verify_blocking_not_deferred(matched)
     return matched
 
 

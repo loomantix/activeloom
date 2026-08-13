@@ -2223,6 +2223,59 @@ def test_complete_ledger_rejects_blocking_deferred_disposition(
         review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
 
 
+def _blocking_occurrence_thread(*, first: str, second: str) -> dict[str, Any]:
+    return {
+        "id": "THREAD",
+        "isResolved": True,
+        "repository": {"nameWithOwner": REPO},
+        "pullRequest": {"number": 7},
+        "comments": {
+            "nodes": [
+                {
+                    "databaseId": 1,
+                    "body": _v3_finding_body(severity="blocking", occurrence=1),
+                    "author": {"login": ACTOR},
+                },
+                {
+                    "databaseId": 2,
+                    "body": _v3_disposition_body(outcome=first, occurrence=1),
+                    "author": {"login": ACTOR},
+                },
+                {
+                    "databaseId": 3,
+                    "body": _v3_finding_body(severity="blocking", occurrence=2),
+                    "author": {"login": ACTOR},
+                },
+                {
+                    "databaseId": 4,
+                    "body": _v3_disposition_body(outcome=second, occurrence=2),
+                    "author": {"login": ACTOR},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+
+
+def test_complete_ledger_accepts_a_blocking_deferral_a_later_occurrence_fixed(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = _blocking_occurrence_thread(first="deferred", second="fixed")
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+
+    assert len(review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)) == 2
+
+
+def test_complete_ledger_rejects_a_blocking_deferral_on_the_latest_occurrence(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = _blocking_occurrence_thread(first="fixed", second="deferred")
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+
+    with pytest.raises(review_ledger.LedgerError, match="cannot be deferred"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+
 def test_review_threads_rejects_truncated_top_level_pagination(
     review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
