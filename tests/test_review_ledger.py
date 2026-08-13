@@ -52,10 +52,11 @@ def _finding_body(
     lens: str = "correctness",
     head: str = HEAD,
     occurrence: int = 1,
+    engine: str = "codex",
 ) -> str:
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     return (
-        f"<!-- local-review:v3 engine=codex round={round_number} head={head} "
+        f"<!-- local-review:v3 engine={engine} round={round_number} head={head} "
         f"fingerprint={fingerprint} occurrence={occurrence} severity={severity} lens={lens} "
         f"content-sha256={digest} -->\n{content}"
     )
@@ -69,10 +70,11 @@ def _disposition_body(
     round_number: int = 2,
     outcome: str = "fixed",
     occurrence: int = 1,
+    engine: str = "codex",
 ) -> str:
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     return (
-        f"<!-- local-review-disposition:v3 engine=codex round={round_number} "
+        f"<!-- local-review-disposition:v3 engine={engine} round={round_number} "
         f"head={head} fingerprint={fingerprint} occurrence={occurrence} outcome={outcome} "
         f"content-sha256={digest} -->\n{content}"
     )
@@ -181,7 +183,9 @@ def test_settled_pseudo_v3_history_is_ignored_by_current_evidence(
         body="Historical finding.\n\n"
         "<!-- local-review:v3 engine=claude fingerprint=historical-deferred outcome=deferred -->"
     )
-    assert review_ledger._verify_thread_dispositions([thread, deferred]) == 0
+    assert review_ledger._verify_thread_dispositions(
+        [thread, deferred], repo=REPO
+    ) == 0
     threads = _threads_file(tmp_path, [thread])
     result_file = tmp_path / "result.json"
     heads = _heads_file(tmp_path, HEAD)
@@ -1244,6 +1248,41 @@ def test_v3_dispose_rejects_conflicting_stable_identity_before_mutation(
         )
 
 
+@pytest.mark.parametrize("outcome", ["dismissed", "deferred"])
+def test_v3_dispose_rejects_an_unfixed_blocker_before_mutation(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    content = tmp_path / "disposition.md"
+    content.write_text("Not fixed.", encoding="utf-8")
+    rows = [_review_row(88, _finding_body("blocker", severity="blocking"))]
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
+    monkeypatch.setattr(
+        review_ledger,
+        "_thread_state",
+        lambda *_args: pytest.fail("thread must not be touched"),
+    )
+    args = SimpleNamespace(
+        repo=REPO,
+        pr=7,
+        head=HEAD,
+        engine="codex",
+        round=2,
+        fingerprint="blocker",
+        occurrence=1,
+        outcome=outcome,
+        comment_id=88,
+        thread_id="THREAD",
+        content_file=str(content),
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="must be fixed"):
+        review_ledger._dispose(args)
+
+
 def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
     review_ledger: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -1826,7 +1865,7 @@ def test_verify_ledger_rejects_deferred_blockers_and_earlier_undisposed_findings
         },
     }
     with pytest.raises(review_ledger.LedgerError, match="must be fixed"):
-        review_ledger._verify_thread_dispositions([deferred_blocker])
+        review_ledger._verify_thread_dispositions([deferred_blocker], repo=REPO)
 
     recurrence = {
         "isResolved": True,
@@ -1849,7 +1888,110 @@ def test_verify_ledger_rejects_deferred_blockers_and_earlier_undisposed_findings
         },
     }
     with pytest.raises(review_ledger.LedgerError, match="sequentially disposed"):
-        review_ledger._verify_thread_dispositions([recurrence])
+        review_ledger._verify_thread_dispositions([recurrence], repo=REPO)
+
+
+def _blocking_recurrence_thread(
+    *,
+    latest_outcome: str = "fixed",
+    latest_finding_head: str = MIDDLE,
+    latest_disposition_head: str = AFTER,
+) -> dict[str, Any]:
+    return {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {
+                    "body": _finding_body(
+                        "repeat-blocker",
+                        round_number=1,
+                        severity="blocking",
+                    ),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _disposition_body(
+                        "repeat-blocker",
+                        head=HEAD,
+                        round_number=1,
+                        outcome="deferred",
+                    ),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _finding_body(
+                        "repeat-blocker",
+                        head=latest_finding_head,
+                        engine="claude",
+                        occurrence=2,
+                        severity="blocking",
+                    ),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _disposition_body(
+                        "repeat-blocker",
+                        head=latest_disposition_head,
+                        engine="claude",
+                        occurrence=2,
+                        outcome=latest_outcome,
+                    ),
+                    "author": {"login": "reviewer"},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+
+
+def test_verify_ledger_accepts_an_unfixed_blocker_a_later_occurrence_fixed(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = _blocking_recurrence_thread()
+    monkeypatch.setattr(review_ledger, "_run_gh", _run_gh_with_forward_compare)
+
+    assert review_ledger._verify_thread_dispositions([thread], repo=REPO) == 1
+
+
+def test_verify_ledger_rejects_an_unfixed_blocker_on_the_latest_occurrence(
+    review_ledger: ModuleType,
+) -> None:
+    thread = _blocking_recurrence_thread(
+        latest_outcome="deferred",
+        latest_disposition_head=MIDDLE,
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="must be fixed"):
+        review_ledger._verify_thread_dispositions([thread], repo=REPO)
+
+
+def test_verify_ledger_rejects_a_same_head_fix_after_an_unfixed_blocker(
+    review_ledger: ModuleType,
+) -> None:
+    thread = _blocking_recurrence_thread(
+        latest_finding_head=HEAD,
+        latest_disposition_head=HEAD,
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="forward transition"):
+        review_ledger._verify_thread_dispositions([thread], repo=REPO)
+
+
+def test_verify_ledger_rejects_a_forked_fix_after_an_unfixed_blocker(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = _blocking_recurrence_thread()
+    monkeypatch.setattr(
+        review_ledger,
+        "_json_output",
+        lambda *_args: {
+            "status": "diverged",
+            "merge_base_commit": {"sha": HISTORICAL},
+        },
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="forward-only"):
+        review_ledger._verify_thread_dispositions([thread], repo=REPO)
 
 
 def test_validate_result_enforces_observed_transition(

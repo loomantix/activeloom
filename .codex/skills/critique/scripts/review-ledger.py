@@ -435,7 +435,7 @@ def _require_finding_root(
 
 def _require_finding_occurrence(
     rows: list[dict[str, Any]], args: argparse.Namespace
-) -> None:
+) -> re.Match[str]:
     records = _require_finding_root(rows, args)
     matches = [
         match
@@ -446,6 +446,7 @@ def _require_finding_occurrence(
     ]
     if len(matches) != 1:
         _fail("disposition does not identify exactly one existing finding occurrence")
+    return matches[0]
 
 
 def _require_prior_occurrences_disposed(
@@ -709,7 +710,9 @@ def _dispose(args: argparse.Namespace) -> None:
     rows = _review_comments(args.repo, args.pr)
     if _rows_have_pseudo_v3(rows):
         _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
-    _require_finding_occurrence(rows, args)
+    finding = _require_finding_occurrence(rows, args)
+    if finding.group("severity") == "blocking" and args.outcome != "fixed":
+        _fail("blocking local-review findings must be fixed")
     _require_disposition_consistency(rows, args, body)
     _thread_state(args)
     comment_id, replayed = _post_review_comment(
@@ -929,7 +932,7 @@ def _write_result(args: argparse.Namespace) -> None:
         else _review_threads(args.repo, args.pr)
     )
     historical_comment_ids = _historical_comment_ids(args)
-    _verify_thread_dispositions(threads, historical_comment_ids)
+    _verify_thread_dispositions(threads, historical_comment_ids, repo=args.repo)
     if args.allowed_heads_file is None:
         comparison = subprocess.run(
             ["git", "rev-list", "--reverse", "--ancestry-path", f"{args.before}..{args.head}"],
@@ -1040,7 +1043,7 @@ def _attest(args: argparse.Namespace) -> None:
         _fail("blocked review results cannot be attested as complete")
     threads = _load_review_threads(args.threads_file)
     historical_comment_ids = _historical_comment_ids(args)
-    _verify_thread_dispositions(threads, historical_comment_ids)
+    _verify_thread_dispositions(threads, historical_comment_ids, repo=args.repo)
     _verify_result_evidence(
         args, threads, data=data, historical_comment_ids=historical_comment_ids
     )
@@ -1431,7 +1434,10 @@ def _matching_dispositions(
 
 
 def _verify_thread_dispositions(
-    threads: list[dict[str, Any]], historical_comment_ids: set[int] | None = None
+    threads: list[dict[str, Any]],
+    historical_comment_ids: set[int] | None = None,
+    *,
+    repo: str,
 ) -> int:
     verified = 0
     fingerprint_threads: dict[str, int] = {}
@@ -1467,6 +1473,47 @@ def _verify_thread_dispositions(
                     _fail(
                         f"local-review fingerprint {fingerprint} recurrence is not sequentially disposed"
                     )
+            matched_occurrences: list[tuple[re.Match[str], re.Match[str]]] = []
+            for finding_index, finding in occurrences:
+                occurrence_matches = _matching_dispositions(
+                    finding_index, finding, dispositions_v3
+                )
+                if len(occurrence_matches) != 1:
+                    _fail("local-review finding lacks exactly one matching disposition")
+                matched_occurrences.append((finding, occurrence_matches[0]))
+            latest_finding, latest_disposition = matched_occurrences[-1]
+            if (
+                latest_finding.group("severity") == "blocking"
+                and latest_disposition.group("outcome") != "fixed"
+            ):
+                _fail("blocking local-review findings must be fixed")
+            prior_unfixed_blockers = [
+                position
+                for position, (finding, disposition) in enumerate(
+                    matched_occurrences[:-1]
+                )
+                if finding.group("severity") == "blocking"
+                and disposition.group("outcome") != "fixed"
+            ]
+            if prior_unfixed_blockers:
+                if latest_disposition.group("outcome") != "fixed":
+                    _fail(
+                        "an unfixed blocker must be cleared by a later fixed occurrence"
+                    )
+                start = prior_unfixed_blockers[-1]
+                for prior, current in zip(
+                    matched_occurrences[start:], matched_occurrences[start + 1 :]
+                ):
+                    _verify_forward_transition(
+                        repo,
+                        prior[1].group("head"),
+                        current[0].group("head"),
+                    )
+                _verify_forward_transition(
+                    repo,
+                    latest_finding.group("head"),
+                    latest_disposition.group("head"),
+                )
         findings: list[tuple[int, re.Match[str], list[tuple[int, re.Match[str]]]]] = [
             (index, finding, dispositions_v3) for index, finding in findings_v3
         ] + [(index, finding, dispositions_v1) for index, finding in findings_v1]
@@ -1475,17 +1522,31 @@ def _verify_thread_dispositions(
         if thread.get("isResolved") is not True:
             _fail("local-review thread is not resolved")
         for finding_index, finding, dispositions in findings:
-            matches = _matching_dispositions(finding_index, finding, dispositions)
-            if len(matches) != 1:
+            finding_matches = _matching_dispositions(
+                finding_index, finding, dispositions
+            )
+            if len(finding_matches) != 1:
                 _fail("local-review finding lacks exactly one matching disposition")
-            if (
-                "severity" in finding.groupdict()
-                and finding.group("severity") == "blocking"
-                and matches[0].group("outcome") != "fixed"
-            ):
-                _fail("blocking local-review findings must be fixed")
         verified += 1
     return verified
+
+
+def _verify_forward_transition(repo: str, before: str, after: str) -> None:
+    if before == after:
+        _fail("superseding fixed occurrence is not a forward transition")
+    comparison = _json_output(["api", f"repos/{repo}/compare/{before}...{after}"])
+    merge_base = (
+        comparison.get("merge_base_commit")
+        if isinstance(comparison, dict)
+        else None
+    )
+    if (
+        not isinstance(comparison, dict)
+        or comparison.get("status") != "ahead"
+        or not isinstance(merge_base, dict)
+        or merge_base.get("sha") != before
+    ):
+        _fail("superseding local-review occurrence is not forward-only")
 
 
 def _verify_result_evidence(
@@ -1531,7 +1592,9 @@ def _verify_ledger(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
     threads = _load_review_threads(args.threads_file)
     historical_comment_ids = _historical_comment_ids(args)
-    thread_count = _verify_thread_dispositions(threads, historical_comment_ids)
+    thread_count = _verify_thread_dispositions(
+        threads, historical_comment_ids, repo=args.repo
+    )
     data = None
     if args.result_file is not None:
         data = _verify_result_evidence(
