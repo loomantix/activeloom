@@ -15,6 +15,8 @@ import pytest
 
 
 HEAD = "a" * 40
+MIDDLE = "b" * 40
+AFTER = "c" * 40
 REPO = "example/repository"
 ACTOR = "reviewer"
 PATCH = """@@ -10,3 +10,4 @@
@@ -2217,6 +2219,153 @@ def test_complete_ledger_rejects_blocking_deferred_disposition(
             "pageInfo": {"hasNextPage": False},
         },
     }
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+
+    with pytest.raises(review_ledger.LedgerError, match="cannot be deferred"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+
+def _blocking_occurrence_thread(
+    *,
+    first: str,
+    second: str,
+    second_finding_head: str = HEAD,
+    second_disposition_head: str = HEAD,
+) -> dict[str, Any]:
+    return {
+        "id": "THREAD",
+        "isResolved": True,
+        "repository": {"nameWithOwner": REPO},
+        "pullRequest": {"number": 7},
+        "comments": {
+            "nodes": [
+                {
+                    "databaseId": 1,
+                    "body": _v3_finding_body(severity="blocking", occurrence=1),
+                    "author": {"login": ACTOR},
+                },
+                {
+                    "databaseId": 2,
+                    "body": _v3_disposition_body(outcome=first, occurrence=1),
+                    "author": {"login": ACTOR},
+                },
+                {
+                    "databaseId": 3,
+                    "body": _v3_finding_body(
+                        head=second_finding_head,
+                        severity="blocking",
+                        occurrence=2,
+                    ),
+                    "author": {"login": ACTOR},
+                },
+                {
+                    "databaseId": 4,
+                    "body": _v3_disposition_body(
+                        head=second_disposition_head,
+                        outcome=second,
+                        occurrence=2,
+                    ),
+                    "author": {"login": ACTOR},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+
+
+def test_complete_ledger_accepts_a_blocking_deferral_a_later_occurrence_fixed(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = _blocking_occurrence_thread(
+        first="deferred",
+        second="fixed",
+        second_finding_head=MIDDLE,
+        second_disposition_head=AFTER,
+    )
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+
+    def compare(args: list[str]) -> dict[str, Any]:
+        endpoint = args[-1]
+        before = HEAD if endpoint.endswith(f"/{HEAD}...{MIDDLE}") else MIDDLE
+        return {"status": "ahead", "merge_base_commit": {"sha": before}}
+
+    monkeypatch.setattr(
+        review_ledger,
+        "_json_output",
+        compare,
+    )
+
+    assert len(review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)) == 2
+
+
+def test_complete_ledger_rejects_a_same_head_fix_after_blocking_deferral(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = _blocking_occurrence_thread(first="deferred", second="fixed")
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+
+    with pytest.raises(review_ledger.LedgerError, match="forward transition"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+
+def test_complete_ledger_rejects_a_forked_fix_after_blocking_deferral(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = _blocking_occurrence_thread(
+        first="deferred",
+        second="fixed",
+        second_finding_head=MIDDLE,
+        second_disposition_head=AFTER,
+    )
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+    monkeypatch.setattr(
+        review_ledger,
+        "_json_output",
+        lambda *_args: {
+            "status": "diverged",
+            "merge_base_commit": {"sha": "d" * 40},
+        },
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="forward-only"):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+
+@pytest.mark.parametrize("case", ["out-of-order", "reopened-before-disposition"])
+def test_complete_ledger_rejects_nonchronological_occurrences(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    thread = _blocking_occurrence_thread(first="fixed", second="fixed")
+    nodes = thread["comments"]["nodes"]
+    if case == "out-of-order":
+        nodes[2:2] = [
+            {
+                "databaseId": 5,
+                "body": _v3_finding_body(occurrence=3),
+                "author": {"login": ACTOR},
+            },
+            {
+                "databaseId": 6,
+                "body": _v3_disposition_body(occurrence=3),
+                "author": {"login": ACTOR},
+            },
+        ]
+        expected = "fingerprint topology"
+    else:
+        nodes[:] = [nodes[0], nodes[2], nodes[3], nodes[1]]
+        expected = "opened before the prior disposition"
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+
+    with pytest.raises(review_ledger.LedgerError, match=expected):
+        review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR)
+
+
+def test_complete_ledger_rejects_a_blocking_deferral_on_the_latest_occurrence(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = _blocking_occurrence_thread(first="fixed", second="deferred")
     monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
 
     with pytest.raises(review_ledger.LedgerError, match="cannot be deferred"):

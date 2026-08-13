@@ -947,11 +947,14 @@ def _matching_dispositions(
         if len(candidates) != 1:
             _fail("local-review finding lacks exactly one matching disposition")
         disposition_index, disposition = candidates[0]
-        if (
-            finding.group("severity") == "blocking"
-            and disposition.group("outcome") == "deferred"
-        ):
-            _fail("blocking local-review findings cannot be deferred")
+        next_findings = [
+            next_index
+            for next_index, next_finding in findings
+            if next_index > finding_index
+            and next_finding.group("fingerprint") == finding.group("fingerprint")
+        ]
+        if next_findings and disposition_index >= min(next_findings):
+            _fail("local-review recurrence was opened before the prior disposition")
         if disposition_index in used_dispositions:
             _fail("local-review disposition matches multiple findings")
         used_dispositions.add(disposition_index)
@@ -959,6 +962,82 @@ def _matching_dispositions(
     if len(used_dispositions) != len(dispositions):
         _fail("local-review ledger contains an orphan disposition")
     return matched
+
+
+def _verify_blocking_not_deferred(
+    repo: str,
+    matched: list[tuple[re.Match[str], re.Match[str]]],
+) -> None:
+    """Enforce the blocking-is-not-deferred rule on the latest occurrence only.
+
+    A fingerprint's occurrences are a sequential history of one root cause: a
+    later occurrence is the same defect found again, and its disposition
+    supersedes the earlier one. Evaluating every occurrence independently makes
+    a blocking finding that was deferred once and then fixed permanently
+    unattestable, no matter how thoroughly it was closed -- and because a
+    recorded disposition is immutable by design, the only ways out are
+    rewriting history or forging the marker, which are the two things this
+    helper exists to prevent.
+
+    `_verify_complete_v3_threads` has already established that a fingerprint's
+    occurrences are contiguous 1..n within a single thread, so the highest
+    occurrence number is the current state of that root cause. When that state
+    clears an earlier blocking deferral, the recurrence and its fixed
+    disposition must also form strict forward Git transitions.
+    """
+    grouped: dict[str, list[tuple[int, re.Match[str], re.Match[str]]]] = {}
+    for finding, disposition in matched:
+        fingerprint = finding.group("fingerprint")
+        occurrence = int(finding.group("occurrence"))
+        grouped.setdefault(fingerprint, []).append((occurrence, finding, disposition))
+    for records in grouped.values():
+        records.sort(key=lambda record: record[0])
+        _, finding, disposition = records[-1]
+        if (
+            finding.group("severity") == "blocking"
+            and disposition.group("outcome") == "deferred"
+        ):
+            _fail("blocking local-review findings cannot be deferred")
+        prior_blocking_deferrals = [
+            index
+            for index, (_, prior_finding, prior_disposition) in enumerate(records[:-1])
+            if prior_finding.group("severity") == "blocking"
+            and prior_disposition.group("outcome") == "deferred"
+        ]
+        if not prior_blocking_deferrals:
+            continue
+        if disposition.group("outcome") != "fixed":
+            _fail("a blocking deferral must be cleared by a later fixed occurrence")
+        start = prior_blocking_deferrals[-1]
+        for prior, current in zip(records[start:], records[start + 1 :]):
+            _verify_forward_transition(
+                repo,
+                prior[2].group("head"),
+                current[1].group("head"),
+            )
+        _verify_forward_transition(
+            repo,
+            finding.group("head"),
+            disposition.group("head"),
+        )
+
+
+def _verify_forward_transition(repo: str, before: str, after: str) -> None:
+    if before == after:
+        _fail("superseding fixed occurrence is not a forward transition")
+    comparison = _json_output(["api", f"repos/{repo}/compare/{before}...{after}"])
+    merge_base = (
+        comparison.get("merge_base_commit")
+        if isinstance(comparison, dict)
+        else None
+    )
+    if (
+        not isinstance(comparison, dict)
+        or comparison.get("status") != "ahead"
+        or not isinstance(merge_base, dict)
+        or merge_base.get("sha") != before
+    ):
+        _fail("superseding local-review occurrence is not forward-only")
 
 
 def _verify_complete_v3_threads(
@@ -1000,9 +1079,7 @@ def _verify_complete_v3_threads(
         matched.extend(_matching_dispositions(findings, dispositions))
     for records in topology.values():
         thread_ids = {thread_id for thread_id, _, _ in records}
-        occurrences = sorted(
-            int(finding.group("occurrence")) for _, _, finding in records
-        )
+        occurrences = [int(finding.group("occurrence")) for _, _, finding in records]
         roots = [record for record in records if record[2].group("occurrence") == "1"]
         if (
             len(thread_ids) != 1
@@ -1011,6 +1088,7 @@ def _verify_complete_v3_threads(
             or roots[0][1] != 0
         ):
             _fail("local-review fingerprint topology is invalid")
+    _verify_blocking_not_deferred(repo, matched)
     return matched
 
 
