@@ -285,6 +285,8 @@ def test_new_script_modes_are_executable() -> None:
         ".codex/skills/agent-loop/scripts/hook-git-guard": 0o755,
         ".codex/skills/backlog-refinement/scripts/bail-report.py": 0o755,
         ".codex/skills/backlog-refinement/scripts/candidates.py": 0o755,
+        ".codex/skills/critique/scripts/local-review-handoff.py": 0o755,
+        ".codex/skills/critique/scripts/run-claude-review.sh": 0o755,
         ".codex/skills/issues/scripts/ready.py": 0o755,
     }
     assert {
@@ -340,6 +342,27 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     ]
     assert "Do not make each lane reload the PR ledger" in normalized["critique"]
     assert "do not hand every lane a whole-diff artifact" in normalized["refactorpass"]
+
+
+def test_local_review_requires_user_mediated_cross_engine_handoffs() -> None:
+    workflow = (REPO_ROOT / ".codex/REVIEW_WORKFLOW.md").read_text(encoding="utf-8")
+    ledger = (REPO_ROOT / ".codex/references/local-review-ledger.md").read_text(
+        encoding="utf-8"
+    )
+    deepcritique = (SKILLS_ROOT / "deepcritique/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    agent_loop = (SKILLS_ROOT / "agent-loop/SKILL.md").read_text(encoding="utf-8")
+    assert "Auto mode" in workflow
+    assert "Handoff mode" in workflow
+    assert "run-claude-review.sh" in workflow
+    assert "literal `--effort low`" in workflow
+    assert "show-handoff --engine codex" in deepcritique
+    assert "post-handoff" in ledger
+    assert "show-handoff" in ledger
+    assert "local-review-handoff:v1" in workflow
+    assert "configuration doctor proves the hook contains literal `--effort low`" in agent_loop
+    assert "Handoff mode must stop after" in agent_loop
 
 
 def test_renamed_review_skills_preserve_in_flight_compatibility() -> None:

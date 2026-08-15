@@ -72,6 +72,16 @@ targets:
     substitutions: []
     mode: '0644'
 
+  - source: .codex/skills/critique/scripts/run-claude-review.sh
+    destination: .codex/skills/critique/scripts/run-claude-review.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/critique/scripts/local-review-handoff.py
+    destination: .codex/skills/critique/scripts/local-review-handoff.py
+    substitutions: []
+    mode: '0755'
+
   - source: .codex/skills/deepcritique/SKILL.md
     destination: .codex/skills/deepcritique/SKILL.md
     substitutions: []

@@ -4,6 +4,40 @@ Use an open draft pull request as the durable ledger for every local Codex or
 Claude review pass. The ledger is part of the review contract, not optional
 reporting after the code changes.
 
+## Cross-engine session handoff
+
+In handoff mode, never start the other review engine from the current session.
+At the end of a pass, post a deterministic PR comment that contains the exact
+base, current head, completed engine and round, outcome, next engine, and a
+pasteable fresh-session prompt:
+
+```bash
+python3 .codex/skills/critique/scripts/local-review-handoff.py post-handoff \
+  --repo <owner/repo> --pr <number> --head <full-head-sha> \
+  --base <full-base-sha> --from-engine <codex|claude> \
+  --to-engine <claude|codex> --round <completed-round> \
+  --outcome <clean|minor|material|blocked> \
+  [--context-file <public-safe-regular-utf8-file>]
+```
+
+The helper owns the `local-review-handoff:v1` marker and prompt. It verifies the
+PR head before and after posting, verifies the comment read-back, rejects marker
+injection from optional context, and makes an identical retry idempotent.
+
+When the user asks to continue or resume a review, load the latest authenticated
+handoff before doing any review work:
+
+```bash
+python3 .codex/skills/critique/scripts/local-review-handoff.py show-handoff \
+  --repo <owner/repo> --pr <number> --engine <codex|claude>
+```
+
+The helper considers the latest handoff from the authenticated GitHub actor,
+verifies its content digest and exact live PR head, and fails if the comment
+targets the other engine. Never fall back to an older handoff addressed to the
+current engine. The PR ledger, not a prior terminal transcript, supplies the
+remaining context.
+
 ## Establish the PR boundary
 
 Before any cleanup or adversarial review:

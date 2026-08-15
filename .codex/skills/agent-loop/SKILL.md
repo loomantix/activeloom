@@ -10,6 +10,18 @@ local review starts. The wrapper owns selection, claiming, worktrees, base
 integration, initial publication, review-head attestation, and readiness. A
 worker only implements, validates, refactors, and commits locally.
 
+## Cross-engine mode
+
+Resolve `auto` or `handoff` from the user's request or repository instructions
+before a mutating run. Auto mode may execute a Claude hook only when the
+configuration doctor proves the hook contains literal `--effort low`; never
+substitute another effort or bypass the doctor. Handoff mode must stop after
+the Codex leg, post `local-review-handoff:v1`, and return control so the user can
+start the Claude review in a new terminal. Do not silently change modes during
+a round. Until the wrapper implements that pause point, refuse an `agent-loop`
+handoff-mode mutating run and direct the user to the interactive review skills;
+do not fall back to its automatic hook.
+
 ## Usage
 
 ```bash

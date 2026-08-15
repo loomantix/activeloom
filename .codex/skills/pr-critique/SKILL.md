@@ -192,6 +192,12 @@ commit or push. Report the clean result.
 
 ## Phase 4: Hand back
 
+Follow the selected local session mode before returning. In auto mode, return to
+the calling orchestrator so it can continue the bounded chain. In handoff mode,
+post a `local-review-handoff:v1` comment with the ledger helper. The comment
+targets the originating engine, pins the current head and review base, and
+contains the fresh-session prompt; the user starts it in a new terminal.
+
 Print a summary aimed at the **originating engine's re-review** — it needs to
 know what changed and what to scrutinize:
 
