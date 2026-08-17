@@ -28,8 +28,10 @@ Do not proceed in the current session unless the user explicitly overrides.
 
 Resolve this engine's round number per `.agents/references/local-review-ledger.md`
 before selecting lanes: use `$AGENT_LOOP_REVIEW_ROUND` when the runner set it,
-take it from an invoking `deepcritique`, or count the `local-review-pass:v3` and
-`local-review-complete:v3` markers on the PR naming `engine=codex` and add one.
+take it from an invoking `deepcritique`, or resolve the active runtime as
+`gemini` or `antigravity` and count the `local-review-pass:v3` and
+`local-review-complete:v3` markers naming that engine, then add one. Use the same resolved
+engine for every helper call and result; use `codex` only for a Codex pass.
 
 - **Rounds 1–2 run adversarially.** The stance, matrices, and fix bias below
   apply as written.

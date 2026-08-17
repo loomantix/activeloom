@@ -32,8 +32,10 @@ and PR head SHA match. Record the PR number and load all prior review threads,
 including resolved and outdated threads.
 
 Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
-when the runner set it, otherwise one past the count of `local-review-pass:v3`
-and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds
+when the runner set it, otherwise resolve the active runtime as `gemini` or
+`antigravity` and use one past the count of `local-review-pass:v3` and
+`local-review-complete:v3` markers naming that engine. Use `codex` only when
+Codex is actually running the pass. Rounds
 1–2 are adversarial; round 3 and later are convergence rounds. State which
 applies before invoking a lane.
 
@@ -42,7 +44,7 @@ applies before invoking a lane.
 The chain gets cheaper as it repeats, deliberately. Cleanup runs once; the
 adversarial stance holds for two rounds and then gives way to landing the change.
 
-1. Search the PR for `local-review-refactor:v1 engine=codex`. If it is absent and
+1. Search the PR for `local-review-refactor:v1 engine=<active-engine>`. If it is absent and
    this is an adversarial round, execute `refactorpass <pr-number>` against the
    draft PR. If it is present, or this is a convergence round, skip cleanup
    entirely and report `refactor pass: already spent at <sha>` or

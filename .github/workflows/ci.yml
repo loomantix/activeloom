@@ -118,7 +118,7 @@ jobs:
           severity: error
 
   yaml:
-    name: YAML syntax
+    name: YAML + Actions schema
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -135,6 +135,13 @@ jobs:
             # are still valid YAML — parse-only check is sufficient.
             python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$f"
           done
+      - name: Install pinned actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
+      - name: Validate workflows and consumer template
+        run: >-
+          actionlint -shellcheck shellcheck
+          .github/workflows/*.yml
+          templates/sync-from-gemini-platform.yml
 
   format:
     name: Prettier check

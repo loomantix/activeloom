@@ -137,12 +137,21 @@ jobs:
         with:
           app-id: ${{ secrets.SYNC_APP_ID }}
           private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Checkout consumer repo (for vendored scripts only)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ env.PR_BASE_BRANCH }}
           persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install trusted helper dependency
+        run: python3 -m pip install 'pyyaml==6.0.2'
 
       - name: Download payload artifact
         if: needs.sync-build.outputs.changed == 'true'
@@ -174,23 +183,14 @@ jobs:
           GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          DATE=$(date -u +%Y%m%d)
-          BRANCH="${SYNC_BRANCH_PREFIX}-${DATE}"
-
-          PRIORS=$(gh pr list \
-            --state open \
-            --limit 100 \
-            --json number,headRefName \
-            --jq ".[] | select(.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) | select(.headRefName != \"${BRANCH}\") | .number")
-          while read -r prior; do
-            [ -z "$prior" ] && continue
-            echo "Closing prior sync PR #$prior"
-            gh pr close "$prior" --delete-branch \
-              --comment "Superseded by today's gemini-platform sync run."
-          done <<< "$PRIORS"
+          BRANCH="${SYNC_BRANCH_PREFIX}-${GITHUB_RUN_ID}"
 
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPO="${GITHUB_REPOSITORY#*/}"
+          CONFIG_PATH=.platform-config.yml
+          if [ -f .gemini-platform-config.yml ]; then
+            CONFIG_PATH=.gemini-platform-config.yml
+          fi
           python3 .github/scripts/create-signed-commit.py \
             --owner "$OWNER" \
             --repo "$REPO" \
@@ -200,17 +200,38 @@ jobs:
             --app-slug "${{ steps.app-token.outputs.app-slug }}" \
             --payload-dir "$PAYLOAD_DIR/tree" \
             --manifest "$PAYLOAD_DIR/manifest" \
+            --config "$CONFIG_PATH" \
             --base-sha-file "$PAYLOAD_DIR/base-sha"
 
           PR_TITLE="Sync from ${UPSTREAM_REPO}"
           PR_BODY="Automated sync from \`${UPSTREAM_REPO}@${UPSTREAM_REF}\`. Review the diff carefully before merging."
-          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
-            echo "PR for $BRANCH already exists — refreshing"
-            gh pr edit "$BRANCH" --title "$PR_TITLE" --body "$PR_BODY"
+          CURRENT_PR=$(gh pr list \
+            --state open \
+            --head "$BRANCH" \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')
+          if [ -n "$CURRENT_PR" ]; then
+            echo "Open PR #$CURRENT_PR for $BRANCH exists — refreshing"
+            gh pr edit "$CURRENT_PR" --title "$PR_TITLE" --body "$PR_BODY"
           else
-            gh pr create \
+            PR_URL=$(gh pr create \
               --base "${PR_BASE_BRANCH}" \
               --head "$BRANCH" \
               --title "$PR_TITLE" \
-              --body "$PR_BODY" 2> >(sed -E 's/(ghs_|ghp_|gho_|ghu_|github_pat_)[A-Za-z0-9_]+/<token-redacted>/g' >&2)
+              --body "$PR_BODY" \
+              2> >(sed -E 's/(ghs_|ghp_|gho_|ghu_|github_pat_)[A-Za-z0-9_]+/<token-redacted>/g' >&2))
+            CURRENT_PR=$(gh pr view "$PR_URL" --json number --jq .number)
           fi
+
+          PRIORS=$(gh pr list \
+            --state open \
+            --limit 100 \
+            --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) | select(.number != ${CURRENT_PR}) | .number")
+          while read -r prior; do
+            [ -z "$prior" ] && continue
+            echo "Closing prior sync PR #$prior"
+            gh pr close "$prior" --delete-branch \
+              --comment "Superseded by sync PR #$CURRENT_PR."
+          done <<< "$PRIORS"

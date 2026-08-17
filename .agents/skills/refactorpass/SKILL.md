@@ -7,8 +7,9 @@ description: PR-first cleanup pass for Codex. Use when the user asks for refacto
 
 Run a structured, behavior-preserving cleanup pass on an open draft PR before
 adversarial review. This is not a broad refactor, and it is not a step that
-repeats each review round: it is the Codex engine's **one** cleanup pass on that
-PR.
+repeats each review round: it is the active engine's **one** cleanup pass on that
+PR. Resolve the active runtime as `gemini` or `antigravity`; use `codex` only
+when Codex is actually running the pass.
 
 ## Context Window Check
 
@@ -57,8 +58,8 @@ Run these lanes as independently as the active runtime permits:
    lanes re-resolve a mutable ref or rebuild the packet independently.
 4. Skip if the changeset is docs/config-only. Treat source files such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash` as review-worthy.
 5. Check the once-per-engine latch. Search the PR's comments for
-   `local-review-refactor:v1 engine=codex`, authored by the actor running this
-   review. If it is present, this PR has already had its Codex cleanup pass:
+   `local-review-refactor:v1 engine=<active-engine>`, authored by the actor
+   running this review. If it is present, this PR has already had that engine's cleanup pass:
    report the skip with the head the earlier pass ran on and stop without running
    a lane. Continue only when the marker is absent or the caller explicitly asked
    to force a re-run, and say which of the two applied.
@@ -85,7 +86,7 @@ Run these lanes as independently as the active runtime permits:
     closing the latch for this engine, carrying the ledger's marker:
 
     ```text
-    <!-- local-review-refactor:v1 engine=codex head=<reviewed-sha> outcome=<committed|no-op> -->
+    <!-- local-review-refactor:v1 engine=<active-engine> head=<reviewed-sha> outcome=<committed|no-op> -->
     ```
 
     Post it only for a pass that actually ran the cleanup lanes. A docs/config-only

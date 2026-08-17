@@ -564,6 +564,7 @@ def test_write_if_changed_rewrites_on_diverged_content(
     changed = sync_engine.write_if_changed(target, "world", None)
     assert changed is True
     assert target.read_text() == "world"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
 def test_write_if_changed_applies_mode_when_diverged(
@@ -1016,6 +1017,33 @@ def test_main_rejects_bare_scalar_target(
     assert rc == 1
     err = capsys.readouterr().err
     assert "malformed target entry" in err
+
+
+def test_main_rejects_scalar_manifest_document(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (upstream_repo / "scripts" / "sync-targets.yml").write_text("not-a-mapping\n")
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "top-level YAML document must be a mapping" in capsys.readouterr().err
+
+
+def test_main_rejects_list_consumer_config_document(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_yaml(upstream_repo / "scripts" / "sync-targets.yml", {"targets": []})
+    (consumer_dir / ".platform-config.yml").write_text("- not\n- a\n- mapping\n")
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "top-level YAML document must be a mapping" in capsys.readouterr().err
 
 
 def test_main_rejects_dot_destination(

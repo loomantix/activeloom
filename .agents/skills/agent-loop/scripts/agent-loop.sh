@@ -127,31 +127,32 @@ if [ -n "$RESUME_BATCH_FILE" ] && { [ -n "$RESUME_RUN_FILE" ] || [ -n "$ISSUE_AL
     exit 2
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${AGENT_LOOP_PROJECT_DIR:-}" ]; then
-    PROJECT_DIR="$AGENT_LOOP_PROJECT_DIR"
+    PROJECT_DIR="$(git -C "$AGENT_LOOP_PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 else
-    PROJECT_DIR="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    PROJECT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 fi
 if [ -z "$PROJECT_DIR" ]; then
-    echo "Could not find a Git repository from $SCRIPT_DIR" >&2
+    echo "Could not find a Git repository from the invocation directory" >&2
     exit 1
 fi
 
 if [ -d "$PROJECT_DIR/.agents/skills/agent-loop" ]; then
-    SKILL_BASE="$PROJECT_DIR/.agents/skills"
+    PROJECT_SKILL_BASE="$PROJECT_DIR/.agents/skills"
 else
-    SKILL_BASE="$PROJECT_DIR/.codex/skills"
+    PROJECT_SKILL_BASE="$PROJECT_DIR/.codex/skills"
 fi
+PACKAGED_SKILL_BASE="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-CONFIG_FILE="$SKILL_BASE/agent-loop/agent-loop.config"
-PROMPT_FILE="$SKILL_BASE/agent-loop/prompt.txt"
+CONFIG_FILE="$PROJECT_SKILL_BASE/agent-loop/agent-loop.config"
+PROMPT_FILE="$PROJECT_SKILL_BASE/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
-ISSUES_READY="$SKILL_BASE/issues/scripts/ready.py"
-REVIEW_LEDGER="$SKILL_BASE/critique/scripts/review-ledger.py"
-RUN_STATE_HELPER="$SKILL_BASE/agent-loop/scripts/agent-loop-state.py"
-REVIEW_PUSH_HELPER="$SKILL_BASE/agent-loop/scripts/review-push.sh"
-CONFIG_DOCTOR_HELPER="$SKILL_BASE/agent-loop/scripts/config-doctor.py"
+ISSUES_READY="$PACKAGED_SKILL_BASE/issues/scripts/ready.py"
+REVIEW_LEDGER="$PACKAGED_SKILL_BASE/critique/scripts/review-ledger.py"
+RUN_STATE_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/agent-loop-state.py"
+REVIEW_PUSH_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/review-push.sh"
+CONFIG_DOCTOR_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/config-doctor.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
 

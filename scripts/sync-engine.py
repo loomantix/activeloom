@@ -32,6 +32,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final, Required, TypedDict
@@ -187,7 +188,7 @@ SENSITIVE_DELETE_REGEXES: Final[tuple[re.Pattern[str], ...]] = tuple(
 )
 
 
-def load_yaml(path: Path) -> dict[str, Any]:
+def load_yaml(path: Path) -> object:
     if not path.is_file():
         sys.stderr.write(f"missing required file: {path}\n")
         sys.exit(2)
@@ -202,9 +203,23 @@ def read_utf8(path: Path) -> str:
 
 
 def write_utf8(path: Path, content: str) -> None:
-    """Write UTF-8 text without platform newline translation."""
-    with path.open("w", encoding="utf-8", newline="") as file:
-        file.write(content)
+    """Atomically write UTF-8 text without platform newline translation."""
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as file:
+            file.write(content)
+            temporary_path = Path(file.name)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def drop_empty_placeholder_lines(
@@ -385,9 +400,12 @@ def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
     """Write content to path only if it differs. Return True if a write happened."""
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = read_utf8(path) if path.is_file() else None
+    preserved_mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o644
     changed = existing != content
     if changed:
         write_utf8(path, content)
+        if mode is None:
+            path.chmod(preserved_mode)
     if mode is not None:
         # `stat.S_IMODE` keeps the full 12-bit permission set (setuid +
         # setgid + sticky + rwx*3). `& 0o777` would mask off the upper
@@ -522,6 +540,13 @@ def main() -> int:
     targets_path = upstream_repo / "scripts" / "sync-targets.yml"
     targets_doc = load_yaml(targets_path)
     config_doc = load_yaml(config_path)
+
+    if not isinstance(targets_doc, dict):
+        sys.stderr.write(f"{targets_path}: top-level YAML document must be a mapping\n")
+        return 1
+    if not isinstance(config_doc, dict):
+        sys.stderr.write(f"{config_path}: top-level YAML document must be a mapping\n")
+        return 1
 
     targets = targets_doc.get("targets") or []
     values = config_doc.get("substitutions") or {}

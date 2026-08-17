@@ -13,12 +13,12 @@ Operational skills you can install globally into `~/.gemini/config/skills/` or s
 | Skill                 | What it does                                                                                                                                                                                                                                      |
 | :-------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `critique`            | PR-first adversarial review. Lean mode runs `code-reviewer` + `silent-failure-hunter` lanes using independent subagents; deep mode runs six core lanes + conditional tenant-coupling.                                                             |
-| `deepcritique`        | Orchestrates deep adversarial review with parallel subagents (`invoke_subagent`), applying 4 failure lenses (State-Matrix Coupling, Probe Precision, Data Safety/Telemetry, Pending-Public Sanitization) and an inline PR ledger.                 |
+| `deepcritique`        | Orchestrates six independent adversarial review lanes plus conditional tenant-coupling, using the inline PR ledger for every confirmed finding and disposition.                                                                                   |
 | `refactorpass`        | PR-first cleanup pass; posts verified cleanup suggestions inline before applying, pushing, replying, and resolving.                                                                                                                               |
 | `pr-critique <pr>`    | Cross-engine deep review of an existing PR using the same inline finding, fix-reply, and resolution ledger.                                                                                                                                       |
 | `reviewit <pr>`       | Hosted review integration with bounded lean/deep modes.                                                                                                                                                                                           |
 | `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                                                                                                            |
-| `grill`               | Pre-code interview. Maps the problem as a design tree and asks the whole dependency-ordered frontier each round. Integrates with `/grill-me`. Derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).      |
+| `grill`               | Pre-code interview. Maps the problem as a design tree and asks the whole dependency-ordered frontier each round. Derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).                                   |
 | `diagnosing-bugs`     | Debugging discipline for bugs that survived the first read — no hypothesis until a tight, deterministic loop goes red on the user's exact symptom. Derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE). |
 | `feature-dev`         | Guided 5-phase feature development: discovery, architecture, implementation, validation, and review.                                                                                                                                              |
 | `issues`              | Workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.                                                                                                                         |
@@ -65,7 +65,7 @@ cd gemini-platform
 ./scripts/install-skills.sh --runtime gemini-cli  # install only for Gemini CLI
 ```
 
-> Skills with repository-customizable assets (such as `backlog-refinement` and `agent-loop`) automatically fall back to packaged `.template` files when run globally, or use the repository-local files once synced.
+> `backlog-refinement` can read packaged templates when run globally. `agent-loop` always targets the repository where it is invoked and requires that repository's synced `agent-loop.config`, `prompt.txt`, and root instructions.
 
 ---
 

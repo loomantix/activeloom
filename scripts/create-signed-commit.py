@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""Create a verified commit via the GitHub Contents API.
+"""Create a GitHub-verified commit via the Git Database API.
 
 Replaces `git commit` + `git push` in the upstream-sync workflow.
 Commits created via the API endpoints (`git/blobs`, `git/trees`,
-`git/commits`, `git/refs`) are auto-signed by GitHub when invoked with
-a GitHub App installation token — the resulting commit shows
-`committer: GitHub` and `verified: true`, satisfying SOC 2 (and similar)
-controls that require human-or-attested-actor sign-off on every change.
+`git/commits`, `git/refs`) can be signed by GitHub when invoked with
+a GitHub App installation token. This helper verifies that result before
+publishing the branch, supporting repositories that require attested bot
+commits without claiming that one mechanism satisfies an audit framework.
 
 Why this exists:
 - `git commit` from inside a workflow runner produces unsigned commits
-  attributed to `github-actions[bot]`. Audit frameworks (SOC 2, ISO 27001,
-  etc.) flag these because the commit lacks cryptographic attestation
-  tied to an attested identity.
-- The same workflow using the GitHub Contents API + a GitHub App's
-  installation token produces commits that are audit-clean: signed,
-  attributed to a known App identity, and audit-traceable.
+  attributed to `github-actions[bot]`. Repositories may require stronger
+  cryptographic attribution for their own change-control policy.
+- The same workflow using the Git Database API + a GitHub App installation
+  token can produce commits signed and attributed to the App identity.
 
 Usage (called from sync-from-upstream.yml after the sync engine writes
 files to the consumer working tree):
@@ -46,6 +44,8 @@ import argparse
 import base64
 import json
 import os
+import posixpath
+import re
 import subprocess
 import sys
 import urllib.error
@@ -53,12 +53,104 @@ import urllib.request
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
-
 class StatusChanges(NamedTuple):
     """Result of `parse_status`: paths to upsert + paths to delete."""
 
     upserts: list[str]
     deletes: list[str]
+
+
+def glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """Compile the sync engine's gitignore-flavored destination glob."""
+    parts: list[str] = []
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "*" and i + 1 < len(pattern) and pattern[i + 1] == "*":
+            if i + 2 < len(pattern) and pattern[i + 2] == "/":
+                parts.append("(?:.*/)?")
+                i += 3
+            else:
+                parts.append(".*")
+                i += 2
+        elif char == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif char == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(char))
+            i += 1
+    return re.compile(r"\A" + "".join(parts) + r"\Z")
+
+
+def _canonical_manifest_path(path: str) -> str | None:
+    """Return a canonical repository-relative path, or None when unsafe."""
+    normalized = posixpath.normpath(path)
+    if (
+        not path
+        or not path.isprintable()
+        or "\\" in path
+        or path.startswith("/")
+        or normalized in (".", "..")
+        or normalized.startswith("../")
+        or normalized != path
+    ):
+        return None
+    return normalized
+
+
+def validate_payload_paths(
+    changes: StatusChanges,
+    config_path: Path,
+) -> StatusChanges:
+    """Fail closed unless every payload path is trusted by the consumer config."""
+    try:
+        import yaml
+    except ImportError as error:
+        sys.stderr.write("PyYAML is required to validate payload-mode consumer allowlists.\n")
+        raise ValueError("missing PyYAML") from error
+    if not config_path.is_file() or config_path.is_symlink():
+        sys.stderr.write(f"consumer config file not found: {config_path}\n")
+        raise ValueError("missing consumer config")
+    document: object = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(document, dict):
+        sys.stderr.write(f"{config_path}: top-level YAML document must be a mapping\n")
+        raise ValueError("invalid consumer config")
+    allowed = document.get("allowed_destinations")
+    if not isinstance(allowed, list) or not allowed or not all(
+        isinstance(pattern, str) and pattern for pattern in allowed
+    ):
+        sys.stderr.write(
+            f"{config_path}: payload mode requires a non-empty `allowed_destinations` string list\n"
+        )
+        raise ValueError("invalid consumer allowlist")
+    patterns = [glob_to_regex(pattern) for pattern in allowed]
+    skip = document.get("skip_targets") or []
+    if not isinstance(skip, list) or not all(isinstance(path, str) for path in skip):
+        sys.stderr.write(f"{config_path}: `skip_targets` must be a list of strings\n")
+        raise ValueError("invalid skip list")
+    skipped_paths = set(skip)
+    canonical_upserts: list[str] = []
+    canonical_deletes: list[str] = []
+    for source, destination in (
+        (changes.upserts, canonical_upserts),
+        (changes.deletes, canonical_deletes),
+    ):
+        for path in source:
+            canonical = _canonical_manifest_path(path)
+            if canonical is None:
+                sys.stderr.write(f"unsafe manifest path: {path!r}\n")
+                raise ValueError("unsafe manifest path")
+            if not any(pattern.match(canonical) is not None for pattern in patterns):
+                sys.stderr.write(f"manifest path is not allowed by consumer config: {canonical}\n")
+                raise ValueError("disallowed manifest path")
+            if canonical in skipped_paths:
+                sys.stderr.write(f"manifest path is opted out by consumer config: {canonical}\n")
+                raise ValueError("skipped manifest path")
+            destination.append(canonical)
+    return StatusChanges(upserts=canonical_upserts, deletes=canonical_deletes)
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
@@ -80,7 +172,7 @@ def _github_request(
 
     Callers should use `github_api` (errors are fatal) or `github_api_optional`
     (404 returns None, other errors fatal) — both surface a clear contract at
-    the call site. The Contents API endpoints this script hits always return
+    the call site. The Git Database API endpoints this script hits always return
     JSON objects; a non-object response is treated as a hard error here so
     callers can rely on a `dict[str, Any]` shape downstream.
     """
@@ -221,6 +313,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-sha-file", default=None, type=Path, help="path to file containing expected base SHA")
     p.add_argument("--expected-base-sha", default=None, help="expected base commit SHA")
     p.add_argument("--consumer-dir", default=None, type=Path, help="path to consumer git working directory")
+    p.add_argument(
+        "--config",
+        default=None,
+        type=Path,
+        help="trusted consumer config; required with --payload-dir/--manifest",
+    )
     p.add_argument("--token-env", default="GH_APP_TOKEN", help="env var holding the App installation token")
     p.add_argument(
         "--app-slug",
@@ -249,20 +347,33 @@ def main() -> int:
         )
         return 2
 
-    if not args.payload_dir and not args.consumer_dir:
-        sys.stderr.write("either --payload-dir or --consumer-dir is required\n")
+    payload_mode = args.payload_dir is not None or args.manifest is not None
+    consumer_mode = args.consumer_dir is not None
+    if payload_mode == consumer_mode:
+        sys.stderr.write(
+            "choose exactly one mode: --consumer-dir, or --payload-dir with --manifest and --config\n"
+        )
+        return 2
+    if payload_mode and (not args.payload_dir or not args.manifest or not args.config):
+        sys.stderr.write("payload mode requires --payload-dir, --manifest, and --config\n")
         return 2
 
     tree_dir = args.payload_dir.resolve() if args.payload_dir else args.consumer_dir.resolve()
     owner_repo = f"{args.owner}/{args.repo}"
 
-    if args.manifest:
+    if payload_mode:
+        assert args.manifest is not None
+        assert args.config is not None
         if not args.manifest.is_file():
             sys.stderr.write(f"manifest file not found: {args.manifest}\n")
             return 1
         raw_manifest = args.manifest.read_text(encoding="utf-8", errors="surrogateescape")
-        changes = parse_status_bytes(raw_manifest)
-    elif args.consumer_dir:
+        try:
+            changes = validate_payload_paths(parse_status_bytes(raw_manifest), args.config)
+        except ValueError:
+            return 1
+    elif consumer_mode:
+        assert args.consumer_dir is not None
         consumer_dir = args.consumer_dir.resolve()
         changes = parse_status(consumer_dir)
     else:
@@ -301,7 +412,7 @@ def main() -> int:
 
     for path in changes.upserts:
         full = tree_dir / path
-        if not full.is_file():
+        if full.is_symlink() or not full.is_file() or not full.resolve().is_relative_to(tree_dir):
             sys.stderr.write(f"  ❌ upsert path is not a regular file: {path}\n")
             return 1
         content = full.read_bytes()
@@ -337,6 +448,20 @@ def main() -> int:
         token,
         {"message": full_message, "tree": new_tree["sha"], "parents": [base_sha]},
     )
+
+    # GitHub's commit endpoint can accept the commit even when the resulting
+    # signature is absent or unverified. Read it back and fail before publishing
+    # any ref unless GitHub explicitly attests the commit.
+    verified_commit = github_api(
+        "GET", f"/repos/{owner_repo}/git/commits/{new_commit['sha']}", token
+    )
+    verification = verified_commit.get("verification")
+    if verified_commit.get("sha") != new_commit["sha"] or not isinstance(verification, dict) or not verification.get("verified"):
+        reason = verification.get("reason") if isinstance(verification, dict) else "missing"
+        sys.stderr.write(
+            f"GitHub did not verify commit {new_commit['sha']} (reason: {reason})\n"
+        )
+        return 1
 
     # 5. Create or force-update the new-branch ref
     existing = github_api_optional(
