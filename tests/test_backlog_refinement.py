@@ -83,6 +83,25 @@ def test_candidates_absent_marker_disables_skipping(tmp_path: Path) -> None:
     assert mod.classify(_issue("anything")) == "unrefined"
 
 
+def test_candidates_falls_back_to_template_when_rubric_md_absent(
+    tmp_path: Path,
+) -> None:
+    """When RUBRIC.md is absent (e.g. global installation), fall back to RUBRIC.md.template."""
+    skill = tmp_path / "backlog-refinement"
+    scripts = skill / "scripts"
+    scripts.mkdir(parents=True)
+    target = scripts / "candidates.py"
+    shutil.copy2(CANDIDATES, target)
+    (skill / "RUBRIC.md.template").write_text(
+        "# Template Rubric\n\n<!-- auto-managed-labels: template-skip -->\n",
+        encoding="utf-8",
+    )
+    mod = _load(target, "candidates_template_fallback")
+    assert mod.AUTO_MANAGED_LABELS == ("template-skip",)
+    assert mod.classify(_issue("template-skip")) == "skipped"
+    assert mod.classify(_issue("other")) == "unrefined"
+
+
 def test_candidates_rejects_duplicate_marker(tmp_path: Path) -> None:
     """More than one marker is ambiguous — fail closed rather than guess."""
     skill = tmp_path / "backlog-refinement"

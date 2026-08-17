@@ -1134,6 +1134,45 @@ def test_main_skip_delete_target_by_destination(
     assert "skip kept.md" in out
 
 
+def test_main_rejects_scalar_skip_targets(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "src.md", "destination": "dest.md"}]},
+    )
+    (consumer_dir / ".platform-config.yml").write_text(
+        "skip_targets: .github/workflows/dco.yml\n"
+    )
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "`skip_targets` must be a list of strings" in capsys.readouterr().err
+
+
+def test_main_rejects_non_string_list_skip_targets(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "src.md", "destination": "dest.md"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"skip_targets": [123]},
+    )
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "`skip_targets` must be a list of strings" in capsys.readouterr().err
+
+
 def test_main_create_if_missing_bootstraps_first_time(
     sync_engine: ModuleType,
     upstream_repo: Path,

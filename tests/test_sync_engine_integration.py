@@ -288,3 +288,27 @@ def test_two_job_sync_payload_preserves_untracked_new_files(tmp_path: Path) -> N
         (extract_tree / ".agents/skills/new-skill/SKILL.md").read_text()
         == "New skill content\n"
     )
+
+
+def test_template_consumer_config_satisfies_canonical_manifest(tmp_path: Path) -> None:
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    template_config = (
+        REPO_ROOT / "templates/.gemini-platform-config.yml"
+    ).read_text(encoding="utf-8")
+    (consumer / ".gemini-platform-config.yml").write_text(
+        template_config, encoding="utf-8"
+    )
+
+    cmd = [
+        sys.executable,
+        str(SYNC_ENGINE),
+        "--upstream-repo",
+        str(REPO_ROOT),
+        "--consumer-dir",
+        str(consumer),
+        "--dry-run",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+

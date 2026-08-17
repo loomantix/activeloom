@@ -525,7 +525,14 @@ def main() -> int:
 
     targets = targets_doc.get("targets") or []
     values = config_doc.get("substitutions") or {}
-    skip = set(config_doc.get("skip_targets") or [])
+    skip_raw = config_doc.get("skip_targets")
+    if skip_raw is None:
+        skip: set[str] = set()
+    elif not isinstance(skip_raw, list) or not all(isinstance(p, str) for p in skip_raw):
+        sys.stderr.write(f"{config_path}: `skip_targets` must be a list of strings\n")
+        return 1
+    else:
+        skip = set(skip_raw)
 
     if not isinstance(targets, list):
         sys.stderr.write(f"{targets_path}: `targets` must be a list\n")

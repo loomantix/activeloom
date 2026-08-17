@@ -393,3 +393,27 @@ def test_reissued_destinations_are_deleted_before_they_are_written() -> None:
         "so consumers never receive them — move the copy entry below the "
         "`delete: true` entry: " + "; ".join(clobbered)
     )
+
+
+def test_action_pin_drift_inventory_is_hermetic() -> None:
+    checker_script = (REPO_ROOT / "scripts/check-action-pin-drift.sh").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"FILES=\(\s*([^)]+)\s*\)", checker_script)
+    assert match is not None, "FILES array not found in check-action-pin-drift.sh"
+    declared_files = {
+        line.strip() for line in match.group(1).splitlines() if line.strip()
+    }
+
+    for rel_path in declared_files:
+        assert (REPO_ROOT / rel_path).is_file(), f"declared file does not exist: {rel_path}"
+
+    all_workflow_files: set[str] = set()
+    for root_dir in [REPO_ROOT / ".github", REPO_ROOT / "templates"]:
+        for yaml_path in root_dir.rglob("*.y*ml"):
+            content = yaml_path.read_text(encoding="utf-8")
+            if re.search(r"uses:\s+[^@\s]+@[0-9a-f]{40}", content):
+                all_workflow_files.add(yaml_path.relative_to(REPO_ROOT).as_posix())
+
+    assert declared_files == all_workflow_files
+

@@ -4,6 +4,13 @@
 
 substitutions:
   PROJECT_NAME: MyProject
+  PROJECT_OVERVIEW: ''
+  CANONICAL_DOCS: ''
+  STACK_TABLE: ''
+  CODE_RULES: ''
+  DOMAIN_RULES: ''
+  REVIEW_FOCUS: ''
+  WHAT_NOT_TO_SUGGEST_EXTRA: ''
 
 # Targets to skip in this consumer repository
 skip_targets:
@@ -14,4 +21,6 @@ skip_targets:
 allowed_destinations:
   - .agents/**
   - agent-loop-instructions.md
+  - .github/copilot-instructions.md
+  - .github/scripts/**
   - .github/workflows/dco.yml

@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Deny GitHub API access to non-review hooks. Review hooks currently receive
 # the broader PR-ledger capability described by the v2 contract.
-# These command shims are not credential isolation; that redesign is tracked at
-# https://github.com/loomantix/gemini-platform/issues/37.
 # Preserve the narrow protocol used by `credential.helper = !gh auth
-# git-credential` until the credential-isolation redesign removes it.
+# git-credential`.
 
 set -euo pipefail
 

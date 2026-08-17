@@ -253,3 +253,8 @@ targets:
   - source: .github/workflows/dco.yml
     destination: .github/workflows/dco.yml
     substitutions: []
+
+  - source: scripts/create-signed-commit.py
+    destination: .github/scripts/create-signed-commit.py
+    substitutions: []
+    mode: '0755'

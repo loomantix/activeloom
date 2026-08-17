@@ -15,7 +15,7 @@ This skill is one half of a closed loop with `/agent-loop`:
         └──────────  RCA sharpens the rubric  ◀── agent-bail:* on bail
 ```
 
-The criteria, taxonomy, and templates live in **[`RUBRIC.md`](./RUBRIC.md)** (the single source of truth, shared with `/agent-loop`). The accumulated root-cause analyses live in **[`LEARNINGS.md`](./LEARNINGS.md)**. Both are consumer-owned (bootstrapped once from `RUBRIC.md.template` / `LEARNINGS.md.template`, then customized per repo). **Read `RUBRIC.md` fully before acting** — it defines §1 readiness criteria, §2 make-ready transformations, §3 disqualifiers (including any repo-specific ones), and the label model.
+The criteria, taxonomy, and templates live in **[`RUBRIC.md`](./RUBRIC.md)** (or `RUBRIC.md.template` when running globally or before local bootstrap; the single source of truth, shared with `/agent-loop`). The accumulated root-cause analyses live in **[`LEARNINGS.md`](./LEARNINGS.md)** (or `LEARNINGS.md.template`). Both are consumer-owned (bootstrapped once from `RUBRIC.md.template` / `LEARNINGS.md.template`, then customized per repo). **Read `RUBRIC.md` (or `RUBRIC.md.template`) fully before acting** — it defines §1 readiness criteria, §2 make-ready transformations, §3 disqualifiers (including any repo-specific ones), and the label model.
 
 > **Integration branch.** This skill says "verify against the integration branch" throughout — that is whatever branch your repo's `agent-loop-instructions.md` opens PRs against (`origin/main` for most repos, `origin/staging` for repos with a staging→main promotion flow). Substitute your repo's value.
 

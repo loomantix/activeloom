@@ -3,6 +3,12 @@ node_modules/
 .venv/
 venv/
 __pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
 
 # Lockfiles managed by their tools
 package-lock.json

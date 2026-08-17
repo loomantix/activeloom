@@ -21,12 +21,16 @@ jobs:
           set -euo pipefail
           base="${{ github.event.pull_request.base.sha }}"
           head="${{ github.event.pull_request.head.sha }}"
+          commits=$(git rev-list --no-merges "$base..$head")
           missing=()
-          while read -r sha; do
-            if ! git show -s --format='%B' "$sha" | grep -qE '^Signed-off-by: .+ <.+@.+>$'; then
-              missing+=("$sha")
-            fi
-          done < <(git rev-list --no-merges "$base..$head")
+          if [ -n "$commits" ]; then
+            while IFS= read -r sha; do
+              [ -z "$sha" ] && continue
+              if ! git show -s --format='%B' "$sha" | grep -qE '^Signed-off-by: .+ <.+@.+>$'; then
+                missing+=("$sha")
+              fi
+            done <<< "$commits"
+          fi
           if [ ${#missing[@]} -ne 0 ]; then
             echo "::error::The following commits are missing a DCO sign-off (Signed-off-by trailer):"
             for sha in "${missing[@]}"; do

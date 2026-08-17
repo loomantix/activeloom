@@ -43,9 +43,9 @@ cd "$repo_root"
 
 FILES=(
   .github/workflows/ci.yml
+  .github/workflows/codeql.yml
   .github/workflows/dco.yml
-  .github/workflows/gemini-review.yml
-  .github/workflows/sync-from-upstream.yml.template
+  templates/sync-from-gemini-platform.yml
 )
 
 declare -A upstream_cache  # spans both files — same Action+version → one API roundtrip

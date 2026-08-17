@@ -615,3 +615,120 @@ def test_main_rejects_non_file_upsert_path(
     assert rc == 1
     err = capsys.readouterr().err
     assert "not a regular file" in err
+
+
+def test_main_full_flow_with_payload_dir_and_manifest(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload_dir = tmp_path / "payload_tree"
+    payload_dir.mkdir()
+    (payload_dir / "new.txt").write_text("hello from payload\n")
+
+    manifest_path = tmp_path / "manifest"
+    manifest_path.write_bytes(b"?? new.txt\0")
+
+    base_sha_file = tmp_path / "base-sha"
+    base_sha_file.write_text("base-sha\n")
+
+    recorder = _ApiRecorder([
+        ("GET", "/repos/loomantix/test/git/ref/heads/main",
+         {"object": {"sha": "base-sha"}}),
+        ("GET", "/repos/loomantix/test/git/commits/base-sha",
+         {"tree": {"sha": "base-tree-sha"}}),
+        ("POST", "/repos/loomantix/test/git/blobs", {"sha": "blob-payload-new"}),
+        ("POST", "/repos/loomantix/test/git/trees", {"sha": "new-tree-sha"}),
+        ("POST", "/repos/loomantix/test/git/commits", {"sha": "new-commit-sha"}),
+        ("GET", "/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16",
+         _http_error("/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16", 404, "Not Found")),
+        ("POST", "/repos/loomantix/test/git/refs", {"ref": "refs/heads/x"}),
+    ])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/upstream-2026-05-16",
+            "--message", "feat: sync from upstream",
+            "--payload-dir", str(payload_dir),
+            "--manifest", str(manifest_path),
+            "--base-sha-file", str(base_sha_file),
+            "--app-slug", "loomantix",
+        ],
+    )
+
+    rc = create_signed_commit.main()
+    assert rc == 0, capsys.readouterr().err
+
+
+def test_main_rejects_diverged_base_sha(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload_dir = tmp_path / "payload_tree"
+    payload_dir.mkdir()
+    (payload_dir / "new.txt").write_text("hello\n")
+
+    manifest_path = tmp_path / "manifest"
+    manifest_path.write_bytes(b"?? new.txt\0")
+
+    base_sha_file = tmp_path / "base-sha"
+    base_sha_file.write_text("old-base-sha\n")
+
+    recorder = _ApiRecorder([
+        ("GET", "/repos/loomantix/test/git/ref/heads/main",
+         {"object": {"sha": "newer-base-sha-from-merge"}}),
+    ])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/upstream-2026-05-16",
+            "--message", "feat: sync from upstream",
+            "--payload-dir", str(payload_dir),
+            "--manifest", str(manifest_path),
+            "--base-sha-file", str(base_sha_file),
+        ],
+    )
+
+    rc = create_signed_commit.main()
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "has diverged from expected base" in err
+
+
+def test_main_requires_payload_or_consumer_dir(
+    create_signed_commit: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/upstream-2026-05-16",
+            "--message", "feat: sync from upstream",
+        ],
+    )
+    rc = create_signed_commit.main()
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "either --payload-dir or --consumer-dir is required" in err
+

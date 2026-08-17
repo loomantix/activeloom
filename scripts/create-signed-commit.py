@@ -145,32 +145,8 @@ def github_api_optional(
         raise  # unreachable; satisfies the type checker
 
 
-def parse_status(consumer_dir: Path) -> StatusChanges:
-    """Return (modified_or_added, deleted) file paths relative to consumer_dir.
-
-    Uses `git status --porcelain -z` for unambiguous parsing: paths are
-    NUL-separated and never quoted or escaped, so paths with spaces /
-    special characters work without ad-hoc unicode-escape handling.
-
-    Renames (status R) and copies (status C) are emitted as TWO
-    NUL-separated strings — the new (destination) path immediately after
-    the status code, then the old (source) path as a separate entry.
-    For renames the new path is recorded as an upsert AND the old path
-    as a delete (without the delete, the tree's `base_tree` would preserve
-    the old file, turning a rename into a copy). Copies record only the
-    new path; the old path stays in place.
-    """
-    # `git status --porcelain` covers tracked + untracked, staged + unstaged.
-    # That's the right scope: anything the sync engine touched shows up.
-    #
-    # `-uall` (untracked-files=all) is critical: without it, an untracked
-    # directory is reported as a single `?? path/` entry instead of one
-    # entry per file inside. Reading bytes from a directory entry raises
-    # IsADirectoryError. With `-uall`, every untracked file is listed
-    # individually — which is what's needed to create a blob per file.
-    # This case shows up the first time a new skill (whose directory
-    # didn't previously exist on the consumer) gets synced.
-    raw = run("git", "status", "--porcelain=v1", "-z", "-uall", cwd=consumer_dir)
+def parse_status_bytes(raw: str) -> StatusChanges:
+    """Return (modified_or_added, deleted) file paths parsed from porcelain -z output."""
     if not raw:
         return StatusChanges(upserts=[], deletes=[])
 
@@ -214,38 +190,20 @@ def parse_status(consumer_dir: Path) -> StatusChanges:
     return StatusChanges(upserts=upserts, deletes=deletes)
 
 
+def parse_status(consumer_dir: Path) -> StatusChanges:
+    """Return (modified_or_added, deleted) file paths relative to consumer_dir."""
+    raw = run("git", "status", "--porcelain=v1", "-z", "-uall", cwd=consumer_dir)
+    return parse_status_bytes(raw)
+
+
 def derive_signoff_trailer(app_slug: str) -> str:
-    """Build a `Signed-off-by:` trailer for the App's identity.
-
-    GitHub assigns each App a bot user named `<slug>[bot]`. We use that
-    plus the canonical `users.noreply.github.com` domain to construct a
-    trailer like:
-
-        Signed-off-by: loomantix[bot] <loomantix[bot]@users.noreply.github.com>
-
-    The caller (the sync workflow) supplies `app_slug`, which it gets as
-    an output of `actions/create-github-app-token`. We don't look it up
-    via `GET /app` because that endpoint requires JWT auth, not an
-    installation token, and `GET /user` returns 403 for installation
-    tokens ("Resource not accessible by integration").
-
-    The bot's numeric user id (which would normally appear before the `+`
-    in the noreply email) is omitted — the DCO regex
-    (`^Signed-off-by: .+ <.+@.+>$`) accepts the slug-only form, and
-    fetching the id would require an extra unauthenticated `/users/<bot>`
-    call for no observable benefit.
-    """
+    """Build a `Signed-off-by:` trailer for the App's identity."""
     name = f"{app_slug}[bot]"
     return f"Signed-off-by: {name} <{name}@users.noreply.github.com>"
 
 
 def with_signoff(message: str, trailer: str) -> str:
-    """Append a Signed-off-by trailer if not already present.
-
-    Idempotent: if the caller already supplied a `Signed-off-by:` line in
-    `--message`, returns the message unchanged. Otherwise appends with a
-    blank-line separator so the trailer parses as a footer.
-    """
+    """Append a Signed-off-by trailer if not already present."""
     if "Signed-off-by:" in message:
         return message
     return f"{message.rstrip()}\n\n{trailer}\n"
@@ -258,7 +216,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-branch", required=True, help="branch to fork the sync commit from")
     p.add_argument("--new-branch", required=True, help="branch to create with the new commit")
     p.add_argument("--message", required=True, help="commit message")
-    p.add_argument("--consumer-dir", required=True, type=Path)
+    p.add_argument("--payload-dir", default=None, type=Path, help="path to extracted payload tree directory")
+    p.add_argument("--manifest", default=None, type=Path, help="path to status manifest file")
+    p.add_argument("--base-sha-file", default=None, type=Path, help="path to file containing expected base SHA")
+    p.add_argument("--expected-base-sha", default=None, help="expected base commit SHA")
+    p.add_argument("--consumer-dir", default=None, type=Path, help="path to consumer git working directory")
     p.add_argument("--token-env", default="GH_APP_TOKEN", help="env var holding the App installation token")
     p.add_argument(
         "--app-slug",
@@ -280,41 +242,65 @@ def main() -> int:
         sys.stderr.write(f"missing token in env var {args.token_env}\n")
         return 2
 
-    consumer_dir = args.consumer_dir.resolve()
-    owner_repo = f"{args.owner}/{args.repo}"
-
-    # Refuse to force-update the base branch onto itself. A typo / hostile
-    # caller passing `--new-branch == --base-branch` would otherwise fast-
-    # forward main onto the sync commit via the force PATCH at the end.
+    # Refuse to force-update the base branch onto itself.
     if args.new_branch == args.base_branch:
         sys.stderr.write(
             f"refusing to operate: --new-branch and --base-branch are the same ({args.new_branch})\n"
         )
         return 2
 
-    changes = parse_status(consumer_dir)
+    if not args.payload_dir and not args.consumer_dir:
+        sys.stderr.write("either --payload-dir or --consumer-dir is required\n")
+        return 2
+
+    tree_dir = args.payload_dir.resolve() if args.payload_dir else args.consumer_dir.resolve()
+    owner_repo = f"{args.owner}/{args.repo}"
+
+    if args.manifest:
+        if not args.manifest.is_file():
+            sys.stderr.write(f"manifest file not found: {args.manifest}\n")
+            return 1
+        raw_manifest = args.manifest.read_text(encoding="utf-8", errors="surrogateescape")
+        changes = parse_status_bytes(raw_manifest)
+    elif args.consumer_dir:
+        consumer_dir = args.consumer_dir.resolve()
+        changes = parse_status(consumer_dir)
+    else:
+        sys.stderr.write("either --manifest or --consumer-dir is required\n")
+        return 2
+
     if not changes.upserts and not changes.deletes:
         print("No changes to commit.")
         return 0
     print(f"Changes detected: {len(changes.upserts)} upsert, {len(changes.deletes)} delete")
 
+    expected_base_sha: str | None = None
+    if args.base_sha_file:
+        if not args.base_sha_file.is_file():
+            sys.stderr.write(f"base-sha file not found: {args.base_sha_file}\n")
+            return 1
+        expected_base_sha = args.base_sha_file.read_text(encoding="utf-8").strip()
+    elif args.expected_base_sha:
+        expected_base_sha = args.expected_base_sha.strip()
+
     # 1. Resolve the base branch's HEAD commit + tree.
     base_ref = github_api("GET", f"/repos/{owner_repo}/git/ref/heads/{args.base_branch}", token)
     base_sha = base_ref["object"]["sha"]
+
+    if expected_base_sha and base_sha != expected_base_sha:
+        sys.stderr.write(
+            f"base branch {args.base_branch} HEAD {base_sha} has diverged from expected base {expected_base_sha}\n"
+        )
+        return 1
+
     base_commit = github_api("GET", f"/repos/{owner_repo}/git/commits/{base_sha}", token)
     base_tree_sha = base_commit["tree"]["sha"]
 
     # 2. Build the tree-entry list:
-    #    - For upserts: create a blob, reference it
-    #    - For deletes: tree entry with sha=null (omits from new tree)
     tree: list[dict[str, Any]] = []
 
     for path in changes.upserts:
-        full = consumer_dir / path
-        # Even with `-uall`, an upsert path that isn't a regular file
-        # (broken symlink, socket, directory) is a hard error: skipping it
-        # silently would let the sync claim success while quietly dropping
-        # files from the tree. Fail loudly instead.
+        full = tree_dir / path
         if not full.is_file():
             sys.stderr.write(f"  ❌ upsert path is not a regular file: {path}\n")
             return 1
@@ -325,16 +311,13 @@ def main() -> int:
             token,
             {"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
         )
-        # Preserve executable bit (sync targets like ready.py, link.py
-        # carry mode 0755).
         mode = "100755" if os.access(full, os.X_OK) else "100644"
         tree.append({"path": path, "mode": mode, "type": "blob", "sha": blob["sha"]})
 
     for path in changes.deletes:
-        # `sha: null` removes the path from the resulting tree.
         tree.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
 
-    # 3. Create the new tree (rooted at base_tree, with the entries above applied).
+    # 3. Create the new tree
     new_tree = github_api(
         "POST",
         f"/repos/{owner_repo}/git/trees",
@@ -342,13 +325,7 @@ def main() -> int:
         {"base_tree": base_tree_sha, "tree": tree},
     )
 
-    # 4. Create the commit. GitHub auto-signs commits created via this
-    #    endpoint when the token is from a GitHub App — committer becomes
-    #    "GitHub", verification: valid.
-    #
-    #    The Signed-off-by trailer is appended when `--app-slug` is given,
-    #    so consumers that gate PRs on DCO accept the resulting commit
-    #    without needing a per-consumer bot exemption.
+    # 4. Create the commit
     full_message = (
         with_signoff(args.message, derive_signoff_trailer(args.app_slug))
         if args.app_slug
@@ -361,7 +338,7 @@ def main() -> int:
         {"message": full_message, "tree": new_tree["sha"], "parents": [base_sha]},
     )
 
-    # 5. Create or force-update the new-branch ref.
+    # 5. Create or force-update the new-branch ref
     existing = github_api_optional(
         "GET", f"/repos/{owner_repo}/git/ref/heads/{args.new_branch}", token
     )
@@ -373,10 +350,6 @@ def main() -> int:
             {"ref": f"refs/heads/{args.new_branch}", "sha": new_commit["sha"]},
         )
     else:
-        # Force-update — the prior run on the same date may have left a
-        # branch behind. The sync workflow's `Open or refresh` step closes
-        # the prior PR and reuses the date-stamped branch, so a force
-        # update is the documented behavior.
         github_api(
             "PATCH",
             f"/repos/{owner_repo}/git/refs/heads/{args.new_branch}",

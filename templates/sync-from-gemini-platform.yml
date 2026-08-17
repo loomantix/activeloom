@@ -95,12 +95,14 @@ jobs:
           git status --short
 
           # Payload layout for Job B:
+          #   base-sha      Job A base commit SHA
           #   manifest      raw `git status --porcelain=v1 -z -uall` bytes
           #   tree.tar.gz   post-sync working tree (.git excluded)
           # -uall is required: untracked directories otherwise collapse to a
           # single `?? dir/` entry, which the script cannot expand.
           rm -rf "$PAYLOAD_DIR"
           mkdir -p "$PAYLOAD_DIR"
+          git rev-parse HEAD > "$PAYLOAD_DIR/base-sha"
           git status --porcelain=v1 -z -uall > "$PAYLOAD_DIR/manifest"
           [ -s "$PAYLOAD_DIR/manifest" ] || { echo "::error::empty manifest written"; exit 1; }
           tar --exclude='./.git' -czf "$PAYLOAD_DIR/tree.tar.gz" .
@@ -118,8 +120,8 @@ jobs:
 
   sync-commit:
     # Trusted job — holds the App installation token. Only runs the
-    # consumer-vendored create-signed-commit.py against Job A's payload.
-    # Never executes upstream-cloned code.
+    # consumer-vendored .github/scripts/create-signed-commit.py against
+    # Job A's payload. Never executes upstream-cloned code.
     needs: sync-build
     if: needs.sync-build.outputs.changed == 'true'
     runs-on: ubuntu-latest
@@ -133,8 +135,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.LOOM_BOT_APP_ID }}
-          private-key: ${{ secrets.LOOM_BOT_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
 
       - name: Checkout consumer repo (for vendored scripts only)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -189,7 +191,7 @@ jobs:
 
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPO="${GITHUB_REPOSITORY#*/}"
-          python3 scripts/create-signed-commit.py \
+          python3 .github/scripts/create-signed-commit.py \
             --owner "$OWNER" \
             --repo "$REPO" \
             --base-branch "${PR_BASE_BRANCH}" \
@@ -197,7 +199,8 @@ jobs:
             --message "chore: sync from ${UPSTREAM_REPO}@${UPSTREAM_REF}" \
             --app-slug "${{ steps.app-token.outputs.app-slug }}" \
             --payload-dir "$PAYLOAD_DIR/tree" \
-            --manifest "$PAYLOAD_DIR/manifest"
+            --manifest "$PAYLOAD_DIR/manifest" \
+            --base-sha-file "$PAYLOAD_DIR/base-sha"
 
           PR_TITLE="Sync from ${UPSTREAM_REPO}"
           PR_BODY="Automated sync from \`${UPSTREAM_REPO}@${UPSTREAM_REF}\`. Review the diff carefully before merging."

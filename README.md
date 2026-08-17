@@ -65,6 +65,8 @@ cd gemini-platform
 ./scripts/install-skills.sh --runtime gemini-cli  # install only for Gemini CLI
 ```
 
+> Skills with repository-customizable assets (such as `backlog-refinement` and `agent-loop`) automatically fall back to packaged `.template` files when run globally, or use the repository-local files once synced.
+
 ---
 
 ## Wire Up A Consumer Repo
@@ -74,6 +76,13 @@ cd gemini-platform
    ```yaml
    substitutions:
      PROJECT_NAME: MyProject
+     PROJECT_OVERVIEW: ''
+     CANONICAL_DOCS: ''
+     STACK_TABLE: ''
+     CODE_RULES: ''
+     DOMAIN_RULES: ''
+     REVIEW_FOCUS: ''
+     WHAT_NOT_TO_SUGGEST_EXTRA: ''
 
    skip_targets:
      - .github/workflows/dco.yml
@@ -81,6 +90,8 @@ cd gemini-platform
    allowed_destinations:
      - .agents/**
      - agent-loop-instructions.md
+     - .github/copilot-instructions.md
+     - .github/scripts/**
      - .github/workflows/dco.yml
    ```
 
