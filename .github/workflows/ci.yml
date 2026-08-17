@@ -139,7 +139,7 @@ jobs:
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
       - name: Validate workflows and consumer template
         run: >-
-          actionlint -shellcheck shellcheck
+          "$(go env GOPATH)/bin/actionlint" -shellcheck shellcheck
           .github/workflows/*.yml
           templates/sync-from-gemini-platform.yml
 
