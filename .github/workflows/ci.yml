@@ -89,15 +89,15 @@ jobs:
           python3 -m coverage report --include='scripts/lint-collapse-sites.py' --fail-under=80
       - name: Coverage gate — release-preflight.py >=80%
         run: |
-          test -f .codex/skills/publish-npm-package/scripts/release-preflight.py
+          test -f .agents/skills/publish-npm-package/scripts/release-preflight.py
           python3 -m coverage report \
-            --include='.codex/skills/publish-npm-package/scripts/release-preflight.py' \
+            --include='.agents/skills/publish-npm-package/scripts/release-preflight.py' \
             --fail-under=80
       - name: Coverage gate — verify-published-package.py >=80%
         run: |
-          test -f .codex/skills/publish-npm-package/scripts/verify-published-package.py
+          test -f .agents/skills/publish-npm-package/scripts/verify-published-package.py
           python3 -m coverage report \
-            --include='.codex/skills/publish-npm-package/scripts/verify-published-package.py' \
+            --include='.agents/skills/publish-npm-package/scripts/verify-published-package.py' \
             --fail-under=80
 
   shell:
