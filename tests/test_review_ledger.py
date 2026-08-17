@@ -2466,3 +2466,90 @@ def test_clean_result_allows_same_round_minor_deferral(
             data=data,
             allowed_heads={HEAD: 0},
         )
+
+
+@pytest.mark.parametrize("engine", ["gemini", "antigravity"])
+def test_gemini_and_antigravity_ledger_round_trip(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    engine: str,
+) -> None:
+    finding_text = _finding_body(
+        "type-coupling",
+        "Gemini detected subtle type coupling.\n",
+        round_number=1,
+        head=HEAD,
+        severity="blocking",
+        lens="type-design-analyzer",
+        occurrence=1,
+        engine=engine,
+    )
+    assert f"engine={engine}" in finding_text
+    match = review_ledger.FINDING_V3_RE.search(finding_text)
+    assert match is not None
+    assert match.group("engine") == engine
+    assert match.group("fingerprint") == "type-coupling"
+    assert match.group("severity") == "blocking"
+
+    disposition_text = _disposition_body(
+        "type-coupling",
+        "Fixed by refining type signature.\n",
+        round_number=1,
+        head=AFTER,
+        outcome="fixed",
+        occurrence=1,
+        engine=engine,
+    )
+    assert f"engine={engine}" in disposition_text
+    disp_match = review_ledger.DISPOSITION_V3_RE.search(disposition_text)
+    assert disp_match is not None
+    assert disp_match.group("engine") == engine
+    assert disp_match.group("outcome") == "fixed"
+
+    result_file = tmp_path / "gemini_result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "status": "changed",
+                "engine": engine,
+                "round": 1,
+                "baseSha": "c" * 40,
+                "beforeSha": HEAD,
+                "afterSha": AFTER,
+                "classification": "material",
+                "findingFingerprints": ["type-coupling"],
+                "finalLaneComplete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    threads = _threads_file(
+        tmp_path,
+        [
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "body": finding_text,
+                            "author": {"login": "reviewer"},
+                        },
+                        {
+                            "body": disposition_text,
+                            "author": {"login": "reviewer"},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            }
+        ],
+    )
+    data = json.loads(result_file.read_text(encoding="utf-8"))
+    assert review_ledger._verify_result_evidence(
+        SimpleNamespace(engine=engine, round=1),
+        review_ledger._load_review_threads(threads),
+        data=data,
+        allowed_heads={HEAD: 0, AFTER: 1},
+    )

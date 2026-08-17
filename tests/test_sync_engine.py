@@ -1730,27 +1730,27 @@ def test_main_allowlist_dual_prefix_for_dual_upstream_consumer(
     consumer_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Consumers that subscribe to both claude-platform and gemini-platform
+    # Consumers that subscribe to multiple upstreams (upstream-a and upstream-b)
     # need both prefixes in their allowlist. A single sync run still hits
     # one upstream at a time; this test exercises the dual-prefix
-    # allowlist's behavior against a claude-style target.
-    (upstream_repo / "src.md").write_text("claude content\n")
+    # allowlist's behavior against a multi-prefix target.
+    (upstream_repo / "src.md").write_text("sample content\n")
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml",
         {
             "targets": [
-                {"source": "src.md", "destination": ".claude/skills/foo.md"}
+                {"source": "src.md", "destination": ".other-agent/skills/foo.md"}
             ]
         },
     )
     _write_yaml(
         consumer_dir / ".platform-config.yml",
-        {"allowed_destinations": [".claude/**", ".agents/**"]},
+        {"allowed_destinations": [".other-agent/**", ".agents/**"]},
     )
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
-    assert (consumer_dir / ".claude" / "skills" / "foo.md").exists()
+    assert (consumer_dir / ".other-agent" / "skills" / "foo.md").exists()
 
 
 def test_main_allowlist_checked_before_source_read(

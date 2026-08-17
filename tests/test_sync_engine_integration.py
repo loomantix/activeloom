@@ -218,3 +218,73 @@ def test_engine_exits_2_on_missing_targets_file(tmp_path: Path) -> None:
     result = _run_engine(upstream, consumer)
     assert result.returncode == 2
     assert "missing required file" in result.stderr
+
+
+def test_two_job_sync_payload_preserves_untracked_new_files(tmp_path: Path) -> None:
+    """Validate that Job A's manifest + tree archive workflow carries newly created
+    untracked files and directories to Job B without truncation."""
+    import tarfile
+
+    upstream = tmp_path / "upstream"
+    consumer = tmp_path / "consumer"
+    (upstream / "scripts").mkdir(parents=True)
+    consumer.mkdir()
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(consumer)], check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=consumer, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=consumer, check=True)
+
+    (consumer / "existing.txt").write_text("initial\n")
+    subprocess.run(["git", "add", "."], cwd=consumer, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=consumer, check=True)
+
+    (upstream / "skills" / "new-skill").mkdir(parents=True)
+    (upstream / "skills" / "new-skill" / "SKILL.md").write_text("New skill content\n")
+    _write_yaml(
+        upstream / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "skills/new-skill/SKILL.md",
+                    "destination": ".agents/skills/new-skill/SKILL.md",
+                }
+            ]
+        },
+    )
+    _write_yaml(
+        consumer / ".gemini-platform-config.yml",
+        {"substitutions": {}},
+    )
+
+    result = _run_engine(upstream, consumer)
+    assert result.returncode == 0
+
+    # Simulate Job A packaging
+    payload_dir = tmp_path / "sync-payload"
+    payload_dir.mkdir()
+    manifest_proc = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "-uall"],
+        cwd=consumer,
+        capture_output=True,
+        check=True,
+    )
+    (payload_dir / "manifest").write_bytes(manifest_proc.stdout)
+    assert (payload_dir / "manifest").stat().st_size > 0
+
+    tar_path = payload_dir / "tree.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        for item in consumer.iterdir():
+            if item.name != ".git":
+                tar.add(item, arcname=item.name)
+
+    # Simulate Job B extraction
+    extract_tree = payload_dir / "tree"
+    extract_tree.mkdir()
+    with tarfile.open(tar_path, "r:gz") as tf:
+        tf.extractall(extract_tree, filter="data")
+
+    assert (extract_tree / ".agents/skills/new-skill/SKILL.md").is_file()
+    assert (
+        (extract_tree / ".agents/skills/new-skill/SKILL.md").read_text()
+        == "New skill content\n"
+    )

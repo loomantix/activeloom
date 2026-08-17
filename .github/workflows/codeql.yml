@@ -1,9 +1,8 @@
 name: CodeQL
 
-# Sync engine + create-signed-commit run with cross-org org-scoped App
-# tokens in the consumer fleet. CodeQL's default Python query suite
-# catches taint flows that ruff and mypy don't. Run it only when the
-# Python surface or this workflow changes.
+# Sync engine and commit signing helpers run in automated CI workflows.
+# CodeQL's default Python query suite catches taint flows that ruff and mypy
+# do not. Run it only when the Python surface or this workflow changes.
 
 on:
   push:

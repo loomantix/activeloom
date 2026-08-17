@@ -1,41 +1,34 @@
-# Security
+# Security Policy
 
-This repo ships Codex skills, agents, and a sync engine. The skills do not handle secrets directly, but the sync engine and `create-signed-commit.py` execute inside CI runners with privileged GitHub App tokens. A vulnerability in this repo could affect every downstream consumer that runs the sync workflow.
+This repository ships Google Antigravity and Gemini CLI skills, role references, and a consumer sync engine. While skills do not store secrets directly, the sync engine and commit helper scripts execute inside CI environments with repository tokens. A vulnerability in this repository could affect downstream consumers that sync from it.
 
-## Reporting a vulnerability
+## Reporting a Vulnerability
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Email **security@loomantix.com** with:
+Please report security concerns responsibly:
 
-1. Description of the vulnerability
-2. Steps to reproduce (or proof-of-concept)
-3. Affected files / scripts / skills
-4. Your name and contact (for follow-up)
-
-You will receive an acknowledgement within 3 business days. We aim to triage within 7 business days and ship a fix within 30 days for confirmed vulnerabilities.
+- For private security disclosures, use GitHub's private vulnerability reporting feature on this repository, or email security disclosures to the maintainers.
+- Include reproduction steps or proof-of-concept, affected files/scripts/skills, and contact information.
 
 ## Scope
 
 In scope:
 
-- Vulnerabilities in `scripts/sync-engine.py` or `scripts/create-signed-commit.py` that could allow path traversal, arbitrary file write, token exfiltration, or supply-chain compromise of downstream consumers.
-- Vulnerabilities in `.github/workflows/sync-from-upstream.yml.template` (the canonical consumer-side workflow) that could leak secrets, escalate permissions, or weaken the App-token boundary.
-- Skill instructions that could be weaponized to drive Codex into destructive actions (e.g. unintended `git push --force`, secret disclosure, mass-modification beyond stated scope) when the skill is invoked under its documented contract.
-- CI/build supply-chain vulnerabilities affecting this repo's own pipelines.
+- Vulnerabilities in `scripts/sync-engine.py` or `scripts/create-signed-commit.py` that could allow path traversal, arbitrary file write, token exfiltration, or supply-chain compromise of consumers.
+- Vulnerabilities in `templates/sync-from-gemini-platform.yml` (the canonical consumer workflow template) that could leak secrets, escalate permissions, or bypass review gates.
+- Skill instructions that could drive Antigravity or Gemini CLI into destructive actions (e.g. unintended `git push --force`, secret disclosure, unauthorized modifications beyond stated scope) when the skill is invoked under its documented contract.
+- CI and build supply-chain vulnerabilities in this repository's own workflows.
 
 Out of scope:
 
-- Vulnerabilities in upstream dependencies (PyYAML, GitHub Actions used by the workflow templates) — please report to the upstream.
-- Vulnerabilities in Codex itself or in the Codex CLI — report to the Codex upstream maintainers.
-- Misconfiguration of a _consumer_ repo (e.g. a consumer setting `SYNC_APP_PRIVATE_KEY` to an over-privileged App). The consumer owns its threat model.
+- Vulnerabilities in upstream runtime engines (Google Gemini CLI, Antigravity CLI, PyYAML, or external GitHub Actions).
+- Misconfiguration of downstream consumer repositories. Consumers maintain their own operational security boundary.
 
-## Disclosure policy
+## Disclosure Policy
 
-We follow coordinated disclosure:
+We follow coordinated vulnerability disclosure:
 
-- We will work with you to understand the issue and ship a fix.
-- Once a fix is released, we publish a security advisory crediting you (unless you prefer to remain anonymous).
-- 90 days after the fix is published, the full technical details may be disclosed.
-
-If a vulnerability is being actively exploited, we may shorten this timeline.
+- We acknowledge valid reports promptly.
+- We work with researchers to validate, patch, and release fixes.
+- Security advisories are published alongside releases.

@@ -53,14 +53,16 @@ Specialized role prompts loaded on-demand via progressive disclosure:
 
 ## Global Install
 
-Install the skills globally onto your machine into `~/.gemini/config/skills/`:
+Install the skills globally for Google Antigravity (`~/.gemini/config/skills/`), Gemini CLI (`~/.gemini/skills/`), and the agent skills directory (`~/.agents/skills/`):
 
 ```bash
 git clone https://github.com/loomantix/gemini-platform.git
 cd gemini-platform
 ./scripts/install-skills.sh --dry-run # report what would happen
-./scripts/install-skills.sh           # symlink skills into ~/.gemini/config/skills/
+./scripts/install-skills.sh           # symlink skills into global directories
 ./scripts/install-skills.sh --force   # replace existing entries after backup
+./scripts/install-skills.sh --runtime antigravity # install only for Antigravity
+./scripts/install-skills.sh --runtime gemini-cli  # install only for Gemini CLI
 ```
 
 ---
