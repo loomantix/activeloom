@@ -1,0 +1,101 @@
+# Sync canonical files from loomantix/gemini-platform — produces verified commits.
+#
+# Trust model: Job A clones gemini-platform and runs upstream `sync-engine.py` under
+# `permissions: { contents: read }` with no App token, then hands a tarball
+# + git-status manifest to Job B. Job B holds the App token and runs
+# `create-signed-commit.py` against Job A's payload.
+#
+# Kill switch: `SKIP_GEMINI_PLATFORM_SYNC` repo variable.
+
+name: Sync from gemini-platform
+
+on:
+  schedule:
+    - cron: '40 9 * * *' # daily at 09:40 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-from-gemini-platform
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: loomantix/gemini-platform
+  UPSTREAM_REF: sync-v1
+  SYNC_BRANCH_PREFIX: sync/gemini-platform
+  PR_BASE_BRANCH: main
+
+jobs:
+  sync-build:
+    if: vars.SKIP_GEMINI_PLATFORM_SYNC == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    env:
+      PAYLOAD_DIR: /tmp/sync-payload
+    steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.PR_BASE_BRANCH }}
+          persist-credentials: false
+
+      - name: Clone upstream
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/upstream
+          mkdir -p /tmp/upstream
+          cd /tmp/upstream
+          git init -q
+          git remote add origin "https://github.com/${UPSTREAM_REPO}.git"
+          if git ls-remote --tags --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
+            git fetch --depth=1 origin "refs/tags/${UPSTREAM_REF}:refs/tags/${UPSTREAM_REF}"
+          elif git ls-remote --heads --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
+            git fetch --depth=1 origin "${UPSTREAM_REF}"
+          else
+            echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' is neither a tag nor a branch on ${UPSTREAM_REPO}." >&2
+            exit 1
+          fi
+          git checkout -q FETCH_HEAD
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python3 -m pip install 'pyyaml==6.0.2'
+
+      - name: Run sync engine
+        run: |
+          set -euo pipefail
+          python3 /tmp/upstream/scripts/sync-engine.py \
+            --upstream-repo /tmp/upstream \
+            --consumer-dir .
+
+      - name: Detect changes + build payload
+        id: diff
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Already in sync with upstream"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          mkdir -p "${PAYLOAD_DIR}"
+          git status --porcelain > "${PAYLOAD_DIR}/status.txt"
+          git diff > "${PAYLOAD_DIR}/changes.patch"
+          tar -czf /tmp/payload.tar.gz -C "${PAYLOAD_DIR}" .
+
+      - name: Upload payload artifact
+        if: steps.diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: sync-payload
+          path: /tmp/payload.tar.gz
+          retention-days: 1

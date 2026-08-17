@@ -1,0 +1,25 @@
+# Consumer config for the render-fidelity half of the `render-check` job.
+#
+# FIXTURE_OPTIONAL is deliberately empty: an empty substitution on its own
+# template line is the one thing the engine is allowed to remove, and dropping
+# only its line would leave the blank-line run prettier collapses.
+#
+# FIXTURE_OPTIONAL_FILLED is the other half of that guard: it is opted into
+# collapsing but renders non-empty, so its line must survive. Without it a
+# regression that collapsed every opted-in line unconditionally — ignoring the
+# emptiness test in `drop_empty_placeholder_lines` — would still match the
+# golden, since every other opted-in key here is empty.
+
+substitutions:
+  FIXTURE_NAME: FidelityFixture
+
+  FIXTURE_BODY: |
+    A populated whole-line placeholder keeps its line and its own spacing.
+
+  FIXTURE_OPTIONAL_FILLED: An opted-in placeholder that renders non-empty keeps its line.
+
+  FIXTURE_OPTIONAL: ''
+  FIXTURE_OPTIONAL_SECOND: ''
+
+allowed_destinations:
+  - '**'
