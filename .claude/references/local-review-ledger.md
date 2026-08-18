@@ -130,7 +130,7 @@ Each engine gets **one** refactor pass per PR. Before running one, search the PR
 for a marker naming this engine:
 
 ```text
-<!-- local-review-refactor:v1 engine=<codex|claude> head=<sha> outcome=<committed|no-op> -->
+<!-- local-review-refactor:v1 engine=<codex|claude|gemini|antigravity> head=<sha> outcome=<committed|no-op> -->
 ```
 
 If one exists, skip the cleanup lanes, say so in the pass output, and go straight
@@ -262,7 +262,7 @@ python3 .claude/skills/critique/scripts/review-ledger.py preflight-anchor \
 python3 .claude/skills/critique/scripts/review-ledger.py post-finding \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line> \
-  --engine <codex|claude> --round <n> --fingerprint <stable-id> \
+  --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
   --occurrence 1 --severity <blocking|major|minor|nit> --lens <lens> \
   --content-file <regular-utf8-file>
 ```
@@ -273,7 +273,7 @@ occurrence to its existing root comment and reopen that thread atomically:
 ```bash
 python3 .claude/skills/critique/scripts/review-ledger.py reopen-occurrence \
   --repo <owner/repo> --pr <number> --head <reviewed-sha> \
-  --engine <codex|claude> --round <n> --fingerprint <stable-id> \
+  --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
   --occurrence <next-number> --severity <severity> --lens <lens> \
   --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
   --content-file <regular-utf8-file>
@@ -289,7 +289,7 @@ state transition:
 ```bash
 python3 .claude/skills/critique/scripts/review-ledger.py dispose \
   --repo <owner/repo> --pr <number> --head <full-fix-sha> \
-  --engine <codex|claude> --round <n> --fingerprint <stable-id> \
+  --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
   --occurrence <number> --outcome <fixed|dismissed|deferred> \
   --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
   --content-file <regular-utf8-file>
@@ -363,7 +363,7 @@ exactly this contract:
 {
   "version": 3,
   "status": "clean|changed|blocked",
-  "engine": "codex|claude",
+  "engine": "codex|claude|gemini|antigravity",
   "round": 1,
   "baseSha": "<sha>",
   "beforeSha": "<sha>",
