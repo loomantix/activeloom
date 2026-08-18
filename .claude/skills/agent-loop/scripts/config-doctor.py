@@ -31,7 +31,13 @@ def _config(path: Path) -> dict[str, str]:
 
 
 def _version(command: list[str], label: str) -> str:
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    # `command[0]` may be a PATH lookup (`node`) rather than an interpreter we
+    # know exists, so a missing runtime must read as a doctor failure instead
+    # of an uncaught OSError traceback.
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise DoctorError(f"{label} could not be executed: {error}") from error
     if result.returncode != 0:
         raise DoctorError(f"{label} compatibility query failed")
     return result.stdout.strip()
@@ -43,7 +49,7 @@ def doctor(project: Path, claude_effort: str | None) -> None:
     config_path = skill / "agent-loop.config"
     prompt_path = skill / "prompt.txt"
     instructions_path = root / "agent-loop-instructions.md"
-    ledger = root / ".claude/skills/critique/scripts/review-ledger.py"
+    ledger = root / ".claude/skills/critique/scripts/review-ledger.js"
     state = skill / "scripts/agent-loop-state.py"
     review_push = skill / "scripts/review-push.sh"
     for path in (config_path, prompt_path, instructions_path, ledger, state, review_push):
@@ -52,7 +58,7 @@ def doctor(project: Path, claude_effort: str | None) -> None:
     values = _config(config_path)
     if values.get("review_contract_version") != "3":
         raise DoctorError("review_contract_version must be 3")
-    if _version([sys.executable, str(ledger), "--protocol-version"], "review ledger") != "3":
+    if _version(["node", str(ledger), "--protocol-version"], "review ledger") != "3":
         raise DoctorError("review-ledger protocol is incompatible with contract v3")
     if _version([sys.executable, str(state), "--state-version"], "run state") != "1":
         raise DoctorError("agent-loop state protocol is incompatible")

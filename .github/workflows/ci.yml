@@ -123,6 +123,49 @@ jobs:
       - name: Prettier --check
         run: npx --yes prettier@3.8.3 --check .
 
+  ledger-drift:
+    # The vendored ledger is a build artifact, not source: it is copied
+    # verbatim out of a published npm tarball and must never be edited or
+    # rebuilt in place. Re-fetch the pinned version and byte-compare, so an
+    # accidental edit (a prettier run, a "quick fix", a merge artifact) cannot
+    # reach consumers wearing a published version's identity.
+    name: Vendored review-ledger matches its published tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+      - name: Byte-compare against the pinned published version
+        run: |
+          set -euo pipefail
+          scripts_dir=.claude/skills/critique/scripts
+          version="$(tr -d '[:space:]' < "$scripts_dir/review-ledger.version")"
+          case "$version" in
+            '' ) echo "::error::review-ledger.version is empty"; exit 1 ;;
+          esac
+          workdir="$(mktemp -d)"
+          ( cd "$workdir" && npm pack "@loomantix/review-ledger@$version" --silent >/dev/null )
+          tar xzf "$workdir"/loomantix-review-ledger-"$version".tgz -C "$workdir"
+          published="$workdir/package/dist/review-ledger.bundle.js"
+          test -f "$published"
+          if ! cmp -s "$published" "$scripts_dir/review-ledger.js"; then
+            echo "::error::$scripts_dir/review-ledger.js does not match @loomantix/review-ledger@$version"
+            echo "Re-vendor it verbatim; never edit or locally rebuild the bundle:"
+            echo "  npm pack @loomantix/review-ledger@$version"
+            echo "  tar xzf loomantix-review-ledger-$version.tgz"
+            echo "  cp package/dist/review-ledger.bundle.js $scripts_dir/review-ledger.js"
+            exit 1
+          fi
+      - name: Vendored ledger speaks review contract v3
+        run: |
+          set -euo pipefail
+          actual="$(node .claude/skills/critique/scripts/review-ledger.js --protocol-version)"
+          [ "$actual" = 3 ] || {
+            echo "::error::vendored ledger reports protocol $actual, contract v3 requires 3"
+            exit 1
+          }
+
   accessibility-asset:
     name: Accessibility asset sanitization
     runs-on: ubuntu-latest

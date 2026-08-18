@@ -42,10 +42,21 @@ targets:
     destination: .claude/skills/critique/SKILL.md
     substitutions: []
 
-  - source: .claude/skills/critique/scripts/review-ledger.py
-    destination: .claude/skills/critique/scripts/review-ledger.py
+  # The ledger is a build artifact of `@loomantix/review-ledger`, vendored
+  # verbatim from the published tarball and run as `node review-ledger.js`.
+  # Mode is 0644 deliberately: npm normalises non-`bin` files to 0644 in the
+  # tarball, so the committed file is not executable and nothing may invoke it
+  # as `./review-ledger.js`. `review-ledger.version` records which published
+  # version these bytes came from; the `ledger-drift` CI job pins them to it.
+  - source: .claude/skills/critique/scripts/review-ledger.js
+    destination: .claude/skills/critique/scripts/review-ledger.js
     substitutions: []
-    mode: '0755'
+    mode: '0644'
+
+  - source: .claude/skills/critique/scripts/review-ledger.version
+    destination: .claude/skills/critique/scripts/review-ledger.version
+    substitutions: []
+    mode: '0644'
 
   - source: .claude/skills/deepcritique/SKILL.md
     destination: .claude/skills/deepcritique/SKILL.md
@@ -311,6 +322,14 @@ targets:
   - destination: .claude/skills/grill/scripts/review-ledger.py
     delete: true
   - destination: .claude/skills/deepgrill/SKILL.md
+    delete: true
+  # The Python ledger was replaced by the vendored `review-ledger.js` bundle.
+  # Unlike the `/grill` rename this is NOT order-dependent — the destination
+  # differs from the copy above by extension, so the two entries cannot
+  # collide. It still has to stay here until every consumer has run a sync
+  # that includes it, or repos keep a stale second ledger implementation that
+  # `agent-loop.sh` no longer calls.
+  - destination: .claude/skills/critique/scripts/review-ledger.py
     delete: true
 
   # ORDER-DEPENDENT — this entry must stay BELOW the `.claude/skills/grill/`

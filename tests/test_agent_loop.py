@@ -68,8 +68,8 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "review-push.sh",
     ):
         shutil.copy2(AGENT_LOOP.parent / helper, script.parent / helper)
-    ledger_source = REPO_ROOT / ".claude/skills/critique/scripts/review-ledger.py"
-    ledger_target = repo / ".claude/skills/critique/scripts/review-ledger.py"
+    ledger_source = REPO_ROOT / ".claude/skills/critique/scripts/review-ledger.js"
+    ledger_target = repo / ".claude/skills/critique/scripts/review-ledger.js"
     ledger_target.parent.mkdir(parents=True)
     shutil.copy2(ledger_source, ledger_target)
     _write_executable(
@@ -403,7 +403,7 @@ def _cleanup_v3_hook(engine: str) -> str:
         "printf '<!-- local-review-refactor:v1 engine="
         f"{engine} head=%s outcome=committed -->\\nCleanup committed.\\n' "
         '"$before" > "$AGENT_LOOP_LOG_DIR/refactor.md"; '
-        "python3 .claude/skills/critique/scripts/review-ledger.py post-pr-comment "
+        "node .claude/skills/critique/scripts/review-ledger.js post-pr-comment "
         '--repo fixture/consumer --pr "$AGENT_LOOP_PR_NUMBER" --head "$after" '
         '--body-file "$AGENT_LOOP_LOG_DIR/refactor.md"; '
         'jq -n --arg engine "$AGENT_LOOP_REVIEW_ENGINE" '
@@ -548,7 +548,7 @@ def test_script_remains_executable_and_valid_bash() -> None:
     [
         ("AGENT_LOOP_REVIEW_PUSH_HELPER", "must use AGENT_LOOP_REVIEW_PUSH_HELPER"),
         ("AGENT_LOOP_REVIEW_RESULT_FILE", "must write AGENT_LOOP_REVIEW_RESULT_FILE"),
-        ("write-result", "must use review-ledger.py write-result"),
+        ("write-result", "must use review-ledger.js write-result"),
     ],
 )
 def test_v3_hook_contract_is_preflighted_before_claim(
@@ -2044,6 +2044,7 @@ def test_missing_default_claude_fails_before_claim(
         "flock",
         "git",
         "jq",
+        "node",
         "python3",
         "realpath",
         "timeout",

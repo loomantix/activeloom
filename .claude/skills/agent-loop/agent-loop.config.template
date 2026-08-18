@@ -20,10 +20,10 @@ validation_hook =
 # the complete PR ledger, post confirmed findings inline before editing, commit
 # and publish fixes through $AGENT_LOOP_REVIEW_PUSH_HELPER, reply with the fix SHA and
 # validation, resolve completed threads, and leave local/remote/PR heads equal.
-# Every successfully completed clean or changed pass calls `review-ledger.py
+# Every successfully completed clean or changed pass calls `review-ledger.js
 # write-result`, which derives the complete same-round disposition set and
 # atomically writes $AGENT_LOOP_REVIEW_RESULT_FILE. A blocked hook uses
-# `review-ledger.py write-blocked-result` with an owner-only blocker file and
+# `review-ledger.js write-blocked-result` with an owner-only blocker file and
 # must not claim a clean or changed pass.
 # Review hooks never post pass/completion markers because
 # the wrapper validates the result and owns those attestations.
