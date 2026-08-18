@@ -1248,24 +1248,10 @@ def test_v3_dispose_rejects_conflicting_stable_identity_before_mutation(
         )
 
 
-@pytest.mark.parametrize("outcome", ["dismissed", "deferred"])
-def test_v3_dispose_rejects_an_unfixed_blocker_before_mutation(
-    review_ledger: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    outcome: str,
-) -> None:
+def _blocking_dispose_args(tmp_path: Path, outcome: str) -> SimpleNamespace:
     content = tmp_path / "disposition.md"
     content.write_text("Not fixed.", encoding="utf-8")
-    rows = [_review_row(88, _finding_body("blocker", severity="blocking"))]
-    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
-    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
-    monkeypatch.setattr(
-        review_ledger,
-        "_thread_state",
-        lambda *_args: pytest.fail("thread must not be touched"),
-    )
-    args = SimpleNamespace(
+    return SimpleNamespace(
         repo=REPO,
         pr=7,
         head=HEAD,
@@ -1279,8 +1265,51 @@ def test_v3_dispose_rejects_an_unfixed_blocker_before_mutation(
         content_file=str(content),
     )
 
-    with pytest.raises(review_ledger.LedgerError, match="must be fixed"):
-        review_ledger._dispose(args)
+
+def test_v3_dispose_rejects_a_deferred_blocker_before_mutation(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    rows = [_review_row(88, _finding_body("blocker", severity="blocking"))]
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
+    monkeypatch.setattr(
+        review_ledger,
+        "_thread_state",
+        lambda *_args: pytest.fail("thread must not be touched"),
+    )
+
+    with pytest.raises(review_ledger.LedgerError, match="cannot be deferred"):
+        review_ledger._dispose(_blocking_dispose_args(tmp_path, "deferred"))
+
+
+def test_v3_dispose_allows_a_dismissed_blocker(
+    review_ledger: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A blocker judged not-a-defect must stay attestable.
+
+    Requiring `fixed` at the tip made a legitimately dismissed blocker
+    permanently unattestable, because a recorded disposition is immutable by
+    design. Only `deferred` is refused.
+    """
+
+    class _ReachedMutation(Exception):
+        pass
+
+    def _reached(*_args: Any) -> None:
+        raise _ReachedMutation
+
+    rows = [_review_row(88, _finding_body("blocker", severity="blocking"))]
+    monkeypatch.setattr(review_ledger, "_verify_head", lambda *_args: None)
+    monkeypatch.setattr(review_ledger, "_review_comments", lambda *_args: rows)
+    monkeypatch.setattr(review_ledger, "_thread_state", _reached)
+
+    # Reaching the mutation stage proves the blocking gate let `dismissed` past.
+    with pytest.raises(_ReachedMutation):
+        review_ledger._dispose(_blocking_dispose_args(tmp_path, "dismissed"))
 
 
 def test_verify_ledger_requires_complete_result_set_and_material_major_fix(
@@ -1864,7 +1893,7 @@ def test_verify_ledger_rejects_deferred_blockers_and_earlier_undisposed_findings
             "pageInfo": {"hasNextPage": False},
         },
     }
-    with pytest.raises(review_ledger.LedgerError, match="must be fixed"):
+    with pytest.raises(review_ledger.LedgerError, match="cannot be deferred"):
         review_ledger._verify_thread_dispositions([deferred_blocker], repo=REPO)
 
     recurrence = {
@@ -1953,7 +1982,7 @@ def test_verify_ledger_accepts_an_unfixed_blocker_a_later_occurrence_fixed(
     assert review_ledger._verify_thread_dispositions([thread], repo=REPO) == 1
 
 
-def test_verify_ledger_rejects_an_unfixed_blocker_on_the_latest_occurrence(
+def test_verify_ledger_rejects_a_deferred_blocker_on_the_latest_occurrence(
     review_ledger: ModuleType,
 ) -> None:
     thread = _blocking_recurrence_thread(
@@ -1961,8 +1990,34 @@ def test_verify_ledger_rejects_an_unfixed_blocker_on_the_latest_occurrence(
         latest_disposition_head=MIDDLE,
     )
 
-    with pytest.raises(review_ledger.LedgerError, match="must be fixed"):
+    with pytest.raises(review_ledger.LedgerError, match="cannot be deferred"):
         review_ledger._verify_thread_dispositions([thread], repo=REPO)
+
+
+def test_verify_ledger_accepts_a_dismissed_blocker_on_the_latest_occurrence(
+    review_ledger: ModuleType,
+) -> None:
+    """A blocker dismissed as not-a-defect verifies; only `deferred` is refused."""
+    dismissed_blocker = {
+        "isResolved": True,
+        "comments": {
+            "nodes": [
+                {
+                    "body": _finding_body("blocker", severity="blocking"),
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "body": _disposition_body("blocker", outcome="dismissed"),
+                    "author": {"login": "reviewer"},
+                },
+            ],
+            "pageInfo": {"hasNextPage": False},
+        },
+    }
+
+    assert review_ledger._verify_thread_dispositions(
+        [dismissed_blocker], repo=REPO
+    ) == 1
 
 
 def test_verify_ledger_rejects_a_same_head_fix_after_an_unfixed_blocker(
