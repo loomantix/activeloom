@@ -712,8 +712,8 @@ def _dispose(args: argparse.Namespace) -> None:
     if _rows_have_pseudo_v3(rows):
         _verify_pseudo_v3_history(_review_threads(args.repo, args.pr))
     finding = _require_finding_occurrence(rows, args)
-    if finding.group("severity") == "blocking" and args.outcome != "fixed":
-        _fail("blocking local-review findings must be fixed")
+    if finding.group("severity") == "blocking" and args.outcome == "deferred":
+        _fail("blocking local-review findings cannot be deferred")
     _require_disposition_consistency(rows, args, body)
     _thread_state(args)
     comment_id, replayed = _post_review_comment(
@@ -1485,23 +1485,23 @@ def _verify_thread_dispositions(
             latest_finding, latest_disposition = matched_occurrences[-1]
             if (
                 latest_finding.group("severity") == "blocking"
-                and latest_disposition.group("outcome") != "fixed"
+                and latest_disposition.group("outcome") == "deferred"
             ):
-                _fail("blocking local-review findings must be fixed")
-            prior_unfixed_blockers = [
+                _fail("blocking local-review findings cannot be deferred")
+            prior_blocking_deferrals = [
                 position
                 for position, (finding, disposition) in enumerate(
                     matched_occurrences[:-1]
                 )
                 if finding.group("severity") == "blocking"
-                and disposition.group("outcome") != "fixed"
+                and disposition.group("outcome") == "deferred"
             ]
-            if prior_unfixed_blockers:
+            if prior_blocking_deferrals:
                 if latest_disposition.group("outcome") != "fixed":
                     _fail(
-                        "an unfixed blocker must be cleared by a later fixed occurrence"
+                        "a blocking deferral must be cleared by a later fixed occurrence"
                     )
-                start = prior_unfixed_blockers[-1]
+                start = prior_blocking_deferrals[-1]
                 for prior, current in zip(
                     matched_occurrences[start:], matched_occurrences[start + 1 :]
                 ):
