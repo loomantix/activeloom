@@ -141,12 +141,12 @@ jobs:
           set -euo pipefail
           scripts_dir=.claude/skills/critique/scripts
           version="$(tr -d '[:space:]' < "$scripts_dir/review-ledger.version")"
-          case "$version" in
-            '' ) echo "::error::review-ledger.version is empty"; exit 1 ;;
-          esac
+          [ -n "$version" ] || { echo "::error::review-ledger.version is empty"; exit 1; }
           workdir="$(mktemp -d)"
-          ( cd "$workdir" && npm pack "@loomantix/review-ledger@$version" --silent >/dev/null )
-          tar xzf "$workdir"/loomantix-review-ledger-"$version".tgz -C "$workdir"
+          # `npm pack --silent` prints the tarball name it chose; use that
+          # rather than re-deriving npm's scope-to-dash naming by hand.
+          tarball="$(cd "$workdir" && npm pack "@loomantix/review-ledger@$version" --silent)"
+          tar xzf "$workdir/$tarball" -C "$workdir"
           published="$workdir/package/dist/review-ledger.bundle.js"
           test -f "$published"
           if ! cmp -s "$published" "$scripts_dir/review-ledger.js"; then
