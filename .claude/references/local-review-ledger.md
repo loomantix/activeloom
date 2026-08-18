@@ -308,6 +308,28 @@ python3 .claude/skills/critique/scripts/review-ledger.py verify-ledger \
   --repo <owner/repo> --pr <number> --head <full-head-sha>
 ```
 
+### Blocking outcomes
+
+A `blocking` finding may not end `deferred`. Both `fixed` and `dismissed` are
+valid terminal outcomes — a blocker judged on inspection not to be a defect is
+dismissed, and that dismissal is attestable. Only deferral, which carries a live
+blocker past the review, is refused.
+
+The rule is evaluated on the **latest** occurrence of a fingerprint. Occurrences
+are a sequential history of one root cause, so the highest occurrence is its
+current state, and a recorded disposition is immutable by design. Evaluating
+every occurrence independently would make a blocker that was deferred once and
+later fixed permanently unattestable, leaving only two ways out — rewriting
+history or forging the marker — which are the two things the ledger exists to
+prevent. When a later occurrence clears an earlier blocking deferral, that
+recurrence and its fix must also form strict forward Git transitions.
+
+The same-round **result evidence** paths are deliberately stricter: there a
+blocking finding must be `fixed`, not merely not-deferred. That rule governs
+what a review result may claim as same-round evidence, which is a different
+question from whether the ledger is internally consistent. Do not collapse the
+two.
+
 ## Fix, reply, and resolve
 
 For each published finding:

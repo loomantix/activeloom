@@ -2919,3 +2919,20 @@ def test_unknown_engine_is_still_rejected(review_ledger: ModuleType) -> None:
     assert (
         review_ledger.FINDING_V3_RE.search(_v3_finding_body(engine="rogue")) is None
     )
+
+
+def test_complete_ledger_accepts_a_dismissed_blocker_on_the_latest_occurrence(
+    review_ledger: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blocker dismissed as not-a-defect stays attestable.
+
+    This pins the half of the rule that distinguishes it from the stricter
+    "blocking findings must be fixed" variant: requiring `fixed` at the tip
+    would make a legitimately dismissed blocker permanently unattestable,
+    because a recorded disposition is immutable by design. Only `deferred`
+    is refused.
+    """
+    thread = _blocking_occurrence_thread(first="fixed", second="dismissed")
+    monkeypatch.setattr(review_ledger, "_review_threads", lambda *_args: [thread])
+
+    assert review_ledger._verify_complete_v3_threads(REPO, 7, ACTOR) != []
