@@ -115,7 +115,9 @@ Where `allowed_signers` holds one principal per line, in git's allowed-signers f
 maintainer-a@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
 ```
 
-Ask upstream for its published signing keys. Until the variable is set the workflow warns and syncs anyway, so this doesn't block first-time onboarding — but an unset variable means anyone who can push a tag to the upstream can ship code into this repo. See [Signing the tag](sync.md#signing-the-tag).
+Ask upstream for its published signing keys. Until the variable is set the workflow warns and syncs anyway, so this doesn't block first-time onboarding — but an unset variable means anyone who can push a tag to the upstream can ship code into this repo, and every PR the sync opens will carry a warning banner saying so. `sync-v2` makes the unset case fail closed. See [Signing the tag](sync.md#signing-the-tag).
+
+Once the variable is set, the workflow also refuses any upstream tag older than the newest one it has already accepted, and tracks that high-water mark in `.github/sync-upstream-state`. That file is written by the workflow and shows up in sync PRs — commit it, don't hand-edit it. It stops a replayed old-but-validly-signed tag from rolling you back onto pre-fix code; see [Replaying an old signed tag](sync.md#replaying-an-old-signed-tag).
 
 For multi-consumer setups, prefer org-level secrets scoped to the consumer repos:
 

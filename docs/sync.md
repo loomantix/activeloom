@@ -115,6 +115,8 @@ JSON
 
 These creation, update, and deletion restrictions mean only the release team can create or move matching tags. GitHub's `required_signatures` ruleset rule applies to commit signatures, not the annotated tag object's signature, so it is intentionally not used here. The consumer-side `git verify-tag` gate below enforces the tag signature and pins the accepted release keys.
 
+The `update` rule is the one that carries the most weight, and it is the reason this ruleset is **required rather than optional**. A signature proves who signed a tag object; it says nothing about whether that object is the release upstream currently intends to ship. Only the `update` rule stops the ref being moved backwards onto an older object — see [Replaying an old signed tag](#replaying-an-old-signed-tag). The consumer-side gate bounds the damage; it does not replace this.
+
 Verify it took effect:
 
 ```bash
@@ -148,7 +150,41 @@ Each consumer sets that block as the `SYNC_TAG_ALLOWED_SIGNERS` repo variable, a
 
 Rotating a signer means updating that variable in every consumer, so keep the list to people who actually cut releases.
 
+#### Replaying an old signed tag
+
+Retagging with `git tag -sf` mints a **brand new tag object** with a fresh signature. The previous object is not destroyed and its signature stays valid forever. That leaves a gap a signature check alone cannot see:
+
+```bash
+# Attacker has push access to upstream. No signing key required.
+git push --force origin <old-tag-object-sha>:refs/tags/sync-v1
+```
+
+Every consumer's next cron run fetches that object, `git verify-tag` reports a good signature from a real maintainer, and the fleet silently rolls back onto whatever code shipped before the last fix. Nothing was forged — an old, genuine release was simply replayed.
+
+The tag ruleset's `update` rule blocks the force-push at the source. As a consumer-side backstop, the sync workflow also refuses any tag whose **tagger date** is older than the newest one it has already accepted. That date lives inside the signed payload, so it cannot be adjusted without invalidating the signature:
+
+| Case                                                       | Result      |
+| ---------------------------------------------------------- | ----------- |
+| Newer signed tag (ordinary release)                        | accepted    |
+| Ref force-moved back onto an older signed tag object       | **blocked** |
+| Deliberate revert published as a new signed tag, dated now | accepted    |
+
+That last row is the distinction that matters: a real revert mints a fresh tag object dated now, even when it points back at an older commit, so intentional rollbacks still work. Only replay of a stale object is refused.
+
+The high-water mark lives in `.github/sync-upstream-state` in the consumer repo:
+
+```
+# Managed by the sync workflow — do not edit by hand.
+# Newest upstream tag accepted by the signature gate; replay guard.
+last_verified_tag_timestamp=1767225600
+last_verified_tag_object=4209f13...
+```
+
+It is written only when the tag actually moves, so an unchanged tag never manufactures an empty PR, and it rides along in the sync PR where it is reviewable. Deleting it resets the floor — treat an unexplained deletion in a sync diff as a finding. The guard is active only when `SYNC_TAG_ALLOWED_SIGNERS` is set; without signature verification an attacker can simply mint a fresh tag, so a date check on its own would buy nothing.
+
 > **Existing-consumer migration:** the workflow template is copied manually; it is not a sync-manifest destination. First update the consumer workflow from the current template so it contains the `Verify upstream tag signature` step. Then set `SYNC_TAG_ALLOWED_SIGNERS` and run the workflow against a known unsigned test tag to confirm it stops before Python setup or any upstream script executes. A consumer with the updated step but no variable gets a warning and syncs anyway, so publishing signed tags does not break consumers that have not received the keys yet.
+
+> **Unset is a temporary state, not a supported one.** Like the absent-`allowed_destinations` case, it exists only so the gate could be introduced without breaking consumers mid-flight, and `sync-v2` will make it fail closed. Until then the warning is deliberately hard to miss: an unverified run annotates the job, writes to the run summary, and — because a warning in a green job is not a control — puts a banner at the top of the body of every PR it opens. If you are reviewing a sync PR carrying that banner, the diff has no provenance behind it beyond push access to the upstream. The replay guard is also inactive in that state.
 
 If your maintainers already sign with GPG instead, drop `gpg.format ssh`, keep `git tag -s`, and swap the consumer-side verification step to import an armored public key rather than writing an allowed-signers file — the shape of the gate is the same.
 
