@@ -12,7 +12,7 @@ A target with `create_if_missing: true` bootstraps the destination on first sync
 
 ## Bounding what the sync can write (`allowed_destinations`)
 
-The manifest is authored **upstream**. Consumers don't review it before it runs — the cron pulls it and the engine acts on it. `allowed_destinations` is the consumer-side control that decides how far that authority reaches: it is the difference between "trust that the upstream maintainer wasn't fooled" and "this repo opted into each path that may be written."
+The manifest is authored **upstream**. Consumers don't review it before it runs — the cron pulls it and the engine acts on it. `allowed_destinations` is a consumer-authored policy enforced by the sync engine. It bounds accidental or unexpected manifest expansion while that engine is trusted; it is not a sandbox around arbitrary upstream code.
 
 Set it in the consumer's `.platform-config.yml`. Every write, delete, and `create_if_missing` bootstrap must match at least one pattern, or the sync fails:
 
@@ -24,7 +24,7 @@ allowed_destinations:
   - agent-loop-instructions.md # agent-loop scaffolding, consumer-owned
 ```
 
-That list matches what the canonical manifest actually ships today: everything else it writes lives under `.codex/`. Trim it further if you don't want a given surface — dropping the `.github/workflows/dco.yml` line means an upstream manifest can never write to your workflows directory, regardless of what the manifest says.
+That list matches what the canonical manifest actually ships today: everything else it writes lives under `.codex/`. Trim it further if you don't want a given surface — dropping the `.github/workflows/dco.yml` line means the trusted sync engine will reject a manifest that tries to write to your workflows directory.
 
 Patterns are gitignore-flavored globs: `**/` spans path segments, `*` and `?` stop at `/`, everything else is literal. They are anchored at both ends, so `.codex/**` does not match `.codexfoo`.
 
@@ -37,7 +37,7 @@ The key is tri-state, and the difference matters:
 | Non-empty list                 | Enforced. Every destination must match a pattern.                         |
 | `[]`                           | Deny everything — the "freeze this consumer" knob.                        |
 
-> **Set this key.** The absent-key case exists only so the gate could be introduced without breaking consumers mid-flight, and the warning it prints lands in a green job where nobody reads it. A consumer without an allowlist grants the upstream manifest write access to its entire tree, including `.github/workflows/`. The engine will flip this case to fail-closed once the fleet has migrated; setting it now is the migration.
+> **Set this key.** The absent-key case exists only so the gate could be introduced without breaking consumers mid-flight, and the warning it prints lands in a green job where nobody reads it. A consumer without an allowlist grants the upstream manifest write access to its entire tree, including `.github/workflows/`. The next breaking sync protocol version will make the absent key fail closed; `sync-v1` keeps its migration-compatible warning behavior.
 
 `allowed_destinations` and `skip_targets` solve different problems and don't substitute for each other. `skip_targets` is an opt-out you maintain per file as the manifest grows — it only stops what you already knew to name. `allowed_destinations` is a ceiling that also applies to targets the upstream adds later, which is the case that actually matters.
 
@@ -45,6 +45,7 @@ The key is tri-state, and the difference matters:
 
 Two gaps to know about, so the allowlist isn't mistaken for a stronger boundary than it is:
 
+- **Upstream code execution.** The workflow runs `scripts/sync-engine.py` from the verified upstream checkout. A malicious engine can ignore this policy or write outside it, so `allowed_destinations` protects against manifest drift only while the engine itself is trusted. The tag-signature gate authenticates the release signer; it does not sandbox the released code.
 - **Overwrites of sensitive paths.** The engine refuses to `delete:` `.github/workflows/**`, `.github/CODEOWNERS`, lockfiles, and Dockerfiles, but it does not block _overwriting_ them. A rewritten workflow doesn't fail loudly — it runs, with your secrets. Keep sensitive paths out of `allowed_destinations` unless you genuinely want them synced.
 - **The commit step is broader than the engine.** `create-signed-commit.py` commits everything `git status` reports in the working tree, not just what the engine wrote, so the allowlist does not constrain what ultimately lands in the sync PR. Review the PR diff; that is still the backstop.
 
@@ -82,25 +83,45 @@ Two controls close that gap. Ship both — they fail independently.
 **1. Protect the tag (server-side, protects every consumer at once).**
 
 ```bash
-gh api -X POST repos/<owner>/codex-platform/rulesets \
-  -f name='sync tags' \
-  -f target='tag' \
-  -f enforcement='active' \
-  -F 'conditions[ref_name][include][]=refs/tags/sync-v*' \
-  -F 'conditions[ref_name][exclude][]=' \
-  -F 'rules[][type]=deletion' \
-  -F 'rules[][type]=required_signatures' \
-  -F 'bypass_actors[][actor_id]=<team-or-app-id>' \
-  -F 'bypass_actors[][actor_type]=Team' \
-  -F 'bypass_actors[][bypass_mode]=always'
+gh api --method POST repos/<owner>/codex-platform/rulesets --input - <<'JSON'
+{
+  "name": "sync tags",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/tags/sync-v*"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {"type": "creation"},
+    {
+      "type": "update",
+      "parameters": {"update_allows_fetch_and_merge": false}
+    },
+    {"type": "deletion"}
+  ],
+  "bypass_actors": [
+    {
+      "actor_id": <release-team-id>,
+      "actor_type": "Team",
+      "bypass_mode": "always"
+    }
+  ]
+}
+JSON
 ```
 
-Retagging requires force-push, so grant bypass only to the maintainers who actually ship releases. `required_signatures` makes an unsigned retag fail at the server, which means the control holds even if someone forgets `-s`.
+These creation, update, and deletion restrictions mean only the release team can create or move matching tags. GitHub's `required_signatures` ruleset rule applies to commit signatures, not the annotated tag object's signature, so it is intentionally not used here. The consumer-side `git verify-tag` gate below enforces the tag signature and pins the accepted release keys.
 
 Verify it took effect:
 
 ```bash
-gh api repos/<owner>/codex-platform/rulesets --jq '.[] | {name, target, enforcement}'
+RULESET_ID=$(gh api repos/<owner>/codex-platform/rulesets \
+  --jq '.[] | select(.name == "sync tags") | .id')
+gh api "repos/<owner>/codex-platform/rulesets/${RULESET_ID}" \
+  --jq '{name, target, enforcement, rules, bypass_actors}'
 ```
 
 **2. Have consumers verify the signature (client-side, protects a consumer if the ruleset is missing or gets changed).** Covered next.
@@ -127,7 +148,7 @@ Each consumer sets that block as the `SYNC_TAG_ALLOWED_SIGNERS` repo variable, a
 
 Rotating a signer means updating that variable in every consumer, so keep the list to people who actually cut releases.
 
-> **Migration:** a consumer with `SYNC_TAG_ALLOWED_SIGNERS` unset gets a warning and syncs anyway, so publishing signed tags doesn't break consumers that haven't been given the keys yet. Verification only becomes enforcing once the variable is set. Set it as soon as the keys above are published.
+> **Existing-consumer migration:** the workflow template is copied manually; it is not a sync-manifest destination. First update the consumer workflow from the current template so it contains the `Verify upstream tag signature` step. Then set `SYNC_TAG_ALLOWED_SIGNERS` and run the workflow against a known unsigned test tag to confirm it stops before Python setup or any upstream script executes. A consumer with the updated step but no variable gets a warning and syncs anyway, so publishing signed tags does not break consumers that have not received the keys yet.
 
 If your maintainers already sign with GPG instead, drop `gpg.format ssh`, keep `git tag -s`, and swap the consumer-side verification step to import an armored public key rather than writing an allowed-signers file — the shape of the gate is the same.
 
@@ -198,6 +219,14 @@ substitutions:
 
 # Optional: opt out of specific files. Use either the source or destination path.
 skip_targets: []
+
+# Required for sync-v1 consumers. Bound the trusted engine to the canonical
+# destinations this consumer accepts.
+allowed_destinations:
+  - .codex/**
+  - .github/copilot-instructions.md
+  - .github/workflows/dco.yml
+  - agent-loop-instructions.md
 ```
 
 Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-line values use YAML block scalars (the `|` form). Keys must be `[A-Z][A-Z0-9_]*`.
@@ -214,10 +243,11 @@ Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-l
 
 1. **Verify the upstream-read secret exists** if the upstream repo is private. Set `UPSTREAM_READ_TOKEN` (fine-grained PAT or GitHub App token with `Contents: Read` on the upstream repo) on the consumer repo (or as an org-level secret scoped to the consumer). For public upstream repos, no token is needed.
 2. **Verify App-token secrets exist** if you want signed sync commits. The reference template reads `SYNC_APP_ID` + `SYNC_APP_PRIVATE_KEY` from secrets — rename in the workflow file if your conventions differ.
-3. Create `.platform-config.yml` at the consumer's root with values for every placeholder used by any templated target.
+3. Create `.platform-config.yml` at the consumer's root with values for every placeholder and the required `allowed_destinations` list shown above.
 4. Copy `.github/workflows/sync-from-upstream.yml.template` to `.github/workflows/sync-from-upstream.yml` (drop the `.template` suffix), then fill in `UPSTREAM_REPO` and the secret names.
-5. Manually trigger the workflow once (`gh workflow run "Sync from upstream"`) to verify the first PR opens cleanly.
-6. Review the first sync PR carefully — it's the largest one the consumer will ever see. Subsequent syncs only carry actual upstream changes.
+5. Set `SYNC_TAG_ALLOWED_SIGNERS` to the upstream release keys before treating the workflow as a verified sync path.
+6. Manually trigger the workflow once (`gh workflow run "Sync from upstream"`) to verify the first PR opens cleanly, and exercise an unsigned test tag to confirm the signature gate fails before upstream code runs.
+7. Review the first sync PR carefully — it's the largest one the consumer will ever see. Subsequent syncs only carry actual upstream changes.
 
 ## Cross-repo secret hygiene
 

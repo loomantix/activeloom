@@ -55,6 +55,7 @@ concurrency:
 env:
   UPSTREAM_REPO: <owner>/<repo>     # e.g. loomantix/codex-platform
   UPSTREAM_REF: sync-v1
+  UPSTREAM_DIR: /tmp/upstream
   SYNC_BRANCH_PREFIX: sync/upstream
   PR_BASE_BRANCH: main              # override if your release flow uses staging etc.
 
@@ -97,13 +98,13 @@ jobs:
           # `git remote add origin` fails if the dir already exists with
           # state, and the workflow would silently end up working against
           # stale content.
-          rm -rf /tmp/upstream
-          mkdir -p /tmp/upstream
-          cd /tmp/upstream
+          rm -rf "$UPSTREAM_DIR"
+          mkdir -p "$UPSTREAM_DIR"
+          cd "$UPSTREAM_DIR"
           git init -q
           # Ensure the auth header is unset on EXIT — success or failure.
           # Without the trap, a `git fetch` error left the token in
-          # /tmp/upstream/.git/config, so subsequent steps that printed
+          # $UPSTREAM_DIR/.git/config, so subsequent steps that printed
           # `git remote -v` or surfaced an error message could leak it.
           trap 'git config --unset-all http.extraheader 2>/dev/null || true' EXIT
           if [ -n "${UPSTREAM_READ_TOKEN:-}" ]; then
@@ -152,25 +153,34 @@ jobs:
       # this workflow does not break a consumer that has not been given keys yet.
       # Set it as soon as upstream publishes its signing keys.
       - name: Verify upstream tag signature
-        if: steps.clone.outputs.ref_kind == 'tag'
         env:
           ALLOWED_SIGNERS: ${{ vars.SYNC_TAG_ALLOWED_SIGNERS }}
+          REF_KIND: ${{ steps.clone.outputs.ref_kind }}
         run: |
           set -euo pipefail
+          if [ "$REF_KIND" != tag ]; then
+            if [ -n "${ALLOWED_SIGNERS:-}" ]; then
+              echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' resolved to a branch, not a tag. Signature enforcement is configured, so refusing to run unsigned upstream code." >&2
+              exit 1
+            fi
+            echo "::warning::UPSTREAM_REF '${UPSTREAM_REF}' resolved to a branch. Branches cannot carry the tag signature this workflow verifies, and SYNC_TAG_ALLOWED_SIGNERS is not set, so this run is unverified."
+            exit 0
+          fi
           if [ -z "${ALLOWED_SIGNERS:-}" ]; then
             echo "::warning::SYNC_TAG_ALLOWED_SIGNERS is not set — the upstream tag is being trusted without verifying its signature. Anyone who can push a tag to ${UPSTREAM_REPO} can ship code to this repo. Set the variable to upstream's published signing keys to close this."
             exit 0
           fi
           # 0600: the file is not secret, but a narrow mode keeps a shared or
           # self-hosted runner from having it rewritten between write and read.
-          signers=/tmp/upstream-allowed-signers
+          signers="${UPSTREAM_DIR}-allowed-signers"
+          verify_error="${UPSTREAM_DIR}-verify-tag.err"
           install -m 600 /dev/null "$signers"
           printf '%s\n' "$ALLOWED_SIGNERS" > "$signers"
-          cd /tmp/upstream
+          cd "$UPSTREAM_DIR"
           git config gpg.ssh.allowedSignersFile "$signers"
-          if ! git verify-tag "${UPSTREAM_REF}" 2>/tmp/verify-tag.err; then
+          if ! git verify-tag "${UPSTREAM_REF}" 2>"$verify_error"; then
             echo "::error::Upstream tag '${UPSTREAM_REF}' is unsigned or its signature does not match SYNC_TAG_ALLOWED_SIGNERS. Refusing to sync. This is what a moved or forged tag looks like — do not bypass it without confirming with an upstream maintainer out of band."
-            cat /tmp/verify-tag.err >&2
+            cat "$verify_error" >&2
             exit 1
           fi
           echo "✅ Verified signature on ${UPSTREAM_REF}"
@@ -186,8 +196,8 @@ jobs:
       - name: Run sync engine
         run: |
           set -euo pipefail
-          python3 /tmp/upstream/scripts/sync-engine.py \
-            --upstream-repo /tmp/upstream \
+          python3 "$UPSTREAM_DIR/scripts/sync-engine.py" \
+            --upstream-repo "$UPSTREAM_DIR" \
             --consumer-dir .
 
       - name: Detect changes
@@ -241,7 +251,7 @@ jobs:
           # to the commit message, so consumer DCO checks accept it
           # without per-repo bot exemptions. The slug comes from
           # actions/create-github-app-token's output.
-          python3 /tmp/upstream/scripts/create-signed-commit.py \
+          python3 "$UPSTREAM_DIR/scripts/create-signed-commit.py" \
             --owner "$OWNER" \
             --repo "$REPO" \
             --base-branch "${PR_BASE_BRANCH}" \

@@ -206,7 +206,7 @@ jobs:
       - name: Parse every YAML file
         run: |
           set -euo pipefail
-          mapfile -t ymlfiles < <(git ls-files '*.yml' '*.yaml')
+          mapfile -t ymlfiles < <(git ls-files '*.yml' '*.yaml' '*.yml.template' '*.yaml.template')
           for f in "${ymlfiles[@]}"; do
             # `.template` files often contain literal `<placeholders>` that
             # are still valid YAML — parse-only check is sufficient.
