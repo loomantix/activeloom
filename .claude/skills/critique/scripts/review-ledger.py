@@ -29,9 +29,10 @@ PR_V1_MARKERS = (
     "<!-- local-review-complete:v1 ",
 )
 EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR"
+SUPPORTED_ENGINES = ("codex", "claude", "gemini", "antigravity")
 FINDING_V3_RE = re.compile(
     r"^<!-- local-review:v3 "
-    r"engine=(?P<engine>codex|claude) "
+    r"engine=(?P<engine>codex|claude|gemini|antigravity) "
     r"round=(?P<round>[1-9][0-9]*) "
     r"head=(?P<head>[0-9a-f]{40}) "
     r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) "
@@ -42,14 +43,14 @@ FINDING_V3_RE = re.compile(
     re.MULTILINE,
 )
 PSEUDO_V3_RE = re.compile(
-    r"^<!-- local-review:v3 engine=claude "
+    r"^<!-- local-review:v3 engine=(?:claude|gemini|antigravity) "
     r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+)"
     r"(?: outcome=deferred)? -->$",
     re.MULTILINE,
 )
 DISPOSITION_V3_RE = re.compile(
     r"^<!-- local-review-disposition:v3 "
-    r"engine=(?P<engine>codex|claude) "
+    r"engine=(?P<engine>codex|claude|gemini|antigravity) "
     r"round=(?P<round>[1-9][0-9]*) "
     r"head=(?P<head>[0-9a-f]{40}) "
     r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) "
@@ -64,7 +65,7 @@ LEGACY_THREAD_MARKER_RE = re.compile(
 )
 FINDING_V1_RE = re.compile(
     r"^<!-- local-review:v1 "
-    r"engine=(?P<engine>codex|claude) "
+    r"engine=(?P<engine>codex|claude|gemini|antigravity) "
     r"round=(?P<round>[1-9][0-9]*) "
     r"head=(?P<head>[0-9a-f]{40}) "
     r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) -->$",
@@ -72,7 +73,7 @@ FINDING_V1_RE = re.compile(
 )
 DISPOSITION_V1_RE = re.compile(
     r"^<!-- local-review-disposition:v1 "
-    r"engine=(?P<engine>codex|claude) "
+    r"engine=(?P<engine>codex|claude|gemini|antigravity) "
     r"round=(?P<round>[1-9][0-9]*) "
     r"head=(?P<head>[0-9a-f]{40}) "
     r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) "
@@ -1944,7 +1945,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_protocol_identity(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--engine", required=True, choices=("codex", "claude"))
+    parser.add_argument("--engine", required=True, choices=SUPPORTED_ENGINES)
     parser.add_argument("--round", required=True, type=int)
     parser.add_argument("--fingerprint", required=True)
     parser.add_argument("--occurrence", type=int, default=1)
@@ -1955,7 +1956,7 @@ def _add_result_arguments(parser: argparse.ArgumentParser, *, github: bool) -> N
         _add_common(parser)
     else:
         parser.add_argument("--head", required=True)
-    parser.add_argument("--engine", required=True, choices=("codex", "claude"))
+    parser.add_argument("--engine", required=True, choices=SUPPORTED_ENGINES)
     parser.add_argument("--round", required=True, type=int)
     parser.add_argument("--base", required=True)
     parser.add_argument("--before", required=True)
@@ -1986,7 +1987,7 @@ def _parser() -> argparse.ArgumentParser:
     content = finding.add_mutually_exclusive_group(required=True)
     content.add_argument("--content-file")
     content.add_argument("--body-file", help="Legacy v1 path or - for stdin")
-    finding.add_argument("--engine", choices=("codex", "claude"))
+    finding.add_argument("--engine", choices=SUPPORTED_ENGINES)
     finding.add_argument("--round", type=int)
     finding.add_argument("--fingerprint")
     finding.add_argument("--occurrence", type=int, default=1)
@@ -2064,7 +2065,7 @@ def _parser() -> argparse.ArgumentParser:
     verify_ledger.add_argument("--threads-file")
     verify_ledger.add_argument("--expected-threads-sha256")
     verify_ledger.add_argument("--actor")
-    verify_ledger.add_argument("--engine", choices=("codex", "claude"))
+    verify_ledger.add_argument("--engine", choices=SUPPORTED_ENGINES)
     verify_ledger.add_argument("--round", type=int)
     verify_ledger.add_argument("--base")
     verify_ledger.add_argument("--before")

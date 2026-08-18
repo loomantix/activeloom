@@ -2857,3 +2857,65 @@ def test_review_skills_define_wrapper_and_standalone_v3_finalization() -> None:
     for skill in (deepcritique, critique, codex_review):
         assert "wrapper/standalone" in skill
         assert "standalone pass" in skill
+
+
+def test_marker_grammar_accepts_every_supported_engine(
+    review_ledger: ModuleType,
+) -> None:
+    """Every engine in SUPPORTED_ENGINES must round-trip through the v3 and v1
+    marker grammars, so a marker written by one engine verifies in another."""
+    assert review_ledger.SUPPORTED_ENGINES == (
+        "codex",
+        "claude",
+        "gemini",
+        "antigravity",
+    )
+    for engine in review_ledger.SUPPORTED_ENGINES:
+        finding = review_ledger.FINDING_V3_RE.search(
+            _v3_finding_body(engine=engine)
+        )
+        assert finding is not None, f"{engine} finding marker rejected"
+        assert finding.group("engine") == engine
+
+        disposition = review_ledger.DISPOSITION_V3_RE.search(
+            _v3_disposition_body(engine=engine)
+        )
+        assert disposition is not None, f"{engine} disposition marker rejected"
+        assert disposition.group("engine") == engine
+
+        v1_finding = review_ledger.FINDING_V1_RE.search(
+            f"<!-- local-review:v1 engine={engine} round=1 head={HEAD} "
+            f"fingerprint=finding -->"
+        )
+        assert v1_finding is not None, f"{engine} v1 finding marker rejected"
+
+        v1_disposition = review_ledger.DISPOSITION_V1_RE.search(
+            f"<!-- local-review-disposition:v1 engine={engine} round=1 "
+            f"head={HEAD} fingerprint=finding outcome=fixed -->"
+        )
+        assert v1_disposition is not None, f"{engine} v1 disposition marker rejected"
+
+
+def test_pseudo_v3_grammar_covers_non_codex_engines(
+    review_ledger: ModuleType,
+) -> None:
+    """Pseudo-v3 history predates the occurrence field and was never emitted by
+    codex, so the grammar admits the other three engines and still excludes it."""
+    for engine in ("claude", "gemini", "antigravity"):
+        match = review_ledger.PSEUDO_V3_RE.search(
+            f"<!-- local-review:v3 engine={engine} fingerprint=historical -->"
+        )
+        assert match is not None, f"{engine} pseudo-v3 marker rejected"
+    assert (
+        review_ledger.PSEUDO_V3_RE.search(
+            "<!-- local-review:v3 engine=codex fingerprint=historical -->"
+        )
+        is None
+    )
+
+
+def test_unknown_engine_is_still_rejected(review_ledger: ModuleType) -> None:
+    """Widening the engine set must not turn the grammar into a wildcard."""
+    assert (
+        review_ledger.FINDING_V3_RE.search(_v3_finding_body(engine="rogue")) is None
+    )
