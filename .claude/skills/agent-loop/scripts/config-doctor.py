@@ -39,7 +39,10 @@ def _version(command: list[str], label: str) -> str:
     except OSError as error:
         raise DoctorError(f"{label} could not be executed: {error}") from error
     if result.returncode != 0:
-        raise DoctorError(f"{label} compatibility query failed")
+        detail = result.stderr.strip() or "<no stderr>"
+        raise DoctorError(
+            f"{label} compatibility query failed (exit {result.returncode}): {detail}"
+        )
     return result.stdout.strip()
 
 
@@ -89,6 +92,7 @@ def doctor(project: Path, claude_effort: str | None) -> None:
             "local-review-pass:v1",
             "local-review-complete:v1",
             "local-review-disposition:v1",
+            "review-ledger.py",
         )
         if any(token in hook for token in obsolete):
             raise DoctorError(f"{engine}_review_hook contains obsolete review ownership")

@@ -249,6 +249,15 @@ for hook_key in claude_review_hook codex_review_hook; do
         echo "$hook_key names an incorrect reviewer skill; Codex and Claude use deepcritique" >&2
         exit 1
     fi
+    # The Python ledger was retired for the vendored `review-ledger.js` bundle,
+    # and sync deletes it. `agent-loop.config` is bootstrapped create-if-missing
+    # and never rewritten, so a consumer keeps whatever path it was written
+    # with — catch it here, where it is one diagnosable line, rather than an
+    # hour of model spend later when the hook's write-result cannot find it.
+    if [[ "$hook_value" == *review-ledger.py* ]]; then
+        echo "$hook_key invokes the retired review-ledger.py; use: node .claude/skills/critique/scripts/review-ledger.js" >&2
+        exit 1
+    fi
 done
 
 if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
@@ -260,8 +269,16 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         echo "review contract v3 requires Node.js to run $REVIEW_LEDGER" >&2
         exit 1
     }
-    [ "$(node "$REVIEW_LEDGER" --protocol-version)" = 3 ] || {
-        echo "review contract v3 requires review-ledger.js protocol version 3" >&2
+    # Capture status separately: command substitution inside `[ ]` is exempt
+    # from `set -e`, so comparing stdout alone reports a crashed or unparsable
+    # bundle as a protocol mismatch. Node too old for the bundle's ESM syntax
+    # is the reachable case, and it deserves its own message.
+    if ! ledger_protocol="$(node "$REVIEW_LEDGER" --protocol-version 2>&1)"; then
+        echo "node could not execute $REVIEW_LEDGER: $ledger_protocol" >&2
+        exit 1
+    fi
+    [ "$ledger_protocol" = 3 ] || {
+        echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v3 requires 3" >&2
         exit 1
     }
     for hook_key in claude_review_hook codex_review_hook; do

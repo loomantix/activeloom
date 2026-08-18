@@ -240,10 +240,16 @@ hand-compose `gh api` form arguments for these mutations.
 
 Invoke it as `node .claude/skills/critique/scripts/review-ledger.js` — it
 requires Node.js and is not executable, so `./review-ledger.js` will not run.
+The bundle is ESM; the sibling `package.json` in that directory declares
+`"type": "module"` so it resolves the same way regardless of what the
+surrounding repository's root manifest says.
 The file is a build artifact of [`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger),
 vendored verbatim from the published tarball at the version recorded in
-`review-ledger.version`. Never edit or reformat it: fixes belong upstream in the
-package, and CI byte-compares this file against that published version.
+`review-ledger.version`, with that tarball's sha512 in `review-ledger.integrity`.
+Never edit or reformat it: fixes belong upstream in the package. The byte-compare
+that enforces this runs in `claude-platform`'s own CI, not here — in a consumer
+repository an accidental edit is silently restored by the next sync rather than
+caught locally, so treat the file as read-only and keep it out of any formatter.
 
 The v3 helper verifies the current PR head before and after each mutation,
 constructs markers and JSON itself, reads mutations back, and reconciles retries

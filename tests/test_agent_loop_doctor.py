@@ -23,6 +23,13 @@ def _project(tmp_path: Path) -> Path:
     shutil.copy2(ROOT / ".claude/skills/agent-loop/scripts/agent-loop-state.py", scripts)
     shutil.copy2(ROOT / ".claude/skills/agent-loop/scripts/review-push.sh", scripts)
     shutil.copy2(ROOT / ".claude/skills/critique/scripts/review-ledger.js", ledger_dir)
+    # See tests/test_agent_loop.py: sync ships the sibling ESM manifest, and a
+    # CommonJS consumer root is the context that needs it.
+    shutil.copy2(ROOT / ".claude/skills/critique/scripts/package.json", ledger_dir)
+    (project / "package.json").write_text(
+        '{"name": "fixture-consumer", "private": true, "type": "commonjs"}\n',
+        encoding="utf-8",
+    )
     shutil.copy2(
         ROOT / ".claude/skills/agent-loop/prompt.txt.template",
         skill / "prompt.txt",

@@ -155,3 +155,36 @@ def test_reissued_destinations_are_deleted_before_they_are_written() -> None:
         "so consumers never receive them — move the copy entry below the "
         "`delete: true` entry: " + "; ".join(clobbered)
     )
+
+
+def test_review_skills_define_wrapper_and_standalone_v3_finalization() -> None:
+    """The wrapper-versus-standalone finalization rule decides who owns a pass
+    attestation, and it is carried only by prose in four synced files. This
+    test moved here when `tests/test_review_ledger.py` was retired alongside
+    the Python ledger: every other test in that file exercised the ledger's
+    internals and now lives with the implementation upstream, but this one
+    asserts *this* repository's skill prompts, which no upstream package can
+    see. Without it, an edit that drops the rule from one of these files ships
+    to every consumer with nothing failing.
+    """
+    ledger = (REPO_ROOT / ".claude/references/local-review-ledger.md").read_text(
+        encoding="utf-8"
+    )
+    deepcritique = (REPO_ROOT / ".claude/skills/deepcritique/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    critique = (REPO_ROOT / ".claude/skills/critique/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    codex_review = (REPO_ROOT / ".claude/skills/codex-review/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Finalize wrapper and standalone results" in ledger
+    assert "helper returns `verified: true`" in ledger
+    assert "On a skip, finalize a clean v3 result" in deepcritique
+    assert "Do not emit `clean` for a cleanup-moved enclosing hook" in deepcritique
+    assert "the enclosing review hook did not move" in critique
+    for skill in (deepcritique, critique, codex_review):
+        assert "wrapper/standalone" in skill
+        assert "standalone pass" in skill

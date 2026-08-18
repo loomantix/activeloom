@@ -72,6 +72,21 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     ledger_target = repo / ".claude/skills/critique/scripts/review-ledger.js"
     ledger_target.parent.mkdir(parents=True)
     shutil.copy2(ledger_source, ledger_target)
+    # Sync ships a sibling `package.json` declaring the bundle as ESM; copy it
+    # so the fixture receives what a consumer receives.
+    shutil.copy2(
+        REPO_ROOT / ".claude/skills/critique/scripts/package.json",
+        ledger_target.parent / "package.json",
+    )
+    # claude-platform has no root manifest, which is the most permissive module
+    # resolution context there is — the bundle would load here even with no
+    # sibling manifest at all. Give the fixture consumer a CommonJS root, the
+    # context that breaks an undeclared ESM `.js`, so this suite actually
+    # exercises what a consumer repo does rather than what upstream does.
+    (repo / "package.json").write_text(
+        '{"name": "fixture-consumer", "private": true, "type": "commonjs"}\n',
+        encoding="utf-8",
+    )
     _write_executable(
         ready,
         "#!/usr/bin/env python3\n"
