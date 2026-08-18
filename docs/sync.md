@@ -132,23 +132,29 @@ gh api "repos/<owner>/codex-platform/rulesets/${RULESET_ID}" \
 
 Sign with SSH — no keyring or agent wrangling in CI, and the public half is what consumers pin.
 
+Set the format per command rather than with `git config --global`. Maintainers here sign _commits_ with GPG, and a global `gpg.format ssh` silently switches that over too:
+
 ```bash
-git config --global gpg.format ssh
-git config --global user.signingkey ~/.ssh/id_ed25519.pub
-git tag -sf sync-v1 -m "Retag sync-v1 to <reason>" <commit-sha>
-git push --force-with-lease origin sync-v1
+git -c gpg.format=ssh -c user.signingkey=~/.ssh/id_ed25519.pub \
+  tag -sf sync-v1 -m "Retag sync-v1 to <reason>" <commit-sha>
+git push --force-with-lease=refs/tags/sync-v1:<previous-tag-object-sha> origin sync-v1
 ```
 
-Publish the **public** keys of everyone allowed to ship a release, in git's allowed-signers format — one principal per line:
+Spell out the previous tag object SHA in the lease. A bare `--force-with-lease` has no ref to compare against for a tag you just rewrote locally, so it does not actually assert anything.
 
+The tagger email on the signed tag is the principal a consumer matches against, so it must appear verbatim in the allowed-signers list. If you commit under a GitHub noreply address, the tag carries that address too.
+
+The **public** keys of everyone allowed to ship a release live in [`docs/allowed_signers`](allowed_signers), in git's allowed-signers format — one principal per line. That file is the canonical source for the `SYNC_TAG_ALLOWED_SIGNERS` repo variable:
+
+```bash
+gh variable set SYNC_TAG_ALLOWED_SIGNERS \
+  --repo <owner>/<consumer> \
+  --body "$(curl -fsSL https://raw.githubusercontent.com/loomantix/codex-platform/main/docs/allowed_signers)"
 ```
-maintainer-a@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
-maintainer-b@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
-```
 
-Each consumer sets that block as the `SYNC_TAG_ALLOWED_SIGNERS` repo variable, and their sync workflow refuses to run the engine on a tag that doesn't verify against it. It is a variable rather than a secret because these are public keys — treating them as secret only makes rotation harder.
+Each consumer's sync workflow refuses to run the engine on a tag that doesn't verify against that variable. It is a variable rather than a secret because these are public keys — treating them as secret only makes rotation harder. Comment lines are ignored by git, so the file's header is safe to carry into the variable verbatim.
 
-Rotating a signer means updating that variable in every consumer, so keep the list to people who actually cut releases.
+Rotating or adding a signer means updating both `docs/allowed_signers` and the variable in every consumer, so keep the list to people who actually cut releases.
 
 #### Replaying an old signed tag
 
