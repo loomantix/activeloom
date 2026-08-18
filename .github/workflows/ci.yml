@@ -1,0 +1,283 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python lint + syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install pyyaml + ruff
+        run: python3 -m pip install 'pyyaml==6.0.2' 'ruff==0.9.10'
+      - name: Compile-check every Python source
+        run: |
+          set -euo pipefail
+          mapfile -t pyfiles < <(git ls-files '*.py')
+          if [ "${#pyfiles[@]}" -eq 0 ]; then
+            echo "(no Python files found)"
+            exit 0
+          fi
+          python3 -m py_compile "${pyfiles[@]}"
+      - name: Ruff lint
+        run: ruff check .
+
+  python-types-and-tests:
+    name: Python types + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          # Cache the resolved wheel cohort against the pinned-tool list
+          # below — the pins never drift within a PR, so the cache hits
+          # on every iter-fix push (~15s saved per re-run).
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install pinned tooling
+        run: |
+          python3 -m pip install \
+            'mypy==1.13.0' \
+            'pyyaml==6.0.2' \
+            'types-PyYAML==6.0.12.20240917' \
+            'pytest==8.3.4' \
+            'pytest-cov==6.0.0' \
+            'pytest-xdist==3.8.0'
+      - name: mypy --strict (config from pyproject.toml)
+        run: python3 -m mypy
+      - name: Configure git identity (parse_status tests use a fixture git repo)
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+      # Two workers roughly halve the subprocess-heavy agent-loop suite without
+      # starving its intentional one-second timeout probes. Four workers made
+      # those tests flaky under local load, so keep this explicit rather than
+      # deriving the worker count from runner CPU capacity.
+      - name: Run pytest with two workers + write coverage data
+        run: >-
+          python3 -m pytest tests/ --cov --cov-report=term-missing -ra
+          --durations=30 -n 2 --dist worksteal
+      # Per-file gate matches the security contract: a future refactor
+      # that spikes one file's coverage can't paper over a regression
+      # in the other. `coverage report --include=<pattern>` already exits
+      # non-zero when the pattern matches no measured file, so a rename
+      # fails the gate on its own; the `test -f` precondition just names
+      # the missing file instead of reporting "No data to report."
+      - name: Coverage gate — sync-engine.py >=80%
+        run: |
+          test -f scripts/sync-engine.py
+          python3 -m coverage report --include='scripts/sync-engine.py' --fail-under=80
+      - name: Coverage gate — create-signed-commit.py >=80%
+        run: |
+          test -f scripts/create-signed-commit.py
+          python3 -m coverage report --include='scripts/create-signed-commit.py' --fail-under=80
+      - name: Coverage gate — lint-collapse-sites.py >=80%
+        run: |
+          test -f scripts/lint-collapse-sites.py
+          python3 -m coverage report --include='scripts/lint-collapse-sites.py' --fail-under=80
+      - name: Coverage gate — release-preflight.py >=80%
+        run: |
+          test -f .agents/skills/publish-npm-package/scripts/release-preflight.py
+          python3 -m coverage report \
+            --include='.agents/skills/publish-npm-package/scripts/release-preflight.py' \
+            --fail-under=80
+      - name: Coverage gate — verify-published-package.py >=80%
+        run: |
+          test -f .agents/skills/publish-npm-package/scripts/verify-published-package.py
+          python3 -m coverage report \
+            --include='.agents/skills/publish-npm-package/scripts/verify-published-package.py' \
+            --fail-under=80
+
+  shell:
+    name: Shell syntax + shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: bash -n every shell script
+        run: |
+          set -euo pipefail
+          mapfile -t shfiles < <(git ls-files '*.sh')
+          for f in "${shfiles[@]}"; do
+            bash -n "$f"
+          done
+      - name: shellcheck (warnings allowed; errors fail)
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          severity: error
+
+  yaml:
+    name: YAML + Actions schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install 'pyyaml==6.0.2'
+      - name: Parse every YAML file
+        run: |
+          set -euo pipefail
+          mapfile -t ymlfiles < <(git ls-files '*.yml' '*.yaml')
+          for f in "${ymlfiles[@]}"; do
+            # `.template` files often contain literal `<placeholders>` that
+            # are still valid YAML — parse-only check is sufficient.
+            python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$f"
+          done
+      - name: Install pinned actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
+      - name: Validate workflows and consumer template
+        run: >-
+          "$(go env GOPATH)/bin/actionlint" -shellcheck shellcheck
+          .github/workflows/*.yml
+          templates/sync-from-gemini-platform.yml
+
+  format:
+    name: Prettier check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.29.3
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Prettier --check
+        run: pnpm format:check
+
+  render-check:
+    name: Rendered template fidelity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.29.3
+      - run: python3 -m pip install 'pyyaml==6.0.2'
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Render fidelity fixture and compare against golden
+        run: |
+          set -euo pipefail
+          # Render from a throwaway upstream tree so the fixture template is
+          # never a real sync target and can never reach a consumer.
+          UPSTREAM=$(mktemp -d)
+          CONSUMER=$(mktemp -d)
+          mkdir -p "$UPSTREAM/scripts"
+          cp tests/fixtures/render-fidelity/sync-targets.yml "$UPSTREAM/scripts/"
+          cp tests/fixtures/render-fidelity/template.md "$UPSTREAM/"
+          cp tests/fixtures/render-fidelity/.platform-config.yml "$CONSUMER/"
+          python3 scripts/sync-engine.py \
+            --upstream-repo "$UPSTREAM" \
+            --consumer-dir "$CONSUMER"
+          diff -u tests/fixtures/render-fidelity/expected.md "$CONSUMER/rendered.md"
+          pnpm exec prettier --config .prettierrc --check \
+            "$CONSUMER/rendered.md"
+
+  sync-targets:
+    name: sync-targets.yml matches schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install 'pyyaml==6.0.2'
+      - name: Validate the canonical manifest parses + has expected shape
+        run: |
+          python3 - <<'PY'
+          import yaml, sys
+          doc = yaml.safe_load(open('scripts/sync-targets.yml'))
+          targets = doc.get('targets')
+          assert isinstance(targets, list) and targets, "targets must be a non-empty list"
+          for t in targets:
+              assert isinstance(t, dict), f"non-mapping target: {t!r}"
+              if t.get('delete'):
+                  assert 'destination' in t, f"delete target missing destination: {t!r}"
+              else:
+                  assert 'source' in t and 'destination' in t, f"copy target missing keys: {t!r}"
+                  substitutions = t.get('substitutions', [])
+                  assert isinstance(substitutions, list) and all(
+                      isinstance(key, str) for key in substitutions
+                  ), f"substitutions must be a string list: {t!r}"
+                  collapse = t.get('collapse_empty_substitutions', [])
+                  assert isinstance(collapse, list) and all(
+                      isinstance(key, str) for key in collapse
+                  ), f"collapse_empty_substitutions must be a string list: {t!r}"
+                  assert set(collapse) <= set(substitutions), (
+                      f"collapse_empty_substitutions must be declared substitutions: {t!r}"
+                  )
+          copilot = next(
+              t for t in targets if t.get('destination') == '.github/copilot-instructions.md'
+          )
+          assert set(copilot.get('collapse_empty_substitutions', [])) == {
+              'PROJECT_OVERVIEW',
+              'STACK_TABLE',
+              'CODE_RULES',
+              'DOMAIN_RULES',
+              'REVIEW_FOCUS',
+              'WHAT_NOT_TO_SUGGEST_EXTRA',
+          }, "Copilot template collapse opt-ins changed without updating the render contract"
+          print(f"OK: {len(targets)} targets")
+          PY
+
+      - name: Validate canonical manifest through the sync engine
+        run: |
+          set -euo pipefail
+          CONSUMER=$(mktemp -d)
+          python3 - "$CONSUMER" <<'PY'
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+          manifest = yaml.safe_load(Path('scripts/sync-targets.yml').read_text())
+          substitutions = {
+              key: '' if key in target.get('collapse_empty_substitutions', []) else 'fixture'
+              for target in manifest['targets']
+              for key in target.get('substitutions', [])
+          }
+          config = {'substitutions': substitutions, 'allowed_destinations': ['**']}
+          (Path(sys.argv[1]) / '.platform-config.yml').write_text(yaml.safe_dump(config))
+          PY
+          python3 scripts/sync-engine.py \
+            --upstream-repo . \
+            --consumer-dir "$CONSUMER" \
+            --dry-run
+
+      # The engine deliberately owns no Markdown knowledge, so nothing at render
+      # time stops a key opted into structural collapsing from deleting a line of
+      # a fenced block, a raw <pre>, or an indented code block. Enforce the
+      # "prose-only, whole-line" rule here instead, where reading the template is
+      # cheap and a violation is an authoring mistake rather than consumer churn.
+      - name: Lint collapse opt-ins against their template sites
+        run: python3 scripts/lint-collapse-sites.py

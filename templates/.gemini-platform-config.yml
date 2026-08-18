@@ -1,0 +1,26 @@
+# Consumer configuration for the gemini-platform sync engine.
+#
+# See https://github.com/loomantix/gemini-platform for details.
+
+substitutions:
+  PROJECT_NAME: MyProject
+  PROJECT_OVERVIEW: ''
+  CANONICAL_DOCS: ''
+  STACK_TABLE: ''
+  CODE_RULES: ''
+  DOMAIN_RULES: ''
+  REVIEW_FOCUS: ''
+  WHAT_NOT_TO_SUGGEST_EXTRA: ''
+
+# Targets to skip in this consumer repository
+skip_targets:
+  - .github/workflows/dco.yml
+
+# Destinations the upstream sync engine is authorized to manage.
+# Matches gitignore-style patterns.
+allowed_destinations:
+  - .agents/**
+  - agent-loop-instructions.md
+  - .github/copilot-instructions.md
+  - .github/scripts/**
+  - .github/workflows/dco.yml
