@@ -4,6 +4,20 @@ Use an open draft pull request as the durable ledger for every local Codex or
 Claude review pass. The ledger is part of the review contract, not optional
 reporting after the code changes.
 
+> **Verification in this repository is not yet trustworthy.** The vendored
+> `review-ledger.py` is missing four invariants that the reference
+> implementation enforces: the authenticated-actor pin, the sealed review-thread
+> snapshot, the thread-scope assertion, and the Git commit-graph binding. A
+> `verify-ledger` result of `verified: true` therefore does **not** establish
+> that the recorded findings were written by the expected reviewer, that the
+> evidence matches what GitHub returned, that the threads belong to the pull
+> request under review, or that the marker heads are on the branch.
+>
+> Treat a verdict from this copy as a formatting check, not an attestation, and
+> do not cite it as review evidence. The gap is inherited rather than introduced
+> here, and it is closed by migrating to the shared `@loomantix/review-ledger`
+> package rather than by patching this file — see #3.
+
 ## Establish the PR boundary
 
 Before any cleanup or adversarial review:
