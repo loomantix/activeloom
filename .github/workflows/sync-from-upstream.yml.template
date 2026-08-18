@@ -88,6 +88,7 @@ jobs:
           fi
 
       - name: Clone upstream
+        id: clone
         env:
           UPSTREAM_READ_TOKEN: ${{ secrets.UPSTREAM_READ_TOKEN }}
         run: |
@@ -117,13 +118,62 @@ jobs:
           # promises won't happen).
           if git ls-remote --tags --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
             git fetch --depth=1 origin "refs/tags/${UPSTREAM_REF}:refs/tags/${UPSTREAM_REF}"
+            # Record which kind of ref won so the signature gate below knows
+            # whether there is a tag object to verify. A branch ref carries no
+            # signature, so the gate cannot apply to it.
+            echo "ref_kind=tag" >> "$GITHUB_OUTPUT"
           elif git ls-remote --heads --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
             git fetch --depth=1 origin "${UPSTREAM_REF}"
+            echo "ref_kind=branch" >> "$GITHUB_OUTPUT"
           else
             echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' is neither a tag nor a branch on ${UPSTREAM_REPO}." >&2
             exit 1
           fi
           git checkout -q FETCH_HEAD
+
+      # Verify the upstream tag's signature BEFORE any upstream code runs.
+      #
+      # Why this step exists: consumers track a tag, and a tag is mutable.
+      # Advancing `sync-v1` is a force-push, not a pull request, so it does not
+      # pass through upstream's CODEOWNERS review. Without this gate, anyone who
+      # can push to the upstream can point the tag at a commit no code owner
+      # approved and every consumer picks it up on the next cron. Verifying the
+      # signature moves the trust anchor from "who can push a tag" to "who holds
+      # a signing key listed below".
+      #
+      # This is defense in depth. The primary control is a tag protection
+      # ruleset on the upstream (see docs/sync.md); this step is what protects
+      # a consumer when that ruleset is missing or is changed.
+      #
+      # `SYNC_TAG_ALLOWED_SIGNERS` is a repo *variable*, not a secret — it holds
+      # public keys. Format is git's allowed-signers file, one principal per line:
+      #   maintainer@example.com ssh-ed25519 AAAAC3Nza...
+      # Unset means "not yet migrated": the step warns and continues, so adding
+      # this workflow does not break a consumer that has not been given keys yet.
+      # Set it as soon as upstream publishes its signing keys.
+      - name: Verify upstream tag signature
+        if: steps.clone.outputs.ref_kind == 'tag'
+        env:
+          ALLOWED_SIGNERS: ${{ vars.SYNC_TAG_ALLOWED_SIGNERS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ALLOWED_SIGNERS:-}" ]; then
+            echo "::warning::SYNC_TAG_ALLOWED_SIGNERS is not set — the upstream tag is being trusted without verifying its signature. Anyone who can push a tag to ${UPSTREAM_REPO} can ship code to this repo. Set the variable to upstream's published signing keys to close this."
+            exit 0
+          fi
+          # 0600: the file is not secret, but a narrow mode keeps a shared or
+          # self-hosted runner from having it rewritten between write and read.
+          signers=/tmp/upstream-allowed-signers
+          install -m 600 /dev/null "$signers"
+          printf '%s\n' "$ALLOWED_SIGNERS" > "$signers"
+          cd /tmp/upstream
+          git config gpg.ssh.allowedSignersFile "$signers"
+          if ! git verify-tag "${UPSTREAM_REF}" 2>/tmp/verify-tag.err; then
+            echo "::error::Upstream tag '${UPSTREAM_REF}' is unsigned or its signature does not match SYNC_TAG_ALLOWED_SIGNERS. Refusing to sync. This is what a moved or forged tag looks like — do not bypass it without confirming with an upstream maintainer out of band."
+            cat /tmp/verify-tag.err >&2
+            exit 1
+          fi
+          echo "✅ Verified signature on ${UPSTREAM_REF}"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0

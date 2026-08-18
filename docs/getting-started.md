@@ -46,7 +46,20 @@ substitutions:
 # Optional: opt out of specific upstream files.
 # Use either the source or destination path.
 skip_targets: []
+
+# Required. The ceiling on what an upstream manifest may write, delete, or
+# bootstrap in this repo. Every destination must match at least one pattern.
+# The list below matches what the canonical manifest ships today — trim it
+# if you don't want a surface. Dropping the workflows line, for example,
+# means upstream can never write to your CI, whatever the manifest says.
+allowed_destinations:
+  - .codex/**
+  - .github/copilot-instructions.md
+  - .github/workflows/dco.yml
+  - agent-loop-instructions.md
 ```
+
+> **Don't omit `allowed_destinations`.** Leaving it out is not "the default" — it's fail-open: the engine prints a warning into an otherwise-green job and then trusts the upstream manifest to write anywhere in your tree, including `.github/workflows/`. The absent-key case only exists so the gate could ship without breaking consumers mid-flight, and it will flip to fail-closed once the fleet has migrated. See [Bounding what the sync can write](sync.md#bounding-what-the-sync-can-write-allowed_destinations).
 
 Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-line values use YAML block scalars (the `|` form). All keys must be `[A-Z][A-Z0-9_]*`.
 
@@ -87,6 +100,22 @@ gh secret set UPSTREAM_READ_TOKEN --repo <owner>/<consumer> --body "<token>"
 ```
 
 > **Important — use `--body "$VALUE"`, not `--body -`.** Passing a secret via stdin (`echo "$TOKEN" | gh secret set --body -`) silently mangles the value. The arg form is the only reliable transport.
+
+### Tag signing keys
+
+The sync workflow verifies the upstream tag's signature before it runs any upstream code. Set the allowed signers as a repo **variable** — these are public keys, not secrets:
+
+```bash
+gh variable set SYNC_TAG_ALLOWED_SIGNERS --repo <owner>/<consumer> --body "$(cat allowed_signers)"
+```
+
+Where `allowed_signers` holds one principal per line, in git's allowed-signers format:
+
+```
+maintainer-a@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
+```
+
+Ask upstream for its published signing keys. Until the variable is set the workflow warns and syncs anyway, so this doesn't block first-time onboarding — but an unset variable means anyone who can push a tag to the upstream can ship code into this repo. See [Signing the tag](sync.md#signing-the-tag).
 
 For multi-consumer setups, prefer org-level secrets scoped to the consumer repos:
 
@@ -135,9 +164,11 @@ Consumers track the `sync-v1` tag, not `main`. So a stray push to upstream main 
 
 ```bash
 # in the upstream repo, on main
-git tag -af sync-v1 -m "Retag sync-v1 to <reason>" <commit-sha>
+git tag -sf sync-v1 -m "Retag sync-v1 to <reason>" <commit-sha>
 git push --force-with-lease origin sync-v1
 ```
+
+Sign the tag (`-s`, not `-a`). Advancing a tag is a force-push, not a pull request, so it never passes through `CODEOWNERS` review — the signature plus a tag protection ruleset are what make the tag trustworthy. See [The tag is the real trust boundary](sync.md#the-tag-is-the-real-trust-boundary).
 
 The `-v1` suffix is the protocol version, not a content version. Retag `sync-v1` for ordinary content changes. Create `sync-v2` only for a breaking sync-protocol change that requires coordinated consumer workflow updates.
 

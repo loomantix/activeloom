@@ -10,6 +10,44 @@ A target with `delete: true` removes the destination from the consumer instead o
 
 A target with `create_if_missing: true` bootstraps the destination on first sync and leaves it alone thereafter. Use this for files that consumers are expected to customize after creation (starter scaffolding, per-consumer configuration). On first creation, required substitutions are still validated and the sync hard-fails if any are missing — same contract as any other copy target. On subsequent syncs the engine short-circuits before substitution, so substitution values declared by the manifest don't have to remain present in the consumer's `.platform-config.yml` once the file exists. Mutually exclusive with `delete`.
 
+## Bounding what the sync can write (`allowed_destinations`)
+
+The manifest is authored **upstream**. Consumers don't review it before it runs — the cron pulls it and the engine acts on it. `allowed_destinations` is the consumer-side control that decides how far that authority reaches: it is the difference between "trust that the upstream maintainer wasn't fooled" and "this repo opted into each path that may be written."
+
+Set it in the consumer's `.platform-config.yml`. Every write, delete, and `create_if_missing` bootstrap must match at least one pattern, or the sync fails:
+
+```yaml
+allowed_destinations:
+  - .codex/** # skills, references, review workflow
+  - .github/copilot-instructions.md # templated Copilot reviewer instructions
+  - .github/workflows/dco.yml # only if you want DCO enforcement synced
+  - agent-loop-instructions.md # agent-loop scaffolding, consumer-owned
+```
+
+That list matches what the canonical manifest actually ships today: everything else it writes lives under `.codex/`. Trim it further if you don't want a given surface — dropping the `.github/workflows/dco.yml` line means an upstream manifest can never write to your workflows directory, regardless of what the manifest says.
+
+Patterns are gitignore-flavored globs: `**/` spans path segments, `*` and `?` stop at `/`, everything else is literal. They are anchored at both ends, so `.codex/**` does not match `.codexfoo`.
+
+The key is tri-state, and the difference matters:
+
+| Value                          | Behavior                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| **Key absent**                 | Fail-open. Warns, then trusts the manifest to write anywhere in the tree. |
+| `allowed_destinations:` (null) | Config error. Almost always a mid-edit accident, so the engine refuses.   |
+| Non-empty list                 | Enforced. Every destination must match a pattern.                         |
+| `[]`                           | Deny everything — the "freeze this consumer" knob.                        |
+
+> **Set this key.** The absent-key case exists only so the gate could be introduced without breaking consumers mid-flight, and the warning it prints lands in a green job where nobody reads it. A consumer without an allowlist grants the upstream manifest write access to its entire tree, including `.github/workflows/`. The engine will flip this case to fail-closed once the fleet has migrated; setting it now is the migration.
+
+`allowed_destinations` and `skip_targets` solve different problems and don't substitute for each other. `skip_targets` is an opt-out you maintain per file as the manifest grows — it only stops what you already knew to name. `allowed_destinations` is a ceiling that also applies to targets the upstream adds later, which is the case that actually matters.
+
+### What it does not cover
+
+Two gaps to know about, so the allowlist isn't mistaken for a stronger boundary than it is:
+
+- **Overwrites of sensitive paths.** The engine refuses to `delete:` `.github/workflows/**`, `.github/CODEOWNERS`, lockfiles, and Dockerfiles, but it does not block _overwriting_ them. A rewritten workflow doesn't fail loudly — it runs, with your secrets. Keep sensitive paths out of `allowed_destinations` unless you genuinely want them synced.
+- **The commit step is broader than the engine.** `create-signed-commit.py` commits everything `git status` reports in the working tree, not just what the engine wrote, so the allowlist does not constrain what ultimately lands in the sync PR. Review the PR diff; that is still the backstop.
+
 ## CI flow (consumer-side workflow)
 
 Each consumer repo drops in `.github/workflows/sync-from-upstream.yml` (copied from [`sync-from-upstream.yml.template`](../.github/workflows/sync-from-upstream.yml.template), with the `UPSTREAM_REPO` and secret names filled in). On its daily cron + `workflow_dispatch`, the workflow:
@@ -27,11 +65,71 @@ Consumers track a tag (`sync-v1`), not `main`. So an unintended push to upstream
 
 ```bash
 # in the upstream repo, on main, after merging changes you want to ship
-git tag -af sync-v1 -m "Retag sync-v1 to <reason>" <commit-sha>
+git tag -sf sync-v1 -m "Retag sync-v1 to <reason>" <commit-sha>
 git push --force-with-lease origin sync-v1
 ```
 
 The `--force-with-lease` is required and intentional — it asserts the tag's previous SHA so a concurrent retag from another maintainer fails loudly rather than silently clobbering. The annotated message documents the cumulative changes since the previous retag.
+
+Use `-s` (signed), not `-a`. The signature is what lets a consumer verify that the tag came from a maintainer rather than from whoever last had push access — see [Signing the tag](#signing-the-tag) below.
+
+#### The tag is the real trust boundary
+
+`CODEOWNERS` and branch protection gate merges into `main`. Consumers do not consume `main` — they consume the tag. **Advancing a tag is a force-push, not a pull request**, so it does not pass through code-owner review at all. Anyone who can push to this repo can point `sync-v1` at any commit, including one that was never reviewed, and every consumer picks it up on the next daily cron.
+
+Two controls close that gap. Ship both — they fail independently.
+
+**1. Protect the tag (server-side, protects every consumer at once).**
+
+```bash
+gh api -X POST repos/<owner>/codex-platform/rulesets \
+  -f name='sync tags' \
+  -f target='tag' \
+  -f enforcement='active' \
+  -F 'conditions[ref_name][include][]=refs/tags/sync-v*' \
+  -F 'conditions[ref_name][exclude][]=' \
+  -F 'rules[][type]=deletion' \
+  -F 'rules[][type]=required_signatures' \
+  -F 'bypass_actors[][actor_id]=<team-or-app-id>' \
+  -F 'bypass_actors[][actor_type]=Team' \
+  -F 'bypass_actors[][bypass_mode]=always'
+```
+
+Retagging requires force-push, so grant bypass only to the maintainers who actually ship releases. `required_signatures` makes an unsigned retag fail at the server, which means the control holds even if someone forgets `-s`.
+
+Verify it took effect:
+
+```bash
+gh api repos/<owner>/codex-platform/rulesets --jq '.[] | {name, target, enforcement}'
+```
+
+**2. Have consumers verify the signature (client-side, protects a consumer if the ruleset is missing or gets changed).** Covered next.
+
+#### Signing the tag
+
+Sign with SSH — no keyring or agent wrangling in CI, and the public half is what consumers pin.
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+git tag -sf sync-v1 -m "Retag sync-v1 to <reason>" <commit-sha>
+git push --force-with-lease origin sync-v1
+```
+
+Publish the **public** keys of everyone allowed to ship a release, in git's allowed-signers format — one principal per line:
+
+```
+maintainer-a@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
+maintainer-b@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
+```
+
+Each consumer sets that block as the `SYNC_TAG_ALLOWED_SIGNERS` repo variable, and their sync workflow refuses to run the engine on a tag that doesn't verify against it. It is a variable rather than a secret because these are public keys — treating them as secret only makes rotation harder.
+
+Rotating a signer means updating that variable in every consumer, so keep the list to people who actually cut releases.
+
+> **Migration:** a consumer with `SYNC_TAG_ALLOWED_SIGNERS` unset gets a warning and syncs anyway, so publishing signed tags doesn't break consumers that haven't been given the keys yet. Verification only becomes enforcing once the variable is set. Set it as soon as the keys above are published.
+
+If your maintainers already sign with GPG instead, drop `gpg.format ssh`, keep `git tag -s`, and swap the consumer-side verification step to import an armored public key rather than writing an allowed-signers file — the shape of the gate is the same.
 
 #### Why the `-v1` suffix is a protocol version, not a content version
 
