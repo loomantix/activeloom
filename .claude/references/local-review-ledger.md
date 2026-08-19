@@ -127,9 +127,12 @@ the shared definition for the pinned `<base-sha>..<head-sha>` review range:
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
   `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
-- **Docs, config, or fixtures** — `.md`, `.txt`, `.yml`, `.yaml`, `.json`,
-  `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
+- **Docs, inert config, or fixtures** — `.md`, `.txt`, `.gitignore`,
+  `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
   `.env.example`, paths under `docs/`, `*.fixture.*`, and snapshot files.
+- **Review-significant config** — workflows, dependency manifests and lockfiles,
+  schemas, migrations, deploy configuration, and sync targets are source even
+  when their extension is `.yml`, `.yaml`, `.json`, or `.toml`.
 - **Anything else** — treat as source.
 
 Zero source files means skip; one or more means run the full pass. A mixed
@@ -189,8 +192,8 @@ When spawning review agents, keep the complete packet as a byte-identical prompt
 prefix and append only a short lane-specific suffix containing the lens and its
 file scope. Put no lane-specific wording before the shared prefix. When the
 runtime supports selecting inherited history, use no inherited conversation
-history or the smallest permitted history; the packet and repository files are
-the source of truth. Do not forward the user's prompt, implementation
+history (`fork_turns="none"`) or the smallest permitted history; the packet and
+repository files are the source of truth. Do not forward the user's prompt, implementation
 transcript, prior lane conclusions, or a pasted whole diff.
 
 The orchestrator reads the complete PR ledger once. Lanes review independently
@@ -413,8 +416,11 @@ finding into the PR.
 ### Use the deterministic ledger helper
 
 Use the vendored `review-ledger.js` for every local-review finding, disposition
-reply, thread resolution, roster declaration, and pass marker. Do not
-hand-compose `gh api` form arguments for these mutations.
+reply, thread resolution, roster declaration, and pass marker. The legacy v1
+refactor latch is the one explicit marker-construction exception: post it with
+the helper's `post-pr-comment` command until that informational latch moves to
+the v3 protocol. Do not hand-compose `gh api` form arguments for these
+mutations.
 
 Invoke it as `node <ledger-helper>` — it requires Node.js and is not executable,
 so `./review-ledger.js` will not run. The bundle is ESM; the sibling
@@ -528,8 +534,11 @@ two.
 
 For each published finding:
 
-1. Apply the correction and run the smallest relevant validation.
-2. Commit and push with a normal, non-force push.
+1. Apply the correction and run the smallest relevant validation. That scoped
+   run dispositions the finding; it never substitutes for the gating run below.
+2. Commit the correction. When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke
+   that wrapper-owned helper with no arguments; otherwise push normally without
+   force.
 3. Put the fix SHA, validation result, and concise rationale in a content file.
    Use `dispose` with the matching fingerprint and occurrence. For dismissal or
    tracked deferral, use `outcome=dismissed` or `outcome=deferred` and the exact
@@ -538,6 +547,36 @@ For each published finding:
 
 If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
 report the exact unresolved thread; do not silently continue.
+
+## Validate before attesting
+
+A scoped run is the right validation for a _fix_. It is never sufficient
+evidence for a _pass_. Before writing any pass or completion attestation, run
+the repository's gating suite unfiltered, and state in the attestation which
+command and config it ran and at which SHA.
+
+Two failure modes make this non-optional, and both have shipped:
+
+- **A scoped run is blind by construction.** It cannot see a sibling suite the
+  change broke, a mirrored spec under a second directory, or a spec the change
+  itself added and never executed. An engine that edits `src/**/x.spec.ts` and
+  runs only that file will report green while `tests/**/x.spec.ts` — the same
+  assertions, a second copy — is red.
+- **CI may not be running the suite either.** Whether any test job runs on a
+  given pull request is a per-repository, per-target-branch policy. A green
+  check list can contain zero test jobs. Never infer test health from check
+  status; read which jobs actually ran, or run the suite yourself.
+
+Read the consumer repository's declared review gate — the commands its
+`AGENTS.md` (or `CLAUDE.md`) names as the gate — and run those. Where a
+repository declares none, run its broadest practical suite and say so. If the
+gating run is genuinely impractical in the environment, the attestation must
+say that plainly instead of implying coverage it does not have.
+
+A gating run that fails is a blocking finding in its own right, even when the
+failure predates the round: an attestation cannot certify a head whose suite is
+red. This applies to a `clean` pass too — a round that changed nothing still
+attests to a head, and that head's suite can be red for reasons no lane examined.
 
 ## Record clean passes and convergence
 
@@ -615,9 +654,14 @@ Result ownership depends on the caller:
   wrapper validates the file and owns attestation.
 - When it is unset, the reviewer is standalone. Create an owner-only temporary
   directory outside the Git worktree, serialize the same result to a regular
-  file there, and invoke the helper's `attest` command with the exact repository,
-  PR, base, before, and final head. Do not report the pass complete unless the
-  helper returns `verified: true`.
+  file there with `write-result`, then invoke
+  `attest --threads-file <path> --expected-threads-sha256 <sha256> --allowed-heads-file <path>`
+  with the exact repository, PR, base, before, and final head. The thread export
+  must be sealed: the helper refuses a `--threads-file` whose digest is not
+  supplied as a 64-hex value, via that flag or the
+  `AGENT_LOOP_REVIEW_THREADS_SHA256` environment fallback. Pass the digest
+  returned by `validate-result` as `--expected-result-sha256`. Do not report the
+  pass complete unless the helper returns `verified: true`.
 
 Docs/config-only skips follow the same rule with a `clean` result whose
 `beforeSha` and `afterSha` both name the reviewed head. A skip returns only
