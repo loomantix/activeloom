@@ -235,7 +235,22 @@ finding into the PR.
 
 ### Use the deterministic ledger helper
 
-Use `.codex/skills/critique/scripts/review-ledger.py` for every local-review
+Invoke it as `node .codex/skills/critique/scripts/review-ledger.js` — it
+requires Node.js and is not executable, so `./review-ledger.js` will not run.
+The bundle is ESM; the sibling `package.json` in that directory declares
+`"type": "module"` so it resolves the same way regardless of what the
+surrounding repository's root manifest says.
+The file is a build artifact of [`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger),
+vendored verbatim from the published tarball at the version recorded in
+`review-ledger.version`, with that tarball's sha512 in `review-ledger.integrity`.
+`node review-ledger.js --version` reports the version it was built from, so a
+copy can always identify itself without trusting the pin file beside it.
+Never edit or reformat it: fixes belong upstream in the package. The byte-compare
+that enforces this runs in `codex-platform`'s own CI, not here — in a consumer
+repository an accidental edit is silently restored by the next sync rather than
+caught locally, so treat the file as read-only and keep it out of any formatter.
+
+Use `.codex/skills/critique/scripts/review-ledger.js` for every local-review
 finding, disposition reply, thread resolution, and pass marker. The legacy v1
 refactor latch is the one explicit marker-construction exception: post it with
 the helper's `post-pr-comment` command until that informational latch moves to
@@ -259,11 +274,11 @@ preserves literal backticks, dollar expressions, quotes, Unicode, CRLF, and a
 missing final newline:
 
 ```bash
-python3 .codex/skills/critique/scripts/review-ledger.py preflight-anchor \
+node .codex/skills/critique/scripts/review-ledger.js preflight-anchor \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line>
 
-python3 .codex/skills/critique/scripts/review-ledger.py post-finding \
+node .codex/skills/critique/scripts/review-ledger.js post-finding \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line> \
   --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
@@ -276,7 +291,7 @@ occurrence to its existing root comment, then reopen that thread as a resumable,
 idempotent sequence:
 
 ```bash
-python3 .codex/skills/critique/scripts/review-ledger.py reopen-occurrence \
+node .codex/skills/critique/scripts/review-ledger.js reopen-occurrence \
   --repo <owner/repo> --pr <number> --head <reviewed-sha> \
   --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
   --occurrence <next-number> --severity <severity> --lens <lens> \
@@ -293,7 +308,7 @@ the final state. If the reply succeeds but resolution fails, running the same
 command again reuses the reply and completes only the missing resolution:
 
 ```bash
-python3 .codex/skills/critique/scripts/review-ledger.py dispose \
+node .codex/skills/critique/scripts/review-ledger.js dispose \
   --repo <owner/repo> --pr <number> --head <full-fix-sha> \
   --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
   --occurrence <number> --outcome <fixed|dismissed|deferred> \
@@ -356,7 +371,7 @@ forward-only transition. Supply `--classification minor|material` only when
 the head moved:
 
 ```bash
-python3 .codex/skills/critique/scripts/review-ledger.py write-result \
+node .codex/skills/critique/scripts/review-ledger.js write-result \
   --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
   --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
   --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
@@ -368,7 +383,7 @@ For a blocked pass, put one short public-safe blocker in an owner-only regular
 file and call the deterministic helper instead of constructing JSON:
 
 ```bash
-python3 .codex/skills/critique/scripts/review-ledger.py write-blocked-result \
+node .codex/skills/critique/scripts/review-ledger.js write-blocked-result \
   --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
   --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
   --before "$AGENT_LOOP_PR_HEAD_SHA" \
@@ -409,9 +424,13 @@ result both stop clearly even when the reviewer process exits zero.
 Outside agent-loop, create the complete review-thread export and ordered
 forward-only transition heads (`beforeSha` through `afterSha`) as private
 temporary files, then use `write-result` to create the same result. Then use
-`attest --threads-file <path> --allowed-heads-file <path>`. The command verifies
-every thread and the changed-result evidence itself before publishing; pass the
-digest returned by `validate-result` as `--expected-result-sha256`.
+`attest --threads-file <path> --expected-threads-sha256 <sha256> --allowed-heads-file <path>`.
+The thread export must be sealed: the helper
+refuses a `--threads-file` whose digest is not supplied as a 64-hex value, via
+that flag or the `AGENT_LOOP_REVIEW_THREADS_SHA256` environment fallback. The
+command verifies every thread and the changed-result evidence itself before
+publishing; pass the digest returned by `validate-result` as
+`--expected-result-sha256`.
 
 Every engine pass remains evidence for the exact head it reviewed. A later
 minor commit does not rewrite that historical fact. Round convergence is a

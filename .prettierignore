@@ -15,3 +15,7 @@ NOTICE
 
 # Local-only Codex overrides (already gitignored, defense in depth)
 .codex/settings.local.json
+
+# Vendored build artifact of @loomantix/review-ledger — its bytes must match
+# the published tarball exactly, so Prettier must never touch it.
+.codex/skills/critique/scripts/review-ledger.js

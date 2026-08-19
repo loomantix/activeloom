@@ -45,7 +45,10 @@
 .codex/skills/backlog-refinement/scripts/candidates.py
 .codex/skills/copilot-review/SKILL.md
 .codex/skills/critique/SKILL.md
-.codex/skills/critique/scripts/review-ledger.py
+.codex/skills/critique/scripts/package.json
+.codex/skills/critique/scripts/review-ledger.integrity
+.codex/skills/critique/scripts/review-ledger.js
+.codex/skills/critique/scripts/review-ledger.version
 .codex/skills/deepcritique/SKILL.md
 .codex/skills/diagnosing-bugs/SKILL.md
 .codex/skills/feature-dev/SKILL.md
