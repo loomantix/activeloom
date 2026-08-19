@@ -79,6 +79,7 @@ class ConsumerConfig(TypedDict, total=False):
     substitutions: dict[str, object]
     skip_targets: list[str]
     allowed_destinations: list[str]
+    allow_sensitive_writes: list[str]
 
 
 PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
@@ -184,6 +185,36 @@ def _compile_case_insensitive(pattern: str) -> re.Pattern[str]:
 
 SENSITIVE_DELETE_REGEXES: Final[tuple[re.Pattern[str], ...]] = tuple(
     _compile_case_insensitive(p) for p in SENSITIVE_DELETE_PATTERNS
+)
+
+# Paths the engine refuses to *write* — overwrite or create — unless the
+# consumer names the exact destination in `allow_sensitive_writes`.
+#
+# The delete block above stops a manifest from removing a guardrail; this
+# one stops it from authoring one. Deletion is not the higher-impact
+# operation here. A deleted workflow stops running; a rewritten workflow
+# runs, with the consumer's secrets and whatever `permissions:` the
+# manifest put in it. The same asymmetry covers CODEOWNERS (rewrite it and
+# the review gate is gone without anything being deleted) and lockfiles (a
+# rewritten pin is a supply-chain edit the next CI run installs).
+#
+# `allowed_destinations` cannot express this on its own: it bounds *where*
+# the manifest may write, per path rather than per operation, and the
+# documented starting allowlist already grants `.github/workflows/dco.yml`
+# because the canonical manifest ships that file. Inheriting write access
+# to a directory is not consent to have a specific workflow rewritten, so
+# the opt-in takes literal paths only — see `parse_sensitive_write_allowlist`.
+#
+# Identical to the delete set today, and kept as a separate name rather
+# than a second literal so a path can never be added to one and forgotten
+# in the other. They answer different questions — "would absence weaken an
+# invariant?" for delete, "does content here control execution, review
+# gating, or dependency resolution?" for write — so split this into its
+# own tuple the moment a path qualifies for one but not the other.
+SENSITIVE_WRITE_PATTERNS: Final[tuple[str, ...]] = SENSITIVE_DELETE_PATTERNS
+
+SENSITIVE_WRITE_REGEXES: Final[tuple[re.Pattern[str], ...]] = tuple(
+    _compile_case_insensitive(p) for p in SENSITIVE_WRITE_PATTERNS
 )
 
 
@@ -493,6 +524,81 @@ def parse_str_list(target: dict[str, Any], key: str) -> list[str] | None:
     return raw
 
 
+def parse_sensitive_write_allowlist(
+    config_doc: dict[str, Any], config_path: Path, consumer_dir: Path
+) -> frozenset[str] | None:
+    """Parse `allow_sensitive_writes` into a set of exact destination paths.
+
+    Returns the (possibly empty) set of sensitive paths this consumer has
+    opted into, or None if the key is malformed — the error is already on
+    stderr, matching `parse_str_list`'s contract.
+
+    Two semantics differ deliberately from `allowed_destinations`:
+
+    * **Absent means deny.** There is no fail-open migration phase here.
+      A consumer that never opts in gets a hard failure naming the exact
+      line to add, not a warning buried in a green job. Failing closed is
+      cheap for this gate specifically: nothing is written when it trips,
+      so the blast radius is a red sync run against an untouched tree.
+    * **Literal paths only.** `allowed_destinations` takes globs because
+      it describes surfaces. This takes exact destinations because the
+      whole point is per-file consent — `.github/workflows/**` here would
+      rebuild the hole the gate exists to close.
+
+    Entries that aren't sensitive paths are rejected rather than ignored.
+    A typo (`.github/workflow/dco.yml`) would otherwise parse fine and
+    leave the real destination unauthorized, so the consumer would see
+    their config naming the path *and* a refusal to write it. The cost is
+    that narrowing `SENSITIVE_WRITE_PATTERNS` later turns a stale entry
+    into a config error; widening it, the direction this set actually
+    moves, is safe.
+    """
+    if "allow_sensitive_writes" not in config_doc:
+        return frozenset()
+
+    raw = config_doc["allow_sensitive_writes"]
+    if raw is None:
+        sys.stderr.write(
+            f"{config_path}: `allow_sensitive_writes:` is present but null. "
+            f"Remove the key, or use `[]` to say explicitly that no sensitive "
+            f"path may be written.\n"
+        )
+        return None
+    if not isinstance(raw, list) or not all(isinstance(p, str) for p in raw):
+        sys.stderr.write(
+            f"{config_path}: `allow_sensitive_writes` must be a list of strings\n"
+        )
+        return None
+
+    entries: set[str] = set()
+    for entry in raw:
+        if "*" in entry or "?" in entry:
+            sys.stderr.write(
+                f"{config_path}: `allow_sensitive_writes` entries must be literal "
+                f"paths, not globs — a directory pattern here would re-open the "
+                f"gap this gate closes. Name each file explicitly: {entry!r}\n"
+            )
+            return None
+        resolved = resolve_under(consumer_dir, entry)
+        if resolved is None or resolved.relative_to(consumer_dir).as_posix() != entry:
+            sys.stderr.write(
+                f"{config_path}: `allow_sensitive_writes` entries must be canonical "
+                f"repo-relative posix paths (no `./`, `//`, `..`, or leading `/`): "
+                f"{entry!r}\n"
+            )
+            return None
+        if not path_matches_any(entry, SENSITIVE_WRITE_REGEXES):
+            sys.stderr.write(
+                f"{config_path}: `allow_sensitive_writes` lists {entry!r}, which is "
+                f"not a sensitive path. Ordinary destinations are governed by "
+                f"`allowed_destinations`; drop this entry so the list stays a "
+                f"readable inventory of the exceptions this consumer really made.\n"
+            )
+            return None
+        entries.add(entry)
+    return frozenset(entries)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--upstream-repo", required=True, type=Path, help="path to a checkout of the upstream repo")
@@ -568,6 +674,16 @@ def main() -> int:
             return 1
         allowed_patterns = [glob_to_regex(p) for p in allowed_raw]
 
+    # Per-file consent for the destinations where content — not absence —
+    # is the dangerous half. Independent of `allowed_destinations`: a
+    # destination must clear both, since one bounds the surface and the
+    # other bounds what may be done to the sensitive files inside it.
+    sensitive_write_allowlist = parse_sensitive_write_allowlist(
+        config_doc, config_path, consumer_dir
+    )
+    if sensitive_write_allowlist is None:
+        return 1
+
     print(f"Syncing from {upstream_repo} → {consumer_dir}")
     if args.dry_run:
         print("(dry run — no files will be written)")
@@ -576,6 +692,7 @@ def main() -> int:
     removed = 0
     skipped = 0
     unchanged = 0
+    sensitive = 0
 
     for target in targets:
         # Each `targets:` entry must be a mapping. A bare scalar (string,
@@ -798,6 +915,41 @@ def main() -> int:
             removed += 1
             continue
 
+        # Engine-level gate on *writing* a sensitive path. Only copy and
+        # `create_if_missing` targets reach here — the delete branch above
+        # always continues or returns. Creation is gated alongside
+        # overwrite on purpose: a workflow file that did not exist before
+        # still runs once a manifest authors it, so "the file was absent"
+        # is not a reason to skip consent.
+        #
+        # The block matches case-insensitively while the opt-in compares
+        # exactly. That asymmetry is deliberate — a denial should be broad
+        # enough to survive a case-insensitive filesystem, a grant should
+        # be narrow enough that it only ever covers the path the consumer
+        # actually wrote down.
+        if path_matches_any(dest_rel_canonical, SENSITIVE_WRITE_REGEXES):
+            if dest_rel_canonical not in sensitive_write_allowlist:
+                sys.stderr.write(
+                    f"  ❌ refusing to write sensitive path without an explicit "
+                    f"opt-in (engine-level block, applies regardless of "
+                    f"allowed_destinations): {dest_rel_canonical}\n"
+                    f"     Content written here controls what runs in this repo, "
+                    f"who has to review it, or what the build installs. To allow "
+                    f"it, add the exact path to `allow_sensitive_writes` in "
+                    f"{config_path.name}:\n"
+                    f"       allow_sensitive_writes:\n"
+                    f"         - {dest_rel_canonical}\n"
+                )
+                return 1
+            sensitive += 1
+            # Surfaced per-run rather than left to the diff: a reviewer of
+            # the sync PR should be able to see "this run rewrites a
+            # workflow" from the job log without reading the patch.
+            print(
+                f"  ⚠️  sensitive destination {dest_rel_canonical} "
+                f"(opted in via `allow_sensitive_writes`)"
+            )
+
         # `create_if_missing: True` bootstraps the destination on first
         # sync and leaves it alone thereafter, so consumer customization
         # of the file survives subsequent syncs. Short-circuit before
@@ -875,7 +1027,13 @@ def main() -> int:
         else:
             unchanged += 1
 
-    print(f"\nDone: {written} written, {removed} removed, {unchanged} unchanged, {skipped} skipped.")
+    summary = (
+        f"\nDone: {written} written, {removed} removed, "
+        f"{unchanged} unchanged, {skipped} skipped."
+    )
+    if sensitive:
+        summary += f" {sensitive} sensitive destination(s) permitted by `allow_sensitive_writes`."
+    print(summary)
     return 0
 
 

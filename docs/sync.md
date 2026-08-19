@@ -100,7 +100,21 @@ substitutions:
 
 # Optional: opt out of specific files. Use either the source or destination path.
 skip_targets: []
+
+# Required before the sync may write a sensitive path. Absent or empty
+# means no sensitive path may be written, and the sync fails closed with
+# the exact line to add rather than warning in a green job.
+allow_sensitive_writes:
+  - .github/workflows/dco.yml
 ```
+
+### `allow_sensitive_writes`
+
+The engine treats a fixed set of destinations as sensitive: `.github/workflows/**`, `.github/actions/**`, `.github/CODEOWNERS`, `package.json`, `pnpm-lock.yaml`, `prisma/schema.prisma`, and `Dockerfile` / `Dockerfile.*`. It refuses to `delete:` any of them unconditionally, and refuses to **write** any of them — overwrite or first-time create — unless the consumer has named that exact path here.
+
+Writing is gated separately from deleting because it is the higher-impact operation on exactly these paths. A deleted workflow stops running; a rewritten workflow runs, with your secrets and whatever `permissions:` the manifest wrote into it. Rewriting `CODEOWNERS` removes the review gate without deleting anything, and rewriting a lockfile is a supply-chain edit your next CI run installs.
+
+Entries must be literal, canonical, repo-relative paths — no globs. Consent inherited from `.github/workflows/**` is what this gate exists to prevent, so a pattern is rejected rather than expanded. Creating a file is gated alongside overwriting it: a workflow that didn't exist before still runs once a manifest authors it. An entry that isn't a sensitive path is a config error, since it's almost always a typo that would leave the real destination unauthorized.
 
 Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-line values use YAML block scalars (the `|` form). Keys must be `[A-Z][A-Z0-9_]*`.
 
@@ -110,6 +124,7 @@ Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-l
 - **Hard fail on missing required substitution.** If a target declares a placeholder the consumer hasn't configured, the script exits 1 — better to break the sync PR than to silently leave an unfilled `<<KEY>>` in the destination file.
 - **Soft warn on undeclared placeholders in the source.** If the source contains `<<FOO>>` but `sync-targets.yml` doesn't declare `FOO` for that target, the placeholder is left intact and a warning is printed. Catches the case where a template change forgot to update the manifest.
 - **File mode preserved.** Targets with `mode: "0755"` get chmod'd after write.
+- **Sensitive destinations fail closed.** A write to a sensitive path that isn't listed in `allow_sensitive_writes` aborts the sync — including under `--dry-run`, so a dry run never reports a write the real run would refuse. Nothing is written when the gate trips. Permitted sensitive writes are announced in the job log and counted in the closing summary, so a reviewer can see "this run rewrites a workflow" without reading the diff.
 - **`create_if_missing` short-circuits before substitution.** When the destination already exists, the engine skips the source read, substitution, and write entirely. This means a consumer can leave `create_if_missing` substitution values undeclared after first creation without breaking later syncs.
 
 ## Adding a new consumer
