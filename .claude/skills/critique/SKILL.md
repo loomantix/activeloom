@@ -32,16 +32,22 @@ Resolve this engine's round number per the ledger before selecting lenses: use
 `local-review-complete:v3`
 markers on the PR naming `engine=claude` and add one.
 
-- **Rounds 1–2 run adversarially** — the matrix and dispositions below apply as
-  written.
-- **Round 3 and later run in convergence mode.** Both engines have read the
-  change cold twice; the goal moves from challenging it to landing it. Convergence
-  mode overrides the lens table and the fix bias, as set out under "Convergence
-  rounds" below. It does not change the post-before-editing, reply, or resolve
-  contract, and it does not raise the round cap.
-- **At Lean the cap is two rounds, and round 2 is a convergence round.** A Lean
-  PR arriving at round 3 is mis-tiered or not converging; report which and stop
-  rather than opening it.
+The stance follows the tier's schedule, not the round ordinal alone:
+
+- **At Deep, rounds 1–2 run adversarially and round 3 and later run in
+  convergence mode.**
+- **At Lean the cap is two rounds: round 1 is adversarial and round 2 is the
+  convergence round.** A Lean PR arriving at round 3 is mis-tiered or not
+  converging; report which and stop rather than opening it.
+- **The first round after an escalation is adversarial whatever its ordinal**,
+  per the workflow doc's escalation rule.
+
+In an adversarial round the matrix and dispositions below apply as written. In a
+convergence round both engines have already read the change cold; the goal moves
+from challenging it to landing it. Convergence mode overrides the lens table and
+the fix bias, as set out under "Convergence rounds" below. It does not change the
+post-before-editing, reply, or resolve contract, and it does not raise the round
+cap.
 
 State the resolved round and stance in the output.
 
@@ -106,7 +112,7 @@ list once, name the paths that lens owns, and prefer `git diff <base-sha>..HEAD
 -- <path>` over handing every agent one whole-diff artifact. Scope a lens by the
 files it reviews, never by the findings it may report.
 
-### Convergence rounds (round 3 and later)
+### Convergence rounds (any round whose stance is convergence)
 
 Run only `code-reviewer`, `silent-failure-hunter`, and `security-review` when its
 signal is present. Drop `type-design-analyzer`, `comment-analyzer`,

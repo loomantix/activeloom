@@ -7,14 +7,15 @@ disable-model-invocation: true
 
 # /codex-review — independent Codex cross-review
 
-You are getting an **independent opinion** on an open PR from the [Codex CLI](https://github.com/openai/codex), run locally. Codex is a different model family from the Claude review chain (`/critique`, `/deepcritique`). In the bounded local loop, Codex runs first in each round and reads the complete PR ledger cold; Claude `/deepcritique` follows on the resulting head.
+You are getting an **independent opinion** on an open PR from the [Codex CLI](https://github.com/openai/codex), run locally. Codex is a different model family from the Claude review chain (`/critique`, `/deepcritique`). In the bounded local loop, Codex runs first in each round and reads the complete PR ledger cold; the Claude lane for the resolved tier follows on the resulting head — `/critique` at Lean, `/deepcritique` at Deep.
 
 Codex runs **read-only by default** — it can read the tree and reason, but cannot modify files, so it is a safe reviewer. This skill never lets Codex edit code. Findings come back to _you_; you verify each against the source and fix only the confirmed ones.
 
 ## When to use
 
-- Before `/deepcritique` in each bounded local round, including after any material
-  Claude fix restarts the loop.
+- Before the round's Claude lane (`/critique` at Lean, `/deepcritique` at Deep)
+  in each bounded local round, including after any material Claude fix restarts
+  the loop.
 - Standalone, when you want a fresh cold read of a PR.
 - Skip on docs/config-only changesets — there is nothing for an adversarial reviewer to find.
 
@@ -50,7 +51,8 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
    - If the changeset is docs/config-only per the ledger's classification,
      finalize a scoped clean v3 result using the ledger's wrapper/standalone
      ownership rule, then exit.
-   - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds 1–2 are adversarial; round 3 and later are convergence rounds, and the prompt and dispositions change accordingly. The result's `baseSha` and the prompt range must name `REVIEW_BASE` exactly.
+   - Resolve the review tier before starting Codex. Read the PR's `local-review-tier:v1` marker; if none exists, classify against the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and post the marker, Lean being the tier when no trigger matches. This skill is the first reviewer in every local round, so an unresolved tier here leaves the whole round unresolved. State the tier and its triggers in the pass output.
+   - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. The stance follows the tier's schedule: at Deep, rounds 1–2 are adversarial and round 3 and later are convergence rounds; at Lean the cap is 2 and round 2 is the convergence round. The prompt and dispositions change accordingly. The result's `baseSha` and the prompt range must name `REVIEW_BASE` exactly.
 
 ## Phase 1: Build the review prompt
 

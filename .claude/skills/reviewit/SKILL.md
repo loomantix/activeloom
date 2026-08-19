@@ -25,7 +25,7 @@ This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilo
 
 `$ARGUMENTS` is whitespace-tokenized. The first token is the PR number; if a second token exists and equals `deep` (case-insensitive), set `MODE=deep` and `MAX_ITERS=4`. Otherwise `MODE=lean` and `MAX_ITERS=2`. Surface the resolved mode in the Phase 6 summary.
 
-`deep` asserts that the review tier resolved to Deep. Read the PR's `local-review-tier:v1` marker during Phase 0; if it says `lean`, run lean and say so — the argument is not evidence. The tier triggers, the Lean-by-default rule, and the evidence bar for escalating mid-chain are in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md).
+**The recorded tier governs the mode in both directions; the argument is not evidence.** Read the PR's `local-review-tier:v1` marker during Phase 0 and run the mode it records — lean on a `lean` marker even when `deep` was passed, and deep on a `deep` marker even when the argument was omitted. Say so whenever the marker overrides the argument. If no marker exists, classify against the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and post one before starting an iteration, as `critique` and `deepcritique` do; Lean is the tier when no trigger matches. The tier triggers, the Lean-by-default rule, and the evidence bar for escalating mid-chain are in that same document.
 
 ## Core principles
 

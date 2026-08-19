@@ -24,6 +24,12 @@ docs/config-only changesets. This is the shared definition for the pinned
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
   `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
+- **Prompt surface — source, whatever the extension.** Every path under
+  `.claude/`, including its Markdown. These files are read by the model as
+  instructions and sync to every consumer, so a defect in them ships exactly
+  like a code defect. Classifying them as docs would make the fan-out trigger
+  in [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md) unreachable for the
+  surface it was written to protect.
 - **Docs, config, or fixtures** — `.md`, `.txt`, `.yml`, `.yaml`, `.json`,
   `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
   `.env.example`, paths under `docs/`, `*.fixture.*`, and snapshot files.
@@ -127,12 +133,17 @@ and record it on the PR, so a later round in a fresh session reads it instead of
 re-deriving it.
 
 ```text
-<!-- local-review-tier:v1 tier=<lean|deep> trigger=<trigger-id-or-none> head=<sha> -->
+<!-- local-review-tier:v1 tier=<lean|deep> trigger=<ids-or-none> head=<sha> -->
 ```
+
+`trigger=` carries **every** trigger the change matched, as the comma-separated
+1–6 ordinals from [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md) — `trigger=3`,
+`trigger=1,3`, or `trigger=none`. Recording only one lets a clean result from
+that trigger's lens de-escalate the PR while an unrecorded trigger still stands.
 
 Search for the marker during pre-flight and adopt that tier. If none exists,
 classify, post the marker as an informational PR comment, and state the tier and
-trigger in the pass output before invoking a lane.
+triggers in the pass output before invoking a lane.
 
 The marker is per-PR, not per-engine and not per-round — every engine reads the
 same one. Post a replacement only for an evidence-backed escalation or

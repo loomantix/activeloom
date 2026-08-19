@@ -69,6 +69,12 @@ harnesses land here even when they are subtle and even when a defect in them
 fails open. That class of defect is caught by the next person the tool touches
 and fixed by editing the tool.
 
+**Precedence: walk triggers 1–6 first. The dominant rule only resolves a change
+that matched no trigger.** It is dominant over the difficulty instinct, not over
+the trigger list. Tooling that also fans out past this repo — the sync engine, a
+shared CI action, anything under `.claude/` — is trigger 3 and therefore Deep,
+because its blast radius is not confined to the developer who runs it.
+
 ### Round budget and stopping rule
 
 A round is one complete pass per available engine at the same head.
@@ -95,12 +101,29 @@ trigger the classification missed — a real authorization or isolation bypass, 
 real data-shape change, a real break in a contract another repository consumes.
 Name the finding and the trigger, update the tier marker, and adopt the Deep
 budget. The round already run counts as Deep round 1; do not restart the count.
+**The first round after an escalation is adversarial whatever its ordinal.** An
+escalated change would otherwise inherit a convergence stance and receive the
+Deep budget without one adversarial Deep pass — and escalation fires precisely
+when a confirmed finding showed the change reaches further than classified.
 
-**Deep → Lean.** De-escalate when Deep round 1 completes and the lens that owns
-the selecting trigger returned no confirmed finding. Finish at Lean: the lean
-lens set, one further round at most. Running the full matrix again over a
+**Deep → Lean.** De-escalate when Deep round 1 completes and _every_ lens owning
+a recorded trigger returned no confirmed finding. Finish at Lean: the lean lens
+set, one further round at most. Running the full matrix again over a
 substantively unchanged diff audits the review rather than the change. Record
-the de-escalation and the lens that came back clean.
+the de-escalation and the lenses that came back clean.
+
+Trigger 6 — an explicitly requested deep review — is never de-escalated. The
+request is the evidence, and no clean lens overrides it. For the rest, a trigger
+de-escalates only through the lens that owns it:
+
+| Trigger                          | Owning lens                                 |
+| -------------------------------- | ------------------------------------------- |
+| 1 sensitive path                 | `security-review`                           |
+| 2 irreversible data or artifact  | `code-reviewer` (migration/compat pass)     |
+| 3 fans out past this repo        | `code-reviewer` on the consumed contract    |
+| 4 non-obvious deployed behaviour | `silent-failure-hunter` + `code-reviewer`   |
+| 5 recurring-incident area        | `code-reviewer` scoped to the incident path |
+| 6 explicitly requested           | not de-escalatable                          |
 
 Tier selection narrows which lenses run and how many rounds are owed. It never
 narrows what a lens may report, and it never relaxes the post-before-editing,
@@ -131,7 +154,10 @@ Use this path when both local engines are available:
      head and re-stales the other engine's attestation for nothing that ships.
      Each engine's cleanup lane latches on a `local-review-refactor:v1` marker;
      a docs/config-only skip does not consume it.
-   - **Rounds 1–2 are adversarial; round 3 and later are convergence rounds.**
+   - **At Deep, rounds 1–2 are adversarial and round 3 and later are
+     convergence rounds; at Lean the cap is 2 and round 2 is the convergence
+     round.** The stance follows the tier's schedule above, not the ordinal
+     alone.
      Once both engines have read the change cold twice, the remaining findings
      are mostly about the review's own artifacts. A convergence round runs only
      the lenses that can find a reason not to deploy, changes the PR only for a
