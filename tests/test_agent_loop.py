@@ -429,7 +429,8 @@ elif args[:1] == ['api'] and endpoint_pr_number(r'/issues/(\d+)/comments') is no
 elif args[:1] == ['api'] and any('/issues/comments/' in arg for arg in args):
     comment_id = int(next(arg.rsplit('/', 1)[1] for arg in args if '/issues/comments/' in arg))
     comments = json.loads((state / 'issue-comments.json').read_text())
-    print(json.dumps(next(row for row in comments if row['id'] == comment_id)))
+    row = next(row for row in comments if row['id'] == comment_id)
+    print(json.dumps(unscoped([row])[0]))
 elif args[:1] == ['api'] and endpoint_pr_number(r'/issues/(\d+)/comments') is not None:
     comments_file = state / 'issue-comments.json'
     number = endpoint_pr_number(r'/issues/(\d+)/comments')
