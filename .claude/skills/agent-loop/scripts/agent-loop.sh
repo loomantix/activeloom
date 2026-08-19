@@ -143,7 +143,7 @@ CONFIG_FILE="$PROJECT_DIR/.claude/skills/agent-loop/agent-loop.config"
 PROMPT_FILE="$PROJECT_DIR/.claude/skills/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
 ISSUES_READY="$PROJECT_DIR/.claude/skills/issues/scripts/ready.py"
-REVIEW_LEDGER="$PROJECT_DIR/.claude/skills/critique/scripts/review-ledger.py"
+REVIEW_LEDGER="$PROJECT_DIR/.claude/skills/critique/scripts/review-ledger.js"
 RUN_STATE_HELPER="$PROJECT_DIR/.claude/skills/agent-loop/scripts/agent-loop-state.py"
 REVIEW_PUSH_HELPER="$PROJECT_DIR/.claude/skills/agent-loop/scripts/review-push.sh"
 CONFIG_DOCTOR_HELPER="$PROJECT_DIR/.claude/skills/agent-loop/scripts/config-doctor.py"
@@ -249,6 +249,15 @@ for hook_key in claude_review_hook codex_review_hook; do
         echo "$hook_key names an incorrect reviewer skill; Codex and Claude use deepcritique" >&2
         exit 1
     fi
+    # The Python ledger was retired for the vendored `review-ledger.js` bundle,
+    # and sync deletes it. `agent-loop.config` is bootstrapped create-if-missing
+    # and never rewritten, so a consumer keeps whatever path it was written
+    # with — catch it here, where it is one diagnosable line, rather than an
+    # hour of model spend later when the hook's write-result cannot find it.
+    if [[ "$hook_value" == *review-ledger.py* ]]; then
+        echo "$hook_key invokes the retired review-ledger.py; use: node .claude/skills/critique/scripts/review-ledger.js" >&2
+        exit 1
+    fi
 done
 
 if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
@@ -256,8 +265,20 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         echo "review contract v3 helper is unavailable: $REVIEW_LEDGER" >&2
         exit 1
     fi
-    [ "$(python3 "$REVIEW_LEDGER" --protocol-version)" = 3 ] || {
-        echo "review contract v3 requires review-ledger.py protocol version 3" >&2
+    command -v node >/dev/null 2>&1 || {
+        echo "review contract v3 requires Node.js to run $REVIEW_LEDGER" >&2
+        exit 1
+    }
+    # Capture status separately: command substitution inside `[ ]` is exempt
+    # from `set -e`, so comparing stdout alone reports a crashed or unparsable
+    # bundle as a protocol mismatch. Node too old for the bundle's ESM syntax
+    # is the reachable case, and it deserves its own message.
+    if ! ledger_protocol="$(node "$REVIEW_LEDGER" --protocol-version 2>&1)"; then
+        echo "node could not execute $REVIEW_LEDGER: $ledger_protocol" >&2
+        exit 1
+    fi
+    [ "$ledger_protocol" = 3 ] || {
+        echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v3 requires 3" >&2
         exit 1
     }
     for hook_key in claude_review_hook codex_review_hook; do
@@ -279,7 +300,7 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
             exit 1
         }
         [[ "$hook_value" == *write-result* ]] || {
-            echo "$hook_key must use review-ledger.py write-result for review contract v3" >&2
+            echo "$hook_key must use review-ledger.js write-result for review contract v3" >&2
             exit 1
         }
     done
@@ -314,7 +335,7 @@ case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be tru
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
-for cmd in git gh jq python3 timeout flock realpath; do
+for cmd in git gh jq node python3 timeout flock realpath; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
 REAL_GIT_BIN="$(type -P git)"
@@ -1261,7 +1282,7 @@ verify_v3_result_attestation() {
     esac
     before_sha="$(jq -r '.beforeSha' "$outcome_file")" || return 1
     after_sha="$(jq -r '.afterSha' "$outcome_file")" || return 1
-    python3 "$REVIEW_LEDGER" validate-result \
+    node "$REVIEW_LEDGER" validate-result \
         --engine "$slug" --round "$REVIEW_ROUNDS_USED" --base "$REVIEWED_BASE_SHA" \
         --before "$before_sha" --head "$after_sha" \
         --result-file "$outcome_file" >/dev/null || {
@@ -1442,7 +1463,7 @@ run_review_pass() {
         }
     fi
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
-        result_json="$(python3 "$REVIEW_LEDGER" validate-result \
+        result_json="$(node "$REVIEW_LEDGER" validate-result \
             --engine "$slug" --round "$round" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
             --before "$before_sha" --head "$after_sha" --result-file "$result_file")" || {
             recovery_message "$engine review did not produce a valid contract v3 result in round $round."
@@ -1914,7 +1935,7 @@ verify_v3_committed_pass_evidence() {
     git merge-base --is-ancestor "$after_sha" "$live_head" || return 1
     ledger_file="$(fetch_local_review_threads)" || return 1
     ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
-    python3 "$REVIEW_LEDGER" verify-ledger \
+    node "$REVIEW_LEDGER" verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$live_head" \
         --result-head "$after_sha" \
         --threads-file "$ledger_file" --actor "$CURRENT_LOGIN" \
@@ -1942,7 +1963,7 @@ attest_v3_review_result() {
     local ledger_file ledger_signature attestation_json observed_result_hash
     ledger_file="$(fetch_local_review_threads)" || return 1
     ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
-    attestation_json="$(python3 "$REVIEW_LEDGER" attest \
+    attestation_json="$(node "$REVIEW_LEDGER" attest \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$after_sha" \
         --engine "$engine" --round "$round" --base "$base_sha" \
         --before "$before_sha" --result-file "$result_file" \
@@ -2003,7 +2024,7 @@ verify_local_review_threads() {
     # length: the ledger requires a recurring root cause to reuse its existing
     # thread, so a resolved round-1 thread that gains an unanswered round-2
     # finding still has two or more comments and would pass a length check.
-    python3 "$REVIEW_LEDGER" verify-ledger \
+    node "$REVIEW_LEDGER" verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
         --head "$(git rev-parse HEAD)" --threads-file "$ledger_file" \
         --expected-threads-sha256 "${ledger_signature#file:}" \

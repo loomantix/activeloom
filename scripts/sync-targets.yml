@@ -42,10 +42,40 @@ targets:
     destination: .claude/skills/critique/SKILL.md
     substitutions: []
 
-  - source: .claude/skills/critique/scripts/review-ledger.py
-    destination: .claude/skills/critique/scripts/review-ledger.py
+  # The ledger is a build artifact of `@loomantix/review-ledger`, vendored
+  # verbatim from the published tarball and run as `node review-ledger.js`.
+  # Mode is 0644 deliberately: npm normalises non-`bin` files to 0644 in the
+  # tarball, so the committed file is not executable and nothing may invoke it
+  # as `./review-ledger.js`. `review-ledger.version` records which published
+  # version these bytes came from; the `ledger-drift` job in *this* repo's CI
+  # pins them to it. That job is not synced, so a consumer's copy is restored
+  # by the next sync rather than verified locally.
+  - source: .claude/skills/critique/scripts/review-ledger.js
+    destination: .claude/skills/critique/scripts/review-ledger.js
     substitutions: []
-    mode: '0755'
+    mode: '0644'
+
+  - source: .claude/skills/critique/scripts/review-ledger.version
+    destination: .claude/skills/critique/scripts/review-ledger.version
+    substitutions: []
+    mode: '0644'
+
+  - source: .claude/skills/critique/scripts/review-ledger.integrity
+    destination: .claude/skills/critique/scripts/review-ledger.integrity
+    substitutions: []
+    mode: '0644'
+
+  # The bundle is ESM. Node resolves module type from the NEAREST package.json
+  # walking up from the file, which in a consumer is that repo's root — so
+  # without this the ledger's module type depends on the consumer's manifest:
+  # `"type": "commonjs"` is a hard SyntaxError, and an absent `type` works only
+  # via Node's syntax detection (>=20.19/22.7) and warns on every invocation.
+  # This directory holds only the bundle and its version file, so scoping it to
+  # ESM is safe and makes the runtime requirement independent of the consumer.
+  - source: .claude/skills/critique/scripts/package.json
+    destination: .claude/skills/critique/scripts/package.json
+    substitutions: []
+    mode: '0644'
 
   - source: .claude/skills/deepcritique/SKILL.md
     destination: .claude/skills/deepcritique/SKILL.md
@@ -128,7 +158,8 @@ targets:
   #   - it needs a browser tool family in the session (Claude in Chrome, or
   #     the Browser pane); repos whose devs run neither should `skip_targets`
   #     both entries rather than ship a skill that can't start.
-  #   - `axe-scan.js` is the only `.js` on the sync surface. It is a payload
+  #   - `axe-scan.js` is one of two `.js` files on the sync surface (the other
+  #     is the vendored `review-ledger.js` bundle above). It is a payload
   #     injected into a live page, never imported or built by the consumer.
   #     Repos that lint or format `.claude/**` should ignore it — it carries
   #     an `eslint-env browser` header for the common case.
@@ -311,6 +342,14 @@ targets:
   - destination: .claude/skills/grill/scripts/review-ledger.py
     delete: true
   - destination: .claude/skills/deepgrill/SKILL.md
+    delete: true
+  # The Python ledger was replaced by the vendored `review-ledger.js` bundle.
+  # Unlike the `/grill` rename this is NOT order-dependent — the destination
+  # differs from the copy above by extension, so the two entries cannot
+  # collide. It still has to stay here until every consumer has run a sync
+  # that includes it, or repos keep a stale second ledger implementation that
+  # `agent-loop.sh` no longer calls.
+  - destination: .claude/skills/critique/scripts/review-ledger.py
     delete: true
 
   # ORDER-DEPENDENT — this entry must stay BELOW the `.claude/skills/grill/`
