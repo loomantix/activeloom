@@ -12,7 +12,7 @@ Claude Code project setup tends to drift as soon as a team has several repos: on
 
 Use this project if you want:
 
-- A repeatable PR-first local review chain with an explicit hosted fallback.
+- A repeatable PR-first local review relay, plus a hosted-reviewer lane that runs alongside it.
 - Repository-local skills that every teammate can invoke the same way.
 - A pull-request-based sync flow instead of direct writes to downstream default branches.
 - Public, auditable defaults for DCO, Copilot instructions, and Claude Code guidance.
@@ -116,7 +116,7 @@ Because they look for different categories of thing, the overlap is thin: tidyin
 
 That payoff is also why the two run **sequentially rather than in parallel**, despite the thin overlap. `/simplify` is a writer; `/critique` is a reader of what it wrote. Run them concurrently and critique anchors findings to `file:line` locations that simplify is actively rewriting — you get stale references, findings about code that's about to be deleted, and an adversarial pass critiquing a shape that won't ship. You want critique (and the reviewers after it) to scrutinize the code as it will actually merge.
 
-The mental model: **orthogonal in what they look for, sequentially dependent in that one rewrites what the other reads.** `/deepcritique` bakes the ordering in — it runs `/refactorpass` then `/critique deep` as a single chain. For the full operational walkthrough and the hosted fallback (`/reviewit`), see [`.claude/REVIEW_WORKFLOW.md`](.claude/REVIEW_WORKFLOW.md).
+The mental model: **orthogonal in what they look for, sequentially dependent in that one rewrites what the other reads.** `/deepcritique` bakes the ordering in — it runs `/refactorpass` then `/critique deep` as a single chain. For the full operational walkthrough and the hosted-reviewer lane (`/reviewit`), see [`.claude/REVIEW_WORKFLOW.md`](.claude/REVIEW_WORKFLOW.md).
 
 ### The sync engine
 

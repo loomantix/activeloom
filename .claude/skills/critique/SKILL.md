@@ -248,7 +248,7 @@ Use `write-result` for `clean` or `changed`, and use
 ## Boundaries
 
 - Do not force-push or merge.
-- Do not invoke hosted reviewers on the local convergence path.
+- Do not invoke hosted reviewers; they are a separate lane the caller runs, not a side effect of this skill.
 - Do not print raw model logs in the PR.
 - Do not mark the PR ready while marked threads are unanswered or unresolved.
 

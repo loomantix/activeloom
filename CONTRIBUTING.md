@@ -38,7 +38,7 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 - Skills that bind to a specific tech stack in their core (e.g. a skill that only works on Rails, or only on Expo) — those belong in stack-specific repos.
 - Hooks that auto-fire hosted reviewers on every PR. Local `/deepcritique` and
   `/codex-review` operate manually through the draft PR ledger; `/reviewit`
-  remains an explicit hosted fallback.
+  remains an explicit hosted-reviewer lane.
 
 ## Workflow
 

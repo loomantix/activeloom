@@ -1,8 +1,112 @@
 # Local Review Ledger
 
-Use an open draft pull request as the durable ledger for every local Codex or
-Claude review pass. The ledger is part of the review contract, not optional
-reporting after the code changes.
+Use an open draft pull request as the durable ledger for every local review
+pass. The ledger is part of the review contract, not optional reporting after
+the code changes.
+
+This document is the engine-neutral protocol. It is published inside
+[`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger)
+and vendored verbatim by each engine's platform repository, so all engines read
+the same contract. Anything specific to one engine — its skill names, its
+vendored helper path, its lens roster — belongs in that engine's
+`REVIEW_WORKFLOW.md`, not here.
+
+Throughout, `<ledger-helper>` stands for this engine's vendored copy of
+`review-ledger.js`. Your `REVIEW_WORKFLOW.md` gives the concrete path.
+
+## Roles, not engine names
+
+The protocol has two roles:
+
+- **author** — the engine that wrote the change. Exactly one per pull request.
+- **reviewer** — an engine that reads the change cold. Zero, one, or two.
+
+Every ordering, restart, and convergence rule below is written against those
+roles. No rule names a specific engine, and adding a fourth engine changes no
+rule in this document.
+
+The author engine's own adversarial pass is worth materially less than a
+reviewer's: it re-reads the change while still holding the rationale that
+produced it, which is the opposite of the cold read the relay exists to obtain.
+The author engine may run the cleanup lane, where it is cheapest, but its pass
+never counts toward cross-model coverage.
+
+## Declare the review roster
+
+Participation must be **declared**, never inferred. An engine that has not
+posted an attestation is indistinguishable from an engine that was never going
+to run, so without a declared roster no reader can tell a round that is
+incomplete from one that is finished.
+
+Before the first reviewer runs, post the roster:
+
+```bash
+node <ledger-helper> post-roster \
+  --repo <owner/repo> --pr <number> --head <full-head-sha> \
+  --author <engine> --reviewers <engine[,engine]|none> \
+  --content-file <regular-utf8-file>
+```
+
+It writes one marker to the pull request:
+
+```text
+<!-- local-review-roster:v1 author=<engine> reviewers=<engine[,engine]|none> content-sha256=<hash> -->
+```
+
+A pull request carries exactly one roster. Re-posting the identical declaration
+replays; posting a conflicting one fails, because every downstream completeness
+answer depends on which roster is authoritative. `read-roster` returns the
+current declaration.
+
+### How many reviewers
+
+One non-author reviewer is the recommended floor and covers the great majority
+of changes. A second adds real value mainly where a defect is expensive and
+hard to see: auth, crypto, secret handling, schema and data-shape work, release
+and sync tooling, or a change whose blast radius crosses repositories.
+
+Solo review — `reviewers=none` — is permitted, but it must be declared up front
+with the reason in the roster's content file. That keeps the choice visible and
+attributable on the pull request rather than resting on whoever remembered it.
+`verify-coverage` refuses an undeclared solo relay.
+
+## Coverage and completeness
+
+Coverage is computed from actor-owned attestations naming the pull request's
+**exact current head**:
+
+```bash
+node <ledger-helper> coverage        --repo <owner/repo> --pr <number> --head <full-head-sha>
+node <ledger-helper> verify-coverage --repo <owner/repo> --pr <number> --head <full-head-sha>
+```
+
+`coverage` reports; `verify-coverage` additionally fails when no roster is
+declared or when a declared reviewer has not attested this head. Both report a
+tier over distinct **non-author** engines: `solo` (none), `cross` (one), `full`
+(two or more).
+
+### The head is the invalidation rule
+
+An engine's attestation is evidence for the exact commit it names, and for no
+other. That single fact replaces every position-based restart rule:
+
+- an engine whose newest attestation names an **earlier** commit has not
+  reviewed what the pull request currently contains, and is missing from the
+  round;
+- an engine whose attestation names the **current** commit has, regardless of
+  what moved the head, which engine moved it, or how many rounds preceded it.
+
+So a material fix does not "restart at the first engine". It moves the head,
+which invalidates exactly those attestations that named the old head — no more.
+An engine that already attested the post-fix commit stays valid and does not
+re-run. This is what keeps a three-engine relay from costing appreciably more
+than a two-engine one; a whole-round restart would spend passes re-confirming a
+commit that had already been read cold.
+
+A round is complete when every declared reviewer holds an attestation at the
+current head. Convergence additionally requires that the round produced no
+material fix and that every local-review thread carries a disposition reply and
+is resolved.
 
 ## Establish the PR boundary
 
@@ -18,18 +122,11 @@ Never force-push during a review relay. A moved remote head ends the pass.
 
 ## Classify the changeset
 
-`refactorpass`, `critique`, `deepcritique`, and `codex-review` all skip
-docs/config-only changesets. This is the shared definition for the pinned
-`<base-sha>..<head-sha>` review range:
+Every cleanup and adversarial lane skips docs/config-only changesets. This is
+the shared definition for the pinned `<base-sha>..<head-sha>` review range:
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
   `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
-- **Prompt surface — source, whatever the extension.** Every path under
-  `.claude/`, including its Markdown. These files are read by the model as
-  instructions and sync to every consumer, so a defect in them ships exactly
-  like a code defect. Classifying them as docs would make the fan-out trigger
-  in [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md) unreachable for the
-  surface it was written to protect.
 - **Docs, config, or fixtures** — `.md`, `.txt`, `.yml`, `.yaml`, `.json`,
   `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
   `.env.example`, paths under `docs/`, `*.fixture.*`, and snapshot files.
@@ -83,17 +180,18 @@ END_REVIEW_PACKET_V1
 ```
 
 Reuse the packet unchanged within one cleanup or adversarial packet epoch. If
-`refactorpass` commits, that cleanup epoch ends: build a new packet from the
-same pinned base through the new head before `critique`. Any later fix ends the
-adversarial pass; never mutate an existing packet to follow a moved head.
+the cleanup lane commits, that epoch ends: build a new packet from the same
+pinned base through the new head before the adversarial lanes run. Any later fix
+ends the adversarial pass; never mutate an existing packet to follow a moved
+head.
 
 When spawning review agents, keep the complete packet as a byte-identical prompt
 prefix and append only a short lane-specific suffix containing the lens and its
 file scope. Put no lane-specific wording before the shared prefix. When the
 runtime supports selecting inherited history, use no inherited conversation
-history (`fork_turns="none"`) or the smallest permitted history; the packet and
-repository files are the source of truth. Do not forward the user's prompt,
-implementation transcript, prior lane conclusions, or a pasted whole diff.
+history or the smallest permitted history; the packet and repository files are
+the source of truth. Do not forward the user's prompt, implementation
+transcript, prior lane conclusions, or a pasted whole diff.
 
 The orchestrator reads the complete PR ledger once. Lanes review independently
 from the pinned source and do not each reload every historical thread. The
@@ -137,7 +235,7 @@ re-deriving it.
 ```
 
 `trigger=` carries **every** trigger the change matched, as the comma-separated
-1–6 ordinals from [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md) — `trigger=3`,
+ordinals from [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md) — `trigger=3`,
 `trigger=1,3`, or `trigger=none`. Recording only one lets a clean result from
 that trigger's lens de-escalate the PR while an unrecorded trigger still stands.
 
@@ -174,16 +272,16 @@ classification posts no marker.
 
 ## Run the refactor pass once per engine
 
-A cleanup pass earns its cost on the first cold read of a changeset. By the
+A refactor pass earns its cost on the first cold read of a changeset. By the
 second round the diff has already been simplified once, and a fresh pass over
 the same code mostly re-litigates naming and shape. That churn moves the head,
-re-stales the other engine's attestation, and changes nothing that ships.
+invalidates other engines' attestations, and changes nothing that ships.
 
 Each engine gets **one** refactor pass per PR. Before running one, search the PR
 for a marker naming this engine:
 
 ```text
-<!-- local-review-refactor:v1 engine=<codex|claude|gemini|antigravity> head=<sha> outcome=<committed|no-op> -->
+<!-- local-review-refactor:v1 engine=<engine> head=<sha> outcome=<committed|no-op> -->
 ```
 
 If one exists, skip the cleanup lanes, say so in the pass output, and go straight
@@ -208,17 +306,16 @@ that name this engine; this pass is one past that count.
 - **Rounds 1–2 — adversarial.** The full stance: assume the diff is guilty and
   run every applicable lane. Fix only confirmed findings whose expected user or
   security harm justifies the change's churn and regression risk.
-- **Round 3 and later — convergence.** Both engines have now read the change
-  cold twice. What remains is rarely a deeper defect; it is the review's own
-  surface. Shift the goal from challenging the change to landing it.
+- **Round 3 and later — convergence.** Every declared reviewer has now read the
+  change cold twice. What remains is rarely a deeper defect; it is the review's
+  own surface. Shift the goal from challenging the change to landing it.
 
 A convergence round:
 
-- runs only the lanes that can find a reason not to deploy — code reviewer,
-  silent failure hunter, and the security reviewer when its signal is present.
-  Drop type/API design, comment/docs, PR test analysis, and tenant-coupling.
-  Those found what they were going to find in rounds 1–2, and they regenerate
-  work indefinitely;
+- runs only the lanes that can find a reason not to deploy — code review, silent
+  failure detection, and security when its signal is present. Drop type/API
+  design, comment/docs, PR test analysis, and tenant-coupling. Those found what
+  they were going to find in rounds 1–2, and they regenerate work indefinitely;
 - changes the PR only for a realistically reachable **blocking** defect whose
   expected harm justifies the churn: one that ships materially wrong behavior,
   loses or corrupts data, exposes a credible security or privacy exploit,
@@ -237,14 +334,35 @@ one level up, where the whole set is visible and the orchestrator decides what
 the PR changes, what merits an urgent follow-up issue, and what should add
 nothing to an already deep backlog.
 
-The stance schedule above is the Deep schedule. At Lean the cap is two rounds:
-round 1 is adversarial, and round 2 runs only if round 1 made a material fix,
-in convergence mode. At both tiers, stop as soon as a complete round produces no
-material fix — the cap is a ceiling, not a target.
-
-Convergence rounds do not extend the round cap — they are how the last rounds are
+Convergence rounds do not extend the round cap — they are how rounds 3 and 4 are
 spent. Reaching the cap in convergence mode with open non-blocking findings means
-ship the PR and carry the issues, not open another round.
+ship the PR and carry the issues, not open a fifth round.
+
+## Hosted reviewers are a different style, not a different phase
+
+Hosted AI reviewers — a Gemini or Copilot pass that runs on the pull request
+itself rather than in a local agent session — are a **different style of
+review**, not a competing protocol and not a phase that has to come after
+something else. Run one whenever it is useful: before the local relay, between
+rounds, or after convergence.
+
+A hosted pass does not invalidate anything on its own. Only a **commit**
+invalidates, and only by the head rule above, which treats a hosted-review fix
+exactly like any other fix:
+
+- if the fix is minor, attestations at the old head are stale for the usual
+  reason and the affected engines re-run when the relay next needs them;
+- if the fix is material, the round has a material transition and does not
+  converge, the same as if a local reviewer had made it.
+
+Classify a hosted-review fix by its effect on the code, using the same
+material/minor rule as everything else. Do not treat "a hosted reviewer touched
+this" as a category of its own, and do not add a hosted pass as a ritual step
+that every change must clear.
+
+Hosted reviewers are not roster participants. They post under their own
+identities, so their comments are context rather than actor-owned ledger
+evidence, and they do not attest. Coverage counts local engines only.
 
 ## Rebuild context from GitHub
 
@@ -253,7 +371,8 @@ At the start of every pass, read:
 - the PR description and changed files;
 - the current PR diff and commit list;
 - all review threads, including resolved and outdated threads;
-- all replies and clean-pass attestations from earlier local reviewers.
+- all replies and clean-pass attestations from earlier reviewers;
+- the declared roster.
 
 Treat this as the context ledger for the back-and-forth. Do not rely on a prior
 model transcript or a local summary. Do not reopen a resolved root cause unless
@@ -262,8 +381,9 @@ rationale is wrong.
 
 Machine-readable findings, disposition replies, and clean-pass attestations
 count as review evidence only when authored by the authenticated GitHub actor
-running the local review. Public comments from other accounts are context, not
-proof that a local pass ran or that its finding was dispositioned.
+running the local review. Public comments from other accounts — including hosted
+reviewers — are context, not proof that a pass ran or that its finding was
+dispositioned.
 
 ## Post before editing
 
@@ -292,29 +412,25 @@ finding into the PR.
 
 ### Use the deterministic ledger helper
 
-Use `.claude/skills/critique/scripts/review-ledger.js` for every local-review
-finding, disposition reply, thread resolution, and pass marker. Do not
+Use the vendored `review-ledger.js` for every local-review finding, disposition
+reply, thread resolution, roster declaration, and pass marker. Do not
 hand-compose `gh api` form arguments for these mutations.
 
-The v1 refactor latch and tier-transition marker are the explicit
-marker-construction exceptions. Create either in an owner-only regular file and
-post it with the helper's `post-pr-comment` command so exact-head verification
-and read-back still apply.
+Invoke it as `node <ledger-helper>` — it requires Node.js and is not executable,
+so `./review-ledger.js` will not run. The bundle is ESM; the sibling
+`package.json` beside it declares `"type": "module"` so it resolves the same way
+regardless of what the surrounding repository's root manifest says.
 
-Invoke it as `node .claude/skills/critique/scripts/review-ledger.js` — it
-requires Node.js and is not executable, so `./review-ledger.js` will not run.
-The bundle is ESM; the sibling `package.json` in that directory declares
-`"type": "module"` so it resolves the same way regardless of what the
-surrounding repository's root manifest says.
-The file is a build artifact of [`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger),
+The file is a build artifact of
+[`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger),
 vendored verbatim from the published tarball at the version recorded in
-`review-ledger.version`, with that tarball's sha512 in `review-ledger.integrity`.
-`node review-ledger.js --version` reports the version it was built from, so a
-copy can always identify itself without trusting the pin file beside it.
-Never edit or reformat it: fixes belong upstream in the package. The byte-compare
-that enforces this runs in `claude-platform`'s own CI, not here — in a consumer
-repository an accidental edit is silently restored by the next sync rather than
-caught locally, so treat the file as read-only and keep it out of any formatter.
+`review-ledger.version`, with that tarball's sha512 in
+`review-ledger.integrity`. `node <ledger-helper> --version` reports the version
+it was built from, so a copy can always identify itself without trusting the pin
+file beside it. Never edit or reformat it: fixes belong upstream in the package.
+In a consumer repository an accidental edit is silently restored by the next
+sync rather than caught locally, so treat the file as read-only and keep it out
+of any formatter.
 
 The v3 helper verifies the current PR head before and after each mutation,
 constructs markers and JSON itself, reads mutations back, and reconciles retries
@@ -333,14 +449,14 @@ preserves literal backticks, dollar expressions, quotes, Unicode, CRLF, and a
 missing final newline:
 
 ```bash
-node .claude/skills/critique/scripts/review-ledger.js preflight-anchor \
+node <ledger-helper> preflight-anchor \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line>
 
-node .claude/skills/critique/scripts/review-ledger.js post-finding \
+node <ledger-helper> post-finding \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line> \
-  --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
+  --engine <engine> --round <n> --fingerprint <stable-id> \
   --occurrence 1 --severity <blocking|major|minor|nit> --lens <lens> \
   --content-file <regular-utf8-file>
 ```
@@ -349,9 +465,9 @@ When the same fingerprint recurs on a later reviewed head, append a new numbered
 occurrence to its existing root comment and reopen that thread atomically:
 
 ```bash
-node .claude/skills/critique/scripts/review-ledger.js reopen-occurrence \
+node <ledger-helper> reopen-occurrence \
   --repo <owner/repo> --pr <number> --head <reviewed-sha> \
-  --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
+  --engine <engine> --round <n> --fingerprint <stable-id> \
   --occurrence <next-number> --severity <severity> --lens <lens> \
   --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
   --content-file <regular-utf8-file>
@@ -365,9 +481,9 @@ identical command again reuses completed work and finishes only the missing
 state transition:
 
 ```bash
-node .claude/skills/critique/scripts/review-ledger.js dispose \
+node <ledger-helper> dispose \
   --repo <owner/repo> --pr <number> --head <full-fix-sha> \
-  --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
+  --engine <engine> --round <n> --fingerprint <stable-id> \
   --occurrence <number> --outcome <fixed|dismissed|deferred> \
   --comment-id <root-comment-id> --thread-id <graphql-thread-id> \
   --content-file <regular-utf8-file>
@@ -382,7 +498,7 @@ actor-owned v3 ledger at the exact head. This rejects unresolved threads,
 unstructured replies, cross-occurrence dispositions, and incomplete pagination:
 
 ```bash
-node .claude/skills/critique/scripts/review-ledger.js verify-ledger \
+node <ledger-helper> verify-ledger \
   --repo <owner/repo> --pr <number> --head <full-head-sha>
 ```
 
@@ -420,13 +536,6 @@ For each published finding:
    reviewed head.
 4. Let `dispose` verify the reply and resolution as one resumable transaction.
 
-Write the commit message with the file-editing tool into the same owner-only
-temporary directory used for ledger content, then commit with
-`git commit -F <file>`. Run each git command as its own plain command. A
-worktree-isolated session refuses a git command carrying a heredoc, redirect,
-or `&&` chain because it cannot statically verify that the command stays inside
-the worktree, and that refusal aborts the pass mid-fix.
-
 If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
 report the exact unresolved thread; do not silently continue.
 
@@ -439,7 +548,7 @@ atomically writes the canonical result. Supply `--classification
 minor|material` only when the head moved:
 
 ```bash
-node .claude/skills/critique/scripts/review-ledger.js write-result \
+node <ledger-helper> write-result \
   --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
   --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
   --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
@@ -455,7 +564,7 @@ For a blocked pass, put one short public-safe blocker in an owner-only regular
 file and call `write-blocked-result` instead of constructing JSON:
 
 ```bash
-node .claude/skills/critique/scripts/review-ledger.js write-blocked-result \
+node <ledger-helper> write-blocked-result \
   --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
   --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
   --before "$AGENT_LOOP_PR_HEAD_SHA" \
@@ -470,7 +579,7 @@ exactly this contract:
 {
   "version": 3,
   "status": "clean|changed|blocked",
-  "engine": "codex|claude|gemini|antigravity",
+  "engine": "<engine>",
   "round": 1,
   "baseSha": "<sha>",
   "beforeSha": "<sha>",
@@ -515,26 +624,38 @@ Docs/config-only skips follow the same rule with a `clean` result whose
 after wrapper result creation or standalone attestation succeeds; it does not
 spend the refactor latch.
 
-Every engine pass remains evidence for the exact head it reviewed. A later
-minor commit does not rewrite that historical fact. Round convergence is a
-separate explicit transition: one Codex-to-Claude round may converge when all
-observed changes are minor and dispositioned, without claiming Codex reviewed
-Claude's later head. Any material change restarts at Codex.
+## Converge
 
-For a two-engine loop:
+Run the relay until all of the following hold, then mark the PR ready:
 
-- run one fresh Codex pass and one fresh Claude pass per round;
-- run the refactor pass only on each engine's first pass, per the once-per-engine
-  latch above;
-- run rounds 1–2 adversarially and rounds 3+ in convergence mode, per the stance
-  rules above;
-- classify committed fixes as `material` or `minor`;
-- restart at Codex when either engine makes a material fix;
-- keep minor fixes, but do not restart solely because of them;
-- converge only after a complete Codex-then-Claude round reports no material
-  fixes and every local-review thread has a reply and is resolved;
-- stop at the configured round cap. Preserve the draft PR and report
-  non-convergence instead of starting an unbounded cycle.
+1. `verify-coverage` passes at the exact current head — a roster is declared and
+   every declared reviewer holds an attestation naming that head.
+2. The round that produced those attestations contained no material fix.
+3. `verify-ledger` passes at the same head: every actor-owned thread carries a
+   structured disposition and is resolved.
+
+Classify committed fixes as `material` or `minor` by effect, not by path or by
+finding severity. `material` covers substantive correctness, security/privacy,
+data-safety, compatibility, deployment/sync, or review-integrity changes,
+including tests or workflows needed to prevent a false green. `minor` is
+low-risk non-behavioral cleanup or polish. A material fix means the round did
+not converge; a minor fix is kept and does not by itself prevent convergence.
+
+Each engine pass remains evidence for the exact head it reviewed, and a later
+minor commit does not rewrite that historical fact. A round may converge on a
+minor A-to-B transition without pretending the earlier reviewer read B; its
+exact-head attestation stays historical evidence, and `verify-coverage` is the
+authority on what has been read at the head that will actually merge.
+
+**A round that only finds non-material test, fixture, comment, or docs polish is
+the signal to ship, not to keep going.** It means the product converged and the
+review has turned to auditing its own artifacts. A test or workflow fix needed to
+prevent a false green remains material. Defer non-material polish without growing
+the backlog, and create a tracking issue only for a concrete, high-impact
+follow-up that should be scheduled within roughly two weeks.
+
+Stop after four rounds by default. Leave the PR draft and report non-convergence
+instead of continuing an unbounded cycle.
 
 The next reviewer must read the ledger before reviewing the new head. That
 requirement is what carries prior rationale forward after local model context
