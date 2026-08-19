@@ -98,10 +98,13 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "print(os.environ.get(key, os.environ.get('AGENT_READY_JSON', '[]')))\n",
     )
     (repo / "agent-loop-instructions.md").write_text(
-        "# Local-only worker instructions\n", encoding="utf-8"
+        "# Local-only worker instructions\n"
+        "Read AGENT_LOOP_ISSUE_TITLE and AGENT_LOOP_ISSUE_BODY from the wrapper.\n",
+        encoding="utf-8",
     )
     (repo / ".codex/skills/agent-loop/prompt.txt").write_text(
-        "Implement #{ISSUE_ID}, commit locally, and do not push or open a PR.\n",
+        "Read AGENT_LOOP_ISSUE_TITLE and AGENT_LOOP_ISSUE_BODY. "
+        "Implement #{ISSUE_ID}, create a local commit, and do not push or open a PR.\n",
         encoding="utf-8",
     )
     (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
@@ -546,13 +549,21 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
     )
     values: dict[str, str | int] = {
         "review_contract_version": 3,
+        "config_doctor": "true",
+        "claude_effort_policy": "low",
         "codex_review_hook": result_command,
         "claude_review_hook": result_command,
     }
     values.update(overrides)
     for key in ("codex_review_hook", "claude_review_hook"):
+        review_prefix = (
+            ": deepcritique $AGENT_LOOP_PR_NUMBER --effort low; "
+            if key == "claude_review_hook"
+            else ": deepcritique $AGENT_LOOP_PR_NUMBER; "
+        )
         values[key] = (
-            ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
+            review_prefix
+            + ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
             f'"$AGENT_LOOP_REVIEW_RESULT_FILE" write-result; {values[key]}'
         )
     return _config(
@@ -2040,6 +2051,42 @@ def test_review_contract_version_is_required_before_claim(
 
 
 @pytest.mark.parametrize(
+    ("old", "new", "expected_error"),
+    [
+        (
+            "config_doctor = true",
+            "config_doctor = false",
+            "requires config_doctor = true",
+        ),
+        (
+            "claude_effort_policy = low",
+            "claude_effort_policy = medium",
+            "requires claude_effort_policy = low",
+        ),
+    ],
+)
+def test_v3_auto_policy_is_required_before_claim(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    old: str,
+    new: str,
+    expected_error: str,
+) -> None:
+    config = _config_v3(tmp_path).replace(old, new)
+    result = _run(
+        consumer,
+        ["--issues", "20"],
+        issues=[_issue(20)],
+        config=config,
+    )
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    gh_log = consumer[3] / "gh.log"
+    assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+    assert not (tmp_path / "worktrees").exists()
+
+
+@pytest.mark.parametrize(
     ("missing_token", "expected_error"),
     [
         ("AGENT_LOOP_REVIEW_PUSH_HELPER", "must use AGENT_LOOP_REVIEW_PUSH_HELPER"),
@@ -2249,9 +2296,9 @@ def test_v3_review_hook_cannot_self_authorize_direct_push(
         "baseSha:$base,beforeSha:$head,afterSha:$head,classification:null,"
         "findingFingerprints:[],finalLaneComplete:true}' "
         '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
-    )
+        )
     codex_hook = (
-        "if AGENT_LOOP_SAFE_REVIEW_PUSH=1 git push origin "
+        'if AGENT_LOOP_SAFE_REVIEW_PUSH=1 git p""ush origin '
         '"HEAD:refs/heads/$AGENT_LOOP_BRANCH" '
         '2> "$AGENT_STATE_DIR/direct-v3-push.stderr"; then exit 89; fi; '
         f"{clean_result}"

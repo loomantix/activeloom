@@ -353,6 +353,9 @@ def test_local_review_documents_explicit_cross_engine_modes() -> None:
         encoding="utf-8"
     )
     agent_loop = (SKILLS_ROOT / "agent-loop/SKILL.md").read_text(encoding="utf-8")
+    agent_loop_config = (SKILLS_ROOT / "agent-loop/agent-loop.config.template").read_text(
+        encoding="utf-8"
+    )
     assert "Auto mode" in workflow
     assert "Handoff mode" in workflow
     assert "run-claude-review.sh" in workflow
@@ -361,7 +364,9 @@ def test_local_review_documents_explicit_cross_engine_modes() -> None:
     assert "post-handoff" in ledger
     assert "show-handoff" in ledger
     assert "local-review-handoff:v1" in workflow
-    assert "configuration doctor proves the hook contains literal `--effort low`" in agent_loop
+    assert "exactly one effort option with literal value `low`" in agent_loop
+    assert "config_doctor = true" in agent_loop_config
+    assert "claude_effort_policy = low" in agent_loop_config
     assert "Handoff mode must stop after" in agent_loop
 
 

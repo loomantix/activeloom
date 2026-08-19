@@ -149,8 +149,11 @@ Find and follow the latest authenticated local-review-handoff:v1 comment before
 reviewing. Verify that its exact head is still current, load the complete PR
 ledger including resolved threads and prior attestations, and continue as the
 {next_engine} reviewer against the pinned base. Do not invoke the other review
-engine from this session. When this pass ends, publish the next authenticated
-handoff comment and stop so the user can start the following session.
+engine from this session. When this pass ends, inspect the authenticated Codex
+and Claude outcomes for the round. If they satisfy the repository's convergence
+rule, publish the terminal review result and follow its configured finalization
+step without another handoff. Otherwise publish the next authenticated handoff
+comment and stop so the user can start the following session.
 ```
 
 Pinned review state:
@@ -164,6 +167,31 @@ Pinned review state:
 
 Pass context: {context}
 """
+
+
+def _handoff_digest(
+    *,
+    from_engine: str,
+    to_engine: str,
+    round_number: int,
+    base: str,
+    head: str,
+    outcome: str,
+    content: str,
+) -> str:
+    payload = {
+        "base": base,
+        "content": content,
+        "from_engine": from_engine,
+        "head": head,
+        "outcome": outcome,
+        "round": round_number,
+        "to_engine": to_engine,
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _verify_issue_comment(repo: str, comment_id: int, expected_body: str) -> None:
@@ -193,7 +221,15 @@ def _post_handoff(args: argparse.Namespace) -> None:
     if args.from_engine == args.to_engine:
         _fail("review handoff engines must be different")
     content = _handoff_content(args, _read_context(args.context_file))
-    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    digest = _handoff_digest(
+        from_engine=args.from_engine,
+        to_engine=args.to_engine,
+        round_number=args.round,
+        base=args.base,
+        head=args.head,
+        outcome=args.outcome,
+        content=content,
+    )
     marker = (
         f"<!-- local-review-handoff:v1 from={args.from_engine} "
         f"to={args.to_engine} round={args.round} base={args.base} "
@@ -218,6 +254,9 @@ def _post_handoff(args: argparse.Namespace) -> None:
                 raise
             replayed = True
     _verify_issue_comment(args.repo, comment_id, body)
+    verified_id = _matching_body(_issue_comments(args.repo, args.pr), marker, body)
+    if verified_id != comment_id:
+        _fail("handoff idempotency key did not resolve to the posted comment")
     _verify_head(args.repo, args.pr, args.head)
     print(
         json.dumps(
@@ -235,26 +274,33 @@ def _post_handoff(args: argparse.Namespace) -> None:
 
 
 def _show_handoff(args: argparse.Namespace) -> None:
-    candidates: list[tuple[int, str, re.Match[str]]] = []
+    candidates: list[tuple[int, str]] = []
     for row in _issue_comments(args.repo, args.pr):
         body = row.get("body")
         comment_id = row.get("id")
         if not isinstance(body, str) or not isinstance(comment_id, int):
             continue
-        matches = list(HANDOFF_V1_RE.finditer(body))
-        if len(matches) > 1:
-            _fail("a PR comment contains multiple local-review handoff markers")
-        if not matches:
-            continue
-        marker = matches[0]
-        if marker.start() != 0 or not body[marker.end() :].startswith("\n"):
-            _fail("a local-review handoff marker must start the PR comment")
-        candidates.append((comment_id, body, marker))
+        if body.startswith("<!-- local-review-handoff:v1"):
+            candidates.append((comment_id, body))
     if not candidates:
         _fail("no authenticated local-review handoff comment was found")
-    comment_id, body, marker = max(candidates, key=lambda candidate: candidate[0])
+    comment_id, body = max(candidates, key=lambda candidate: candidate[0])
+    matches = list(HANDOFF_V1_RE.finditer(body))
+    if len(matches) != 1:
+        _fail("latest local-review handoff marker is malformed")
+    marker = matches[0]
+    if marker.start() != 0 or not body[marker.end() :].startswith("\n"):
+        _fail("a local-review handoff marker must start the PR comment")
     content = body[marker.end() + 1 :]
-    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    digest = _handoff_digest(
+        from_engine=marker.group("from_engine"),
+        to_engine=marker.group("to_engine"),
+        round_number=int(marker.group("round")),
+        base=marker.group("base"),
+        head=marker.group("head"),
+        outcome=marker.group("outcome"),
+        content=content,
+    )
     if digest != marker.group("content_sha"):
         _fail("latest local-review handoff content digest is invalid")
     if marker.group("to_engine") != args.engine:

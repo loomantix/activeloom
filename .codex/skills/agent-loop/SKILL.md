@@ -13,9 +13,10 @@ worker only implements, validates, refactors, and commits locally.
 ## Cross-engine mode
 
 Resolve `auto` or `handoff` from the user's request or repository instructions
-before a mutating run. Auto mode may execute a Claude hook only when the
-configuration doctor proves the hook contains literal `--effort low`; never
-substitute another effort or bypass the doctor. Handoff mode must stop after
+before a mutating run. Contract-v3 auto mode requires `config_doctor = true` and
+`claude_effort_policy = low`; the doctor requires the Claude hook to contain
+exactly one effort option with literal value `low`. Never substitute another
+effort or bypass the doctor. Handoff mode must stop after
 the Codex leg, post `local-review-handoff:v1`, and return control so the user can
 start the Claude review in a new terminal. Do not silently change modes during
 a round. Until the wrapper implements that pause point, refuse an `agent-loop`
@@ -76,7 +77,7 @@ with the issue worktree as the current directory.
 | `codex_review_hook`                              | Required fresh Codex `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                                                                   |
 | `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                                                                         |
 | `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.                                                                                     |
-| `claude_effort_policy`                           | Optional literal Claude effort policy checked by the doctor, such as `low`.                                                                                                                                 |
+| `claude_effort_policy`                           | Contract-v3 auto mode requires literal `low`; the doctor rejects missing, different, or conflicting Claude effort options.                                                                                  |
 | `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.                                                                                        |
 | `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                                                                                                  |
 | `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                                                                |

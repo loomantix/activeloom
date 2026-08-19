@@ -48,7 +48,7 @@ modes silently in the middle of a round.
   the same literal low-effort contract. After Claude returns, validate its
   PR-head and ledger evidence and continue the chain until convergence or the
   configured cap.
-- **Handoff mode** never starts the other engine. Each pass posts an
+- **Handoff mode** never starts the other engine. Each nonterminal pass posts an
   authenticated `local-review-handoff:v1` PR comment and returns control to the
   user, who starts the requested reviewer in a new terminal session. Do not
   choose the other engine's model, effort, flags, or runtime settings.
@@ -103,9 +103,10 @@ engine in a fresh terminal.
 8. After convergence, require every local-review thread to contain a disposition
    reply and be resolved, revalidate the exact PR head, and mark the PR ready.
 
-An automated wrapper must make its mode explicit. Auto-mode Claude hooks must
-use literal `--effort low` and pass the non-mutating configuration doctor before
-selection or claim. Handoff mode stops after each engine leg and uses the same
+An automated wrapper must make its mode explicit. Contract-v3 auto mode requires
+`config_doctor = true` and `claude_effort_policy = low`; the doctor requires
+exactly one literal `--effort low` option in the Claude hook before selection or
+claim. Handoff mode stops after each nonterminal engine leg and uses the same
 PR-comment protocol as an interactive review.
 
 Do not run `reviewit` after this path merely as an extra ritual. If the developer

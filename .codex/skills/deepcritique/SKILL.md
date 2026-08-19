@@ -125,15 +125,22 @@ result directly to that orchestrator. Do not start local convergence, recommend
 another `reviewit`, push, or emit a terminal workflow summary; `reviewit` owns
 the hosted-path summary.
 
-When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
-finish the ledger, then follow the selected session mode. In auto mode, invoke
-Claude only through `run-claude-review.sh`; never hand-compose the command or
-override its literal low effort. In handoff mode, post the next-session handoff
-with `local-review-handoff.py post-handoff` and return control to the user.
+When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, finish the ledger, write the
+wrapper-owned Codex result as described below, and return to agent-loop. Never
+launch Claude from inside a wrapper-owned Codex hook; agent-loop owns the next
+engine and its separate result boundary.
+
+Outside agent-loop, follow the selected local-convergence session mode. In auto
+mode, invoke Claude only through `run-claude-review.sh`; never hand-compose the
+command or override its literal low effort. The launcher requires the exact
+reviewed head and fails closed unless the current worktree is that self-authored,
+same-repository PR head. In handoff mode, post the next-session handoff with
+`local-review-handoff.py post-handoff` and return control to the user.
 
 ```bash
 .codex/skills/critique/scripts/run-claude-review.sh \
-  --repo <owner/repo> --pr <pr-number> --base <review-base-sha> --round <round>
+  --repo <owner/repo> --pr <pr-number> --base <review-base-sha> \
+  --head <reviewed-head-sha> --round <round>
 ```
 
 After the launcher returns, verify local, upstream, and PR heads plus the new
