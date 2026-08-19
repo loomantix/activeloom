@@ -30,14 +30,15 @@ Operational skills you can install globally or sync into any repo:
 | `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                                                                                                                                      |
 | `ship-staging <pr>`   | Merge a ready staging PR, mark linked issues on-staging, refresh the local staging reference, and notify Google Chat.                                                                                                                                                          |
 
-The synced review workflow supports two developer-selected cross-model paths:
-local Codex/Claude convergence when both CLIs are available, or `reviewit` as a
-hosted Gemini/Copilot fallback when local Claude Code is unavailable. Consumers
-can declare their default path in repository instructions without removing the
-other platform capability. Local convergence restarts only for material review
-fixes; validated minor-only polish does not keep the cycle running. Every local
-finding is recorded before its fix, then replied to with the fix SHA and
-validation before resolution.
+The synced review workflow is a relay defined over roles rather than engine
+names: one author engine and the reviewer engines declared on the pull
+request's roster. The `reviewit` hosted Gemini/Copilot lane runs alongside it
+whenever it is useful, and is the primary path for a repository with no local
+CLI. A review fix invalidates only the attestations naming the superseded head,
+so an engine that already read the current commit does not re-run; validated
+minor-only polish does not keep the cycle running. Every local finding is
+recorded before its fix, then replied to with the fix SHA and validation before
+resolution.
 
 ### Codex references (`.codex/references/`)
 

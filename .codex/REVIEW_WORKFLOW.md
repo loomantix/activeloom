@@ -14,10 +14,14 @@ resolved as well as unresolved threads before reviewing the current head.
 
 Load [the local review ledger](references/local-review-ledger.md) before running
 `refactorpass`, `critique`, `deepcritique`, `pr-critique`, or local review hooks.
-That file is the engine-neutral protocol, vendored verbatim from
+That file is the engine-neutral protocol published by the
 [`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger)
-so every engine reads the same contract. Where it writes `<ledger-helper>`, this
-engine's path is:
+project and vendored verbatim into every engine repository, so all engines read
+the same contract. The helper bundle beside it is vendored from that package's
+published tarball and pinned by `review-ledger.version` and
+`review-ledger.integrity`; CI byte-compares the bundle, not this document, so a
+protocol edit must land upstream rather than here. Where the protocol writes
+`<ledger-helper>`, this engine's path is:
 
 ```text
 .codex/skills/critique/scripts/review-ledger.js
@@ -28,7 +32,7 @@ engine's path is:
 The relay is defined over two roles:
 
 - **author** — the engine that wrote the change. Exactly one.
-- **reviewer** — an engine that reads the change cold. Zero, one, or two.
+- **reviewer** — an engine that reads the change cold. Zero, one, or more.
 
 Codex is the author role when Codex wrote the change and a reviewer role
 otherwise. No rule below names a specific engine, so adding a fourth changes
@@ -85,11 +89,15 @@ longer need to be chosen between. See "Hosted Reviewers" below.
      second reviewer from costing a full extra round every time anything
      changes.
    - **Rounds 1–2 are adversarial; round 3 and later are convergence rounds.**
-     Once every declared reviewer has read the change cold twice, the remaining findings
-     are mostly about the review's own artifacts. A convergence round runs only
-     the lanes that can find a reason not to deploy, changes the PR only for a
-     realistically reachable blocking defect, defers everything else, creates
-     an issue only for an urgent high-impact follow-up, and ends the loop as soon
+     A reviewer holding no attestation on this PR runs adversarially on its
+     first cold read whatever the round ordinal: the stance tracks how many
+     times that reviewer has read the change, not how many rounds elapsed
+     before it joined.
+     Once every declared reviewer has read the change cold twice, the remaining
+     findings are mostly about the review's own artifacts. A convergence round
+     runs only the lanes that can find a reason not to deploy, changes the PR
+     only for a realistically reachable blocking defect, defers everything else,
+     creates an issue only for an urgent high-impact follow-up, and ends as soon
      as it finds no blocker. Lanes still report everything they find —
      the narrowing is a disposition rule applied when consolidating lane output,
      never an instruction to a lane to withhold what it found.
@@ -109,9 +117,12 @@ the opposite of the cold read the relay exists to obtain. `coverage` reports it
 as `authorAttested` so the fact stays visible, but the tier counts distinct
 non-author engines only.
 
-The `agent-loop` skill automates this path with a required non-mutating
-validation hook plus `review_max_rounds`, `codex_review_hook`, and
-`claude_review_hook`. Under contract v3 every hook writes a structured clean,
+The `agent-loop` skill automates a two-engine instance of this relay with a
+required non-mutating validation hook plus `review_max_rounds`,
+`codex_review_hook`, and `claude_review_hook`. It still encodes a fixed
+Codex-then-Claude order and a position-based restart rather than the head rule
+above; that is deliberate for now, and the roster and head-exact rules do not
+yet reach it. Under contract v3 every hook writes a structured clean,
 changed, or blocked result to `$AGENT_LOOP_REVIEW_RESULT_FILE`. The wrapper
 validates that result against observed Git state and the v3 ledger, then posts
 the canonical pass/completion attestation itself. It opens a draft PR before
@@ -138,6 +149,11 @@ developers have no local agent engine — a repository with no local CLI and no
 declared roster still gets real review from a hosted pass. That is the case the
 lane exists for; it is not the case these defaults are tuned for.
 
+A repository with no local engine has no roster, so `verify-coverage` does not
+apply to it. There, convergence is the hosted lane's own contract: every hosted
+finding disposed and resolved, and a final iteration that produced no fix. A
+roster-less PR converges on that rule and must not claim relay coverage.
+
 A hosted pass **invalidates nothing on its own.** Only a commit invalidates, and
 only by the head rule in step 6, which treats a hosted-review fix exactly like
 any other:
@@ -156,29 +172,25 @@ identities, so their comments are context rather than actor-owned ledger
 evidence, and they do not attest. Coverage counts local engines only — a hosted
 pass does not turn a solo relay into a cross-model one.
 
-### Lean
+Invocation:
 
-1. Make the local change, create a clean commit, and open a draft PR.
-2. Run `refactorpass <pr-number>` for source changes.
-3. Run `critique <pr-number>`. Lean mode executes the code-reviewer and silent
-   failure-hunter lanes, using independent subagents when available.
-4. Run `reviewit <pr-number>`. It triggers Gemini Flash and Copilot, verifies and
-   deduplicates their findings, fixes confirmed issues, pushes, replies, and
-   loops within its configured cap.
+- **Lean** — `reviewit <pr-number>` for the bounded Gemini Flash and Copilot
+  loop. It verifies and deduplicates their findings, fixes confirmed issues,
+  pushes, replies, and loops within its cap. Run it after
+  `refactorpass <pr-number>` and `critique <pr-number>` when the local relay is
+  also running.
+- **Deep** — `reviewit <pr-number> deep`, with the larger cap and early-exit
+  rules. Its final local `deepcritique` receives the same PR number and ledger,
+  and skips the refactor pass when this engine's cleanup latch is already spent
+  on the PR.
 
-### Deep
-
-1. Open a draft PR, then run `deepcritique <pr-number>`. It executes `critique deep`'s
-   six core lanes and the conditional tenant-coupling lane, preceded by
-   `refactorpass` on this engine's first pass over the PR.
-2. Run `reviewit <pr-number> deep`. Deep mode uses the same hosted reviewers
-   with its larger cap, early-exit rules, and final fresh Codex `deepcritique`.
-   That tail `deepcritique` skips the refactor pass — step 1 already spent this
-   engine's cleanup latch on the PR.
+## Review Tier
 
 Choose deep when the change touches auth, crypto, secret handling, schema/data
 shape, GitHub Actions, sync tooling, `.codex/skills/**`, a large refactor, an
-area with recurring incidents, or customer/tenant-variable behavior.
+area with recurring incidents, or customer/tenant-variable behavior. The tier
+selects the depth of both the relay's lanes and the hosted lane; the relay's
+round cap is step 7's bound, not the tier's.
 
 ## Skip Path
 

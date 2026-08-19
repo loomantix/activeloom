@@ -207,9 +207,10 @@ validation run:    <commands + result>
 pushed:            <yes: SHA on <head-branch> | no fixes — nothing pushed>
 pinned review base: <full REVIEW_BASE_SHA>
 
-Hand back to the authoring engine for re-review of the new HEAD
-(e.g. the next local convergence pass, `reviewit <pr-number>` on the hosted
-fallback path, or a fresh `critique` on the pushed commit).
+If this pass pushed a fix it moved the head, invalidating every attestation
+naming the superseded commit, including the authoring engine's. Those engines
+re-run against this HEAD; engines that had not yet attested are unaffected. If
+nothing was pushed, no attestation changed.
 ```
 
 Always surface the design tradeoffs explicitly — the round trip only works if
@@ -220,9 +221,9 @@ the engine reviewing next knows where to look.
 - **Does not run `refactorpass`.** No cleanup-churn on a PR under cross-review.
 - **Does not open or merge the PR**, and does not push to a base branch.
 - **Does not force-push or rebase.** A rejected push is reported, not forced.
-- **Does not replace the selected review path.** `reviewit` remains the hosted
-  Gemini + Copilot fallback; local Codex/Claude convergence is the alternative.
-  `pr-critique` is an optional cross-engine relay, not a terminal review.
+- **Does not replace the relay.** `reviewit` drives the hosted Gemini + Copilot
+  lane, which runs alongside the local relay rather than instead of it.
+  `pr-critique` is one reviewer's lane, not a terminal review.
 
 ## Source of truth
 
