@@ -13,10 +13,14 @@ pass must read resolved as well as unresolved threads before reviewing the curre
 
 Load [the local review ledger](references/local-review-ledger.md) before running
 `refactorpass`, `critique`, `deepcritique`, `pr-critique`, or local review hooks.
-That file is the engine-neutral protocol, vendored verbatim from
+That file is the engine-neutral protocol published by the
 [`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger)
-so every engine reads the same contract. Where it writes `<ledger-helper>`, this
-engine's path is:
+project and vendored verbatim into every engine repository, so all engines read
+the same contract. The helper bundle beside it is vendored from that package's
+published tarball and pinned by `review-ledger.version` and
+`review-ledger.integrity`; CI byte-compares the bundle, not this document, so a
+protocol edit must land upstream rather than here. Where the protocol writes
+`<ledger-helper>`, this engine's path is:
 
 ```text
 .agents/skills/critique/scripts/review-ledger.js
@@ -27,7 +31,7 @@ engine's path is:
 The relay is defined over two roles:
 
 - **author** — the engine that wrote the change. Exactly one.
-- **reviewer** — an engine that reads the change cold. Zero, one, or two.
+- **reviewer** — an engine that reads the change cold. Zero, one, or more.
 
 Antigravity/Gemini is the author role when it wrote the change and a reviewer
 role otherwise. No rule below names a specific engine, so adding a fourth
@@ -78,6 +82,10 @@ Solo review is permitted but must be declared with a recorded reason.
      second reviewer from costing a full extra round every time anything
      changes.
    - **Rounds 1–2 are adversarial; round 3 and later are convergence rounds.**
+     A reviewer holding no attestation on this PR runs adversarially on its
+     first cold read whatever the round ordinal: the stance tracks how many
+     times that reviewer has read the change, not how many rounds elapsed
+     before it joined.
      Once every declared reviewer has read the change cold twice, the remaining
      findings are mostly about the review's own artifacts. A convergence round
      runs only the lanes that can find a reason not to deploy, changes the PR
@@ -139,6 +147,19 @@ Hosted reviewers are not roster participants. They post under their own
 identities, so their comments are context rather than actor-owned ledger
 evidence, and they do not attest. Coverage counts local engines only — a hosted
 pass does not turn a solo relay into a cross-model one.
+
+A repository with no local engine has no roster, so `verify-coverage` does not
+apply to it. There, convergence is the hosted lane's own contract: every hosted
+finding disposed and resolved, and a final iteration that produced no fix. A
+roster-less PR converges on that rule and must not claim relay coverage.
+
+Invocation:
+
+- **Lean** — `reviewit <pr-number>` for the bounded Gemini Flash and Copilot
+  loop. It verifies and deduplicates their findings, fixes confirmed issues,
+  pushes, replies, and loops within its cap.
+- **Deep** — `reviewit <pr-number> deep`, with the larger cap and early-exit
+  rules, and a final local `deepcritique` on the same PR number and ledger.
 
 ## Review Principles
 

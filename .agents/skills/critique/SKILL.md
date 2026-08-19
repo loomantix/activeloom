@@ -246,9 +246,9 @@ End with:
   (with one-line evidence)
 - validation run
 - PR number, reviewed head, comments posted, replies posted, and threads resolved
-- the next step for the path selected in `.agents/REVIEW_WORKFLOW.md`: return to
-  the local Codex/Claude convergence loop after completing the PR ledger, or use
-  `reviewit <pr>` / `reviewit <pr> deep` on the hosted
-  fallback path. When recommending `reviewit`, recommend a fresh Codex session;
-  the current session has absorbed critique findings, fix commits, and (in deep
-  mode) the full review matrix.
+- the next step under `.agents/REVIEW_WORKFLOW.md`: hand back to the relay for
+  the declared reviewers that have not attested this head, and add
+  `reviewit <pr>` / `reviewit <pr> deep` whenever a hosted pass is wanted. When
+  recommending `reviewit`, recommend a fresh session; the current one has
+  absorbed critique findings, fix commits, and (in deep mode) the full review
+  matrix.
