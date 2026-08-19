@@ -246,6 +246,8 @@ surrounding repository's root manifest says.
 The file is a build artifact of [`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger),
 vendored verbatim from the published tarball at the version recorded in
 `review-ledger.version`, with that tarball's sha512 in `review-ledger.integrity`.
+`node review-ledger.js --version` reports the version it was built from, so a
+copy can always identify itself without trusting the pin file beside it.
 Never edit or reformat it: fixes belong upstream in the package. The byte-compare
 that enforces this runs in `claude-platform`'s own CI, not here — in a consumer
 repository an accidental edit is silently restored by the next sync rather than
