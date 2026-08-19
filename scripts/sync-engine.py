@@ -586,6 +586,113 @@ def parse_sensitive_write_allowlist(
     return frozenset(entries)
 
 
+def sensitive_write_refusal(dest_rel_canonical: str, config_name: str) -> str:
+    """The refusal text for an unconsented write to a sensitive destination.
+
+    Shared verbatim by the pre-pass and the in-loop gate so a consumer sees
+    the same message and the same copy-pasteable fix whichever one refuses.
+    """
+    return (
+        f"  ❌ refusing to write sensitive path without an explicit "
+        f"opt-in (engine-level block, applies regardless of "
+        f"allowed_destinations): {dest_rel_canonical}\n"
+        f"     Content written here controls what runs in this repo, "
+        f"who has to review it, or what the build installs. To allow "
+        f"it, add the exact path to `allow_sensitive_writes` in "
+        f"{config_name}:\n"
+        f"       allow_sensitive_writes:\n"
+        f"         - {dest_rel_canonical}\n"
+    )
+
+
+def announce_sensitive_write(dest_rel_canonical: str) -> None:
+    """Surface a permitted sensitive write in the job log.
+
+    Called at the write itself rather than at the consent check, so the line
+    means what it says: a reviewer of the sync PR should be able to see that
+    this run rewrote a workflow without reading the patch.
+    """
+    print(
+        f"  ⚠️  sensitive destination {dest_rel_canonical} "
+        f"(opted in via `allow_sensitive_writes`)"
+    )
+
+
+def unconsented_sensitive_writes(
+    targets: list[Any],
+    skip: set[str],
+    consumer_dir: Path,
+    allowlist: frozenset[str],
+    allowed_patterns: list[re.Pattern[str]] | None,
+) -> list[str]:
+    """Canonical destinations that the sync would write without consent.
+
+    Admission control, run before the mutating loop so a refusal really does
+    leave the tree untouched. Without it the gate fires from inside the loop
+    and every target ahead of the offending one has already been written —
+    and the canonical manifest puts `.github/workflows/dco.yml` last, which
+    is the worst possible ordering for that.
+
+    Deliberately permissive about everything that is not its own question.
+    Malformed entries, bad `mode`, escaping paths, and non-canonical
+    destinations are all skipped here and left to the main loop, which
+    reports them far better than a pre-pass could. This function only ever
+    answers "would this target write a sensitive path the consumer has not
+    named?", so a target it cannot classify is not its business.
+
+    The main loop keeps its own copy of this check. That duplication is the
+    point: this pass exists for *ordering*, and a security gate should not
+    depend on a pre-pass staying in perfect sync with the loop's
+    reachability rules. If the two ever drift, the loop still refuses — it
+    just refuses less atomically.
+    """
+    denied: list[str] = []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        dest_rel = target.get("destination")
+        source_rel = target.get("source")
+        if not isinstance(dest_rel, str) or not dest_rel:
+            continue
+        # Only writes are gated. A non-boolean flag is a malformed entry the
+        # main loop rejects, so treat it as "not this pass's problem".
+        if not isinstance(target.get("delete"), (bool, type(None))):
+            continue
+        if bool(target.get("delete")):
+            continue
+        if (isinstance(source_rel, str) and source_rel in skip) or dest_rel in skip:
+            continue
+        dest_path = resolve_under(consumer_dir, dest_rel)
+        if dest_path is None:
+            continue
+        dest_rel_canonical = dest_path.relative_to(consumer_dir).as_posix()
+        if dest_rel_canonical != dest_rel:
+            continue
+        # A destination outside `allowed_destinations` is never written, so
+        # it needs no sensitive consent — and the loop's allowlist error is
+        # the one the consumer needs. Reporting the sensitive refusal here
+        # would send them to add `allow_sensitive_writes` for a path that
+        # would still be refused afterwards.
+        if allowed_patterns is not None and not path_matches_any(
+            dest_rel_canonical, allowed_patterns
+        ):
+            continue
+        if not path_matches_any(dest_rel_canonical, SENSITIVE_WRITE_REGEXES):
+            continue
+        # `create_if_missing` with the destination already present never
+        # writes — the loop short-circuits before the source read. Asking
+        # consent to write a file the engine has permanently committed to
+        # leaving alone would break that documented contract and fail every
+        # steady-state consumer.
+        cim_raw = target.get("create_if_missing")
+        if isinstance(cim_raw, bool) and cim_raw:
+            if dest_path.exists() or dest_path.is_symlink():
+                continue
+        if dest_rel_canonical not in allowlist:
+            denied.append(dest_rel_canonical)
+    return denied
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--upstream-repo", required=True, type=Path, help="path to a checkout of the upstream repo")
@@ -669,6 +776,19 @@ def main() -> int:
         config_doc, config_path, consumer_dir
     )
     if sensitive_write_allowlist is None:
+        return 1
+
+    # Admission control. Refuse the whole run up front so "nothing is written
+    # when the gate trips" is true by construction rather than by luck of
+    # manifest ordering. Reports every offending destination, not just the
+    # first — a consumer adopting this gate should get one complete list to
+    # paste into their config, not one path per red run.
+    denied_sensitive = unconsented_sensitive_writes(
+        targets, skip, consumer_dir, sensitive_write_allowlist, allowed_patterns
+    )
+    if denied_sensitive:
+        for dest in denied_sensitive:
+            sys.stderr.write(sensitive_write_refusal(dest, config_path.name))
         return 1
 
     print(f"Syncing from {upstream_repo} → {consumer_dir}")
@@ -902,41 +1022,6 @@ def main() -> int:
             removed += 1
             continue
 
-        # Engine-level gate on *writing* a sensitive path. Only copy and
-        # `create_if_missing` targets reach here — the delete branch above
-        # always continues or returns. Creation is gated alongside
-        # overwrite on purpose: a workflow file that did not exist before
-        # still runs once a manifest authors it, so "the file was absent"
-        # is not a reason to skip consent.
-        #
-        # The block matches case-insensitively while the opt-in compares
-        # exactly. That asymmetry is deliberate — a denial should be broad
-        # enough to survive a case-insensitive filesystem, a grant should
-        # be narrow enough that it only ever covers the path the consumer
-        # actually wrote down.
-        if path_matches_any(dest_rel_canonical, SENSITIVE_WRITE_REGEXES):
-            if dest_rel_canonical not in sensitive_write_allowlist:
-                sys.stderr.write(
-                    f"  ❌ refusing to write sensitive path without an explicit "
-                    f"opt-in (engine-level block, applies regardless of "
-                    f"allowed_destinations): {dest_rel_canonical}\n"
-                    f"     Content written here controls what runs in this repo, "
-                    f"who has to review it, or what the build installs. To allow "
-                    f"it, add the exact path to `allow_sensitive_writes` in "
-                    f"{config_path.name}:\n"
-                    f"       allow_sensitive_writes:\n"
-                    f"         - {dest_rel_canonical}\n"
-                )
-                return 1
-            sensitive += 1
-            # Surfaced per-run rather than left to the diff: a reviewer of
-            # the sync PR should be able to see "this run rewrites a
-            # workflow" from the job log without reading the patch.
-            print(
-                f"  ⚠️  sensitive destination {dest_rel_canonical} "
-                f"(opted in via `allow_sensitive_writes`)"
-            )
-
         # `create_if_missing: True` bootstraps the destination on first
         # sync and leaves it alone thereafter, so consumer customization
         # of the file survives subsequent syncs. Short-circuit before
@@ -961,6 +1046,34 @@ def main() -> int:
                 print(f"  ✓  preserved {dest_rel} (create_if_missing)")
                 unchanged += 1
                 continue
+
+        # Engine-level gate on *writing* a sensitive path, and the
+        # authoritative one — `unconsented_sensitive_writes` above only
+        # front-runs it so the refusal lands before anything is written.
+        #
+        # Placed below the `create_if_missing` preserve branch on purpose.
+        # Above it, a bootstrap target whose destination already exists
+        # would demand consent to write a file the engine has just decided
+        # never to touch, which breaks the documented short-circuit and
+        # fails every steady-state consumer. Everything still reaching here
+        # either writes or is a no-op write of identical bytes, and consent
+        # is required for both: gating on today's byte diff would let a
+        # sync run green for months and then fail the day upstream edits
+        # the file, which is a worse time to discover missing consent.
+        #
+        # The block matches case-insensitively while the opt-in compares
+        # exactly. That asymmetry is deliberate — a denial should be broad
+        # enough to survive a case-insensitive filesystem, a grant should
+        # be narrow enough that it only ever covers the path the consumer
+        # actually wrote down.
+        is_sensitive_write = path_matches_any(
+            dest_rel_canonical, SENSITIVE_WRITE_REGEXES
+        )
+        if is_sensitive_write and dest_rel_canonical not in sensitive_write_allowlist:
+            sys.stderr.write(
+                sensitive_write_refusal(dest_rel_canonical, config_path.name)
+            )
+            return 1
 
         # Same path-bound check on `source` as `destination` — a manifest
         # typo with `..` segments would otherwise read arbitrary files
@@ -995,6 +1108,10 @@ def main() -> int:
         # nothing and stays byte-identical to the upstream source.
         substituted = substitute(text, values, subs, source_rel, collapse_empty_substitutions)
 
+        # Both branches below report a sensitive write only where one
+        # actually happens. The daily cron is almost always at steady state,
+        # so counting at the consent check instead would make the false
+        # positive the common case and the real signal the rare one.
         if args.dry_run:
             existing = dest_path.read_text(encoding="utf-8") if dest_path.is_file() else None
             current_mode = stat.S_IMODE(dest_path.stat().st_mode) if dest_path.is_file() else None
@@ -1002,6 +1119,9 @@ def main() -> int:
             mode_diverged = mode is not None and current_mode is not None and current_mode != mode
             if content_diverged or mode_diverged:
                 reason = "content" if content_diverged else "mode"
+                if is_sensitive_write:
+                    sensitive += 1
+                    announce_sensitive_write(dest_rel_canonical)
                 print(f"  📝 would write {dest_rel} ({reason})")
                 written += 1
             else:
@@ -1009,6 +1129,9 @@ def main() -> int:
             continue
 
         if write_if_changed(dest_path, substituted, mode):
+            if is_sensitive_write:
+                sensitive += 1
+                announce_sensitive_write(dest_rel_canonical)
             print(f"  ✅ wrote {dest_rel}")
             written += 1
         else:
