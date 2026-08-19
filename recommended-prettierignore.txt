@@ -23,7 +23,10 @@
 .agents/skills/backlog-refinement/scripts/candidates.py
 .agents/skills/copilot-review/SKILL.md
 .agents/skills/critique/SKILL.md
-.agents/skills/critique/scripts/review-ledger.py
+.agents/skills/critique/scripts/package.json
+.agents/skills/critique/scripts/review-ledger.integrity
+.agents/skills/critique/scripts/review-ledger.js
+.agents/skills/critique/scripts/review-ledger.version
 .agents/skills/deepcritique/SKILL.md
 .agents/skills/diagnosing-bugs/SKILL.md
 .agents/skills/feature-dev/SKILL.md
