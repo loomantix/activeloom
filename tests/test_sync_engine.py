@@ -2684,6 +2684,29 @@ def test_sensitive_write_patterns_cover_the_delete_set(sync_engine: ModuleType) 
     )
 
 
+def test_sensitive_write_patterns_are_all_delete_protected(
+    sync_engine: ModuleType,
+) -> None:
+    # This is the direction that carries the pre-pass's atomicity guarantee,
+    # and it is not the same claim as the assertion above.
+    #
+    # `unconsented_sensitive_writes` skips a `create_if_missing` target whose
+    # destination already exists, on the assumption it will still be there
+    # when the loop arrives. The only way it disappears mid-run is an earlier
+    # `delete:` target — refused only when the path is in the *delete* set. A
+    # write-sensitive path that is not delete-protected can therefore be
+    # removed after admission control has cleared the run, dropping its target
+    # into the in-loop gate after a write and a delete have already landed:
+    # the mid-run abort the pre-pass exists to prevent.
+    #
+    # Both hold trivially while `SENSITIVE_WRITE_PATTERNS` aliases the delete
+    # tuple. This one is what must survive the split that alias's comment
+    # invites.
+    assert set(sync_engine.SENSITIVE_WRITE_PATTERNS) <= set(
+        sync_engine.SENSITIVE_DELETE_PATTERNS
+    )
+
+
 # ---------------------------------------------------------------------------
 # The gate must track writes, not targets
 # ---------------------------------------------------------------------------
@@ -3074,15 +3097,149 @@ def test_main_sensitive_write_refusal_is_one_pasteable_yaml_block(
 
     # Lift the block verbatim and append it to a config that already has
     # top-level keys, which is the only paste a consumer ever performs.
-    # Dedenting it here instead would strip the exact defect under test: an
-    # indented mapping appended to a real config is a ParserError, and a
-    # uniformly indented block parses only as a standalone document.
-    block = err[err.index("allow_sensitive_writes:") :]
+    #
+    # Slice on whole lines, not on the offset of the key's first character.
+    # `err.index("allow_sensitive_writes:")` starts *after* whatever
+    # indentation precedes the key, so it silently re-dedents the block and
+    # strips the exact defect this test is named for — an indented grant
+    # block pasted into a real config either raises ParserError or nests
+    # silently under the preceding key. Anchoring on the newline keeps
+    # column-zero placement load-bearing here.
+    assert "\nallow_sensitive_writes:" in err, (
+        "the grant block must start at column zero to survive being pasted "
+        "into a config that already has top-level keys"
+    )
+    block = err[err.index("\nallow_sensitive_writes:") + 1 :]
     existing = 'substitutions:\n  FOO: bar\n\nallowed_destinations:\n  - "**"\n'
     assert yaml.safe_load(existing + block)["allow_sensitive_writes"] == [
         ".github/workflows/dco.yml",
         ".github/workflows/release.yml",
     ]
+
+
+def test_main_sensitive_refusal_block_carries_existing_grants(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The steady state after the fleet migration: the consumer already holds
+    # a grant and upstream adds a second sensitive destination. A block
+    # listing only the *new* path is a second occurrence of a key the config
+    # already has — `safe_load` keeps the last, so following the instruction
+    # discards the existing grant and the next run refuses a path the config
+    # visibly names. Pasting again refuses the other one, forever.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    (upstream_repo / "pkg.json").write_text('{"type": "module"}\n')
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "dco.yml", "destination": ".github/workflows/dco.yml"},
+                {"source": "pkg.json", "destination": "apps/web/package.json"},
+            ]
+        },
+    )
+    existing = (
+        'substitutions:\n  FOO: bar\n\nallowed_destinations:\n  - "**"\n'
+        "allow_sensitive_writes:\n  - .github/workflows/dco.yml\n"
+    )
+    (consumer_dir / ".platform-config.yml").write_text(existing)
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.count("allow_sensitive_writes:") == 1
+
+    # Appending the emitted block is the worst thing a consumer can do with
+    # it, so it is what the assertion has to survive: the duplicate key wins,
+    # and it must carry both grants rather than only the new one.
+    assert "\nallow_sensitive_writes:" in err, (
+        "the grant block must start at column zero to survive being pasted "
+        "into a config that already has top-level keys"
+    )
+    block = err[err.index("\nallow_sensitive_writes:") + 1 :]
+    assert yaml.safe_load(existing + block)["allow_sensitive_writes"] == [
+        ".github/workflows/dco.yml",
+        "apps/web/package.json",
+    ]
+
+
+def test_main_config_destination_refused_and_not_grantable(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The consent store cannot be governed by the consent it stores. A
+    # manifest able to rewrite `.platform-config.yml` can write its own
+    # `allow_sensitive_writes` entry and then, on the next run, write any
+    # sensitive path with the gate reporting an opt-in that upstream granted
+    # itself. Refused unconditionally, and naming it in the allowlist must
+    # not help.
+    (upstream_repo / "cfg.yml").write_text(
+        "allowed_destinations:\n  - '**'\n"
+        "allow_sensitive_writes:\n  - .github/workflows/deploy.yml\n"
+    )
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "cfg.yml", "destination": ".platform-config.yml"}]},
+    )
+    original = "allowed_destinations:\n  - '**'\nallow_sensitive_writes: []\n"
+    (consumer_dir / ".platform-config.yml").write_text(original)
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refusing to write the consumer's own sync config" in err
+    assert (consumer_dir / ".platform-config.yml").read_text() == original
+
+    # And the refusal is not opt-in-able: naming the config in
+    # `allow_sensitive_writes` is rejected at parse time, so there is no
+    # spelling of the config that authorizes rewriting the config.
+    (consumer_dir / ".platform-config.yml").write_text(
+        "allowed_destinations:\n  - '**'\n"
+        "allow_sensitive_writes:\n  - .platform-config.yml\n"
+    )
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "which is not a sensitive path" in capsys.readouterr().err
+
+
+def test_main_in_loop_sensitive_gate_refuses_when_the_pre_pass_misses(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `unconsented_sensitive_writes`' docstring justifies duplicating the
+    # consent check in the loop as the fallback for drift: "if the two ever
+    # drift, the loop still refuses — it just refuses less atomically."
+    # Nothing exercised that fallback, so the whole in-loop gate could be
+    # deleted with the suite green.
+    #
+    # The two agree by construction today, so the drift has to be injected:
+    # blind the pre-pass and assert the loop still refuses. This is the
+    # documented property, not a hypothetical one — it is the only thing
+    # standing between a future pre-pass bug and an unconsented workflow
+    # write.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+    monkeypatch.setattr(sync_engine, "unconsented_sensitive_writes", lambda *a: [])
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "refusing to write sensitive path" in capsys.readouterr().err
+    assert not (consumer_dir / ".github" / "workflows" / "dco.yml").exists()
 
 
 def test_main_sensitive_directory_destination_refused_before_any_delete(
