@@ -438,9 +438,13 @@ result both stop clearly even when the reviewer process exits zero.
 Outside agent-loop, create the complete review-thread export and ordered
 forward-only transition heads (`beforeSha` through `afterSha`) as private
 temporary files, then use `write-result` to create the same result. Then use
-`attest --threads-file <path> --allowed-heads-file <path>`. The command verifies
-every thread and the changed-result evidence itself before publishing; pass the
-digest returned by `validate-result` as `--expected-result-sha256`.
+`attest --threads-file <path> --expected-threads-sha256 <sha256> --allowed-heads-file <path>`.
+The thread export must be sealed: the helper
+refuses a `--threads-file` whose digest is not supplied as a 64-hex value, via
+that flag or the `AGENT_LOOP_REVIEW_THREADS_SHA256` environment fallback. The
+command verifies every thread and the changed-result evidence itself before
+publishing; pass the digest returned by `validate-result` as
+`--expected-result-sha256`.
 
 Every engine pass remains evidence for the exact head it reviewed. A later
 minor commit does not rewrite that historical fact. Round convergence is a
