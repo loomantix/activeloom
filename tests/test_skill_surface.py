@@ -44,8 +44,17 @@ def _snapshot(root: Path) -> dict[str, tuple[str, int]]:
 
 def _canonical_sync_command(consumer: Path) -> list[str]:
     config = consumer / ".codex-platform-config.yml"
+    # `allowed_destinations` is deliberately absent — these tests exercise
+    # the canonical manifest, not the destination allowlist, and the absent
+    # key is still fail-open. `allow_sensitive_writes` has no such migration
+    # phase, so the manifest's `.github/workflows/dco.yml` target has to be
+    # consented to here exactly as a real consumer consents to it.
     config.write_text(
-        "substitutions: {}\nskip_targets:\n  - .github/copilot-instructions.md\n",
+        "substitutions: {}\n"
+        "skip_targets:\n"
+        "  - .github/copilot-instructions.md\n"
+        "allow_sensitive_writes:\n"
+        "  - .github/workflows/dco.yml\n",
         encoding="utf-8",
     )
     return [

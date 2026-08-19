@@ -46,8 +46,20 @@ jobs:
     # Updating `CLAUDE_PIN_SHA` MUST happen in the same PR as the file
     # updates that match it. A bumped SHA without matching file content
     # fails the gate intentionally so a reviewer notices the drift.
+    #
+    # The pin does NOT track `claude-platform`'s default branch. It tracks a
+    # preserved review-only line whose commits are frozen behind signed
+    # annotated tags (`sync-engine-pre-rename-fidelity-v*`), because that
+    # line carries engine hardening — faithful CRLF handling on read/write,
+    # the ASCII-only blank-line rule, container-aware collapse linting —
+    # that was reviewed onto the historical pre-rename snapshot and never
+    # made it back onto `main`. Re-vendoring from `main` would silently
+    # revert it. When bumping, branch from the current tag, land the change
+    # upstream on both that line and `main`, tag the new snapshot, and point
+    # this pin at the tagged commit.
     env:
-      CLAUDE_PIN_SHA: da67234540072c03ad9884f8fea53523fcbc6d55
+      # sync-engine-pre-rename-fidelity-v2
+      CLAUDE_PIN_SHA: 3222ab91e85ac0c8bd68e7d71c8381423e1de18d
       CLAUDE_REPO: loomantix/claude-platform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -443,7 +455,17 @@ jobs:
               for target in manifest['targets']
               for key in target.get('substitutions', [])
           }
-          config = {'substitutions': substitutions, 'allowed_destinations': ['**']}
+          # Listed literally rather than derived from the manifest: the
+          # engine requires per-file consent to write a sensitive path, and
+          # deriving the opt-in would grant whatever the manifest happens to
+          # ask for — this job would then stay green through the exact change
+          # (a new workflow target) that most deserves a reviewer's attention.
+          # Same explicit-over-implicit trade as the vendor-drift file list.
+          config = {
+              'substitutions': substitutions,
+              'allowed_destinations': ['**'],
+              'allow_sensitive_writes': ['.github/workflows/dco.yml'],
+          }
           (Path(sys.argv[1]) / '.platform-config.yml').write_text(yaml.safe_dump(config))
           PY
           python3 scripts/sync-engine.py \
