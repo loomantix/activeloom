@@ -31,6 +31,13 @@ draft PR before invoking any review lane. Verify the local HEAD, remote branch,
 and PR head SHA match. Record the PR number and load all prior review threads,
 including resolved and outdated threads.
 
+Resolve the selected local session mode from repository instructions or the
+user. In handoff mode, if the user asks to continue or resume a review, run
+`local-review-handoff.py show-handoff --engine codex` before resolving the
+round. Continue only when the latest authenticated handoff targets Codex and
+its exact head remains current. If it targets Claude, stop and ask the user to
+start a fresh Claude terminal session.
+
 Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
 when the runner set it, otherwise one past the count of `local-review-pass:v3`
 and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds
@@ -118,8 +125,28 @@ result directly to that orchestrator. Do not start local convergence, recommend
 another `reviewit`, push, or emit a terminal workflow summary; `reviewit` owns
 the hosted-path summary.
 
-When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
-return control after pushing reviewed fixes and completing their PR threads:
+When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, finish the ledger, write the
+wrapper-owned Codex result as described below, and return to agent-loop. Never
+launch Claude from inside a wrapper-owned Codex hook; agent-loop owns the next
+engine and its separate result boundary.
+
+Outside agent-loop, follow the selected local-convergence session mode. In auto
+mode, invoke Claude only through `run-claude-review.sh`; never hand-compose the
+command or override its literal low effort. The launcher requires the exact
+reviewed head and fails closed unless the current worktree is that self-authored,
+same-repository PR head. In handoff mode, post the next-session handoff with
+`local-review-handoff.py post-handoff` and return control to the user.
+
+```bash
+.codex/skills/critique/scripts/run-claude-review.sh \
+  --repo <owner/repo> --pr <pr-number> --base <review-base-sha> \
+  --head <reviewed-head-sha> --round <round>
+```
+
+After the launcher returns, verify local, upstream, and PR heads plus the new
+Claude ledger evidence before deciding whether the chain converged or restarts
+at Codex. A launcher failure stops the chain; never retry with a hand-composed
+Claude command.
 
 If `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, always create the v3 structured
 result after the final lane. For `clean` or `changed`, call the ledger helper's
@@ -138,7 +165,10 @@ Round: <n> (<adversarial | convergence>)
 Refactor pass: <ran | already spent at <sha> | skipped (convergence round) | docs-config skip>
 Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
-  Run a fresh local Claude review on this PR head against <review-base-sha>.
+  Auto mode: run the tested low-effort Claude launcher and continue the chain.
+  Handoff mode: a local-review-handoff:v1 comment for Claude was posted; the
+  user starts a fresh Claude terminal and says "Continue review on PR
+  #<pr-number>."
   Read all prior local-review threads before reviewing.
   Classify committed fixes as material or minor.
   Restart at Codex only when either reviewer commits a material fix.

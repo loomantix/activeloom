@@ -104,6 +104,7 @@ Report:
 - PR number plus comments, replies, and resolved-thread counts
 - recommended next step from the selected path: if invoked by `deepcritique`,
   return so it can run `critique deep`; if run standalone on the local path, run
-  `deepcritique` next and hand off to Claude only after that full chain; on the
+  `deepcritique` next and let it follow the selected auto or handoff mode after
+  that full chain; on the
   hosted fallback path, run `critique <pr-number>` / `deepcritique <pr-number>` and
   then `reviewit <pr-number>`

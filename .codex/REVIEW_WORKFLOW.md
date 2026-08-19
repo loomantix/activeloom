@@ -33,17 +33,46 @@ based on the developer's available tooling.
 
 Use this path when both local engines are available:
 
+### Select the local session mode
+
+Local convergence has two explicit modes. A consumer may declare a default;
+otherwise ask the user before the first cross-engine transition. Do not switch
+modes silently in the middle of a round.
+
+- **Auto mode** runs the complete bounded chain. For a direct interactive
+  transition, Codex may start Claude only through
+  `.codex/skills/critique/scripts/run-claude-review.sh`. The launcher pins the
+  actual CLI argv to literal `--effort low`; callers cannot supply or override
+  the effort. Never hand-compose a `claude` command. An automated wrapper may
+  instead run its configured Claude hook after its configuration doctor proves
+  the same literal low-effort contract. After Claude returns, validate its
+  PR-head and ledger evidence and continue the chain until convergence or the
+  configured cap.
+- **Handoff mode** never starts the other engine. Each nonterminal pass posts an
+  authenticated `local-review-handoff:v1` PR comment and returns control to the
+  user, who starts the requested reviewer in a new terminal session. Do not
+  choose the other engine's model, effort, flags, or runtime settings.
+
+In handoff mode, when the user says `continue review on PR <number>`, `resume
+review`, or similar, first load the latest authenticated handoff comment.
+Continue only when it names the current engine and its exact head is still the
+PR head. If it names the other engine, stop and ask the user to start that
+engine in a fresh terminal.
+
 1. Make the change, run focused validation, and create a clean local commit.
 2. Push the feature branch and open or reuse its draft PR. Record the PR number,
    head SHA, and all existing review threads before any reviewer runs.
 3. Fetch the target base, record its immutable commit SHA, and give that exact
    SHA to both reviewers for the round. Neither reviewer may re-resolve a
    mutable remote-tracking ref independently.
-4. In a fresh Codex session, run `deepcritique <pr-number>`. Read the PR ledger,
+4. In a fresh Codex session, run `deepcritique <pr-number>`. Read any applicable
+   handoff plus the complete PR ledger,
    post every confirmed finding inline before editing, fix, validate, commit,
    push, reply, and resolve.
-5. On that resulting HEAD, run a fresh adversarial Claude review against the
-   same base and PR ledger. Apply the same comment/fix/reply/resolve contract.
+5. On that resulting HEAD, run Claude according to the selected mode. Auto mode
+   uses only the low-effort launcher and continues when it returns. Handoff mode
+   posts the handoff and stops for a user-started Claude terminal. The Claude
+   reviewer applies the same comment/fix/reply/resolve contract.
 6. Classify committed review fixes as `material` or `minor`. A material fix
    affects behavior, correctness, security/privacy, data safety, compatibility,
    deployment/sync integrity, or another substantive contract; restart at Codex
@@ -74,17 +103,11 @@ Use this path when both local engines are available:
 8. After convergence, require every local-review thread to contain a disposition
    reply and be resolved, revalidate the exact PR head, and mark the PR ready.
 
-The `agent-loop` skill automates this path with a required non-mutating
-validation hook plus `review_max_rounds`, `codex_review_hook`, and
-`claude_review_hook`. Under contract v3 every hook writes a structured clean,
-changed, or blocked result to `$AGENT_LOOP_REVIEW_RESULT_FILE`. The wrapper
-validates that result against observed Git state and the v3 ledger, then posts
-the canonical pass/completion attestation itself. It opens a draft PR before
-review, exports the pinned PR identity to both hooks, checkpoints private atomic
-run state, and verifies that each hook leaves local, remote, and PR heads
-aligned. Consumer hooks own semantic finding verification, deterministic inline
-posting and disposition, and classification; they must fail or return blocked
-if a valid finding or undisposed local-review thread remains.
+An automated wrapper must make its mode explicit. Contract-v3 auto mode requires
+`config_doctor = true` and `claude_effort_policy = low`; the doctor requires
+exactly one literal `--effort low` option in the Claude hook before selection or
+claim. Handoff mode stops after each nonterminal engine leg and uses the same
+PR-comment protocol as an interactive review.
 
 Do not run `reviewit` after this path merely as an extra ritual. If the developer
 switches to hosted review and it creates or pushes a commit, the prior local

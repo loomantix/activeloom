@@ -72,6 +72,11 @@ def test_doctor_accepts_current_contract_without_mutation(tmp_path: Path) -> Non
         ("write-result", "AGENT_LOOP_REVIEW_OUTCOME_FILE", "obsolete review ownership"),
         ("/deepcritique", "/deepgrill", "must invoke deepcritique"),
         ("--effort low", "--effort medium", "literal --effort low"),
+        (
+            "--effort low",
+            "--effort low --effort max",
+            "exactly one literal --effort low",
+        ),
         ("AGENT_LOOP_REVIEW_PUSH_HELPER", "git push", "review push helper"),
     ],
 )

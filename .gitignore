@@ -22,6 +22,7 @@ venv/
 # Test artifacts (in case a future test suite drops things here)
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 .coverage
 coverage/
 htmlcov/
