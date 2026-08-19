@@ -3072,11 +3072,14 @@ def test_main_sensitive_write_refusal_is_one_pasteable_yaml_block(
 
     assert err.count("allow_sensitive_writes:") == 1
 
-    # Lift the block the consumer is told to paste and parse it the way the
-    # engine will after they paste it into their config.
-    block = err[err.index("       allow_sensitive_writes:") :]
-    pasted = "\n".join(line[7:] for line in block.rstrip("\n").split("\n")) + "\n"
-    assert yaml.safe_load(pasted)["allow_sensitive_writes"] == [
+    # Lift the block verbatim and append it to a config that already has
+    # top-level keys, which is the only paste a consumer ever performs.
+    # Dedenting it here instead would strip the exact defect under test: an
+    # indented mapping appended to a real config is a ParserError, and a
+    # uniformly indented block parses only as a standalone document.
+    block = err[err.index("allow_sensitive_writes:") :]
+    existing = 'substitutions:\n  FOO: bar\n\nallowed_destinations:\n  - "**"\n'
+    assert yaml.safe_load(existing + block)["allow_sensitive_writes"] == [
         ".github/workflows/dco.yml",
         ".github/workflows/release.yml",
     ]

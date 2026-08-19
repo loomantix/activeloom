@@ -103,8 +103,11 @@ skip_targets: []
 
 # Required before the sync may write a sensitive path. Absent or empty
 # means no sensitive path may be written, and the sync fails closed with
-# the exact line to add rather than warning in a green job.
+# the exact line to add rather than warning in a green job. These are the
+# two destinations the canonical manifest writes today; the refusal names
+# any others exactly, in a block you can paste as-is.
 allow_sensitive_writes:
+  - .claude/skills/critique/scripts/package.json
   - .github/workflows/dco.yml
 ```
 

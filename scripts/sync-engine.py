@@ -615,10 +615,20 @@ def sensitive_write_refusal(destinations: Sequence[str], config_name: str) -> st
     Shared by the pre-pass and the in-loop gate so a consumer sees the same
     message and the same copy-pasteable fix whichever one refuses; the loop
     passes a single-element sequence.
+
+    The grant block is emitted at column zero, set off by a blank line, while
+    the rest of the message stays indented with the engine's other output.
+    The inconsistency is deliberate. A `.platform-config.yml` keeps its
+    top-level keys at column zero, so an indented mapping appended to one is
+    a `yaml.parser.ParserError` rather than a nested key: the consumer pastes
+    exactly what they were told to paste and the next run fails on YAML
+    syntax instead of on the grant they just added. Uniform indentation
+    parses only when the block is the entire document, which is never the
+    paste being performed.
     """
     plural = "s" if len(destinations) > 1 else ""
     listed = "".join(f"       - {dest}\n" for dest in destinations)
-    granted = "".join(f"         - {dest}\n" for dest in destinations)
+    granted = "".join(f"  - {dest}\n" for dest in destinations)
     return (
         f"  ❌ refusing to write sensitive path{plural} without an explicit "
         f"opt-in (engine-level block, applies regardless of "
@@ -626,9 +636,9 @@ def sensitive_write_refusal(destinations: Sequence[str], config_name: str) -> st
         f"{listed}"
         f"     Content written here controls what runs in this repo, "
         f"who has to review it, or what the build installs. To allow "
-        f"it, add the exact path{plural} to `allow_sensitive_writes` in "
-        f"{config_name}:\n"
-        f"       allow_sensitive_writes:\n"
+        f"it, paste the following into {config_name} exactly as shown:\n"
+        f"\n"
+        f"allow_sensitive_writes:\n"
         f"{granted}"
     )
 
