@@ -110,7 +110,9 @@ allow_sensitive_writes:
 
 ### `allow_sensitive_writes`
 
-The engine treats a fixed set of destinations as sensitive: `.github/workflows/**`, `.github/actions/**`, `.github/CODEOWNERS`, `package.json`, `pnpm-lock.yaml`, `prisma/schema.prisma`, and `Dockerfile` / `Dockerfile.*`. It refuses to `delete:` any of them unconditionally, and refuses to **write** any of them — overwrite or first-time create — unless the consumer has named that exact path here.
+The engine treats a fixed set of destinations as sensitive: `.github/workflows/**`, `.github/actions/**`, `**/CODEOWNERS`, `**/package.json`, `**/pnpm-lock.yaml`, `**/prisma/schema.prisma`, and `**/Dockerfile` / `**/Dockerfile.*`. It refuses to `delete:` any of them unconditionally, and refuses to **write** any of them — overwrite or first-time create — unless the consumer has named that exact path here.
+
+The `**/` entries match at any depth, root included, because a workspace-shaped repo keeps these files at `apps/web/package.json` or `services/api/Dockerfile` rather than at the root. `CODEOWNERS` is matched at any depth because GitHub resolves it from the repository root, `.github/`, and `docs/` — gating only one of the three would leave the review gate rewritable. The two `.github/` entries stay depth-pinned, since those directories are the only place GitHub reads workflows and composite actions from.
 
 Writing is gated separately from deleting because it is the higher-impact operation on exactly these paths. A deleted workflow stops running; a rewritten workflow runs, with your secrets and whatever `permissions:` the manifest wrote into it. Rewriting `CODEOWNERS` removes the review gate without deleting anything, and rewriting a lockfile is a supply-chain edit your next CI run installs.
 

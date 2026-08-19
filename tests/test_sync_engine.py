@@ -2873,3 +2873,162 @@ def test_main_sensitive_write_skipped_target_needs_no_opt_in(
     assert "skip dco.yml (opted out via .platform-config.yml)" in out
     assert "1 skipped" in out
     assert not (consumer_dir / ".github" / "workflows" / "dco.yml").exists()
+
+
+# ---------------------------------------------------------------------------
+# Sensitive patterns match at any depth, not just repository root
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "package.json",
+        "apps/web/package.json",
+        "pnpm-lock.yaml",
+        "packages/api/pnpm-lock.yaml",
+        "Dockerfile",
+        "services/api/Dockerfile",
+        "Dockerfile.prod",
+        "api/Dockerfile.prod",
+        "prisma/schema.prisma",
+        "db/prisma/schema.prisma",
+        "CODEOWNERS",
+        ".github/CODEOWNERS",
+        "docs/CODEOWNERS",
+        ".github/workflows/ci.yml",
+        ".github/actions/setup/action.yml",
+    ],
+)
+def test_sensitive_patterns_match_at_any_depth(
+    sync_engine: ModuleType, destination: str
+) -> None:
+    # `glob_to_regex` anchors both ends, so a bare `package.json` entry would
+    # cover the repository root and nothing else. A workspace-shaped consumer
+    # keeps exactly these files one or two directories down, which is where
+    # the gate is most needed. CODEOWNERS matters most: GitHub resolves it
+    # from the root, `.github/`, and `docs/`, so gating one location would
+    # leave the review gate rewritable through the other two.
+    assert sync_engine.path_matches_any(
+        destination, sync_engine.SENSITIVE_WRITE_REGEXES
+    ), destination
+    assert sync_engine.path_matches_any(
+        destination, sync_engine.SENSITIVE_DELETE_REGEXES
+    ), destination
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "src/index.ts",
+        "README.md",
+        ".claude/settings.json",
+        # Widening to `**/` must not start matching on substrings or
+        # neighbouring extensions.
+        "docs/package.json.md",
+        "package.json.bak",
+        "my-package.json",
+        "notprisma/schema.prisma",
+        "Dockerfilex",
+        "docs/workflows/ci.yml",
+    ],
+)
+def test_sensitive_patterns_do_not_over_match(
+    sync_engine: ModuleType, destination: str
+) -> None:
+    assert not sync_engine.path_matches_any(
+        destination, sync_engine.SENSITIVE_WRITE_REGEXES
+    ), destination
+
+
+def test_main_nested_package_json_needs_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The end-to-end shape of the gap: a monorepo destination that cleared
+    # both the delete block and the write gate while the patterns were
+    # root-anchored. A rewritten workspace manifest is a supply-chain edit
+    # the consumer's next install picks up.
+    (upstream_repo / "pkg.json").write_text('{"name": "x"}\n')
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "pkg.json",
+                    "destination": "apps/web/package.json",
+                    "substitutions": [],
+                }
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refusing to write sensitive path" in err
+    assert "apps/web/package.json" in err
+    assert not (consumer_dir / "apps" / "web" / "package.json").exists()
+
+
+def test_main_root_codeowners_needs_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # GitHub honours root `CODEOWNERS` when `.github/CODEOWNERS` is absent,
+    # so writing it installs or replaces the review gate — the exact harm
+    # this PR cites as its reason to gate writes rather than only deletes.
+    (upstream_repo / "owners").write_text("* @someone\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "owners", "destination": "CODEOWNERS", "substitutions": []}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refusing to write sensitive path" in err
+    assert "CODEOWNERS" in err
+    assert not (consumer_dir / "CODEOWNERS").exists()
+
+
+def test_main_nested_sensitive_write_allowed_when_opted_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Widening the patterns must not make a nested destination unsyncable —
+    # the canonical manifest ships `.claude/skills/critique/scripts/package.json`,
+    # so this is the path every consumer now has to name.
+    (upstream_repo / "pkg.json").write_text('{"name": "x"}\n')
+    dest = ".claude/skills/critique/scripts/package.json"
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "pkg.json", "destination": dest, "substitutions": []}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"], "allow_sensitive_writes": [dest]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert f"sensitive destination {dest}" in out
+    assert (consumer_dir / dest).read_text() == '{"name": "x"}\n'
