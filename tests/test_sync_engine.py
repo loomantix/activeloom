@@ -2718,3 +2718,194 @@ def test_sensitive_write_patterns_cover_the_delete_set(sync_engine: ModuleType) 
     assert set(sync_engine.SENSITIVE_DELETE_PATTERNS) <= set(
         sync_engine.SENSITIVE_WRITE_PATTERNS
     )
+
+
+# ---------------------------------------------------------------------------
+# The gate must track writes, not targets
+# ---------------------------------------------------------------------------
+
+
+def test_main_sensitive_write_not_reported_when_nothing_changes(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The steady-state case, which is what the daily cron actually does.
+    # The destination is already byte-identical, so no write happens and
+    # the run must not claim one. The audit line exists so a reviewer can
+    # read the job log and conclude "this run rewrote a workflow" — if it
+    # fires on every no-op sync, the false positive becomes the common
+    # case and the real signal stops being read.
+    workflow = consumer_dir / ".github" / "workflows" / "dco.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: DCO\non: pull_request\n")
+    (upstream_repo / "dco.yml").write_text("name: DCO\non: pull_request\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".github/workflows/dco.yml"],
+            "allow_sensitive_writes": [".github/workflows/dco.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "sensitive destination" not in out
+    assert "sensitive destination(s) permitted" not in out
+    assert "1 unchanged" in out
+
+
+def test_main_sensitive_create_if_missing_preserved_needs_no_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `create_if_missing` with the destination already present never
+    # writes — docs/sync.md promises the engine "skips the source read,
+    # substitution, and write entirely". Demanding consent to write a file
+    # the engine has permanently committed to leaving alone breaks that
+    # contract and fails every steady-state consumer on the retag.
+    workflow = consumer_dir / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: CI\non: push\njobs:\n  consumer-customized: {}\n")
+    (upstream_repo / "ci.yml.template").write_text("name: CI\non: push\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "ci.yml.template",
+                    "destination": ".github/workflows/ci.yml",
+                    "create_if_missing": True,
+                }
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".github/workflows/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "preserved .github/workflows/ci.yml (create_if_missing)" in out
+    # Consumer customization survives untouched.
+    assert "consumer-customized" in workflow.read_text()
+
+
+def test_main_sensitive_write_refused_before_any_target_is_written(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # docs/sync.md promises "Nothing is written when the gate trips".
+    # The refusal must therefore be admission control, not a mid-loop
+    # abort: the canonical manifest puts `.github/workflows/dco.yml` last,
+    # so an un-opted-in consumer would otherwise take the entire sync
+    # before the refusal — the maximum-damage ordering, not the minimum.
+    (upstream_repo / "a.md").write_text("NEW upstream a\n")
+    (upstream_repo / "dco.yml").write_text("name: DCO\non: pull_request\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "a.md", "destination": "docs/a.md"},
+                {"source": "dco.yml", "destination": ".github/workflows/dco.yml"},
+            ]
+        },
+    )
+    ordinary = consumer_dir / "docs" / "a.md"
+    ordinary.parent.mkdir(parents=True)
+    ordinary.write_text("OLD consumer a\n")
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refusing to write sensitive path" in err
+    # The ordinary target ahead of the sensitive one is untouched.
+    assert ordinary.read_text() == "OLD consumer a\n"
+    assert not (consumer_dir / ".github" / "workflows" / "dco.yml").exists()
+
+
+def test_main_sensitive_write_refusal_lists_every_denied_destination(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A consumer adopting the gate should get one complete list to paste
+    # into their config, not one path per red run.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    (upstream_repo / "release.yml").write_text("name: Release\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "dco.yml", "destination": ".github/workflows/dco.yml"},
+                {
+                    "source": "release.yml",
+                    "destination": ".github/workflows/release.yml",
+                },
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert ".github/workflows/dco.yml" in err
+    assert ".github/workflows/release.yml" in err
+
+
+def test_main_sensitive_write_skipped_target_needs_no_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `skip_targets` is how a private consumer opts out of the DCO
+    # workflow. A target that is never processed must not require consent
+    # to write — otherwise opting out becomes impossible without also
+    # granting the write the opt-out exists to avoid.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": ["**"],
+            "skip_targets": [".github/workflows/dco.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The skip line is labelled by source (`source_rel or dest_rel`).
+    assert "skip dco.yml (opted out via .platform-config.yml)" in out
+    assert "1 skipped" in out
+    assert not (consumer_dir / ".github" / "workflows" / "dco.yml").exists()

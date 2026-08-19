@@ -116,6 +116,8 @@ Writing is gated separately from deleting because it is the higher-impact operat
 
 Entries must be literal, canonical, repo-relative paths — no globs. Consent inherited from `.github/workflows/**` is what this gate exists to prevent, so a pattern is rejected rather than expanded. Creating a file is gated alongside overwriting it: a workflow that didn't exist before still runs once a manifest authors it. An entry that isn't a sensitive path is a config error, since it's almost always a typo that would leave the real destination unauthorized.
 
+Consent is required for any target the sync would write, whether or not this particular run changes the bytes — a sync that ran green for months and then failed the day upstream edited the file would surface the missing entry at the worst possible time. Two cases need no entry, because no write can happen: a target you opted out of with `skip_targets`, and a `create_if_missing` target whose destination already exists (the engine has permanently committed to leaving that file alone). A destination outside `allowed_destinations` reports that error instead, since adding sensitive consent for it would not make it writable.
+
 Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-line values use YAML block scalars (the `|` form). Keys must be `[A-Z][A-Z0-9_]*`.
 
 ## Behavior contract
@@ -124,7 +126,7 @@ Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-l
 - **Hard fail on missing required substitution.** If a target declares a placeholder the consumer hasn't configured, the script exits 1 — better to break the sync PR than to silently leave an unfilled `<<KEY>>` in the destination file.
 - **Soft warn on undeclared placeholders in the source.** If the source contains `<<FOO>>` but `sync-targets.yml` doesn't declare `FOO` for that target, the placeholder is left intact and a warning is printed. Catches the case where a template change forgot to update the manifest.
 - **File mode preserved.** Targets with `mode: "0755"` get chmod'd after write.
-- **Sensitive destinations fail closed.** A write to a sensitive path that isn't listed in `allow_sensitive_writes` aborts the sync — including under `--dry-run`, so a dry run never reports a write the real run would refuse. Nothing is written when the gate trips. Permitted sensitive writes are announced in the job log and counted in the closing summary, so a reviewer can see "this run rewrites a workflow" without reading the diff.
+- **Sensitive destinations fail closed.** Consent is checked for every target before the sync writes anything, so a missing `allow_sensitive_writes` entry aborts the run with the tree untouched — and the error lists every destination you need to add, not just the first. The check also applies under `--dry-run`, so a dry run never reports a write the real run would refuse. A permitted sensitive write is announced in the job log and counted in the closing summary at the point it actually happens, so a reviewer can see "this run rewrites a workflow" without reading the diff — and a steady-state sync that rewrites nothing says nothing.
 - **`create_if_missing` short-circuits before substitution.** When the destination already exists, the engine skips the source read, substitution, and write entirely. This means a consumer can leave `create_if_missing` substitution values undeclared after first creation without breaking later syncs.
 
 ## Adding a new consumer
