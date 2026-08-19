@@ -119,6 +119,26 @@ State the changeset size and lane file count in the lane-specific suffix. These
 rules reduce duplicated bytes; they never justify dropping a lens, omitting a
 needed file, or weakening verification.
 
+## Record the review tier once per PR
+
+The tier decides which lanes run and how many rounds are owed. Resolve it
+before the first reviewer per [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md)
+and record it on the PR, so a later round in a fresh session reads it instead of
+re-deriving it.
+
+```text
+<!-- local-review-tier:v1 tier=<lean|deep> trigger=<trigger-id-or-none> head=<sha> -->
+```
+
+Search for the marker during pre-flight and adopt that tier. If none exists,
+classify, post the marker as an informational PR comment, and state the tier and
+trigger in the pass output before invoking a lane.
+
+The marker is per-PR, not per-engine and not per-round — every engine reads the
+same one. Post a replacement only for an evidence-backed escalation or
+de-escalation, naming the confirmed finding or clean lens that justified it. A
+pass that exits on the docs/config-only classification posts no marker.
+
 ## Run the refactor pass once per engine
 
 A cleanup pass earns its cost on the first cold read of a changeset. By the
@@ -184,9 +204,14 @@ one level up, where the whole set is visible and the orchestrator decides what
 the PR changes, what merits an urgent follow-up issue, and what should add
 nothing to an already deep backlog.
 
-Convergence rounds do not extend the round cap — they are how rounds 3 and 4 are
+The stance schedule above is the Deep schedule. At Lean the cap is two rounds:
+round 1 is adversarial, and round 2 runs only if round 1 made a material fix,
+in convergence mode. At both tiers, stop as soon as a complete round produces no
+material fix — the cap is a ceiling, not a target.
+
+Convergence rounds do not extend the round cap — they are how the last rounds are
 spent. Reaching the cap in convergence mode with open non-blocking findings means
-ship the PR and carry the issues, not open a fifth round.
+ship the PR and carry the issues, not open another round.
 
 ## Rebuild context from GitHub
 

@@ -25,6 +25,8 @@ This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilo
 
 `$ARGUMENTS` is whitespace-tokenized. The first token is the PR number; if a second token exists and equals `deep` (case-insensitive), set `MODE=deep` and `MAX_ITERS=4`. Otherwise `MODE=lean` and `MAX_ITERS=2`. Surface the resolved mode in the Phase 6 summary.
 
+`deep` asserts that the review tier resolved to Deep. Read the PR's `local-review-tier:v1` marker during Phase 0; if it says `lean`, run lean and say so — the argument is not evidence. The tier triggers, the Lean-by-default rule, and the evidence bar for escalating mid-chain are in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md).
+
 ## Core principles
 
 - **Full auto by default**: once the PR number is provided, do not ask for confirmation between phases. Fix everything fixable, defer what isn't, dismiss false positives. Present the summary at the end.
@@ -118,7 +120,7 @@ gh workflow run "Gemini Code Review" \
   -F tier=flash
 ```
 
-**Pass `-F tier=flash` explicitly.** The workflow defaults `tier` to `pro` when omitted (intentional for UI clickers, unintended for CLI/API callers). Pro is $1–$8 per review; Flash is $0.05–$0.20. Only override to `pro` if the user has explicitly asked for a deep review on a high-stakes PR (security/auth, schema migrations, large refactors) AND confirmed the cost.
+**Pass `-F tier=flash` explicitly.** The workflow defaults `tier` to `pro` when omitted (intentional for UI clickers, unintended for CLI/API callers). Pro is $1–$8 per review; Flash is $0.05–$0.20. Only override to `pro` when the resolved review tier is Deep, the user asked for it explicitly, AND confirmed the cost. Do not re-derive the triggers here — read the tier marker.
 
 ### Fire Copilot
 

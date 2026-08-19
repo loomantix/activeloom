@@ -14,16 +14,110 @@ as well as unresolved threads before reviewing the current head.
 Load [the local review ledger](references/local-review-ledger.md) before running
 `refactorpass`, `critique`, `deepcritique`, `codex-review`, or local review hooks.
 
+## Review Tier
+
+Resolve the tier **before the first reviewer runs**, on every path. An
+unresolved tier is not a neutral state — it is how the expensive path becomes
+the default. **Lean is the default; Deep is the exception you justify.**
+
+State the resolved tier and the trigger that selected it — or `no trigger` — in
+the pass output, and post the ledger's `local-review-tier:v1` marker once per
+PR. Later rounds read the marker instead of reclassifying; a tier re-derived
+each round drifts back to Deep.
+
+### What sets the tier
+
+Tier is set by what a missed defect reaches, not by how hard the change is to
+review. Difficulty is the wrong input: every subtle diff feels like it deserves
+more scrutiny, and that feeling is what pulls a whole repo onto the deep path.
+
+Resolve the changed-file list once with
+`git diff --name-only <base-sha>..<head-sha>`, then walk the triggers below.
+**Any one selects Deep; no trigger means Lean.**
+
+1. **Sensitive path** — authentication, authorization, cryptography, secret or
+   credential handling, PHI/PII, tenant or customer isolation. However small
+   the edit.
+2. **Irreversible in production data or a published artifact** — migration,
+   backfill, a published package's API or version: anything a revert cannot
+   undo.
+3. **Fans out past this repo** — the synced `.claude/**` surface, the sync
+   engine, a published package, a contract other repositories consume. One
+   defect lands in every consumer.
+4. **Non-obvious behaviour in deployed runtime code** — concurrency, retries or
+   idempotency, cache invalidation, money or clinical calculation, state
+   machines, partial-failure and rollback paths: correctness that is not
+   readable from the diff.
+5. **Recurring-incident area** — the touched paths produced a post-merge defect,
+   revert, or hotfix in roughly the last 90 days
+   (`git log --oneline --since=90.days -- <paths>`).
+6. **Explicitly requested** — a deep review was asked for, or the change is a
+   first of its kind the author cannot self-assess.
+
+### What does not set the tier
+
+Subtlety does not: a change can be hard to reason about and still be Lean. Nor
+does diff size — a large mechanical refactor is Lean unless it also trips
+trigger 4. Nor does topic adjacency: code _about_ security that does not itself
+run on a sensitive path is not trigger 1, and a CI secret scanner is tooling
+rather than auth.
+
+**The dominant rule: when the worst outcome of a missed defect is a red CI run,
+a broken build, or a broken developer workflow, the change is Lean.** CI
+scripts, lint rules, build tooling, developer utilities, fixtures, and test
+harnesses land here even when they are subtle and even when a defect in them
+fails open. That class of defect is caught by the next person the tool touches
+and fixed by editing the tool.
+
+### Round budget and stopping rule
+
+A round is one complete pass per available engine at the same head.
+
+- **Lean — cap 2.** Round 1 is adversarial. Round 2 runs only if round 1 made a
+  material fix, and runs in convergence mode.
+- **Deep — cap 4.** Rounds 1–2 adversarial, rounds 3–4 convergence.
+
+**Stop as soon as a complete round produces no material fix.** That is the
+stopping rule for both tiers, and it is a rule rather than a budget to spend: a
+Lean change that lands after one clean round has had enough review.
+
+A Lean change that reaches round 3 has either been mis-tiered — escalate it
+deliberately, below — or is not converging, which is a signal about the change
+rather than a licence for another round. Say which, and stop.
+
+### Escalate and de-escalate on evidence
+
+Both moves require a confirmed finding. A suspicion, an unverified severity
+label, or "this feels risky" is not evidence and does not move a tier.
+
+**Lean → Deep.** Escalate when a confirmed finding shows the change reaches a
+trigger the classification missed — a real authorization or isolation bypass, a
+real data-shape change, a real break in a contract another repository consumes.
+Name the finding and the trigger, update the tier marker, and adopt the Deep
+budget. The round already run counts as Deep round 1; do not restart the count.
+
+**Deep → Lean.** De-escalate when Deep round 1 completes and the lens that owns
+the selecting trigger returned no confirmed finding. Finish at Lean: the lean
+lens set, one further round at most. Running the full matrix again over a
+substantively unchanged diff audits the review rather than the change. Record
+the de-escalation and the lens that came back clean.
+
+Tier selection narrows which lenses run and how many rounds are owed. It never
+narrows what a lens may report, and it never relaxes the post-before-editing,
+reply, or resolve contract.
+
 ## Local Convergence Path
 
 Use this path when both local engines are available:
 
 1. Make the change, validate it, create a clean commit, and open a draft PR.
-2. Pin the exact base SHA for the round and give it to both reviewers.
+2. Pin the exact base SHA for the round, resolve the tier, and give both to
+   the reviewers. Do not start a reviewer with the tier unresolved.
 3. Run `codex-review <pr-number>` as a fresh local Codex pass. Read the ledger
    and apply the comment/fix/reply/resolve contract to confirmed findings.
-4. On the resulting head, run a fresh Claude `deepcritique <pr-number>` with the
-   same ledger contract.
+4. On the resulting head, run the Claude lane for the resolved tier in a fresh
+   session, under the same ledger contract: `critique <pr-number>` at Lean,
+   `deepcritique <pr-number>` at Deep.
 5. Classify fixes by effect, not path or finding severity. `material` includes
    substantive correctness, security/privacy, data-safety, compatibility,
    deployment/sync, or review-integrity changes, including tests or workflows
@@ -54,8 +148,9 @@ Use this path when both local engines are available:
    engine reviewed B; its exact-head attestation remains historical evidence.
 7. The wrapper, not review hooks, posts canonical pass/completion attestations
    after validating structured results and the GitHub ledger.
-8. Stop after four rounds by default. Leave the PR draft and report
-   non-convergence instead of continuing an unbounded cycle.
+8. Stop at the tier's round cap — two at Lean, four at Deep — or earlier under
+   the stopping rule above. Leave the PR draft and report non-convergence
+   instead of continuing an unbounded cycle.
 
 Do not add hosted reviewers to this path merely as another ritual. A later
 hosted-review fix invalidates local convergence and requires a fresh local
@@ -78,13 +173,16 @@ When a local Codex CLI is unavailable:
    same PR number and ledger. That tail `deepcritique` skips the refactor pass —
    step 1 already spent this engine's cleanup latch on the PR.
 
-Use deep mode for auth, crypto, secrets, schema/data-shape work, GitHub Actions,
-sync tooling, `.claude/skills/**`, large refactors, recurring incidents, or
-customer/tenant-variable behavior.
+Which of the two runs is the tier decision above, resolved before the first
+reviewer — not a per-invocation choice. `reviewit`'s iteration cap is the tier's
+round cap: two at Lean, four at Deep.
 
 ## Review Principles
 
 - Treat generated findings as hypotheses; verify against source before posting.
+- **A pass that cannot name its tier and the trigger that selected it has not
+  started correctly.** Tier is resolved before the first reviewer, not inferred
+  from which skill someone happened to type.
 - **No reviewer in this chain pre-filters by severity or confidence.** Not a
   `critique` sub-agent, not `codex-review`, not an inline `Agent(...)` prompt you
   write yourself. Each reports everything with a severity and confidence
