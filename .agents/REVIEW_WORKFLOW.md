@@ -108,6 +108,15 @@ later phase. Run one whenever it is useful: before the relay, between rounds,
 after convergence, or as the only review on a change that does not warrant a
 local relay.
 
+**The local relay is the default path here.** Coverage is expected to come from
+declared roster engines reading the change cold, and that is what
+`verify-coverage` measures. The hosted lane is an extension on top of that.
+
+It stays fully supported because it is the primary path for a consumer whose
+developers have no local agent engine — a repository with no local CLI and no
+declared roster still gets real review from a hosted pass. That is the case the
+lane exists for; it is not the case these defaults are tuned for.
+
 Note that a hosted Gemini Flash pass and this engine's local lane are different
 reviewers despite the shared model family: the hosted pass posts under its own
 identity and reviews from GitHub, while the local lane runs as the authenticated
