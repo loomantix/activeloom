@@ -16,7 +16,7 @@ Operational skills you can install globally or sync into any repo:
 | `critique`            | PR-first adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass.                                                                                                                |
 | `deepcritique`        | Opens or reuses a draft PR and orchestrates `critique deep` with an inline finding ledger, preceded by refactorpass on this engine's first pass only.                                                                                                                          |
 | `pr-critique <pr>`    | Cross-engine deep review of an existing PR using the same inline finding, fix-reply, and resolution ledger.                                                                                                                                                                    |
-| `reviewit <pr>`       | Optional hosted fallback for developers without local Claude Code. Orchestrates post-push Gemini Flash + Copilot review with bounded lean/deep modes.                                                                                                                          |
+| `reviewit <pr>`       | Optional hosted-reviewer lane, runnable alongside the local relay or on its own. Orchestrates post-push Gemini Flash + Copilot review with bounded lean/deep modes.                                                                                                            |
 | `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                                                                                                                                         |
 | `grill`               | Pre-code interview. Maps the problem as a design tree and asks the whole dependency-ordered frontier each round, with a recommended answer per question. Writes no code. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE). |
 | `diagnosing-bugs`     | Debugging discipline for bugs that survived the first read — no hypothesis until a tight, deterministic loop goes red on the user's exact symptom. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).                       |
@@ -99,7 +99,7 @@ Consumer Migration** section.
 4. Set the GitHub App secrets on the consumer.
 5. Run `gh workflow run "Sync from upstream" --repo <owner>/<consumer>`.
 6. Reference `.codex/REVIEW_WORKFLOW.md` from the consumer `AGENTS.md` and declare
-   whether that consumer defaults to local convergence or the hosted fallback.
+   which reviewer engines that consumer declares on a review roster.
 
 ## Design Notes
 

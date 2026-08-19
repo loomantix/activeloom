@@ -38,7 +38,7 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 - Skills that bind to a specific tech stack in their core (e.g. a skill that only works on Rails, or only on Expo) — those belong in stack-specific repos.
 - Hooks that auto-fire on every PR. Review remains developer-selected and
   explicit: draft-PR-first local Codex/Claude convergence or manual post-PR
-  `/reviewit` for the hosted fallback.
+  `/reviewit` for the hosted-reviewer lane.
 
 ## Workflow
 

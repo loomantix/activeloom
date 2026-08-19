@@ -118,7 +118,7 @@ result directly to that orchestrator. Do not start local convergence, recommend
 another `reviewit`, push, or emit a terminal workflow summary; `reviewit` owns
 the hosted-path summary.
 
-When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
+When `$AGENT_LOOP_REVIEW_ENGINE` is set, or this pass is part of a review relay,
 return control after pushing reviewed fixes and completing their PR threads:
 
 If `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, always create the v3 structured
@@ -138,21 +138,24 @@ Round: <n> (<adversarial | convergence>)
 Refactor pass: <ran | already spent at <sha> | skipped (convergence round) | docs-config skip>
 Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
-  Run a fresh local Claude review on this PR head against <review-base-sha>.
-  Read all prior local-review threads before reviewing.
+  Run each declared reviewer that has not attested this head, against
+  <review-base-sha>. Read all prior local-review threads before reviewing.
   Classify committed fixes as material or minor.
-  Restart at Codex only when either reviewer commits a material fix.
-  Mark ready only after one full Codex-then-Claude round produces no material
-  fixes and every local-review thread is resolved.
+  A fix invalidates only the attestations naming the superseded head; an engine
+  that already attested this head does not re-run.
+  Mark ready only after verify-coverage passes at the exact head, that round
+  produced no material fix, and every local-review thread is resolved.
 ```
 
 A convergence round that found no blocking defect ends the loop. Say so and name
 the repository's ship step; do not report the remaining rounds as owed.
 
-Do not recommend or invoke `reviewit` on the local convergence path. The current
-process or outer agent-loop wrapper owns the next pass and final summary.
+Do not invoke `reviewit` from inside this skill; hosted review is a separate
+lane the caller runs when it is useful, not a side effect of this pass. The
+current process or outer agent-loop wrapper owns the next pass and final
+summary.
 
-When the hosted fallback path is selected, tell the user:
+When the caller asked for the hosted lane as the next step, tell the user:
 
 ```text
 Deep PR review complete.
