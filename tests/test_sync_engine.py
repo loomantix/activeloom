@@ -9,6 +9,7 @@ Covers the sync-engine hardening invariants:
 - Manifest validation (malformed entries, strict-boolean `delete`/`create_if_missing`)
 - The delete branch's `exists() or is_symlink()` dangling-link path
 - The create_if_missing branch's bootstrap + preserve semantics
+- `allow_sensitive_writes` per-file consent for sensitive destinations
 """
 from __future__ import annotations
 
@@ -1559,15 +1560,17 @@ def test_main_sensitive_delete_refused_even_when_allowlisted(
     assert workflow_path.exists()  # untouched
 
 
-def test_main_sensitive_copy_still_allowed_when_in_allowlist(
+def test_main_sensitive_copy_allowed_when_opted_in(
     sync_engine: ModuleType,
     upstream_repo: Path,
     consumer_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The sensitive-path block applies to `delete: true` only. Copying a
-    # workflow file into `.github/workflows/` from upstream is a normal
-    # sync operation (every consumer syncs their CI workflows this way).
+    # Copying a workflow in from upstream stays a supported operation —
+    # it is how consumers sync their CI — but it now needs the consumer
+    # to have named that exact file in `allow_sensitive_writes`. The
+    # directory grant in `allowed_destinations` is necessary and no
+    # longer sufficient.
     (upstream_repo / "ci.yml.template").write_text("name: CI\non: push\n")
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml",
@@ -1582,7 +1585,10 @@ def test_main_sensitive_copy_still_allowed_when_in_allowlist(
     )
     _write_yaml(
         consumer_dir / ".platform-config.yml",
-        {"allowed_destinations": [".github/workflows/**"]},
+        {
+            "allowed_destinations": [".github/workflows/**"],
+            "allow_sensitive_writes": [".github/workflows/ci.yml"],
+        },
     )
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
@@ -2088,10 +2094,11 @@ def test_main_create_if_missing_sensitive_path_allowed_for_copy(
     consumer_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The sensitive-path block applies to `delete: true` only. A
-    # `create_if_missing` bootstrap of `.github/workflows/ci.yml` (which
-    # IS a sensitive path) must succeed on the first sync — otherwise
-    # net-new consumers couldn't onboard their CI workflow via sync.
+    # A `create_if_missing` bootstrap of `.github/workflows/ci.yml` must
+    # still succeed on the first sync once the consumer has opted in —
+    # otherwise net-new consumers couldn't onboard their CI workflow via
+    # sync at all. Consent is required (see the refusal test below), but
+    # consent is enough.
     (upstream_repo / "ci.yml.template").write_text("name: CI\non: push\n")
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml",
@@ -2107,7 +2114,10 @@ def test_main_create_if_missing_sensitive_path_allowed_for_copy(
     )
     _write_yaml(
         consumer_dir / ".platform-config.yml",
-        {"allowed_destinations": [".github/workflows/**"]},
+        {
+            "allowed_destinations": [".github/workflows/**"],
+            "allow_sensitive_writes": [".github/workflows/ci.yml"],
+        },
     )
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
@@ -2141,3 +2151,1134 @@ def test_main_allowlist_empty_string_pattern_matches_only_empty(
     assert rc == 1
     err = capsys.readouterr().err
     assert "destination not in consumer's `allowed_destinations`" in err
+
+
+# ---------------------------------------------------------------------------
+# allow_sensitive_writes — per-file consent for sensitive destinations
+# ---------------------------------------------------------------------------
+
+
+def test_main_sensitive_overwrite_refused_without_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The scenario the gate exists for. The consumer followed the
+    # documented onboarding path, so `.github/workflows/` is in their
+    # allowlist because the canonical manifest ships `dco.yml`. A
+    # manifest entry then aims a different payload at an existing
+    # workflow. Deleting that workflow was already refused; rewriting it
+    # is the higher-impact operation, because the rewrite *runs* — with
+    # the consumer's secrets and the manifest's `permissions:` block.
+    workflow = consumer_dir / ".github" / "workflows" / "release.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: Release\non: push\n")
+
+    (upstream_repo / "payload.yml").write_text(
+        "name: Release\non: push\npermissions: write-all\n"
+    )
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "payload.yml", "destination": ".github/workflows/release.yml"}
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".github/workflows/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refusing to write sensitive path without an explicit opt-in" in err
+    # The error has to be actionable on its own — the consumer should not
+    # need the docs open to fix it.
+    assert "allow_sensitive_writes" in err
+    assert ".github/workflows/release.yml" in err
+    assert workflow.read_text() == "name: Release\non: push\n"  # untouched
+
+
+def test_main_sensitive_write_opt_in_is_per_file(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Consenting to the file the manifest legitimately ships (`dco.yml`)
+    # must not carry over to a sibling in the same directory. If it did,
+    # the opt-in would be a directory grant wearing a different name.
+    (upstream_repo / "payload.yml").write_text("name: Evil\non: push\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "payload.yml", "destination": ".github/workflows/release.yml"}
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".github/workflows/**"],
+            "allow_sensitive_writes": [".github/workflows/dco.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "refusing to write sensitive path" in capsys.readouterr().err
+    assert not (consumer_dir / ".github" / "workflows" / "release.yml").exists()
+
+
+def test_main_sensitive_create_if_missing_refused_without_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Creation is gated alongside overwrite. A workflow that did not exist
+    # before still runs once the manifest authors it, so "the file was
+    # absent" cannot be a reason to skip consent — otherwise the gate is
+    # trivially bypassed by picking a filename the consumer doesn't use.
+    (upstream_repo / "payload.yml").write_text("name: New\non: push\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "payload.yml",
+                    "destination": ".github/workflows/new.yml",
+                    "create_if_missing": True,
+                }
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".github/workflows/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "refusing to write sensitive path" in capsys.readouterr().err
+    assert not (consumer_dir / ".github" / "workflows" / "new.yml").exists()
+
+
+def test_main_sensitive_write_still_bounded_by_allowed_destinations(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The two gates are independent and a destination must clear both.
+    # `allow_sensitive_writes` grants consent for an operation; it does
+    # not widen the surface `allowed_destinations` bounds.
+    (upstream_repo / "payload.yml").write_text("name: CI\non: push\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "payload.yml", "destination": ".github/workflows/ci.yml"}
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".claude/**"],
+            "allow_sensitive_writes": [".github/workflows/ci.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "destination not in consumer's `allowed_destinations`" in capsys.readouterr().err
+
+
+def test_main_sensitive_write_opt_in_does_not_permit_delete(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Consenting to have a file rewritten is not consenting to have it
+    # removed. The delete block stays unconditional.
+    workflow = consumer_dir / ".github" / "workflows" / "dco.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: DCO\n")
+
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"destination": ".github/workflows/dco.yml", "delete": True}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".github/workflows/**"],
+            "allow_sensitive_writes": [".github/workflows/dco.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "refusing to delete sensitive path" in capsys.readouterr().err
+    assert workflow.exists()
+
+
+def test_main_sensitive_write_dry_run_refuses_before_reporting(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `--dry-run` must surface the refusal too. A dry run that reports
+    # "would write" for a destination the real run rejects would send a
+    # consumer to debug the wrong thing.
+    (upstream_repo / "payload.yml").write_text("name: CI\non: push\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "payload.yml", "destination": ".github/workflows/ci.yml"}
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".github/workflows/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch, dry_run=True)
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "refusing to write sensitive path" in captured.err
+    assert "would write" not in captured.out
+
+
+def test_main_sensitive_write_opt_in_is_case_sensitive(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The block matches case-insensitively (so `dockerfile` can't slip
+    # past on APFS/NTFS) while the grant compares exactly. A denial should
+    # be broad; a grant should cover only the path actually written down.
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "img", "destination": "dockerfile"}]},
+    )
+    (upstream_repo / "img").write_text("FROM scratch\n")
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": ["**"],
+            "allow_sensitive_writes": ["Dockerfile"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "refusing to write sensitive path" in capsys.readouterr().err
+
+
+def test_main_sensitive_write_reports_opted_in_destination(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # An opted-in sensitive write is legitimate but still worth seeing.
+    # A reviewer of the sync PR should be able to tell from the job log
+    # that the run rewrote a workflow, without reading the diff.
+    (upstream_repo / "dco.yml").write_text("name: DCO\non: pull_request\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".github/workflows/dco.yml"],
+            "allow_sensitive_writes": [".github/workflows/dco.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "sensitive destination .github/workflows/dco.yml" in out
+    assert "1 sensitive destination(s) permitted by `allow_sensitive_writes`" in out
+
+
+def test_main_ordinary_destination_needs_no_sensitive_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The gate must not touch the paths the manifest actually spends its
+    # time on. A skill file is not sensitive, so it syncs with no opt-in
+    # and no extra output.
+    (upstream_repo / "skill.md").write_text("skill\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "skill.md", "destination": ".claude/skills/foo.md"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "sensitive destination" not in out
+    assert "sensitive destination(s) permitted" not in out
+
+
+def test_main_sensitive_write_allowlist_rejects_glob_entry(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A glob here would rebuild exactly the hole the gate closes: consent
+    # inherited from a directory pattern rather than given per file.
+    (upstream_repo / "payload.yml").write_text("name: CI\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "payload.yml", "destination": ".github/workflows/ci.yml"}
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".github/workflows/**"],
+            "allow_sensitive_writes": [".github/workflows/**"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "must be literal paths, not globs" in err
+    assert not (consumer_dir / ".github" / "workflows" / "ci.yml").exists()
+
+
+def test_main_sensitive_write_allowlist_rejects_non_canonical_entry(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Destinations are compared as canonical strings, so a non-canonical
+    # opt-in would never match and would read as an effective grant that
+    # silently isn't one.
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "x", "destination": ".github/workflows/ci.yml"}]},
+    )
+    (upstream_repo / "x").write_text("name: CI\n")
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".github/workflows/**"],
+            "allow_sensitive_writes": ["./.github/workflows/ci.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "must be canonical repo-relative posix paths" in capsys.readouterr().err
+
+
+def test_main_sensitive_write_allowlist_rejects_escaping_entry(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "x", "destination": ".github/workflows/ci.yml"}]},
+    )
+    (upstream_repo / "x").write_text("name: CI\n")
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".github/workflows/**"],
+            "allow_sensitive_writes": ["../elsewhere/Dockerfile"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "must be canonical repo-relative posix paths" in capsys.readouterr().err
+
+
+def test_main_sensitive_write_allowlist_rejects_non_sensitive_entry(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Catches the typo case at parse time. `.github/workflow/dco.yml` (no
+    # `s`) would otherwise parse cleanly and leave the real destination
+    # unauthorized — the consumer would then be staring at a config that
+    # names the path alongside a refusal to write it.
+    (upstream_repo / "skill.md").write_text("skill\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "skill.md", "destination": ".claude/skills/foo.md"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".claude/**"],
+            "allow_sensitive_writes": [".github/workflow/dco.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "is not a sensitive path" in capsys.readouterr().err
+
+
+def test_main_sensitive_write_allowlist_null_is_config_error(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Mirrors the `allowed_destinations:` null case — a bare key with no
+    # value is a mid-edit accident, and `[]` is the explicit way to say
+    # "nothing is permitted."
+    (upstream_repo / "skill.md").write_text("skill\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "skill.md", "destination": ".claude/skills/foo.md"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**"], "allow_sensitive_writes": None},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "`allow_sensitive_writes:` is present but null" in capsys.readouterr().err
+
+
+def test_main_sensitive_write_allowlist_rejects_non_list(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (upstream_repo / "skill.md").write_text("skill\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "skill.md", "destination": ".claude/skills/foo.md"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".claude/**"],
+            "allow_sensitive_writes": ".github/workflows/dco.yml",
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "`allow_sensitive_writes` must be a list of strings" in capsys.readouterr().err
+
+
+def test_main_sensitive_write_empty_list_denies(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `[]` and an absent key mean the same thing for this gate — there is
+    # no fail-open migration phase to distinguish them. `[]` exists so a
+    # consumer can state the decision rather than leave it implied.
+    (upstream_repo / "payload.yml").write_text("name: CI\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "payload.yml", "destination": ".github/workflows/ci.yml"}
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".github/workflows/**"], "allow_sensitive_writes": []},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "refusing to write sensitive path" in capsys.readouterr().err
+
+
+def test_main_sensitive_write_covers_lockfile_and_codeowners(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The non-workflow half of the set. Rewriting CODEOWNERS removes the
+    # review gate without deleting anything; rewriting a lockfile is a
+    # supply-chain edit CI installs on the next run.
+    for destination in (".github/CODEOWNERS", "pnpm-lock.yaml", "package.json"):
+        (upstream_repo / "payload").write_text("payload\n")
+        _write_yaml(
+            upstream_repo / "scripts" / "sync-targets.yml",
+            {"targets": [{"source": "payload", "destination": destination}]},
+        )
+        _write_yaml(
+            consumer_dir / ".platform-config.yml",
+            {"allowed_destinations": ["**"]},
+        )
+
+        rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+        assert rc == 1, destination
+        err = capsys.readouterr().err
+        assert "refusing to write sensitive path" in err
+        assert destination in err
+        assert not (consumer_dir / destination).exists()
+
+
+def test_sensitive_write_patterns_cover_the_delete_set(sync_engine: ModuleType) -> None:
+    # The two sets are the same object today. Pin that: a path added to
+    # the delete set because its absence breaks an invariant is, so far
+    # without exception, also a path whose contents control execution,
+    # review gating, or dependency resolution. If a future change makes
+    # them genuinely diverge, this assertion is the place to record why.
+    assert set(sync_engine.SENSITIVE_DELETE_PATTERNS) <= set(
+        sync_engine.SENSITIVE_WRITE_PATTERNS
+    )
+
+
+def test_sensitive_write_patterns_are_all_delete_protected(
+    sync_engine: ModuleType,
+) -> None:
+    # This is the direction that carries the pre-pass's atomicity guarantee,
+    # and it is not the same claim as the assertion above.
+    #
+    # `unconsented_sensitive_writes` skips a `create_if_missing` target whose
+    # destination already exists, on the assumption it will still be there
+    # when the loop arrives. The only way it disappears mid-run is an earlier
+    # `delete:` target — refused only when the path is in the *delete* set. A
+    # write-sensitive path that is not delete-protected can therefore be
+    # removed after admission control has cleared the run, dropping its target
+    # into the in-loop gate after a write and a delete have already landed:
+    # the mid-run abort the pre-pass exists to prevent.
+    #
+    # Both hold trivially while `SENSITIVE_WRITE_PATTERNS` aliases the delete
+    # tuple. This one is what must survive the split that alias's comment
+    # invites.
+    assert set(sync_engine.SENSITIVE_WRITE_PATTERNS) <= set(
+        sync_engine.SENSITIVE_DELETE_PATTERNS
+    )
+
+
+# ---------------------------------------------------------------------------
+# The gate must track writes, not targets
+# ---------------------------------------------------------------------------
+
+
+def test_main_sensitive_write_not_reported_when_nothing_changes(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The steady-state case, which is what the daily cron actually does.
+    # The destination is already byte-identical, so no write happens and
+    # the run must not claim one. The audit line exists so a reviewer can
+    # read the job log and conclude "this run rewrote a workflow" — if it
+    # fires on every no-op sync, the false positive becomes the common
+    # case and the real signal stops being read.
+    workflow = consumer_dir / ".github" / "workflows" / "dco.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: DCO\non: pull_request\n")
+    (upstream_repo / "dco.yml").write_text("name: DCO\non: pull_request\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": [".github/workflows/dco.yml"],
+            "allow_sensitive_writes": [".github/workflows/dco.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "sensitive destination" not in out
+    assert "sensitive destination(s) permitted" not in out
+    assert "1 unchanged" in out
+
+
+def test_main_sensitive_create_if_missing_preserved_needs_no_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `create_if_missing` with the destination already present never
+    # writes — docs/sync.md promises the engine "skips the source read,
+    # substitution, and write entirely". Demanding consent to write a file
+    # the engine has permanently committed to leaving alone breaks that
+    # contract and fails every steady-state consumer on the retag.
+    workflow = consumer_dir / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: CI\non: push\njobs:\n  consumer-customized: {}\n")
+    (upstream_repo / "ci.yml.template").write_text("name: CI\non: push\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "ci.yml.template",
+                    "destination": ".github/workflows/ci.yml",
+                    "create_if_missing": True,
+                }
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".github/workflows/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "preserved .github/workflows/ci.yml (create_if_missing)" in out
+    # Consumer customization survives untouched.
+    assert "consumer-customized" in workflow.read_text()
+
+
+def test_main_sensitive_write_refused_before_any_target_is_written(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # docs/sync.md promises "Nothing is written when the gate trips".
+    # The refusal must therefore be admission control, not a mid-loop
+    # abort: the canonical manifest puts `.github/workflows/dco.yml` last,
+    # so an un-opted-in consumer would otherwise take the entire sync
+    # before the refusal — the maximum-damage ordering, not the minimum.
+    (upstream_repo / "a.md").write_text("NEW upstream a\n")
+    (upstream_repo / "dco.yml").write_text("name: DCO\non: pull_request\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "a.md", "destination": "docs/a.md"},
+                {"source": "dco.yml", "destination": ".github/workflows/dco.yml"},
+            ]
+        },
+    )
+    ordinary = consumer_dir / "docs" / "a.md"
+    ordinary.parent.mkdir(parents=True)
+    ordinary.write_text("OLD consumer a\n")
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refusing to write sensitive path" in err
+    # The ordinary target ahead of the sensitive one is untouched.
+    assert ordinary.read_text() == "OLD consumer a\n"
+    assert not (consumer_dir / ".github" / "workflows" / "dco.yml").exists()
+
+
+def test_main_sensitive_write_refusal_lists_every_denied_destination(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A consumer adopting the gate should get one complete list to paste
+    # into their config, not one path per red run.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    (upstream_repo / "release.yml").write_text("name: Release\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "dco.yml", "destination": ".github/workflows/dco.yml"},
+                {
+                    "source": "release.yml",
+                    "destination": ".github/workflows/release.yml",
+                },
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert ".github/workflows/dco.yml" in err
+    assert ".github/workflows/release.yml" in err
+
+
+def test_main_sensitive_write_skipped_target_needs_no_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `skip_targets` is how a private consumer opts out of the DCO
+    # workflow. A target that is never processed must not require consent
+    # to write — otherwise opting out becomes impossible without also
+    # granting the write the opt-out exists to avoid.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {
+            "allowed_destinations": ["**"],
+            "skip_targets": [".github/workflows/dco.yml"],
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The skip line is labelled by source (`source_rel or dest_rel`).
+    assert "skip dco.yml (opted out via .platform-config.yml)" in out
+    assert "1 skipped" in out
+    assert not (consumer_dir / ".github" / "workflows" / "dco.yml").exists()
+
+
+# ---------------------------------------------------------------------------
+# Sensitive patterns match at any depth, not just repository root
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "package.json",
+        "apps/web/package.json",
+        "pnpm-lock.yaml",
+        "packages/api/pnpm-lock.yaml",
+        "Dockerfile",
+        "services/api/Dockerfile",
+        "Dockerfile.prod",
+        "api/Dockerfile.prod",
+        "prisma/schema.prisma",
+        "db/prisma/schema.prisma",
+        "CODEOWNERS",
+        ".github/CODEOWNERS",
+        "docs/CODEOWNERS",
+        ".github/workflows/ci.yml",
+        ".github/actions/setup/action.yml",
+    ],
+)
+def test_sensitive_patterns_match_at_any_depth(
+    sync_engine: ModuleType, destination: str
+) -> None:
+    # `glob_to_regex` anchors both ends, so a bare `package.json` entry would
+    # cover the repository root and nothing else. A workspace-shaped consumer
+    # keeps exactly these files one or two directories down, which is where
+    # the gate is most needed. CODEOWNERS matters most: GitHub resolves it
+    # from the root, `.github/`, and `docs/`, so gating one location would
+    # leave the review gate rewritable through the other two.
+    assert sync_engine.path_matches_any(
+        destination, sync_engine.SENSITIVE_WRITE_REGEXES
+    ), destination
+    assert sync_engine.path_matches_any(
+        destination, sync_engine.SENSITIVE_DELETE_REGEXES
+    ), destination
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "src/index.ts",
+        "README.md",
+        ".claude/settings.json",
+        # Widening to `**/` must not start matching on substrings or
+        # neighbouring extensions.
+        "docs/package.json.md",
+        "package.json.bak",
+        "my-package.json",
+        "notprisma/schema.prisma",
+        "Dockerfilex",
+        "docs/workflows/ci.yml",
+    ],
+)
+def test_sensitive_patterns_do_not_over_match(
+    sync_engine: ModuleType, destination: str
+) -> None:
+    assert not sync_engine.path_matches_any(
+        destination, sync_engine.SENSITIVE_WRITE_REGEXES
+    ), destination
+
+
+def test_main_nested_package_json_needs_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The end-to-end shape of the gap: a monorepo destination that cleared
+    # both the delete block and the write gate while the patterns were
+    # root-anchored. A rewritten workspace manifest is a supply-chain edit
+    # the consumer's next install picks up.
+    (upstream_repo / "pkg.json").write_text('{"name": "x"}\n')
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "pkg.json",
+                    "destination": "apps/web/package.json",
+                    "substitutions": [],
+                }
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refusing to write sensitive path" in err
+    assert "apps/web/package.json" in err
+    assert not (consumer_dir / "apps" / "web" / "package.json").exists()
+
+
+def test_main_root_codeowners_needs_opt_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # GitHub honours root `CODEOWNERS` when `.github/CODEOWNERS` is absent,
+    # so writing it installs or replaces the review gate — the exact harm
+    # this PR cites as its reason to gate writes rather than only deletes.
+    (upstream_repo / "owners").write_text("* @someone\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "owners", "destination": "CODEOWNERS", "substitutions": []}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refusing to write sensitive path" in err
+    assert "CODEOWNERS" in err
+    assert not (consumer_dir / "CODEOWNERS").exists()
+
+
+def test_main_nested_sensitive_write_allowed_when_opted_in(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Widening the patterns must not make a nested destination unsyncable —
+    # the canonical manifest ships `.claude/skills/critique/scripts/package.json`,
+    # so this is the path every consumer now has to name.
+    (upstream_repo / "pkg.json").write_text('{"name": "x"}\n')
+    dest = ".claude/skills/critique/scripts/package.json"
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "pkg.json", "destination": dest, "substitutions": []}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"], "allow_sensitive_writes": [dest]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert f"sensitive destination {dest}" in out
+    assert (consumer_dir / dest).read_text() == '{"name": "x"}\n'
+
+
+def test_main_sensitive_write_refusal_is_one_pasteable_yaml_block(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The complete-list promise is only worth anything if the list pastes as
+    # a unit. One `allow_sensitive_writes:` mapping per denied path looks
+    # helpful and parses badly: duplicate YAML keys, `safe_load` keeps the
+    # last, and the next run refuses a path the config visibly names.
+    # Asserting both paths appear in the text does not catch that — this
+    # asserts the emitted block round-trips through the parser.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    (upstream_repo / "release.yml").write_text("name: Release\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "dco.yml", "destination": ".github/workflows/dco.yml"},
+                {
+                    "source": "release.yml",
+                    "destination": ".github/workflows/release.yml",
+                },
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+
+    assert err.count("allow_sensitive_writes:") == 1
+
+    # Lift the block verbatim and append it to a config that already has
+    # top-level keys, which is the only paste a consumer ever performs.
+    #
+    # Slice on whole lines, not on the offset of the key's first character.
+    # `err.index("allow_sensitive_writes:")` starts *after* whatever
+    # indentation precedes the key, so it silently re-dedents the block and
+    # strips the exact defect this test is named for — an indented grant
+    # block pasted into a real config either raises ParserError or nests
+    # silently under the preceding key. Anchoring on the newline keeps
+    # column-zero placement load-bearing here.
+    assert "\nallow_sensitive_writes:" in err, (
+        "the grant block must start at column zero to survive being pasted "
+        "into a config that already has top-level keys"
+    )
+    block = err[err.index("\nallow_sensitive_writes:") + 1 :]
+    existing = 'substitutions:\n  FOO: bar\n\nallowed_destinations:\n  - "**"\n'
+    assert yaml.safe_load(existing + block)["allow_sensitive_writes"] == [
+        ".github/workflows/dco.yml",
+        ".github/workflows/release.yml",
+    ]
+
+
+def test_main_sensitive_refusal_block_carries_existing_grants(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The steady state after the fleet migration: the consumer already holds
+    # a grant and upstream adds a second sensitive destination. A block
+    # listing only the *new* path is a second occurrence of a key the config
+    # already has — `safe_load` keeps the last, so following the instruction
+    # discards the existing grant and the next run refuses a path the config
+    # visibly names. Pasting again refuses the other one, forever.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    (upstream_repo / "pkg.json").write_text('{"type": "module"}\n')
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "dco.yml", "destination": ".github/workflows/dco.yml"},
+                {"source": "pkg.json", "destination": "apps/web/package.json"},
+            ]
+        },
+    )
+    existing = (
+        'substitutions:\n  FOO: bar\n\nallowed_destinations:\n  - "**"\n'
+        "allow_sensitive_writes:\n  - .github/workflows/dco.yml\n"
+    )
+    (consumer_dir / ".platform-config.yml").write_text(existing)
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.count("allow_sensitive_writes:") == 1
+
+    # Appending the emitted block is the worst thing a consumer can do with
+    # it, so it is what the assertion has to survive: the duplicate key wins,
+    # and it must carry both grants rather than only the new one.
+    assert "\nallow_sensitive_writes:" in err, (
+        "the grant block must start at column zero to survive being pasted "
+        "into a config that already has top-level keys"
+    )
+    block = err[err.index("\nallow_sensitive_writes:") + 1 :]
+    assert yaml.safe_load(existing + block)["allow_sensitive_writes"] == [
+        ".github/workflows/dco.yml",
+        "apps/web/package.json",
+    ]
+
+
+def test_main_config_destination_refused_and_not_grantable(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The consent store cannot be governed by the consent it stores. A
+    # manifest able to rewrite `.platform-config.yml` can write its own
+    # `allow_sensitive_writes` entry and then, on the next run, write any
+    # sensitive path with the gate reporting an opt-in that upstream granted
+    # itself. Refused unconditionally, and naming it in the allowlist must
+    # not help.
+    (upstream_repo / "cfg.yml").write_text(
+        "allowed_destinations:\n  - '**'\n"
+        "allow_sensitive_writes:\n  - .github/workflows/deploy.yml\n"
+    )
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "cfg.yml", "destination": ".platform-config.yml"}]},
+    )
+    original = "allowed_destinations:\n  - '**'\nallow_sensitive_writes: []\n"
+    (consumer_dir / ".platform-config.yml").write_text(original)
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refusing to write the consumer's own sync config" in err
+    assert (consumer_dir / ".platform-config.yml").read_text() == original
+
+    # And the refusal is not opt-in-able: naming the config in
+    # `allow_sensitive_writes` is rejected at parse time, so there is no
+    # spelling of the config that authorizes rewriting the config.
+    (consumer_dir / ".platform-config.yml").write_text(
+        "allowed_destinations:\n  - '**'\n"
+        "allow_sensitive_writes:\n  - .platform-config.yml\n"
+    )
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "which is not a sensitive path" in capsys.readouterr().err
+
+
+def test_main_in_loop_sensitive_gate_refuses_when_the_pre_pass_misses(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `unconsented_sensitive_writes`' docstring justifies duplicating the
+    # consent check in the loop as the fallback for drift: "if the two ever
+    # drift, the loop still refuses — it just refuses less atomically."
+    # Nothing exercised that fallback, so the whole in-loop gate could be
+    # deleted with the suite green.
+    #
+    # The two agree by construction today, so the drift has to be injected:
+    # blind the pre-pass and assert the loop still refuses. This is the
+    # documented property, not a hypothetical one — it is the only thing
+    # standing between a future pre-pass bug and an unconsented workflow
+    # write.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+    monkeypatch.setattr(sync_engine, "unconsented_sensitive_writes", lambda *a: [])
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "refusing to write sensitive path" in capsys.readouterr().err
+    assert not (consumer_dir / ".github" / "workflows" / "dco.yml").exists()
+
+
+def test_main_sensitive_directory_destination_refused_before_any_delete(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The pre-pass must mirror the loop, which preserves an existing
+    # destination only when it is not a real directory. Treating a directory
+    # as "preserved" clears it through admission control — and an earlier
+    # delete plus `prune_empty_parents` can remove that directory before the
+    # loop arrives, dropping the target into the in-loop gate after the
+    # deletion has already landed.
+    (upstream_repo / "Dockerfile").write_text("FROM upstream\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"destination": "Dockerfile/child.txt", "delete": True},
+                {
+                    "source": "Dockerfile",
+                    "destination": "Dockerfile",
+                    "create_if_missing": True,
+                },
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+    child = consumer_dir / "Dockerfile" / "child.txt"
+    child.parent.mkdir(parents=True)
+    child.write_text("consumer child\n")
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "refusing to write sensitive path" in capsys.readouterr().err
+    # The tree is untouched, per the guarantee in docs/sync.md.
+    assert child.read_text() == "consumer child\n"

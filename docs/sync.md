@@ -100,7 +100,34 @@ substitutions:
 
 # Optional: opt out of specific files. Use either the source or destination path.
 skip_targets: []
+
+# Required before the sync may write a sensitive path. Absent or empty
+# means no sensitive path may be written, and the sync fails closed with
+# the exact line to add rather than warning in a green job. These are the
+# two destinations the canonical manifest writes today; the refusal names
+# any others exactly, in a block you can paste as-is.
+allow_sensitive_writes:
+  - .claude/skills/critique/scripts/package.json
+  - .github/workflows/dco.yml
 ```
+
+### `allow_sensitive_writes`
+
+The engine treats a fixed set of destinations as sensitive: `.github/workflows/**`, `.github/actions/**`, `**/CODEOWNERS`, `**/package.json`, `**/pnpm-lock.yaml`, `**/prisma/schema.prisma`, and `**/Dockerfile` / `**/Dockerfile.*`. It refuses to `delete:` any of them unconditionally, and refuses to **write** any of them — overwrite or first-time create — unless the consumer has named that exact path here.
+
+The `**/` entries match at any depth, root included, because a workspace-shaped repo keeps these files at `apps/web/package.json` or `services/api/Dockerfile` rather than at the root. `CODEOWNERS` is matched at any depth because GitHub resolves it from the repository root, `.github/`, and `docs/` — gating only one of the three would leave the review gate rewritable. The two `.github/` entries stay depth-pinned, since those directories are the only place GitHub reads workflows and composite actions from.
+
+Writing is gated separately from deleting because it is the higher-impact operation on exactly these paths. A deleted workflow stops running; a rewritten workflow runs, with your secrets and whatever `permissions:` the manifest wrote into it. Rewriting `CODEOWNERS` removes the review gate without deleting anything, and rewriting a lockfile is a supply-chain edit your next CI run installs.
+
+Entries must be literal, canonical, repo-relative paths — no globs. Consent inherited from `.github/workflows/**` is what this gate exists to prevent, so a pattern is rejected rather than expanded. Creating a file is gated alongside overwriting it: a workflow that didn't exist before still runs once a manifest authors it. An entry that isn't a sensitive path is a config error, since it's almost always a typo that would leave the real destination unauthorized.
+
+Consent is required for any target the sync would write, whether or not this particular run changes the bytes — a sync that ran green for months and then failed the day upstream edited the file would surface the missing entry at the worst possible time. Two cases need no entry, because no write can happen: a target you opted out of with `skip_targets`, and a `create_if_missing` target whose destination already exists as a file (the engine has permanently committed to leaving that file alone). A destination outside `allowed_destinations` reports that error instead, since adding sensitive consent for it would not make it writable.
+
+Your `.platform-config.yml` is refused as a destination, and no entry authorizes it. It records both `allow_sensitive_writes` and `allowed_destinations`, so a manifest able to rewrite it could grant itself consent on one run and spend that consent on the next — with the job log reporting an opt-in you never made. The refusal compares each destination against the resolved config path, so an explicit `--config` elsewhere is covered, while a `.platform-config.yml` vendored in your tree as an example or a fixture stays an ordinary destination.
+
+**All of these checks match the destination path as written, not the file it resolves to.** The write itself follows symlinks, so a symlink in your working tree decouples the path the gate judges from the file that ends up rewritten — an ordinary destination symlinked to a workflow is written without consent, and a symlinked `.platform-config.yml` is not caught by the refusal above. The engine assumes an upstream-controlled manifest and a consumer tree free of malicious symlinks (see `resolve_under` in `scripts/sync-engine.py`); anyone able to commit a symlink to your repository can commit the target file directly regardless. Closing the gap is tracked in [#118](https://github.com/loomantix/claude-platform/issues/118).
+
+When a refusal lists paths you have not granted, it prints the complete `allow_sensitive_writes:` block you should end up with — the newly denied destinations **and** the grants already in your config — to _replace_ that key rather than to append after it. Appending a second `allow_sensitive_writes:` key would silently discard the first, since YAML keeps only the last occurrence, and the following run would then refuse a path your config visibly names.
 
 Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-line values use YAML block scalars (the `|` form). Keys must be `[A-Z][A-Z0-9_]*`.
 
@@ -110,6 +137,7 @@ Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-l
 - **Hard fail on missing required substitution.** If a target declares a placeholder the consumer hasn't configured, the script exits 1 — better to break the sync PR than to silently leave an unfilled `<<KEY>>` in the destination file.
 - **Soft warn on undeclared placeholders in the source.** If the source contains `<<FOO>>` but `sync-targets.yml` doesn't declare `FOO` for that target, the placeholder is left intact and a warning is printed. Catches the case where a template change forgot to update the manifest.
 - **File mode preserved.** Targets with `mode: "0755"` get chmod'd after write.
+- **Sensitive destinations fail closed.** Consent is checked for every target before the sync writes anything, so a missing `allow_sensitive_writes` entry aborts the run with the tree untouched — and the error lists every destination you need to add, not just the first. The one exception is the symlink caveat above: the pre-pass reads the tree as it stands at the start of the run, so an earlier `delete:` target that removes a symlinked ancestor can land before the refusal. The check also applies under `--dry-run`, so a dry run never reports a write the real run would refuse. A permitted sensitive write is announced in the job log and counted in the closing summary at the point it actually happens, so a reviewer can see "this run rewrites a workflow" without reading the diff — and a steady-state sync that rewrites nothing says nothing.
 - **`create_if_missing` short-circuits before substitution.** When the destination already exists, the engine skips the source read, substitution, and write entirely. This means a consumer can leave `create_if_missing` substitution values undeclared after first creation without breaking later syncs.
 
 ## Adding a new consumer
