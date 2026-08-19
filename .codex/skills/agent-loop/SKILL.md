@@ -92,10 +92,10 @@ contract v3. Both hooks must scope against the SHA so a
 mid-round remote update cannot give the engines different bases.
 
 Every successfully completed clean or changed v3 review hook calls
-`review-ledger.py write-result`; the helper derives the complete
+`review-ledger.js write-result`; the helper derives the complete
 same-engine/same-round fingerprint set, including fixed, deferred, and
 dismissed dispositions, and atomically writes the structured result. A blocked
-hook instead uses `review-ledger.py write-blocked-result` with an owner-only
+hook instead uses `review-ledger.js write-blocked-result` with an owner-only
 blocker file and
 must not claim a clean or changed pass. The wrapper validates the engine, round, pinned base, observed
 before/after SHAs, classification, finding fingerprints, and final-lane status;
@@ -140,7 +140,7 @@ $AGENT_LOOP_PR_NUMBER` with their respective local engine. Scope both to
 3. Configure a non-mutating `validation_hook`, add
    `review_contract_version = 3`, make every successfully completed clean or
    changed hook write the v3 result to `$AGENT_LOOP_REVIEW_RESULT_FILE` through
-   `review-ledger.py write-result`, use `review-ledger.py
+   `review-ledger.js write-result`, use `review-ledger.js
 write-blocked-result` for blocked results, and optionally override
    `review_max_rounds = 4` with another positive cap.
 4. Merge the current local-only wording from the instruction and prompt

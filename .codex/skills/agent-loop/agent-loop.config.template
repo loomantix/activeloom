@@ -38,10 +38,10 @@ claude_effort_policy =
 # engine an arbitrary command launches; these commands own that guarantee.
 # Hooks also receive `$AGENT_LOOP_PR_NUMBER`, `$AGENT_LOOP_PR_URL`, and
 # `$AGENT_LOOP_PR_HEAD_SHA`. The last value is the exact head at pass start.
-# Every successfully completed clean or changed hook must call `review-ledger.py
+# Every successfully completed clean or changed hook must call `review-ledger.js
 # write-result` to create the canonical `$AGENT_LOOP_REVIEW_RESULT_FILE`; reviewers
 # never copy fingerprint arrays. A blocked hook must use the deterministic
-# `review-ledger.py write-blocked-result` command documented by deepcritique and
+# `review-ledger.js write-blocked-result` command documented by deepcritique and
 # return without claiming a clean
 # or changed pass. Hooks use
 # the deterministic ledger helper for findings and the resumable `dispose`

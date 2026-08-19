@@ -22,7 +22,14 @@ def _project(tmp_path: Path) -> Path:
     ledger_dir.mkdir(parents=True)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/agent-loop-state.py", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/review-push.sh", scripts)
-    shutil.copy2(ROOT / ".codex/skills/critique/scripts/review-ledger.py", ledger_dir)
+    shutil.copy2(ROOT / ".codex/skills/critique/scripts/review-ledger.js", ledger_dir)
+    # See tests/test_agent_loop.py: sync ships the sibling ESM manifest, and a
+    # CommonJS consumer root is the context that needs it.
+    shutil.copy2(ROOT / ".codex/skills/critique/scripts/package.json", ledger_dir)
+    (project / "package.json").write_text(
+        '{"name": "fixture-consumer", "private": true, "type": "commonjs"}\n',
+        encoding="utf-8",
+    )
     (skill / "prompt.txt").write_text(
         "Read AGENT_LOOP_ISSUE_TITLE and AGENT_LOOP_ISSUE_BODY. Create a local commit only; do not push.\n",
         encoding="utf-8",
@@ -33,8 +40,8 @@ def _project(tmp_path: Path) -> Path:
     )
     (skill / "agent-loop.config").write_text(
         "review_contract_version = 3\n"
-        "codex_review_hook = deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.py write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n"
-        "claude_review_hook = claude --effort low /deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.py write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n",
+        "codex_review_hook = deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n"
+        "claude_review_hook = claude --effort low /deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n",
         encoding="utf-8",
     )
     return project
