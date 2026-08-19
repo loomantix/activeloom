@@ -55,3 +55,4 @@ allowed_destinations:
 # file, exactly as a real consumer does.
 allow_sensitive_writes:
   - .github/workflows/dco.yml
+  - .claude/skills/critique/scripts/package.json

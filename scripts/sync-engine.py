@@ -161,15 +161,30 @@ def path_matches_any(path: str, compiled_patterns: Sequence[re.Pattern[str]]) ->
 # wrong content tends to fail loudly at the next CI run; absence is silent.
 # That's why workflows + composite actions + CODEOWNERS + lockfiles + schema
 # + Dockerfile are in; tsconfig.json (loud compile failure) is not.
+#
+# Depth matters as much as filename. `glob_to_regex` anchors both ends, so a
+# bare `package.json` would match the repository root and nothing else — and
+# a workspace-shaped consumer keeps the files this set cares about at
+# `apps/web/package.json` and `services/api/Dockerfile`. `**/` compiles to
+# `(?:.*/)?`, so each entry below covers the root case *and* every nested
+# one. The two `.github/` entries stay depth-pinned on purpose: those
+# directories are the only place GitHub reads workflows and composite
+# actions from, so matching them at arbitrary depth would only ever add
+# false positives.
+#
+# CODEOWNERS is the entry that most needs the `**/`. GitHub resolves it from
+# the repository root, `.github/`, and `docs/`; pinning it to `.github/`
+# would leave two of the three locations unguarded, and "rewrite it and the
+# review gate is gone" is precisely why these paths are here.
 SENSITIVE_DELETE_PATTERNS: Final[tuple[str, ...]] = (
     ".github/workflows/**",
     ".github/actions/**",
-    ".github/CODEOWNERS",
-    "package.json",
-    "pnpm-lock.yaml",
-    "prisma/schema.prisma",
-    "Dockerfile",
-    "Dockerfile.*",
+    "**/CODEOWNERS",
+    "**/package.json",
+    "**/pnpm-lock.yaml",
+    "**/prisma/schema.prisma",
+    "**/Dockerfile",
+    "**/Dockerfile.*",
 )
 def _compile_case_insensitive(pattern: str) -> re.Pattern[str]:
     """Recompile a glob pattern with `re.IGNORECASE`.
