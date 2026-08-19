@@ -51,7 +51,7 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
    - If the changeset is docs/config-only per the ledger's classification,
      finalize a scoped clean v3 result using the ledger's wrapper/standalone
      ownership rule, then exit.
-   - Resolve the review tier before starting Codex. Resolve the effective PR `local-review-tier:v1` marker under the ledger's authenticated, forward-only transition rule; if none exists, classify against the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and post the marker, Lean being the tier when no trigger matches. This skill is the first reviewer in every local round, so an unresolved tier here leaves the whole round unresolved. State the tier and its triggers in the pass output.
+   - Resolve the review tier before starting Codex. Resolve the effective PR `local-review-tier:v1` marker under the ledger's authenticated, forward-only transition rule; if none exists, classify against the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and post the marker, Lean being the tier when no trigger matches. Reviewer order within a round is a scheduling choice, not a protocol rule, so tier resolution belongs to whichever reviewer runs first; an unresolved tier leaves the whole round unresolved. State the tier and its triggers in the pass output.
    - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. The stance follows the tier's schedule: at Deep, rounds 1–2 are adversarial and round 3 and later are convergence rounds; at Lean the cap is 2 and round 2 is the convergence round. The prompt and dispositions change accordingly. The result's `baseSha` and the prompt range must name `REVIEW_BASE` exactly.
 
 ## Phase 1: Build the review prompt
@@ -183,7 +183,9 @@ When the status file appears with exit code zero, read the findings file — it 
   wrapper/standalone ownership rule.
 - Every attestation remains exact to the head reviewed. A later minor fix is an
   explicit transition in the round; it does not rewrite the attestation or
-  claim Codex reviewed the later head. A material transition restarts at Codex.
+  claim Codex reviewed the later head. A material transition moves the head,
+  which invalidates precisely those attestations that named the superseded
+  commit.
 
 ## Phase 4: Disposition
 

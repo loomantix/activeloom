@@ -227,7 +227,8 @@ cleanup, clarity, or test/docs polish.
 Every engine attestation remains exact to the head it reviewed. A later minor
 fix does not rewrite that evidence or claim the other engine reviewed the new
 head. The outer round may still converge through an explicit minor transition;
-a material transition restarts at Codex.
+a material transition moves the head, which invalidates precisely those
+attestations that named the superseded commit.
 
 ## Phase 4: Output
 
@@ -238,11 +239,12 @@ and whether material fixes require another local-engine pass.
 A convergence round that found no blocking defect ends the loop: record a clean
 result, recommend the ship step, and list any urgent deferred issues.
 
-If this Claude pass made a material fix, restart the bounded round at
-`/codex-review <pr-number>` in a fresh session. Otherwise it completes the
-Claude half of the current round. Always finalize `clean`, `changed`, or
-`blocked` per the ledger's wrapper/standalone ownership rule before returning.
-Use `write-result` for `clean` or `changed`, and use
+If this Claude pass made a material fix, it moved the head: every declared
+reviewer whose attestation named the superseded commit re-runs against the new
+head in a fresh session, and a reviewer that already attested this head does
+not. Otherwise it completes Claude's part of the current round. Always finalize
+`clean`, `changed`, or `blocked` per the ledger's wrapper/standalone ownership
+rule before returning. Use `write-result` for `clean` or `changed`, and use
 `write-blocked-result` with an owner-only blocker file for `blocked`.
 
 ## Boundaries

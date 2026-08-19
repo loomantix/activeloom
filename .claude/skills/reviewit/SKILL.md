@@ -16,8 +16,10 @@ You are orchestrating the post-push AI review cycle for an open pull request.
 2. **Mid-loop cost-shift checkpoint** between iter 2 → 3 and iter 3 → 4. If the iteration that just completed produced fixes but findings still aren't converging (any critical, or critical+suggestion+nitpick ≥ 5 post-dedup), pause and ask the user before spending another iteration's worth of paid-reviewer budget. Three exits: continue the chain, bail early to the final `/deepcritique` (skipping the remaining paid iters), or stop and merge as-is (skipping `/deepcritique` too). The trigger only fires when fix-resolutions are still being produced — the no-fix early-exit above already handles the other non-convergence mode.
 3. **Final `/deepcritique` on the PR.** After the loop exits for any reason except merge-as-is, invoke `Skill(skill="deepcritique", args="<pr-number>")`. It reads the complete PR ledger and runs `/critique deep` on the current exact head. It runs `/refactorpass` first only when the pre-push chain did not already spend this engine's cleanup latch on the PR, and it selects an adversarial or convergence stance from its round number — both resolved from the ledger, not from this skill.
 
-`/reviewit` is the explicit hosted-review fallback. The default local path uses
-the draft PR ledger with `/deepcritique <pr>` and `/codex-review <pr>`.
+`/reviewit` is the explicit hosted-reviewer lane, run whenever it is useful
+rather than only when a local engine is missing. The local relay remains the
+default path and uses the draft PR ledger with `/deepcritique <pr>` and
+`/codex-review <pr>`.
 
 This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilot is intentionally disabled — `/reviewit` is the only path that fires AI review.
 

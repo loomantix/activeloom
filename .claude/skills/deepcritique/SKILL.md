@@ -128,9 +128,10 @@ Print:
 - Classification: <clean | minor | material>
 
 Next local step:
-  If this pass made a material fix, restart at /codex-review <pr-number>.
-  Otherwise this completes the Claude half of the current local round; the
-  outer runner decides convergence from both exact-head v3 results.
+  Run each declared reviewer that has not attested this head.
+  A fix invalidates only the attestations naming the superseded head; a
+  reviewer that already attested this head does not re-run.
+  The outer runner decides convergence from the exact-head v3 results.
 ```
 
 A convergence round that found no blocking defect ends the loop. Say so and name
