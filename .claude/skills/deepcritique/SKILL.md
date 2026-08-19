@@ -1,6 +1,6 @@
 ---
 name: deepcritique
-description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /critique deep — preceded by /refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use on complex or high-risk changes such as auth/crypto, schema migrations, sync-propagating work, and large refactors.
+description: High-fidelity PR-first review chain that opens or reuses a draft PR, posts verified findings inline before fixes, and runs /critique deep — preceded by /refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Runs only when the review tier resolved to Deep; hands a Lean changeset back to /critique.
 argument-hint: (optional PR number)
 ---
 
@@ -12,9 +12,9 @@ preceded by `/refactorpass` only on this engine's first pass over that PR.
 The chain gets cheaper as it repeats, deliberately. Cleanup runs once; the
 adversarial stance holds for two rounds and then gives way to landing the change.
 
-Use this path for `.claude/skills/**`, sync scripts, GitHub Actions, auth,
-crypto, secrets, sensitive-data paths, schema/data-shape changes, large
-refactors, recurring defects, or an explicit high-risk review request.
+This lane runs only when the review tier resolved to Deep. The triggers and the
+Lean-by-default rule live in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md);
+this skill reads that decision rather than making its own.
 
 ## Phase 0: Pre-flight
 
@@ -52,6 +52,27 @@ Proceed in the current session only after an explicit override.
    and `local-review-complete:v3` markers naming `engine=claude`. Rounds 1–2 are
    adversarial; round 3 and later are convergence rounds. State which applies
    before running a lane.
+
+### Tier gate
+
+Runs after the PR boundary: the marker lives on the PR, and a changeset that
+exits on the docs/config-only skip never needs a tier.
+
+Resolve the effective `local-review-tier:v1` marker under the ledger's
+authenticated, forward-only transition rule; if none exists, classify against
+the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and
+post the marker.
+
+**If the tier is Lean, do not run this chain.** Report the tier and the missing
+trigger and hand off to `Skill(skill="critique", args="<pr-number>")`. That lane
+owns the v3 structured result for the transition, so do not exit before it
+finalizes one. Continue here only on a Deep tier or an explicit user override —
+itself trigger 6, recorded in the marker.
+
+If Deep round 1 completes with no confirmed finding from **all owning lenses for
+every recorded trigger**, de-escalate: post the replacement marker naming every
+clean lens and send the remaining rounds to `/critique` at Lean. Never
+de-escalate when trigger 6 is present.
 
 ## Phase 1: Refactor pass — first Claude pass only
 
@@ -99,6 +120,7 @@ Print:
 ```text
 ✅ /deepcritique complete on PR #<pr-number>.
 - Reviewed head: <sha>
+- Tier: deep (trigger: <trigger>)
 - Round: <n> (<adversarial | convergence>)
 - Refactor pass: <ran | already spent at <sha> | docs-config skip>
 - Findings: <posted/replied/resolved counts>

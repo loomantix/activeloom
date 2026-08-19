@@ -12,7 +12,9 @@ reviewers found, how it was fixed, and why a thread was resolved.
 
 ## Mode resolution
 
-Parse `$ARGUMENTS` for an optional PR number and the word `deep`.
+Mode follows the resolved review tier, not the caller's habit. Parse
+`$ARGUMENTS` for an optional PR number and the word `deep`; `deep` asserts that
+the tier resolved to Deep, and Phase 0 checks it against the PR's tier marker.
 
 - Lean mode runs `code-reviewer` and, when the diff contains error/async
   signals, `silent-failure-hunter`.
@@ -30,13 +32,22 @@ Resolve this engine's round number per the ledger before selecting lenses: use
 `local-review-complete:v3`
 markers on the PR naming `engine=claude` and add one.
 
-- **Rounds 1–2 run adversarially** — the matrix and dispositions below apply as
-  written.
-- **Round 3 and later run in convergence mode.** Both engines have read the
-  change cold twice; the goal moves from challenging it to landing it. Convergence
-  mode overrides the lens table and the fix bias, as set out under "Convergence
-  rounds" below. It does not change the post-before-editing, reply, or resolve
-  contract, and it does not raise the round cap.
+The stance follows the tier's schedule, not the round ordinal alone:
+
+- **At Deep, rounds 1–2 run adversarially and round 3 and later run in
+  convergence mode.**
+- **At Lean the cap is two rounds: round 1 is adversarial and round 2 is the
+  convergence round.** A Lean PR arriving at round 3 is mis-tiered or not
+  converging; report which and stop rather than opening it.
+- **The first round after an escalation is adversarial whatever its ordinal**,
+  per the workflow doc's escalation rule.
+
+In an adversarial round the matrix and dispositions below apply as written. In a
+convergence round both engines have already read the change cold; the goal moves
+from challenging it to landing it. Convergence mode overrides the lens table and
+the fix bias, as set out under "Convergence rounds" below. It does not change the
+post-before-editing, reply, or resolve contract, and it does not raise the round
+cap.
 
 State the resolved round and stance in the output.
 
@@ -66,6 +77,20 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 Do not begin a reviewer until the PR ledger is available. Do not use a
 force-push to establish or update the review branch.
 
+### Tier resolution
+
+Resolve the effective `local-review-tier:v1` marker under the ledger's
+authenticated, forward-only transition rule. If none exists, classify against
+the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and
+post the marker before starting a lane; Lean is the tier when no trigger
+matches. Run the lens set for the recorded tier. A `deep` argument from an
+internal `/deepcritique` handoff only asserts that tier; a direct human `deep`
+request is trigger 6 and posts a Deep replacement that preserves recorded
+triggers and adds 6 before lanes start. Escalate mid-pass only on a confirmed
+finding that reaches a trigger, per the workflow doc's evidence rule, and post
+the replacement marker naming it. State the resolved tier and trigger alongside
+the round and stance.
+
 ## Phase 1: Select the review lenses
 
 Always include `pr-review-toolkit:code-reviewer` when source code changed.
@@ -90,7 +115,7 @@ list once, name the paths that lens owns, and prefer `git diff <base-sha>..HEAD
 -- <path>` over handing every agent one whole-diff artifact. Scope a lens by the
 files it reviews, never by the findings it may report.
 
-### Convergence rounds (round 3 and later)
+### Convergence rounds (any round whose stance is convergence)
 
 Run only `code-reviewer`, `silent-failure-hunter`, and `security-review` when its
 signal is present. Drop `type-design-analyzer`, `comment-analyzer`,
@@ -206,9 +231,9 @@ a material transition restarts at Codex.
 
 ## Phase 4: Output
 
-Report the PR and reviewed head, the resolved round and stance, mode and lenses,
-disposition/thread counts, validation, fix SHAs, and whether material fixes
-require another local-engine pass.
+Report the PR and reviewed head, the resolved tier and its trigger, the round
+and stance, mode and lenses, disposition/thread counts, validation, fix SHAs,
+and whether material fixes require another local-engine pass.
 
 A convergence round that found no blocking defect ends the loop: record a clean
 result, recommend the ship step, and list any urgent deferred issues.
