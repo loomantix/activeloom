@@ -601,22 +601,35 @@ def parse_sensitive_write_allowlist(
     return frozenset(entries)
 
 
-def sensitive_write_refusal(dest_rel_canonical: str, config_name: str) -> str:
-    """The refusal text for an unconsented write to a sensitive destination.
+def sensitive_write_refusal(destinations: Sequence[str], config_name: str) -> str:
+    """The refusal text for unconsented writes to sensitive destinations.
 
-    Shared verbatim by the pre-pass and the in-loop gate so a consumer sees
-    the same message and the same copy-pasteable fix whichever one refuses.
+    Takes every denied destination at once and emits the
+    `allow_sensitive_writes:` mapping exactly once. One complete block per
+    path would look helpful and paste badly: two blocks are two occurrences
+    of the same YAML key, `yaml.safe_load` keeps only the last, and the
+    consumer's next run refuses a path their config visibly names. The
+    canonical manifest denies an unmigrated consumer on two destinations,
+    so that is the common adoption path rather than an edge case.
+
+    Shared by the pre-pass and the in-loop gate so a consumer sees the same
+    message and the same copy-pasteable fix whichever one refuses; the loop
+    passes a single-element sequence.
     """
+    plural = "s" if len(destinations) > 1 else ""
+    listed = "".join(f"       - {dest}\n" for dest in destinations)
+    granted = "".join(f"         - {dest}\n" for dest in destinations)
     return (
-        f"  ❌ refusing to write sensitive path without an explicit "
+        f"  ❌ refusing to write sensitive path{plural} without an explicit "
         f"opt-in (engine-level block, applies regardless of "
-        f"allowed_destinations): {dest_rel_canonical}\n"
+        f"allowed_destinations):\n"
+        f"{listed}"
         f"     Content written here controls what runs in this repo, "
         f"who has to review it, or what the build installs. To allow "
-        f"it, add the exact path to `allow_sensitive_writes` in "
+        f"it, add the exact path{plural} to `allow_sensitive_writes` in "
         f"{config_name}:\n"
         f"       allow_sensitive_writes:\n"
-        f"         - {dest_rel_canonical}\n"
+        f"{granted}"
     )
 
 
@@ -699,9 +712,19 @@ def unconsented_sensitive_writes(
         # consent to write a file the engine has permanently committed to
         # leaving alone would break that documented contract and fail every
         # steady-state consumer.
+        #
+        # Mirror the loop's condition exactly: it preserves an existing
+        # destination only when that destination is not a real directory,
+        # and rejects a directory outright. Treating a directory as
+        # "preserved" here would clear it through admission control, and an
+        # earlier `delete:` target plus `prune_empty_parents` can remove
+        # that directory before the loop reaches this target — dropping it
+        # into the in-loop gate after a deletion has already landed, which
+        # is exactly the mid-run abort this pre-pass exists to prevent.
         cim_raw = target.get("create_if_missing")
         if isinstance(cim_raw, bool) and cim_raw:
-            if dest_path.exists() or dest_path.is_symlink():
+            is_real_dir = dest_path.is_dir() and not dest_path.is_symlink()
+            if not is_real_dir and (dest_path.exists() or dest_path.is_symlink()):
                 continue
         if dest_rel_canonical not in allowlist:
             denied.append(dest_rel_canonical)
@@ -802,8 +825,7 @@ def main() -> int:
         targets, skip, consumer_dir, sensitive_write_allowlist, allowed_patterns
     )
     if denied_sensitive:
-        for dest in denied_sensitive:
-            sys.stderr.write(sensitive_write_refusal(dest, config_path.name))
+        sys.stderr.write(sensitive_write_refusal(denied_sensitive, config_path.name))
         return 1
 
     print(f"Syncing from {upstream_repo} → {consumer_dir}")
@@ -1086,7 +1108,7 @@ def main() -> int:
         )
         if is_sensitive_write and dest_rel_canonical not in sensitive_write_allowlist:
             sys.stderr.write(
-                sensitive_write_refusal(dest_rel_canonical, config_path.name)
+                sensitive_write_refusal([dest_rel_canonical], config_path.name)
             )
             return 1
 

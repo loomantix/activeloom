@@ -3032,3 +3032,93 @@ def test_main_nested_sensitive_write_allowed_when_opted_in(
     out = capsys.readouterr().out
     assert f"sensitive destination {dest}" in out
     assert (consumer_dir / dest).read_text() == '{"name": "x"}\n'
+
+
+def test_main_sensitive_write_refusal_is_one_pasteable_yaml_block(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The complete-list promise is only worth anything if the list pastes as
+    # a unit. One `allow_sensitive_writes:` mapping per denied path looks
+    # helpful and parses badly: duplicate YAML keys, `safe_load` keeps the
+    # last, and the next run refuses a path the config visibly names.
+    # Asserting both paths appear in the text does not catch that — this
+    # asserts the emitted block round-trips through the parser.
+    (upstream_repo / "dco.yml").write_text("name: DCO\n")
+    (upstream_repo / "release.yml").write_text("name: Release\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "dco.yml", "destination": ".github/workflows/dco.yml"},
+                {
+                    "source": "release.yml",
+                    "destination": ".github/workflows/release.yml",
+                },
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    err = capsys.readouterr().err
+
+    assert err.count("allow_sensitive_writes:") == 1
+
+    # Lift the block the consumer is told to paste and parse it the way the
+    # engine will after they paste it into their config.
+    block = err[err.index("       allow_sensitive_writes:") :]
+    pasted = "\n".join(line[7:] for line in block.rstrip("\n").split("\n")) + "\n"
+    assert yaml.safe_load(pasted)["allow_sensitive_writes"] == [
+        ".github/workflows/dco.yml",
+        ".github/workflows/release.yml",
+    ]
+
+
+def test_main_sensitive_directory_destination_refused_before_any_delete(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The pre-pass must mirror the loop, which preserves an existing
+    # destination only when it is not a real directory. Treating a directory
+    # as "preserved" clears it through admission control — and an earlier
+    # delete plus `prune_empty_parents` can remove that directory before the
+    # loop arrives, dropping the target into the in-loop gate after the
+    # deletion has already landed.
+    (upstream_repo / "Dockerfile").write_text("FROM upstream\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"destination": "Dockerfile/child.txt", "delete": True},
+                {
+                    "source": "Dockerfile",
+                    "destination": "Dockerfile",
+                    "create_if_missing": True,
+                },
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": ["**"]},
+    )
+    child = consumer_dir / "Dockerfile" / "child.txt"
+    child.parent.mkdir(parents=True)
+    child.write_text("consumer child\n")
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "refusing to write sensitive path" in capsys.readouterr().err
+    # The tree is untouched, per the guarantee in docs/sync.md.
+    assert child.read_text() == "consumer child\n"
