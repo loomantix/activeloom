@@ -346,7 +346,8 @@ two.
 
 For each published finding:
 
-1. Apply the correction and run the smallest relevant validation.
+1. Apply the correction and run the smallest relevant validation. That scoped
+   run dispositions the finding; it never substitutes for the gating run below.
 2. Commit the correction. When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke
    that wrapper-owned helper with no arguments; otherwise push normally without
    force.
@@ -358,6 +359,36 @@ For each published finding:
 
 If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
 report the exact unresolved thread; do not silently continue.
+
+## Validate before attesting
+
+A scoped run is the right validation for a _fix_. It is never sufficient
+evidence for a _pass_. Before writing any pass or completion attestation, run
+the repository's gating suite unfiltered, and state in the attestation which
+command and config it ran and at which SHA.
+
+Two failure modes make this non-optional, and both have shipped:
+
+- **A scoped run is blind by construction.** It cannot see a sibling suite the
+  change broke, a mirrored spec under a second directory, or a spec the change
+  itself added and never executed. An engine that edits `src/**/x.spec.ts` and
+  runs only that file will report green while `tests/**/x.spec.ts` — the same
+  assertions, a second copy — is red.
+- **CI may not be running the suite either.** Whether any test job runs on a
+  given pull request is a per-repository, per-target-branch policy. A green
+  check list can contain zero test jobs. Never infer test health from check
+  status; read which jobs actually ran, or run the suite yourself.
+
+Read the consumer repository's declared review gate — the commands its
+`AGENTS.md` (or `CLAUDE.md`) names as the gate — and run those. Where a
+repository declares none, run its broadest practical suite and say so. If the
+gating run is genuinely impractical in the environment, the attestation must
+say that plainly instead of implying coverage it does not have.
+
+A gating run that fails is a blocking finding in its own right, even when the
+failure predates the round: an attestation cannot certify a head whose suite is
+red. This applies to a `clean` pass too — a round that changed nothing still
+attests to a head, and that head's suite can be red for reasons no lane examined.
 
 ## Record clean passes and convergence
 
