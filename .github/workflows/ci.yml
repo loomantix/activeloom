@@ -211,6 +211,26 @@ jobs:
             exit 1
           }
 
+      - name: Vendored ledger self-identifies as the pinned version
+        # The byte-compare above proves the file came from the tarball the pin
+        # names. This proves the artifact agrees about which version that is:
+        # `--version` is injected into the bundle at build time, so a build
+        # whose injection silently degraded (`0.0.0-dev`) would otherwise sit
+        # here indistinguishable from a good one, and every downstream consumer
+        # would trust a pin file the artifact itself cannot corroborate.
+        run: |
+          set -euo pipefail
+          scripts_dir=.claude/skills/critique/scripts
+          pinned="$(tr -d '[:space:]' < "$scripts_dir/review-ledger.version")"
+          if ! reported="$(node "$scripts_dir/review-ledger.js" --version 2>&1)"; then
+            echo "::error::node could not execute the vendored ledger: $reported"
+            exit 1
+          fi
+          [ "$reported" = "$pinned" ] || {
+            echo "::error::vendored ledger reports version '$reported', but review-ledger.version pins '$pinned'"
+            exit 1
+          }
+
   accessibility-asset:
     name: Accessibility asset sanitization
     runs-on: ubuntu-latest

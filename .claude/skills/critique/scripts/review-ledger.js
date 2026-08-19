@@ -5,6 +5,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
+var PACKAGE_VERSION = true ? "1.0.2" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -2395,6 +2396,11 @@ function parseCliArgs(argv) {
       i++;
       continue;
     }
+    if (arg === "--version") {
+      args.version = true;
+      i++;
+      continue;
+    }
     if (!arg.startsWith("-") && args.command === void 0) {
       args.command = arg;
       i++;
@@ -2565,6 +2571,11 @@ function validateArgs(args) {
 function runCli(argv = process.argv.slice(2)) {
   resetGitHubRunner();
   const args = parseCliArgs(argv);
+  if (args.version) {
+    process.stdout.write(`${PACKAGE_VERSION}
+`);
+    return 0;
+  }
   if (args.protocolVersion) {
     process.stdout.write(`${PROTOCOL_VERSION}
 `);
