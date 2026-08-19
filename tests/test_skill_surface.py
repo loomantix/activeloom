@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
@@ -248,9 +249,32 @@ def test_sync_replaces_retired_review_skill_paths_on_success(tmp_path: Path) -> 
     assert _frontmatter(reissued)["name"] == "grill"
     for skill in ("critique", "deepcritique", "pr-critique"):
         assert (consumer / f".agents/skills/{skill}/SKILL.md").is_file()
-    ledger = consumer / ".agents/skills/critique/scripts/review-ledger.py"
+    ledger = consumer / ".agents/skills/critique/scripts/review-ledger.js"
     assert ledger.is_file()
-    assert stat.S_IMODE(ledger.stat().st_mode) == 0o755
+    # Vendored from an npm tarball, which normalises non-`bin` files to 0644.
+    # It is invoked as `node review-ledger.js`, never executed directly.
+    assert stat.S_IMODE(ledger.stat().st_mode) == 0o644
+    # The bundle is ESM under a `.js` name, so without this sibling manifest
+    # Node resolves the module type from the consumer's root package.json and a
+    # `"type": "commonjs"` repository fails with a SyntaxError. It must arrive
+    # in the same sync as the bundle.
+    ledger_manifest = consumer / ".agents/skills/critique/scripts/package.json"
+    assert ledger_manifest.is_file()
+    assert json.loads(ledger_manifest.read_text(encoding="utf-8"))["type"] == "module"
+    for pin in ("review-ledger.version", "review-ledger.integrity"):
+        assert (consumer / f".agents/skills/critique/scripts/{pin}").is_file()
+    # The retired Python ledger is removed by the same sync run.
+    assert not (consumer / ".agents/skills/critique/scripts/review-ledger.py").exists()
+
+
+def test_vendored_ledger_is_not_executable() -> None:
+    """The ledger is data run through `node`, not a script with a shebang.
+
+    npm normalises non-`bin` files to 0644 in the tarball, so a 0755 here would
+    mean the bytes were touched after vendoring.
+    """
+    ledger = REPO_ROOT / ".agents/skills/critique/scripts/review-ledger.js"
+    assert stat.S_IMODE(ledger.stat().st_mode) == 0o644
 
 
 def test_new_script_modes_are_executable() -> None:
@@ -261,7 +285,6 @@ def test_new_script_modes_are_executable() -> None:
         ".agents/skills/agent-loop/scripts/hook-git-guard": 0o755,
         ".agents/skills/backlog-refinement/scripts/bail-report.py": 0o755,
         ".agents/skills/backlog-refinement/scripts/candidates.py": 0o755,
-        ".agents/skills/critique/scripts/review-ledger.py": 0o755,
         ".agents/skills/issues/scripts/ready.py": 0o755,
     }
     assert {
@@ -297,7 +320,10 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     assert "maximum 1000 words" in normalized["ledger"]
     assert "Review-significant config" in normalized["ledger"]
     assert "dependency manifests and lockfiles" in normalized["ledger"]
-    assert "`attest --threads-file <path> --allowed-heads-file <path>`" in ledger
+    assert (
+        "`attest --threads-file <path> --expected-threads-sha256 <sha256> "
+        "--allowed-heads-file <path>`" in ledger
+    )
 
     for skill in (
         normalized["deepcritique"],

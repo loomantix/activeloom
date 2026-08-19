@@ -66,10 +66,25 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     for guard_name in ("hook-git-guard", "hook-gh-guard", "review-push.sh", "config-doctor.py"):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
-    ledger_source = REPO_ROOT / ".agents/skills/critique/scripts/review-ledger.py"
-    ledger_target = repo / ".agents/skills/critique/scripts/review-ledger.py"
+    ledger_source = REPO_ROOT / ".agents/skills/critique/scripts/review-ledger.js"
+    ledger_target = repo / ".agents/skills/critique/scripts/review-ledger.js"
     ledger_target.parent.mkdir(parents=True)
     shutil.copy2(ledger_source, ledger_target)
+    # Sync ships a sibling `package.json` declaring the bundle as ESM; copy it
+    # so the fixture receives what a consumer receives.
+    shutil.copy2(
+        REPO_ROOT / ".agents/skills/critique/scripts/package.json",
+        ledger_target.parent / "package.json",
+    )
+    # gemini-platform has no root manifest, which is the most permissive module
+    # resolution context there is — the bundle would load here even with no
+    # sibling manifest at all. Give the fixture consumer a CommonJS root, the
+    # context that breaks an undeclared ESM `.js`, so this suite actually
+    # exercises what a consumer repo does rather than what upstream does.
+    (repo / "package.json").write_text(
+        '{"name": "fixture-consumer", "private": true, "type": "commonjs"}\n',
+        encoding="utf-8",
+    )
     _write_executable(
         ready,
         "#!/usr/bin/env python3\n"
@@ -102,19 +117,46 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write_executable(
         gh,
         r"""#!/usr/bin/env python3
-import hashlib, json, os, pathlib, signal, subprocess, sys, time
+import hashlib, json, os, pathlib, re, signal, subprocess, sys, time
 args = sys.argv[1:]
 state = pathlib.Path(os.environ['AGENT_STATE_DIR'])
 input_payload = json.load(sys.stdin) if '--input' in args else None
 with (state / 'gh.log').open('a') as handle:
     handle.write(' '.join(args) + '\n')
 issues = json.loads(os.environ.get('AGENT_ISSUES_JSON', '{}'))
+
+
+def endpoint_pr_number(pattern):
+    # A batch opens one PR per issue, so the stub cannot serve a single
+    # hardcoded number: the ledger binds every attestation to (repo, PR), and
+    # two issues sharing a number make issue 1's evidence look like a
+    # conflicting attestation for issue 2. Read the number back out of the
+    # endpoint the caller actually asked for.
+    for arg in args:
+        found = re.search(pattern, arg)
+        if found:
+            return int(found.group(1))
+    return None
+
+
+def scoped_rows(path, number):
+    rows = json.loads(path.read_text()) if path.exists() else []
+    # Rows a test seeded by hand carry no scope; treat them as belonging to
+    # whichever PR asks, so seeded single-PR fixtures keep working.
+    return [row for row in rows if row.get('_pr', number) == number]
+
+
+def unscoped(rows):
+    return [{key: value for key, value in row.items() if key != '_pr'} for row in rows]
 if args[:2] == ['auth', 'git-credential']:
     sys.stdin.read()
     print('username=tester')
     print('password=' + os.environ.get('GH_TOKEN', ''))
-elif args[:3] == ['api', 'user', '--jq']:
-    print('tester')
+elif args[:2] == ['api', 'user']:
+    # The vendored ledger resolves the actor as JSON; the retired Python asked
+    # for it with `--jq`. Answer both so the stub matches real `gh` rather than
+    # one caller's argument shape.
+    print('tester' if '--jq' in args else json.dumps({'login': 'tester'}))
 elif args[:2] == ['repo', 'view']:
     print('fixture/consumer')
 elif args[:2] == ['issue', 'view']:
@@ -186,7 +228,18 @@ elif args[:2] == ['pr', 'view']:
         )
         print('\t'.join(['OPEN', draft, branch, head, base_branch, base_oid]))
     elif '--json number' in joined:
-        print('1')
+        print(args[2].rsplit('/', 1)[1] if args[2].startswith('http') else args[2])
+    elif 'baseRefOid' in joined:
+        # The vendored ledger binds the ledger to the PR's base commit; the
+        # retired Python never asked for it, so this branch did not exist and
+        # the call fell through to the generic handler, which exits non-zero
+        # with no stderr — surfacing as "GitHub operation failed: no diagnostic
+        # returned" rather than an unsupported-invocation message.
+        base_head = subprocess.run(
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
+            check=True, capture_output=True, text=True
+        ).stdout.split()[0]
+        print(os.environ.get('AGENT_PR_BASE_OID', base_head))
     elif 'headRefOid' in joined:
         branch = (state / 'pr-branch').read_text()
         remote_head = subprocess.run(
@@ -218,7 +271,10 @@ elif args[:2] == ['pr', 'create']:
         ['git', 'branch', '--show-current'], check=True, capture_output=True, text=True
     ).stdout.strip()
     (state / 'pr-branch').write_text(branch)
-    print('https://example.invalid/pr/1')
+    counter = state / 'pr-counter'
+    number = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(number))
+    print('https://example.invalid/pr/' + str(number))
 elif args[:2] == ['pr', 'edit']:
     (state / 'pr-edited').touch()
 elif args[:2] == ['pr', 'ready']:
@@ -290,6 +346,7 @@ elif args[:2] == ['pr', 'review']:
     reviews_file = state / 'reviews.json'
     reviews = json.loads(reviews_file.read_text()) if reviews_file.exists() else []
     reviews.append({
+        '_pr': int(args[2]) if args[2].isdigit() else 1,
         'body': body,
         'user': {'login': os.environ.get('AGENT_REVIEW_AUTHOR', 'tester')},
         'commit_id': subprocess.run(
@@ -333,6 +390,17 @@ elif args[:2] == ['api', 'graphql']:
                 selected_node.setdefault('id', f'THREAD-{index}-{node_index}')
             else:
                 selected_node.pop('id', None)
+            # The vendored ledger refuses a thread it cannot prove belongs to
+            # the PR it was asked about, so echo the scope fields back when the
+            # query selects them — real `gh` would. Only default them in: a
+            # test that deliberately omits them from a node is asserting the
+            # refusal and must keep its omission.
+            if 'repository' in query and 'nameWithOwner' in query:
+                selected_node.setdefault('repository', {'nameWithOwner': 'fixture/consumer'})
+            if 'pullRequest' in query and 'number' in query:
+                selected_node.setdefault(
+                    'pullRequest', {'number': int(os.environ.get('AGENT_LOOP_PR_NUMBER', '1'))}
+                )
             selected_nodes.append(selected_node)
         has_next = index + 1 < len(pages)
         output.append({'data': {'repository': {'pullRequest': {
@@ -342,33 +410,37 @@ elif args[:2] == ['api', 'graphql']:
             }}
         }}}})
     print(json.dumps(output))
-elif args[:1] == ['api'] and any('/issues/1/comments?per_page=100' in arg for arg in args):
+elif args[:1] == ['api'] and endpoint_pr_number(r'/issues/(\d+)/comments\?per_page=100') is not None:
     comments_file = state / 'issue-comments.json'
-    comments = json.loads(comments_file.read_text()) if comments_file.exists() else []
-    print(json.dumps([comments]))
-elif args[:1] == ['api'] and any('/issues/1/comments' in arg for arg in args) and '-X' in args:
+    number = endpoint_pr_number(r'/issues/(\d+)/comments\?per_page=100')
+    print(json.dumps([unscoped(scoped_rows(comments_file, number))]))
+elif args[:1] == ['api'] and endpoint_pr_number(r'/issues/(\d+)/comments') is not None and '-X' in args:
     comments_file = state / 'issue-comments.json'
+    number = endpoint_pr_number(r'/issues/(\d+)/comments')
     comments = json.loads(comments_file.read_text()) if comments_file.exists() else []
     row = {
         'id': len(comments) + 700,
         'body': input_payload['body'],
         'user': {'login': 'tester'},
     }
-    comments.append(row)
+    comments.append(dict(row, _pr=number))
     comments_file.write_text(json.dumps(comments))
     print(json.dumps(row))
 elif args[:1] == ['api'] and any('/issues/comments/' in arg for arg in args):
     comment_id = int(next(arg.rsplit('/', 1)[1] for arg in args if '/issues/comments/' in arg))
     comments = json.loads((state / 'issue-comments.json').read_text())
-    print(json.dumps(next(row for row in comments if row['id'] == comment_id)))
-elif args[:1] == ['api'] and any('/issues/1/comments' in arg for arg in args):
+    row = next(row for row in comments if row['id'] == comment_id)
+    print(json.dumps(unscoped([row])[0]))
+elif args[:1] == ['api'] and endpoint_pr_number(r'/issues/(\d+)/comments') is not None:
     comments_file = state / 'issue-comments.json'
-    print(comments_file.read_text() if comments_file.exists() else '[]')
-elif args[:1] == ['api'] and any('/pulls/1/comments' in arg for arg in args):
+    number = endpoint_pr_number(r'/issues/(\d+)/comments')
+    print(json.dumps(unscoped(scoped_rows(comments_file, number))))
+elif args[:1] == ['api'] and endpoint_pr_number(r'/pulls/(\d+)/comments') is not None:
     print('[]')
-elif args[:1] == ['api'] and any('/pulls/1/reviews' in arg for arg in args):
+elif args[:1] == ['api'] and endpoint_pr_number(r'/pulls/(\d+)/reviews') is not None:
     reviews_file = state / 'reviews.json'
-    reviews = json.loads(reviews_file.read_text()) if reviews_file.exists() else []
+    number = endpoint_pr_number(r'/pulls/(\d+)/reviews')
+    reviews = unscoped(scoped_rows(reviews_file, number))
     print(json.dumps([reviews] if '--slurp' in args else reviews))
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
@@ -1972,7 +2044,7 @@ def test_review_contract_version_is_required_before_claim(
     [
         ("AGENT_LOOP_REVIEW_PUSH_HELPER", "must use AGENT_LOOP_REVIEW_PUSH_HELPER"),
         ("AGENT_LOOP_REVIEW_RESULT_FILE", "must write AGENT_LOOP_REVIEW_RESULT_FILE"),
-        ("write-result", "must use review-ledger.py write-result"),
+        ("write-result", "must use review-ledger.js write-result"),
     ],
 )
 def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
@@ -4396,6 +4468,7 @@ def test_missing_default_codex_fails_before_claim(
         "flock",
         "git",
         "jq",
+        "node",
         "python3",
         "realpath",
         "timeout",
