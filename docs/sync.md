@@ -125,7 +125,7 @@ Consent is required for any target the sync would write, whether or not this par
 
 Your `.platform-config.yml` is refused as a destination unconditionally, and no entry authorizes it. It records both `allow_sensitive_writes` and `allowed_destinations`, so a manifest able to rewrite it could grant itself consent on one run and spend that consent on the next — with the job log reporting an opt-in you never made. The refusal matches by resolved path, so an explicit `--config` elsewhere is covered, while a `.platform-config.yml` vendored in your tree as an example or a fixture stays an ordinary destination.
 
-When a refusal lists paths you have not granted, it prints the complete `allow_sensitive_writes:` block you should end up with — the newly denied destinations **and** the grants already in your config — to *replace* that key rather than to append after it. Appending a second `allow_sensitive_writes:` key would silently discard the first, since YAML keeps only the last occurrence, and the following run would then refuse a path your config visibly names.
+When a refusal lists paths you have not granted, it prints the complete `allow_sensitive_writes:` block you should end up with — the newly denied destinations **and** the grants already in your config — to _replace_ that key rather than to append after it. Appending a second `allow_sensitive_writes:` key would silently discard the first, since YAML keeps only the last occurrence, and the following run would then refuse a path your config visibly names.
 
 Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-line values use YAML block scalars (the `|` form). Keys must be `[A-Z][A-Z0-9_]*`.
 
