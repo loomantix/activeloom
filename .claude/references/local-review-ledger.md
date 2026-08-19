@@ -24,6 +24,12 @@ docs/config-only changesets. This is the shared definition for the pinned
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
   `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
+- **Prompt surface — source, whatever the extension.** Every path under
+  `.claude/`, including its Markdown. These files are read by the model as
+  instructions and sync to every consumer, so a defect in them ships exactly
+  like a code defect. Classifying them as docs would make the fan-out trigger
+  in [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md) unreachable for the
+  surface it was written to protect.
 - **Docs, config, or fixtures** — `.md`, `.txt`, `.yml`, `.yaml`, `.json`,
   `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
   `.env.example`, paths under `docs/`, `*.fixture.*`, and snapshot files.
@@ -119,6 +125,53 @@ State the changeset size and lane file count in the lane-specific suffix. These
 rules reduce duplicated bytes; they never justify dropping a lens, omitting a
 needed file, or weakening verification.
 
+## Record the review tier once per PR
+
+The tier decides which lanes run and how many rounds are owed. Resolve it
+before the first reviewer per [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md)
+and record it on the PR, so a later round in a fresh session reads it instead of
+re-deriving it.
+
+```text
+<!-- local-review-tier:v1 tier=<lean|deep> trigger=<ids-or-none> head=<sha> -->
+```
+
+`trigger=` carries **every** trigger the change matched, as the comma-separated
+1–6 ordinals from [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md) — `trigger=3`,
+`trigger=1,3`, or `trigger=none`. Recording only one lets a clean result from
+that trigger's lens de-escalate the PR while an unrecorded trigger still stands.
+
+Resolve one effective marker during pre-flight:
+
+1. Read issue comments in chronological order. Accept only a comment authored by
+   the authenticated GitHub actor running the local review whose marker is one
+   exact line in the grammar above, with a full 40-character `head`. Ignore
+   marker-shaped comments from other actors as untrusted context. A malformed
+   actor-authored candidate or two candidates in one comment is a hard stop.
+2. Treat the latest accepted comment as the effective marker. Each replacement
+   head must be a descendant of the previous accepted head and an ancestor of
+   the current PR head; conflicting or non-forward history is a hard stop. This
+   chronological rule is the append-only supersession chain — never choose the
+   first marker returned by an API.
+3. When the current head is later than the effective marker's head, inspect the
+   forward delta against the tier triggers. Retain the tier when the delta adds
+   no unrecorded trigger. If it does, or the human directly requests Deep, post
+   a replacement at the current head that preserves the recorded triggers and
+   adds every new one before invoking a lane. A head mismatch by itself does not
+   reclassify the unchanged range.
+
+If no accepted marker exists, classify and post one before invoking a lane.
+Create the marker body in an owner-only regular file and use the ledger helper's
+`post-pr-comment --head <current-head> --body-file <file>` legacy-v1 path so the
+helper verifies the exact head and reads the comment back. State the effective
+tier and triggers in the pass output.
+
+The marker is per-PR, not per-engine and not per-round — every engine resolves
+the same transition chain. Post a replacement only for an evidence-backed
+escalation or de-escalation, naming the confirmed finding, direct request, or
+clean lenses that justified it. A pass that exits on the docs/config-only
+classification posts no marker.
+
 ## Run the refactor pass once per engine
 
 A cleanup pass earns its cost on the first cold read of a changeset. By the
@@ -184,9 +237,14 @@ one level up, where the whole set is visible and the orchestrator decides what
 the PR changes, what merits an urgent follow-up issue, and what should add
 nothing to an already deep backlog.
 
-Convergence rounds do not extend the round cap — they are how rounds 3 and 4 are
+The stance schedule above is the Deep schedule. At Lean the cap is two rounds:
+round 1 is adversarial, and round 2 runs only if round 1 made a material fix,
+in convergence mode. At both tiers, stop as soon as a complete round produces no
+material fix — the cap is a ceiling, not a target.
+
+Convergence rounds do not extend the round cap — they are how the last rounds are
 spent. Reaching the cap in convergence mode with open non-blocking findings means
-ship the PR and carry the issues, not open a fifth round.
+ship the PR and carry the issues, not open another round.
 
 ## Rebuild context from GitHub
 
@@ -234,9 +292,29 @@ finding into the PR.
 
 ### Use the deterministic ledger helper
 
-Use `.claude/skills/critique/scripts/review-ledger.py` for every local-review
+Use `.claude/skills/critique/scripts/review-ledger.js` for every local-review
 finding, disposition reply, thread resolution, and pass marker. Do not
 hand-compose `gh api` form arguments for these mutations.
+
+The v1 refactor latch and tier-transition marker are the explicit
+marker-construction exceptions. Create either in an owner-only regular file and
+post it with the helper's `post-pr-comment` command so exact-head verification
+and read-back still apply.
+
+Invoke it as `node .claude/skills/critique/scripts/review-ledger.js` — it
+requires Node.js and is not executable, so `./review-ledger.js` will not run.
+The bundle is ESM; the sibling `package.json` in that directory declares
+`"type": "module"` so it resolves the same way regardless of what the
+surrounding repository's root manifest says.
+The file is a build artifact of [`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger),
+vendored verbatim from the published tarball at the version recorded in
+`review-ledger.version`, with that tarball's sha512 in `review-ledger.integrity`.
+`node review-ledger.js --version` reports the version it was built from, so a
+copy can always identify itself without trusting the pin file beside it.
+Never edit or reformat it: fixes belong upstream in the package. The byte-compare
+that enforces this runs in `claude-platform`'s own CI, not here — in a consumer
+repository an accidental edit is silently restored by the next sync rather than
+caught locally, so treat the file as read-only and keep it out of any formatter.
 
 The v3 helper verifies the current PR head before and after each mutation,
 constructs markers and JSON itself, reads mutations back, and reconciles retries
@@ -255,11 +333,11 @@ preserves literal backticks, dollar expressions, quotes, Unicode, CRLF, and a
 missing final newline:
 
 ```bash
-python3 .claude/skills/critique/scripts/review-ledger.py preflight-anchor \
+node .claude/skills/critique/scripts/review-ledger.js preflight-anchor \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line>
 
-python3 .claude/skills/critique/scripts/review-ledger.py post-finding \
+node .claude/skills/critique/scripts/review-ledger.js post-finding \
   --repo <owner/repo> --pr <number> --head <full-head-sha> \
   --path <repository-relative-path> --line <right-side-line> \
   --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
@@ -271,7 +349,7 @@ When the same fingerprint recurs on a later reviewed head, append a new numbered
 occurrence to its existing root comment and reopen that thread atomically:
 
 ```bash
-python3 .claude/skills/critique/scripts/review-ledger.py reopen-occurrence \
+node .claude/skills/critique/scripts/review-ledger.js reopen-occurrence \
   --repo <owner/repo> --pr <number> --head <reviewed-sha> \
   --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
   --occurrence <next-number> --severity <severity> --lens <lens> \
@@ -287,7 +365,7 @@ identical command again reuses completed work and finishes only the missing
 state transition:
 
 ```bash
-python3 .claude/skills/critique/scripts/review-ledger.py dispose \
+node .claude/skills/critique/scripts/review-ledger.js dispose \
   --repo <owner/repo> --pr <number> --head <full-fix-sha> \
   --engine <codex|claude|gemini|antigravity> --round <n> --fingerprint <stable-id> \
   --occurrence <number> --outcome <fixed|dismissed|deferred> \
@@ -304,7 +382,7 @@ actor-owned v3 ledger at the exact head. This rejects unresolved threads,
 unstructured replies, cross-occurrence dispositions, and incomplete pagination:
 
 ```bash
-python3 .claude/skills/critique/scripts/review-ledger.py verify-ledger \
+node .claude/skills/critique/scripts/review-ledger.js verify-ledger \
   --repo <owner/repo> --pr <number> --head <full-head-sha>
 ```
 
@@ -342,6 +420,13 @@ For each published finding:
    reviewed head.
 4. Let `dispose` verify the reply and resolution as one resumable transaction.
 
+Write the commit message with the file-editing tool into the same owner-only
+temporary directory used for ledger content, then commit with
+`git commit -F <file>`. Run each git command as its own plain command. A
+worktree-isolated session refuses a git command carrying a heredoc, redirect,
+or `&&` chain because it cannot statically verify that the command stays inside
+the worktree, and that refusal aborts the pass mid-fix.
+
 If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
 report the exact unresolved thread; do not silently continue.
 
@@ -354,7 +439,7 @@ atomically writes the canonical result. Supply `--classification
 minor|material` only when the head moved:
 
 ```bash
-python3 .claude/skills/critique/scripts/review-ledger.py write-result \
+node .claude/skills/critique/scripts/review-ledger.js write-result \
   --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
   --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
   --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
@@ -370,7 +455,7 @@ For a blocked pass, put one short public-safe blocker in an owner-only regular
 file and call `write-blocked-result` instead of constructing JSON:
 
 ```bash
-python3 .claude/skills/critique/scripts/review-ledger.py write-blocked-result \
+node .claude/skills/critique/scripts/review-ledger.js write-blocked-result \
   --head "$(git rev-parse HEAD)" --engine "$AGENT_LOOP_REVIEW_ENGINE" \
   --round "$AGENT_LOOP_REVIEW_ROUND" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
   --before "$AGENT_LOOP_PR_HEAD_SHA" \

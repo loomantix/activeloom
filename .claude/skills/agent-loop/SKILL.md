@@ -82,10 +82,10 @@ fresh fetch plus `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_BASE_SHA`, and under contract v3
 `AGENT_LOOP_REVIEW_ACTOR`, `AGENT_LOOP_REVIEW_RESULT_FILE`, and
 `AGENT_LOOP_REVIEW_PUSH_HELPER`. Every successfully completed clean or changed
-hook calls `review-ledger.py write-result`, which derives the complete
+hook calls `review-ledger.js write-result`, which derives the complete
 same-engine/same-round fixed, deferred, and dismissed fingerprint set and writes
 the canonical result. A changed result requires at least one fixed finding. A
-blocked hook instead uses `review-ledger.py write-blocked-result` with an
+blocked hook instead uses `review-ledger.js write-blocked-result` with an
 owner-only blocker file and must not claim a clean or changed pass. The wrapper validates its exact
 SHAs and finding fingerprints, verifies resolved v3 dispositions, and owns the
 canonical pass/completion attestation. A missing, invalid, or blocked result

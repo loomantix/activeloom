@@ -56,7 +56,7 @@ Opus 5 delegates to subagents more readily than prior models. That pays off on g
 - **Never** spawn a subagent to verify or double-check the session's own work (see §2).
 - If one agent can do it, use one. Keep spawn counts low.
 
-`/critique`'s agent matrix is a **ceiling, not a floor** — pick the lenses whose signals actually appear in the diff. The "two to five agents is typical in deep mode" line in that skill is a real budget, not a suggestion. If a change feels big enough to want more lenses than the matrix offers, that is a signal to escalate to `/deepcritique`, not to invent extra agents.
+`/critique`'s agent matrix is a **ceiling, not a floor** — pick the lenses whose signals actually appear in the diff. The "two to five agents is typical in deep mode" line in that skill is a real budget, not a suggestion. Wanting more lenses than the matrix offers is not by itself grounds to escalate to `/deepcritique` — escalation is a tier decision made on evidence, per [REVIEW_WORKFLOW.md](REVIEW_WORKFLOW.md). It is never grounds to invent extra agents.
 
 ## 4. Prompt for length — effort will not do it for you
 

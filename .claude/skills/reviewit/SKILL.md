@@ -25,6 +25,17 @@ This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilo
 
 `$ARGUMENTS` is whitespace-tokenized. The first token is the PR number; if a second token exists and equals `deep` (case-insensitive), set `MODE=deep` and `MAX_ITERS=4`. Otherwise `MODE=lean` and `MAX_ITERS=2`. Surface the resolved mode in the Phase 6 summary.
 
+**The effective recorded tier governs the mode in both directions.** Resolve it
+under the authenticated transition rule in the local review ledger. A `deep`
+argument supplied by an internal tier-aware handoff is only an assertion and
+does not override the marker. A direct human `deep` request is trigger 6: append
+a Deep replacement that preserves recorded triggers and adds 6 before starting,
+then run the four-iteration mode. Without a marker or direct request, classify
+against the triggers in
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md), post one, and default to
+Lean only when none match. Say whenever resolution changes the argument-derived
+mode.
+
 ## Core principles
 
 - **Full auto by default**: once the PR number is provided, do not ask for confirmation between phases. Fix everything fixable, defer what isn't, dismiss false positives. Present the summary at the end.
@@ -43,7 +54,9 @@ This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilo
 
 **Argument**: `$ARGUMENTS` — first token is the PR number; optional second token `deep` enables deep mode (see "Mode resolution" above).
 
-1. **Validate PR number** (numeric, > 0). If missing, ask the user for it. Resolve `MODE` and `MAX_ITERS` per the rule above.
+1. **Validate PR number** (numeric, > 0). If missing, ask the user for it. Load
+   [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md),
+   then resolve `MODE` and `MAX_ITERS` per the rule above.
 
 2. **Fetch PR details**:
 
@@ -57,13 +70,17 @@ This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilo
 
 4. **Confirm the head ref is checked out locally** (`git rev-parse --abbrev-ref HEAD` matches `headRefName`). If not, the skill cannot push fixes — surface and exit.
 
-5. **Triviality detection — prompt to skip the chain on docs/config-only PRs.** Inspect the PR's changed files and classify by extension (same heuristic as `/refactorpass` and `/critique` Phase 0):
+5. **Triviality detection — prompt to skip the chain on docs/config-only PRs.**
+   Classify with the ledger's shared definition, including that every
+   `.claude/**` path is source whatever its extension:
 
    ```bash
    gh pr view <pr-number> --json files --jq '.files[].path'
    ```
 
-   Classify each path. If only docs/config files (`.md`, `.txt`, `.yml`, `.yaml`, `.json`, `.toml`, `.gitignore`, `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`, files under `docs/`, `*.fixture.*`, snapshot files), prompt the user **before** spending any reviewer budget:
+   If the shared classifier returns only docs/config files, prompt the user
+   **before** spending any reviewer budget. Never offer this skip after a tier
+   trigger matched:
 
    ```
    This PR looks docs/config-only — N files, no source code changes.
@@ -118,7 +135,7 @@ gh workflow run "Gemini Code Review" \
   -F tier=flash
 ```
 
-**Pass `-F tier=flash` explicitly.** The workflow defaults `tier` to `pro` when omitted (intentional for UI clickers, unintended for CLI/API callers). Pro is $1–$8 per review; Flash is $0.05–$0.20. Only override to `pro` if the user has explicitly asked for a deep review on a high-stakes PR (security/auth, schema migrations, large refactors) AND confirmed the cost.
+**Pass `-F tier=flash` explicitly.** The workflow defaults `tier` to `pro` when omitted (intentional for UI clickers, unintended for CLI/API callers). Pro is $1–$8 per review; Flash is $0.05–$0.20. Only override to `pro` when the resolved review tier is Deep, the user asked for it explicitly, AND confirmed the cost. Do not re-derive the triggers here — read the tier marker.
 
 ### Fire Copilot
 

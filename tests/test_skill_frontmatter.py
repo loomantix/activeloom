@@ -155,3 +155,62 @@ def test_reissued_destinations_are_deleted_before_they_are_written() -> None:
         "so consumers never receive them — move the copy entry below the "
         "`delete: true` entry: " + "; ".join(clobbered)
     )
+
+
+def test_review_skills_define_wrapper_and_standalone_v3_finalization() -> None:
+    """The wrapper-versus-standalone finalization rule decides who owns a pass
+    attestation, and it is carried only by prose in four synced files. This
+    test moved here when `tests/test_review_ledger.py` was retired alongside
+    the Python ledger: every other test in that file exercised the ledger's
+    internals and now lives with the implementation upstream, but this one
+    asserts *this* repository's skill prompts, which no upstream package can
+    see. Without it, an edit that drops the rule from one of these files ships
+    to every consumer with nothing failing.
+    """
+    ledger = (REPO_ROOT / ".claude/references/local-review-ledger.md").read_text(
+        encoding="utf-8"
+    )
+    deepcritique = (REPO_ROOT / ".claude/skills/deepcritique/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    critique = (REPO_ROOT / ".claude/skills/critique/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    codex_review = (REPO_ROOT / ".claude/skills/codex-review/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Finalize wrapper and standalone results" in ledger
+    assert "helper returns `verified: true`" in ledger
+    assert "On a skip, finalize a clean v3 result" in deepcritique
+    assert "Do not emit `clean` for a cleanup-moved enclosing hook" in deepcritique
+    assert "the enclosing review hook did not move" in critique
+    for skill in (deepcritique, critique, codex_review):
+        assert "wrapper/standalone" in skill
+        assert "standalone pass" in skill
+
+
+def test_review_tier_contract_is_consistent_across_review_skills() -> None:
+    """Tier control flow is prompt-level behavior synced to every consumer."""
+
+    def normalized(path: str) -> str:
+        return " ".join((REPO_ROOT / path).read_text(encoding="utf-8").split())
+
+    workflow = normalized(".claude/REVIEW_WORKFLOW.md")
+    ledger = normalized(".claude/references/local-review-ledger.md")
+    reviewit = normalized(".claude/skills/reviewit/SKILL.md")
+    critique = normalized(".claude/skills/critique/SKILL.md")
+    deepcritique = normalized(".claude/skills/deepcritique/SKILL.md")
+    codex_review = normalized(".claude/skills/codex-review/SKILL.md")
+
+    assert "authenticated GitHub actor" in ledger
+    assert "latest accepted comment" in ledger
+    assert "every `.claude/**` path is source" in reviewit
+    assert "direct human `deep` request is trigger 6" in reviewit
+    assert "direct human `deep` request is trigger 6" in critique
+    assert "all owning lenses for every recorded trigger" in deepcritique
+    assert "any round whose resolved stance is convergence" in codex_review
+    assert (
+        "`codex-review` cross-check is the documented vendor-specific exception"
+        in workflow
+    )

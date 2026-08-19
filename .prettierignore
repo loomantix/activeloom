@@ -15,6 +15,10 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
+# Vendored build artifact of @loomantix/review-ledger — its bytes must match
+# the published tarball exactly, so Prettier must never touch it.
+.claude/skills/critique/scripts/review-ledger.js
+
 # Legal text — preserve canonical wrapping
 LICENSE
 NOTICE
