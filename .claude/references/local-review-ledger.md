@@ -357,6 +357,13 @@ For each published finding:
    reviewed head.
 4. Let `dispose` verify the reply and resolution as one resumable transaction.
 
+Write the commit message with the file-editing tool into the same owner-only
+temporary directory used for ledger content, then commit with
+`git commit -F <file>`. Run each git command as its own plain command. A
+worktree-isolated session refuses a git command carrying a heredoc, redirect,
+or `&&` chain because it cannot statically verify that the command stays inside
+the worktree, and that refusal aborts the pass mid-fix.
+
 If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
 report the exact unresolved thread; do not silently continue.
 
