@@ -344,7 +344,7 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     assert "do not hand every lane a whole-diff artifact" in normalized["refactorpass"]
 
 
-def test_local_review_requires_user_mediated_cross_engine_handoffs() -> None:
+def test_local_review_documents_explicit_cross_engine_modes() -> None:
     workflow = (REPO_ROOT / ".codex/REVIEW_WORKFLOW.md").read_text(encoding="utf-8")
     ledger = (REPO_ROOT / ".codex/references/local-review-ledger.md").read_text(
         encoding="utf-8"

@@ -32,8 +32,8 @@ and PR head SHA match. Record the PR number and load all prior review threads,
 including resolved and outdated threads.
 
 Resolve the selected local session mode from repository instructions or the
-user. In handoff mode, if the user asks to continue or resume a review, run the
-ledger helper's `show-handoff --engine codex` command before resolving the
+user. In handoff mode, if the user asks to continue or resume a review, run
+`local-review-handoff.py show-handoff --engine codex` before resolving the
 round. Continue only when the latest authenticated handoff targets Codex and
 its exact head remains current. If it targets Claude, stop and ask the user to
 start a fresh Claude terminal session.
@@ -129,7 +129,7 @@ When `AGENT_LOOP_REVIEW_ENGINE=codex` or the local convergence path is selected,
 finish the ledger, then follow the selected session mode. In auto mode, invoke
 Claude only through `run-claude-review.sh`; never hand-compose the command or
 override its literal low effort. In handoff mode, post the next-session handoff
-with the ledger helper's `post-handoff` command and return control to the user.
+with `local-review-handoff.py post-handoff` and return control to the user.
 
 ```bash
 .codex/skills/critique/scripts/run-claude-review.sh \

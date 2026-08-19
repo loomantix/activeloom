@@ -39,12 +39,15 @@ Local convergence has two explicit modes. A consumer may declare a default;
 otherwise ask the user before the first cross-engine transition. Do not switch
 modes silently in the middle of a round.
 
-- **Auto mode** runs the complete bounded chain. Codex may start Claude only
-  through `.codex/skills/critique/scripts/run-claude-review.sh`. The launcher
-  pins the actual CLI argv to literal `--effort low`; callers cannot supply or
-  override the effort. Never hand-compose a `claude` command. After the Claude
-  subprocess returns, validate its PR-head and ledger evidence and continue the
-  chain until convergence or the configured cap.
+- **Auto mode** runs the complete bounded chain. For a direct interactive
+  transition, Codex may start Claude only through
+  `.codex/skills/critique/scripts/run-claude-review.sh`. The launcher pins the
+  actual CLI argv to literal `--effort low`; callers cannot supply or override
+  the effort. Never hand-compose a `claude` command. An automated wrapper may
+  instead run its configured Claude hook after its configuration doctor proves
+  the same literal low-effort contract. After Claude returns, validate its
+  PR-head and ledger evidence and continue the chain until convergence or the
+  configured cap.
 - **Handoff mode** never starts the other engine. Each pass posts an
   authenticated `local-review-handoff:v1` PR comment and returns control to the
   user, who starts the requested reviewer in a new terminal session. Do not

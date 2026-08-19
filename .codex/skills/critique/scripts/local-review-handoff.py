@@ -201,9 +201,9 @@ def _post_handoff(args: argparse.Namespace) -> None:
     )
     body = f"{marker}\n{content}"
     _verify_head(args.repo, args.pr, args.head)
-    existing = _matching_body(_issue_comments(args.repo, args.pr), marker, body)
-    replayed = existing is not None
-    if existing is None:
+    comment_id = _matching_body(_issue_comments(args.repo, args.pr), marker, body)
+    replayed = comment_id is not None
+    if comment_id is None:
         try:
             response = _json_output(
                 ["api", "-X", "POST", f"repos/{args.repo}/issues/{args.pr}/comments"],
@@ -213,13 +213,10 @@ def _post_handoff(args: argparse.Namespace) -> None:
                 _fail("GitHub accepted the mutation but returned no comment ID")
             comment_id = cast(int, response["id"])
         except HandoffError:
-            recovered = _matching_body(_issue_comments(args.repo, args.pr), marker, body)
-            if recovered is None:
+            comment_id = _matching_body(_issue_comments(args.repo, args.pr), marker, body)
+            if comment_id is None:
                 raise
-            comment_id = recovered
             replayed = True
-    else:
-        comment_id = existing
     _verify_issue_comment(args.repo, comment_id, body)
     _verify_head(args.repo, args.pr, args.head)
     print(
@@ -289,7 +286,7 @@ def _sha(value: str) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(required=True)
     post = commands.add_parser("post-handoff")
     post.add_argument("--repo", required=True)
     post.add_argument("--pr", required=True, type=int)

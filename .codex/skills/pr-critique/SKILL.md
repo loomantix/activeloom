@@ -194,7 +194,8 @@ commit or push. Report the clean result.
 
 Follow the selected local session mode before returning. In auto mode, return to
 the calling orchestrator so it can continue the bounded chain. In handoff mode,
-post a `local-review-handoff:v1` comment with the ledger helper. The comment
+post a `local-review-handoff:v1` comment with the `local-review-handoff.py`
+helper. The comment
 targets the originating engine, pins the current head and review base, and
 contains the fresh-session prompt; the user starts it in a new terminal.
 
