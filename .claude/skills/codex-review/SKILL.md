@@ -51,7 +51,7 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
    - If the changeset is docs/config-only per the ledger's classification,
      finalize a scoped clean v3 result using the ledger's wrapper/standalone
      ownership rule, then exit.
-   - Resolve the review tier before starting Codex. Read the PR's `local-review-tier:v1` marker; if none exists, classify against the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and post the marker, Lean being the tier when no trigger matches. This skill is the first reviewer in every local round, so an unresolved tier here leaves the whole round unresolved. State the tier and its triggers in the pass output.
+   - Resolve the review tier before starting Codex. Resolve the effective PR `local-review-tier:v1` marker under the ledger's authenticated, forward-only transition rule; if none exists, classify against the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and post the marker, Lean being the tier when no trigger matches. This skill is the first reviewer in every local round, so an unresolved tier here leaves the whole round unresolved. State the tier and its triggers in the pass output.
    - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. The stance follows the tier's schedule: at Deep, rounds 1–2 are adversarial and round 3 and later are convergence rounds; at Lean the cap is 2 and round 2 is the convergence round. The prompt and dispositions change accordingly. The result's `baseSha` and the prompt range must name `REVIEW_BASE` exactly.
 
 ## Phase 1: Build the review prompt
@@ -66,7 +66,7 @@ Write a tight, scoped prompt. A vague "review this" wastes the run; name the fil
 - The 3–4 riskiest things about this specific change, phrased as **where to scrutinize hardest** — not as an attack. See the framing rules below.
 - The output contract: **only high-confidence material findings** (correctness, security, data-loss); for each, `file:line`, severity, concrete issue, concrete fix; "no material findings" if clean; be terse.
 
-### Convergence rounds (round 3 and later)
+### Convergence rounds (any round whose resolved stance is convergence)
 
 Codex has already read this change cold twice. Narrow the prompt's scrutiny list
 to what could stop the deploy — correctness, data safety, security and privacy,

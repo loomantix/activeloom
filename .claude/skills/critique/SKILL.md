@@ -79,14 +79,17 @@ force-push to establish or update the review branch.
 
 ### Tier resolution
 
-Read the PR's `local-review-tier:v1` marker. If none exists, classify against
+Resolve the effective `local-review-tier:v1` marker under the ledger's
+authenticated, forward-only transition rule. If none exists, classify against
 the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and
 post the marker before starting a lane; Lean is the tier when no trigger
-matches. Run the lens set for the recorded tier — if `deep` was passed but the
-marker says Lean, say so and run Lean, because an argument is not evidence.
-Escalate mid-pass only on a confirmed finding that reaches a trigger, per the
-workflow doc's evidence rule, and post the replacement marker naming it. State
-the resolved tier and trigger alongside the round and stance.
+matches. Run the lens set for the recorded tier. A `deep` argument from an
+internal `/deepcritique` handoff only asserts that tier; a direct human `deep`
+request is trigger 6 and posts a Deep replacement that preserves recorded
+triggers and adds 6 before lanes start. Escalate mid-pass only on a confirmed
+finding that reaches a trigger, per the workflow doc's evidence rule, and post
+the replacement marker naming it. State the resolved tier and trigger alongside
+the round and stance.
 
 ## Phase 1: Select the review lenses
 

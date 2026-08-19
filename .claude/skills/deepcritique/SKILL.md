@@ -58,7 +58,8 @@ Proceed in the current session only after an explicit override.
 Runs after the PR boundary: the marker lives on the PR, and a changeset that
 exits on the docs/config-only skip never needs a tier.
 
-Read the PR's `local-review-tier:v1` marker; if none exists, classify against
+Resolve the effective `local-review-tier:v1` marker under the ledger's
+authenticated, forward-only transition rule; if none exists, classify against
 the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and
 post the marker.
 
@@ -68,9 +69,10 @@ owns the v3 structured result for the transition, so do not exit before it
 finalizes one. Continue here only on a Deep tier or an explicit user override —
 itself trigger 6, recorded in the marker.
 
-If Deep round 1 completes with no confirmed finding from the lens that owns the
-selecting trigger, de-escalate: post the replacement marker naming that lens and
-send the remaining rounds to `/critique` at Lean.
+If Deep round 1 completes with no confirmed finding from **all owning lenses for
+every recorded trigger**, de-escalate: post the replacement marker naming every
+clean lens and send the remaining rounds to `/critique` at Lean. Never
+de-escalate when trigger 6 is present.
 
 ## Phase 1: Refactor pass — first Claude pass only
 

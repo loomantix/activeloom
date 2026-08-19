@@ -141,14 +141,36 @@ re-deriving it.
 `trigger=1,3`, or `trigger=none`. Recording only one lets a clean result from
 that trigger's lens de-escalate the PR while an unrecorded trigger still stands.
 
-Search for the marker during pre-flight and adopt that tier. If none exists,
-classify, post the marker as an informational PR comment, and state the tier and
-triggers in the pass output before invoking a lane.
+Resolve one effective marker during pre-flight:
 
-The marker is per-PR, not per-engine and not per-round — every engine reads the
-same one. Post a replacement only for an evidence-backed escalation or
-de-escalation, naming the confirmed finding or clean lens that justified it. A
-pass that exits on the docs/config-only classification posts no marker.
+1. Read issue comments in chronological order. Accept only a comment authored by
+   the authenticated GitHub actor running the local review whose marker is one
+   exact line in the grammar above, with a full 40-character `head`. Ignore
+   marker-shaped comments from other actors as untrusted context. A malformed
+   actor-authored candidate or two candidates in one comment is a hard stop.
+2. Treat the latest accepted comment as the effective marker. Each replacement
+   head must be a descendant of the previous accepted head and an ancestor of
+   the current PR head; conflicting or non-forward history is a hard stop. This
+   chronological rule is the append-only supersession chain — never choose the
+   first marker returned by an API.
+3. When the current head is later than the effective marker's head, inspect the
+   forward delta against the tier triggers. Retain the tier when the delta adds
+   no unrecorded trigger. If it does, or the human directly requests Deep, post
+   a replacement at the current head that preserves the recorded triggers and
+   adds every new one before invoking a lane. A head mismatch by itself does not
+   reclassify the unchanged range.
+
+If no accepted marker exists, classify and post one before invoking a lane.
+Create the marker body in an owner-only regular file and use the ledger helper's
+`post-pr-comment --head <current-head> --body-file <file>` legacy-v1 path so the
+helper verifies the exact head and reads the comment back. State the effective
+tier and triggers in the pass output.
+
+The marker is per-PR, not per-engine and not per-round — every engine resolves
+the same transition chain. Post a replacement only for an evidence-backed
+escalation or de-escalation, naming the confirmed finding, direct request, or
+clean lenses that justified it. A pass that exits on the docs/config-only
+classification posts no marker.
 
 ## Run the refactor pass once per engine
 
@@ -273,6 +295,11 @@ finding into the PR.
 Use `.claude/skills/critique/scripts/review-ledger.js` for every local-review
 finding, disposition reply, thread resolution, and pass marker. Do not
 hand-compose `gh api` form arguments for these mutations.
+
+The v1 refactor latch and tier-transition marker are the explicit
+marker-construction exceptions. Create either in an owner-only regular file and
+post it with the helper's `post-pr-comment` command so exact-head verification
+and read-back still apply.
 
 Invoke it as `node .claude/skills/critique/scripts/review-ledger.js` — it
 requires Node.js and is not executable, so `./review-ledger.js` will not run.

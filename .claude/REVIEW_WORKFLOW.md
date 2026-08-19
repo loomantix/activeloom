@@ -22,8 +22,9 @@ the default. **Lean is the default; Deep is the exception you justify.**
 
 State the resolved tier and the trigger that selected it — or `no trigger` — in
 the pass output, and post the ledger's `local-review-tier:v1` marker once per
-PR. Later rounds read the marker instead of reclassifying; a tier re-derived
-each round drifts back to Deep.
+PR. Later rounds resolve the effective marker under the ledger's authenticated,
+forward-only transition rule instead of reclassifying the unchanged range; a
+tier re-derived from scratch each round drifts back to Deep.
 
 ### What sets the tier
 
@@ -51,16 +52,17 @@ Resolve the changed-file list once with
 5. **Recurring-incident area** — the touched paths produced a post-merge defect,
    revert, or hotfix in roughly the last 90 days
    (`git log --oneline --since=90.days -- <paths>`).
-6. **Explicitly requested** — a deep review was asked for, or the change is a
-   first of its kind the author cannot self-assess.
+6. **Explicitly requested** — a human directly asked for a deep review, or the
+   change is a first of its kind the author cannot self-assess. An internal
+   `deep` argument passed between tier-aware skills only asserts the recorded
+   tier; it is not a new request.
 
 ### What does not set the tier
 
 Subtlety does not: a change can be hard to reason about and still be Lean. Nor
 does diff size — a large mechanical refactor is Lean unless it also trips
 trigger 4. Nor does topic adjacency: code _about_ security that does not itself
-run on a sensitive path is not trigger 1, and a CI secret scanner is tooling
-rather than auth.
+enforce a sensitive boundary is not trigger 1.
 
 **The dominant rule: when the worst outcome of a missed defect is a red CI run,
 a broken build, or a broken developer workflow, the change is Lean.** CI
@@ -68,6 +70,11 @@ scripts, lint rules, build tooling, developer utilities, fixtures, and test
 harnesses land here even when they are subtle and even when a defect in them
 fails open. That class of defect is caught by the next person the tool touches
 and fixed by editing the tool.
+
+Classify enforcement controls by the consequence of failure, not by their CI
+location. A secret/privacy scanner, provenance gate, or release guard is Deep
+when failing open can expose protected data, grant access, or compromise a
+published artifact; that outcome trips trigger 1 or 2 rather than this rule.
 
 **Precedence: walk triggers 1–6 first. The dominant rule only resolves a change
 that matched no trigger.** It is dominant over the difficulty instinct, not over
@@ -98,9 +105,11 @@ label, or "this feels risky" is not evidence and does not move a tier.
 
 **Lean → Deep.** Escalate when a confirmed finding shows the change reaches a
 trigger the classification missed — a real authorization or isolation bypass, a
-real data-shape change, a real break in a contract another repository consumes.
-Name the finding and the trigger, update the tier marker, and adopt the Deep
-budget. The round already run counts as Deep round 1; do not restart the count.
+real data-shape change, a real break in a contract another repository consumes —
+or when the human directly requests Deep, which is trigger 6. Name the finding
+or request and the trigger, post a replacement tier marker that preserves every
+recorded trigger and adds the new one, and adopt the Deep budget. The round
+already run counts as Deep round 1; do not restart the count.
 **The first round after an escalation is adversarial whatever its ordinal.** An
 escalated change would otherwise inherit a convergence stance and receive the
 Deep budget without one adversarial Deep pass — and escalation fires precisely
@@ -209,13 +218,13 @@ round cap: two at Lean, four at Deep.
 - **A pass that cannot name its tier and the trigger that selected it has not
   started correctly.** Tier is resolved before the first reviewer, not inferred
   from which skill someone happened to type.
-- **No reviewer in this chain pre-filters by severity or confidence.** Not a
-  `critique` sub-agent, not `codex-review`, not an inline `Agent(...)` prompt you
-  write yourself. Each reports everything with a severity and confidence
-  attached; the filtering happens one level up, where every lens is visible at
-  once and each claim can be checked against the diff. A finding suppressed
-  inside the reviewer is unrecoverable; a low-scored finding costs one line to
-  dismiss. See [`MODEL_NOTES.md`](MODEL_NOTES.md) §1.
+- **No Claude finder lane pre-filters by severity or confidence.** A `critique`
+  sub-agent or inline `Agent(...)` prompt reports everything with severity and
+  confidence attached; filtering happens one level up, where every lens is
+  visible and each claim can be checked against the diff. The bounded
+  `codex-review` cross-check is the documented vendor-specific exception: its
+  terse material-finding filter remains per [`MODEL_NOTES.md`](MODEL_NOTES.md)
+  §1 and must not be copied into Claude finder prompts.
 - The agent matrix is a ceiling, not a floor. Run only the lenses whose signals
   appear in the diff, and never add an agent to re-check another agent's work.
   See [`MODEL_NOTES.md`](MODEL_NOTES.md) §2–§3.
