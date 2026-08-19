@@ -349,6 +349,17 @@ review**, not a competing protocol and not a phase that has to come after
 something else. Run one whenever it is useful: before the local relay, between
 rounds, or after convergence.
 
+**The local relay is the default path.** Review coverage is expected to come
+from declared roster engines reading the change cold, and that is what
+`verify-coverage` measures. Hosted reviewers are an extension on top of it, not
+a substitute for it.
+
+They are, however, the primary path for a repository whose developers have no
+local agent engine available — a consumer of this package with neither a local
+CLI nor a declared roster still gets real review from a hosted pass. That case
+is why the hosted lane exists and stays supported; it is not the case these
+defaults are tuned for.
+
 A hosted pass does not invalidate anything on its own. Only a **commit**
 invalidates, and only by the head rule above, which treats a hosted-review fix
 exactly like any other fix:
