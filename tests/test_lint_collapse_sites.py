@@ -17,7 +17,7 @@ import pytest
 def _check(lint: ModuleType, tmp_path: Path, body: str, keys: list[str] | None = None) -> list[str]:
     source = tmp_path / "template.md"
     source.write_text(body, encoding="utf-8")
-    violations: list[str] = lint.check_source(source, keys or ["E"])
+    violations: list[str] = lint.check_source(source, ["E"] if keys is None else keys)
     return violations
 
 
@@ -34,7 +34,13 @@ def test_accepts_an_unopted_key_inside_literal_content(
 ) -> None:
     # `F` is not opted in, so its position is irrelevant — the engine will
     # never collapse its line.
-    assert _check(lint_collapse_sites, tmp_path, "```\n<<F>>\n```\n", ["E"]) == []
+    assert _check(lint_collapse_sites, tmp_path, "<<E>>\n\n```\n<<F>>\n```\n", ["E"]) == []
+
+
+def test_accepts_literal_content_with_an_explicit_empty_opt_in_list(
+    lint_collapse_sites: ModuleType, tmp_path: Path
+) -> None:
+    assert _check(lint_collapse_sites, tmp_path, "```\n<<E>>\n```\n", []) == []
 
 
 @pytest.mark.parametrize(
@@ -45,6 +51,18 @@ def test_accepts_an_unopted_key_inside_literal_content(
         "<pre>\nline\n\n<<E>>\n\nline\n</pre>\n",
         "intro\n\n    <<E>>\n\noutro\n",
         "intro\n\n\t<<E>>\n\noutro\n",
+        "---\nnote: |\n  before\n\n  <<E>>\n\n  after\n---\n",
+        '+++\nnote = """\nbefore\n\n  <<E>>\n\nafter\n"""\n+++\n',
+        # A leading `---` may be a thematic break, not front matter. Reading it
+        # only as front matter lets a `---` inside a fence close a block the
+        # scanner never saw open, exposing the fenced content after it.
+        "---\n```\n---\n\n<<E>>\n\n```\n",
+        # The closing delimiter sits at column 0; an indented `---` is block
+        # scalar content, not the end of the block.
+        "---\nnote: |\n  ---\n\n  <<E>>\n\n  after\n---\n",
+        # A byte-order mark survives `encoding="utf-8"` and must not hide the
+        # opening delimiter.
+        "\ufeff---\nnote: |\n  before\n\n  <<E>>\n\n  after\n---\n",
     ],
 )
 def test_rejects_a_placeholder_inside_literal_content(
@@ -72,6 +90,18 @@ def test_rejects_a_placeholder_inside_literal_content(
         "<!DECLARATION\n\n<<E>>\n\n>\n",
         "<![CDATA[\n\n<<E>>\n\n]]>\n",
         "- ```\n  code\n\n  <<E>>\n\n  more\n  ```\n",
+        "```\n> ```\n\n<<E>>\n\n```\n",
+        "> ```\n> quoted\n```\n\n<<E>>\n\n```\n",
+        "- ```\n  listed\n```\n\n<<E>>\n\n```\n",
+        "- ```\n  first\n\noutside\n\n- ```\n\n  <<E>>\n\n  tail\n  ```\n",
+        # A closing fence may be indented independently of its opener, and a
+        # blockquote's fence ends with the quote. Requiring the opener's exact
+        # prefix would hold the fence open past its real closer, so the next
+        # genuine opener gets consumed as the closer and its body reads as
+        # prose. Each shape below puts `<<E>>` inside a fenced block.
+        "```\n  ```\n```\n\n<<E>>\n",
+        "> ```\n```\n> ```\n\n<<E>>\n",
+        "  ```\n```\n  ```\n\n<<E>>\n",
         "intro\n\n \t<<E>>\n\noutro\n",
         "intro\n\n   \t<<E>>\n\noutro\n",
     ],
@@ -98,6 +128,7 @@ def test_rejects_a_placeholder_sharing_its_line_with_prose(
         "intro\n<<E>>\n\noutro\n",
         "intro\n\n<<E>>\noutro\n",
         "intro\n<<E>>\noutro\n",
+        "intro\n\n<<E>>\n\u00a0\noutro\n",
     ],
 )
 def test_rejects_a_placeholder_without_blank_separators(
@@ -124,6 +155,14 @@ def test_rejects_an_invalid_placeholder_key(
     assert "not a valid placeholder key" in violations[0]
 
 
+def test_rejects_an_opted_in_key_with_no_placeholder_occurrence(
+    lint_collapse_sites: ModuleType, tmp_path: Path
+) -> None:
+    violations = _check(lint_collapse_sites, tmp_path, "no placeholders here\n")
+    assert len(violations) == 1
+    assert "has no placeholder occurrence" in violations[0]
+
+
 def test_reports_every_violating_site(lint_collapse_sites: ModuleType, tmp_path: Path) -> None:
     violations = _check(lint_collapse_sites, tmp_path, "```\n<<E>>\n```\n\n> <<E>>\n")
     assert len(violations) == 2
@@ -145,7 +184,7 @@ def test_canonical_manifest_passes(
     # count it reports.
     reported = re.search(r"verified in (\d+) source", capsys.readouterr().out)
     assert reported is not None
-    assert int(reported.group(1)) >= 1
+    assert int(reported.group(1)) == 1
 
 
 def test_main_rejects_an_unsafe_site(
