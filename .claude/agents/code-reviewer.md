@@ -45,6 +45,15 @@ Start by clearly stating what you're reviewing. For each issue, provide:
 - Specific project guideline reference or bug explanation
 - Concrete fix suggestion
 
-Group issues by severity (Critical / Important / Minor), highest confidence first within each group, so the caller can cut the list wherever it wants. If you found nothing, say so in one line rather than padding with a summary of what you checked.
+Attach a severity as well as a confidence score. They measure different things: confidence is how sure you are the finding is real, severity is how far it reaches if it is. Use these four levels and no others — they are the enum the review ledger accepts, defined in full in `.claude/references/local-review-ledger.md`:
+
+- **blocking** — ships materially wrong behavior, loses or corrupts data, exposes a credible security or privacy exploit, breaks a public contract, or breaks deploy or rollout.
+- **major** — a real defect in behavior a user or operator can reach, but not blocking.
+- **minor** — correct-but-improvable, or a defect confined to a non-executing surface (comments, docs, naming, test clarity) with no behavioral consequence.
+- **nit** — style or preference. No defect.
+
+Rate on blast radius, not on how important the finding feels. A factually wrong comment is **minor** by default however badly wrong it is, because nothing that executes changes; it is **major** only when a reader acting on it would reach a wrong conclusion about what the code does that would change an engineering decision. A weak test is **minor** unless correcting it makes it fail and the repair needs an app-code change.
+
+Group issues by severity, highest confidence first within each group, so the caller can cut the list wherever it wants. If you found nothing, say so in one line rather than padding with a summary of what you checked.
 
 Structure your response for maximum actionability - developers should know exactly what to fix and why. Keep each finding to a few sentences; the value is in the file:line and the fix, not in the prose around them.

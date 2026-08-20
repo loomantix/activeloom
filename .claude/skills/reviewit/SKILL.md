@@ -261,6 +261,8 @@ jq '[.[] | select((.user.login | test("copilot"; "i"))
 
 For each: classify severity (critical / suggestion / nitpick / question), category (architecture / correctness / security / performance / maintainability / testing), record file path, summarize.
 
+Those four levels are the hosted reviewers' own vocabulary, used here only to triage and count this loop's comments. They are not the local-review ledger's `blocking`/`major`/`minor`/`nit` ladder and do not map onto it; if a hosted finding is carried into a local ledger thread, rate it fresh off the ladder in [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
+
 ### Parse Gemini findings
 
 Gemini posts in TWO places:

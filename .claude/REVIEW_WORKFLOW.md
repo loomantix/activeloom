@@ -189,6 +189,15 @@ review is permitted but must be declared with a reason; see step 2.
    needed to prevent a false green. `minor` is low-risk non-behavioral cleanup
    or polish.
 
+   Severity and classification are separate axes and neither implies the other.
+   A fixed `major` whose fix edited only comments, only docs, or only tests is
+   `minor` — no executing line moved, so the round can complete through that
+   transition rather than owing every declared reviewer a fresh cold read.
+   Findings are rated on the single ladder in
+   [`references/local-review-ledger.md`](references/local-review-ledger.md);
+   that section is the only definition of `blocking`, `major`, `minor`, and
+   `nit`, and every lens and engine uses it.
+
    **The chain gets cheaper as it repeats.** Three rules make that happen, and
    all are enforced from the ledger rather than from session memory:
    - **The refactor pass runs once per engine per PR.** A second `/simplify` over
