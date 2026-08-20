@@ -5,14 +5,27 @@ will be overwritten on the next sync.
 
 ## PR-First Rule
 
-Open a draft pull request before any local cleanup or adversarial review. Local
-Claude and Codex passes use GitHub review threads as durable shared context:
-post each verified finding inline before editing, push the correction, reply
-with the fix and validation, then resolve the thread. Every pass reads resolved
-as well as unresolved threads before reviewing the current head.
+Open a draft pull request before any local cleanup or adversarial review. Every
+local pass, whichever engine runs it, uses GitHub review threads as durable
+shared context: post each verified finding inline before editing, push the
+correction, reply with the fix and validation, then resolve the thread. Every
+pass reads resolved as well as unresolved threads before reviewing the current
+head.
 
 Load [the local review ledger](references/local-review-ledger.md) before running
 `refactorpass`, `critique`, `deepcritique`, `codex-review`, or local review hooks.
+That file is the engine-neutral protocol published by the
+[`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger)
+project and vendored verbatim into every engine repository, so all engines read
+the same contract. The helper bundle beside it is vendored from that package's
+published tarball and pinned by `review-ledger.version` and
+`review-ledger.integrity`; CI byte-compares the bundle, not this document, so a
+protocol edit must land upstream rather than here. Where the protocol writes
+`<ledger-helper>`, this engine's path is:
+
+```text
+.claude/skills/critique/scripts/review-ledger.js
+```
 
 ## Review Tier
 
@@ -138,79 +151,144 @@ Tier selection narrows which lenses run and how many rounds are owed. It never
 narrows what a lens may report, and it never relaxes the post-before-editing,
 reply, or resolve contract.
 
-## Local Convergence Path
+## Review Relay
 
-Use this path when both local engines are available:
+The relay is defined over **roles**, not engine names:
+
+- **author** — the engine that wrote the change. Exactly one.
+- **reviewer** — an engine that reads the change cold. Zero, one, or more.
+
+Claude is the author role when Claude wrote the change and a reviewer role
+otherwise. The rules below never name an engine, so adding a fourth changes
+nothing here.
+
+**One non-author reviewer is the recommended floor**, and covers the great
+majority of changes. A second reviewer earns its cost mainly where a defect is
+expensive and hard to see — the Deep triggers above are the same signals. Solo
+review is permitted but must be declared with a reason; see step 2.
 
 1. Make the change, validate it, create a clean commit, and open a draft PR.
-2. Pin the exact base SHA for the round, resolve the tier, and give both to
-   the reviewers. Do not start a reviewer with the tier unresolved.
-3. Run `codex-review <pr-number>` as a fresh local Codex pass. Read the ledger
-   and apply the comment/fix/reply/resolve contract to confirmed findings.
-4. On the resulting head, run the Claude lane for the resolved tier in a fresh
-   session, under the same ledger contract: `critique <pr-number>` at Lean,
-   `deepcritique <pr-number>` at Deep.
+2. Declare the roster with the ledger helper's `post-roster`, naming the author
+   engine and the reviewer engines for this PR. Participation is declared, never
+   inferred: an engine that has not attested is otherwise indistinguishable from
+   one that was never going to run, so nothing downstream can tell an incomplete
+   round from a finished one. A solo relay is `--reviewers none` with the reason
+   in the content file, which puts the choice on the PR rather than in a
+   session's memory.
+3. Pin the exact base SHA for the round, resolve the tier, and give both to
+   every reviewer. Do not start a reviewer with the tier unresolved.
+4. Run each declared reviewer in a fresh session against the current head, under
+   the ledger's comment/fix/reply/resolve contract. Claude's lane is
+   `critique <pr-number>` at Lean and `deepcritique <pr-number>` at Deep; other
+   engines use their own equivalents. Reviewer order within a round is a
+   scheduling choice, not a protocol rule — what matters is which commit each
+   one read.
 5. Classify fixes by effect, not path or finding severity. `material` includes
    substantive correctness, security/privacy, data-safety, compatibility,
    deployment/sync, or review-integrity changes, including tests or workflows
    needed to prevent a false green. `minor` is low-risk non-behavioral cleanup
-   or polish. Restart at Codex after a material fix; retain minor fixes.
+   or polish.
 
-   **The chain gets cheaper as it repeats.** Two rules make that happen, and both
-   are enforced from the ledger rather than from session memory:
+   **The chain gets cheaper as it repeats.** Three rules make that happen, and
+   all are enforced from the ledger rather than from session memory:
    - **The refactor pass runs once per engine per PR.** A second `/simplify` over
      an already-simplified diff returns naming and shape churn, which moves the
-     head and re-stales the other engine's attestation for nothing that ships.
+     head and invalidates the other engines' attestations for nothing that ships.
      Each engine's cleanup lane latches on a `local-review-refactor:v1` marker;
      a docs/config-only skip does not consume it.
+   - **A fix invalidates by head, not by position.** An attestation is evidence
+     for the exact commit it names. A material fix does not restart the round at
+     some first engine; it moves the head, which invalidates precisely those
+     attestations that named the old head. An engine that already attested the
+     post-fix commit stays valid and does not re-run. This is what keeps a
+     second reviewer from costing a full extra round every time anything
+     changes.
    - **At Deep, rounds 1–2 are adversarial and round 3 and later are
      convergence rounds; at Lean the cap is 2 and round 2 is the convergence
      round.** The stance follows the tier's schedule above, not the ordinal
-     alone.
-     Once both engines have read the change cold twice, the remaining findings
-     are mostly about the review's own artifacts. A convergence round runs only
-     the lenses that can find a reason not to deploy, changes the PR only for a
-     realistically reachable blocking defect, defers everything else, creates
-     an issue only for an urgent high-impact follow-up, and ends the loop as soon
-     as it finds no blocker. Lenses still report everything they find —
-     the narrowing is a disposition rule applied by the orchestrator, never an
-     instruction to a review agent to withhold by severity or confidence.
+     alone. A reviewer holding no attestation on this PR runs adversarially on
+     its first cold read whatever the round ordinal: the stance tracks how many
+     times that reviewer has read the change, not how many rounds elapsed
+     before it joined.
+     Once every declared reviewer has read the change cold twice, the remaining
+     findings are mostly about the review's own artifacts. A convergence round
+     runs only the lenses that can find a reason not to deploy, changes the PR
+     only for a realistically reachable blocking defect, defers everything else,
+     creates an issue only for an urgent high-impact follow-up, and ends the
+     loop as soon as it finds no blocker. Lenses still report everything they
+     find — the narrowing is a disposition rule applied by the orchestrator,
+     never an instruction to a review agent to withhold by severity or
+     confidence.
 
-6. Converge after one complete Codex-then-Claude round has no material
-   transition, every pass has a validated v3 result for its exact reviewed head,
-   and every local-review thread has a disposition reply and is resolved. A
-   minor A-to-B transition can complete the round without pretending the first
-   engine reviewed B; its exact-head attestation remains historical evidence.
+6. Converge when `verify-coverage` passes at the exact current head — a roster
+   is declared and every declared reviewer holds an attestation naming that
+   head — the round that produced those attestations had no material
+   transition, and every local-review thread has a disposition reply and is
+   resolved. A minor A-to-B transition can complete the round without pretending
+   an earlier reviewer read B; its exact-head attestation remains historical
+   evidence, and `verify-coverage` is the authority on what has been read at the
+   head that will actually merge.
 7. The wrapper, not review hooks, posts canonical pass/completion attestations
    after validating structured results and the GitHub ledger.
 8. Stop at the tier's round cap — two at Lean, four at Deep — or earlier under
    the stopping rule above. Leave the PR draft and report non-convergence
    instead of continuing an unbounded cycle.
 
-Do not add hosted reviewers to this path merely as another ritual. A later
-hosted-review fix invalidates local convergence and requires a fresh local
-round.
+The author engine's own adversarial pass never counts toward coverage. It
+re-reads the change while still holding the rationale that produced it, which is
+the opposite of the cold read the relay exists to obtain. `coverage` reports it
+as `authorAttested` so the fact stays visible, but the tier counts distinct
+non-author engines only.
 
-## Hosted Fallback Path
+## Hosted Reviewers
 
-When a local Codex CLI is unavailable:
+Hosted AI reviewers — the Gemini Flash and Copilot passes `reviewit` drives on
+the PR itself — are a **different style of review**, not a fallback and not a
+later phase. Run one whenever it is useful: before the relay, between rounds,
+after convergence, or as the only review on a change that does not warrant a
+local relay.
 
-### Lean
+**The local relay is the default path here.** Coverage is expected to come from
+declared roster engines reading the change cold, and that is what
+`verify-coverage` measures. The hosted lane is an extension on top of that.
 
-1. Open a draft PR.
-2. Run `refactorpass <pr-number>`, then `critique <pr-number>`.
-3. Run `reviewit <pr-number>` for the bounded Gemini Flash and Copilot loop.
+It stays fully supported because it is the primary path for a consumer whose
+developers have no local agent engine — a repository with no local CLI and no
+declared roster still gets real review from a hosted pass. That is the case the
+lane exists for; it is not the case these defaults are tuned for.
 
-### Deep
+A repository with no local engine has no roster, so `verify-coverage` does not
+apply to it. There, convergence is the hosted lane's own contract: every hosted
+finding disposed and resolved, and a final iteration that produced no fix. A
+roster-less PR converges on that rule and must not claim relay coverage.
 
-1. Open a draft PR and run `deepcritique <pr-number>`.
-2. Run `reviewit <pr-number> deep`; its final local `deepcritique` receives the
-   same PR number and ledger. That tail `deepcritique` skips the refactor pass —
-   step 1 already spent this engine's cleanup latch on the PR.
+A hosted pass **invalidates nothing on its own.** Only a commit invalidates, and
+only by the head rule in step 5, which treats a hosted-review fix exactly like
+any other:
 
-Which of the two runs is the tier decision above, resolved before the first
-reviewer — not a per-invocation choice. `reviewit`'s iteration cap is the tier's
-round cap: two at Lean, four at Deep.
+- a minor fix leaves attestations at the old head stale for the ordinary reason,
+  and the affected engines re-run when the relay next needs them;
+- a material fix means the round had a material transition and does not
+  converge, the same as if a local reviewer had made it.
+
+Classify a hosted-review fix by its effect on the code, with the same
+material/minor rule as everything else. "A hosted reviewer touched this" is not
+a category.
+
+Hosted reviewers are not roster participants. They post under their own
+identities, so their comments are context rather than actor-owned ledger
+evidence, and they do not attest. Coverage counts local engines only — a hosted
+pass does not turn a solo relay into a cross-model one.
+
+Invocation:
+
+- **Lean** — `reviewit <pr-number>` for the bounded Gemini Flash and Copilot
+  loop, after `refactorpass <pr-number>` and `critique <pr-number>`.
+- **Deep** — `reviewit <pr-number> deep`; its final local `deepcritique`
+  receives the same PR number and ledger, and skips the refactor pass when this
+  engine's cleanup latch is already spent on the PR.
+
+`reviewit`'s iteration cap is the tier's round cap: two at Lean, four at Deep.
 
 ## Review Principles
 
@@ -233,8 +311,9 @@ round cap: two at Lean, four at Deep.
 - **A round that only finds non-material test, fixture, comment, or docs polish
   is the signal to ship, not to keep going.** It means the product converged and
   the review has turned to auditing its own artifacts. A test or workflow fix
-  needed to prevent a false green remains material and restarts at Codex under
-  step 5. Defer non-material polish without growing the backlog.
+  needed to prevent a false green remains material and moves the head under
+  step 5, invalidating the attestations that named the old commit. Defer
+  non-material polish without growing the backlog.
 - Create a tracking issue only for a concrete, high-impact follow-up that should
   be scheduled within roughly two weeks.
 - A fix without a preceding inline finding, a finding without a reply, or a
@@ -254,11 +333,11 @@ round cap: two at Lean, four at Deep.
   [`skills/critique/SKILL.md`](skills/critique/SKILL.md) ·
   [`skills/deepcritique/SKILL.md`](skills/deepcritique/SKILL.md) ·
   [`skills/codex-review/SKILL.md`](skills/codex-review/SKILL.md) — the local
-  convergence lanes.
-- [`skills/reviewit/SKILL.md`](skills/reviewit/SKILL.md) — the hosted fallback,
-  including the `tier=flash` cost rule.
+  relay lanes.
+- [`skills/reviewit/SKILL.md`](skills/reviewit/SKILL.md) — the hosted-reviewer
+  lane, including the `tier=flash` cost rule.
 - [`skills/review-accessibility/SKILL.md`](skills/review-accessibility/SKILL.md)
   — optional, human-triggered a11y pass; opens its own PR and is not part of
-  either path above.
+  the relay or the hosted lane.
 - `/pushit` and `/review-cycle` are retired; their stubs are gone, so old
   invocations resolve to nothing.

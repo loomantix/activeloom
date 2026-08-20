@@ -128,9 +128,10 @@ Print:
 - Classification: <clean | minor | material>
 
 Next local step:
-  If this pass made a material fix, restart at /codex-review <pr-number>.
-  Otherwise this completes the Claude half of the current local round; the
-  outer runner decides convergence from both exact-head v3 results.
+  Run each declared reviewer that has not attested this head.
+  A fix invalidates only the attestations naming the superseded head; a
+  reviewer that already attested this head does not re-run.
+  The outer runner decides convergence from the exact-head v3 results.
 ```
 
 A convergence round that found no blocking defect ends the loop. Say so and name
@@ -142,13 +143,13 @@ test or workflow. Minor means low-risk non-behavioral cleanup or polish. Every
 attestation stays exact to its reviewed head; the outer round owns any explicit
 minor-transition convergence decision.
 
-When the hosted fallback was explicitly selected, hand off to
-`/reviewit <pr-number> deep` instead.
+When the caller wants the hosted lane as the next step, hand off to
+`/reviewit <pr-number> deep`.
 
 ## Boundaries
 
 - Do not force-push or merge.
-- Do not invoke hosted reviewers on the local convergence path.
+- Do not invoke hosted reviewers; they are a separate lane the caller runs, not a side effect of this skill.
 - Do not silently override the user's finding dispositions.
 
 ## Source of truth
