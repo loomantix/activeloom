@@ -43,5 +43,4 @@ allowed_destinations:
   - .agents/**
   - agent-loop-instructions.md
   - .github/copilot-instructions.md
-  - .github/scripts/**
   - .github/workflows/dco.yml

@@ -45,7 +45,6 @@
 .agents/skills/reviewit/SKILL.md
 .agents/skills/ship-staging/SKILL.md
 .agents/skills/task-packet/SKILL.md
-.github/scripts/create-signed-commit.py
 .github/workflows/dco.yml
 # <<< platform-synced paths >>>
 

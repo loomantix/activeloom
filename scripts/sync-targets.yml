@@ -287,7 +287,12 @@ targets:
     destination: .github/workflows/dco.yml
     substitutions: []
 
-  - source: scripts/create-signed-commit.py
-    destination: .github/scripts/create-signed-commit.py
-    substitutions: []
-    mode: '0755'
+  # `.github/scripts/create-signed-commit.py` is deliberately NOT a sync
+  # target. It is the only thing the trusted job runs while holding the App
+  # installation token, and the workflow's trust model rests on it being
+  # consumer-vendored: Job A executes upstream code with no token, Job B
+  # holds the token and executes only consumer-owned code. Syncing the
+  # helper would hand upstream a write channel into the trusted job and
+  # void that separation. Consumers vendor it by hand at onboarding and
+  # update it by reviewed PR, the same way `claude-platform` and
+  # `codex-platform` consumers do.
