@@ -86,6 +86,8 @@ cd gemini-platform
 
    skip_targets:
      - .github/workflows/dco.yml
+     - .github/copilot-instructions.md
+     - agent-loop-instructions.md
 
    allowed_destinations:
      - .agents/**
@@ -95,8 +97,22 @@ cd gemini-platform
      - .github/workflows/dco.yml
    ```
 
+   `skip_targets` is where a consumer settles ownership of a destination that
+   more than one upstream writes. The defaults above opt out of the shared DCO
+   workflow and leave `.github/copilot-instructions.md` and
+   `agent-loop-instructions.md` to whichever upstream already owns them in that
+   repo — drop an entry if this repo should be the writer instead.
+
 2. Copy `templates/sync-from-gemini-platform.yml` to `.github/workflows/sync-from-gemini-platform.yml`.
-3. Configure the daily scheduled sync workflow to keep all skills and rules continuously up to date.
+3. Point `SYNC_APP_ID` / `SYNC_APP_PRIVATE_KEY` at a GitHub App with
+   `contents: write` and `pull_requests: write` on the consumer repo. An
+   organization secret with `private` visibility cannot be read from a public
+   repository, so public consumers may need a different secret than private
+   ones.
+4. Confirm `UPSTREAM_REF` resolves. The workflow fails closed if it names
+   neither a tag nor a branch on this repo.
+5. Configure the daily scheduled sync workflow to keep all skills and rules
+   continuously up to date.
 
 ---
 
