@@ -19,16 +19,22 @@ session. Continue only after an explicit override.
 ## PR-first pre-flight
 
 1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
-2. Require a clean, committed feature branch, not `main`, `master`, or
+2. Take the pass telemetry snapshot before reading or classifying anything, per
+   [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". A
+   cleanup pass spends tokens and moves lines; leaving it out would attribute
+   its churn to nobody while its cost vanished, which corrupts the per-line
+   denominator directly. The helper is a no-op when telemetry is not enabled
+   for this repository.
+3. Require a clean, committed feature branch, not `main`, `master`, or
    `staging`.
-3. Reuse its open PR. If none exists, push normally and open a draft PR before
+4. Reuse its open PR. If none exists, push normally and open a draft PR before
    cleanup starts.
-4. Require local HEAD, remote head, and PR head to match. Read all prior review
+5. Require local HEAD, remote head, and PR head to match. Read all prior review
    threads.
-5. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
-6. Skip docs/config-only changesets, per the ledger's changeset
+6. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
+7. Skip docs/config-only changesets, per the ledger's changeset
    classification.
-7. **Check the once-per-engine latch.** Search the PR's comments for
+8. **Check the once-per-engine latch.** Search the PR's comments for
    `local-review-refactor:v1 engine=claude`, authored by the actor running this
    review. If it is present, this PR has already had its Claude cleanup pass:
    report the skip with the head the earlier pass ran on and stop. Do not run
@@ -39,7 +45,7 @@ session. Continue only after an explicit override.
    returns naming and shape churn, not cleanups. That churn moves the head and
    re-stales the other engine's attestation for no shipped benefit.
 
-8. Resolve the changed-file list once and follow the ledger's diff-delivery
+9. Resolve the changed-file list once and follow the ledger's diff-delivery
    rules. If this pass fans cleanup angles out to agents, scope each to the
    files it reviews rather than giving every angle the same whole-diff
    artifact.
@@ -98,6 +104,17 @@ threads for cleanups: only the final adversarial `critique` lane may certify the
 enclosing Claude review hook, and the outer wrapper owns its attestation.
 
 ## Output
+
+Emit this pass's telemetry record per
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry" with
+`--pass-type refactor`, whichever of the three outcomes above applied. A pass
+that committed is `changed`; one that found nothing is `clean`. A pass that
+stopped on a spent latch is also `clean`, not `skipped` — its changeset was
+reviewable, this engine had simply already spent its one pass, and the record
+rejects a `skipped` pass carrying review-significant files. A docs/config-only
+skip is the case that genuinely reports `skipped`.
+
+Emission exits zero whether or not it succeeded. Report the outcome and move on.
 
 Report:
 

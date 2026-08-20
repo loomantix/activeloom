@@ -63,16 +63,25 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 ### PR-first pre-flight
 
 1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
-2. Require a clean, committed feature branch, not `main`, `master`, or
+2. Take the pass telemetry snapshot before reading or classifying anything, per
+   [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". The
+   reading and classification this phase does is part of what the pass costs, so
+   a snapshot taken later would quietly under-report it. The helper is a no-op
+   when telemetry is not enabled for this repository.
+3. Require a clean, committed feature branch, not `main`, `master`, or
    `staging`.
-3. Reuse the branch's open PR. If none exists, push normally and open a draft
+4. Reuse the branch's open PR. If none exists, push normally and open a draft
    PR before starting a reviewer.
-4. Require local HEAD, remote head, and PR head to match.
-5. Record the exact PR base and head SHAs. Read every prior review thread,
-   including resolved and outdated threads.
-6. Skip docs/config-only changesets, per the ledger's changeset classification.
+5. Require local HEAD, remote head, and PR head to match.
+6. Record the exact PR base and head SHAs. Read every prior review thread,
+   including resolved and outdated threads. Telemetry markers are not review
+   context: exclude them by marker prefix and never carry them into a finder
+   prompt or packet.
+7. Skip docs/config-only changesets, per the ledger's changeset classification.
    Finalize a clean v3 result using the ledger's wrapper/standalone ownership
-   rule before returning.
+   rule, then emit a `skipped` telemetry record, before returning. A skip still
+   spends tokens reading and classifying the PR, and that overhead is worth
+   seeing.
 
 Do not begin a reviewer until the PR ledger is available. Do not use a
 force-push to establish or update the review branch.
@@ -247,9 +256,19 @@ attestations that named the superseded commit.
 
 ## Phase 4: Output
 
+Once the v3 result is finalized and any fix commits are pushed, emit this
+pass's telemetry record per [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md)
+"Pass Telemetry", with `--pass-type review` and the status this pass reached.
+Emission runs last because it must describe the finished pass, and it exits zero
+whether or not it succeeded: a telemetry failure is reported and never retried
+into the review, never changes the v3 result, and never delays marking the PR
+ready.
+
 Report the PR and reviewed head, the resolved tier and its trigger, the round
 and stance, mode and lenses, disposition/thread counts, validation, fix SHAs,
-and whether material fixes require another local-engine pass.
+and whether material fixes require another local-engine pass. Reporting this
+pass's own measured spend here is permitted; reading any earlier pass's record
+is not.
 
 A convergence round that found no blocking defect ends the loop: record a clean
 result, recommend the ship step, and list any urgent deferred issues.
