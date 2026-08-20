@@ -93,7 +93,6 @@ cd gemini-platform
      - .agents/**
      - agent-loop-instructions.md
      - .github/copilot-instructions.md
-     - .github/scripts/**
      - .github/workflows/dco.yml
    ```
 
@@ -104,14 +103,21 @@ cd gemini-platform
    repo — drop an entry if this repo should be the writer instead.
 
 2. Copy `templates/sync-from-gemini-platform.yml` to `.github/workflows/sync-from-gemini-platform.yml`.
-3. Point `SYNC_APP_ID` / `SYNC_APP_PRIVATE_KEY` at a GitHub App with
+3. Vendor `scripts/create-signed-commit.py` to `.github/scripts/create-signed-commit.py`
+   in the consumer, by hand. This file is deliberately **not** a sync target:
+   it is the only code the trusted job runs while holding the App token, and
+   the workflow's isolation depends on it being consumer-owned rather than
+   upstream-writable. Update it by reviewed PR, never by sync. A consumer
+   already running another sync of this family will have the file — check it
+   accepts `--config` and `--base-sha-file` before reusing it.
+4. Point `SYNC_APP_ID` / `SYNC_APP_PRIVATE_KEY` at a GitHub App with
    `contents: write` and `pull_requests: write` on the consumer repo. An
    organization secret with `private` visibility cannot be read from a public
    repository, so public consumers may need a different secret than private
    ones.
-4. Confirm `UPSTREAM_REF` resolves. The workflow fails closed if it names
+5. Confirm `UPSTREAM_REF` resolves. The workflow fails closed if it names
    neither a tag nor a branch on this repo.
-5. Configure the daily scheduled sync workflow to keep all skills and rules
+6. Configure the daily scheduled sync workflow to keep all skills and rules
    continuously up to date.
 
 ---
