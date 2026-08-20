@@ -5,7 +5,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.0.2" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.1.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -47,11 +47,19 @@ var FINDING_V3_OPENER = "<!-- local-review:v3";
 var PR_V1_MARKERS = [
   "<!-- local-review-refactor:v1 ",
   "<!-- local-review-pass:v1 ",
-  "<!-- local-review-complete:v1 "
+  "<!-- local-review-complete:v1 ",
+  "<!-- local-review-tier:v1 "
 ];
 var FINDING_V3_RE = /^<!-- local-review:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) severity=(?<severity>blocking|major|minor|nit) lens=(?<lens>[A-Za-z0-9._:/-]+) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
 var PSEUDO_V3_RE = /^<!-- local-review:v3 engine=(?:claude|gemini|antigravity) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+)(?: outcome=deferred)? -->$/m;
 var DISPOSITION_V3_RE = /^<!-- local-review-disposition:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) occurrence=(?<occurrence>[1-9][0-9]*) outcome=(?<outcome>fixed|dismissed|deferred) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
+var ROSTER_V1_MARKER = "<!-- local-review-roster:v1";
+var ROSTER_V1_RE = /^<!-- local-review-roster:v1 author=(?<author>codex|claude|gemini|antigravity) reviewers=(?<reviewers>none|(?:codex|claude|gemini|antigravity)(?:,(?:codex|claude|gemini|antigravity))?) content-sha256=(?<content_sha>[0-9a-f]{64}) -->$/m;
+var ROSTER_V2_MARKER = "<!-- local-review-roster:v2";
+var ROSTER_V2_RE = /^<!-- local-review-roster:v2 author=(?<author>codex|claude|gemini|antigravity) reviewers=(?<reviewers>none|(?:codex|claude|gemini|antigravity)(?:,(?:codex|claude|gemini|antigravity))?) head=(?<head>[0-9a-f]{40}) supersedes=(?<supersedes>none|[1-9][0-9]*) declaration-sha256=(?<declaration_sha>[0-9a-f]{64}) -->$/m;
+var ROSTER_ANY_MARKER = "<!-- local-review-roster:";
+var PASS_V3_RE = /^<!-- local-review-pass:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) base=(?<base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) result-sha256=(?<result_sha>[0-9a-f]{64}) -->$/m;
+var COMPLETE_V3_RE = /^<!-- local-review-complete:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) base=(?<base>[0-9a-f]{40}) before=(?<before>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) classification=(?<classification>minor|material) fingerprints=(?<fingerprints>[A-Za-z0-9._:/,-]*) result-sha256=(?<result_sha>[0-9a-f]{64}) -->$/m;
 var FINDING_V1_RE = /^<!-- local-review:v1 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) -->$/m;
 var DISPOSITION_V1_RE = /^<!-- local-review-disposition:v1 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) outcome=(?<outcome>fixed|dismissed|deferred) -->$/m;
 
@@ -88,6 +96,9 @@ function parseJsonOrFail(raw, message) {
   }
 }
 
+// src/protocol.ts
+import { readFileSync } from "fs";
+
 // src/hash.ts
 import { createHash } from "crypto";
 function sha256Text(value) {
@@ -109,15 +120,7 @@ function requireSha(value, name) {
   return value;
 }
 
-// src/ledger.ts
-import { execFileSync as execFileSync2 } from "child_process";
-
-// src/github.ts
-import { execFileSync } from "child_process";
-import { readFileSync as readFileSync2 } from "fs";
-
 // src/protocol.ts
-import { readFileSync } from "fs";
 function readLegacyBody(path, marker, bodyText) {
   let body;
   if (bodyText !== void 0) {
@@ -210,6 +213,16 @@ function buildDispositionBody(params) {
 ${params.content}` };
 }
 function matchProtocol(body, pattern, marker) {
+  const matched = matchMarkerLine(body, pattern, marker);
+  if (matched === null) {
+    return null;
+  }
+  if (sha256Text(matched.content) !== matched.match.groups["content_sha"]) {
+    fail(`authenticated ${marker} record has an invalid content hash`);
+  }
+  return matched.match;
+}
+function matchMarkerLine(body, pattern, marker) {
   if (!body.includes(marker)) {
     return null;
   }
@@ -225,10 +238,7 @@ function matchProtocol(body, pattern, marker) {
   if (!content.trim()) {
     fail(`authenticated ${marker} content is empty`);
   }
-  if (sha256Text(content) !== match.groups["content_sha"]) {
-    fail(`authenticated ${marker} record has an invalid content hash`);
-  }
-  return match;
+  return { match, content };
 }
 function verifyV1Marker(body, match, label) {
   const matchEnd = match.index + match[0].length;
@@ -298,7 +308,12 @@ function matchDisposition(body) {
   };
 }
 
+// src/ledger.ts
+import { execFileSync as execFileSync2 } from "child_process";
+
 // src/github.ts
+import { execFileSync } from "child_process";
+import { readFileSync as readFileSync2 } from "fs";
 var defaultActor = null;
 function execFailureDetail(error) {
   const execError = error;
@@ -2340,6 +2355,491 @@ function verifyLedger(params) {
   return { actor, dispositions: matched.length, verified: true };
 }
 
+// src/roster.ts
+function parseReviewers(raw, author) {
+  if (raw === "none") {
+    return [];
+  }
+  return validateReviewers(raw.split(","), author);
+}
+function validateReviewers(reviewers, author) {
+  if (reviewers.length > 2) {
+    fail("a roster may declare at most two reviewers");
+  }
+  const validated = [];
+  for (const candidate of reviewers) {
+    if (!SUPPORTED_ENGINES.includes(candidate)) {
+      fail(`reviewer must be one of: ${SUPPORTED_ENGINES.join(", ")}`);
+    }
+    const engine = candidate;
+    if (engine === author) {
+      fail("the author engine cannot also be listed as a reviewer");
+    }
+    if (validated.includes(engine)) {
+      fail("reviewers must be distinct");
+    }
+    validated.push(engine);
+  }
+  return validated;
+}
+function rosterDigestInput(fields) {
+  return [
+    "local-review-roster:v2",
+    `author=${fields.author}`,
+    `reviewers=${fields.reviewers}`,
+    `head=${fields.head}`,
+    `supersedes=${fields.supersedes === null ? "none" : fields.supersedes}`,
+    "",
+    fields.content
+  ].join("\n");
+}
+function formatReviewers(reviewers) {
+  return reviewers.length === 0 ? "none" : reviewers.join(",");
+}
+function matchRoster(body) {
+  const occurrences = body.split(ROSTER_ANY_MARKER).length - 1;
+  if (occurrences === 0) {
+    return null;
+  }
+  if (occurrences > 1) {
+    fail("a comment carries more than one local-review roster marker");
+  }
+  if (body.includes(ROSTER_V2_MARKER)) {
+    return matchRosterV2(body);
+  }
+  if (body.includes(ROSTER_V1_MARKER)) {
+    return matchRosterV1(body);
+  }
+  fail("local-review roster record is of an unsupported protocol version");
+}
+function matchRosterV2(body) {
+  const matched = matchMarkerLine(body, ROSTER_V2_RE, ROSTER_V2_MARKER);
+  if (matched === null) {
+    fail("local-review roster record is malformed");
+  }
+  const groups = matched.match.groups;
+  const author = groups["author"];
+  const rawSupersedes = groups["supersedes"];
+  const supersedes = rawSupersedes === "none" ? null : parseInt(rawSupersedes, 10);
+  if (supersedes !== null && !Number.isSafeInteger(supersedes)) {
+    fail("local-review roster supersedes must be a comment id");
+  }
+  const expected = sha256Text(
+    rosterDigestInput({
+      author,
+      reviewers: groups["reviewers"],
+      head: groups["head"],
+      supersedes,
+      content: matched.content
+    })
+  );
+  if (expected !== groups["declaration_sha"]) {
+    fail(
+      "authenticated local-review-roster:v2 record has an invalid declaration hash"
+    );
+  }
+  return {
+    version: 2,
+    author,
+    reviewers: parseReviewers(groups["reviewers"], author),
+    head: groups["head"],
+    supersedes,
+    digest: groups["declaration_sha"]
+  };
+}
+function matchRosterV1(body) {
+  const match = matchProtocol(body, ROSTER_V1_RE, ROSTER_V1_MARKER);
+  if (!match?.groups) {
+    fail("local-review roster record is malformed");
+  }
+  const author = match.groups["author"];
+  return {
+    version: 1,
+    author,
+    reviewers: parseReviewers(match.groups["reviewers"], author),
+    head: null,
+    supersedes: null,
+    digest: match.groups["content_sha"]
+  };
+}
+function buildRosterBody(params) {
+  if (!SUPPORTED_ENGINES.includes(params.author)) {
+    fail(`author must be one of: ${SUPPORTED_ENGINES.join(", ")}`);
+  }
+  validateContentString(params.content);
+  validateReviewers(params.reviewers, params.author);
+  requireSha(params.head, "head");
+  if (params.supersedes !== null && (!Number.isSafeInteger(params.supersedes) || params.supersedes < 1)) {
+    fail("supersedes must be a positive comment id");
+  }
+  const reviewers = formatReviewers(params.reviewers);
+  const declarationSha = sha256Text(
+    rosterDigestInput({
+      author: params.author,
+      reviewers,
+      head: params.head,
+      supersedes: params.supersedes,
+      content: params.content
+    })
+  );
+  const marker = `${ROSTER_V2_MARKER} author=${params.author} reviewers=${reviewers} head=${params.head} supersedes=${params.supersedes === null ? "none" : params.supersedes} declaration-sha256=${declarationSha} -->`;
+  return { marker, body: `${marker}
+${params.content}` };
+}
+function absentRoster() {
+  return {
+    present: false,
+    version: null,
+    author: null,
+    reviewers: [],
+    head: null,
+    commentId: null,
+    supersedes: null,
+    chain: []
+  };
+}
+function rosterCandidates(rows) {
+  const candidates = [];
+  for (const row of rows) {
+    const body = String(row["body"] ?? "");
+    if (!body.includes(ROSTER_ANY_MARKER)) {
+      continue;
+    }
+    const match = matchRoster(body);
+    if (match === null || typeof row["id"] !== "number") {
+      fail("local-review roster record is malformed");
+    }
+    candidates.push({ id: row["id"], match });
+  }
+  return candidates.sort((a, b) => a.id - b.id);
+}
+function resolveRoster(rows) {
+  const candidates = rosterCandidates(rows);
+  if (candidates.length === 0) {
+    return absentRoster();
+  }
+  const links = candidates.filter((row) => row.match.version === 2);
+  if (links.length === 0) {
+    return resolveLegacyRoster(candidates);
+  }
+  const byId = new Map(candidates.map((row) => [row.id, row]));
+  const superseded = /* @__PURE__ */ new Set();
+  let roots = 0;
+  for (const link of links) {
+    const predecessor = link.match.supersedes;
+    if (predecessor === null) {
+      roots += 1;
+      continue;
+    }
+    const target = byId.get(predecessor);
+    if (target === void 0) {
+      fail(
+        `local-review roster supersedes comment ${predecessor}, which is not a roster on this pull request`
+      );
+    }
+    if (predecessor >= link.id) {
+      fail("local-review roster supersedes a later declaration");
+    }
+    if (superseded.has(predecessor)) {
+      fail("local-review roster supersession chain forks");
+    }
+    superseded.add(predecessor);
+    if (target.match.version !== 2) {
+      roots += 1;
+    }
+  }
+  if (roots !== 1) {
+    fail(
+      roots === 0 ? "local-review roster supersession chain has no first declaration" : "local-review roster declares more than one supersession chain"
+    );
+  }
+  const tips = links.filter((link) => !superseded.has(link.id));
+  if (tips.length !== 1) {
+    fail("local-review roster supersession chain does not resolve to one tip");
+  }
+  const tip = tips[0];
+  const chain = [];
+  let cursor = tip;
+  while (cursor !== void 0) {
+    chain.unshift(cursor.id);
+    const predecessor = cursor.match.supersedes;
+    cursor = predecessor === null ? void 0 : byId.get(predecessor);
+  }
+  if (chain.length !== candidates.length) {
+    fail("local-review roster supersession chain does not cover every roster");
+  }
+  return {
+    present: true,
+    version: 2,
+    author: tip.match.author,
+    reviewers: tip.match.reviewers,
+    head: tip.match.head,
+    commentId: tip.id,
+    supersedes: tip.match.supersedes,
+    chain
+  };
+}
+function resolveLegacyRoster(candidates) {
+  if (candidates.length !== 1) {
+    fail("local-review roster is declared more than once");
+  }
+  const only = candidates[0];
+  return {
+    present: true,
+    version: 1,
+    author: only.match.author,
+    reviewers: only.match.reviewers,
+    head: null,
+    commentId: only.id,
+    supersedes: null,
+    chain: [only.id]
+  };
+}
+function readRoster(params) {
+  assertActor(params.actor);
+  return resolveRoster(getIssueComments(params.repo, params.pr));
+}
+function reconcileConcurrentRoster(repo, pr, body, postedCommentId) {
+  const rows = getIssueComments(repo, pr).filter(
+    (row) => String(row["body"] ?? "") === body
+  );
+  if (rows.some((row) => typeof row["id"] !== "number")) {
+    fail("local-review roster conflicts with concurrent evidence");
+  }
+  if (rows.length === 0) {
+    fail("local-review roster conflicts with concurrent evidence");
+  }
+  const ids = rows.map((row) => row["id"]).sort((a, b) => a - b);
+  const canonical = ids[0];
+  for (const duplicate of ids.slice(1)) {
+    deleteIssueComment(repo, pr, duplicate);
+  }
+  return {
+    commentId: canonical,
+    usedPostedComment: canonical === postedCommentId
+  };
+}
+function postRoster(params) {
+  assertActor(params.actor);
+  requireSha(params.head, "head");
+  verifyHead(params.repo, params.pr, params.head);
+  const rows = getIssueComments(params.repo, params.pr);
+  const existing = resolveRoster(rows);
+  const replayCandidate = existing.present && existing.version === 2 ? buildRosterBody({
+    author: params.author,
+    reviewers: params.reviewers,
+    head: params.head,
+    supersedes: existing.supersedes,
+    content: params.content
+  }) : null;
+  const effectiveBody = existing.commentId === null ? null : rows.find((row) => row["id"] === existing.commentId)?.["body"] ?? null;
+  const isReplay = replayCandidate !== null && effectiveBody === replayCandidate.body;
+  const supersedes = isReplay ? existing.supersedes : existing.commentId;
+  const { marker, body } = isReplay ? replayCandidate : buildRosterBody({
+    author: params.author,
+    reviewers: params.reviewers,
+    head: params.head,
+    supersedes,
+    content: params.content
+  });
+  let commentId;
+  let replayed = false;
+  let created = false;
+  if (isReplay) {
+    commentId = existing.commentId;
+    replayed = true;
+  } else {
+    created = true;
+    try {
+      const response = jsonOutput(
+        [
+          "api",
+          "-X",
+          "POST",
+          `repos/${params.repo}/issues/${params.pr}/comments`
+        ],
+        { body }
+      );
+      commentId = getPostedCommentId(response);
+    } catch (error) {
+      if (error instanceof LedgerError) {
+        const recovered = findMatchingBody(
+          getIssueComments(params.repo, params.pr),
+          marker,
+          body
+        );
+        if (recovered === null) throw error;
+        commentId = recovered;
+        replayed = true;
+        created = false;
+      } else {
+        throw error;
+      }
+    }
+  }
+  let chain;
+  try {
+    if (created) {
+      const reconciled = reconcileConcurrentRoster(
+        params.repo,
+        params.pr,
+        body,
+        commentId
+      );
+      commentId = reconciled.commentId;
+      replayed = replayed || !reconciled.usedPostedComment;
+      created = reconciled.usedPostedComment;
+    }
+    verifyIssueComment(params.repo, commentId, body);
+    const roster = resolveRoster(getIssueComments(params.repo, params.pr));
+    if (roster.commentId !== commentId) {
+      fail("could not verify the effective local-review roster after posting");
+    }
+    chain = roster.chain;
+    verifyHead(params.repo, params.pr, params.head);
+  } catch (error) {
+    if (created) {
+      try {
+        deleteIssueComment(params.repo, params.pr, commentId);
+      } catch (rollbackError) {
+        throw new LedgerError(
+          `roster verification failed and rollback could not be verified: ${rollbackError.message ?? String(rollbackError)}`,
+          { cause: error }
+        );
+      }
+    }
+    throw error;
+  }
+  return {
+    comment_id: commentId,
+    author: params.author,
+    reviewers: [...params.reviewers],
+    head: params.head,
+    supersedes,
+    superseded: supersedes !== null,
+    chain,
+    replayed,
+    verified: true
+  };
+}
+function matchAttestationMarker(body, pattern) {
+  const match = pattern.exec(body);
+  if (!match || !match.groups || match.index !== 0) {
+    return null;
+  }
+  const matchEnd = match[0].length;
+  if (!body.slice(matchEnd).startsWith("\n")) {
+    return null;
+  }
+  if (!body.slice(matchEnd + 1).trim()) {
+    return null;
+  }
+  return match;
+}
+function attestationsAtHead(rows, head) {
+  const found = [];
+  const identities = /* @__PURE__ */ new Set();
+  for (const row of rows) {
+    const body = String(row["body"] ?? "");
+    const pass = matchAttestationMarker(body, PASS_V3_RE);
+    const complete = matchAttestationMarker(body, COMPLETE_V3_RE);
+    const match = pass ?? complete;
+    if (!match?.groups) {
+      continue;
+    }
+    const engine = match.groups["engine"];
+    const round = parseInt(match.groups["round"], 10);
+    const identity = `${engine}|${round}`;
+    if (identities.has(identity)) {
+      fail("local-review attestation identity is duplicated");
+    }
+    identities.add(identity);
+    if (match.groups["head"] === head) {
+      found.push({
+        engine,
+        round,
+        status: pass === match ? "clean" : "changed"
+      });
+    }
+  }
+  return found;
+}
+function coverageTier(count) {
+  if (count === 0) return "solo";
+  if (count === 1) return "cross";
+  return "full";
+}
+function coverage(params) {
+  assertActor(params.actor);
+  verifyHead(params.repo, params.pr, params.head);
+  const rows = getIssueComments(params.repo, params.pr);
+  const roster = resolveRoster(rows);
+  const attested = attestationsAtHead(rows, params.head);
+  const attestedEngines = [
+    ...new Set(attested.map((row) => row.engine))
+  ].sort();
+  const nonAuthorAttested = roster.reviewers.filter(
+    (engine) => attestedEngines.includes(engine)
+  );
+  const missingReviewers = roster.reviewers.filter(
+    (engine) => !attestedEngines.includes(engine)
+  );
+  const authorAttested = roster.author !== null && attestedEngines.includes(roster.author);
+  const rosterStale = roster.present && roster.head !== params.head;
+  const soloDeclared = roster.present && roster.reviewers.length === 0;
+  const soloAcknowledged = soloDeclared && roster.version === 2 && !rosterStale;
+  const report = {
+    head: params.head,
+    rosterPresent: roster.present,
+    rosterVersion: roster.version,
+    rosterHead: roster.head,
+    rosterStale,
+    rosterChain: roster.chain,
+    author: roster.author,
+    reviewers: [...roster.reviewers],
+    attestedAtHead: attestedEngines,
+    nonAuthorAttested,
+    missingReviewers,
+    authorAttested,
+    tier: coverageTier(nonAuthorAttested.length),
+    soloDeclared,
+    soloAcknowledged,
+    roundComplete: roster.present && missingReviewers.length === 0 && (!soloDeclared || soloAcknowledged && authorAttested),
+    verified: true
+  };
+  verifyHead(params.repo, params.pr, params.head);
+  return report;
+}
+function verifyCoverage(params) {
+  const report = coverage(params);
+  if (!report.rosterPresent) {
+    fail(
+      "no local-review roster is declared on this pull request; run post-roster before claiming coverage"
+    );
+  }
+  if (report.missingReviewers.length > 0) {
+    fail(
+      `declared reviewers have not attested this head: ${report.missingReviewers.join(", ")}`
+    );
+  }
+  if (report.soloDeclared && report.rosterVersion !== 2) {
+    fail(
+      "this solo relay is declared in the roster:v1 grammar, whose declaration sits outside its own hash; re-post it with post-roster to record the same choice as roster:v2 evidence"
+    );
+  }
+  if (report.soloDeclared && report.rosterStale) {
+    fail(
+      `this solo relay was declared at ${report.rosterHead ?? "<no head>"}, not at ${report.head}; re-post it with post-roster --head ${report.head} to declare the same choice over the code that is here now`
+    );
+  }
+  if (report.soloAcknowledged && !report.authorAttested) {
+    fail(
+      "a declared solo relay still requires the author engine to attest this head"
+    );
+  }
+  return report;
+}
+
 // src/format.ts
 function formatFindings(findings) {
   if (findings.length === 0) {
@@ -2517,6 +3017,13 @@ function parseCliArgs(argv) {
       case "--json-file":
         args.jsonFile = parseVal(arg);
         break;
+      case "--author":
+        args.author = parseEnum(arg, parseVal(arg), SUPPORTED_ENGINES);
+        break;
+      case "--reviewers": {
+        args.reviewers = parseVal(arg);
+        break;
+      }
       default:
         fail(`unknown argument: ${arg}`);
     }
@@ -2826,6 +3333,51 @@ function runCli(argv = process.argv.slice(2)) {
         resultFile: args.resultFile,
         allowedHeadsFile: args.allowedHeadsFile,
         expectedThreadsSha256: args.expectedThreadsSha256
+      });
+      writeSortedJson(out);
+      break;
+    }
+    case "post-roster": {
+      if (!args.repo || args.pr === void 0 || !args.head || !args.author || args.reviewers === void 0 || !args.contentFile) {
+        fail(
+          "post-roster requires --repo, --pr, --head, --author, --reviewers, and --content-file"
+        );
+      }
+      const out = postRoster({
+        repo: args.repo,
+        pr: args.pr,
+        head: args.head,
+        actor: args.actor,
+        author: args.author,
+        reviewers: parseReviewers(args.reviewers, args.author),
+        content: readContent(args.contentFile)
+      });
+      writeSortedJson(out);
+      break;
+    }
+    case "read-roster": {
+      if (!args.repo || args.pr === void 0) {
+        fail("read-roster requires --repo and --pr");
+      }
+      const out = readRoster({
+        repo: args.repo,
+        pr: args.pr,
+        actor: args.actor
+      });
+      writeSortedJson(out);
+      break;
+    }
+    case "coverage":
+    case "verify-coverage": {
+      if (!args.repo || args.pr === void 0 || !args.head) {
+        fail(`${args.command} requires --repo, --pr, and --head`);
+      }
+      const run = args.command === "coverage" ? coverage : verifyCoverage;
+      const out = run({
+        repo: args.repo,
+        pr: args.pr,
+        head: args.head,
+        actor: args.actor
       });
       writeSortedJson(out);
       break;
