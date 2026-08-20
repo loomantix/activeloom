@@ -209,7 +209,13 @@ For confirmed fixes:
 4. require local HEAD, remote head, and PR head to match;
 5. use the deterministic helper's resumable `dispose` transaction with the fix
    SHA, validation result, fingerprint, and occurrence;
-6. after the final lane, write the v3 structured result. Under agent-loop the
+6. before the attestation, run the repository's gating suite unfiltered, per the
+   ledger's "Validate before attesting". The focused run in step 2 dispositions
+   the finding and is not evidence for the pass. Name the command, config, and
+   SHA in the attestation. A red gating run is itself a blocking finding, even
+   when it predates this round, and applies to a `clean` pass just as much as a
+   changed one;
+7. after the final lane, write the v3 structured result. Under agent-loop the
    wrapper owns the committed-pass marker.
 
 Never resolve a finding merely because code changed. A marked thread requires
