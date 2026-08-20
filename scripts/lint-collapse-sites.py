@@ -52,6 +52,18 @@ CDATA_OPEN = "<![CDATA["
 CDATA_CLOSE = "]]>"
 
 
+def front_matter_delimiter(lines: list[str]) -> str | None:
+    """Return the delimiter line 0 opens a front-matter block with, if any.
+
+    `read_text(encoding="utf-8")` keeps a leading byte-order mark, so strip one
+    for this comparison only. Every other rule still sees the source bytes.
+    """
+    if not lines:
+        return None
+    first = lines[0].lstrip("\ufeff").strip(" \t\r")
+    return first if first in {"---", "+++"} else None
+
+
 def literal_content_lines(lines: list[str]) -> list[bool]:
     """Mark each line that a Markdown reader would treat as literal content.
 
@@ -59,6 +71,41 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
     preceding blank line makes it a real CommonMark indented code block. A lint
     that is too strict costs one manifest comment; one that is too loose costs
     a consumer a deleted line.
+
+    Two of the rules below are ambiguous on their own, and reading a document
+    only one way can mark *fewer* lines literal than reading it the other way:
+
+      - a leading `---` may open front matter or be a thematic break. Read as
+        front matter, the scanner skips the fence machinery for those lines, so
+        a `---` inside a fenced block closes a block it never saw open;
+      - a closing fence may be indented independently of its opener, and a
+        blockquote's fence ends when the quote does. Requiring the opener's
+        exact prefix holds the fence open past its real closer, which then
+        swallows the next genuine opener.
+
+    So scan every applicable reading and mark a line literal when *any* of them
+    does. Each rule can then only add coverage, never remove it, which is the
+    only direction that is safe here.
+    """
+    scans = [
+        _scan_literal_lines(lines, None, strict_fence_prefix=True),
+        _scan_literal_lines(lines, None, strict_fence_prefix=False),
+    ]
+    delimiter = front_matter_delimiter(lines)
+    if delimiter is not None:
+        scans.append(_scan_literal_lines(lines, delimiter, strict_fence_prefix=True))
+        scans.append(_scan_literal_lines(lines, delimiter, strict_fence_prefix=False))
+    return [any(marks) for marks in zip(*scans)]
+
+
+def _scan_literal_lines(
+    lines: list[str], delimiter: str | None, *, strict_fence_prefix: bool
+) -> list[bool]:
+    """One pass of the scanner, under one reading of the ambiguous rules.
+
+    `delimiter` is the front-matter delimiter to honour, or None to scan the
+    whole document as Markdown. `strict_fence_prefix` requires a fence closer to
+    repeat its opener's prefix.
     """
     literal = [False] * len(lines)
     fence: tuple[str, int, str] | None = None
@@ -67,16 +114,14 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
     in_processing_instruction = False
     in_declaration = False
     in_cdata = False
-    front_matter_delimiter = (
-        lines[0].strip(" \t\r")
-        if lines and lines[0].strip(" \t\r") in {"---", "+++"}
-        else None
-    )
     for index, line in enumerate(lines):
-        if front_matter_delimiter is not None:
+        if delimiter is not None:
             literal[index] = True
-            if index > 0 and line.strip(" \t\r") == front_matter_delimiter:
-                front_matter_delimiter = None
+            # YAML and TOML both require the closing delimiter at column 0.
+            # Stripping the indentation would let an indented `---` inside a
+            # block scalar end the block early.
+            if index > 0 and line.rstrip(" \t\r") == delimiter:
+                delimiter = None
             continue
         fence_match = FENCE_RE.search(line)
         if fence_match is not None and any(
@@ -98,11 +143,17 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
                 fence_match is not None
                 and fence_match.group(1)[0] == char
                 and len(fence_match.group(1)) >= length
-                and line[: fence_match.start()] == opener_prefix
-                # Repeating a list-item prefix starts another list item; it
-                # cannot close the earlier item's fence. Treating it as a
-                # closer exposes the second fenced block to unsafe collapsing.
-                and LIST_ITEM_FENCE_PREFIX_RE.search(opener_prefix) is None
+                and (
+                    not strict_fence_prefix
+                    or (
+                        line[: fence_match.start()] == opener_prefix
+                        # Repeating a list-item prefix starts another list
+                        # item; it cannot close the earlier item's fence.
+                        # Treating it as a closer exposes the second fenced
+                        # block to unsafe collapsing.
+                        and LIST_ITEM_FENCE_PREFIX_RE.search(opener_prefix) is None
+                    )
+                )
                 and not line[fence_match.end() :].strip(" \t\r")
             ):
                 fence = None
