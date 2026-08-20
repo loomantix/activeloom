@@ -3282,3 +3282,68 @@ def test_main_sensitive_directory_destination_refused_before_any_delete(
     assert "refusing to write sensitive path" in capsys.readouterr().err
     # The tree is untouched, per the guarantee in docs/sync.md.
     assert child.read_text() == "consumer child\n"
+
+
+def test_render_preserves_unicode_whitespace_separator(sync_engine: ModuleType) -> None:
+    text = "a\n\n<<E>>\n\u00a0\nb\n"
+    assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\n\u00a0\nb\n"
+
+
+def test_render_treats_crlf_only_value_as_empty(sync_engine: ModuleType) -> None:
+    text = "a\r\n\r\n<<E>>\r\n\r\nb\r\n"
+    assert sync_engine.substitute(text, {"E": "\r\n"}, ["E"], "src.md", ["E"]) == "a\r\n\r\nb\r\n"
+
+
+def test_render_crlf_without_final_newline_leaves_no_orphan_cr(
+    sync_engine: ModuleType,
+) -> None:
+    # Dropping the last line consumes only the `\n` of the separator in front of
+    # it; without the fixup the rendered file ends in a bare `\r`.
+    for text, expected in (
+        ("a\r\n<<E>>", "a"),
+        ("a\r\nb\r\n<<E>>", "a\r\nb"),
+        ("a\r\n\r\n<<E>>", "a"),
+    ):
+        assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == expected
+
+
+def test_render_lf_without_final_newline_is_unaffected(sync_engine: ModuleType) -> None:
+    # The LF control for the case above: same shapes, no carriage returns to orphan.
+    for text, expected in (("a\n<<E>>", "a"), ("a\nb\n<<E>>", "a\nb")):
+        assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == expected
+
+
+def test_render_keeps_a_genuine_trailing_cr_when_nothing_is_dropped(
+    sync_engine: ModuleType,
+) -> None:
+    # The orphan fixup must not fire when no line was dropped — that path returns
+    # the source byte-for-byte.
+    text = "a\r"
+    assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", []) == text
+
+
+def test_main_preserves_crlf_while_collapsing_an_empty_placeholder(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (upstream_repo / "template.md").write_bytes(b"a\r\n\r\n<<E>>\r\n\r\nb\r\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "template.md",
+                    "destination": "rendered.md",
+                    "substitutions": ["E"],
+                    "collapse_empty_substitutions": ["E"],
+                }
+            ]
+        },
+    )
+    _write_yaml(consumer_dir / ".platform-config.yml", {"substitutions": {"E": ""}})
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 0
+    assert (consumer_dir / "rendered.md").read_bytes() == b"a\r\n\r\nb\r\n"
+
