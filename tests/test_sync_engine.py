@@ -3036,11 +3036,12 @@ def test_main_nested_sensitive_write_allowed_when_opted_in(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Widening the patterns must not make a nested destination unsyncable —
-    # the canonical manifest ships `.claude/skills/critique/scripts/package.json`,
-    # so this is the path every consumer now has to name.
+    # Widening the patterns must not make a nested destination unsyncable.
+    # The example is a workspace package manifest rather than one in an
+    # engine's prompt surface: the prompt tree is carved out of both guards,
+    # so a path there would exercise the carve-out instead of this gate.
     (upstream_repo / "pkg.json").write_text('{"name": "x"}\n')
-    dest = ".claude/skills/critique/scripts/package.json"
+    dest = "apps/web/package.json"
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml",
         {"targets": [{"source": "pkg.json", "destination": dest, "substitutions": []}]},
@@ -3347,3 +3348,138 @@ def test_main_preserves_crlf_while_collapsing_an_empty_placeholder(
     assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 0
     assert (consumer_dir / "rendered.md").read_bytes() == b"a\r\n\r\nb\r\n"
 
+
+
+def test_main_engine_surface_manifest_needs_no_consent(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The live regression: the canonical manifest ships the ESM marker that
+    # scopes the vendored review-ledger bundle directory. `**/package.json`
+    # matches it at depth, so before the carve-out every consumer's sync
+    # refused until it granted consent for two lines of `{"type": "module"}`
+    # sitting beside a bundle the same run writes with no gate at all.
+    (upstream_repo / "pkg.json").write_text('{\n  "type": "module"\n}\n')
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "pkg.json",
+                    "destination": ".claude/skills/critique/scripts/package.json",
+                }
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    written = consumer_dir / ".claude" / "skills" / "critique" / "scripts" / "package.json"
+    assert written.read_text() == '{\n  "type": "module"\n}\n'
+
+
+def test_main_engine_surface_covers_every_relay_engine(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The engine is vendored into each repo in the relay, so a carve-out
+    # naming only `.claude/` would leave codex and gemini refusing the
+    # identical marker in their own prompt trees.
+    (upstream_repo / "pkg.json").write_text('{"type": "module"}\n')
+    destinations = [
+        ".claude/skills/critique/scripts/package.json",
+        ".codex/skills/critique/scripts/package.json",
+        ".agents/skills/critique/scripts/package.json",
+    ]
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "pkg.json", "destination": d} for d in destinations
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**", ".codex/**", ".agents/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    for d in destinations:
+        assert (consumer_dir / d).exists()
+
+
+def test_main_engine_surface_is_retirable_by_tombstone(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # claude-platform#115: sharing one tuple made the delete refusal
+    # unconditional on a path the manifest itself ships. No consent key
+    # covers deletes, so the marker could never be withdrawn — consumers
+    # would keep a stale `"type": "module"` governing a bundle that no
+    # longer exists, or go permanently red on a tombstone none of them
+    # could clear.
+    marker = consumer_dir / ".claude" / "skills" / "critique" / "scripts"
+    marker.mkdir(parents=True)
+    (marker / "package.json").write_text('{"type": "module"}\n')
+
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "destination": ".claude/skills/critique/scripts/package.json",
+                    "delete": True,
+                }
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    assert not (marker / "package.json").exists()
+
+
+def test_main_carve_out_does_not_reach_outside_the_prompt_surface(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The carve-out is scoped to the manifest's own payload. Every guarded
+    # shape outside it keeps matching at any depth — this is the `**/`
+    # widening the patterns were given, and it has to survive the split.
+    (upstream_repo / "payload").write_text("payload\n")
+    for destination in (
+        "apps/web/package.json",
+        "services/api/Dockerfile",
+        "docs/CODEOWNERS",
+        ".github/workflows/release.yml",
+    ):
+        _write_yaml(
+            upstream_repo / "scripts" / "sync-targets.yml",
+            {"targets": [{"source": "payload", "destination": destination}]},
+        )
+        _write_yaml(
+            consumer_dir / ".platform-config.yml",
+            {"allowed_destinations": ["**"]},
+        )
+        rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+        assert rc == 1, destination
+        assert "refusing to write sensitive path" in capsys.readouterr().err

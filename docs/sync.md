@@ -103,17 +103,17 @@ skip_targets: []
 
 # Required before the sync may write a sensitive path. Absent or empty
 # means no sensitive path may be written, and the sync fails closed with
-# the exact line to add rather than warning in a green job. These are the
-# two destinations the canonical manifest writes today; the refusal names
-# any others exactly, in a block you can paste as-is.
-allow_sensitive_writes:
-  - .claude/skills/critique/scripts/package.json
-  - .github/workflows/dco.yml
+# the exact line to add rather than warning in a green job. The canonical
+# manifest writes no such path today, so most consumers need no entry at
+# all; the refusal names any that appear, in a block you can paste as-is.
+allow_sensitive_writes: []
 ```
 
 ### `allow_sensitive_writes`
 
 The engine treats a fixed set of destinations as sensitive: `.github/workflows/**`, `.github/actions/**`, `**/CODEOWNERS`, `**/package.json`, `**/pnpm-lock.yaml`, `**/prisma/schema.prisma`, and `**/Dockerfile` / `**/Dockerfile.*`. It refuses to `delete:` any of them unconditionally, and refuses to **write** any of them — overwrite or first-time create — unless the consumer has named that exact path here.
+
+One carve-out: a path inside an engine's own prompt surface (`.claude/**`, `.codex/**`, `.agents/**`) is not sensitive to either guard. Both guards exist to stop a manifest reaching _outside_ its surface into the files that configure your project — what CI runs, who reviews it, what the build installs. The prompt tree is the manifest's own payload, in a directory you already opened to it through `allowed_destinations`, and the engine writes arbitrary executable content there — skills, hooks, the vendored review-ledger bundle — with no gate at all. Gating `.claude/skills/critique/scripts/package.json`, two lines of `{"type": "module"}` scoping the directory that holds that bundle, while writing the bundle itself ungated on the same run is not a smaller grant, only a more confusing one. None of the guarded shapes carry authority there either: GitHub reads workflows only from `.github/workflows/`, resolves `CODEOWNERS` only from the root, `.github/`, and `docs/`, and a package manager installs a nested manifest only when a workspace declares it. The carve-out is also what makes a synced sensitive path retirable — no consent key covers deletes, so without it a file the manifest ships could never be withdrawn by tombstone.
 
 The `**/` entries match at any depth, root included, because a workspace-shaped repo keeps these files at `apps/web/package.json` or `services/api/Dockerfile` rather than at the root. `CODEOWNERS` is matched at any depth because GitHub resolves it from the repository root, `.github/`, and `docs/` — gating only one of the three would leave the review gate rewritable. The two `.github/` entries stay depth-pinned, since those directories are the only place GitHub reads workflows and composite actions from.
 

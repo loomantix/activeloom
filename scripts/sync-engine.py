@@ -232,6 +232,63 @@ SENSITIVE_WRITE_REGEXES: Final[tuple[re.Pattern[str], ...]] = tuple(
     _compile_case_insensitive(p) for p in SENSITIVE_WRITE_PATTERNS
 )
 
+# The prompt surface of each engine in the relay, carved out of both blocks.
+#
+# Both guards exist to stop a manifest reaching *outside* its own surface
+# into the files that configure the consumer's project — what CI runs, who
+# reviews it, what the build installs. A path inside an engine's prompt
+# directory is not that. It is the manifest's own payload, living in a tree
+# the consumer already opened to it through `allowed_destinations`, and the
+# engine writes arbitrary executable content there — skills, hooks, the
+# vendored review-ledger bundle — with no consent gate at all.
+#
+# So the carve-out changes nothing about what a manifest can do. Refusing
+# `.claude/skills/critique/scripts/package.json` — two lines of
+# `{"type": "module"}` scoping the directory holding that bundle — while
+# writing the bundle it configures on the same run is not a smaller grant,
+# only a more confusing one. The marker cannot do anything the file beside
+# it could not already do.
+#
+# None of the guarded shapes carry their authority here either: GitHub reads
+# workflows only from `.github/workflows/`, resolves CODEOWNERS only from the
+# root, `.github/`, and `docs/`, and a package manager installs a nested
+# manifest only when a workspace declares it. Outside the prompt surface
+# every pattern keeps matching at any depth, which is the `**/` widening
+# these paths were given and must keep.
+#
+# This also restores the retirement path (#115). Tombstoning is how a synced
+# file is withdrawn, and without the carve-out a path the manifest ships
+# could never be taken back: no `allow_sensitive_writes` grant covers
+# deletes, so the refusal was unconditional and no consumer could clear it.
+ENGINE_SURFACE_PATTERNS: Final[tuple[str, ...]] = (
+    ".claude/**",
+    ".codex/**",
+    ".agents/**",
+)
+
+ENGINE_SURFACE_REGEXES: Final[tuple[re.Pattern[str], ...]] = tuple(
+    _compile_case_insensitive(p) for p in ENGINE_SURFACE_PATTERNS
+)
+
+
+def is_engine_surface(dest_rel_canonical: str) -> bool:
+    """Whether a canonical destination lives in an engine's prompt surface."""
+    return path_matches_any(dest_rel_canonical, ENGINE_SURFACE_REGEXES)
+
+
+def is_sensitive_write_dest(dest_rel_canonical: str) -> bool:
+    """Whether writing this destination needs an `allow_sensitive_writes` grant."""
+    return path_matches_any(
+        dest_rel_canonical, SENSITIVE_WRITE_REGEXES
+    ) and not is_engine_surface(dest_rel_canonical)
+
+
+def is_sensitive_delete_dest(dest_rel_canonical: str) -> bool:
+    """Whether deleting this destination is refused outright."""
+    return path_matches_any(
+        dest_rel_canonical, SENSITIVE_DELETE_REGEXES
+    ) and not is_engine_surface(dest_rel_canonical)
+
 
 def load_yaml(path: Path) -> dict[str, Any]:
     if not path.is_file():
@@ -824,7 +881,7 @@ def unconsented_sensitive_writes(
             dest_rel_canonical, allowed_patterns
         ):
             continue
-        if not path_matches_any(dest_rel_canonical, SENSITIVE_WRITE_REGEXES):
+        if not is_sensitive_write_dest(dest_rel_canonical):
             continue
         # `create_if_missing` with the destination already present never
         # writes — the loop short-circuits before the source read. Asking
@@ -1152,7 +1209,7 @@ def main() -> int:
             # regardless of allowlist — a consumer that legitimately syncs
             # CI workflows still must not have those workflows deletable
             # by manifest entry.
-            if path_matches_any(dest_rel_canonical, SENSITIVE_DELETE_REGEXES):
+            if is_sensitive_delete_dest(dest_rel_canonical):
                 sys.stderr.write(
                     f"  ❌ refusing to delete sensitive path (engine-level "
                     f"block, applies regardless of allowed_destinations): "
@@ -1235,9 +1292,7 @@ def main() -> int:
         # enough to survive a case-insensitive filesystem, a grant should
         # be narrow enough that it only ever covers the path the consumer
         # actually wrote down.
-        is_sensitive_write = path_matches_any(
-            dest_rel_canonical, SENSITIVE_WRITE_REGEXES
-        )
+        is_sensitive_write = is_sensitive_write_dest(dest_rel_canonical)
         if dest_path == config_path:
             sys.stderr.write(
                 config_destination_refusal([dest_rel_canonical], config_path.name)
