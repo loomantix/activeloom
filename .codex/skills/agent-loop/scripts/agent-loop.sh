@@ -303,6 +303,14 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
             exit 1
         }
     done
+    [ "$CONFIG_DOCTOR" = true ] || {
+        echo "review contract v3 auto mode requires config_doctor = true" >&2
+        exit 1
+    }
+    [ "$CLAUDE_EFFORT_POLICY" = low ] || {
+        echo "review contract v3 auto mode requires claude_effort_policy = low" >&2
+        exit 1
+    }
 fi
 
 BASE_BRANCH="${AGENT_LOOP_BASE_BRANCH:-$BASE_BRANCH}"

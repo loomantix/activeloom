@@ -104,5 +104,6 @@ Report:
 - PR number plus comments, replies, and resolved-thread counts
 - recommended next step from the selected path: if invoked by `deepcritique`,
   return so it can run `critique deep`; if run standalone, run `deepcritique`
-  next and hand to the next declared reviewer only after that full chain; add
-  `reviewit <pr-number>` whenever a hosted pass is wanted
+  next and let it follow the selected auto or handoff mode before handing to the
+  next declared reviewer; add `reviewit <pr-number>` whenever a hosted pass is
+  wanted

@@ -31,6 +31,13 @@ draft PR before invoking any review lane. Verify the local HEAD, remote branch,
 and PR head SHA match. Record the PR number and load all prior review threads,
 including resolved and outdated threads.
 
+Resolve the selected local session mode from repository instructions or the
+user. In handoff mode, if the user asks to continue or resume a review, run
+`local-review-handoff.py show-handoff --engine codex` before resolving the
+round. Continue only when the latest authenticated handoff targets Codex and
+its exact head remains current. If it targets Claude, stop and ask the user to
+start a fresh Claude terminal session.
+
 Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
 when the runner set it, otherwise one past the count of `local-review-pass:v3`
 and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds
@@ -114,12 +121,34 @@ Read `.codex/REVIEW_WORKFLOW.md` and the consumer's instructions to determine
 which cross-model path the developer selected.
 
 When invoked as the final sub-skill inside `reviewit`, return the deepcritique
-result directly to that orchestrator. Do not start local convergence, recommend
+result directly to that orchestrator. Do not start the local relay, recommend
 another `reviewit`, push, or emit a terminal workflow summary; `reviewit` owns
 the hosted-path summary.
 
-When `$AGENT_LOOP_REVIEW_ENGINE` is set, or this pass is part of a review relay,
-return control after pushing reviewed fixes and completing their PR threads:
+When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, finish the ledger, write the
+wrapper-owned Codex result as described below, and return to agent-loop. Never
+launch another engine from inside a wrapper-owned Codex hook; agent-loop owns
+the next engine and its separate result boundary.
+
+Outside agent-loop, when `$AGENT_LOOP_REVIEW_ENGINE` is set or this pass is part
+of a review relay, follow the selected session mode. In auto mode, invoke the
+next reviewer only through `run-claude-review.sh`; never hand-compose the
+command or override its literal low effort. The launcher requires the exact
+reviewed head and fails closed unless the current worktree is that
+self-authored, same-repository PR head. In handoff mode, post the next-session
+handoff with `local-review-handoff.py post-handoff` and return control to the
+user.
+
+```bash
+.codex/skills/critique/scripts/run-claude-review.sh \
+  --repo <owner/repo> --pr <pr-number> --base <review-base-sha> \
+  --head <reviewed-head-sha> --round <round>
+```
+
+After the launcher returns, verify local, upstream, and PR heads plus the new
+ledger evidence before deciding whether the round converged. A fix invalidates
+only the attestations naming the superseded head. A launcher failure stops the
+chain; never retry with a hand-composed command.
 
 If `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, always create the v3 structured
 result after the final lane. For `clean` or `changed`, call the ledger helper's
@@ -139,7 +168,12 @@ Refactor pass: <ran | already spent at <sha> | skipped (convergence round) | doc
 Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
   Run each declared reviewer that has not attested this head, against
-  <review-base-sha>. Read all prior local-review threads before reviewing.
+  <review-base-sha>.
+  Auto mode: run the tested low-effort launcher and continue the chain.
+  Handoff mode: a local-review-handoff:v1 comment was posted; the user starts a
+  fresh terminal for the next reviewer and says "Continue review on PR
+  #<pr-number>."
+  Read all prior local-review threads before reviewing.
   Classify committed fixes as material or minor.
   A fix invalidates only the attestations naming the superseded head; an engine
   that already attested this head does not re-run.

@@ -38,7 +38,9 @@ CLI. A review fix invalidates only the attestations naming the superseded head,
 so an engine that already read the current commit does not re-run; validated
 minor-only polish does not keep the cycle running. Every local finding is
 recorded before its fix, then replied to with the fix SHA and validation before
-resolution.
+resolution. The relay runs in `auto` mode, where a tested launcher pins every
+directly invoked review to `--effort low`, or in `handoff` mode, where each pass
+posts a resumable PR comment and stops for a new user-started terminal session.
 
 ### Codex references (`.codex/references/`)
 

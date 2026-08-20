@@ -18,8 +18,9 @@ validation_hook =
 # consumer configs must migrate the hooks below before adding this marker.
 review_contract_version = 3
 config_doctor = true
-# Optional literal policy enforced by the doctor, for example `low`.
-claude_effort_policy =
+# Required for contract-v3 auto mode. The doctor rejects any Claude hook whose
+# effort options are not exactly one literal `--effort low`.
+claude_effort_policy = low
 
 # Both review hooks are required. The wrapper runs Codex first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are

@@ -49,6 +49,32 @@ longer need to be chosen between. See "Hosted Reviewers" below.
 
 ## Review Relay
 
+### Select the local session mode
+
+The local relay has two explicit session modes. A consumer may declare a default;
+otherwise ask the user before the first cross-engine transition. Do not switch
+modes silently in the middle of a round.
+
+- **Auto mode** runs the complete bounded chain. For a direct interactive
+  transition, Codex may start Claude only through
+  `.codex/skills/critique/scripts/run-claude-review.sh`. The launcher pins the
+  actual CLI argv to literal `--effort low`; callers cannot supply or override
+  the effort. Never hand-compose a `claude` command. An automated wrapper may
+  instead run its configured Claude hook after its configuration doctor proves
+  the same literal low-effort contract. After Claude returns, validate its
+  PR-head and ledger evidence and continue the chain until convergence or the
+  configured cap.
+- **Handoff mode** never starts the other engine. Each nonterminal pass posts an
+  authenticated `local-review-handoff:v1` PR comment and returns control to the
+  user, who starts the requested reviewer in a new terminal session. Do not
+  choose the other engine's model, effort, flags, or runtime settings.
+
+In handoff mode, when the user says `continue review on PR <number>`, `resume
+review`, or similar, first load the latest authenticated handoff comment.
+Continue only when it names the current engine and its exact head is still the
+PR head. If it names the other engine, stop and ask the user to start that
+engine in a fresh terminal.
+
 1. Make the change, run focused validation, and create a clean local commit.
 2. Push the feature branch and open or reuse its draft PR. Record the PR number,
    head SHA, and all existing review threads before any reviewer runs.
@@ -69,6 +95,14 @@ longer need to be chosen between. See "Hosted Reviewers" below.
    engines use their own equivalents. Reviewer order within a round is a
    scheduling choice, not a protocol rule — what matters is which commit each
    one read.
+
+   How the next reviewer starts is a mode choice, not a protocol rule. Auto
+   mode launches it from the current session through its low-effort launcher
+   and continues when it returns. Handoff mode posts a handoff comment and
+   stops, so the next reviewer begins in a fresh user-started terminal. Both
+   modes carry the same comment/fix/reply/resolve contract, and neither changes
+   which commit an attestation names.
+
 6. Classify committed review fixes as `material` or `minor`. A material fix
    affects behavior, correctness, security/privacy, data safety, compatibility,
    deployment/sync integrity, or another substantive contract. Minor-only fixes
@@ -131,6 +165,53 @@ run state, and verifies that each hook leaves local, remote, and PR heads
 aligned. Consumer hooks own semantic finding verification, deterministic inline
 posting and disposition, and classification; they must fail or return blocked
 if a valid finding or undisposed local-review thread remains.
+
+An automated wrapper must make its mode explicit. Contract-v3 auto mode requires
+`config_doctor = true` and `claude_effort_policy = low`; the doctor requires
+exactly one literal `--effort low` option in the Claude hook before selection or
+claim. Handoff mode stops after each nonterminal engine leg and uses the same
+PR-comment protocol as an interactive review.
+
+## Cross-Engine Session Handoff
+
+This section is engine-specific and lives here rather than in the vendored
+protocol document, which stays byte-identical across every engine.
+
+In handoff mode, never start another reviewer from the current session. At the
+end of a pass, post a deterministic PR comment carrying the exact base, current
+head, completed engine and round, outcome, next reviewer, and a pasteable
+fresh-session prompt:
+
+```bash
+python3 .codex/skills/critique/scripts/local-review-handoff.py post-handoff \
+  --repo <owner/repo> --pr <number> --head <full-head-sha> \
+  --base <full-base-sha> --from-engine <engine> \
+  --to-engine <engine> --round <completed-round> \
+  --outcome <clean|minor|material|blocked> \
+  [--context-file <public-safe-regular-utf8-file>]
+```
+
+The helper owns the `local-review-handoff:v1` marker and prompt. It verifies the
+PR head before and after posting, verifies the comment read-back, rejects marker
+injection from optional context, and makes an identical retry idempotent.
+
+When the user asks to continue or resume a review, load the latest authenticated
+handoff before doing any review work:
+
+```bash
+python3 .codex/skills/critique/scripts/local-review-handoff.py show-handoff \
+  --repo <owner/repo> --pr <number> --engine <engine>
+```
+
+The helper considers the latest handoff from the authenticated GitHub actor,
+verifies its content digest and exact live PR head, and fails if the comment
+targets another engine. Never fall back to an older handoff addressed to the
+current engine. The PR ledger, not a prior terminal transcript, supplies the
+remaining context.
+
+A handoff records who runs next; it is not evidence of review. Coverage still
+comes from attestations naming the exact head, so a handoff neither creates nor
+invalidates one.
 
 ## Hosted Reviewers
 

@@ -104,10 +104,12 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         raise DoctorError("codex_review_hook must invoke deepcritique")
     if not re.search(r"(?:^|[ /])deepcritique(?:[ $\"']|$)", hooks["claude"]):
         raise DoctorError("claude_review_hook must invoke deepcritique")
-    if claude_effort and not re.search(
-        rf"(?:^|\s)--effort(?:=|\s+){re.escape(claude_effort)}(?:\s|$)", hooks["claude"]
-    ):
-        raise DoctorError(f"claude_review_hook must use literal --effort {claude_effort}")
+    if claude_effort:
+        efforts = re.findall(r"(?:^|\s)--effort(?:=|\s+)([^\s;]+)", hooks["claude"])
+        if efforts != [claude_effort]:
+            raise DoctorError(
+                f"claude_review_hook must use exactly one literal --effort {claude_effort}"
+            )
 
 
 def main() -> int:
