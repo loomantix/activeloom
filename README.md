@@ -16,7 +16,7 @@ Operational skills you can install globally or sync into any repo:
 | `critique`            | PR-first adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass.                                                                                                                |
 | `deepcritique`        | Opens or reuses a draft PR and orchestrates `critique deep` with an inline finding ledger, preceded by refactorpass on this engine's first pass only.                                                                                                                          |
 | `pr-critique <pr>`    | Cross-engine deep review of an existing PR using the same inline finding, fix-reply, and resolution ledger.                                                                                                                                                                    |
-| `reviewit <pr>`       | Optional hosted fallback for developers without local Claude Code. Orchestrates post-push Gemini Flash + Copilot review with bounded lean/deep modes.                                                                                                                          |
+| `reviewit <pr>`       | Optional hosted-reviewer lane, runnable alongside the local relay or on its own. Orchestrates post-push Gemini Flash + Copilot review with bounded lean/deep modes.                                                                                                            |
 | `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                                                                                                                                         |
 | `grill`               | Pre-code interview. Maps the problem as a design tree and asks the whole dependency-ordered frontier each round, with a recommended answer per question. Writes no code. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE). |
 | `diagnosing-bugs`     | Debugging discipline for bugs that survived the first read — no hypothesis until a tight, deterministic loop goes red on the user's exact symptom. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).                       |
@@ -30,17 +30,17 @@ Operational skills you can install globally or sync into any repo:
 | `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                                                                                                                                      |
 | `ship-staging <pr>`   | Merge a ready staging PR, mark linked issues on-staging, refresh the local staging reference, and notify Google Chat.                                                                                                                                                          |
 
-The synced review workflow supports two developer-selected cross-model paths:
-local Codex/Claude convergence when both CLIs are available, or `reviewit` as a
-hosted Gemini/Copilot fallback when local Claude Code is unavailable. Consumers
-can declare their default path in repository instructions without removing the
-other platform capability. Local convergence restarts only for material review
-fixes; validated minor-only polish does not keep the cycle running. Every local
-finding is recorded before its fix, then replied to with the fix SHA and
-validation before resolution. Local convergence can run in `auto` mode, where a
-tested launcher pins every directly invoked Claude review to `--effort low`, or
-in `handoff` mode, where each pass posts a resumable PR comment and stops for a
-new user-started terminal session.
+The synced review workflow is a relay defined over roles rather than engine
+names: one author engine and the reviewer engines declared on the pull
+request's roster. The `reviewit` hosted Gemini/Copilot lane runs alongside it
+whenever it is useful, and is the primary path for a repository with no local
+CLI. A review fix invalidates only the attestations naming the superseded head,
+so an engine that already read the current commit does not re-run; validated
+minor-only polish does not keep the cycle running. Every local finding is
+recorded before its fix, then replied to with the fix SHA and validation before
+resolution. The relay runs in `auto` mode, where a tested launcher pins every
+directly invoked review to `--effort low`, or in `handoff` mode, where each pass
+posts a resumable PR comment and stops for a new user-started terminal session.
 
 ### Codex references (`.codex/references/`)
 
@@ -102,7 +102,7 @@ Consumer Migration** section.
 4. Set the GitHub App secrets on the consumer.
 5. Run `gh workflow run "Sync from upstream" --repo <owner>/<consumer>`.
 6. Reference `.codex/REVIEW_WORKFLOW.md` from the consumer `AGENTS.md` and declare
-   whether that consumer defaults to local convergence or the hosted fallback.
+   which reviewer engines that consumer declares on a review roster.
 
 ## Design Notes
 

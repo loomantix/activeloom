@@ -370,8 +370,14 @@ def test_local_review_documents_explicit_cross_engine_modes() -> None:
     assert "run-claude-review.sh" in workflow
     assert "literal `--effort low`" in workflow
     assert "show-handoff --engine codex" in deepcritique
-    assert "post-handoff" in ledger
-    assert "show-handoff" in ledger
+    # The handoff protocol is engine-specific, so it lives in this engine's
+    # REVIEW_WORKFLOW.md. `local-review-ledger.md` is a vendored artifact of
+    # @loomantix/review-ledger and must stay byte-identical across every engine
+    # repository, so nothing engine-specific may be written into it.
+    assert "post-handoff" in workflow
+    assert "show-handoff" in workflow
+    assert "local-review-handoff.py" not in ledger
+    assert ".codex/" not in ledger
     assert "local-review-handoff:v1" in workflow
     assert "exactly one effort option with literal value `low`" in agent_loop
     assert "config_doctor = true" in agent_loop_config

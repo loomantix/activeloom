@@ -250,11 +250,10 @@ End with:
   (with one-line evidence)
 - validation run
 - PR number, reviewed head, comments posted, replies posted, and threads resolved
-- the next step for the path selected in `.codex/REVIEW_WORKFLOW.md`: return to
-  the selected local convergence mode after completing the PR ledger—run only
-  the tested low-effort launcher in auto mode, or post
-  `local-review-handoff:v1` and stop in handoff mode—or use
-  `reviewit <pr>` / `reviewit <pr> deep` on the hosted
-  fallback path. When recommending `reviewit`, recommend a fresh Codex session;
-  the current session has absorbed critique findings, fix commits, and (in deep
-  mode) the full review matrix.
+- the next step under `.codex/REVIEW_WORKFLOW.md`: hand back to the relay for
+  the declared reviewers that have not attested this head — in auto mode run
+  only the tested low-effort launcher, in handoff mode post
+  `local-review-handoff:v1` and stop — and add `reviewit <pr>` /
+  `reviewit <pr> deep` whenever a hosted pass is wanted. When recommending
+  `reviewit`, recommend a fresh session; the current one has absorbed critique
+  findings, fix commits, and (in deep mode) the full review matrix.

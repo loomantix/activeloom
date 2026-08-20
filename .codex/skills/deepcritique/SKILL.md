@@ -121,21 +121,23 @@ Read `.codex/REVIEW_WORKFLOW.md` and the consumer's instructions to determine
 which cross-model path the developer selected.
 
 When invoked as the final sub-skill inside `reviewit`, return the deepcritique
-result directly to that orchestrator. Do not start local convergence, recommend
+result directly to that orchestrator. Do not start the local relay, recommend
 another `reviewit`, push, or emit a terminal workflow summary; `reviewit` owns
 the hosted-path summary.
 
 When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, finish the ledger, write the
 wrapper-owned Codex result as described below, and return to agent-loop. Never
-launch Claude from inside a wrapper-owned Codex hook; agent-loop owns the next
-engine and its separate result boundary.
+launch another engine from inside a wrapper-owned Codex hook; agent-loop owns
+the next engine and its separate result boundary.
 
-Outside agent-loop, follow the selected local-convergence session mode. In auto
-mode, invoke Claude only through `run-claude-review.sh`; never hand-compose the
+Outside agent-loop, when `$AGENT_LOOP_REVIEW_ENGINE` is set or this pass is part
+of a review relay, follow the selected session mode. In auto mode, invoke the
+next reviewer only through `run-claude-review.sh`; never hand-compose the
 command or override its literal low effort. The launcher requires the exact
-reviewed head and fails closed unless the current worktree is that self-authored,
-same-repository PR head. In handoff mode, post the next-session handoff with
-`local-review-handoff.py post-handoff` and return control to the user.
+reviewed head and fails closed unless the current worktree is that
+self-authored, same-repository PR head. In handoff mode, post the next-session
+handoff with `local-review-handoff.py post-handoff` and return control to the
+user.
 
 ```bash
 .codex/skills/critique/scripts/run-claude-review.sh \
@@ -144,9 +146,9 @@ same-repository PR head. In handoff mode, post the next-session handoff with
 ```
 
 After the launcher returns, verify local, upstream, and PR heads plus the new
-Claude ledger evidence before deciding whether the chain converged or restarts
-at Codex. A launcher failure stops the chain; never retry with a hand-composed
-Claude command.
+ledger evidence before deciding whether the round converged. A fix invalidates
+only the attestations naming the superseded head. A launcher failure stops the
+chain; never retry with a hand-composed command.
 
 If `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, always create the v3 structured
 result after the final lane. For `clean` or `changed`, call the ledger helper's
@@ -165,24 +167,29 @@ Round: <n> (<adversarial | convergence>)
 Refactor pass: <ran | already spent at <sha> | skipped (convergence round) | docs-config skip>
 Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
-  Auto mode: run the tested low-effort Claude launcher and continue the chain.
-  Handoff mode: a local-review-handoff:v1 comment for Claude was posted; the
-  user starts a fresh Claude terminal and says "Continue review on PR
+  Run each declared reviewer that has not attested this head, against
+  <review-base-sha>.
+  Auto mode: run the tested low-effort launcher and continue the chain.
+  Handoff mode: a local-review-handoff:v1 comment was posted; the user starts a
+  fresh terminal for the next reviewer and says "Continue review on PR
   #<pr-number>."
   Read all prior local-review threads before reviewing.
   Classify committed fixes as material or minor.
-  Restart at Codex only when either reviewer commits a material fix.
-  Mark ready only after one full Codex-then-Claude round produces no material
-  fixes and every local-review thread is resolved.
+  A fix invalidates only the attestations naming the superseded head; an engine
+  that already attested this head does not re-run.
+  Mark ready only after verify-coverage passes at the exact head, that round
+  produced no material fix, and every local-review thread is resolved.
 ```
 
 A convergence round that found no blocking defect ends the loop. Say so and name
 the repository's ship step; do not report the remaining rounds as owed.
 
-Do not recommend or invoke `reviewit` on the local convergence path. The current
-process or outer agent-loop wrapper owns the next pass and final summary.
+Do not invoke `reviewit` from inside this skill; hosted review is a separate
+lane the caller runs when it is useful, not a side effect of this pass. The
+current process or outer agent-loop wrapper owns the next pass and final
+summary.
 
-When the hosted fallback path is selected, tell the user:
+When the caller asked for the hosted lane as the next step, tell the user:
 
 ```text
 Deep PR review complete.

@@ -103,8 +103,7 @@ Report:
 - validation run
 - PR number plus comments, replies, and resolved-thread counts
 - recommended next step from the selected path: if invoked by `deepcritique`,
-  return so it can run `critique deep`; if run standalone on the local path, run
-  `deepcritique` next and let it follow the selected auto or handoff mode after
-  that full chain; on the
-  hosted fallback path, run `critique <pr-number>` / `deepcritique <pr-number>` and
-  then `reviewit <pr-number>`
+  return so it can run `critique deep`; if run standalone, run `deepcritique`
+  next and let it follow the selected auto or handoff mode before handing to the
+  next declared reviewer; add `reviewit <pr-number>` whenever a hosted pass is
+  wanted
