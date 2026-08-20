@@ -26,6 +26,8 @@ allowed_destinations:
 
 That list matches what the canonical manifest actually ships today: everything else it writes lives under `.codex/`. Trim it further if you don't want a given surface — dropping the `.github/workflows/dco.yml` line means the trusted sync engine will reject a manifest that tries to write to your workflows directory.
 
+Note that the `dco.yml` line is necessary but not sufficient. `.github/workflows/` is a sensitive destination, so writing anything there also requires naming the exact file under [`allow_sensitive_writes`](#consenting-to-sensitive-destinations-allow_sensitive_writes).
+
 Patterns are gitignore-flavored globs: `**/` spans path segments, `*` and `?` stop at `/`, everything else is literal. They are anchored at both ends, so `.codex/**` does not match `.codexfoo`.
 
 The key is tri-state, and the difference matters:
@@ -41,13 +43,46 @@ The key is tri-state, and the difference matters:
 
 `allowed_destinations` and `skip_targets` solve different problems and don't substitute for each other. `skip_targets` is an opt-out you maintain per file as the manifest grows — it only stops what you already knew to name. `allowed_destinations` is a ceiling that also applies to targets the upstream adds later, which is the case that actually matters.
 
-### What it does not cover
+### What the allowlist does not cover
 
 Two gaps to know about, so the allowlist isn't mistaken for a stronger boundary than it is:
 
 - **Upstream code execution.** The workflow runs `scripts/sync-engine.py` from the verified upstream checkout. A malicious engine can ignore this policy or write outside it, so `allowed_destinations` protects against manifest drift only while the engine itself is trusted. The tag-signature gate authenticates the release signer; it does not sandbox the released code.
-- **Overwrites of sensitive paths.** The engine refuses to `delete:` `.github/workflows/**`, `.github/CODEOWNERS`, lockfiles, and Dockerfiles, but it does not block _overwriting_ them. A rewritten workflow doesn't fail loudly — it runs, with your secrets. Keep sensitive paths out of `allowed_destinations` unless you genuinely want them synced.
 - **The commit step is broader than the engine.** `create-signed-commit.py` commits everything `git status` reports in the working tree, not just what the engine wrote, so the allowlist does not constrain what ultimately lands in the sync PR. Review the PR diff; that is still the backstop.
+
+## Consenting to sensitive destinations (`allow_sensitive_writes`)
+
+`allowed_destinations` bounds **where** the manifest may write. It says nothing about **what may be done** to the files inside that surface, and for a handful of destinations that distinction is the whole risk.
+
+The engine treats these as sensitive:
+
+```
+.github/workflows/**   .github/actions/**   .github/CODEOWNERS
+package.json           pnpm-lock.yaml       prisma/schema.prisma
+Dockerfile             Dockerfile.*
+```
+
+It refuses to `delete:` any of them unconditionally. It also refuses to **write** any of them — overwriting an existing file or creating a new one — unless the consumer has named that exact path:
+
+```yaml
+allow_sensitive_writes:
+  - .github/workflows/dco.yml
+```
+
+Writing is gated separately from deleting because on these paths it is the higher-impact operation. A deleted workflow stops running. A rewritten workflow _runs_, with your secrets and whatever `permissions:` block the manifest put in it. Rewrite `CODEOWNERS` and the review gate is gone without anything being deleted; rewrite a lockfile and you have a supply-chain edit your next CI run installs.
+
+The directory grant cannot carry this consent on its own. The recommended starting allowlist above includes `.github/workflows/dco.yml` because the canonical manifest genuinely ships that file — so a consumer who followed the documented onboarding path has already granted write access into `.github/workflows/`, and allowlist patterns are per-path, not per-operation.
+
+Four rules worth knowing before you write the list:
+
+- **Absent or `[]` means deny.** There is no fail-open migration phase, unlike `allowed_destinations`. A sync that hits an un-consented sensitive path fails with the exact line to add, having written nothing.
+- **Literal paths only.** `.github/workflows/**` is rejected. A glob here would rebuild the inherited-consent gap the gate exists to close, so consent is per file or not at all.
+- **Creating counts as writing.** A workflow that didn't exist before still runs once a manifest authors it, so `create_if_missing` is gated the same way.
+- **Non-sensitive entries are a config error.** `.github/workflow/dco.yml` (no `s`) would otherwise parse fine and leave the real destination unauthorized, leaving you with a config that names the path next to a refusal to write it.
+
+Permitted sensitive writes are announced in the sync job log and counted in its closing summary, so a reviewer can see that a run rewrites a workflow without first finding it in the diff.
+
+**Migrating the existing fleet.** Consumers run the engine from the `sync-v1` tag, not from upstream `main`, so nothing changes for them until a maintainer advances that tag — see [Tag advancement](#tag-advancement-the-gate-that-ships). Add `allow_sensitive_writes` to each consumer's `.platform-config.yml` **before** the retag and no consumer ever sees a failure. Retag first and each affected consumer gets one red sync run instead, with the line to add printed in the log; nothing is written while the gate is tripped, so there is no half-applied sync to unwind. A consumer that would rather stop syncing the workflow opts out with `skip_targets` instead of consenting — the skip is evaluated before either gate. Removing the path from `allowed_destinations` is not the way to do it: an out-of-allowlist destination fails the sync rather than skipping that one target.
 
 ## CI flow (consumer-side workflow)
 
@@ -269,6 +304,12 @@ allowed_destinations:
   - .github/copilot-instructions.md
   - .github/workflows/dco.yml
   - agent-loop-instructions.md
+
+# Required before the sync may write any sensitive path (workflows, composite
+# actions, CODEOWNERS, lockfiles, the Prisma schema, Dockerfiles). Literal
+# paths only; absent or empty means no sensitive path may be written.
+allow_sensitive_writes:
+  - .github/workflows/dco.yml
 ```
 
 Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-line values use YAML block scalars (the `|` form). Keys must be `[A-Z][A-Z0-9_]*`.
@@ -279,13 +320,14 @@ Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-l
 - **Hard fail on missing required substitution.** If a target declares a placeholder the consumer hasn't configured, the script exits 1 — better to break the sync PR than to silently leave an unfilled `<<KEY>>` in the destination file.
 - **Soft warn on undeclared placeholders in the source.** If the source contains `<<FOO>>` but `sync-targets.yml` doesn't declare `FOO` for that target, the placeholder is left intact and a warning is printed. Catches the case where a template change forgot to update the manifest.
 - **File mode preserved.** Targets with `mode: "0755"` get chmod'd after write.
+- **Sensitive destinations fail closed.** A write to a sensitive path missing from `allow_sensitive_writes` aborts the sync — under `--dry-run` too, so a dry run never reports a write the real run would refuse. Nothing is written when the gate trips.
 - **`create_if_missing` short-circuits before substitution.** When the destination already exists, the engine skips the source read, substitution, and write entirely. This means a consumer can leave `create_if_missing` substitution values undeclared after first creation without breaking later syncs.
 
 ## Adding a new consumer
 
 1. **Verify the upstream-read secret exists** if the upstream repo is private. Set `UPSTREAM_READ_TOKEN` (fine-grained PAT or GitHub App token with `Contents: Read` on the upstream repo) on the consumer repo (or as an org-level secret scoped to the consumer). For public upstream repos, no token is needed.
 2. **Verify App-token secrets exist** if you want signed sync commits. The reference template reads `SYNC_APP_ID` + `SYNC_APP_PRIVATE_KEY` from secrets — rename in the workflow file if your conventions differ.
-3. Create `.platform-config.yml` at the consumer's root with values for every placeholder and the required `allowed_destinations` list shown above.
+3. Create `.platform-config.yml` at the consumer's root with values for every placeholder, the required `allowed_destinations` list shown above, and — if you want the DCO workflow synced — `allow_sensitive_writes: [.github/workflows/dco.yml]`.
 4. Copy `.github/workflows/sync-from-upstream.yml.template` to `.github/workflows/sync-from-upstream.yml` (drop the `.template` suffix), then fill in `UPSTREAM_REPO` and the secret names.
 5. Set `SYNC_TAG_ALLOWED_SIGNERS` to the upstream release keys before treating the workflow as a verified sync path.
 6. Manually trigger the workflow once (`gh workflow run "Sync from upstream"`) to verify the first PR opens cleanly, and exercise an unsigned test tag to confirm the signature gate fails before upstream code runs.
