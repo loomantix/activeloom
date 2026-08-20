@@ -50,13 +50,63 @@ node <ledger-helper> post-roster \
 It writes one marker to the pull request:
 
 ```text
-<!-- local-review-roster:v1 author=<engine> reviewers=<engine[,engine]|none> content-sha256=<hash> -->
+<!-- local-review-roster:v2 author=<engine> reviewers=<engine[,engine]|none> head=<sha> supersedes=<comment-id|none> declaration-sha256=<hash> -->
 ```
 
-A pull request carries exactly one roster. Re-posting the identical declaration
-replays; posting a conflicting one fails, because every downstream completeness
-answer depends on which roster is authoritative. `read-roster` returns the
-current declaration.
+`declaration-sha256` covers the declaration, not just the reason prose beneath
+it. Its pre-image is these lines, joined by `\n`, followed by a blank line and
+the content:
+
+```text
+local-review-roster:v2
+author=<engine>
+reviewers=<engine[,engine]|none>
+head=<sha>
+supersedes=<comment-id|none>
+```
+
+So `author=`, `reviewers=`, `head=`, and `supersedes=` cannot be edited in place
+after the fact. This is the whole point of the field: the roster's justification
+must not be left standing over a roster it no longer describes.
+
+`head=` binds the declaration to the commit it was made over. A roster declared
+while a branch held only documentation says nothing about the auth code that
+lands on it later.
+
+The authenticated relay actor owns the roster chain, and every local engine in
+the relay must use that same pinned actor. `read-roster` returns the effective
+declaration and the chain that produced it.
+
+### Re-declaring the roster
+
+Rosters supersede rather than replace. Posting a roster over an existing one
+writes a new marker naming the previous comment in `supersedes=`; the previous
+declaration stays on the pull request. Re-posting a byte-identical declaration
+replays instead of appending.
+
+Readers resolve the effective roster the way they resolve the review tier:
+
+1. Read actor-owned issue comments in chronological order. Accept only a comment
+   whose marker is one exact line in the grammar above and whose digest
+   verifies. A malformed marker, a failed digest, or two roster candidates in
+   one comment is a hard stop.
+2. The chain must be a single path: exactly one first declaration, no two links
+   superseding the same comment, no link superseding a comment that is not on
+   the pull request, and every roster on the pull request covered by the chain.
+   The newest link is the effective roster.
+
+Unlike the tier marker, roster links carry **no ancestry requirement** between
+their heads. Recording a transition always beats refusing it: a developer who
+decides late that a change no longer needs a second reviewer must be able to
+record that in one step, and a rebase must never make that step unreachable.
+Hard stops are for genuine ambiguity — a forked or dangling chain, a forged
+digest — never for a human changing their mind.
+
+Pull requests carrying the older `local-review-roster:v1` marker still read. v1
+put the declaration outside its own hash and named no commit, so it is treated
+as **advisory**: its declared reviewers are still held to attesting the current
+head, but a v1 solo declaration is not evidence a reader will repeat. Posting a
+v2 roster supersedes the v1 comment and migrates the pull request in one step.
 
 ### How many reviewers
 
@@ -65,10 +115,12 @@ of changes. A second adds real value mainly where a defect is expensive and
 hard to see: auth, crypto, secret handling, schema and data-shape work, release
 and sync tooling, or a change whose blast radius crosses repositories.
 
-Solo review — `reviewers=none` — is permitted, but it must be declared up front
-with the reason in the roster's content file. That keeps the choice visible and
-attributable on the pull request rather than resting on whoever remembered it.
-`verify-coverage` refuses an undeclared solo relay.
+Solo review — `reviewers=none` — is a **legitimate outcome, not a degraded
+one**. What it must be is declared, with the reason in the roster's content
+file, at the head it applies to. That keeps the choice visible and attributable
+on the pull request rather than resting on whoever remembered it. Narrowing to
+solo late in a pull request's life is equally legitimate; post the narrowed
+roster and it becomes an ordered, visible link in the chain.
 
 ## Coverage and completeness
 
@@ -80,10 +132,29 @@ node <ledger-helper> coverage        --repo <owner/repo> --pr <number> --head <f
 node <ledger-helper> verify-coverage --repo <owner/repo> --pr <number> --head <full-head-sha>
 ```
 
-`coverage` reports; `verify-coverage` additionally fails when no roster is
-declared or when a declared reviewer has not attested this head. Both report a
-tier over distinct **non-author** engines: `solo` (none), `cross` (one), `full`
-(two or more).
+`coverage` reports; `verify-coverage` additionally refuses a ledger that would
+assert something untrue about what happened. Both report a tier over distinct
+**non-author** engines: `solo` (none), `cross` (one), `full` (two or more).
+
+`verify-coverage` refuses when:
+
+- no roster is declared;
+- a declared reviewer has not attested this head;
+- a solo relay is declared in the v1 grammar, whose declaration sits outside its
+  own hash;
+- a solo relay was declared at a commit other than this one;
+- a declared solo relay carries no attestation from the author engine.
+
+Missing or stale roster evidence clears in one `post-roster` step at the current
+head, available at any point in a pull request's life. Missing review evidence
+clears when the named engine posts its attestation, or when the developer
+deliberately re-declares the roster to reflect the review they judge sufficient.
+
+**Neither command is a merge gate.** The ledger records evidence; it holds no
+authority over whether a change ships. Do not wire `verify-coverage` into branch
+protection, a required check, or anything that reads as one. A developer who has
+looked at a change and judged the review it has had to be enough merges it, and
+no roster state may make that impossible or require a workaround to reach.
 
 ### The head is the invalidation rule
 
@@ -127,6 +198,11 @@ the shared definition for the pinned `<base-sha>..<head-sha>` review range:
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
   `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
+- **Prompt surface — source, whatever the extension.** Every path under the
+  engine's prompt directory, including its Markdown. These files are read by the
+  model as instructions and sync to every consumer, so a defect in them ships
+  exactly like a code defect. Classifying them as docs would make the review-tier
+  triggers unreachable for the surface they were written to protect.
 - **Docs, inert config, or fixtures** — `.md`, `.txt`, `.gitignore`,
   `.gitattributes`, `LICENSE`, `CHANGELOG`, `README`,
   `.env.example`, paths under `docs/`, `*.fixture.*`, and snapshot files.
@@ -284,7 +360,7 @@ needed file, or weakening verification.
 ## Record the review tier once per PR
 
 The tier decides which lanes run and how many rounds are owed. Resolve it
-before the first reviewer per [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md)
+before the first reviewer per your `REVIEW_WORKFLOW.md`
 and record it on the PR, so a later round in a fresh session reads it instead of
 re-deriving it.
 
@@ -293,7 +369,7 @@ re-deriving it.
 ```
 
 `trigger=` carries **every** trigger the change matched, as the comma-separated
-ordinals from [`../REVIEW_WORKFLOW.md`](../REVIEW_WORKFLOW.md) — `trigger=3`,
+ordinals from your `REVIEW_WORKFLOW.md` — `trigger=3`,
 `trigger=1,3`, or `trigger=none`. Recording only one lets a clean result from
 that trigger's lens de-escalate the PR while an unrecorded trigger still stands.
 
@@ -391,7 +467,12 @@ one level up, where the whole set is visible and the orchestrator decides what
 the PR changes, what merits an urgent follow-up issue, and what should add
 nothing to an already deep backlog.
 
-Convergence rounds do not extend the round cap — they are how rounds 3 and 4 are
+The stance schedule above is the Deep schedule. At Lean the cap is two rounds:
+round 1 is adversarial, and round 2 runs only if round 1 made a material fix, in
+convergence mode. At both tiers, stop as soon as a complete round produces no
+material fix — the cap is a ceiling, not a target.
+
+Convergence rounds do not extend the round cap — they are how the last rounds are
 spent. Reaching the cap in convergence mode with open non-blocking findings means
 ship the PR and carry the issues, not open a fifth round.
 
@@ -611,6 +692,13 @@ For each published finding:
    reviewed head.
 4. Let `dispose` verify the reply and resolution as one resumable transaction.
 
+Write the commit message with the file-editing tool into the same owner-only
+temporary directory used for ledger content, then commit with
+`git commit -F <file>`. Run each git command as its own plain command. A
+worktree-isolated session refuses a git command carrying a heredoc, redirect, or
+`&&` chain because it cannot statically verify that the command stays inside the
+worktree, and that refusal aborts the pass mid-fix.
+
 If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
 report the exact unresolved thread; do not silently continue.
 
@@ -771,7 +859,8 @@ prevent a false green remains material. Defer non-material polish without growin
 the backlog, and create a tracking issue only for a concrete, high-impact
 follow-up that should be scheduled within roughly two weeks.
 
-Stop after four rounds by default. Leave the PR draft and report non-convergence
+Stop at the tier's round cap — four at Deep, two at Lean. Leave the PR draft and
+report non-convergence
 instead of continuing an unbounded cycle.
 
 The next reviewer must read the ledger before reviewing the new head. That
