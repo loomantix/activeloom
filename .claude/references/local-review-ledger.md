@@ -138,6 +138,61 @@ the shared definition for the pinned `<base-sha>..<head-sha>` review range:
 Zero source files means skip; one or more means run the full pass. A mixed
 changeset is not a partial skip.
 
+## Rate every finding on one severity ladder
+
+Every local-review finding carries one of four severities. They are the enum the
+ledger helper accepts, and they mean the same thing in every lens, engine, and
+skill. Rate by **blast radius** — what breaks, and for whom — not by how
+important the finding feels or how hard it was to find.
+
+- **`blocking`** — ships materially wrong behavior, loses or corrupts data,
+  exposes a credible security or privacy exploit, breaks a public contract, or
+  breaks deploy or rollout.
+- **`major`** — a real defect in behavior a user or operator can reach, but not
+  blocking.
+- **`minor`** — correct-but-improvable, or a defect confined to a non-executing
+  surface (comments, docs, naming, test clarity) with no behavioral consequence.
+- **`nit`** — style or preference. No defect.
+
+**A factually wrong comment is `minor` by default.** It changes no behavior, so
+its blast radius is a reader, not a run — and that holds even when the wrongness
+matters a great deal. There is no rung meaning "important but non-behavioral";
+`minor` is that rung. The same goes for a stale doc, a misleading name, and a
+test whose assertion is weaker than its name claims.
+
+Rating a comment defect `major` because it is embarrassing, or a nit `major`
+because the file is important, destroys the ladder's one useful property: that
+`major` and above mean a user or operator is exposed.
+
+### When a non-executing surface escalates
+
+A comment or docs finding is `major` only when the statement is wrong enough to
+**cause questions about the actual implementation** — a reader acting on it
+would reach a wrong conclusion about what the code does, in a way that would
+change an engineering decision. Merely imprecise, stale, or overclaimed is
+`minor`.
+
+A test finding is `major` only when correcting the test makes it **fail**, and
+making it pass again requires an app-code change. The app-code defect the test
+was hiding is what earns the rung; the test edit alone never does. A test that is
+ineffective but whose repair still passes is `minor`.
+
+Neither bar is a reporting bar. Report the finding either way with its severity
+attached — see [`../MODEL_NOTES.md`](../MODEL_NOTES.md) §1.
+
+### Severity is not classification
+
+Severity describes a **finding**: how far the defect reaches. Classification
+(`minor` / `material`, below) describes the **change the pass made**: whether
+behavior moved. They are independent axes, and the two words colliding on
+`minor` is a naming accident, not a mapping.
+
+A `major` finding whose fix edited only comments, only docs, or only tests
+classifies `minor` — nothing that executes changed. A `nit` whose fix altered a
+conditional classifies `material`. Read the diff, not the label on the thread.
+Never restate a severity to reach a classification, or pick a classification to
+match a severity.
+
 ## Build one immutable review packet
 
 Review fan-out must use one canonical description of the changeset. Without an
@@ -319,13 +374,12 @@ A convergence round:
   failure detection, and security when its signal is present. Drop type/API
   design, comment/docs, PR test analysis, and tenant-coupling. Those found what
   they were going to find in rounds 1–2, and they regenerate work indefinitely;
-- changes the PR only for a realistically reachable **blocking** defect whose
-  expected harm justifies the churn: one that ships materially wrong behavior,
-  loses or corrupts data, exposes a credible security or privacy exploit,
-  breaks a public contract, or breaks deploy or rollout. Defer everything else
-  and resolve the thread. Create an issue only for a concrete, high-impact
-  follow-up that should be scheduled within roughly two weeks; otherwise record
-  `outcome=deferred` with a no-issue rationale;
+- changes the PR only for a realistically reachable `blocking` defect, as the
+  severity ladder above defines it, whose expected harm justifies the churn. A
+  finding a comment or test edit could clear was never `blocking`. Defer
+  everything else and resolve the thread. Create an issue only for a concrete,
+  high-impact follow-up that should be scheduled within roughly two weeks;
+  otherwise record `outcome=deferred` with a no-issue rationale;
 - makes the smallest edit that clears the blocker. No refactors, no renames, no
   new abstraction, no test or comment hardening;
 - ends the loop as soon as it finds no blocking defect. Post the clean-pass
@@ -418,7 +472,8 @@ deduplicate by root cause before publishing it. For every confirmed finding:
 4. Put only the human finding prose in a regular UTF-8 content file. The helper
    owns the v3 marker, its field order, and its content hash.
 5. State severity, review lens, evidence, impact, and the expected correction.
-   Keep one root cause per thread.
+   Rate the severity off the ladder above, on blast radius. Keep one root cause
+   per thread.
 
 Post only confirmed findings. Never copy raw model output, hidden reasoning,
 logs, credentials, private data, or repository content unrelated to the
@@ -595,7 +650,12 @@ Every pass writes `$AGENT_LOOP_REVIEW_RESULT_FILE` when that variable is set.
 For a clean or changed pass, call the ledger helper's `write-result` command so
 it fetches the complete thread ledger, derives the forward transition, and
 atomically writes the canonical result. Supply `--classification
-minor|material` only when the head moved:
+minor|material` only when the head moved.
+
+Derive that classification from the diff this pass produced, never from the
+severities on the threads it dispositioned — see "Severity is not
+classification" above. A pass whose commits changed no executing line is
+`minor` even when a thread it closed was posted `blocking` or `major`:
 
 ```bash
 node <ledger-helper> write-result \
@@ -690,11 +750,13 @@ Run the relay until all of the following hold, then mark the PR ready:
    structured disposition and is resolved.
 
 Classify committed fixes as `material` or `minor` by effect, not by path or by
-finding severity. `material` covers substantive correctness, security/privacy,
-data-safety, compatibility, deployment/sync, or review-integrity changes,
-including tests or workflows needed to prevent a false green. `minor` is
-low-risk non-behavioral cleanup or polish. A material fix means the round did
-not converge; a minor fix is kept and does not by itself prevent convergence.
+finding severity — read the diff the pass produced, per "Severity is not
+classification" above. `material` covers substantive correctness,
+security/privacy, data-safety, compatibility, deployment/sync, or
+review-integrity changes, including tests or workflows needed to prevent a false
+green. `minor` is low-risk non-behavioral cleanup or polish. A material fix
+means the round did not converge; a minor fix is kept and does not by itself
+prevent convergence.
 
 Each engine pass remains evidence for the exact head it reviewed, and a later
 minor commit does not rewrite that historical fact. A round may converge on a

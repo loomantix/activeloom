@@ -139,9 +139,11 @@ the ship step; do not report the remaining rounds as owed.
 
 Classify by effect, not path or finding severity. A correctness, security,
 deployment/sync, or review-integrity fix may be material even when it touches a
-test or workflow. Minor means low-risk non-behavioral cleanup or polish. Every
-attestation stays exact to its reviewed head; the outer round owns any explicit
-minor-transition convergence decision.
+test or workflow, and a fixed `major` whose fix edited only comments, only docs,
+or only tests is `minor` — the severity of the finding never sets the
+classification of the pass. Minor means low-risk non-behavioral cleanup or
+polish. Every attestation stays exact to its reviewed head; the outer round owns
+any explicit minor-transition convergence decision.
 
 When the caller wants the hosted lane as the next step, hand off to
 `/reviewit <pr-number> deep`.

@@ -107,8 +107,11 @@ Add only lenses whose signal exists:
 
 Every finder prompt must identify the exact head and diff, ask the agent to
 read the source, request every plausible finding with severity and `file:line`,
-and impose a concise output ceiling. Do not ask finders to suppress findings by
-confidence. Run selected agents in parallel; the orchestrator verifies them.
+and impose a concise output ceiling. Name the four-rung ladder from the ledger
+reference in the prompt — `blocking`, `major`, `minor`, `nit`, rated on blast
+radius — so lenses do not each invent their own scale. Do not ask finders to
+suppress findings by confidence. Run selected agents in parallel; the
+orchestrator verifies them.
 
 Brief each finder per the ledger's diff-delivery rules: resolve the changed-file
 list once, name the paths that lens owns, and prefer `git diff <base-sha>..HEAD
@@ -180,10 +183,9 @@ already posted, reply with `outcome=deferred` and the no-issue rationale; keep a
 concern that does not clear the actionable finding bar out of the PR ledger.
 
 In a convergence round, the bar tightens further toward landing the change.
-Change the PR only for a **blocking** defect that also clears the bar above — one
-that is realistically reachable and ships materially wrong behavior, loses or
-corrupts data, exposes a credible security or privacy exploit, breaks a public
-contract, or breaks deploy or rollout:
+Change the PR only for a realistically reachable `blocking` defect, as the
+ledger's severity ladder defines it, that also clears the bar above. A finding a
+comment or test edit could clear was never `blocking`:
 
 - Fix a blocking finding with the smallest edit that clears it. No refactor, no
   rename, no new abstraction, no test or comment hardening alongside it.
@@ -223,6 +225,13 @@ substantive correctness, security/privacy, data-safety, compatibility,
 deployment/sync, or review-integrity change, including a test or workflow
 change needed to prevent a false green. `minor` is low-risk non-behavioral
 cleanup, clarity, or test/docs polish.
+
+Severity is a property of the finding, classification a property of this pass's
+diff, and neither implies the other. A `major` finding whose fix touched only
+comments, only docs, or only tests is a `minor` pass. Never restate a severity
+to reach a classification: the thread's severity is fixed evidence, and the
+classification is read off the diff. See "Severity is not classification" in the
+ledger reference.
 
 Every engine attestation remains exact to the head it reviewed. A later minor
 fix does not rewrite that evidence or claim the other engine reviewed the new
