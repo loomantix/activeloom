@@ -356,7 +356,17 @@ def drop_empty_placeholder_lines(
     # An `out` emptied by dropping every line is an empty document, not a blank
     # line — the pinned prettier writes an empty file, so appending "\n" here
     # would be churn against the consumer's own format run.
-    return out + "\n" if trailing_newline and out else out
+    if trailing_newline and out:
+        return out + "\n"
+    if out.endswith("\r") and not keep[-1]:
+        # The source had no trailing newline and its last line was dropped, so
+        # the separator in front of that line is only half-gone: `split("\n")`
+        # left its `\r` behind on the line now at the end. Drop that orphan, or
+        # a CRLF template renders out ending in a bare carriage return that
+        # terminates nothing. Mid-file drops need no such fixup — every kept
+        # line still carries its own `\r` and the rejoin is well-formed.
+        return out[:-1]
+    return out
 
 
 def substitute(
