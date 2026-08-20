@@ -7,10 +7,10 @@ and it decides purely from the line's own bytes. The engine carries no Markdown
 knowledge, by design, because a whole-file normalizer cannot tell an
 author-written blank line from a placeholder-produced one without re-parsing the
 document. That leaves one gap: a key opted into collapsing whose template
-occurrence sits inside literal content — a fenced block, a four-space indented
-block, an HTML comment, or a raw `<pre>`, `<script>`, `<style>`, or `<textarea>`
-— would silently delete a line of that content from every consumer's rendered
-file.
+occurrence sits inside literal content — front matter, a fenced block, a
+four-space indented block, an HTML comment, or a raw `<pre>`, `<script>`,
+`<style>`, or `<textarea>` — would silently delete a line of that content from
+every consumer's rendered file.
 
 Close it here rather than in the engine. Reading the template is cheap at lint
 time, a violation is always an authoring mistake in this repo's own manifest,
@@ -39,6 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 PLACEHOLDER_RE = re.compile(r"<<([A-Z][A-Z0-9_]*)>>")
 FENCE_RE = re.compile(r"(`{3,}|~{3,})")
+LIST_ITEM_FENCE_PREFIX_RE = re.compile(r"(?:^|[ \t>])(?:[-+*]|\d{1,9}[.)])[ \t]+\Z")
 RAW_TAG_EVENT_RE = re.compile(
     r"</(?P<close>pre|script|style|textarea)\s*>|<(?P<open>pre|script|style|textarea)\b",
     re.IGNORECASE,
@@ -60,29 +61,48 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
     a consumer a deleted line.
     """
     literal = [False] * len(lines)
-    fence: tuple[str, int] | None = None
+    fence: tuple[str, int, str] | None = None
     raw_tag: str | None = None
     in_comment = False
     in_processing_instruction = False
     in_declaration = False
     in_cdata = False
+    front_matter_delimiter = (
+        lines[0].strip(" \t\r")
+        if lines and lines[0].strip(" \t\r") in {"---", "+++"}
+        else None
+    )
     for index, line in enumerate(lines):
+        if front_matter_delimiter is not None:
+            literal[index] = True
+            if index > 0 and line.strip(" \t\r") == front_matter_delimiter:
+                front_matter_delimiter = None
+            continue
         fence_match = FENCE_RE.search(line)
         if fence_match is not None and any(
             char not in " \t>-+*0123456789.)" for char in line[: fence_match.start()]
         ):
             fence_match = None
         if fence is None and fence_match is not None:
-            fence = (fence_match.group(1)[0], len(fence_match.group(1)))
+            fence = (
+                fence_match.group(1)[0],
+                len(fence_match.group(1)),
+                line[: fence_match.start()],
+            )
             literal[index] = True
             continue
         if fence is not None:
             literal[index] = True
-            char, length = fence
+            char, length, opener_prefix = fence
             if (
                 fence_match is not None
                 and fence_match.group(1)[0] == char
                 and len(fence_match.group(1)) >= length
+                and line[: fence_match.start()] == opener_prefix
+                # Repeating a list-item prefix starts another list item; it
+                # cannot close the earlier item's fence. Treating it as a
+                # closer exposes the second fenced block to unsafe collapsing.
+                and LIST_ITEM_FENCE_PREFIX_RE.search(opener_prefix) is None
                 and not line[fence_match.end() :].strip(" \t\r")
             ):
                 fence = None
@@ -157,11 +177,13 @@ def check_source(source: Path, collapse_keys: list[str]) -> list[str]:
     literal = literal_content_lines(lines)
     violations: list[str] = []
     collapse_set = set(collapse_keys)
+    source_keys: set[str] = set()
     for key in sorted(collapse_set):
         if PLACEHOLDER_NAME_RE.fullmatch(key) is None:
             violations.append(f"{source}: `{key}` is not a valid placeholder key")
     for index, line in enumerate(lines):
         line_keys = set(PLACEHOLDER_RE.findall(line))
+        source_keys.update(line_keys)
         present = line_keys & collapse_set
         if not present:
             continue
@@ -172,13 +194,16 @@ def check_source(source: Path, collapse_keys: list[str]) -> list[str]:
                 reason = "shares its line with a placeholder that is not opted in"
             elif PLACEHOLDER_RE.sub("", line).strip(" \t\r"):
                 reason = "shares its line with non-placeholder text"
-            elif index > 0 and lines[index - 1].strip():
+            elif index > 0 and lines[index - 1].strip(" \t\r"):
                 reason = "is not preceded by a blank separator"
-            elif index + 1 < len(lines) and lines[index + 1].strip():
+            elif index + 1 < len(lines) and lines[index + 1].strip(" \t\r"):
                 reason = "is not followed by a blank separator"
             else:
                 continue
             violations.append(f"{source}:{index + 1}: `{key}` {reason}")
+    for key in sorted(collapse_set - source_keys):
+        if PLACEHOLDER_NAME_RE.fullmatch(key) is not None:
+            violations.append(f"{source}: `{key}` has no placeholder occurrence")
     return violations
 
 
