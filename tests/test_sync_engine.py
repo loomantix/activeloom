@@ -3282,3 +3282,40 @@ def test_main_sensitive_directory_destination_refused_before_any_delete(
     assert "refusing to write sensitive path" in capsys.readouterr().err
     # The tree is untouched, per the guarantee in docs/sync.md.
     assert child.read_text() == "consumer child\n"
+
+
+def test_render_preserves_unicode_whitespace_separator(sync_engine: ModuleType) -> None:
+    text = "a\n\n<<E>>\n\u00a0\nb\n"
+    assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\n\u00a0\nb\n"
+
+
+def test_render_treats_crlf_only_value_as_empty(sync_engine: ModuleType) -> None:
+    text = "a\r\n\r\n<<E>>\r\n\r\nb\r\n"
+    assert sync_engine.substitute(text, {"E": "\r\n"}, ["E"], "src.md", ["E"]) == "a\r\n\r\nb\r\n"
+
+
+def test_main_preserves_crlf_while_collapsing_an_empty_placeholder(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (upstream_repo / "template.md").write_bytes(b"a\r\n\r\n<<E>>\r\n\r\nb\r\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "template.md",
+                    "destination": "rendered.md",
+                    "substitutions": ["E"],
+                    "collapse_empty_substitutions": ["E"],
+                }
+            ]
+        },
+    )
+    _write_yaml(consumer_dir / ".platform-config.yml", {"substitutions": {"E": ""}})
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 0
+    assert (consumer_dir / "rendered.md").read_bytes() == b"a\r\n\r\nb\r\n"
+

@@ -241,6 +241,18 @@ def load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(fp) or {}
 
 
+def read_utf8(path: Path) -> str:
+    """Read UTF-8 text without universal-newline translation."""
+    with path.open(encoding="utf-8", newline="") as file:
+        return file.read()
+
+
+def write_utf8(path: Path, content: str) -> None:
+    """Write UTF-8 text without platform newline translation."""
+    with path.open("w", encoding="utf-8", newline="") as file:
+        file.write(content)
+
+
 def drop_empty_placeholder_lines(
     text: str, rendered_values: dict[str, str], collapse_keys: set[str], source: str
 ) -> str:
@@ -283,7 +295,7 @@ def drop_empty_placeholder_lines(
         # a placeholder at either end leaves a leading/trailing blank behind.
         if not 0 <= index < len(lines):
             return True
-        return not lines[index].strip()
+        return not lines[index].strip(" \t\r")
 
     def previous_kept(index: int) -> int:
         # Look past lines already dropped this pass, so back-to-back empty
@@ -298,7 +310,7 @@ def drop_empty_placeholder_lines(
         matches = list(PLACEHOLDER_RE.finditer(line))
         # Strip `\r` alongside spaces and tabs: `.split("\n")` leaves it on
         # every line of a CRLF source, and without this the residue is truthy
-        # and no line ever qualifies. Matches `is_blank`'s bare `.strip()`.
+        # and no line ever qualifies. Matches `is_blank`'s ASCII-only rule.
         if not matches or PLACEHOLDER_RE.sub("", line).strip(" \t\r"):
             continue
         keys = [match.group(1) for match in matches]
@@ -395,7 +407,8 @@ def substitute(
     # the natural way a consumer says "this section is empty" — `str(None)`
     # would render the literal word `None` into their repo and block collapsing.
     rendered_values = {
-        key: "" if values[key] is None else str(values[key]).rstrip("\n") for key in declared
+        key: "" if values[key] is None else str(values[key]).rstrip("\r\n")
+        for key in declared
     }
     collapse_keys = set(collapse_empty_substitutions)
 
@@ -417,10 +430,10 @@ def substitute(
 def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
     """Write content to path only if it differs. Return True if a write happened."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.is_file() else None
+    existing = read_utf8(path) if path.is_file() else None
     changed = existing != content
     if changed:
-        path.write_text(content, encoding="utf-8")
+        write_utf8(path, content)
     if mode is not None:
         # `stat.S_IMODE` keeps the full 12-bit permission set (setuid +
         # setgid + sticky + rwx*3). `& 0o777` would mask off the upper
@@ -1250,7 +1263,7 @@ def main() -> int:
             sys.stderr.write(f"  ❌ source missing in upstream: {source_rel}\n")
             return 1
 
-        text = source_path.read_text(encoding="utf-8")
+        text = read_utf8(source_path)
         # Always run substitution — even when subs=[] — so that the
         # "undeclared placeholder in source" warning fires when a developer
         # adds a `<<KEY>>` token to a source file but forgets to declare
@@ -1267,7 +1280,7 @@ def main() -> int:
         # so counting at the consent check instead would make the false
         # positive the common case and the real signal the rare one.
         if args.dry_run:
-            existing = dest_path.read_text(encoding="utf-8") if dest_path.is_file() else None
+            existing = read_utf8(dest_path) if dest_path.is_file() else None
             current_mode = stat.S_IMODE(dest_path.stat().st_mode) if dest_path.is_file() else None
             content_diverged = existing != substituted
             mode_diverged = mode is not None and current_mode is not None and current_mode != mode
