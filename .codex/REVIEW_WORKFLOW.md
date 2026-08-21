@@ -55,13 +55,16 @@ The local relay has two explicit session modes. A consumer may declare a default
 otherwise ask the user before the first cross-engine transition. Do not switch
 modes silently in the middle of a round.
 
-- **Auto mode** runs the complete bounded chain. The default direct interactive
-  transition starts Agy only through
+- **Auto mode** runs the complete bounded chain. Resolve the effective roster
+  first and invoke each missing declared reviewer through its tested launcher;
+  never change an in-flight roster implicitly. For a newly declared relay the
+  default direct interactive reviewer is Agy, started only through
   `.codex/skills/critique/scripts/run-agy-review.sh`. That launcher pins
   `gemini-3.7-flash-high`, literal `--effort high`, accept-edits mode, unattended
   permissions, structured output, and a 60-minute print bound; callers cannot
   supply or override them. It also requires Agy to resolve the current
-  `deepcritique` skill and rejects stale backup skill paths before review. A
+  `deepcritique` skill, resolves its real target, and validates the complete Agy
+  relay surface before review. A
   consumer may explicitly retain Claude through the tested
   `run-claude-review.sh` launcher, which keeps its literal `--effort low`
   contract. Agy starts a fresh one-shot by omitting continuation flags, but the
@@ -104,7 +107,7 @@ engine in a fresh terminal.
    one read.
 
    How the next reviewer starts is a mode choice, not a protocol rule. Auto
-   mode launches it from the current session through its tested launcher and
+   mode launches it from the current session through its roster-selected tested launcher and
    continues when it returns. Handoff mode posts a handoff comment and
    stops, so the next reviewer begins in a fresh user-started terminal. Both
    modes carry the same comment/fix/reply/resolve contract, and neither changes

@@ -61,9 +61,40 @@ def _trusted_environment(
     return {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
 
-def _fake_agy(tmp_path: Path, *, review_status: str = "SUCCESS", stale: bool = False) -> Path:
-    fake_agy = tmp_path / "agy"
+def _fake_agy(tmp_path: Path, *, review_status: str = "SUCCESS", stale: bool = False) -> tuple[Path, Path]:
+    surface = tmp_path / "agy-surface" / ".agents"
     skill_parent = "deepcritique.bak.20260817T164958Z" if stale else "deepcritique"
+    deep_skill = surface / "skills" / skill_parent / "SKILL.md"
+    deep_skill.parent.mkdir(parents=True)
+    deep_skill.write_text(
+        "AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_BASE_SHA write-result gemini antigravity\n",
+        encoding="utf-8",
+    )
+    display_skill = deep_skill
+    if stale:
+        canonical_skill_dir = surface / "skills/deepcritique"
+        canonical_skill_dir.symlink_to(deep_skill.parent, target_is_directory=True)
+        display_skill = canonical_skill_dir / "SKILL.md"
+    required_files = {
+        surface / "references/local-review-ledger.md": "ledger\n",
+        surface / "references/roles/code-reviewer.md": "role\n",
+        surface / "references/roles/silent-failure-hunter.md": "role\n",
+        surface / "references/roles/type-design-analyzer.md": "role\n",
+        surface / "references/roles/comment-analyzer.md": "role\n",
+        surface / "references/roles/pr-test-analyzer.md": "role\n",
+        surface / "references/roles/security-reviewer.md": "role\n",
+        surface / "skills/critique/SKILL.md": (
+            "AGENT_LOOP_REVIEW_ENGINE write-result "
+            ".agents/references/local-review-ledger.md\n"
+        ),
+        surface / "skills/critique/scripts/review-ledger.js": "ledger\n",
+        surface / "skills/refactorpass/SKILL.md": "refactor\n",
+    }
+    for path, content in required_files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    fake_agy = tmp_path / "agy"
     fake_agy.write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, sys\n"
@@ -71,7 +102,7 @@ def _fake_agy(tmp_path: Path, *, review_status: str = "SUCCESS", stale: bool = F
         "prompt = args[-1]\n"
         "if prompt == '/skills':\n"
         "    print(json.dumps({'status': 'SUCCESS', 'command': {'data': {'skills': [\n"
-        f"        {{'name': 'deepcritique', 'path': '/skills/{skill_parent}/SKILL.md'}}\n"
+        f"        {{'name': 'deepcritique', 'path': {str(display_skill)!r}}}\n"
         "    ]}}}))\n"
         "else:\n"
         "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n"
@@ -84,7 +115,7 @@ def _fake_agy(tmp_path: Path, *, review_status: str = "SUCCESS", stale: bool = F
         encoding="utf-8",
     )
     fake_agy.chmod(0o755)
-    return fake_agy
+    return fake_agy, surface
 
 
 def _command() -> list[str]:
@@ -105,7 +136,7 @@ def _command() -> list[str]:
 
 def test_launcher_executes_agy_with_pinned_model_and_high_effort(tmp_path: Path) -> None:
     argv_file = tmp_path / "argv.json"
-    fake_agy = _fake_agy(tmp_path)
+    fake_agy, surface = _fake_agy(tmp_path)
     environment = {
         **_trusted_environment(tmp_path),
         "AGY_ARGV_FILE": str(argv_file),
@@ -123,7 +154,7 @@ def test_launcher_executes_agy_with_pinned_model_and_high_effort(tmp_path: Path)
 
     invocation = json.loads(argv_file.read_text(encoding="utf-8"))
     argv = invocation["argv"]
-    assert argv[:11] == [
+    assert argv[:13] == [
         "--model",
         "gemini-3.7-flash-high",
         "--effort",
@@ -131,17 +162,20 @@ def test_launcher_executes_agy_with_pinned_model_and_high_effort(tmp_path: Path)
         "--mode",
         "accept-edits",
         "--dangerously-skip-permissions",
+        "--add-dir",
+        str(surface),
         "--output-format",
         "json",
         "--print-timeout",
         "60m",
     ]
-    assert argv[11] == "--print"
-    assert argv[12].startswith("/deepcritique 123\n")
-    assert "Continue review on PR #123" in argv[12]
-    assert "Use gemini as the active local-review engine identity" in argv[12]
-    assert HEAD in argv[12]
-    assert "round 2" in argv[12]
+    assert argv[13] == "--print"
+    assert argv[14].startswith("/deepcritique 123\n")
+    assert "Continue review on PR #123" in argv[14]
+    assert "Use gemini as the active local-review engine identity" in argv[14]
+    assert f"Agy relay surface is {surface}" in argv[14]
+    assert HEAD in argv[14]
+    assert "round 2" in argv[14]
     assert invocation["env"] == {"base": HEAD, "engine": "gemini", "round": "2"}
     assert result.stdout == "review complete\n"
 
@@ -189,7 +223,7 @@ def test_launcher_rejects_mismatched_worktree_before_agy(tmp_path: Path) -> None
 
 def test_launcher_rejects_canceled_agy_result_even_with_zero_exit(tmp_path: Path) -> None:
     argv_file = tmp_path / "argv.json"
-    fake_agy = _fake_agy(tmp_path, review_status="CANCELED")
+    fake_agy, _ = _fake_agy(tmp_path, review_status="CANCELED")
     environment = {
         **_trusted_environment(tmp_path),
         "AGY_ARGV_FILE": str(argv_file),
@@ -211,7 +245,7 @@ def test_launcher_rejects_canceled_agy_result_even_with_zero_exit(tmp_path: Path
 
 def test_launcher_rejects_stale_backup_skill_before_review(tmp_path: Path) -> None:
     argv_file = tmp_path / "argv.json"
-    fake_agy = _fake_agy(tmp_path, stale=True)
+    fake_agy, _ = _fake_agy(tmp_path, stale=True)
     environment = {
         **_trusted_environment(tmp_path),
         "AGY_ARGV_FILE": str(argv_file),

@@ -68,7 +68,7 @@ result_file="$temp_dir/result.json"
     --output-format json \
     --print '/skills' >"$skills_file"
 
-python3 - "$skills_file" <<'PY'
+agy_surface_root="$(python3 - "$skills_file" <<'PY'
 import json
 import pathlib
 import sys
@@ -86,10 +86,46 @@ matches = [row for row in skills if row.get("name") == "deepcritique"]
 if len(matches) != 1:
     raise SystemExit("agy must resolve exactly one deepcritique skill")
 
-path = pathlib.Path(str(matches[0].get("path", "")))
+display_path = pathlib.Path(str(matches[0].get("path", "")))
+try:
+    path = display_path.resolve(strict=True)
+except OSError as error:
+    raise SystemExit(f"agy deepcritique skill path cannot be resolved: {error}")
 if path.name != "SKILL.md" or path.parent.name != "deepcritique" or any(".bak." in part for part in path.parts):
     raise SystemExit(f"agy resolved a stale or unexpected deepcritique skill: {path}")
+
+surface = path.parent.parent.parent
+required = [
+    surface / "references/local-review-ledger.md",
+    surface / "references/roles/code-reviewer.md",
+    surface / "references/roles/silent-failure-hunter.md",
+    surface / "references/roles/type-design-analyzer.md",
+    surface / "references/roles/comment-analyzer.md",
+    surface / "references/roles/pr-test-analyzer.md",
+    surface / "references/roles/security-reviewer.md",
+    surface / "skills/critique/SKILL.md",
+    surface / "skills/critique/scripts/review-ledger.js",
+    surface / "skills/refactorpass/SKILL.md",
+]
+missing = [str(candidate) for candidate in required if not candidate.is_file()]
+if missing:
+    raise SystemExit(f"agy deepcritique relay surface is incomplete: {', '.join(missing)}")
+
+deep_contract = path.read_text(encoding="utf-8")
+critique_contract = (surface / "skills/critique/SKILL.md").read_text(encoding="utf-8")
+for capability in ("AGENT_LOOP_REVIEW_ENGINE", "AGENT_LOOP_REVIEW_BASE_SHA", "write-result", "gemini", "antigravity"):
+    if capability not in deep_contract:
+        raise SystemExit(f"agy deepcritique skill lacks required capability: {capability}")
+for capability in ("AGENT_LOOP_REVIEW_ENGINE", "write-result", ".agents/references/local-review-ledger.md"):
+    if capability not in critique_contract:
+        raise SystemExit(f"agy critique skill lacks required capability: {capability}")
+
+surface_text = str(surface)
+if not surface.is_absolute() or "\n" in surface_text or "\r" in surface_text:
+    raise SystemExit("agy relay surface path is unsafe")
+print(surface_text)
 PY
+)"
 
 prompt="/deepcritique ${pr}
 
@@ -97,12 +133,15 @@ Continue review on PR #${pr} in ${repo}.
 
 This is automatic local-convergence mode. Run a fresh Gemini deepcritique pass
 for round ${round} against the pinned base ${base} and exact reviewed head
-${head}. Use gemini as the active local-review engine identity. Reconstruct
-context from the PR description, commits, diff, checks, and complete
-local-review ledger, including resolved threads and prior attestations. Post
-verified findings inline before edits, then validate, push, reply, resolve, and
-publish the normal review result. Do not invoke Codex; return control to the
-calling Codex session when the Gemini pass is complete."
+${head}. Use gemini as the active local-review engine identity. The compatible
+Agy relay surface is ${agy_surface_root}; use absolute paths under that root for
+every .agents skill, reference, role, and ledger helper instead of assuming the
+review worktree contains a .agents directory. Reconstruct context from the PR
+description, commits, diff, checks, and complete local-review ledger, including
+resolved threads and prior attestations. Post verified findings inline before
+edits, then validate, push, reply, resolve, and publish the normal review result.
+Do not invoke Codex; return control to the calling Codex session when the Gemini
+pass is complete."
 
 export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"
@@ -114,6 +153,7 @@ set +e
     --effort high \
     --mode accept-edits \
     --dangerously-skip-permissions \
+    --add-dir "$agy_surface_root" \
     --output-format json \
     --print-timeout 60m \
     --print "$prompt" >"$result_file"
