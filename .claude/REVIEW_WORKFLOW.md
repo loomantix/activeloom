@@ -384,12 +384,20 @@ session log; the ledger helper never does, and never may.
 Write telemetry working files to `$AGENT_LOOP_LOG_DIR/telemetry/` when that
 variable is set, or to another owner-only directory outside the Git worktree.
 
-Before the first reviewer, cleanup agent, or classification read — early enough
-that the pass's own setup counts as part of its cost:
+After the pre-flight has resolved the mandatory repository, PR, base, head,
+round, and stance identity, but before it reads review threads, classifies the
+changeset, or invokes the first reviewer or cleanup agent:
 
 ```bash
 node <usage-helper> snapshot --out "<telemetry-dir>/usage-start.json"
 ```
+
+The skill and identity-resolution pre-flight necessarily precede this boundary
+and are not included in the record. A failure before the boundary reports
+`telemetry not emitted: boundary unresolved`; it cannot truthfully construct the
+PR-bound record that `emit-telemetry` requires. A failure after the snapshot has
+all mandatory identity fields and emits `status=blocked`. Compare pass records
+only on this shared boundary.
 
 After the pass has finalized its v3 result, and after any fix commits:
 
@@ -410,8 +418,9 @@ it to `delta`. `tokenSource` is the provenance of the numbers and must never be
 upgraded by hand:
 
 - `session-log-delta` — measured, scoped to this pass.
-- `unscoped-session` — measured, but a truthful upper bound rather than this
-  pass's cost. A standalone pass with no start snapshot lands here.
+- `unscoped-session` — an unattributed session total. It may include or omit
+  work relative to this pass and must not be used in pass-cost comparisons. A
+  standalone pass with no usable start snapshot lands here.
 - `unavailable` — no usable data, and the record carries **no** token buckets.
 
 **A pass with no usable usage data must never emit zero tokens.** A zero makes
@@ -441,7 +450,11 @@ file-editing tool — never a heredoc or command substitution:
 }
 ```
 
-Count only threads this pass posted or dispositioned. `chainInducedRegressions`
+For this schema, `posted` is the number of unique finding threads this pass
+handled: the union of roots it newly posted and inherited occurrences it
+dispositioned. Count each thread once even when both happened in this pass; this
+keeps `posted` greater than or equal to the summed outcomes the helper validates.
+`chainInducedRegressions`
 counts new fingerprints whose diff anchor traces via `git blame` to a commit
 recorded as a fix SHA in an earlier disposition **on this PR** — rework the
 chain caused itself, which is far more expensive than either a finding or a

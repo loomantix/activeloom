@@ -19,24 +19,16 @@ session. Continue only after an explicit override.
 ## PR-first pre-flight
 
 1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
-2. Take the pass telemetry snapshot before reading or classifying anything, per
-   [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". A
-   cleanup pass spends tokens and moves lines; leaving it out would attribute
-   its churn to nobody while its cost vanished, which corrupts the per-line
-   denominator directly. The helper is a no-op when telemetry is not enabled
-   for this repository.
-3. Require a clean, committed feature branch, not `main`, `master`, or
+2. Require a clean, committed feature branch, not `main`, `master`, or
    `staging`.
-4. Reuse its open PR. If none exists, push normally and open a draft PR before
+3. Reuse its open PR. If none exists, push normally and open a draft PR before
    cleanup starts.
-5. Require local HEAD, remote head, and PR head to match. Read all prior review
-   threads. Telemetry markers are not review context: exclude every comment
-   whose marker begins `local-review-telemetry:` here and wherever else this
-   pass reads the PR's comments, and never carry one into context assembly.
-   Filter by that prefix rather than by a list of known markers, so a record
-   type added later is excluded by default.
-6. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
-7. Resolve the enclosing review round and stance from the caller when supplied.
+4. Require local HEAD, remote head, and PR head to match.
+5. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
+   Read the actor-owned issue comments needed for the tier, round, stance, and
+   latch, excluding every comment whose marker begins
+   `local-review-telemetry:`.
+6. Resolve the enclosing review round and stance from the caller when supplied.
    Otherwise take the round from the ledger's standalone rule, and take the
    stance from the effective tier marker already on the PR — that rule yields a
    round only, and stance follows the tier's schedule. Fall back to
@@ -44,7 +36,14 @@ session. Continue only after an explicit override.
    carrying none has had no prior round. Retain both values through every
    terminal branch because `emit-telemetry` requires them and offers no way to
    omit `--stance`.
-8. Apply the docs/config-only classification. On a skip, set the telemetry
+7. Take the pass telemetry snapshot now that its mandatory repository, PR,
+   base, head, round, and stance identity exists, per
+   [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". The
+   helper is a no-op when telemetry is not enabled for this repository. The
+   skill and identity-resolution setup above is outside the measurement boundary.
+8. Read all prior review threads. Telemetry markers are not review context:
+   exclude them by marker prefix and never carry one into context assembly.
+   Apply the docs/config-only classification. On a skip, set the telemetry
    status to `skipped` and continue directly to Output without spending the
    refactor latch.
 9. **Check the once-per-engine latch.** Search the PR's comments for
@@ -130,7 +129,9 @@ skip is the case that genuinely reports `skipped`.
 Emission exits zero whether or not it succeeded. Report the outcome and move on.
 When a failure terminates the pass after a snapshot was taken, emit
 `status=blocked` before returning; telemetry failure itself remains nonfatal and
-is not retried.
+is not retried. A failure before the snapshot boundary reports
+`telemetry not emitted: boundary unresolved` because the mandatory record
+identity does not yet exist.
 
 Report:
 

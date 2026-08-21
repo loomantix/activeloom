@@ -265,7 +265,7 @@ function readFrom(path, offset, size) {
 
 function parseEntries(text) {
   const entries = [];
-  let degraded = false;
+  let degradedReason = null;
   const lines = text.split('\n');
   for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
@@ -275,17 +275,17 @@ function parseEntries(text) {
     try {
       entries.push(JSON.parse(trimmed));
     } catch {
-      // A partially flushed final line is expected when reading a log that is
-      // still being appended to. Skipping it under-counts by at most one turn;
-      // failing here would cost the whole record. Only the final fragment is a
-      // normal boundary condition; corruption between complete lines makes a
-      // scoped measurement untrustworthy.
-      if (index < lines.length - 1 || text.endsWith('\n')) {
-        degraded = true;
-      }
+      // A partial final record is a normal concurrency condition, but omitting
+      // it still makes the captured total incomplete. Mid-log corruption and a
+      // partial tail have different diagnostics; neither may claim scoped
+      // provenance.
+      degradedReason ??=
+        index === lines.length - 1 && !text.endsWith('\n')
+          ? 'partial-record'
+          : 'parse-corruption';
     }
   }
-  return { entries, degraded };
+  return { entries, degradedReason };
 }
 
 const TOKEN_RE = /^[A-Za-z0-9._:/-]+$/;
@@ -498,8 +498,8 @@ function collect(sessionLog, offsets, identities = {}) {
       rewound = true;
     }
     const parsed = parseEntries(chunk.text);
-    if (parsed.degraded) {
-      degrade('parse-corruption');
+    if (parsed.degradedReason !== null) {
+      degrade(parsed.degradedReason);
     }
     for (const entry of parsed.entries) {
       const found = usageOf(entry);
@@ -717,15 +717,37 @@ function readSnapshot(path) {
   } catch {
     return null;
   }
+  const isRecord = (value) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
   if (
     !parsed ||
     typeof parsed !== 'object' ||
     parsed['version'] !== SNAPSHOT_VERSION ||
+    parsed['engine'] !== 'claude' ||
     typeof parsed['sessionLog'] !== 'string' ||
-    typeof parsed['offsets'] !== 'object' ||
-    parsed['offsets'] === null ||
+    !isRecord(parsed['offsets']) ||
+    !isRecord(parsed['identities']) ||
     parsed['identityBound'] !== true ||
-    nonNegativeInteger(parsed['offsets'][parsed['sessionLog']]) === null
+    typeof parsed['startedAt'] !== 'string' ||
+    Number.isNaN(Date.parse(parsed['startedAt']))
+  ) {
+    return null;
+  }
+  const offsetPaths = Object.keys(parsed['offsets']);
+  const identityPaths = Object.keys(parsed['identities']);
+  if (
+    nonNegativeInteger(parsed['offsets'][parsed['sessionLog']]) === null ||
+    offsetPaths.length !== identityPaths.length ||
+    offsetPaths.some((entry) => {
+      const identity = parsed['identities'][entry];
+      return (
+        nonNegativeInteger(parsed['offsets'][entry]) === null ||
+        !isRecord(identity) ||
+        nonNegativeInteger(identity['dev']) === null ||
+        nonNegativeInteger(identity['ino']) === null
+      );
+    }) ||
+    identityPaths.some((entry) => parsed['offsets'][entry] === undefined)
   ) {
     return null;
   }
@@ -790,8 +812,10 @@ function runDelta(args) {
       (collected.degraded ? 'degraded' : 'no-turns');
   } else if (!snapshot || collected.rewound) {
     // Without a usable start snapshot, or after the log rewound under us, the
-    // numbers are a truthful upper bound on the pass rather than a measurement
-    // of it.
+    // numbers are an unattributed session total rather than a measurement of
+    // this pass. Heuristic discovery can select another concurrent session, so
+    // this value has no directional bound and must not be used for pass-cost
+    // comparison.
     tokenSource = 'unscoped-session';
     reason = collected.rewound
       ? 'log-rewound'
@@ -852,11 +876,34 @@ function main(argv) {
   try {
     args = parseArgs(argv);
   } catch (error) {
-    return emit({
-      mode: null,
-      enabled: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    const requestedMode =
+      argv[0] === 'snapshot' || argv[0] === 'delta' ? argv[0] : null;
+    const message = error instanceof Error ? error.message : String(error);
+    if (requestedMode === 'snapshot') {
+      return emit({
+        mode: 'snapshot',
+        enabled: true,
+        sessionLog: null,
+        snapshotFile: null,
+        scoped: false,
+        error: message,
+      });
+    }
+    if (requestedMode === 'delta') {
+      return emit({
+        mode: 'delta',
+        enabled: true,
+        tokenSource: 'unavailable',
+        reason: 'error',
+        tokensFile: null,
+        lanesFile: null,
+        engineVersion: null,
+        durationSeconds: null,
+        turns: null,
+        error: message,
+      });
+    }
+    return emit({ mode: null, enabled: false, error: message });
   }
 
   const gate = gateState();

@@ -63,42 +63,44 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 ### PR-first pre-flight
 
 1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
-2. Take the pass telemetry snapshot before reading or classifying anything, per
-   [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". The
-   reading and classification this phase does is part of what the pass costs, so
-   a snapshot taken later would quietly under-report it. The helper is a no-op
-   when telemetry is not enabled for this repository.
-3. Require a clean, committed feature branch, not `main`, `master`, or
+2. Require a clean, committed feature branch, not `main`, `master`, or
    `staging`.
-4. Reuse the branch's open PR. If none exists, push normally and open a draft
+3. Reuse the branch's open PR. If none exists, push normally and open a draft
    PR before starting a reviewer.
-5. Require local HEAD, remote head, and PR head to match.
-6. Record the exact PR base and head SHAs. Read every prior review thread,
-   including resolved and outdated threads. Telemetry markers are not review
-   context: exclude every comment whose marker begins `local-review-telemetry:`
-   and never carry one into a finder prompt or packet. Filter by that prefix
-   rather than by a list of known markers, so a record type added later is
-   excluded by default. Where any remaining thread carries a v3 finding or
-   disposition record, write its comment ID to an owner-only file before
-   running a lane: that snapshot is the ledger's
+4. Require local HEAD, remote head, and PR head to match.
+5. Record the exact PR base and head SHAs. Read the actor-owned issue comments
+   needed to resolve the tier, round, and stance, excluding every comment whose
+   marker begins `local-review-telemetry:`.
+6. Resolve the round and stance now, before the telemetry boundary or any branch
+   that can emit. Read the effective tier marker already on the PR — reading it
+   only, since a pass that exits on the docs/config classification posts no
+   marker — and fall back to `adversarial` when none exists, which is correct
+   because a PR carrying no tier marker has had no prior round and both schedules
+   make round 1 adversarial. `emit-telemetry` requires `--stance` and offers no
+   way to omit it.
+7. Take the pass telemetry snapshot now that its mandatory repository, PR,
+   base, head, round, and stance identity exists, per
+   [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". The
+   helper is a no-op when telemetry is not enabled for this repository. The
+   skill and identity-resolution setup above is outside the measurement boundary.
+8. Read every prior review thread, including resolved and outdated threads.
+   Telemetry markers are not review context: exclude them by marker prefix and
+   never carry one into a finder prompt or packet. Where any remaining thread
+   carries a v3 finding or disposition record, write its comment ID to an
+   owner-only file before running a lane: that snapshot is the ledger's
    `--historical-comment-ids-file`, and it is the one attestation input that
    cannot be reconstructed once this pass has posted its own findings.
-7. Resolve the round and stance now, before any branch that can emit. Read the
-   effective tier marker already on the PR — reading it only, since a pass that
-   exits on the docs/config classification posts no marker — and fall back to
-   `adversarial` when none exists, which is correct because a PR carrying no
-   tier marker has had no prior round and both schedules make round 1
-   adversarial. `emit-telemetry` requires `--stance` and offers no way to omit
-   it, so a terminal branch reached without this is a branch that cannot emit.
-8. Skip docs/config-only changesets, per the ledger's changeset classification.
+9. Skip docs/config-only changesets, per the ledger's changeset classification.
    Finalize a clean v3 result using the ledger's wrapper/standalone ownership
    rule, then emit a `skipped` telemetry record, before returning. A skip still
    spends tokens reading and classifying the PR, and that overhead is worth
    seeing.
-9. If a failure terminates this pass after the snapshot was taken, emit
-   `status=blocked` before returning. This applies from here on, not only at
-   Phase 4 — a pass that dies in Phase 1 through 3 never reaches the output
-   phase, and that is exactly the pass the `blocked` record describes.
+10. If a failure terminates this pass after the snapshot boundary, emit
+    `status=blocked` before returning. This applies from here on, not only at
+    Phase 4 — a pass that dies in Phase 1 through 3 never reaches the output
+    phase, and that is exactly the pass the `blocked` record describes.
+    A failure in steps 1–6 reports `telemetry not emitted: boundary unresolved`
+    instead; it does not yet have the mandatory identity needed to emit.
 
 Do not begin a reviewer until the PR ledger is available. Do not use a
 force-push to establish or update the review branch.

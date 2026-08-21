@@ -428,17 +428,20 @@ def test_lanes_are_absent_rather_than_empty(tmp_path: Path, session: Path) -> No
     assert delta(tmp_path, start)["lanesFile"] is None
 
 
-def test_a_malformed_trailing_line_does_not_lose_the_record(
+def test_a_malformed_trailing_line_downgrades_the_record(
     tmp_path: Path, session: Path
 ) -> None:
-    """A log still being appended to routinely ends mid-line."""
+    """A partial turn is ordinary concurrency, but the total is incomplete."""
     session.write_text("")
     start = snapshot(session, tmp_path)
     with session.open("a") as handle:
         handle.write(turn(request_id="a", output=42))
         handle.write('{"type":"assistant","message":{"usa')
 
-    assert tokens_of(delta(tmp_path, start))[0]["output"] == 42
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["reason"] == "partial-record"
+    assert payload["tokensFile"] is None
 
 
 def test_mid_log_corruption_downgrades_instead_of_claiming_scoped(
@@ -647,6 +650,41 @@ def test_a_snapshot_version_bump_is_not_read_as_current(
 
     payload = delta(tmp_path, start, session_log=str(session))
     assert payload["tokenSource"] == "unscoped-session"
+
+
+def test_a_snapshot_without_boundary_identities_cannot_scope_a_delta(
+    tmp_path: Path, session: Path
+) -> None:
+    """An incomplete v1 snapshot must not disable replacement detection."""
+    session.write_text(turn(request_id="before", output=5))
+    start = snapshot(session, tmp_path)
+    stored = json.loads(start.read_text())
+    del stored["identities"]
+    start.write_text(json.dumps(stored))
+
+    replacement = session.with_name("replacement.jsonl")
+    replacement.write_text(
+        turn(request_id="before", output=5)
+        + turn(request_id="replacement", output=900)
+    )
+    session.unlink()
+    replacement.rename(session)
+
+    payload = delta(tmp_path, start, session_log=str(session))
+    assert payload["tokenSource"] == "unscoped-session"
+    assert payload["reason"] == "no-start-snapshot"
+
+
+def test_a_snapshot_parse_error_keeps_the_snapshot_failure_shape(
+    tmp_path: Path,
+) -> None:
+    """A malformed invocation is broken telemetry, not a deliberate opt-out."""
+    payload = run("snapshot", "--out")
+    assert payload["mode"] == "snapshot"
+    assert payload["enabled"] is True
+    assert payload["snapshotFile"] is None
+    assert payload["scoped"] is False
+    assert payload["error"]
 
 
 def test_an_unrecognised_model_id_downgrades_rather_than_dropping_its_tokens(
