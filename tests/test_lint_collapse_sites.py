@@ -53,6 +53,16 @@ def test_accepts_literal_content_with_an_explicit_empty_opt_in_list(
         "intro\n\n\t<<E>>\n\noutro\n",
         "---\nnote: |\n  before\n\n  <<E>>\n\n  after\n---\n",
         '+++\nnote = """\nbefore\n\n  <<E>>\n\nafter\n"""\n+++\n',
+        # A leading `---` may be a thematic break, not front matter. Reading it
+        # only as front matter lets a `---` inside a fence close a block the
+        # scanner never saw open, exposing the fenced content after it.
+        "---\n```\n---\n\n<<E>>\n\n```\n",
+        # The closing delimiter sits at column 0; an indented `---` is block
+        # scalar content, not the end of the block.
+        "---\nnote: |\n  ---\n\n  <<E>>\n\n  after\n---\n",
+        # A byte-order mark survives `encoding="utf-8"` and must not hide the
+        # opening delimiter.
+        "\ufeff---\nnote: |\n  before\n\n  <<E>>\n\n  after\n---\n",
     ],
 )
 def test_rejects_a_placeholder_inside_literal_content(
@@ -84,6 +94,14 @@ def test_rejects_a_placeholder_inside_literal_content(
         "> ```\n> quoted\n```\n\n<<E>>\n\n```\n",
         "- ```\n  listed\n```\n\n<<E>>\n\n```\n",
         "- ```\n  first\n\noutside\n\n- ```\n\n  <<E>>\n\n  tail\n  ```\n",
+        # A closing fence may be indented independently of its opener, and a
+        # blockquote's fence ends with the quote. Requiring the opener's exact
+        # prefix would hold the fence open past its real closer, so the next
+        # genuine opener gets consumed as the closer and its body reads as
+        # prose. Each shape below puts `<<E>>` inside a fenced block.
+        "```\n  ```\n```\n\n<<E>>\n",
+        "> ```\n```\n> ```\n\n<<E>>\n",
+        "  ```\n```\n  ```\n\n<<E>>\n",
         "intro\n\n \t<<E>>\n\noutro\n",
         "intro\n\n   \t<<E>>\n\noutro\n",
     ],

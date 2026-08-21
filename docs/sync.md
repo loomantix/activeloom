@@ -57,10 +57,14 @@ Two gaps to know about, so the allowlist isn't mistaken for a stronger boundary 
 The engine treats these as sensitive:
 
 ```
-.github/workflows/**   .github/actions/**   .github/CODEOWNERS
-package.json           pnpm-lock.yaml       prisma/schema.prisma
-Dockerfile             Dockerfile.*
+.github/workflows/**   .github/actions/**   **/CODEOWNERS
+**/package.json        **/pnpm-lock.yaml    **/prisma/schema.prisma
+**/Dockerfile          **/Dockerfile.*
 ```
+
+The `**/` entries match at any depth, root included, because a workspace-shaped repo keeps these files at `apps/web/package.json` or `services/api/Dockerfile` rather than at the root. `CODEOWNERS` is matched at any depth because GitHub resolves it from the repository root, `.github/`, and `docs/` — gating only one of the three would leave the review gate rewritable. The two `.github/` entries stay depth-pinned, since those directories are the only place GitHub reads workflows and composite actions from.
+
+One carve-out: a path inside an engine's own prompt surface (`.claude/**`, `.codex/**`, `.agents/**`) is not sensitive to either guard. Both guards exist to stop a manifest reaching _outside_ its surface into the files that configure your project — what CI runs, who reviews it, what the build installs. The prompt tree is the manifest's own payload, in a directory you already opened to it through `allowed_destinations`, and the engine writes arbitrary executable content there — skills, hooks, the vendored review-ledger bundle — with no gate at all. Gating `.codex/skills/critique/scripts/package.json`, two lines of `{"type": "module"}` scoping the directory that holds that bundle, while writing the bundle itself ungated on the same run is not a smaller grant, only a more confusing one. The carve-out is also what makes a synced sensitive path retirable — no consent key covers deletes, so without it a file the manifest ships could never be withdrawn by tombstone.
 
 It refuses to `delete:` any of them unconditionally. It also refuses to **write** any of them — overwriting an existing file or creating a new one — unless the consumer has named that exact path:
 
