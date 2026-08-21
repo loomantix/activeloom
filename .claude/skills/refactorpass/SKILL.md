@@ -32,23 +32,27 @@ session. Continue only after an explicit override.
 5. Require local HEAD, remote head, and PR head to match. Read all prior review
    threads.
 6. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
-7. Skip docs/config-only changesets, per the ledger's changeset
-   classification.
-8. **Check the once-per-engine latch.** Search the PR's comments for
+7. Resolve the enclosing review round and stance from the caller when supplied;
+   otherwise use the ledger's standalone round rule. Retain both values through
+   every terminal branch because `emit-telemetry` requires them.
+8. Apply the docs/config-only classification. On a skip, set the telemetry
+   status to `skipped` and continue directly to Output without spending the
+   refactor latch.
+9. **Check the once-per-engine latch.** Search the PR's comments for
    `local-review-refactor:v1 engine=claude`, authored by the actor running this
    review. If it is present, this PR has already had its Claude cleanup pass:
-   report the skip with the head the earlier pass ran on and stop. Do not run
-   `/simplify`. Continue only when the marker is absent or `$ARGUMENTS` contains
-   `force`, and say which of the two applied.
+   set the telemetry status to `clean` and continue directly to Output. Do not
+   run `/simplify`. Continue to cleanup only when the marker is absent or
+   `$ARGUMENTS` contains `force`, and say which of the two applied.
 
    The rule exists because the second pass over an already-simplified diff
    returns naming and shape churn, not cleanups. That churn moves the head and
    re-stales the other engine's attestation for no shipped benefit.
 
-9. Resolve the changed-file list once and follow the ledger's diff-delivery
-   rules. If this pass fans cleanup angles out to agents, scope each to the
-   files it reviews rather than giving every angle the same whole-diff
-   artifact.
+10. Resolve the changed-file list once and follow the ledger's diff-delivery
+    rules. If this pass fans cleanup angles out to agents, scope each to the
+    files it reviews rather than giving every angle the same whole-diff
+    artifact.
 
 ## Single `/simplify` pass
 
@@ -115,6 +119,9 @@ rejects a `skipped` pass carrying review-significant files. A docs/config-only
 skip is the case that genuinely reports `skipped`.
 
 Emission exits zero whether or not it succeeded. Report the outcome and move on.
+When a failure terminates the pass after a snapshot was taken, emit
+`status=blocked` before returning; telemetry failure itself remains nonfatal and
+is not retried.
 
 Report:
 

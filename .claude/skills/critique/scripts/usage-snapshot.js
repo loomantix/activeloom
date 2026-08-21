@@ -32,9 +32,10 @@ import {
   statSync,
   readFileSync,
   writeFileSync,
+  chmodSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 const SNAPSHOT_VERSION = 1;
 
@@ -143,22 +144,49 @@ function listSessionLogs(dir) {
   return logs.sort((left, right) => right.mtimeMs - left.mtimeMs);
 }
 
+function findSessionLogById(root, preferredDir, sessionId) {
+  const name = `${sessionId}.jsonl`;
+  const preferred = join(preferredDir, name);
+  if (fileSize(preferred) !== null) {
+    return preferred;
+  }
+  let projects;
+  try {
+    projects = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const matches = projects
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(root, entry.name, name))
+    .filter((path) => fileSize(path) !== null);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 /**
  * Resolve the log for the session this pass is running in.
  *
- * Discovery happens at snapshot time, when the session we are running in is by
- * construction the one most recently appended to. `delta` never re-discovers:
- * it reads the path the snapshot recorded, so a second session becoming the
- * most recent one mid-pass cannot silently retarget the measurement.
+ * Prefer the harness's exact session id. Newest-by-mtime remains a compatibility
+ * fallback, but it is never strong enough to claim pass-scoped provenance when
+ * another session can use the same working directory. `delta` never re-targets
+ * a valid identity-bound snapshot.
  */
 function discoverSessionLog(args) {
   const explicit = args.sessionLog ?? process.env['CLAUDE_SESSION_LOG'];
   if (explicit) {
-    return resolve(explicit);
+    return { path: resolve(explicit), identityBound: true };
   }
-  const dir = join(projectsRoot(args), projectSlug(args.cwd ?? process.cwd()));
+  const root = projectsRoot(args);
+  const dir = join(root, projectSlug(args.cwd ?? process.cwd()));
+  const sessionId = process.env['CLAUDE_CODE_SESSION_ID'];
+  if (sessionId && /^[A-Za-z0-9._-]+$/.test(sessionId)) {
+    const identityBound = findSessionLogById(root, dir, sessionId);
+    if (identityBound !== null) {
+      return { path: identityBound, identityBound: true };
+    }
+  }
   const [newest] = listSessionLogs(dir);
-  return newest ? newest.path : null;
+  return newest ? { path: newest.path, identityBound: false } : null;
 }
 
 function sessionIdFor(sessionLogPath) {
@@ -198,11 +226,7 @@ function fileSize(path) {
 }
 
 /** Read a byte range without pulling a multi-megabyte transcript into memory. */
-function readFrom(path, offset) {
-  const size = fileSize(path);
-  if (size === null) {
-    return null;
-  }
+function readFrom(path, offset, size) {
   if (offset > size) {
     // The log was truncated or rotated under us, so the recorded offset no
     // longer names the point the pass began at.
@@ -231,7 +255,9 @@ function readFrom(path, offset) {
 
 function parseEntries(text) {
   const entries = [];
-  for (const line of text.split('\n')) {
+  let degraded = false;
+  const lines = text.split('\n');
+  for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
     if (trimmed === '') {
       continue;
@@ -241,10 +267,15 @@ function parseEntries(text) {
     } catch {
       // A partially flushed final line is expected when reading a log that is
       // still being appended to. Skipping it under-counts by at most one turn;
-      // failing here would cost the whole record.
+      // failing here would cost the whole record. Only the final fragment is a
+      // normal boundary condition; corruption between complete lines makes a
+      // scoped measurement untrustworthy.
+      if (index < lines.length - 1 || text.endsWith('\n')) {
+        degraded = true;
+      }
     }
   }
-  return entries;
+  return { entries, degraded };
 }
 
 const TOKEN_RE = /^[A-Za-z0-9._:/-]+$/;
@@ -330,6 +361,19 @@ function usageOf(entry) {
   if (!usage || typeof usage !== 'object') {
     return null;
   }
+  const details = usage['output_tokens_details'];
+  const values = [
+    usage['input_tokens'],
+    usage['output_tokens'],
+    usage['cache_read_input_tokens'],
+    usage['cache_creation_input_tokens'],
+    details && typeof details === 'object'
+      ? details['thinking_tokens']
+      : undefined,
+  ];
+  if (!values.some((value) => nonNegativeInteger(value) !== null)) {
+    return null;
+  }
   return { usage, model: message['model'] };
 }
 
@@ -350,19 +394,48 @@ function retain(previous, candidate) {
   return after >= before ? candidate : previous;
 }
 
-function collect(logs, offsets) {
+function boundaryFor(path) {
+  try {
+    const stat = statSync(path);
+    return { path, size: stat.size, dev: stat.dev, ino: stat.ino };
+  } catch {
+    return null;
+  }
+}
+
+function boundaryUnchanged(boundary) {
+  const current = boundaryFor(boundary.path);
+  return (
+    current !== null &&
+    current.size === boundary.size &&
+    current.dev === boundary.dev &&
+    current.ino === boundary.ino
+  );
+}
+
+function collect(sessionLog, offsets) {
   const turnsByKey = new Map();
   let rewound = false;
+  let degraded = false;
+  const logs = passLogs(sessionLog);
+  const boundaries = logs.map(boundaryFor).filter((value) => value !== null);
 
-  for (const path of logs) {
-    const chunk = readFrom(path, offsets[path] ?? 0);
+  for (const boundary of boundaries) {
+    const chunk = readFrom(
+      boundary.path,
+      offsets[boundary.path] ?? 0,
+      boundary.size,
+    );
     if (chunk === null) {
+      degraded = true;
       continue;
     }
     if (chunk.rewound) {
       rewound = true;
     }
-    for (const entry of parseEntries(chunk.text)) {
+    const parsed = parseEntries(chunk.text);
+    degraded ||= parsed.degraded;
+    for (const entry of parsed.entries) {
       const found = usageOf(entry);
       if (found === null) {
         continue;
@@ -383,6 +456,16 @@ function collect(logs, offsets) {
         }),
       );
     }
+  }
+
+  const finalLogs = passLogs(sessionLog);
+  if (
+    finalLogs.length !== logs.length ||
+    finalLogs.some((path, index) => path !== logs[index]) ||
+    boundaries.length !== logs.length ||
+    boundaries.some((boundary) => !boundaryUnchanged(boundary))
+  ) {
+    degraded = true;
   }
 
   const byModel = new Map();
@@ -445,11 +528,25 @@ function collect(logs, offsets) {
     ...lane.counters,
   }));
 
-  return { tokens, lanes, rewound, engineVersion, lastTimestamp, turns };
+  return {
+    tokens,
+    lanes,
+    rewound,
+    degraded,
+    engineVersion,
+    lastTimestamp,
+    turns,
+  };
 }
 
 function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+function ensureOwnerOnlyDir(path) {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  chmodSync(path, 0o700);
 }
 
 function emit(payload) {
@@ -461,7 +558,9 @@ function runSnapshot(args) {
   if (!args.out) {
     throw new Error('snapshot requires --out');
   }
-  const sessionLog = discoverSessionLog(args);
+  ensureOwnerOnlyDir(dirname(resolve(args.out)));
+  const discovered = discoverSessionLog(args);
+  const sessionLog = discovered?.path ?? null;
   const snapshot = {
     version: SNAPSHOT_VERSION,
     engine: 'claude',
@@ -469,6 +568,7 @@ function runSnapshot(args) {
     sessionId: sessionLog ? sessionIdFor(sessionLog) : null,
     startedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
     offsets: {},
+    identityBound: discovered?.identityBound ?? false,
   };
   if (sessionLog !== null) {
     for (const path of passLogs(sessionLog)) {
@@ -486,7 +586,10 @@ function runSnapshot(args) {
     snapshotFile: resolve(args.out),
     // A pass that starts with no discoverable log can still emit; it just
     // cannot claim a scoped measurement.
-    scoped: sessionLog !== null,
+    scoped:
+      sessionLog !== null &&
+      discovered?.identityBound === true &&
+      snapshot.offsets[sessionLog] !== undefined,
     error: null,
   });
 }
@@ -507,7 +610,9 @@ function readSnapshot(path) {
     parsed['version'] !== SNAPSHOT_VERSION ||
     typeof parsed['sessionLog'] !== 'string' ||
     typeof parsed['offsets'] !== 'object' ||
-    parsed['offsets'] === null
+    parsed['offsets'] === null ||
+    parsed['identityBound'] !== true ||
+    nonNegativeInteger(parsed['offsets'][parsed['sessionLog']]) === null
   ) {
     return null;
   }
@@ -518,10 +623,13 @@ function runDelta(args) {
   if (!args.outDir) {
     throw new Error('delta requires --out-dir');
   }
-  mkdirSync(args.outDir, { recursive: true, mode: 0o700 });
+  ensureOwnerOnlyDir(args.outDir);
 
   const snapshot = readSnapshot(args.start);
-  const sessionLog = snapshot ? snapshot.sessionLog : discoverSessionLog(args);
+  const discovered = snapshot ? null : discoverSessionLog(args);
+  const sessionLog = snapshot
+    ? snapshot.sessionLog
+    : (discovered?.path ?? null);
 
   if (sessionLog === null || fileSize(sessionLog) === null) {
     // No usable log. This must never serialise as zero tokens: an engine that
@@ -541,10 +649,10 @@ function runDelta(args) {
   }
 
   const offsets = snapshot ? snapshot.offsets : {};
-  const collected = collect(passLogs(sessionLog), offsets);
+  const collected = collect(sessionLog, offsets);
 
   let tokenSource;
-  if (collected.tokens.length === 0) {
+  if (collected.tokens.length === 0 || collected.degraded) {
     tokenSource = 'unavailable';
   } else if (!snapshot || collected.rewound) {
     // Without a start snapshot, or after the log rewound under us, the numbers

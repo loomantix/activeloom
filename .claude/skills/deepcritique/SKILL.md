@@ -41,15 +41,18 @@ Proceed in the current session only after an explicit override.
    context: exclude them by marker prefix and never carry them into a lane's
    prompt or packet.
 
-This chain emits no telemetry record of its own. Each lane it invokes snapshots
-and emits for itself, so a Deep round produces one `refactor` record and one
-`review` record rather than a third that double-counts both. See
+This chain emits no telemetry record of its own. Each sub-skill it actually
+invokes snapshots and emits for itself, so the wrapper never adds a third record
+that double-counts their work. A skipped refactor phase is not an invoked pass
+and emits no refactor record. See
 [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry".
 
 6. Apply the docs/config-only skip, per the ledger's changeset classification.
-   On a skip, finalize a clean v3 result using the ledger's wrapper/standalone
-   ownership rule, report `docs-config skip`, and exit without spending the
-   refactor latch.
+   On a skip, finalize a clean v3 result through immediate handoff to
+   `/critique <pr-number>`: that telemetry-owning lane takes its snapshot,
+   independently confirms the classification, finalizes the result, and emits
+   `status=skipped` under the ledger's wrapper/standalone ownership rule. Return
+   after it completes without spending the refactor latch.
 7. Resolve the changed-file list once for the initial packet. If refactorpass
    commits, that packet ends with its reviewed head: reload the PR head and
    build a new immutable packet before deep critique. If refactorpass is a no-op,

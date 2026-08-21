@@ -350,9 +350,10 @@ node <usage-helper> delta \
   --start "<telemetry-dir>/usage-start.json" --out-dir "<telemetry-dir>"
 ```
 
-`delta` prints `tokenSource`, `engineVersion`, `durationSeconds`, and the paths
-it wrote. Pass those through verbatim. `tokenSource` is the provenance of the
-numbers and must never be upgraded by hand:
+`delta` prints `enabled`, `tokenSource`, `engineVersion`, `durationSeconds`, and
+the paths it wrote. When `enabled` is false, do not invoke `emit-telemetry`.
+Otherwise pass non-null values through verbatim. `tokenSource` is the provenance
+of the numbers and must never be upgraded by hand:
 
 - `session-log-delta` — measured, scoped to this pass.
 - `unscoped-session` — measured, but a truthful upper bound rather than this
@@ -404,7 +405,11 @@ node <ledger-helper> emit-telemetry \
   --findings-file <path>
 ```
 
-Omit `--tokens-file` and `--lanes-file` when `delta` reported them as null.
+Omit `--review-tier`, `--engine-version`, `--duration-seconds`, `--tokens-file`,
+and `--lanes-file` whenever the corresponding value is null. A docs/config-only
+skip can legitimately have no resolved review tier, and unavailable usage can
+legitimately have no engine version or duration; the omitted options serialize
+as null without inventing a value or failing the emission.
 Omit `--changeset-file` and the classifier runs over `<base>..<head>` itself.
 Add `--truncated` when a lane silently truncated the diff it was given: a lane
 that reviewed less than it was asked to produces cheap, bad findings, which is
