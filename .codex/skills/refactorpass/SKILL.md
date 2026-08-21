@@ -46,6 +46,11 @@ Run these lanes as independently as the active runtime permits:
 ## Process
 
 1. Load `.codex/references/local-review-ledger.md`.
+   1a. Take the pass telemetry snapshot before reading or classifying anything, per
+   `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry". A cleanup pass spends tokens
+   and moves lines; leaving it out would attribute its churn to nobody while
+   its cost vanished, which corrupts the per-line denominator directly. The
+   helper is a no-op when telemetry is not enabled for this repository.
 2. Verify the branch is not `main`, `master`, or `staging`. Resolve or create
    its draft PR before running cleanup lanes, and require local, remote, and PR
    heads to match. Read all prior review threads.
@@ -91,6 +96,15 @@ Run these lanes as independently as the active runtime permits:
     Post it only for a pass that actually ran the cleanup lanes. A docs/config-only
     skip leaves the latch open, so a later round whose changeset contains source
     can still spend the one pass.
+
+14. Emit this pass's telemetry record per `.codex/REVIEW_WORKFLOW.md` "Pass
+    Telemetry" with `--pass-type refactor`. A pass that committed is `changed`;
+    one that found nothing is `clean`. A pass that stopped on a spent latch is
+    also `clean`, not `skipped` — its changeset was reviewable, this engine had
+    simply already spent its one pass, and the record rejects a `skipped` pass
+    carrying review-significant files. A docs/config-only skip is the case that
+    genuinely reports `skipped`. Emission exits zero whether or not it
+    succeeded: report the outcome and move on.
 
 ## Output
 

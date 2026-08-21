@@ -29,7 +29,14 @@ Require a clean, committed feature branch. Reuse the open PR whose head is the
 current branch. If none exists, push the branch with a normal push and open a
 draft PR before invoking any review lane. Verify the local HEAD, remote branch,
 and PR head SHA match. Record the PR number and load all prior review threads,
-including resolved and outdated threads.
+including resolved and outdated threads. Telemetry markers are not review
+context: exclude them by marker prefix and never carry them into a lane prompt
+or packet.
+
+This chain emits no telemetry record of its own. Each lane it invokes snapshots
+and emits for itself, so a deep round produces one `refactor` record and one
+`review` record rather than a third that double-counts both. See
+`.codex/REVIEW_WORKFLOW.md` "Pass Telemetry".
 
 Resolve the selected local session mode from repository instructions or the
 user. In handoff mode, if the user asks to continue or resume a review, run
