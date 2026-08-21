@@ -291,6 +291,32 @@ function nonNegativeInteger(value) {
 }
 
 /**
+ * The canonical buckets, as counter key and the reader that pulls the bucket
+ * out of a provider `usage` object.
+ *
+ * One table drives the presence check in `usageOf`, the null initialisation in
+ * `makeCounters`, and the summation in `accumulate`. Enumerating the same five
+ * fields separately in each is how a bucket added later ends up summed but not
+ * counted toward presence — the two answers drift apart silently, and the
+ * record still looks plausible.
+ */
+const USAGE_FIELDS = [
+  ['input', (usage) => usage['input_tokens']],
+  ['output', (usage) => usage['output_tokens']],
+  ['cacheRead', (usage) => usage['cache_read_input_tokens']],
+  ['cacheWrite', (usage) => usage['cache_creation_input_tokens']],
+  [
+    'reasoning',
+    (usage) => {
+      const details = usage['output_tokens_details'];
+      return details && typeof details === 'object'
+        ? details['thinking_tokens']
+        : undefined;
+    },
+  ],
+];
+
+/**
  * Accumulate one bucket set, keeping "never reported" apart from "reported
  * zero".
  *
@@ -299,13 +325,7 @@ function nonNegativeInteger(value) {
  * that survives for a year because the dashboard still looks plausible.
  */
 function makeCounters() {
-  return {
-    input: null,
-    output: null,
-    cacheRead: null,
-    cacheWrite: null,
-    reasoning: null,
-  };
+  return Object.fromEntries(USAGE_FIELDS.map(([key]) => [key, null]));
 }
 
 function add(counters, key, value) {
@@ -317,13 +337,8 @@ function add(counters, key, value) {
 }
 
 function accumulate(counters, usage) {
-  add(counters, 'input', usage['input_tokens']);
-  add(counters, 'output', usage['output_tokens']);
-  add(counters, 'cacheRead', usage['cache_read_input_tokens']);
-  add(counters, 'cacheWrite', usage['cache_creation_input_tokens']);
-  const details = usage['output_tokens_details'];
-  if (details && typeof details === 'object') {
-    add(counters, 'reasoning', details['thinking_tokens']);
+  for (const [key, read] of USAGE_FIELDS) {
+    add(counters, key, read(usage));
   }
 }
 
@@ -361,17 +376,10 @@ function usageOf(entry) {
   if (!usage || typeof usage !== 'object') {
     return null;
   }
-  const details = usage['output_tokens_details'];
-  const values = [
-    usage['input_tokens'],
-    usage['output_tokens'],
-    usage['cache_read_input_tokens'],
-    usage['cache_creation_input_tokens'],
-    details && typeof details === 'object'
-      ? details['thinking_tokens']
-      : undefined,
-  ];
-  if (!values.some((value) => nonNegativeInteger(value) !== null)) {
+  const measured = USAGE_FIELDS.some(
+    ([, read]) => nonNegativeInteger(read(usage)) !== null,
+  );
+  if (!measured) {
     return null;
   }
   return { usage, model: message['model'] };
@@ -426,10 +434,6 @@ function collect(sessionLog, offsets) {
       offsets[boundary.path] ?? 0,
       boundary.size,
     );
-    if (chunk === null) {
-      degraded = true;
-      continue;
-    }
     if (chunk.rewound) {
       rewound = true;
     }
