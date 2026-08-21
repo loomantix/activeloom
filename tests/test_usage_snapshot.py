@@ -48,33 +48,31 @@ def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
     return payload
 
 
+def json_line(event: dict[str, Any]) -> str:
+    return json.dumps(event) + "\n"
+
+
 def meta(cwd: Path, version: str = "0.148.0") -> str:
-    return (
-        json.dumps(
-            {
-                "timestamp": "2026-08-20T12:00:00.000Z",
-                "type": "session_meta",
-                "payload": {
-                    "session_id": "01a0-session",
-                    "cwd": str(cwd),
-                    "cli_version": version,
-                },
-            }
-        )
-        + "\n"
+    return json_line(
+        {
+            "timestamp": "2026-08-20T12:00:00.000Z",
+            "type": "session_meta",
+            "payload": {
+                "session_id": "01a0-session",
+                "cwd": str(cwd),
+                "cli_version": version,
+            },
+        }
     )
 
 
 def context(model: str = "gpt-5.6-sol", effort: str = "medium") -> str:
-    return (
-        json.dumps(
-            {
-                "timestamp": "2026-08-20T12:00:01.000Z",
-                "type": "turn_context",
-                "payload": {"model": model, "effort": effort},
-            }
-        )
-        + "\n"
+    return json_line(
+        {
+            "timestamp": "2026-08-20T12:00:01.000Z",
+            "type": "turn_context",
+            "payload": {"model": model, "effort": effort},
+        }
     )
 
 
@@ -100,18 +98,15 @@ def counted(
     }
     if reasoning is not None:
         totals["reasoning_output_tokens"] = reasoning
-    return (
-        json.dumps(
-            {
-                "timestamp": timestamp,
-                "type": "event_msg",
-                "payload": {
-                    "type": "token_count",
-                    "info": {"total_token_usage": totals},
-                },
-            }
-        )
-        + "\n"
+    return json_line(
+        {
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {"total_token_usage": totals},
+            },
+        }
     )
 
 
