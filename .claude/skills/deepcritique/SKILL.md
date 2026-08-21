@@ -44,18 +44,22 @@ Proceed in the current session only after an explicit override.
 This chain emits no telemetry record of its own. Each lane it invokes snapshots
 and emits for itself, so a Deep round produces one `refactor` record and one
 `review` record rather than a third that double-counts both. See
-[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". 6. Apply the docs/config-only skip, per the ledger's changeset classification.
-On a skip, finalize a clean v3 result using the ledger's wrapper/standalone
-ownership rule, report `docs-config skip`, and exit without spending the
-refactor latch. 7. Resolve the changed-file list once for the initial packet. If refactorpass
-commits, that packet ends with its reviewed head: reload the PR head and
-build a new immutable packet before deep critique. If refactorpass is a no-op,
-both lanes may reuse the initial packet. The ledger's diff-delivery rules
-govern both. 8. Resolve this engine's round number per the ledger — `$AGENT_LOOP_REVIEW_ROUND`
-when the runner set it, otherwise one past the count of `local-review-pass:v3`
-and `local-review-complete:v3` markers naming `engine=claude`. Rounds 1–2 are
-adversarial; round 3 and later are convergence rounds. State which applies
-before running a lane.
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry".
+
+6. Apply the docs/config-only skip, per the ledger's changeset classification.
+   On a skip, finalize a clean v3 result using the ledger's wrapper/standalone
+   ownership rule, report `docs-config skip`, and exit without spending the
+   refactor latch.
+7. Resolve the changed-file list once for the initial packet. If refactorpass
+   commits, that packet ends with its reviewed head: reload the PR head and
+   build a new immutable packet before deep critique. If refactorpass is a no-op,
+   both lanes may reuse the initial packet. The ledger's diff-delivery rules
+   govern both.
+8. Resolve this engine's round number per the ledger — `$AGENT_LOOP_REVIEW_ROUND`
+   when the runner set it, otherwise one past the count of `local-review-pass:v3`
+   and `local-review-complete:v3` markers naming `engine=claude`. Rounds 1–2 are
+   adversarial; round 3 and later are convergence rounds. State which applies
+   before running a lane.
 
 ### Tier gate
 

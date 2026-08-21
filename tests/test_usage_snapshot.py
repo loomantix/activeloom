@@ -190,7 +190,7 @@ def test_unscoped_without_a_snapshot_is_labelled_as_such(
 
 def test_a_rewound_log_downgrades_to_unscoped(tmp_path: Path, session: Path) -> None:
     """A recorded offset past the end of the file no longer marks the start."""
-    session.write_text(turn(request_id="a", output=100) * 1)
+    session.write_text(turn(request_id="a", output=100))
     start = snapshot(session, tmp_path)
     session.write_text(turn(request_id="b", output=7))
 
