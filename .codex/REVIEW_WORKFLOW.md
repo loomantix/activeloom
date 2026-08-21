@@ -291,6 +291,172 @@ that named the old commit — including the author engine's. Those engines re-ru
 against the new head; engines that had not yet attested are unaffected. The
 hand-back is the head rule, not a separate obligation.
 
+## Pass Telemetry
+
+Every pass records what it cost, as a `local-review-telemetry:v1` marker in its
+own PR comment. The record carries token buckets per exact model, classified
+line churn, finding dispositions, and the pass identity needed to ask whether
+Deep earns its cost. This engine reports its prompt side as one figure with the
+cached and cache-write portions inside it, so the helper subtracts them to reach
+the disjoint canonical buckets and keeps the reported figure alongside as a
+provider bucket — that arithmetic is what makes an `input` count here mean the
+same thing it means for another engine.
+
+The record carries no prose, no file paths, no finding titles, and no money:
+rates move and a subscription's marginal cost is zero, so a stored dollar figure
+is wrong when written and unverifiable later. Counts keep the whole series
+re-priceable.
+
+Emission is opt-in while extraction is being proven on one repository. The
+snapshot helper reads `LOOM_REVIEW_TELEMETRY` and does nothing unless it is
+exactly `on`. It is environment configuration set once, never an interactive
+prompt during a pass — a prompt would block an autonomous run.
+
+### Never read a telemetry marker
+
+A pass must not read prior telemetry: not into a finder prompt, not into a
+review packet, not into context assembly, not into a summary of the PR. An
+agent that can see its own measured cost and a readable trend has been handed a
+target, and the thing it can most easily optimise is the review rather than the
+spend. Reporting **this** pass's own numbers at the end, after findings are
+posted, is fine — a single figure with no baseline is not a trend.
+
+Filter by the `local-review-telemetry:` prefix rather than by a list of known
+markers, so a record type added later is excluded by default instead of leaking
+into reviewer context until someone teaches the filter about it.
+
+### Snapshot before, delta after
+
+`<usage-helper>` is `.codex/skills/critique/scripts/usage-snapshot.js`, beside
+the vendored ledger helper and invoked the same way. It binds the coordinator
+to the host-provided session ID and includes new descendant sessions spawned by
+that coordinator during the pass; the ledger helper never reads session logs,
+and never may.
+
+Write telemetry working files to `$AGENT_LOOP_LOG_DIR/telemetry/` when that
+variable is set, or to another owner-only directory outside the Git worktree.
+
+Before the first reviewer, cleanup agent, or classification read — early enough
+that the pass's own setup counts as part of its cost:
+
+```bash
+node <usage-helper> snapshot --out "<telemetry-dir>/usage-start.json"
+```
+
+After the pass has finalized its v3 result, and after any fix commits:
+
+```bash
+node <usage-helper> delta \
+  --start "<telemetry-dir>/usage-start.json" --out-dir "<telemetry-dir>"
+```
+
+`delta` prints `tokenSource`, nullable `engineVersion`, nullable
+`durationSeconds`, and the paths it wrote. This engine reports no per-lane
+attribution, so `lanesFile` is always null and `lanes` is absent from the record
+rather than empty. Pass non-null values through verbatim and omit their flags
+when null. `tokenSource` is the provenance of the numbers and must never be
+upgraded by hand:
+
+- `session-log-delta` — measured, scoped to this pass.
+- `unscoped-session` — measured, but a truthful upper bound rather than this
+  pass's cost. A standalone pass with no start snapshot lands here.
+- `unavailable` — no usable data, and the record carries **no** token buckets.
+
+**A pass with no usable usage data must never emit zero tokens.** A zero makes
+the engine look free and skews every average in its favour, and it is the kind
+of defect that survives a year because the dashboard still looks plausible.
+Aggregation excludes a missing measurement; nothing zero-fills it.
+
+### Count the findings
+
+Write this pass's own dispositions to a regular file with the active
+file-editing tool — never a heredoc or command substitution:
+
+```json
+{
+  "posted": 0,
+  "bySeverityAndOutcome": {
+    "blocking": { "validFixed": 0, "validDeferred": 0, "invalidDismissed": 0 },
+    "major": { "validFixed": 0, "validDeferred": 0, "invalidDismissed": 0 },
+    "minor": { "validFixed": 0, "validDeferred": 0, "invalidDismissed": 0 },
+    "nit": { "validFixed": 0, "validDeferred": 0, "invalidDismissed": 0 }
+  },
+  "chainInducedRegressions": 0
+}
+```
+
+Count only threads this pass posted or dispositioned, and keep `posted`
+greater than or equal to the sum of every disposition: the emitter checks that
+and refuses the record otherwise. A pass that dispositions a thread an earlier
+pass posted — fixing a deferred finding, say — therefore counts it in `posted`
+as well, so the record stays internally consistent. `chainInducedRegressions`
+counts new fingerprints whose diff anchor traces via `git blame` to a commit
+recorded as a fix SHA in an earlier disposition **on this PR** — rework the
+chain caused itself, which is far more expensive than either a finding or a
+clean pass. A `reopen-occurrence` is not one of these: that is the same defect
+still present, not a new one the chain introduced.
+
+### Emit the record
+
+```bash
+node <ledger-helper> emit-telemetry \
+  --repo <owner/repo> --pr <number> --engine codex \
+  --base <full-base-sha> --head <full-head-sha> \
+  --pass-type <review|refactor> --review-tier <lean|deep> \
+  --trigger <autonomous|interactive> --round <n> \
+  --stance <adversarial|convergence> --status <clean|changed|blocked|skipped> \
+  --token-source <from delta> --engine-version <from delta> \
+  --duration-seconds <from delta> \
+  --tokens-file <from delta> \
+  --findings-file <path>
+```
+
+**Skip this step entirely when the helper reports `enabled: false`.** With the
+gate off, `delta` reports `tokenSource: null` and omits `engineVersion` and
+`durationSeconds` rather than returning them as null. Passing that through
+would omit `--token-source`, which `emit-telemetry` requires, so a pass that
+emitted anyway would fail on every run — and a pass that "repaired" the gap by
+substituting `unavailable` would post a telemetry record on a repository that
+opted out. There is nothing to record when the gate is off.
+
+Omit `--engine-version`, `--duration-seconds`, and `--tokens-file` whenever
+`delta` reported the corresponding value as null.
+Omit `--changeset-file` and the classifier runs over `<base>..<head>` itself.
+Add `--truncated` when a lane silently truncated the diff it was given: a lane
+that reviewed less than it was asked to produces cheap, bad findings, which is
+the exact pattern that otherwise reads as efficiency.
+
+`trigger` is `autonomous` when a runner set the `AGENT_LOOP_*` variables and
+`interactive` otherwise.
+
+### What each pass emits
+
+| Pass                                  | `--pass-type`      | `--status` |
+| ------------------------------------- | ------------------ | ---------- |
+| Adversarial pass, nothing to fix      | `review`           | `clean`    |
+| Adversarial pass that committed a fix | `review`           | `changed`  |
+| Pass that could not complete          | `review`           | `blocked`  |
+| Docs/config-only skip                 | matching pass-type | `skipped`  |
+| Cleanup pass that committed           | `refactor`         | `changed`  |
+| Cleanup pass that found nothing       | `refactor`         | `clean`    |
+| Cleanup skipped on a spent latch      | `refactor`         | `clean`    |
+
+A skip still burns tokens reading and classifying the PR, and "we spent eight
+thousand tokens deciding not to review" is exactly the machinery overhead worth
+seeing. `skipped` is reserved for the changeset that had nothing reviewable in
+it — the record rejects a `skipped` pass carrying review-significant files, so a
+cleanup pass that stopped on a spent latch reports `clean` instead. Its
+changeset was reviewable; this engine had simply already spent its one pass.
+
+### Emission failure is never fatal
+
+`emit-telemetry` exits zero either way and prints `emitted` with the reason on
+failure. Report that outcome and move on. Never retry it into the review, never
+let it change the v3 result, and never let it delay marking the PR ready. This
+is why the record is a separate marker in a separate comment rather than an
+extension of the attestation, whose body is byte-verified and hash-checked: a
+telemetry defect must not fail a review that found real defects.
+
 ## Review Principles
 
 - Treat every generated finding as a hypothesis. Verify it against code, tests,

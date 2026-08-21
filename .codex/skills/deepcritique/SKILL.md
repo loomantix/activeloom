@@ -29,7 +29,24 @@ Require a clean, committed feature branch. Reuse the open PR whose head is the
 current branch. If none exists, push the branch with a normal push and open a
 draft PR before invoking any review lane. Verify the local HEAD, remote branch,
 and PR head SHA match. Record the PR number and load all prior review threads,
-including resolved and outdated threads.
+including resolved and outdated threads. Telemetry markers are not review
+context: exclude them by marker prefix and never carry them into a lane prompt
+or packet.
+
+This chain emits no telemetry record of its own. Each lane it invokes snapshots
+and emits for itself, so a deep round produces a `review` record plus, when
+cleanup actually ran, a `refactor` record — rather than a third that
+double-counts both. A convergence round or a spent latch skips cleanup, so
+those rounds produce only the `review` record.
+
+The chain's own overhead is therefore **not** in either record: pre-flight runs
+before the first lane snapshots, and the packet rebuild between lanes and the
+relay after the last one fall outside both windows. A deep round's recorded
+cost is a lower bound, and the gap is one-directional — it understates Deep and
+never Lean, which is the comparison these records exist to support. Reading a
+long thread ledger is not a rounding error, so treat the difference as real
+when reading a Deep-versus-Lean series. See `.codex/REVIEW_WORKFLOW.md`
+"Pass Telemetry".
 
 Resolve the selected local session mode from repository instructions or the
 user. In handoff mode, if the user asks to continue or resume a review, run

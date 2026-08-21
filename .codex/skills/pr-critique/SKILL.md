@@ -14,6 +14,13 @@ round trip, not a terminal review.
 
 Load `.codex/references/local-review-ledger.md`. The originating engine's
 resolved threads are required input to this pass, not optional background.
+Telemetry markers are not: exclude them by marker prefix and never carry them
+into a lane prompt or packet.
+
+Take the pass telemetry snapshot before reading or classifying anything, per
+`.codex/REVIEW_WORKFLOW.md` "Pass Telemetry". A relay leg is a full review pass
+and costs like one; leaving it out would make cross-engine review look free. The
+helper is a no-op when telemetry is not enabled for this repository.
 
 This is **not** `deepcritique`. Both are PR-first and use the same thread ledger,
 but `deepcritique` runs the current engine's deep matrix, preceded by `refactorpass`
@@ -191,6 +198,13 @@ If no fixes were applied (clean, or everything deferred/dismissed), do not
 commit or push. Report the clean result.
 
 ## Phase 4: Hand back
+
+Once the pass result is finalized and any fix commits are pushed, emit this
+pass's telemetry record per `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry", with
+`--pass-type review` and the status this pass reached. Emission exits zero
+whether or not it succeeded: report the outcome and move on. Reporting this
+pass's own measured spend in the summary below is permitted; reading any earlier
+pass's record is not.
 
 Follow the selected local session mode before returning. In auto mode, return to
 the calling orchestrator so it can continue the bounded chain. In handoff mode,
