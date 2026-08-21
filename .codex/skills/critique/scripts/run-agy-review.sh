@@ -56,10 +56,11 @@ remote_head="${remote_row%%[[:space:]]*}"
 agy_review_cli="${AGY_REVIEW_CLI:-agy}"
 command -v "$agy_review_cli" >/dev/null 2>&1 || { echo "agy is required" >&2; exit 1; }
 
-skills_file="$(mktemp)"
-result_file="$(mktemp)"
-chmod 600 "$skills_file" "$result_file"
-trap 'rm -f -- "$skills_file" "$result_file"' EXIT
+temp_dir="$(mktemp -d)"
+trap 'rm -rf -- "$temp_dir"' EXIT
+chmod 700 "$temp_dir"
+skills_file="$temp_dir/skills.json"
+result_file="$temp_dir/result.json"
 
 "$agy_review_cli" \
     --model gemini-3.7-flash-high \

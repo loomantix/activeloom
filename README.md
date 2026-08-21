@@ -79,6 +79,13 @@ cd codex-platform
 ./scripts/install-skills.sh --force   # replace existing entries after backup
 ```
 
+Auto-mode cross-engine review also requires the `agy` CLI and a current
+`deepcritique` skill in Agy's `/skills` output. The launcher verifies both and
+fails before review if skill discovery resolves a stale backup. A repository or
+user may explicitly select the retained Claude launcher instead; otherwise Agy
+is the auto-mode default. Agy currently persists one-shot conversations, so use
+Claude where local conversation persistence is prohibited.
+
 Existing symlinks pick up in-place edits after `git pull`. After pulling a
 version that adds, renames, or retires skills, rerun
 `./scripts/install-skills.sh --dry-run`, then the normal installer so new links
