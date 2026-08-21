@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -480,3 +481,221 @@ def test_no_bucket_is_ever_negative(tmp_path: Path, session: Path) -> None:
     payload = delta(tmp_path, start)
     assert payload["tokenSource"] == "unavailable"
     assert payload["tokensFile"] is None
+
+
+def test_the_project_slug_substitutes_every_non_alphanumeric(
+    tmp_path: Path,
+) -> None:
+    """A dotted working directory must still resolve its project directory.
+
+    The harness replaces every non-alphanumeric character with a dash, not only
+    the separator, so a hostname-style repository name resolves to a directory
+    a separator-only substitution never finds.
+    """
+    cwd = tmp_path / "www.example.com"
+    cwd.mkdir()
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(cwd.resolve()))
+    project = tmp_path / "projects" / slug
+    project.mkdir(parents=True)
+    log = project / "0000-session.jsonl"
+    log.write_text(turn(request_id="a", output=11))
+
+    payload = run(
+        "snapshot",
+        "--out",
+        str(tmp_path / "start.json"),
+        "--projects-dir",
+        str(tmp_path / "projects"),
+        "--cwd",
+        str(cwd),
+    )
+    assert payload["sessionLog"] == str(log)
+
+
+def test_a_snapshot_from_another_session_is_not_scoped(
+    tmp_path: Path, session: Path
+) -> None:
+    """A stale start file must not scope this pass to its predecessor's log.
+
+    The start file sits at a fixed path across an autonomous run, so a pass
+    whose snapshot step failed would otherwise measure from the previous pass's
+    baseline and still call the result scoped.
+    """
+    start = snapshot(session, tmp_path)
+    other = session.parent / "1111-other.jsonl"
+    other.write_text(turn(request_id="other", output=99))
+
+    payload = run(
+        "delta",
+        "--out-dir",
+        str(tmp_path / "out"),
+        "--start",
+        str(start),
+        "--projects-dir",
+        str(tmp_path / "projects"),
+        "--cwd",
+        str(tmp_path),
+        CLAUDE_CODE_SESSION_ID="1111-other",
+    )
+    assert payload["tokenSource"] == "unscoped-session"
+    assert payload["reason"] == "snapshot-not-this-session"
+
+
+def test_a_log_recorded_at_snapshot_and_gone_at_delta_downgrades(
+    tmp_path: Path, session: Path
+) -> None:
+    """A vanished lane log must not leave a record still claiming completeness."""
+    subagents = session.parent / session.stem / "subagents"
+    subagents.mkdir(parents=True)
+    lane = subagents / "agent-1.jsonl"
+    lane.write_text(turn(request_id="lane", output=500, sidechain=True, lens="x"))
+
+    start = snapshot(session, tmp_path)
+    lane.unlink()
+    with session.open("a") as handle:
+        handle.write(turn(request_id="after", output=20))
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["reason"] == "log-missing-since-snapshot"
+
+
+def test_a_replaced_log_is_not_reported_as_a_scoped_delta(
+    tmp_path: Path, session: Path
+) -> None:
+    """A different file at the same path is not the file the offset described."""
+    session.write_text(turn(request_id="first", output=5))
+    start = snapshot(session, tmp_path)
+
+    replacement = session.parent / "replacement.jsonl"
+    replacement.write_text(
+        turn(request_id="first", output=5) + turn(request_id="second", output=900)
+    )
+    session.unlink()
+    replacement.rename(session)
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["reason"] == "log-replaced-since-snapshot"
+
+
+def test_an_ambiguous_session_id_is_not_identity_bound(tmp_path: Path) -> None:
+    """Two projects holding the same session id must not resolve to either."""
+    projects = tmp_path / "projects"
+    for name in ("alpha", "beta"):
+        directory = projects / name
+        directory.mkdir(parents=True)
+        (directory / "shared.jsonl").write_text(turn(request_id=name, output=1))
+
+    payload = run(
+        "snapshot",
+        "--out",
+        str(tmp_path / "start.json"),
+        "--projects-dir",
+        str(projects),
+        "--cwd",
+        str(tmp_path / "nowhere"),
+        CLAUDE_CODE_SESSION_ID="shared",
+    )
+    assert payload["sessionLog"] is None
+    assert payload["scoped"] is False
+
+
+def test_a_traversal_shaped_session_id_is_rejected(tmp_path: Path) -> None:
+    """The session id is joined into a path, so its shape is a real guard."""
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(turn(request_id="outside", output=1))
+    projects = tmp_path / "projects"
+    (projects / "empty").mkdir(parents=True)
+
+    payload = run(
+        "snapshot",
+        "--out",
+        str(tmp_path / "start.json"),
+        "--projects-dir",
+        str(projects),
+        "--cwd",
+        str(tmp_path / "nowhere"),
+        CLAUDE_CODE_SESSION_ID="../../outside",
+    )
+    assert payload["sessionLog"] is None
+    assert payload["scoped"] is False
+
+
+def test_a_malformed_start_file_downgrades_instead_of_scoping(
+    tmp_path: Path, session: Path
+) -> None:
+    """Only a snapshot this helper can validate may scope a measurement."""
+    session.write_text(turn(request_id="a", output=12))
+    start = tmp_path / "start.json"
+    start.write_text("{ not json")
+
+    payload = delta(tmp_path, start, session_log=str(session))
+    assert payload["tokenSource"] == "unscoped-session"
+    assert payload["reason"] == "no-start-snapshot"
+
+
+def test_a_snapshot_version_bump_is_not_read_as_current(
+    tmp_path: Path, session: Path
+) -> None:
+    """A start file from a different snapshot format must not scope this pass."""
+    session.write_text(turn(request_id="a", output=12))
+    start = snapshot(session, tmp_path)
+    stored = json.loads(start.read_text())
+    stored["version"] = stored["version"] + 1
+    start.write_text(json.dumps(stored))
+
+    payload = delta(tmp_path, start, session_log=str(session))
+    assert payload["tokenSource"] == "unscoped-session"
+
+
+def test_an_unrecognised_model_id_downgrades_rather_than_dropping_its_tokens(
+    tmp_path: Path, session: Path
+) -> None:
+    """A rejected model id must not silently leave the per-model total short."""
+    start = snapshot(session, tmp_path)
+    session.write_text(
+        turn(request_id="ok", output=10)
+        + turn(request_id="odd", output=4000, model="<synthetic>")
+    )
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["reason"] == "unrecognized-model-id"
+
+
+def test_an_unavailable_record_reports_no_measured_fields(
+    tmp_path: Path, session: Path
+) -> None:
+    """A record that declared its inputs unusable must not report values from them."""
+    payload = delta(tmp_path)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["engineVersion"] is None
+    assert payload["durationSeconds"] is None
+    # Never zero: a missing count that serialises as zero makes the pass look
+    # free, which is the same defect as a zero-filled token bucket.
+    assert payload["turns"] is None
+
+
+def test_written_files_are_owner_only(tmp_path: Path, session: Path) -> None:
+    """These files embed absolute session paths, so the mode is part of the contract."""
+    start = snapshot(session, tmp_path)
+    session.write_text(turn(request_id="a", output=10, sidechain=True, lens="x"))
+    payload = delta(tmp_path, start)
+
+    written = [start, Path(payload["tokensFile"]), Path(payload["lanesFile"])]
+    for path in written:
+        assert path.stat().st_mode & 0o077 == 0, path
+
+
+def test_an_existing_output_directory_keeps_its_own_mode(
+    tmp_path: Path, session: Path
+) -> None:
+    """The helper hardens what it creates, not a directory the caller named."""
+    out = tmp_path / "out"
+    out.mkdir()
+    out.chmod(0o755)
+
+    snapshot(session, tmp_path)
+    run("delta", "--out-dir", str(out))
+    assert out.stat().st_mode & 0o777 == 0o755

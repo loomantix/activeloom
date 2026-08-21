@@ -33,6 +33,7 @@ import {
   readFileSync,
   writeFileSync,
   chmodSync,
+  unlinkSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -57,9 +58,13 @@ function gateState() {
   if (value === 'off') {
     return { enabled: false, reason: 'LOOM_REVIEW_TELEMETRY is off' };
   }
+  // A misconfigured value is not an opt-out. Reporting it only as a reason
+  // would make a typo that disables the whole rollout indistinguishable from a
+  // deliberate `off`.
   return {
     enabled: false,
     reason: 'LOOM_REVIEW_TELEMETRY must be exactly "on" or "off"',
+    error: 'LOOM_REVIEW_TELEMETRY must be exactly "on" or "off"',
   };
 }
 
@@ -107,10 +112,15 @@ function parseArgs(argv) {
 
 /**
  * Claude Code stores a session under a directory named for the working
- * directory with every separator replaced by a dash.
+ * directory with every non-alphanumeric character replaced by a dash.
+ *
+ * Replacing only the separator is not enough: a working directory containing a
+ * dot — a hostname-style repository name, or a worktree under a dotted
+ * directory — resolves to a directory that does not exist, and discovery then
+ * falls all the way through to no log at all.
  */
 function projectSlug(cwd) {
-  return resolve(cwd).split(sep).join('-');
+  return resolve(cwd).replace(/[^A-Za-z0-9]/g, '-');
 }
 
 function projectsRoot(args) {
@@ -280,8 +290,19 @@ function parseEntries(text) {
 
 const TOKEN_RE = /^[A-Za-z0-9._:/-]+$/;
 
+/**
+ * The accepted alphabet is a base64url superset, so a shape check alone puts no
+ * bound on what a transcript-derived string can carry into a public record.
+ * Model, effort, lane, and engine version all pass through here.
+ */
+const TOKEN_MAX_LENGTH = 128;
+
 function safeToken(value) {
-  return typeof value === 'string' && TOKEN_RE.test(value) ? value : null;
+  return typeof value === 'string' &&
+    value.length <= TOKEN_MAX_LENGTH &&
+    TOKEN_RE.test(value)
+    ? value
+    : null;
 }
 
 function nonNegativeInteger(value) {
@@ -411,22 +432,61 @@ function boundaryFor(path) {
   }
 }
 
+/**
+ * A boundary holds when the file is still the same file and still contains at
+ * least the bytes that were read.
+ *
+ * Growth is not instability: `readFrom` only ever reads the prefix
+ * `[offset, boundary.size)` captured before the read, so bytes appended
+ * afterwards cannot change what was counted. Requiring an exact size would
+ * discard a whole valid measurement whenever anything appended during
+ * collection — and `delta` runs inside the session it measures, so a
+ * still-finishing subagent or a hook is enough. Only shrinkage or a
+ * replacement means the recorded end offset no longer names the same content.
+ */
 function boundaryUnchanged(boundary) {
   const current = boundaryFor(boundary.path);
   return (
     current !== null &&
-    current.size === boundary.size &&
+    current.size >= boundary.size &&
     current.dev === boundary.dev &&
     current.ino === boundary.ino
   );
 }
 
-function collect(sessionLog, offsets) {
+function collect(sessionLog, offsets, identities = {}) {
   const turnsByKey = new Map();
   let rewound = false;
   let degraded = false;
+  let degradedReason = null;
+  const degrade = (reason) => {
+    degraded = true;
+    degradedReason ??= reason;
+  };
   const logs = passLogs(sessionLog);
   const boundaries = logs.map(boundaryFor).filter((value) => value !== null);
+
+  // A log recorded at snapshot time and absent now is not simply "not a
+  // candidate": its measured cost silently leaves a record that still claims to
+  // be scoped and complete. The delta-time re-check below compares the log set
+  // against itself and cannot see this.
+  const present = new Set(logs);
+  if (Object.keys(offsets).some((path) => !present.has(path))) {
+    degrade('log-missing-since-snapshot');
+  }
+
+  // The device/inode pin only guards against replacement within one `collect`
+  // unless it also crosses the snapshot. Without this, a file swapped for a
+  // different, longer one between snapshot and delta reads as ordinary growth.
+  for (const boundary of boundaries) {
+    const recorded = identities[boundary.path];
+    if (
+      recorded &&
+      (recorded.dev !== boundary.dev || recorded.ino !== boundary.ino)
+    ) {
+      degrade('log-replaced-since-snapshot');
+    }
+  }
 
   for (const boundary of boundaries) {
     const chunk = readFrom(
@@ -438,11 +498,19 @@ function collect(sessionLog, offsets) {
       rewound = true;
     }
     const parsed = parseEntries(chunk.text);
-    degraded ||= parsed.degraded;
+    if (parsed.degraded) {
+      degrade('parse-corruption');
+    }
     for (const entry of parsed.entries) {
       const found = usageOf(entry);
       if (found === null) {
         continue;
+      }
+      // An id the shape gate rejects would otherwise be dropped from the
+      // per-model buckets while still reaching the lane buckets, leaving the
+      // two aggregates in one record disagreeing with no downgrade.
+      if (safeToken(found.model) === null) {
+        degrade('unrecognized-model-id');
       }
       const key = turnKey(entry);
       turnsByKey.set(
@@ -469,13 +537,14 @@ function collect(sessionLog, offsets) {
     boundaries.length !== logs.length ||
     boundaries.some((boundary) => !boundaryUnchanged(boundary))
   ) {
-    degraded = true;
+    degrade('boundary-moved');
   }
 
   const byModel = new Map();
   const byLens = new Map();
   let engineVersion = null;
   let lastTimestamp = null;
+  let lastAt = null;
   let turns = 0;
 
   for (const turn of turnsByKey.values()) {
@@ -507,15 +576,23 @@ function collect(sessionLog, offsets) {
       accumulate(lane.counters, turn.usage);
     }
 
-    if (turn.version !== null) {
-      engineVersion = turn.version;
-    }
-    if (
-      typeof turn.timestamp === 'string' &&
-      !Number.isNaN(Date.parse(turn.timestamp)) &&
-      (lastTimestamp === null || turn.timestamp > lastTimestamp)
-    ) {
+    // Both of these describe the newest turn in the range, so both must be
+    // chosen by instant. Map iteration is insertion order — the session log,
+    // then subagent logs sorted by filename — so an unordered assignment
+    // reports whichever turn happened to land last, and a lexical comparison
+    // of timestamps only agrees with time while every one is UTC at identical
+    // sub-second precision.
+    const at =
+      typeof turn.timestamp === 'string' ? Date.parse(turn.timestamp) : NaN;
+    if (!Number.isNaN(at) && (lastAt === null || at > lastAt)) {
+      lastAt = at;
       lastTimestamp = turn.timestamp;
+      if (turn.version !== null) {
+        engineVersion = turn.version;
+      }
+    }
+    if (engineVersion === null && turn.version !== null) {
+      engineVersion = turn.version;
     }
   }
 
@@ -537,20 +614,47 @@ function collect(sessionLog, offsets) {
     lanes,
     rewound,
     degraded,
+    degradedReason,
     engineVersion,
     lastTimestamp,
     turns,
   };
 }
 
+/**
+ * Write owner-only without following a symlink already sitting at the path.
+ *
+ * `writeFileSync` follows one, so a link planted in the telemetry directory
+ * would have its target overwritten and chmodded. Unlinking first makes the
+ * write land on a file this run created, and the creation mode closes the
+ * window the trailing chmod would otherwise leave open.
+ */
 function writeJson(path, value) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  try {
+    unlinkSync(path);
+  } catch {
+    // Nothing there, or nothing we may remove; the exclusive create below is
+    // what actually decides whether the write happens.
+  }
+  const fd = openSync(path, 'wx', 0o600);
+  try {
+    writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`);
+  } finally {
+    closeSync(fd);
+  }
   chmodSync(path, 0o600);
 }
 
+/**
+ * Narrow only what this run created. `mkdirSync` with `recursive` is a no-op on
+ * an existing directory, so an unconditional chmod would strip group and other
+ * access from a caller-named directory the run does not own.
+ */
 function ensureOwnerOnlyDir(path) {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
-  chmodSync(path, 0o700);
+  const created = mkdirSync(path, { recursive: true, mode: 0o700 });
+  if (created !== undefined) {
+    chmodSync(path, 0o700);
+  }
 }
 
 function emit(payload) {
@@ -572,13 +676,18 @@ function runSnapshot(args) {
     sessionId: sessionLog ? sessionIdFor(sessionLog) : null,
     startedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
     offsets: {},
+    // Recorded alongside the offsets so `delta` can tell a file that grew from
+    // a different file that replaced it. Without this the identity pin never
+    // crosses the snapshot boundary.
+    identities: {},
     identityBound: discovered?.identityBound ?? false,
   };
   if (sessionLog !== null) {
     for (const path of passLogs(sessionLog)) {
-      const size = fileSize(path);
-      if (size !== null) {
-        snapshot.offsets[path] = size;
+      const boundary = boundaryFor(path);
+      if (boundary !== null) {
+        snapshot.offsets[path] = boundary.size;
+        snapshot.identities[path] = { dev: boundary.dev, ino: boundary.ino };
       }
     }
   }
@@ -629,39 +738,66 @@ function runDelta(args) {
   }
   ensureOwnerOnlyDir(args.outDir);
 
-  const snapshot = readSnapshot(args.start);
-  const discovered = snapshot ? null : discoverSessionLog(args);
-  const sessionLog = snapshot
-    ? snapshot.sessionLog
-    : (discovered?.path ?? null);
+  const candidate = readSnapshot(args.start);
+  const discovered = discoverSessionLog(args);
+
+  // A snapshot's `identityBound` is evidence about the pass that wrote it, not
+  // about this one. The start file sits at a fixed path that is stable across
+  // every pass of an autonomous run, and a failed snapshot leaves the previous
+  // pass's file in place — so a pass whose snapshot step failed would otherwise
+  // measure from its predecessor's baseline and call the result scoped.
+  //
+  // Reject on a positive contradiction only: discovery identity-bound this pass
+  // to a different log. Discovery that cannot identity-bind has not disproved
+  // the snapshot, and downgrading there would cost measurements in every
+  // environment where the session id is simply unavailable.
+  const staleSnapshot =
+    candidate !== null &&
+    discovered !== null &&
+    discovered.identityBound === true &&
+    discovered.path !== candidate.sessionLog;
+  const snapshot = staleSnapshot ? null : candidate;
+  const sessionLog =
+    snapshot?.sessionLog ?? discovered?.path ?? candidate?.sessionLog ?? null;
 
   if (sessionLog === null || fileSize(sessionLog) === null) {
-    // No usable log. This must never serialise as zero tokens: an engine that
+    // No usable log. This must never serialise as zero: an engine that
     // reported nothing would otherwise look free and skew every average in its
-    // favour.
+    // favour, and that holds for every bucket, not only the token ones.
     return emit({
       mode: 'delta',
       enabled: true,
       tokenSource: 'unavailable',
+      reason: 'no-session-log',
       tokensFile: null,
       lanesFile: null,
       engineVersion: null,
       durationSeconds: null,
-      turns: 0,
+      turns: null,
       error: null,
     });
   }
 
   const offsets = snapshot ? snapshot.offsets : {};
-  const collected = collect(sessionLog, offsets);
+  const collected = collect(sessionLog, offsets, snapshot?.identities ?? {});
 
   let tokenSource;
+  let reason = null;
   if (collected.tokens.length === 0 || collected.degraded) {
     tokenSource = 'unavailable';
+    reason =
+      collected.degradedReason ??
+      (collected.degraded ? 'degraded' : 'no-turns');
   } else if (!snapshot || collected.rewound) {
-    // Without a start snapshot, or after the log rewound under us, the numbers
-    // are a truthful upper bound on the pass rather than a measurement of it.
+    // Without a usable start snapshot, or after the log rewound under us, the
+    // numbers are a truthful upper bound on the pass rather than a measurement
+    // of it.
     tokenSource = 'unscoped-session';
+    reason = collected.rewound
+      ? 'log-rewound'
+      : staleSnapshot
+        ? 'snapshot-not-this-session'
+        : 'no-start-snapshot';
   } else {
     tokenSource = 'session-log-delta';
   }
@@ -692,15 +828,21 @@ function runDelta(args) {
     }
   }
 
+  // An `unavailable` record has declared its own inputs unusable, so it must
+  // not go on to report values extracted from them. `reason` is the exception:
+  // it is diagnostic only and cannot upgrade provenance.
+  const measured = tokenSource !== 'unavailable';
+
   return emit({
     mode: 'delta',
     enabled: true,
     tokenSource,
+    reason,
     tokensFile,
     lanesFile,
-    engineVersion: collected.engineVersion,
+    engineVersion: measured ? collected.engineVersion : null,
     durationSeconds,
-    turns: collected.turns,
+    turns: measured ? collected.turns : null,
     error: null,
   });
 }
@@ -726,7 +868,7 @@ function main(argv) {
       tokenSource: null,
       tokensFile: null,
       lanesFile: null,
-      error: null,
+      error: gate.error ?? null,
     });
   }
 
@@ -739,15 +881,31 @@ function main(argv) {
     }
     throw new Error('mode must be "snapshot" or "delta"');
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // A failed snapshot must report the snapshot contract, not the delta one.
+    // `scoped: false` is what tells the caller the start file it may still be
+    // holding does not describe this pass.
+    if (args.mode === 'snapshot') {
+      return emit({
+        mode: 'snapshot',
+        enabled: true,
+        sessionLog: null,
+        snapshotFile: null,
+        scoped: false,
+        error: message,
+      });
+    }
     return emit({
       mode: args.mode ?? null,
       enabled: true,
       tokenSource: 'unavailable',
+      reason: 'error',
       tokensFile: null,
       lanesFile: null,
       engineVersion: null,
       durationSeconds: null,
-      error: error instanceof Error ? error.message : String(error),
+      turns: null,
+      error: message,
     });
   }
 }

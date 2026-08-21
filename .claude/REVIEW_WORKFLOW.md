@@ -311,8 +311,11 @@ whole series re-priceable.
 
 Emission is opt-in while extraction is being proven on one repository. The
 snapshot helper reads `LOOM_REVIEW_TELEMETRY` and does nothing unless it is
-exactly `on`. It is environment configuration set once, never an interactive
-prompt during a pass — a prompt would block an autonomous run.
+`on`, ignoring surrounding whitespace and case. Any other non-empty value is
+neither on nor off: the helper stays disabled and reports an error, so a typo
+reads as a misconfiguration rather than as a deliberate opt-out. It is
+environment configuration set once, never an interactive prompt during a pass —
+a prompt would block an autonomous run.
 
 ### Never read a telemetry marker
 
@@ -350,10 +353,16 @@ node <usage-helper> delta \
   --start "<telemetry-dir>/usage-start.json" --out-dir "<telemetry-dir>"
 ```
 
-`delta` prints `enabled`, `tokenSource`, `engineVersion`, `durationSeconds`, and
-the paths it wrote. When `enabled` is false, do not invoke `emit-telemetry`.
-Otherwise pass non-null values through verbatim. `tokenSource` is the provenance
-of the numbers and must never be upgraded by hand:
+`delta` prints `enabled`, `tokenSource`, `reason`, `engineVersion`,
+`durationSeconds`, and the paths it wrote. When `enabled` is false, do not
+invoke `emit-telemetry`. Otherwise pass non-null values through verbatim, except
+`reason`: it is diagnostic only, names why a measurement was downgraded or
+abandoned, is not an `emit-telemetry` argument, and never upgrades provenance.
+Report it in the pass output so a telemetry outage can be told apart from
+telemetry being switched off. A failed `snapshot` reports `scoped: false` and no
+`snapshotFile`; treat the start file it did not write as stale and do not pass
+it to `delta`. `tokenSource` is the provenance of the numbers and must never be
+upgraded by hand:
 
 - `session-log-delta` — measured, scoped to this pass.
 - `unscoped-session` — measured, but a truthful upper bound rather than this
@@ -363,7 +372,11 @@ of the numbers and must never be upgraded by hand:
 **A pass with no usable usage data must never emit zero tokens.** A zero makes
 the engine look free and skews every average in its favour, and it is the kind
 of defect that survives a year because the dashboard still looks plausible.
-Aggregation excludes a missing measurement; nothing zero-fills it.
+Aggregation excludes a missing measurement; nothing zero-fills it. The rule is
+about absence versus measured zero, so it holds for every count the helper
+reports, not only the token buckets, and an `unavailable` record reports no
+engine version, duration, or turn count at all — a record that has declared its
+own inputs unusable may not go on to quote values drawn from them.
 
 ### Count the findings
 
@@ -410,6 +423,16 @@ and `--lanes-file` whenever the corresponding value is null. A docs/config-only
 skip can legitimately have no resolved review tier, and unavailable usage can
 legitimately have no engine version or duration; the omitted options serialize
 as null without inventing a value or failing the emission.
+
+`--stance` is the one value on this list's other side: it is mandatory and
+cannot be omitted, yet it follows the tier's schedule, and the two schedules
+diverge from round 2. A branch that emits before a tier is resolved — a
+docs/config skip, or a cleanup lane that resolves no tier at all — must
+therefore derive it rather than reaching for the tier it does not have. Read the
+effective tier marker already on the PR, without classifying or posting one, and
+fall back to `adversarial` when none exists: a PR carrying no tier marker has
+had no prior round, and both schedules make round 1 adversarial. Resolve this
+before the first branch that can emit, not at the point of emission.
 Omit `--changeset-file` and the classifier runs over `<base>..<head>` itself.
 Add `--truncated` when a lane silently truncated the diff it was given: a lane
 that reviewed less than it was asked to produces cheap, bad findings, which is
@@ -429,6 +452,8 @@ the exact pattern that otherwise reads as efficiency.
 | Cleanup pass that committed           | `refactor`    | `changed`  |
 | Cleanup pass that found nothing       | `refactor`    | `clean`    |
 | Cleanup skipped on a spent latch      | `refactor`    | `clean`    |
+| Cleanup on a docs/config-only skip    | `refactor`    | `skipped`  |
+| Cleanup that could not complete       | `refactor`    | `blocked`  |
 
 A skip still burns tokens reading and classifying the PR, and "we spent eight
 thousand tokens deciding not to review" is exactly the machinery overhead worth

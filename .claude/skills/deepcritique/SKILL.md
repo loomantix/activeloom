@@ -47,6 +47,16 @@ that double-counts their work. A skipped refactor phase is not an invoked pass
 and emits no refactor record. See
 [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry".
 
+That is deliberately not complete attribution, and the gap runs one way. This
+wrapper's own pre-flight — reading the ledger reference and every prior thread,
+classifying the changeset, building the packet, resolving the round, and any
+tier marker it posts — happens before the first sub-skill takes its snapshot, so
+no record covers it. The two handoff branches below are the extreme case: the
+whole wrapper pass precedes the single record the receiving lane emits. Deep
+records therefore understate the chain, and a `session-log-delta` emitted under
+this wrapper is scoped to its lane rather than to the chain. Do not read the
+Deep-versus-Lean comparison as if the two were measured on the same boundary.
+
 6. Apply the docs/config-only skip, per the ledger's changeset classification.
    On a skip, finalize a clean v3 result through immediate handoff to
    `/critique <pr-number>`: that telemetry-owning lane takes its snapshot,

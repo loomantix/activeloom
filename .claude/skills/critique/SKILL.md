@@ -75,13 +75,26 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 5. Require local HEAD, remote head, and PR head to match.
 6. Record the exact PR base and head SHAs. Read every prior review thread,
    including resolved and outdated threads. Telemetry markers are not review
-   context: exclude them by marker prefix and never carry them into a finder
-   prompt or packet.
-7. Skip docs/config-only changesets, per the ledger's changeset classification.
+   context: exclude every comment whose marker begins `local-review-telemetry:`
+   and never carry one into a finder prompt or packet. Filter by that prefix
+   rather than by a list of known markers, so a record type added later is
+   excluded by default.
+7. Resolve the round and stance now, before any branch that can emit. Read the
+   effective tier marker already on the PR — reading it only, since a pass that
+   exits on the docs/config classification posts no marker — and fall back to
+   `adversarial` when none exists, which is correct because a PR carrying no
+   tier marker has had no prior round and both schedules make round 1
+   adversarial. `emit-telemetry` requires `--stance` and offers no way to omit
+   it, so a terminal branch reached without this is a branch that cannot emit.
+8. Skip docs/config-only changesets, per the ledger's changeset classification.
    Finalize a clean v3 result using the ledger's wrapper/standalone ownership
    rule, then emit a `skipped` telemetry record, before returning. A skip still
    spends tokens reading and classifying the PR, and that overhead is worth
    seeing.
+9. If a failure terminates this pass after the snapshot was taken, emit
+   `status=blocked` before returning. This applies from here on, not only at
+   Phase 4 — a pass that dies in Phase 1 through 3 never reaches the output
+   phase, and that is exactly the pass the `blocked` record describes.
 
 Do not begin a reviewer until the PR ledger is available. Do not use a
 force-push to establish or update the review branch.

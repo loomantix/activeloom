@@ -30,11 +30,20 @@ session. Continue only after an explicit override.
 4. Reuse its open PR. If none exists, push normally and open a draft PR before
    cleanup starts.
 5. Require local HEAD, remote head, and PR head to match. Read all prior review
-   threads.
+   threads. Telemetry markers are not review context: exclude every comment
+   whose marker begins `local-review-telemetry:` here and wherever else this
+   pass reads the PR's comments, and never carry one into context assembly.
+   Filter by that prefix rather than by a list of known markers, so a record
+   type added later is excluded by default.
 6. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
-7. Resolve the enclosing review round and stance from the caller when supplied;
-   otherwise use the ledger's standalone round rule. Retain both values through
-   every terminal branch because `emit-telemetry` requires them.
+7. Resolve the enclosing review round and stance from the caller when supplied.
+   Otherwise take the round from the ledger's standalone rule, and take the
+   stance from the effective tier marker already on the PR — that rule yields a
+   round only, and stance follows the tier's schedule. Fall back to
+   `adversarial` when no tier marker exists, which is correct because a PR
+   carrying none has had no prior round. Retain both values through every
+   terminal branch because `emit-telemetry` requires them and offers no way to
+   omit `--stance`.
 8. Apply the docs/config-only classification. On a skip, set the telemetry
    status to `skipped` and continue directly to Output without spending the
    refactor latch.
