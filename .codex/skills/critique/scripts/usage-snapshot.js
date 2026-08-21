@@ -29,7 +29,6 @@ import {
   readdirSync,
   readSync,
   closeSync,
-  statSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs';
@@ -114,7 +113,14 @@ function sessionsRoot(args) {
   );
 }
 
-/** Rollout logs are filed under a `YYYY/MM/DD` tree beneath the sessions root. */
+/**
+ * Rollout logs are filed under a `YYYY/MM/DD` tree beneath the sessions root.
+ *
+ * The list is deliberately unordered. Every consumer either counts matches to
+ * decide whether discovery is unambiguous or walks the whole set, so ranking
+ * the logs by recency here would only suggest a "most recent wins" rule that
+ * discovery specifically does not apply.
+ */
 function listRolloutLogs(root) {
   const logs = [];
   const walk = (dir, depth) => {
@@ -135,17 +141,12 @@ function listRolloutLogs(root) {
         entry.name.startsWith('rollout-') &&
         entry.name.endsWith('.jsonl')
       ) {
-        try {
-          logs.push({ path, mtimeMs: statSync(path).mtimeMs });
-        } catch {
-          // A log that vanished between listing and stat is never the session
-          // we are running in.
-        }
+        logs.push(path);
       }
     }
   };
   walk(root, 0);
-  return logs.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  return logs;
 }
 
 function parseLine(line) {
@@ -170,24 +171,41 @@ function sessionMetaFromText(text) {
   return null;
 }
 
+const sessionMetaCache = new Map();
+
 /**
  * Read the session header, which sits at the head of the file and therefore
  * outside the delta window.
+ *
+ * A header is written once at session start, so a successful read is cached
+ * for the life of this one-shot process: discovery reads the header of every
+ * rollout log under the sessions root, and a pass walks that tree two or three
+ * times. A failed read is not cached — a log still being created must stay
+ * re-readable rather than being pinned to the miss.
  */
 function sessionMeta(path) {
+  const cached = sessionMetaCache.get(path);
+  if (cached !== undefined) {
+    return cached;
+  }
   let fd;
+  let meta = null;
   try {
     fd = openSync(path, 'r');
     const buffer = Buffer.allocUnsafe(65536);
     const read = readSync(fd, buffer, 0, buffer.length, 0);
-    return sessionMetaFromText(buffer.subarray(0, read).toString('utf8'));
+    meta = sessionMetaFromText(buffer.subarray(0, read).toString('utf8'));
   } catch {
-    return null;
+    meta = null;
   } finally {
     if (fd !== undefined) {
       closeSync(fd);
     }
   }
+  if (meta !== null) {
+    sessionMetaCache.set(path, meta);
+  }
+  return meta;
 }
 
 function sessionId(meta) {
@@ -198,8 +216,8 @@ function sessionId(meta) {
 
 function sessionDescriptors(root, cwd) {
   const expectedCwd = resolve(cwd);
-  return listRolloutLogs(root).flatMap((candidate) => {
-    const meta = sessionMeta(candidate.path);
+  return listRolloutLogs(root).flatMap((path) => {
+    const meta = sessionMeta(path);
     if (
       !meta ||
       typeof meta['cwd'] !== 'string' ||
@@ -211,13 +229,7 @@ function sessionDescriptors(root, cwd) {
     if (id === null) {
       return [];
     }
-    return [
-      {
-        path: candidate.path,
-        id,
-        parentId: safeToken(meta['parent_thread_id']),
-      },
-    ];
+    return [{ path, id, parentId: safeToken(meta['parent_thread_id']) }];
   });
 }
 
@@ -515,22 +527,9 @@ function collect(text, snapshot, zeroBaseline = false) {
     if (isEmpty(delta)) {
       return;
     }
-    const key = `${current.model} ${current.effort ?? ''}`;
-    const existing = buckets.get(key);
-    if (existing === undefined) {
-      buckets.set(key, {
-        model: current.model,
-        effort: current.effort,
-        totals: { ...delta },
-      });
-      return;
-    }
-    for (const field of REPORTED_FIELDS) {
-      const value = delta[field];
-      const prior = existing.totals[field];
-      existing.totals[field] =
-        prior === null || value === null ? null : prior + value;
-    }
+    mergeRawBuckets(buckets, [
+      { model: current.model, effort: current.effort, totals: delta },
+    ]);
   };
 
   for (const line of text.split('\n')) {
@@ -825,11 +824,10 @@ function runDelta(args) {
     engineVersion,
     durationSeconds,
     events,
-    error:
-      childIncomplete || invalidProjection
-        ? childIncomplete
-          ? 'a descendant session had incomplete usage data'
-          : 'provider token subsets did not reconcile'
+    error: childIncomplete
+      ? 'a descendant session had incomplete usage data'
+      : invalidProjection
+        ? 'provider token subsets did not reconcile'
         : null,
   });
 }

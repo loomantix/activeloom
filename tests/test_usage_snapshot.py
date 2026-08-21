@@ -162,7 +162,7 @@ def tokens_of(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return records
 
 
-def test_gate_off_writes_nothing(tmp_path: Path, session: Path) -> None:
+def test_gate_off_writes_nothing(tmp_path: Path) -> None:
     """Emission is opt-in, and a gated-off run must not touch the filesystem."""
     out = tmp_path / "start.json"
     payload = run("snapshot", "--out", str(out), enabled=False)
@@ -585,9 +585,7 @@ def test_an_incomplete_trailing_line_makes_usage_unavailable(
     assert payload["tokensFile"] is None
 
 
-def test_an_internal_error_reports_unavailable_and_exits_zero(
-    tmp_path: Path,
-) -> None:
+def test_an_internal_error_reports_unavailable_and_exits_zero() -> None:
     """A telemetry defect must never block a review that found real defects."""
     payload = run("delta")
     assert payload["tokenSource"] == "unavailable"
