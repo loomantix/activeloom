@@ -177,6 +177,8 @@ PR-comment protocol as an interactive review.
 This section is engine-specific and lives here rather than in the vendored
 protocol document, which stays byte-identical across every engine.
 
+### Post the handoff at the end of a pass
+
 In handoff mode, never start another reviewer from the current session. At the
 end of a pass, post a deterministic PR comment carrying the exact base, current
 head, completed engine and round, outcome, next reviewer, and a pasteable
@@ -195,8 +197,28 @@ The helper owns the `local-review-handoff:v1` marker and prompt. It verifies the
 PR head before and after posting, verifies the comment read-back, rejects marker
 injection from optional context, and makes an identical retry idempotent.
 
-When the user asks to continue or resume a review, load the latest authenticated
-handoff before doing any review work:
+### Read the prior pass before every review
+
+Before running any lane, read what the other engines already left at this head.
+This is unconditional: it does not depend on the session mode, and it does not
+depend on the user having said "continue" or "resume". A reviewer that starts
+cold re-derives findings another engine already posted inline, which is the
+expensive failure this read exists to prevent.
+
+**The ledger attestation is the authority.** Every
+`local-review-pass:v3` / `local-review-complete:v3` marker on the PR carries the
+engine, round, base, before and final head, the classification, and the full
+finding-fingerprint set of the pass that produced it. Read those markers, their
+bodies, and the inline v3 threads they name. Do not re-litigate a fingerprint
+another engine dispositioned at this head. `coverage` and `verify-coverage`
+report the same state mechanically.
+
+`local-review-handoff:v1` is a Codex-side enrichment on top of that record, not
+a substitute for it and not a precondition. **Never refuse to start because no
+handoff comment exists** — an engine that does not implement this protocol never
+writes one, so its absence carries no information about whether the previous
+pass ran. Where one is present it is the
+richer read:
 
 ```bash
 python3 .codex/skills/critique/scripts/local-review-handoff.py show-handoff \
@@ -206,8 +228,8 @@ python3 .codex/skills/critique/scripts/local-review-handoff.py show-handoff \
 The helper considers the latest handoff from the authenticated GitHub actor,
 verifies its content digest and exact live PR head, and fails if the comment
 targets another engine. Never fall back to an older handoff addressed to the
-current engine. The PR ledger, not a prior terminal transcript, supplies the
-remaining context.
+current engine. A failure that means "targets the other engine" is a genuine
+stop; a failure that means "none found" is not.
 
 A handoff records who runs next; it is not evidence of review. Coverage still
 comes from attestations naming the exact head, so a handoff neither creates nor
