@@ -161,12 +161,28 @@ the next engine and its separate result boundary.
 
 Outside agent-loop, when `$AGENT_LOOP_REVIEW_ENGINE` is set or this pass is part
 of a review relay, follow the selected session mode. In auto mode, invoke the
-next reviewer only through `run-claude-review.sh`; never hand-compose the
-command or override its literal low effort. The launcher requires the exact
-reviewed head and fails closed unless the current worktree is that
-self-authored, same-repository PR head. In handoff mode, post the next-session
-handoff with `local-review-handoff.py post-handoff` and return control to the
-user.
+next reviewer only through a tested launcher. First read the effective roster
+and exact-head coverage. Run each declared reviewer that lacks an attestation at
+the current head: use `run-agy-review.sh` for `gemini` and
+`run-claude-review.sh` for `claude`. Never replace a declared reviewer silently;
+changing an existing roster requires an explicit superseding declaration. When
+no roster exists yet, declare it before launching; Gemini is the default
+reviewer unless repository instructions or the user selected another roster.
+Never hand-compose either command or override its model, effort, permission,
+output, or timeout options. Both launchers require the exact reviewed head and
+fail closed unless the current worktree is that self-authored,
+same-repository PR head. The Agy launcher additionally resolves and validates
+the complete Agy relay surface before review. In handoff mode, post the
+next-session handoff with `local-review-handoff.py post-handoff` and return
+control to the user.
+
+```bash
+.codex/skills/critique/scripts/run-agy-review.sh \
+  --repo <owner/repo> --pr <pr-number> --base <review-base-sha> \
+  --head <reviewed-head-sha> --round <round>
+```
+
+Explicit Claude fallback:
 
 ```bash
 .codex/skills/critique/scripts/run-claude-review.sh \
@@ -198,7 +214,8 @@ Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
   Run each declared reviewer that has not attested this head, against
   <review-base-sha>.
-  Auto mode: run the tested low-effort launcher and continue the chain.
+  Auto mode: run the tested launcher for each missing declared reviewer and
+  continue the chain; use Gemini only as the default for a newly declared relay.
   Handoff mode: a local-review-handoff:v1 comment was posted; the user starts a
   fresh terminal for the next reviewer and says "Continue review on PR
   #<pr-number>."
@@ -235,5 +252,7 @@ step needs cache headroom. A fresh session for `reviewit deep` makes the
 full chain materially cheaper.
 ```
 
-If no path is declared, present both choices and ask the developer to select
-based on whether local Claude Code is available. Do not assume a license.
+If no session mode is declared, present auto and handoff and ask the developer
+to select. In auto mode follow any existing roster; for a newly declared relay
+Agy is the default local reviewer unless repository instructions or the user
+selected another roster.

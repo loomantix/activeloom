@@ -38,9 +38,11 @@ CLI. A review fix invalidates only the attestations naming the superseded head,
 so an engine that already read the current commit does not re-run; validated
 minor-only polish does not keep the cycle running. Every local finding is
 recorded before its fix, then replied to with the fix SHA and validation before
-resolution. The relay runs in `auto` mode, where a tested launcher pins every
-directly invoked review to `--effort low`, or in `handoff` mode, where each pass
-posts a resumable PR comment and stops for a new user-started terminal session.
+resolution. The relay runs in `auto` mode, where the default tested launcher
+pins Agy to Gemini 3.7 Flash with high thinking (with the existing low-effort
+Claude launcher retained as an explicit fallback), or in `handoff` mode, where
+each pass posts a resumable PR comment and stops for a new user-started terminal
+session.
 
 ### Codex references (`.codex/references/`)
 
@@ -76,6 +78,16 @@ cd codex-platform
 ./scripts/install-skills.sh           # symlink missing skills into ~/.codex/skills/
 ./scripts/install-skills.sh --force   # replace existing entries after backup
 ```
+
+Auto mode with a declared `gemini` reviewer requires the `agy` CLI and the
+pinned companion `deepcritique` bundle in Agy's `/skills` output. The launcher
+resolves the real bundle, requires a clean `loomantix/gemini-platform` checkout
+at its pinned commit, validates the required regular files and ledger module
+shape, and adds that surface to Agy's workspace. Auto mode follows an existing
+PR roster; `gemini` through Agy is the default only when declaring a new relay.
+A repository or user may instead declare `claude`. Agy currently persists
+one-shot conversations, so use Claude where local conversation persistence is
+prohibited.
 
 Existing symlinks pick up in-place edits after `git pull`. After pulling a
 version that adds, renames, or retires skills, rerun
