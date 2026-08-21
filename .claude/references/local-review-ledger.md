@@ -813,14 +813,38 @@ Result ownership depends on the caller:
   wrapper validates the file and owns attestation.
 - When it is unset, the reviewer is standalone. Create an owner-only temporary
   directory outside the Git worktree, serialize the same result to a regular
-  file there with `write-result`, then invoke
-  `attest --threads-file <path> --expected-threads-sha256 <sha256> --allowed-heads-file <path>`
-  with the exact repository, PR, base, before, and final head. The thread export
-  must be sealed: the helper refuses a `--threads-file` whose digest is not
-  supplied as a 64-hex value, via that flag or the
-  `AGENT_LOOP_REVIEW_THREADS_SHA256` environment fallback. Pass the digest
-  returned by `validate-result` as `--expected-result-sha256`. Do not report the
-  pass complete unless the helper returns `verified: true`.
+  file there with `write-result`, then invoke `attest` with the exact repository,
+  PR, base, before, and final head. Pass the digest returned by `validate-result`
+  as `--expected-result-sha256`. Do not report the pass complete unless the
+  helper returns `verified: true`.
+
+**A standalone pass always has a reachable attestation.** The snapshot flags are
+optional inputs, not preconditions, and a pass that did not capture one still
+attests:
+
+- `--threads-file` / `--expected-threads-sha256` seal a review-thread export so a
+  wrapper's evidence cannot shift mid-pass. Omit both and the helper fetches the
+  threads live from GitHub, which is the normal standalone path. The sealing rule
+  — the helper refuses a `--threads-file` whose digest is not supplied as a
+  64-hex value, via that flag or the `AGENT_LOOP_REVIEW_THREADS_SHA256`
+  environment fallback — governs an export you chose to pass, not one you owe.
+- `--historical-comment-ids-file` is the one input that is genuinely
+  order-sensitive: it names the v3 comment IDs that already existed **before**
+  this pass posted anything, so the helper can tell historical evidence from
+  current-pass data. Omit it and every v3 record on the PR is treated as
+  current-pass. For a pass whose only v3 threads are its own — a first round, or
+  any round that inherited none — that is exactly right. Where earlier rounds or
+  another engine left v3 threads behind, capture the snapshot in pre-flight;
+  after the pass has posted its own findings it can no longer be reconstructed.
+- `--allowed-heads-file` widens the accepted before/head transition set. A pass
+  whose before and head are the two SHAs it actually reviewed does not need it.
+
+Never substitute prose for the marker. A write-up that names
+`local-review-pass:v3` or `local-review-complete:v3` in its text is not an
+attestation: `verify-coverage` does not match it, so the round reads as one the
+reviewer never ran, while a human reading the PR sees a finished review. If the
+helper genuinely refuses, that refusal is the finding — finalize `blocked` with
+the diagnostic and say so, rather than reporting the pass complete without one.
 
 Docs/config-only skips follow the same rule with a `clean` result whose
 `beforeSha` and `afterSha` both name the reviewed head. A skip returns only

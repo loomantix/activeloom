@@ -69,7 +69,11 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
    PR before starting a reviewer.
 4. Require local HEAD, remote head, and PR head to match.
 5. Record the exact PR base and head SHAs. Read every prior review thread,
-   including resolved and outdated threads.
+   including resolved and outdated threads. Where any of them carry a v3
+   finding or disposition record, write their comment IDs to an owner-only file
+   before running a lane: that snapshot is the ledger's
+   `--historical-comment-ids-file`, and it is the one attestation input that
+   cannot be reconstructed once this pass has posted its own findings.
 6. Skip docs/config-only changesets, per the ledger's changeset classification.
    Finalize a clean v3 result using the ledger's wrapper/standalone ownership
    rule before returning.
@@ -156,7 +160,11 @@ refactorpass committed, preserve the enclosing hook's original before SHA and
 finalize `changed` with classification `minor` and an empty finding set; the
 committed refactor latch supplies the evidence. Under agent-loop the wrapper
 owns the canonical pass attestation; a standalone pass must attest through the
-helper before reporting completion.
+helper before reporting completion. The helper's snapshot flags are optional
+inputs — omit them and it reads the threads live — so a pass that did not seal
+one still attests. Never report a pass complete on a write-up that only names
+the marker in prose; if the helper refuses, finalize `blocked` with its
+diagnostic instead.
 
 ## Phase 3: Disposition and fixes
 
