@@ -68,15 +68,39 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 3. Reuse the branch's open PR. If none exists, push normally and open a draft
    PR before starting a reviewer.
 4. Require local HEAD, remote head, and PR head to match.
-5. Record the exact PR base and head SHAs. Read every prior review thread,
-   including resolved and outdated threads. Where any of them carry a v3
-   finding or disposition record, write their comment IDs to an owner-only file
-   before running a lane: that snapshot is the ledger's
+5. Record the exact PR base and head SHAs. Read the actor-owned issue comments
+   needed to resolve the tier, round, and stance, excluding every comment whose
+   marker begins `local-review-telemetry:`.
+6. Resolve the round and stance now, before the telemetry boundary or any branch
+   that can emit. Read the effective tier marker already on the PR — reading it
+   only, since a pass that exits on the docs/config classification posts no
+   marker — and fall back to `adversarial` when none exists, which is correct
+   because a PR carrying no tier marker has had no prior round and both schedules
+   make round 1 adversarial. `emit-telemetry` requires `--stance` and offers no
+   way to omit it.
+7. Take the pass telemetry snapshot now that its mandatory repository, PR,
+   base, head, round, and stance identity exists, per
+   [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". The
+   helper is a no-op when telemetry is not enabled for this repository. The
+   skill and identity-resolution setup above is outside the measurement boundary.
+8. Read every prior review thread, including resolved and outdated threads.
+   Telemetry markers are not review context: exclude them by marker prefix and
+   never carry one into a finder prompt or packet. Where any remaining thread
+   carries a v3 finding or disposition record, write its comment ID to an
+   owner-only file before running a lane: that snapshot is the ledger's
    `--historical-comment-ids-file`, and it is the one attestation input that
    cannot be reconstructed once this pass has posted its own findings.
-6. Skip docs/config-only changesets, per the ledger's changeset classification.
+9. Skip docs/config-only changesets, per the ledger's changeset classification.
    Finalize a clean v3 result using the ledger's wrapper/standalone ownership
-   rule before returning.
+   rule, then emit a `skipped` telemetry record, before returning. A skip still
+   spends tokens reading and classifying the PR, and that overhead is worth
+   seeing.
+10. If a failure terminates this pass after the snapshot boundary, emit
+    `status=blocked` before returning. This applies from here on, not only at
+    Phase 4 — a pass that dies in Phase 1 through 3 never reaches the output
+    phase, and that is exactly the pass the `blocked` record describes.
+    A failure in steps 1–6 reports `telemetry not emitted: boundary unresolved`
+    instead; it does not yet have the mandatory identity needed to emit.
 
 Do not begin a reviewer until the PR ledger is available. Do not use a
 force-push to establish or update the review branch.
@@ -255,9 +279,19 @@ attestations that named the superseded commit.
 
 ## Phase 4: Output
 
+Once the v3 result is finalized and any fix commits are pushed, emit this
+pass's telemetry record per [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md)
+"Pass Telemetry", with `--pass-type review` and the status this pass reached.
+Emission runs last because it must describe the finished pass, and it exits zero
+whether or not it succeeded: a telemetry failure is reported and never retried
+into the review, never changes the v3 result, and never delays marking the PR
+ready.
+
 Report the PR and reviewed head, the resolved tier and its trigger, the round
 and stance, mode and lenses, disposition/thread counts, validation, fix SHAs,
-and whether material fixes require another local-engine pass.
+and whether material fixes require another local-engine pass. Reporting this
+pass's own measured spend here is permitted; reading any earlier pass's record
+is not.
 
 A convergence round that found no blocking defect ends the loop: record a clean
 result, recommend the ship step, and list any urgent deferred issues.

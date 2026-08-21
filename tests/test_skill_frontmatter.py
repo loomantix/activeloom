@@ -214,3 +214,26 @@ def test_review_tier_contract_is_consistent_across_review_skills() -> None:
         "`codex-review` cross-check is the documented vendor-specific exception"
         in workflow
     )
+
+
+def test_telemetry_snapshot_follows_mandatory_review_identity() -> None:
+    """Blocked telemetry is possible only after every required identity exists."""
+
+    critique = (REPO_ROOT / ".claude/skills/critique/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    refactorpass = (REPO_ROOT / ".claude/skills/refactorpass/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert critique.index("Resolve the round and stance now") < critique.index(
+        "Take the pass telemetry snapshot now"
+    )
+    assert critique.index("Take the pass telemetry snapshot now") < critique.index(
+        "Read every prior review thread"
+    )
+    assert refactorpass.index(
+        "Resolve the enclosing review round and stance"
+    ) < refactorpass.index("Take the pass telemetry snapshot now")
+    for skill in (critique, refactorpass):
+        assert "telemetry not emitted: boundary unresolved" in skill

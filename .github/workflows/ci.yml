@@ -287,6 +287,18 @@ jobs:
           # discovery would otherwise find nothing and fall back to defaults.
           npx --yes prettier@3.8.3 --config .prettierrc --check \
             "$RENDER_DIR/.github/copilot-instructions.md"
+      - name: Verify telemetry review surface reaches consumers exactly
+        run: |
+          set -euo pipefail
+          for path in \
+            .claude/REVIEW_WORKFLOW.md \
+            .claude/skills/critique/SKILL.md \
+            .claude/skills/critique/scripts/usage-snapshot.js \
+            .claude/skills/deepcritique/SKILL.md \
+            .claude/skills/refactorpass/SKILL.md; do
+            cmp "$path" "$RENDER_DIR/$path"
+          done
+          test "$(stat -c '%a' "$RENDER_DIR/.claude/skills/critique/scripts/usage-snapshot.js")" = 644
       - name: Render fidelity fixture and compare against golden
         run: |
           set -euo pipefail

@@ -65,12 +65,22 @@ targets:
     substitutions: []
     mode: '0644'
 
+  # The pass-scoped usage extractor. Unlike the ledger bundle beside it, this
+  # is maintained here rather than vendored: it parses this engine's session
+  # log, which breaks on a CLI release, and the ledger package must never grow
+  # a dependency on transcripts it has no business reading. Also ESM, and also
+  # covered by the directory's `package.json` below.
+  - source: .claude/skills/critique/scripts/usage-snapshot.js
+    destination: .claude/skills/critique/scripts/usage-snapshot.js
+    substitutions: []
+    mode: '0644'
+
   # The bundle is ESM. Node resolves module type from the NEAREST package.json
   # walking up from the file, which in a consumer is that repo's root — so
   # without this the ledger's module type depends on the consumer's manifest:
   # `"type": "commonjs"` is a hard SyntaxError, and an absent `type` works only
   # via Node's syntax detection (>=20.19/22.7) and warns on every invocation.
-  # This directory holds only the bundle and its version file, so scoping it to
+  # This directory holds only ESM scripts and their pin files, so scoping it to
   # ESM is safe and makes the runtime requirement independent of the consumer.
   - source: .claude/skills/critique/scripts/package.json
     destination: .claude/skills/critique/scripts/package.json

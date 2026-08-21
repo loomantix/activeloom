@@ -23,26 +23,44 @@ session. Continue only after an explicit override.
    `staging`.
 3. Reuse its open PR. If none exists, push normally and open a draft PR before
    cleanup starts.
-4. Require local HEAD, remote head, and PR head to match. Read all prior review
-   threads.
+4. Require local HEAD, remote head, and PR head to match.
 5. Resolve the exact base SHA once and use its literal `<base-sha>..HEAD` range.
-6. Skip docs/config-only changesets, per the ledger's changeset
-   classification.
-7. **Check the once-per-engine latch.** Search the PR's comments for
+   Read the actor-owned issue comments needed for the tier, round, stance, and
+   latch, excluding every comment whose marker begins
+   `local-review-telemetry:`.
+6. Resolve the enclosing review round and stance from the caller when supplied.
+   Otherwise take the round from the ledger's standalone rule, and take the
+   stance from the effective tier marker already on the PR — that rule yields a
+   round only, and stance follows the tier's schedule. Fall back to
+   `adversarial` when no tier marker exists, which is correct because a PR
+   carrying none has had no prior round. Retain both values through every
+   terminal branch because `emit-telemetry` requires them and offers no way to
+   omit `--stance`.
+7. Take the pass telemetry snapshot now that its mandatory repository, PR,
+   base, head, round, and stance identity exists, per
+   [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". The
+   helper is a no-op when telemetry is not enabled for this repository. The
+   skill and identity-resolution setup above is outside the measurement boundary.
+8. Read all prior review threads. Telemetry markers are not review context:
+   exclude them by marker prefix and never carry one into context assembly.
+   Apply the docs/config-only classification. On a skip, set the telemetry
+   status to `skipped` and continue directly to Output without spending the
+   refactor latch.
+9. **Check the once-per-engine latch.** Search the PR's comments for
    `local-review-refactor:v1 engine=claude`, authored by the actor running this
    review. If it is present, this PR has already had its Claude cleanup pass:
-   report the skip with the head the earlier pass ran on and stop. Do not run
-   `/simplify`. Continue only when the marker is absent or `$ARGUMENTS` contains
-   `force`, and say which of the two applied.
+   set the telemetry status to `clean` and continue directly to Output. Do not
+   run `/simplify`. Continue to cleanup only when the marker is absent or
+   `$ARGUMENTS` contains `force`, and say which of the two applied.
 
    The rule exists because the second pass over an already-simplified diff
    returns naming and shape churn, not cleanups. That churn moves the head and
    re-stales the other engine's attestation for no shipped benefit.
 
-8. Resolve the changed-file list once and follow the ledger's diff-delivery
-   rules. If this pass fans cleanup angles out to agents, scope each to the
-   files it reviews rather than giving every angle the same whole-diff
-   artifact.
+10. Resolve the changed-file list once and follow the ledger's diff-delivery
+    rules. If this pass fans cleanup angles out to agents, scope each to the
+    files it reviews rather than giving every angle the same whole-diff
+    artifact.
 
 ## Single `/simplify` pass
 
@@ -98,6 +116,22 @@ threads for cleanups: only the final adversarial `critique` lane may certify the
 enclosing Claude review hook, and the outer wrapper owns its attestation.
 
 ## Output
+
+Emit this pass's telemetry record per
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry" with
+`--pass-type refactor`, whichever of the three outcomes above applied. A pass
+that committed is `changed`; one that found nothing is `clean`. A pass that
+stopped on a spent latch is also `clean`, not `skipped` — its changeset was
+reviewable, this engine had simply already spent its one pass, and the record
+rejects a `skipped` pass carrying review-significant files. A docs/config-only
+skip is the case that genuinely reports `skipped`.
+
+Emission exits zero whether or not it succeeded. Report the outcome and move on.
+When a failure terminates the pass after a snapshot was taken, emit
+`status=blocked` before returning; telemetry failure itself remains nonfatal and
+is not retried. A failure before the snapshot boundary reports
+`telemetry not emitted: boundary unresolved` because the mandatory record
+identity does not yet exist.
 
 Report:
 
