@@ -47,19 +47,17 @@ jobs:
     # updates that match it. A bumped SHA without matching file content
     # fails the gate intentionally so a reviewer notices the drift.
     #
-    # The pin does NOT track `claude-platform`'s default branch. It tracks a
-    # preserved review-only line whose commits are frozen behind signed
-    # annotated tags (`sync-engine-pre-rename-fidelity-v*`), because that
-    # line carries engine hardening — faithful CRLF handling on read/write,
-    # the ASCII-only blank-line rule, container-aware collapse linting —
-    # that was reviewed onto the historical pre-rename snapshot and never
-    # made it back onto `main`. Re-vendoring from `main` would silently
-    # revert it. When bumping, branch from the current tag, land the change
-    # upstream on both that line and `main`, tag the new snapshot, and point
-    # this pin at the tagged commit.
+    # The pin tracks `claude-platform`'s default branch. It used to track a
+    # preserved review-only line, because that line carried engine hardening
+    # — faithful CRLF handling on read/write, the ASCII-only blank-line
+    # rule, container-aware collapse linting — that had been reviewed onto a
+    # historical snapshot and never made it back onto `main`. That work now
+    # lives on `main` (claude-platform#123 and #125), so the fork carries
+    # nothing unique and re-vendoring from `main` no longer reverts anything.
+    # When bumping, land the change upstream on `main` first, then point this
+    # pin at the merged commit in the same PR as the vendored file content.
     env:
-      # sync-engine-pre-rename-fidelity-v2
-      CLAUDE_PIN_SHA: 3222ab91e85ac0c8bd68e7d71c8381423e1de18d
+      CLAUDE_PIN_SHA: e8d9ba8e274940cb4e38fc21feff81ce7f58de11
       CLAUDE_REPO: loomantix/claude-platform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
