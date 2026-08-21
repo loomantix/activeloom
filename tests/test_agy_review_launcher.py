@@ -25,6 +25,8 @@ def _trusted_environment(
     local_head: str = HEAD,
     pr_head: str = HEAD,
     remote_head: str = HEAD,
+    surface_remote: str = "https://github.com/loomantix/gemini-platform.git",
+    surface_head: str = AGY_SURFACE_SHA,
 ) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -35,20 +37,41 @@ def _trusted_environment(
         "args = sys.argv[1:]\n"
         f"local_head = {local_head!r}\n"
         f"remote_head = {remote_head!r}\n"
-        "if args == ['rev-parse', 'HEAD']:\n"
-        "    print(local_head)\n"
-        "elif args == ['ls-remote', '--exit-code', 'origin', 'refs/heads/feature']:\n"
-        "    print(remote_head + '\\trefs/heads/feature')\n"
+        f"surface_remote = {surface_remote!r}\n"
+        f"surface_head = {surface_head!r}\n"
+        # Strip leading global options so the launcher may harden its
+        # surface calls without every dispatch below shifting position.
+        "global_options = []\n"
+        "while args and (args[0] == '-c' or args[0].startswith('--')):\n"
+        "    if args[0] == '-c':\n"
+        "        global_options.append(args[1]); args = args[2:]\n"
+        "    else:\n"
+        "        global_options.append(args[0]); args = args[1:]\n"
+        "target = None\n"
+        "if args[:1] == ['-C']:\n"
+        "    target, args = args[1], args[2:]\n"
+        "    options_file = os.environ.get('AGY_GIT_OPTIONS_FILE')\n"
+        "    if options_file:\n"
+        "        with open(options_file, 'a', encoding='utf-8') as handle:\n"
+        "            handle.write(' '.join(global_options) + '\\n')\n"
+        "if target is None:\n"
+        "    if args == ['rev-parse', 'HEAD']:\n"
+        "        print(local_head)\n"
+        "    elif args == ['ls-remote', '--exit-code', 'origin', 'refs/heads/feature']:\n"
+        "        print(remote_head + '\\trefs/heads/feature')\n"
+        "    elif args == ['status', '--porcelain']:\n"
+        "        pass\n"
+        "    else:\n"
+        "        raise SystemExit('unexpected git invocation: ' + ' '.join(args))\n"
+        "elif args == ['rev-parse', '--show-toplevel']:\n"
+        "    print(pathlib.Path(target).parent)\n"
+        "elif args == ['remote', 'get-url', 'origin']:\n"
+        "    print(surface_remote)\n"
+        "elif args == ['rev-parse', 'HEAD']:\n"
+        "    print(surface_head)\n"
         "elif args == ['status', '--porcelain']:\n"
-        "    pass\n"
-        "elif len(args) >= 4 and args[0] == '-C' and args[2:] == ['rev-parse', '--show-toplevel']:\n"
-        "    print(pathlib.Path(args[1]).parent)\n"
-        "elif len(args) >= 5 and args[0] == '-C' and args[2:] == ['remote', 'get-url', 'origin']:\n"
-        "    print('https://github.com/loomantix/gemini-platform.git')\n"
-        "elif len(args) >= 4 and args[0] == '-C' and args[2:] == ['rev-parse', 'HEAD']:\n"
-        f"    print({AGY_SURFACE_SHA!r})\n"
-        "elif len(args) >= 4 and args[0] == '-C' and args[2:] == ['status', '--porcelain']:\n"
-        "    if os.environ.get('AGY_TEST_SURFACE_DIRTY') == '1': print(' M .agents/skills/critique/SKILL.md')\n"
+        "    if os.environ.get('AGY_TEST_SURFACE_DIRTY') == '1':\n"
+        "        print(' M .agents/skills/critique/SKILL.md')\n"
         "else:\n"
         "    raise SystemExit('unexpected git invocation: ' + ' '.join(args))\n",
         encoding="utf-8",
@@ -329,7 +352,13 @@ def test_launcher_rejects_dirty_trusted_surface_before_review(tmp_path: Path) ->
     assert not argv_file.exists()
 
 
-def test_launcher_forwards_termination_to_running_agy(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("forwarded_signal", "expected_returncode"),
+    [(signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129)],
+)
+def test_launcher_forwards_termination_to_running_agy(
+    tmp_path: Path, forwarded_signal: int, expected_returncode: int
+) -> None:
     child_pid_file = tmp_path / "child.pid"
     completed_marker = tmp_path / "completed"
     fake_agy, _ = _fake_agy(tmp_path)
@@ -368,10 +397,130 @@ def test_launcher_forwards_termination_to_running_agy(tmp_path: Path) -> None:
     assert child_pid_file.exists()
     child_pid = int(child_pid_file.read_text(encoding="utf-8"))
 
-    os.kill(process.pid, signal.SIGTERM)
+    os.kill(process.pid, forwarded_signal)
     stdout, stderr = process.communicate(timeout=8)
 
-    assert process.returncode == 143, (stdout, stderr)
+    assert process.returncode == expected_returncode, (stdout, stderr)
     assert not completed_marker.exists()
     with pytest.raises(ProcessLookupError):
         os.kill(child_pid, 0)
+
+
+def test_launcher_rejects_untrusted_surface_remote(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _ = _fake_agy(tmp_path)
+    environment = {
+        **_trusted_environment(tmp_path, surface_remote="https://github.com/attacker/gemini-platform.git"),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = subprocess.run(
+        _command(), check=False, capture_output=True, text=True, cwd=ROOT, env=environment
+    )
+
+    assert result.returncode == 1
+    assert "untrusted Git remote" in result.stderr
+    assert not argv_file.exists()
+
+
+def test_launcher_rejects_unpinned_surface_commit(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _ = _fake_agy(tmp_path)
+    environment = {
+        **_trusted_environment(tmp_path, surface_head="c" * 40),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = subprocess.run(
+        _command(), check=False, capture_output=True, text=True, cwd=ROOT, env=environment
+    )
+
+    assert result.returncode == 1
+    assert f"not at the pinned gemini-platform commit {AGY_SURFACE_SHA}" in result.stderr
+    assert not argv_file.exists()
+
+
+def test_launcher_pin_matches_the_launcher_source() -> None:
+    # The launcher comment promises this constant moves in lockstep with the pin,
+    # so assert it rather than mirroring the value by hand.
+    assert f'agy_surface_sha="{AGY_SURFACE_SHA}"' in LAUNCHER.read_text(encoding="utf-8")
+
+
+def test_launcher_neutralizes_config_execution_on_the_nominated_surface(tmp_path: Path) -> None:
+    # The surface path is nominated by Agy, and Git executes programs named by a
+    # repository's own config, so every -C call must disarm that config.
+    options_file = tmp_path / "git-options.txt"
+    fake_agy, _ = _fake_agy(tmp_path)
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(tmp_path / "argv.json"),
+        "AGY_GIT_OPTIONS_FILE": str(options_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    subprocess.run(
+        _command(), check=True, capture_output=True, text=True, cwd=ROOT, env=environment
+    )
+
+    invocations = options_file.read_text(encoding="utf-8").splitlines()
+    assert len(invocations) == 4
+    for options in invocations:
+        assert "core.fsmonitor=" in options
+        assert "core.hooksPath=/dev/null" in options
+        assert "--no-optional-locks" in options
+
+
+def test_launcher_rejects_blank_review_response(tmp_path: Path) -> None:
+    fake_agy, _ = _fake_agy(tmp_path)
+    fake_agy.write_text(
+        fake_agy.read_text(encoding="utf-8").replace(
+            "'response': 'review complete'", "'response': '   '"
+        ),
+        encoding="utf-8",
+    )
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(tmp_path / "argv.json"),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = subprocess.run(
+        _command(), check=False, capture_output=True, text=True, cwd=ROOT, env=environment
+    )
+
+    assert result.returncode == 1
+    assert "without a text response" in result.stderr
+    assert result.stdout == ""
+
+
+def test_launcher_completes_under_inherited_job_control(tmp_path: Path) -> None:
+    # Bash imports `monitor` from an exported SHELLOPTS. With job control on, a
+    # forking setsid would detach Agy and hand the launcher an empty result.
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _ = _fake_agy(tmp_path)
+    # Delay the payload so a launcher that stopped waiting is caught
+    # deterministically rather than by whichever process wins a race.
+    fake_agy.write_text(
+        fake_agy.read_text(encoding="utf-8").replace(
+            "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n",
+            "    import time\n"
+            "    time.sleep(2)\n"
+            "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n",
+        ),
+        encoding="utf-8",
+    )
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+        "SHELLOPTS": "monitor",
+    }
+
+    result = subprocess.run(
+        _command(), check=True, capture_output=True, text=True, cwd=ROOT, env=environment
+    )
+
+    assert result.stdout == "review complete\n"
+    assert argv_file.exists()

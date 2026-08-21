@@ -14,10 +14,14 @@ from typing import Any, NoReturn, cast
 
 
 CURRENT_ACTOR: str | None = None
+# Engine identities this handoff surface accepts. Must stay in step with the
+# marker grammar below and with the engines the review-ledger helper accepts.
+ENGINES = ("codex", "claude", "gemini")
+ENGINE_LABELS = {"codex": "Codex", "claude": "Claude", "gemini": "Gemini"}
 HANDOFF_V1_RE = re.compile(
     r"^<!-- local-review-handoff:v1 "
-    r"from=(?P<from_engine>codex|claude) "
-    r"to=(?P<to_engine>codex|claude) "
+    r"from=(?P<from_engine>codex|claude|gemini) "
+    r"to=(?P<to_engine>codex|claude|gemini) "
     r"round=(?P<round>[1-9][0-9]*) "
     r"base=(?P<base>[0-9a-f]{40}) "
     r"head=(?P<head>[0-9a-f]{40}) "
@@ -136,7 +140,7 @@ def _read_context(path_value: str | None) -> str:
 
 def _handoff_content(args: argparse.Namespace, context: str) -> str:
     next_engine = cast(str, args.to_engine)
-    label = "Codex" if next_engine == "codex" else "Claude"
+    label = ENGINE_LABELS[next_engine]
     context = context.strip() or "No additional context. Reconstruct the pass from the PR ledger."
     return f"""## Local review handoff: {args.from_engine} to {next_engine}
 
@@ -149,8 +153,8 @@ Find and follow the latest authenticated local-review-handoff:v1 comment before
 reviewing. Verify that its exact head is still current, load the complete PR
 ledger including resolved threads and prior attestations, and continue as the
 {next_engine} reviewer against the pinned base. Do not invoke the other review
-engine from this session. When this pass ends, inspect the authenticated Codex
-and Claude outcomes for the round. If they satisfy the repository's convergence
+engine from this session. When this pass ends, inspect every declared
+engine's authenticated outcome for the round. If they satisfy the repository's convergence
 rule, publish the terminal review result and follow its configured finalization
 step without another handoff. Otherwise publish the next authenticated handoff
 comment and stop so the user can start the following session.
@@ -338,8 +342,8 @@ def _parser() -> argparse.ArgumentParser:
     post.add_argument("--pr", required=True, type=int)
     post.add_argument("--head", required=True, type=_sha)
     post.add_argument("--base", required=True, type=_sha)
-    post.add_argument("--from-engine", required=True, choices=("codex", "claude"))
-    post.add_argument("--to-engine", required=True, choices=("codex", "claude"))
+    post.add_argument("--from-engine", required=True, choices=ENGINES)
+    post.add_argument("--to-engine", required=True, choices=ENGINES)
     post.add_argument("--round", required=True, type=int)
     post.add_argument("--outcome", required=True, choices=("clean", "minor", "material", "blocked"))
     post.add_argument("--context-file")
@@ -348,7 +352,7 @@ def _parser() -> argparse.ArgumentParser:
     show = commands.add_parser("show-handoff")
     show.add_argument("--repo", required=True)
     show.add_argument("--pr", required=True, type=int)
-    show.add_argument("--engine", required=True, choices=("codex", "claude"))
+    show.add_argument("--engine", required=True, choices=ENGINES)
     show.set_defaults(handler=_show_handoff)
     return parser
 

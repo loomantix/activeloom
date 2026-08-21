@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Bash imports `monitor` from an exported SHELLOPTS. With job control on,
+# each background job leads its own process group, so the `setsid` below
+# forks instead of exec'ing: `$!` would name a wrapper that exits at once,
+# leaving the real Agy detached and unreachable by the cancellation path.
+set +m
 
 usage() {
     echo "usage: $0 --repo OWNER/REPO --pr NUMBER --base SHA --head SHA --round NUMBER" >&2
@@ -73,7 +78,7 @@ agy_pid=""
 forward_signal() {
     local signal="$1"
     local exit_code="$2"
-    trap - INT TERM
+    trap - INT TERM HUP
     if [ -n "$agy_pid" ] && kill -0 "$agy_pid" 2>/dev/null; then
         kill -s "$signal" -- "-$agy_pid" 2>/dev/null || true
         for _ in {1..20}; do
@@ -104,6 +109,7 @@ run_agy_managed() {
 
 trap 'forward_signal INT 130' INT
 trap 'forward_signal TERM 143' TERM
+trap 'forward_signal HUP 129' HUP
 
 # The outer bound stays above --print-timeout so the CLI's own timeout fires
 # first and still writes a structured payload for the parser below.
@@ -183,21 +189,32 @@ print(surface_text)
 PY
 )"
 
-agy_surface_repo="$(git -C "$agy_surface_root" rev-parse --show-toplevel)"
+# Git runs programs named by a repository's own configuration, such as
+# core.fsmonitor. The surface path is nominated by Agy and is untrusted
+# until the provenance checks below pass, so neutralize that configuration
+# on every command: the pin decides, not the candidate's own config.
+surface_git() {
+    local dir="$1"
+    shift
+    git -c core.fsmonitor= -c core.hooksPath=/dev/null --no-optional-locks \
+        -C "$dir" "$@"
+}
+
+agy_surface_repo="$(surface_git "$agy_surface_root" rev-parse --show-toplevel)"
 [ "$agy_surface_root" = "$agy_surface_repo/.agents" ] || {
     echo "agy relay surface must be the .agents directory of its trusted checkout" >&2
     exit 1
 }
-agy_surface_remote="$(git -C "$agy_surface_repo" remote get-url origin)"
+agy_surface_remote="$(surface_git "$agy_surface_repo" remote get-url origin)"
 case "$agy_surface_remote" in
     https://github.com/loomantix/gemini-platform.git|git@github.com:loomantix/gemini-platform.git) ;;
     *) echo "agy relay surface has an untrusted Git remote" >&2; exit 1 ;;
 esac
-[ "$(git -C "$agy_surface_repo" rev-parse HEAD)" = "$agy_surface_sha" ] || {
+[ "$(surface_git "$agy_surface_repo" rev-parse HEAD)" = "$agy_surface_sha" ] || {
     echo "agy relay surface is not at the pinned gemini-platform commit $agy_surface_sha" >&2
     exit 1
 }
-[ -z "$(git -C "$agy_surface_repo" status --porcelain)" ] || {
+[ -z "$(surface_git "$agy_surface_repo" status --porcelain)" ] || {
     echo "agy relay surface checkout must be clean" >&2
     exit 1
 }
@@ -253,7 +270,7 @@ if exit_code != 0 or status != "SUCCESS":
     raise SystemExit(f"agy review failed (exit {exit_code}, status {status!r}): {message}")
 
 response = payload.get("response")
-if not isinstance(response, str):
+if not isinstance(response, str) or not response.strip():
     raise SystemExit("agy review succeeded without a text response")
 print(response)
 PY
