@@ -389,6 +389,7 @@ def test_launcher_forwards_termination_to_running_agy(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_DFL),
     )
     for _ in range(100):
         if child_pid_file.exists():
