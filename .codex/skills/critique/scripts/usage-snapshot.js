@@ -25,6 +25,7 @@
 import {
   mkdirSync,
   openSync,
+  fstatSync,
   readdirSync,
   readSync,
   closeSync,
@@ -35,7 +36,7 @@ import {
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const SNAPSHOT_VERSION = 1;
+const SNAPSHOT_VERSION = 2;
 
 /**
  * Emission is opt-in while the extraction is being proven on a single
@@ -45,14 +46,13 @@ const SNAPSHOT_VERSION = 1;
  */
 function gateState() {
   const raw = process.env['LOOM_REVIEW_TELEMETRY'];
-  if (raw === undefined || raw.trim() === '') {
+  if (raw === undefined || raw === '') {
     return { enabled: false, reason: 'LOOM_REVIEW_TELEMETRY is unset' };
   }
-  const value = raw.trim().toLowerCase();
-  if (value === 'on') {
+  if (raw === 'on') {
     return { enabled: true, reason: null };
   }
-  if (value === 'off') {
+  if (raw === 'off') {
     return { enabled: false, reason: 'LOOM_REVIEW_TELEMETRY is off' };
   }
   return {
@@ -89,6 +89,9 @@ function parseArgs(argv) {
         break;
       case '--session-log':
         args.sessionLog = take(arg);
+        break;
+      case '--session-id':
+        args.sessionId = take(arg);
         break;
       case '--sessions-dir':
         args.sessionsDir = take(arg);
@@ -145,14 +148,6 @@ function listRolloutLogs(root) {
   return logs.sort((left, right) => right.mtimeMs - left.mtimeMs);
 }
 
-function fileSize(path) {
-  try {
-    return statSync(path).size;
-  } catch {
-    return null;
-  }
-}
-
 function parseLine(line) {
   const trimmed = line.trim();
   if (trimmed === '') {
@@ -161,11 +156,18 @@ function parseLine(line) {
   try {
     return JSON.parse(trimmed);
   } catch {
-    // A partially flushed final line is expected when reading a log that is
-    // still being appended to. Skipping it costs at most one event; failing
-    // here would cost the whole record.
     return null;
   }
+}
+
+function sessionMetaFromText(text) {
+  for (const line of text.split('\n')) {
+    const event = parseLine(line);
+    if (event && event['type'] === 'session_meta') {
+      return event['payload'] ?? null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -173,19 +175,71 @@ function parseLine(line) {
  * outside the delta window.
  */
 function sessionMeta(path) {
-  let head;
+  let fd;
   try {
-    head = readFileSync(path, 'utf8').slice(0, 65536);
+    fd = openSync(path, 'r');
+    const buffer = Buffer.allocUnsafe(65536);
+    const read = readSync(fd, buffer, 0, buffer.length, 0);
+    return sessionMetaFromText(buffer.subarray(0, read).toString('utf8'));
   } catch {
     return null;
-  }
-  for (const line of head.split('\n')) {
-    const event = parseLine(line);
-    if (event && event['type'] === 'session_meta') {
-      return event['payload'] ?? null;
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd);
     }
   }
-  return null;
+}
+
+function sessionId(meta) {
+  return meta
+    ? (safeToken(meta['session_id']) ?? safeToken(meta['id']) ?? null)
+    : null;
+}
+
+function sessionDescriptors(root, cwd) {
+  const expectedCwd = resolve(cwd);
+  return listRolloutLogs(root).flatMap((candidate) => {
+    const meta = sessionMeta(candidate.path);
+    if (
+      !meta ||
+      typeof meta['cwd'] !== 'string' ||
+      resolve(meta['cwd']) !== expectedCwd
+    ) {
+      return [];
+    }
+    const id = sessionId(meta);
+    if (id === null) {
+      return [];
+    }
+    return [
+      {
+        path: candidate.path,
+        id,
+        parentId: safeToken(meta['parent_thread_id']),
+      },
+    ];
+  });
+}
+
+function descendantDescriptors(descriptors, rootId) {
+  const descendants = [];
+  const knownParents = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const descriptor of descriptors) {
+      if (
+        descriptor.parentId !== null &&
+        knownParents.has(descriptor.parentId) &&
+        !knownParents.has(descriptor.id)
+      ) {
+        knownParents.add(descriptor.id);
+        descendants.push(descriptor);
+        changed = true;
+      }
+    }
+  }
+  return descendants;
 }
 
 /**
@@ -203,37 +257,30 @@ function discoverSessionLog(args) {
     return resolve(explicit);
   }
   const cwd = resolve(args.cwd ?? process.cwd());
-  const candidates = listRolloutLogs(sessionsRoot(args));
-  for (const candidate of candidates) {
-    const meta = sessionMeta(candidate.path);
-    if (
-      meta &&
-      typeof meta['cwd'] === 'string' &&
-      resolve(meta['cwd']) === cwd
-    ) {
-      return candidate.path;
-    }
+  const candidates = sessionDescriptors(sessionsRoot(args), cwd);
+  const requestedId = safeToken(
+    args.sessionId ??
+      process.env['CODEX_SESSION_ID'] ??
+      process.env['CODEX_THREAD_ID'],
+  );
+  if (requestedId !== null) {
+    const matches = candidates.filter(
+      (candidate) => candidate.id === requestedId,
+    );
+    return matches.length === 1 ? matches[0].path : null;
   }
-  return null;
+  return candidates.length === 1 ? candidates[0].path : null;
 }
 
-function readFrom(path, offset) {
-  const size = fileSize(path);
-  if (size === null) {
-    return null;
-  }
-  if (offset > size) {
-    // The log was truncated or rotated under us, so the recorded offset no
-    // longer names the point the pass began at.
-    return { text: readFileSync(path, 'utf8'), rewound: true };
-  }
-  if (offset === size) {
-    return { text: '', rewound: false };
-  }
-  const length = size - offset;
-  const buffer = Buffer.allocUnsafe(length);
-  const fd = openSync(path, 'r');
+function readCompleteWindow(path, requestedOffset = 0) {
+  let fd;
   try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const rewound = requestedOffset > size;
+    const offset = rewound ? 0 : requestedOffset;
+    const length = size - offset;
+    const buffer = Buffer.allocUnsafe(length);
     let read = 0;
     while (read < length) {
       const got = readSync(fd, buffer, read, length - read, offset + read);
@@ -242,9 +289,21 @@ function readFrom(path, offset) {
       }
       read += got;
     }
-    return { text: buffer.subarray(0, read).toString('utf8'), rewound: false };
+    const bytes = buffer.subarray(0, read);
+    const newline = bytes.lastIndexOf(0x0a);
+    const completeLength = newline === -1 ? 0 : newline + 1;
+    return {
+      text: bytes.subarray(0, completeLength).toString('utf8'),
+      offset: offset + completeLength,
+      rewound,
+      trailingIncomplete: completeLength !== bytes.length,
+    };
+  } catch {
+    return null;
   } finally {
-    closeSync(fd);
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
   }
 }
 
@@ -326,7 +385,7 @@ function turnModel(event) {
   return { model, effort: safeToken(payload['effort']) };
 }
 
-function subtract(end, start) {
+function subtract(end, start, zeroBaseline = false) {
   const delta = {};
   let regressed = false;
   for (const field of REPORTED_FIELDS) {
@@ -335,8 +394,12 @@ function subtract(end, start) {
       delta[field] = null;
       continue;
     }
-    const startValue = start?.[field] ?? 0;
-    const difference = endValue - startValue;
+    const startValue = start?.[field] ?? null;
+    if (startValue === null && !zeroBaseline) {
+      delta[field] = null;
+      continue;
+    }
+    const difference = endValue - (startValue ?? 0);
     if (difference < 0) {
       regressed = true;
     }
@@ -367,15 +430,13 @@ function toCanonical(totals) {
   const cacheRead = totals['cached_input_tokens'];
   const cacheWrite = totals['cache_write_input_tokens'];
 
-  let input = reportedInput;
-  if (input !== null) {
-    input -= cacheRead ?? 0;
-    input -= cacheWrite ?? 0;
+  let input = null;
+  let invalidProjection = false;
+  if (reportedInput !== null && cacheRead !== null && cacheWrite !== null) {
+    input = reportedInput - cacheRead - cacheWrite;
     if (input < 0) {
-      // The subset assumption did not hold for this CLI version. Report the
-      // figure as sent rather than a negative count, and let the provider
-      // bucket carry the evidence.
-      input = reportedInput;
+      input = null;
+      invalidProjection = true;
     }
   }
 
@@ -389,7 +450,28 @@ function toCanonical(totals) {
   if (reportedInput !== null) {
     bucket.providerBuckets = { reported_input_tokens: reportedInput };
   }
-  return bucket;
+  return { bucket, invalidProjection };
+}
+
+function mergeRawBuckets(target, source) {
+  for (const bucket of source) {
+    const key = `${bucket.model} ${bucket.effort ?? ''}`;
+    const existing = target.get(key);
+    if (existing === undefined) {
+      target.set(key, {
+        model: bucket.model,
+        effort: bucket.effort,
+        totals: { ...bucket.totals },
+      });
+      continue;
+    }
+    for (const field of REPORTED_FIELDS) {
+      const left = existing.totals[field];
+      const right = bucket.totals[field];
+      existing.totals[field] =
+        left === null || right === null ? null : left + right;
+    }
+  }
 }
 
 /**
@@ -400,7 +482,7 @@ function toCanonical(totals) {
  * afterwards. Closing an interval at every `turn_context` change keeps each
  * bucket exact without depending on per-turn events that can repeat.
  */
-function collect(text, snapshot) {
+function collect(text, snapshot, zeroBaseline = false) {
   const buckets = new Map();
   let current = snapshot?.model
     ? { model: snapshot.model, effort: snapshot.effort ?? null }
@@ -418,6 +500,7 @@ function collect(text, snapshot) {
     let { delta, regressed: wentBackwards } = subtract(
       lastTotals,
       intervalStart,
+      zeroBaseline,
     );
     if (wentBackwards) {
       // The cumulative counter went backwards, so the baseline no longer
@@ -427,7 +510,7 @@ function collect(text, snapshot) {
       // `regressed` flag downgrades the whole record to `unscoped-session` so
       // nothing downstream reads it as a measurement.
       regressed = true;
-      delta = subtract(lastTotals, null).delta;
+      delta = subtract(lastTotals, null, true).delta;
     }
     if (isEmpty(delta)) {
       return;
@@ -444,10 +527,9 @@ function collect(text, snapshot) {
     }
     for (const field of REPORTED_FIELDS) {
       const value = delta[field];
-      if (value === null) {
-        continue;
-      }
-      existing.totals[field] = (existing.totals[field] ?? 0) + value;
+      const prior = existing.totals[field];
+      existing.totals[field] =
+        prior === null || value === null ? null : prior + value;
     }
   };
 
@@ -466,10 +548,6 @@ function collect(text, snapshot) {
 
     const totals = tokenCountTotals(event);
     if (totals !== null) {
-      // A null baseline stays null and subtracts as zero. The window always
-      // begins at the snapshot's byte offset, so with no recorded totals the
-      // truthful floor is zero — adopting the first cumulative reading as the
-      // baseline instead would silently discard the first turn in the window.
       lastTotals = totals;
       continue;
     }
@@ -489,13 +567,7 @@ function collect(text, snapshot) {
   }
   flush();
 
-  const tokens = [...buckets.values()].map((bucket) => ({
-    model: bucket.model,
-    effort: bucket.effort,
-    ...toCanonical(bucket.totals),
-  }));
-
-  return { tokens, regressed, lastTimestamp, events };
+  return { buckets: [...buckets.values()], regressed, lastTimestamp, events };
 }
 
 function writeJson(path, value) {
@@ -507,14 +579,8 @@ function emit(payload) {
   return 0;
 }
 
-/** Read the cumulative totals and model in effect at the end of the log. */
-function tailState(path) {
-  let text;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch {
-    return { totals: null, model: null, effort: null };
-  }
+/** Read the cumulative totals and model in effect at the end of a fixed prefix. */
+function tailState(text) {
   let totals = null;
   let model = null;
   let effort = null;
@@ -542,21 +608,37 @@ function runSnapshot(args) {
     throw new Error('snapshot requires --out');
   }
   const sessionLog = discoverSessionLog(args);
-  const state = sessionLog
-    ? tailState(sessionLog)
+  const prefix = sessionLog ? readCompleteWindow(sessionLog) : null;
+  const state = prefix
+    ? tailState(prefix.text)
     : { totals: null, model: null, effort: null };
-  const meta = sessionLog ? sessionMeta(sessionLog) : null;
+  const meta = prefix ? sessionMetaFromText(prefix.text) : null;
+  const rootSessionId = sessionId(meta);
+  const cwd = resolve(
+    args.cwd ??
+      (meta && typeof meta['cwd'] === 'string' ? meta['cwd'] : process.cwd()),
+  );
+  const root = resolve(sessionsRoot(args));
+  const descriptors = sessionDescriptors(root, cwd);
+  const knownDescendantSessionIds = rootSessionId
+    ? descendantDescriptors(descriptors, rootSessionId).map(
+        (descriptor) => descriptor.id,
+      )
+    : [];
   const snapshot = {
     version: SNAPSHOT_VERSION,
     engine: 'codex',
     sessionLog,
-    sessionId: meta ? (safeToken(meta['session_id']) ?? null) : null,
+    sessionId: rootSessionId,
     engineVersion: meta ? (safeToken(meta['cli_version']) ?? null) : null,
     startedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-    offset: sessionLog ? (fileSize(sessionLog) ?? 0) : 0,
+    offset: prefix ? prefix.offset : 0,
     totals: state.totals,
     model: state.model,
     effort: state.effort,
+    cwd,
+    sessionsRoot: root,
+    knownDescendantSessionIds,
   };
   writeJson(args.out, snapshot);
   return emit({
@@ -566,7 +648,7 @@ function runSnapshot(args) {
     snapshotFile: resolve(args.out),
     // A pass that starts with no discoverable log can still emit; it just
     // cannot claim a scoped measurement.
-    scoped: sessionLog !== null,
+    scoped: prefix !== null && rootSessionId !== null,
     error: null,
   });
 }
@@ -586,7 +668,8 @@ function readSnapshot(path) {
     typeof parsed !== 'object' ||
     parsed['version'] !== SNAPSHOT_VERSION ||
     typeof parsed['sessionLog'] !== 'string' ||
-    typeof parsed['offset'] !== 'number'
+    typeof parsed['offset'] !== 'number' ||
+    typeof parsed['sessionId'] !== 'string'
   ) {
     return null;
   }
@@ -621,9 +704,17 @@ function runDelta(args) {
   if (sessionLog === null) {
     return unavailable(null);
   }
-  const chunk = readFrom(sessionLog, snapshot ? snapshot.offset : 0);
+  const chunk = readCompleteWindow(sessionLog, snapshot ? snapshot.offset : 0);
   if (chunk === null) {
     return unavailable(null);
+  }
+
+  const meta = sessionMeta(sessionLog);
+  if (snapshot && sessionId(meta) !== snapshot.sessionId) {
+    return unavailable('session identity changed after the snapshot');
+  }
+  if (chunk.trailingIncomplete) {
+    return unavailable('session log ended with an incomplete JSONL event');
   }
 
   // A rewound log was re-read from byte zero, so the recorded totals are no
@@ -632,16 +723,69 @@ function runDelta(args) {
   const collected = collect(
     chunk.text,
     chunk.rewound && snapshot ? { ...snapshot, totals: null } : snapshot,
+    !snapshot || chunk.rewound,
   );
-  const meta = sessionMeta(sessionLog);
+  const aggregateBuckets = new Map();
+  mergeRawBuckets(aggregateBuckets, collected.buckets);
+
+  let regressed = collected.regressed;
+  let events = collected.events;
+  let lastTimestamp = collected.lastTimestamp;
+  let childIncomplete = false;
+  if (snapshot) {
+    const descriptors = sessionDescriptors(
+      snapshot.sessionsRoot ?? sessionsRoot(args),
+      snapshot.cwd ?? process.cwd(),
+    );
+    const known = new Set(snapshot.knownDescendantSessionIds ?? []);
+    const children = descendantDescriptors(
+      descriptors,
+      snapshot.sessionId,
+    ).filter((descriptor) => !known.has(descriptor.id));
+    for (const child of children) {
+      const childWindow = readCompleteWindow(child.path);
+      if (childWindow === null || childWindow.trailingIncomplete) {
+        childIncomplete = true;
+        continue;
+      }
+      const childCollected = collect(childWindow.text, null, true);
+      if (childCollected.buckets.length === 0) {
+        childIncomplete = true;
+        continue;
+      }
+      mergeRawBuckets(aggregateBuckets, childCollected.buckets);
+      regressed ||= childCollected.regressed;
+      events += childCollected.events;
+      if (
+        childCollected.lastTimestamp !== null &&
+        (lastTimestamp === null || childCollected.lastTimestamp > lastTimestamp)
+      ) {
+        lastTimestamp = childCollected.lastTimestamp;
+      }
+    }
+  }
+
+  const canonical = [...aggregateBuckets.values()].map((bucket) => {
+    const projected = toCanonical(bucket.totals);
+    return {
+      invalidProjection: projected.invalidProjection,
+      token: {
+        model: bucket.model,
+        effort: bucket.effort,
+        ...projected.bucket,
+      },
+    };
+  });
+  const invalidProjection = canonical.some((item) => item.invalidProjection);
+  const tokens = canonical.map((item) => item.token);
   const engineVersion =
     (meta ? safeToken(meta['cli_version']) : null) ??
     (snapshot ? (snapshot.engineVersion ?? null) : null);
 
   let tokenSource;
-  if (collected.tokens.length === 0) {
+  if (tokens.length === 0 || childIncomplete || invalidProjection) {
     tokenSource = 'unavailable';
-  } else if (!snapshot || chunk.rewound || collected.regressed) {
+  } else if (!snapshot || chunk.rewound || regressed) {
     // Without a start snapshot, or after the log rewound or the counter reset
     // under us, the numbers are a truthful upper bound on the pass rather than
     // a measurement of it.
@@ -653,7 +797,7 @@ function runDelta(args) {
   let tokensFile = null;
   if (tokenSource !== 'unavailable') {
     tokensFile = join(args.outDir, 'telemetry-tokens.json');
-    writeJson(tokensFile, collected.tokens);
+    writeJson(tokensFile, tokens);
   }
 
   let durationSeconds = null;
@@ -661,11 +805,10 @@ function runDelta(args) {
     tokenSource === 'session-log-delta' &&
     snapshot &&
     typeof snapshot.startedAt === 'string' &&
-    collected.lastTimestamp !== null
+    lastTimestamp !== null
   ) {
     const elapsed =
-      (Date.parse(collected.lastTimestamp) - Date.parse(snapshot.startedAt)) /
-      1000;
+      (Date.parse(lastTimestamp) - Date.parse(snapshot.startedAt)) / 1000;
     if (Number.isFinite(elapsed) && elapsed >= 0) {
       durationSeconds = Math.round(elapsed);
     }
@@ -681,8 +824,13 @@ function runDelta(args) {
     lanesFile: null,
     engineVersion,
     durationSeconds,
-    events: collected.events,
-    error: null,
+    events,
+    error:
+      childIncomplete || invalidProjection
+        ? childIncomplete
+          ? 'a descendant session had incomplete usage data'
+          : 'provider token subsets did not reconcile'
+        : null,
   });
 }
 

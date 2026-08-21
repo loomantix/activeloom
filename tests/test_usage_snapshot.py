@@ -31,6 +31,8 @@ def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
     environment.pop("LOOM_REVIEW_TELEMETRY", None)
     environment.pop("CODEX_SESSION_LOG", None)
     environment.pop("CODEX_SESSIONS_DIR", None)
+    environment.pop("CODEX_SESSION_ID", None)
+    environment.pop("CODEX_THREAD_ID", None)
     if enabled:
         environment["LOOM_REVIEW_TELEMETRY"] = "on"
     environment.update(env)
@@ -52,16 +54,25 @@ def json_line(event: dict[str, Any]) -> str:
     return json.dumps(event) + "\n"
 
 
-def meta(cwd: Path, version: str = "0.148.0") -> str:
+def meta(
+    cwd: Path,
+    version: str = "0.148.0",
+    session_id: str = "01a0-session",
+    parent_thread_id: str | None = None,
+) -> str:
+    payload = {
+        "id": session_id,
+        "session_id": session_id,
+        "cwd": str(cwd),
+        "cli_version": version,
+    }
+    if parent_thread_id is not None:
+        payload["parent_thread_id"] = parent_thread_id
     return json_line(
         {
             "timestamp": "2026-08-20T12:00:00.000Z",
             "type": "session_meta",
-            "payload": {
-                "session_id": "01a0-session",
-                "cwd": str(cwd),
-                "cli_version": version,
-            },
+            "payload": payload,
         }
     )
 
@@ -122,7 +133,15 @@ def session(tmp_path: Path) -> Path:
 
 def snapshot(session: Path, tmp_path: Path) -> Path:
     out = tmp_path / "start.json"
-    payload = run("snapshot", "--out", str(out), "--session-log", str(session))
+    payload = run(
+        "snapshot",
+        "--out",
+        str(out),
+        "--session-log",
+        str(session),
+        "--sessions-dir",
+        str(session.parents[3]),
+    )
     assert payload["enabled"] is True
     assert payload["scoped"] is True
     return out
@@ -164,6 +183,18 @@ def test_gate_rejects_an_unrecognised_value(tmp_path: Path) -> None:
     assert payload["enabled"] is False
 
 
+@pytest.mark.parametrize("value", ["ON", " on ", "On"])
+def test_gate_requires_exact_on(tmp_path: Path, value: str) -> None:
+    payload = run(
+        "snapshot",
+        "--out",
+        str(tmp_path / "start.json"),
+        enabled=False,
+        LOOM_REVIEW_TELEMETRY=value,
+    )
+    assert payload["enabled"] is False
+
+
 def test_no_session_log_reports_unavailable(tmp_path: Path) -> None:
     """No data must never serialise as zero tokens."""
     empty = tmp_path / "sessions"
@@ -187,14 +218,62 @@ def test_discovery_requires_the_working_directory_to_match(tmp_path: Path) -> No
     assert payload["tokenSource"] == "unavailable"
 
 
+def test_discovery_uses_the_host_session_id_with_same_cwd_logs(tmp_path: Path) -> None:
+    day = tmp_path / "sessions" / "2026" / "08" / "20"
+    day.mkdir(parents=True)
+    selected = day / "rollout-selected.jsonl"
+    selected.write_text(
+        meta(tmp_path, session_id="selected")
+        + context()
+        + counted(input_tokens=10, output=2)
+    )
+    (day / "rollout-other.jsonl").write_text(
+        meta(tmp_path, session_id="other")
+        + context()
+        + counted(input_tokens=999, output=999)
+    )
+
+    payload = delta(
+        tmp_path,
+        sessions_dir=str(tmp_path / "sessions"),
+        cwd=str(tmp_path),
+        session_id="selected",
+    )
+
+    assert payload["tokenSource"] == "unscoped-session"
+    assert tokens_of(payload)[0]["output"] == 2
+
+
+def test_discovery_abstains_when_same_cwd_logs_are_ambiguous(tmp_path: Path) -> None:
+    day = tmp_path / "sessions" / "2026" / "08" / "20"
+    day.mkdir(parents=True)
+    for session_id in ("first", "second"):
+        (day / f"rollout-{session_id}.jsonl").write_text(
+            meta(tmp_path, session_id=session_id)
+            + context()
+            + counted(input_tokens=10, output=2)
+        )
+
+    payload = delta(
+        tmp_path, sessions_dir=str(tmp_path / "sessions"), cwd=str(tmp_path)
+    )
+
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
+
+
 def test_scoped_delta_counts_only_the_pass(tmp_path: Path, session: Path) -> None:
     """Work that predates the snapshot belongs to whatever ran before."""
     with session.open("a") as handle:
         handle.write(context())
-        handle.write(counted(input_tokens=9_000, cached=8_000, output=400, reasoning=90))
+        handle.write(
+            counted(input_tokens=9_000, cached=8_000, output=400, reasoning=90)
+        )
     start = snapshot(session, tmp_path)
     with session.open("a") as handle:
-        handle.write(counted(input_tokens=9_150, cached=8_100, output=460, reasoning=100))
+        handle.write(
+            counted(input_tokens=9_150, cached=8_100, output=460, reasoning=100)
+        )
 
     payload = delta(tmp_path, start)
     assert payload["tokenSource"] == "session-log-delta"
@@ -213,6 +292,19 @@ def test_scoped_delta_counts_only_the_pass(tmp_path: Path, session: Path) -> Non
     ]
 
 
+def test_first_cumulative_event_after_snapshot_is_not_assumed_to_start_at_zero(
+    tmp_path: Path, session: Path
+) -> None:
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=500, output=20))
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
+
+
 def test_canonical_buckets_reconcile_with_the_reported_input(
     tmp_path: Path, session: Path
 ) -> None:
@@ -223,9 +315,11 @@ def test_canonical_buckets_reconcile_with_the_reported_input(
     the reported figure alongside is what makes that arithmetic checkable later
     instead of lossy.
     """
-    start = snapshot(session, tmp_path)
     with session.open("a") as handle:
         handle.write(context())
+        handle.write(counted(input_tokens=0, cached=0, cache_write=0, output=0))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
         handle.write(
             counted(input_tokens=1_000, cached=700, cache_write=200, output=50)
         )
@@ -264,9 +358,25 @@ def test_a_rewound_log_downgrades_to_unscoped(tmp_path: Path, session: Path) -> 
     assert tokens_of(payload)[0]["output"] == 7
 
 
-def test_a_counter_reset_downgrades_to_unscoped(
+def test_a_replaced_session_log_is_not_subtracted(
     tmp_path: Path, session: Path
 ) -> None:
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    session.write_text(
+        meta(tmp_path, session_id="replacement")
+        + context()
+        + counted(input_tokens=200, output=20)
+    )
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
+
+
+def test_a_counter_reset_downgrades_to_unscoped(tmp_path: Path, session: Path) -> None:
     """A cumulative counter that goes backwards invalidates the subtraction.
 
     Reporting the difference anyway would emit a negative or wildly wrong
@@ -286,21 +396,38 @@ def test_a_counter_reset_downgrades_to_unscoped(
 
 def test_an_unreported_bucket_stays_null(tmp_path: Path, session: Path) -> None:
     """`null` and `0` are different answers all the way to the record."""
-    start = snapshot(session, tmp_path)
     with session.open("a") as handle:
         handle.write(context())
-        handle.write(counted(input_tokens=40, output=4, reasoning=None))
+        handle.write(counted(input_tokens=10, output=1, reasoning=None))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=40, output=4, reasoning=5))
 
     bucket = tokens_of(delta(tmp_path, start))[0]
     assert bucket["reasoning"] is None
-    assert bucket["output"] == 4
+    assert bucket["output"] == 3
+
+
+def test_a_bucket_first_reported_after_snapshot_stays_null(
+    tmp_path: Path, session: Path
+) -> None:
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=10, output=1, reasoning=None))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=20, output=2, reasoning=7))
+
+    assert tokens_of(delta(tmp_path, start))[0]["reasoning"] is None
 
 
 def test_a_reported_zero_stays_zero(tmp_path: Path, session: Path) -> None:
     """The converse: a measured zero must not be erased into `null`."""
-    start = snapshot(session, tmp_path)
     with session.open("a") as handle:
         handle.write(context())
+        handle.write(counted(input_tokens=10, output=1, reasoning=0))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
         handle.write(counted(input_tokens=40, output=4, reasoning=0))
 
     assert tokens_of(delta(tmp_path, start))[0]["reasoning"] == 0
@@ -327,6 +454,86 @@ def test_multiple_models_get_one_bucket_each(tmp_path: Path, session: Path) -> N
     }
 
 
+def test_unknown_model_interval_poisoning_is_preserved(
+    tmp_path: Path, session: Path
+) -> None:
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10, reasoning=None))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=110, output=11, reasoning=3))
+        handle.write(context(effort="high"))
+        handle.write(counted(input_tokens=120, output=12, reasoning=5))
+        handle.write(context(effort="medium"))
+        handle.write(counted(input_tokens=130, output=13, reasoning=8))
+
+    medium = next(
+        bucket
+        for bucket in tokens_of(delta(tmp_path, start))
+        if bucket["effort"] == "medium"
+    )
+    assert medium["reasoning"] is None
+
+
+def test_inconsistent_provider_subsets_make_usage_unavailable(
+    tmp_path: Path, session: Path
+) -> None:
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=0, cached=0, output=0))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=100, cached=120, output=5))
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
+
+
+def test_snapshot_uses_one_complete_jsonl_boundary(
+    tmp_path: Path, session: Path
+) -> None:
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    straddling = counted(input_tokens=120, output=12)
+    split = len(straddling) // 2
+    with session.open("a") as handle:
+        handle.write(straddling[:split])
+
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(straddling[split:])
+        handle.write(counted(input_tokens=130, output=13))
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    assert bucket["providerBuckets"]["reported_input_tokens"] == 30
+    assert bucket["output"] == 3
+
+
+def test_new_descendant_sessions_are_included_in_the_pass(
+    tmp_path: Path, session: Path
+) -> None:
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=110, output=11))
+
+    child = session.with_name("rollout-child.jsonl")
+    child.write_text(
+        meta(tmp_path, session_id="child", parent_thread_id="01a0-session")
+        + context()
+        + counted(input_tokens=20, output=2)
+    )
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    assert bucket["providerBuckets"]["reported_input_tokens"] == 30
+    assert bucket["output"] == 3
+
+
 def test_a_repeated_token_count_is_not_double_counted(
     tmp_path: Path, session: Path
 ) -> None:
@@ -336,9 +543,11 @@ def test_a_repeated_token_count_is_not_double_counted(
     the previous turn's totals. Summing the per-turn figures those events carry
     inflates the pass; reading the cumulative total does not.
     """
-    start = snapshot(session, tmp_path)
     with session.open("a") as handle:
         handle.write(context())
+        handle.write(counted(input_tokens=0, output=0))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
         handle.write(counted(input_tokens=1_000, output=100))
         handle.write(counted(input_tokens=1_000, output=100))
         handle.write(counted(input_tokens=1_000, output=100))
@@ -351,15 +560,17 @@ def test_a_repeated_token_count_is_not_double_counted(
 def test_lanes_are_absent_rather_than_empty(tmp_path: Path, session: Path) -> None:
     """This engine reports no per-lane attribution, and the record schema
     rejects an empty lane list."""
-    start = snapshot(session, tmp_path)
     with session.open("a") as handle:
         handle.write(context())
+        handle.write(counted(input_tokens=0, output=0))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
         handle.write(counted(input_tokens=40, output=4))
 
     assert delta(tmp_path, start)["lanesFile"] is None
 
 
-def test_a_malformed_trailing_line_does_not_lose_the_record(
+def test_an_incomplete_trailing_line_makes_usage_unavailable(
     tmp_path: Path, session: Path
 ) -> None:
     """A log still being appended to routinely ends mid-line."""
@@ -369,7 +580,9 @@ def test_a_malformed_trailing_line_does_not_lose_the_record(
         handle.write(counted(input_tokens=40, output=42))
         handle.write('{"type":"event_msg","payload":{"type":"token_c')
 
-    assert tokens_of(delta(tmp_path, start))[0]["output"] == 42
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
 
 
 def test_an_internal_error_reports_unavailable_and_exits_zero(

@@ -328,8 +328,10 @@ into reviewer context until someone teaches the filter about it.
 ### Snapshot before, delta after
 
 `<usage-helper>` is `.codex/skills/critique/scripts/usage-snapshot.js`, beside
-the vendored ledger helper and invoked the same way. It reads this engine's own
-session log; the ledger helper never does, and never may.
+the vendored ledger helper and invoked the same way. It binds the coordinator
+to the host-provided session ID and includes new descendant sessions spawned by
+that coordinator during the pass; the ledger helper never reads session logs,
+and never may.
 
 Write telemetry working files to `$AGENT_LOOP_LOG_DIR/telemetry/` when that
 variable is set, or to another owner-only directory outside the Git worktree.
@@ -348,10 +350,12 @@ node <usage-helper> delta \
   --start "<telemetry-dir>/usage-start.json" --out-dir "<telemetry-dir>"
 ```
 
-`delta` prints `tokenSource`, `engineVersion`, `durationSeconds`, and the paths
-it wrote. This engine reports no per-lane attribution, so `lanesFile` is always
-null and `lanes` is absent from the record rather than empty. Pass those through verbatim. `tokenSource` is the provenance of the
-numbers and must never be upgraded by hand:
+`delta` prints `tokenSource`, nullable `engineVersion`, nullable
+`durationSeconds`, and the paths it wrote. This engine reports no per-lane
+attribution, so `lanesFile` is always null and `lanes` is absent from the record
+rather than empty. Pass non-null values through verbatim and omit their flags
+when null. `tokenSource` is the provenance of the numbers and must never be
+upgraded by hand:
 
 - `session-log-delta` — measured, scoped to this pass.
 - `unscoped-session` — measured, but a truthful upper bound rather than this
@@ -403,7 +407,8 @@ node <ledger-helper> emit-telemetry \
   --findings-file <path>
 ```
 
-Omit `--tokens-file` when `delta` reported it as null.
+Omit `--engine-version`, `--duration-seconds`, and `--tokens-file` whenever
+`delta` reported the corresponding value as null.
 Omit `--changeset-file` and the classifier runs over `<base>..<head>` itself.
 Add `--truncated` when a lane silently truncated the diff it was given: a lane
 that reviewed less than it was asked to produces cheap, bad findings, which is
