@@ -699,3 +699,33 @@ def test_an_existing_output_directory_keeps_its_own_mode(
     snapshot(session, tmp_path)
     run("delta", "--out-dir", str(out))
     assert out.stat().st_mode & 0o777 == 0o755
+
+
+def test_only_a_scoped_delta_reports_a_duration(tmp_path: Path, session: Path) -> None:
+    """An upper-bound record must not carry a duration from a snapshot that does not bound it."""
+    session.write_text(turn(request_id="a", output=12))
+
+    payload = delta(tmp_path, session_log=str(session))
+    assert payload["tokenSource"] == "unscoped-session"
+    assert payload["durationSeconds"] is None
+
+
+def test_a_lane_spanning_models_reports_no_single_model(
+    tmp_path: Path, session: Path
+) -> None:
+    """Naming one of several models would be a guess presented as a measurement."""
+    start = snapshot(session, tmp_path)
+    session.write_text(
+        turn(request_id="a", output=1, model="claude-opus-5", sidechain=True, lens="w")
+        + turn(
+            request_id="b", output=1, model="claude-sonnet-5", sidechain=True, lens="w"
+        )
+        + turn(request_id="c", output=1, model="claude-opus-5", sidechain=True, lens="s")
+    )
+
+    payload = delta(tmp_path, start)
+    lanes = {
+        lane["lens"]: lane for lane in json.loads(Path(payload["lanesFile"]).read_text())
+    }
+    assert lanes["w"]["model"] is None
+    assert lanes["s"]["model"] == "claude-opus-5"
