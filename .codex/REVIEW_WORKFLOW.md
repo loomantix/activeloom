@@ -55,15 +55,22 @@ The local relay has two explicit session modes. A consumer may declare a default
 otherwise ask the user before the first cross-engine transition. Do not switch
 modes silently in the middle of a round.
 
-- **Auto mode** runs the complete bounded chain. For a direct interactive
-  transition, Codex may start Claude only through
-  `.codex/skills/critique/scripts/run-claude-review.sh`. The launcher pins the
-  actual CLI argv to literal `--effort low`; callers cannot supply or override
-  the effort. Never hand-compose a `claude` command. An automated wrapper may
-  instead run its configured Claude hook after its configuration doctor proves
-  the same literal low-effort contract. After Claude returns, validate its
+- **Auto mode** runs the complete bounded chain. The default direct interactive
+  transition starts Agy only through
+  `.codex/skills/critique/scripts/run-agy-review.sh`. That launcher pins
+  `gemini-3.7-flash-high`, literal `--effort high`, accept-edits mode, unattended
+  permissions, structured output, and a 60-minute print bound; callers cannot
+  supply or override them. It also requires Agy to resolve the current
+  `deepcritique` skill and rejects stale backup skill paths before review. A
+  consumer may explicitly retain Claude through the tested
+  `run-claude-review.sh` launcher, which keeps its literal `--effort low`
+  contract. Agy starts a fresh one-shot by omitting continuation flags, but the
+  current CLI has no equivalent of Claude's `--no-session-persistence`; retain the
+  Claude path when local conversation persistence is prohibited. Never
+  hand-compose either CLI command. After the reviewer returns, validate its
   PR-head and ledger evidence and continue the chain until convergence or the
-  configured cap.
+  configured cap. The separate `agent-loop` wrapper remains Codex-then-Claude
+  until its fixed engine slots are migrated independently.
 - **Handoff mode** never starts the other engine. Each nonterminal pass posts an
   authenticated `local-review-handoff:v1` PR comment and returns control to the
   user, who starts the requested reviewer in a new terminal session. Do not
@@ -97,8 +104,8 @@ engine in a fresh terminal.
    one read.
 
    How the next reviewer starts is a mode choice, not a protocol rule. Auto
-   mode launches it from the current session through its low-effort launcher
-   and continues when it returns. Handoff mode posts a handoff comment and
+   mode launches it from the current session through its tested launcher and
+   continues when it returns. Handoff mode posts a handoff comment and
    stops, so the next reviewer begins in a fresh user-started terminal. Both
    modes carry the same comment/fix/reply/resolve contract, and neither changes
    which commit an attestation names.

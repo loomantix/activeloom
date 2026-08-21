@@ -295,6 +295,7 @@ def test_new_script_modes_are_executable() -> None:
         ".codex/skills/backlog-refinement/scripts/bail-report.py": 0o755,
         ".codex/skills/backlog-refinement/scripts/candidates.py": 0o755,
         ".codex/skills/critique/scripts/local-review-handoff.py": 0o755,
+        ".codex/skills/critique/scripts/run-agy-review.sh": 0o755,
         ".codex/skills/critique/scripts/run-claude-review.sh": 0o755,
         ".codex/skills/issues/scripts/ready.py": 0o755,
     }
@@ -367,6 +368,9 @@ def test_local_review_documents_explicit_cross_engine_modes() -> None:
     )
     assert "Auto mode" in workflow
     assert "Handoff mode" in workflow
+    assert "run-agy-review.sh" in workflow
+    assert "gemini-3.7-flash-high" in workflow
+    assert "literal `--effort high`" in workflow
     assert "run-claude-review.sh" in workflow
     assert "literal `--effort low`" in workflow
     assert "show-handoff --engine codex" in deepcritique

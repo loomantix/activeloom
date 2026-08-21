@@ -77,6 +77,11 @@ targets:
     substitutions: []
     mode: '0755'
 
+  - source: .codex/skills/critique/scripts/run-agy-review.sh
+    destination: .codex/skills/critique/scripts/run-agy-review.sh
+    substitutions: []
+    mode: '0755'
+
   - source: .codex/skills/critique/scripts/local-review-handoff.py
     destination: .codex/skills/critique/scripts/local-review-handoff.py
     substitutions: []

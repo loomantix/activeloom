@@ -1,0 +1,232 @@
+"""Execution-level contract for the automatic Agy review launcher."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+LAUNCHER = ROOT / ".codex/skills/critique/scripts/run-agy-review.sh"
+HEAD = "a" * 40
+OTHER_HEAD = "b" * 40
+
+
+def _trusted_environment(
+    tmp_path: Path,
+    *,
+    local_head: str = HEAD,
+    pr_head: str = HEAD,
+    remote_head: str = HEAD,
+) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_git = bin_dir / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        f"local_head = {local_head!r}\n"
+        f"remote_head = {remote_head!r}\n"
+        "if args == ['rev-parse', 'HEAD']:\n"
+        "    print(local_head)\n"
+        "elif args == ['ls-remote', '--exit-code', 'origin', 'refs/heads/feature']:\n"
+        "    print(remote_head + '\\trefs/heads/feature')\n"
+        "elif args == ['status', '--porcelain']:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit('unexpected git invocation: ' + ' '.join(args))\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        f"pr_head = {pr_head!r}\n"
+        "if args[:2] == ['repo', 'view']:\n"
+        "    print('example/repository')\n"
+        "elif args[:2] == ['api', 'user']:\n"
+        "    print('reviewer')\n"
+        "elif args[:2] == ['pr', 'view']:\n"
+        "    print(pr_head + '\\tfeature\\texample/repository\\treviewer')\n"
+        "else:\n"
+        "    raise SystemExit('unexpected gh invocation: ' + ' '.join(args))\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+    return {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+def _fake_agy(tmp_path: Path, *, review_status: str = "SUCCESS", stale: bool = False) -> Path:
+    fake_agy = tmp_path / "agy"
+    skill_parent = "deepcritique.bak.20260817T164958Z" if stale else "deepcritique"
+    fake_agy.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "prompt = args[-1]\n"
+        "if prompt == '/skills':\n"
+        "    print(json.dumps({'status': 'SUCCESS', 'command': {'data': {'skills': [\n"
+        f"        {{'name': 'deepcritique', 'path': '/skills/{skill_parent}/SKILL.md'}}\n"
+        "    ]}}}))\n"
+        "else:\n"
+        "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n"
+        "        json.dump({'argv': args, 'env': {\n"
+        "            'base': os.environ.get('AGENT_LOOP_REVIEW_BASE_SHA'),\n"
+        "            'round': os.environ.get('AGENT_LOOP_REVIEW_ROUND'),\n"
+        "            'engine': os.environ.get('AGENT_LOOP_REVIEW_ENGINE'),\n"
+        "        }}, out)\n"
+        f"    print(json.dumps({{'status': {review_status!r}, 'response': 'review complete'}}))\n",
+        encoding="utf-8",
+    )
+    fake_agy.chmod(0o755)
+    return fake_agy
+
+
+def _command() -> list[str]:
+    return [
+        str(LAUNCHER),
+        "--repo",
+        "example/repository",
+        "--pr",
+        "123",
+        "--base",
+        HEAD,
+        "--head",
+        HEAD,
+        "--round",
+        "2",
+    ]
+
+
+def test_launcher_executes_agy_with_pinned_model_and_high_effort(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy = _fake_agy(tmp_path)
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = subprocess.run(
+        _command(),
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    invocation = json.loads(argv_file.read_text(encoding="utf-8"))
+    argv = invocation["argv"]
+    assert argv[:11] == [
+        "--model",
+        "gemini-3.7-flash-high",
+        "--effort",
+        "high",
+        "--mode",
+        "accept-edits",
+        "--dangerously-skip-permissions",
+        "--output-format",
+        "json",
+        "--print-timeout",
+        "60m",
+    ]
+    assert argv[11] == "--print"
+    assert argv[12].startswith("/deepcritique 123\n")
+    assert "Continue review on PR #123" in argv[12]
+    assert "Use gemini as the active local-review engine identity" in argv[12]
+    assert HEAD in argv[12]
+    assert "round 2" in argv[12]
+    assert invocation["env"] == {"base": HEAD, "engine": "gemini", "round": "2"}
+    assert result.stdout == "review complete\n"
+
+
+def test_launcher_rejects_caller_supplied_model_or_effort(tmp_path: Path) -> None:
+    marker = tmp_path / "called"
+    fake_agy = tmp_path / "agy"
+    fake_agy.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n", encoding="utf-8")
+    fake_agy.chmod(0o755)
+
+    for extra in (("--model", "other"), ("--effort", "low")):
+        result = subprocess.run(
+            [*_command(), *extra],
+            check=False,
+            cwd=ROOT,
+            env={**os.environ, "AGY_REVIEW_CLI": str(fake_agy)},
+        )
+        assert result.returncode == 2
+    assert not marker.exists()
+
+
+def test_launcher_rejects_mismatched_worktree_before_agy(tmp_path: Path) -> None:
+    marker = tmp_path / "called"
+    fake_agy = tmp_path / "agy"
+    fake_agy.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n", encoding="utf-8")
+    fake_agy.chmod(0o755)
+    environment = {
+        **_trusted_environment(tmp_path, local_head=OTHER_HEAD),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = subprocess.run(
+        _command(),
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    assert result.returncode == 1
+    assert "local HEAD does not match --head" in result.stderr
+    assert not marker.exists()
+
+
+def test_launcher_rejects_canceled_agy_result_even_with_zero_exit(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy = _fake_agy(tmp_path, review_status="CANCELED")
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = subprocess.run(
+        _command(),
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    assert result.returncode == 1
+    assert "status 'CANCELED'" in result.stderr
+
+
+def test_launcher_rejects_stale_backup_skill_before_review(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy = _fake_agy(tmp_path, stale=True)
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = subprocess.run(
+        _command(),
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    assert result.returncode == 1
+    assert "stale or unexpected deepcritique skill" in result.stderr
+    assert not argv_file.exists()
