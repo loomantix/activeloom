@@ -177,12 +177,19 @@ review is permitted but must be declared with a reason; see step 2.
    session's memory.
 3. Pin the exact base SHA for the round, resolve the tier, and give both to
    every reviewer. Do not start a reviewer with the tier unresolved.
-4. Run each declared reviewer in a fresh session against the current head, under
-   the ledger's comment/fix/reply/resolve contract. Claude's lane is
-   `critique <pr-number>` at Lean and `deepcritique <pr-number>` at Deep; other
-   engines use their own equivalents. Reviewer order within a round is a
-   scheduling choice, not a protocol rule — what matters is which commit each
-   one read.
+4. Run each declared reviewer against the current head, under the ledger's
+   comment/fix/reply/resolve contract. Claude's lane is `critique <pr-number>`
+   at Lean and `deepcritique <pr-number>` at Deep; other engines use their own
+   equivalents. Reviewer order within a round is a scheduling choice, not a
+   protocol rule — what matters is which commit each one read.
+
+   How a non-author reviewer starts is a session choice, not a protocol rule.
+   **Session mode** — the user starts each reviewer in a fresh terminal — is
+   always available and is the only mode for an engine with no tested launcher.
+   **Auto mode** lets the current session start a declared reviewer itself,
+   through that engine's checked-in launcher and nothing else. Both modes carry
+   the same contract and neither changes which commit an attestation names.
+
 5. Classify fixes by effect, not path or finding severity. `material` includes
    substantive correctness, security/privacy, data-safety, compatibility,
    deployment/sync, or review-integrity changes, including tests or workflows
@@ -242,6 +249,44 @@ review is permitted but must be declared with a reason; see step 2.
 8. Stop at the tier's round cap — two at Lean, four at Deep — or earlier under
    the stopping rule above. Leave the PR draft and report non-convergence
    instead of continuing an unbounded cycle.
+
+### Auto mode
+
+Auto mode is available for the `gemini` reviewer, launched through
+[`skills/critique/scripts/run-agy-review.sh`](skills/critique/scripts/run-agy-review.sh).
+The launcher pins `gemini-3.7-flash-high`, literal `--effort high`, accept-edits
+mode, unattended permissions, structured JSON output, and a 60-minute print
+bound; a caller supplies only the repository, PR, base, head, and round. It
+refuses to start unless the current repository, the PR's ownership and head
+repository, local HEAD, PR head, and remote head all match the requested exact
+head over a clean worktree, and unless the reviewer CLI resolves exactly one
+live `deepcritique` skill backed by a clean `loomantix/gemini-platform`
+checkout at the launcher's pinned commit that vendors this engine's
+`review-ledger` version. Hand-composing the CLI command instead is outside the
+tested contract.
+
+Honour the effective roster exactly: run the declared reviewers that lack an
+attestation at the current head, and treat `gemini` as a default only when
+declaring a new relay. Replacing a reviewer already in flight takes an explicit
+superseding declaration.
+
+**A returning launcher is not a completed review.** Accept the round only when
+the launcher exits zero — it requires structured `status == SUCCESS` and a
+non-blank response — _and_ `verify-coverage` shows that engine's authenticated
+attestation at the exact reviewed head. The two disagree in both directions: the
+Antigravity CLI reports a turn-level `ERROR` when any single tool call in the
+turn failed, so a review that finished and posted its ledger evidence can still
+exit nonzero; and a reviewer can narrate completion, or post a comment, without
+publishing a result at the head that will merge. Read the ledger rather than the
+narration, and re-run the round rather than relaxing the launcher.
+
+The launcher starts a fresh one-shot by omitting every continuation flag. The
+Antigravity CLI has no equivalent of Claude's `--no-session-persistence`, so it
+still records a local conversation; use session mode where local conversation
+persistence is prohibited.
+
+The `agent-loop` wrapper drives its own fixed engine slots and is not part of
+this lane.
 
 The author engine's own adversarial pass never counts toward coverage. It
 re-reads the change while still holding the rationale that produced it, which is
@@ -513,6 +558,8 @@ telemetry defect must not fail a review that found real defects.
 - `skills/critique/scripts/usage-snapshot.js` — this engine's pass-scoped usage
   extractor. It reads the session log, which the vendored ledger helper never
   does; see "Pass Telemetry" above.
+- [`skills/critique/scripts/run-agy-review.sh`](skills/critique/scripts/run-agy-review.sh)
+  — the auto-mode launcher for the `gemini` reviewer.
 - [`skills/refactorpass/SKILL.md`](skills/refactorpass/SKILL.md) ·
   [`skills/critique/SKILL.md`](skills/critique/SKILL.md) ·
   [`skills/deepcritique/SKILL.md`](skills/deepcritique/SKILL.md) ·

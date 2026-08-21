@@ -78,7 +78,11 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
    context: exclude every comment whose marker begins `local-review-telemetry:`
    and never carry one into a finder prompt or packet. Filter by that prefix
    rather than by a list of known markers, so a record type added later is
-   excluded by default.
+   excluded by default. Where any remaining thread carries a v3 finding or
+   disposition record, write its comment ID to an owner-only file before
+   running a lane: that snapshot is the ledger's
+   `--historical-comment-ids-file`, and it is the one attestation input that
+   cannot be reconstructed once this pass has posted its own findings.
 7. Resolve the round and stance now, before any branch that can emit. Read the
    effective tier marker already on the PR — reading it only, since a pass that
    exits on the docs/config classification posts no marker — and fall back to
@@ -178,7 +182,11 @@ refactorpass committed, preserve the enclosing hook's original before SHA and
 finalize `changed` with classification `minor` and an empty finding set; the
 committed refactor latch supplies the evidence. Under agent-loop the wrapper
 owns the canonical pass attestation; a standalone pass must attest through the
-helper before reporting completion.
+helper before reporting completion. The helper's snapshot flags are optional
+inputs — omit them and it reads the threads live — so a pass that did not seal
+one still attests. Never report a pass complete on a write-up that only names
+the marker in prose; if the helper refuses, finalize `blocked` with its
+diagnostic instead.
 
 ## Phase 3: Disposition and fixes
 
@@ -288,8 +296,11 @@ result, recommend the ship step, and list any urgent deferred issues.
 
 If this Claude pass made a material fix, it moved the head: every declared
 reviewer whose attestation named the superseded commit re-runs against the new
-head in a fresh session, and a reviewer that already attested this head does
-not. Otherwise it completes Claude's part of the current round. Always finalize
+head, and a reviewer that already attested this head does not. In session mode
+that re-run is a fresh terminal; in auto mode it is that engine's checked-in
+launcher — `.claude/skills/critique/scripts/run-agy-review.sh` for `gemini` — followed by a
+`verify-coverage` check at the exact reviewed head, per
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md). Otherwise it completes Claude's part of the current round. Always finalize
 `clean`, `changed`, or `blocked` per the ledger's wrapper/standalone ownership
 rule before returning. Use `write-result` for `clean` or `changed`, and use
 `write-blocked-result` with an owner-only blocker file for `blocked`.
