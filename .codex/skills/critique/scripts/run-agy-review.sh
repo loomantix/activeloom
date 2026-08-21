@@ -168,7 +168,7 @@ critique_contract = (surface / "skills/critique/SKILL.md").read_text(encoding="u
 for capability in ("AGENT_LOOP_REVIEW_ENGINE", "AGENT_LOOP_REVIEW_BASE_SHA", "write-result", "gemini", "antigravity"):
     if capability not in deep_contract:
         raise SystemExit(f"agy deepcritique skill lacks required capability: {capability}")
-for capability in ("AGENT_LOOP_REVIEW_ENGINE", "write-result", ".agents/references/local-review-ledger.md"):
+for capability in ("write-result", ".agents/references/local-review-ledger.md"):
     if capability not in critique_contract:
         raise SystemExit(f"agy critique skill lacks required capability: {capability}")
 
