@@ -61,6 +61,21 @@ trap 'rm -rf -- "$temp_dir"' EXIT
 chmod 700 "$temp_dir"
 skills_file="$temp_dir/skills.json"
 result_file="$temp_dir/result.json"
+agy_pid=""
+
+forward_signal() {
+    local signal="$1"
+    local exit_code="$2"
+    trap - INT TERM
+    if [ -n "$agy_pid" ] && kill -0 "$agy_pid" 2>/dev/null; then
+        kill -s "$signal" "$agy_pid" 2>/dev/null || true
+        wait "$agy_pid" 2>/dev/null || true
+    fi
+    exit "$exit_code"
+}
+
+trap 'forward_signal INT 130' INT
+trap 'forward_signal TERM 143' TERM
 
 "$agy_review_cli" \
     --model gemini-3.7-flash-high \
@@ -96,6 +111,7 @@ if path.name != "SKILL.md" or path.parent.name != "deepcritique" or any(".bak." 
 
 surface = path.parent.parent.parent
 required = [
+    surface / "REVIEW_WORKFLOW.md",
     surface / "references/local-review-ledger.md",
     surface / "references/roles/code-reviewer.md",
     surface / "references/roles/silent-failure-hunter.md",
@@ -104,7 +120,10 @@ required = [
     surface / "references/roles/pr-test-analyzer.md",
     surface / "references/roles/security-reviewer.md",
     surface / "skills/critique/SKILL.md",
+    surface / "skills/critique/scripts/package.json",
     surface / "skills/critique/scripts/review-ledger.js",
+    surface / "skills/critique/scripts/review-ledger.version",
+    surface / "skills/critique/scripts/review-ledger.integrity",
     surface / "skills/refactorpass/SKILL.md",
 ]
 missing = [str(candidate) for candidate in required if not candidate.is_file()]
@@ -156,8 +175,11 @@ set +e
     --add-dir "$agy_surface_root" \
     --output-format json \
     --print-timeout 60m \
-    --print "$prompt" >"$result_file"
+    --print "$prompt" >"$result_file" &
+agy_pid="$!"
+wait "$agy_pid"
 agy_exit="$?"
+agy_pid=""
 set -e
 
 python3 - "$result_file" "$agy_exit" <<'PY'

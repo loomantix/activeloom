@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import time
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,6 +80,7 @@ def _fake_agy(tmp_path: Path, *, review_status: str = "SUCCESS", stale: bool = F
         canonical_skill_dir.symlink_to(deep_skill.parent, target_is_directory=True)
         display_skill = canonical_skill_dir / "SKILL.md"
     required_files = {
+        surface / "REVIEW_WORKFLOW.md": "workflow\n",
         surface / "references/local-review-ledger.md": "ledger\n",
         surface / "references/roles/code-reviewer.md": "role\n",
         surface / "references/roles/silent-failure-hunter.md": "role\n",
@@ -87,7 +92,10 @@ def _fake_agy(tmp_path: Path, *, review_status: str = "SUCCESS", stale: bool = F
             "AGENT_LOOP_REVIEW_ENGINE write-result "
             ".agents/references/local-review-ledger.md\n"
         ),
+        surface / "skills/critique/scripts/package.json": '{"type":"module"}\n',
         surface / "skills/critique/scripts/review-ledger.js": "ledger\n",
+        surface / "skills/critique/scripts/review-ledger.version": "1.1.0\n",
+        surface / "skills/critique/scripts/review-ledger.integrity": "sha512-test\n",
         surface / "skills/refactorpass/SKILL.md": "refactor\n",
     }
     for path, content in required_files.items():
@@ -264,3 +272,76 @@ def test_launcher_rejects_stale_backup_skill_before_review(tmp_path: Path) -> No
     assert result.returncode == 1
     assert "stale or unexpected deepcritique skill" in result.stderr
     assert not argv_file.exists()
+
+
+def test_launcher_rejects_incomplete_relay_surface_before_review(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy, surface = _fake_agy(tmp_path)
+    (surface / "REVIEW_WORKFLOW.md").unlink()
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = subprocess.run(
+        _command(),
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    assert result.returncode == 1
+    assert "relay surface is incomplete" in result.stderr
+    assert "REVIEW_WORKFLOW.md" in result.stderr
+    assert not argv_file.exists()
+
+
+def test_launcher_forwards_termination_to_running_agy(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "child.pid"
+    completed_marker = tmp_path / "completed"
+    fake_agy, _ = _fake_agy(tmp_path)
+    source = fake_agy.read_text(encoding="utf-8")
+    source = source.replace(
+        "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n",
+        "    import time\n"
+        "    with open(os.environ['AGY_CHILD_PID_FILE'], 'w', encoding='utf-8') as pid_out:\n"
+        "        pid_out.write(str(os.getpid()))\n"
+        "    time.sleep(30)\n"
+        "    with open(os.environ['AGY_COMPLETED_MARKER'], 'w', encoding='utf-8') as marker:\n"
+        "        marker.write('completed')\n"
+        "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n",
+    )
+    fake_agy.write_text(source, encoding="utf-8")
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(tmp_path / "argv.json"),
+        "AGY_CHILD_PID_FILE": str(child_pid_file),
+        "AGY_COMPLETED_MARKER": str(completed_marker),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    process = subprocess.Popen(
+        _command(),
+        cwd=ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    for _ in range(100):
+        if child_pid_file.exists():
+            break
+        time.sleep(0.05)
+    assert child_pid_file.exists()
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+    os.kill(process.pid, signal.SIGTERM)
+    stdout, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 143, (stdout, stderr)
+    assert not completed_marker.exists()
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
