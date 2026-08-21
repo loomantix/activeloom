@@ -426,7 +426,13 @@ def test_launcher_tracks_child_when_signal_precedes_pid_assignment(tmp_path: Pat
     }
 
     result = subprocess.run(
-        _command(), check=False, capture_output=True, text=True, cwd=ROOT, env=environment
+        _command(),
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=environment,
+        preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_DFL),
     )
 
     assert race_marker.exists()
