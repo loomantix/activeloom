@@ -144,6 +144,8 @@ def _fake_agy(
     *,
     review_status: str = "SUCCESS",
     review_payload: str | None = None,
+    skills_payload: str | None = None,
+    skills_exit_code: str = "0",
     stale: bool = False,
     ledger_version: str = LEDGER_VERSION,
     deep_contract: str = (
@@ -173,9 +175,15 @@ def _fake_agy(
         "args = sys.argv[1:]\n"
         "prompt = args[-1]\n"
         "if prompt == '/skills':\n"
-        "    print(json.dumps({'status': 'SUCCESS', 'command': {'data': {'skills': [\n"
-        f"        {{'name': 'deepcritique', 'path': {str(display_skill)!r}}}\n"
-        "    ]}}}))\n"
+        f"    skills_exit = int(os.environ.get('AGY_SKILLS_TEST_EXIT_CODE', {skills_exit_code!r}))\n"
+        + (
+            f"    sys.stdout.write({skills_payload!r})\n"
+            if skills_payload is not None
+            else "    print(json.dumps({'status': 'SUCCESS', 'command': {'data': {'skills': [\n"
+            f"        {{'name': 'deepcritique', 'path': {str(display_skill)!r}}}\n"
+            "    ]}}}))\n"
+        )
+        + "    raise SystemExit(skills_exit)\n"
         "else:\n"
         "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n"
         "        json.dump({'argv': args, 'env': {\n"
@@ -665,6 +673,31 @@ def test_launcher_failure_directs_the_caller_to_the_ledger(tmp_path: Path) -> No
     assert "read the PR ledger directly" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("payload", "exit_code", "expected"),
+    [
+        (json.dumps({"status": "ERROR", "error": "auth failure"}), "1", "skill preflight did not succeed (exit 1): ERROR"),
+        (json.dumps({"status": "CANCELED"}), "0", "skill preflight did not succeed (exit 0): CANCELED"),
+        ("{bad json", "0", "skill preflight returned invalid JSON (exit 0)"),
+        (json.dumps(["not", "dict"]), "0", "skill preflight returned non-dict JSON (exit 0)"),
+    ],
+)
+def test_launcher_requires_successful_skill_preflight(
+    tmp_path: Path, payload: str, exit_code: str, expected: str
+) -> None:
+    fake_agy, _ = _fake_agy(tmp_path, skills_payload=payload, skills_exit_code=exit_code)
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(tmp_path / "argv.json"),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = _run(environment)
+
+    assert result.returncode == 1
+    assert expected in result.stderr
+
+
 # --------------------------------------------------------------------------
 # process-group management
 # --------------------------------------------------------------------------
@@ -729,8 +762,56 @@ def test_launcher_forwards_termination_to_the_running_review(
 
     assert process.returncode == expected_returncode, (stdout, stderr)
     assert not completed_marker.exists()
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+    _await_reaped(child_pid)
+
+
+def test_launcher_escalates_to_sigkill_when_child_ignores_signal(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "child.pid"
+    completed_marker = tmp_path / "completed"
+    fake_agy, _ = _fake_agy(tmp_path)
+    source = fake_agy.read_text(encoding="utf-8")
+    source = source.replace(
+        "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n",
+        "    import time, signal\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "    with open(os.environ['AGY_CHILD_PID_FILE'], 'w', encoding='utf-8') as pid_out:\n"
+        "        pid_out.write(str(os.getpid()))\n"
+        "    time.sleep(30)\n"
+        "    with open(os.environ['AGY_COMPLETED_MARKER'], 'w', encoding='utf-8') as marker:\n"
+        "        marker.write('completed')\n"
+        "    with open(os.environ['AGY_ARGV_FILE'], 'w', encoding='utf-8') as out:\n",
+    )
+    fake_agy.write_text(source, encoding="utf-8")
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(tmp_path / "argv.json"),
+        "AGY_CHILD_PID_FILE": str(child_pid_file),
+        "AGY_COMPLETED_MARKER": str(completed_marker),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    process = subprocess.Popen(
+        _command(),
+        cwd=ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    for _ in range(200):
+        if child_pid_file.exists():
+            break
+        time.sleep(0.05)
+    assert child_pid_file.exists()
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+    os.kill(process.pid, signal.SIGTERM)
+    stdout, stderr = process.communicate(timeout=15)
+
+    assert process.returncode == 143, (stdout, stderr)
+    assert not completed_marker.exists()
+    _await_reaped(child_pid)
 
 
 def test_launcher_survives_an_inherited_ignored_sighup(tmp_path: Path) -> None:

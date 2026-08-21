@@ -94,13 +94,13 @@ forward_signal() {
     if [ -z "$target_pid" ]; then
         target_pid="$(jobs -pr | head -n 1)"
     fi
-    if [ -n "$target_pid" ] && kill -0 "$target_pid" 2>/dev/null; then
+    if [ -n "$target_pid" ] && kill -0 -- "-$target_pid" 2>/dev/null; then
         kill -s "$signal" -- "-$target_pid" 2>/dev/null || true
         for _ in {1..20}; do
-            kill -0 "$target_pid" 2>/dev/null || break
+            kill -0 -- "-$target_pid" 2>/dev/null || break
             sleep 0.25
         done
-        if kill -0 "$target_pid" 2>/dev/null; then
+        if kill -0 -- "-$target_pid" 2>/dev/null; then
             kill -KILL -- "-$target_pid" 2>/dev/null || true
         fi
         wait "$target_pid" 2>/dev/null || true
@@ -128,25 +128,31 @@ trap 'forward_signal HUP 129' HUP
 
 # The outer bound stays above --print-timeout so the CLI's own timeout fires
 # first and still writes a structured payload for the parser below.
+skills_exit=0
 run_agy_managed "$skills_file" 2m \
     --model gemini-3.7-flash-high \
     --effort high \
     --output-format json \
     --print-timeout 90s \
-    --print '/skills'
+    --print '/skills' || skills_exit="$?"
 
-agy_surface_root="$(python3 - "$skills_file" "$ledger_version" <<'PY'
+agy_surface_root="$(python3 - "$skills_file" "$ledger_version" "$skills_exit" <<'PY'
 import json
 import pathlib
 import sys
 
+exit_code = int(sys.argv[3])
 try:
     payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 except (OSError, UnicodeError, json.JSONDecodeError) as error:
-    raise SystemExit(f"skill preflight returned invalid JSON: {error}")
+    raise SystemExit(f"skill preflight returned invalid JSON (exit {exit_code}): {error}")
 
-if payload.get("status") != "SUCCESS":
-    raise SystemExit(f"skill preflight did not succeed: {payload.get('status', 'missing status')}")
+if not isinstance(payload, dict):
+    raise SystemExit(f"skill preflight returned non-dict JSON (exit {exit_code})")
+
+if exit_code != 0 or payload.get("status") != "SUCCESS":
+    status = payload.get("status", "missing status")
+    raise SystemExit(f"skill preflight did not succeed (exit {exit_code}): {status}")
 
 expected_ledger_version = sys.argv[2]
 skills = payload.get("command", {}).get("data", {}).get("skills", [])
@@ -293,6 +299,9 @@ try:
     payload = json.loads(path.read_text(encoding="utf-8"))
 except (OSError, UnicodeError, json.JSONDecodeError) as error:
     raise SystemExit(f"the review returned invalid JSON (exit {exit_code}): {error}")
+
+if not isinstance(payload, dict):
+    raise SystemExit(f"the review returned non-dict JSON (exit {exit_code})")
 
 status = payload.get("status")
 if exit_code != 0 or status != "SUCCESS":

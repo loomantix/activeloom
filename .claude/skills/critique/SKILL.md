@@ -258,7 +258,7 @@ If this Claude pass made a material fix, it moved the head: every declared
 reviewer whose attestation named the superseded commit re-runs against the new
 head, and a reviewer that already attested this head does not. In session mode
 that re-run is a fresh terminal; in auto mode it is that engine's checked-in
-launcher — `scripts/run-agy-review.sh` for `gemini` — followed by a
+launcher — `.claude/skills/critique/scripts/run-agy-review.sh` for `gemini` — followed by a
 `verify-coverage` check at the exact reviewed head, per
 [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md). Otherwise it completes Claude's part of the current round. Always finalize
 `clean`, `changed`, or `blocked` per the ledger's wrapper/standalone ownership
