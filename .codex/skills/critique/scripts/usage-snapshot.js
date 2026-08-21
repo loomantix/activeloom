@@ -26,14 +26,19 @@ import {
   mkdirSync,
   openSync,
   fstatSync,
+  fchmodSync,
+  chmodSync,
   readdirSync,
   readSync,
   closeSync,
   readFileSync,
   writeFileSync,
+  constants,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+
+const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = constants;
 
 const SNAPSHOT_VERSION = 2;
 
@@ -208,9 +213,20 @@ function sessionMeta(path) {
   return meta;
 }
 
+/**
+ * A rollout log's own identity.
+ *
+ * `id` is the log's own id on every header shape the CLI writes. `session_id`
+ * is not: on a child log it repeats `parent_thread_id`, so reading it first
+ * gives a child the parent's identity — which makes the descendant walk reject
+ * every child as already-seen, and makes discovery by host session id
+ * ambiguous as soon as one child shares the working directory. Descent is
+ * carried by `parent_thread_id` alone; `session_id` is only a fallback for a
+ * header that omits `id`.
+ */
 function sessionId(meta) {
   return meta
-    ? (safeToken(meta['session_id']) ?? safeToken(meta['id']) ?? null)
+    ? (safeToken(meta['id']) ?? safeToken(meta['session_id']) ?? null)
     : null;
 }
 
@@ -400,6 +416,7 @@ function turnModel(event) {
 function subtract(end, start, zeroBaseline = false) {
   const delta = {};
   let regressed = false;
+  let unmeasurable = false;
   for (const field of REPORTED_FIELDS) {
     const endValue = end?.[field] ?? null;
     if (endValue === null) {
@@ -408,6 +425,9 @@ function subtract(end, start, zeroBaseline = false) {
     }
     const startValue = start?.[field] ?? null;
     if (startValue === null && !zeroBaseline) {
+      // Reported at the end of the interval but not at its start, so how much
+      // of it accrued inside the interval is unknown.
+      unmeasurable = true;
       delta[field] = null;
       continue;
     }
@@ -417,7 +437,7 @@ function subtract(end, start, zeroBaseline = false) {
     }
     delta[field] = difference;
   }
-  return { delta, regressed };
+  return { delta, regressed, unmeasurable };
 }
 
 function isEmpty(totals) {
@@ -503,17 +523,19 @@ function collect(text, snapshot, zeroBaseline = false) {
   let lastTotals = intervalStart;
   let lastTimestamp = null;
   let regressed = false;
+  let incomplete = false;
+  let unparsed = 0;
   let events = 0;
 
   const flush = () => {
     if (current === null || lastTotals === null) {
       return;
     }
-    let { delta, regressed: wentBackwards } = subtract(
-      lastTotals,
-      intervalStart,
-      zeroBaseline,
-    );
+    let {
+      delta,
+      regressed: wentBackwards,
+      unmeasurable,
+    } = subtract(lastTotals, intervalStart, zeroBaseline);
     if (wentBackwards) {
       // The cumulative counter went backwards, so the baseline no longer
       // describes this session and the difference is meaningless — it would
@@ -525,6 +547,16 @@ function collect(text, snapshot, zeroBaseline = false) {
       delta = subtract(lastTotals, null, true).delta;
     }
     if (isEmpty(delta)) {
+      // An interval with nothing measurable in it is about to be dropped, and
+      // `intervalStart` then advances past it, so its usage leaves the record
+      // entirely rather than joining the next bucket. Dropping it is the right
+      // call — an unmeasurable start must not be assumed to be zero — but the
+      // record can no longer describe itself as an exact, pass-scoped
+      // measurement, because the total it reports is now missing a stretch of
+      // the pass. Without this flag a single surviving bucket hides the loss.
+      if (unmeasurable) {
+        incomplete = true;
+      }
       return;
     }
     mergeRawBuckets(buckets, [
@@ -535,6 +567,15 @@ function collect(text, snapshot, zeroBaseline = false) {
   for (const line of text.split('\n')) {
     const event = parseLine(line);
     if (event === null) {
+      if (line.trim() !== '') {
+        // A complete line that is not valid JSON. `parseLine` cannot say what
+        // it was, so it may have been the `token_count` that closes this
+        // window or a `turn_context` that moves a model boundary. Either way
+        // the window is no longer a complete account of the pass, and unlike a
+        // truncated final line — which is already refused — nothing else
+        // downstream would notice.
+        unparsed += 1;
+      }
       continue;
     }
     events += 1;
@@ -566,11 +607,34 @@ function collect(text, snapshot, zeroBaseline = false) {
   }
   flush();
 
-  return { buckets: [...buckets.values()], regressed, lastTimestamp, events };
+  return {
+    buckets: [...buckets.values()],
+    regressed,
+    incomplete,
+    unparsed,
+    lastTimestamp,
+    events,
+  };
 }
 
+/**
+ * Write an owner-only JSON file.
+ *
+ * The `mode` option on `writeFileSync` applies only when the file is created,
+ * so a path that already exists keeps whatever mode it had. These files record
+ * the session log's location and the session id, so the mode is enforced with
+ * an explicit `fchmodSync` instead of being left to the create path. `O_NOFOLLOW`
+ * refuses a symlink outright: the destination directory is not always one this
+ * process created, and following a planted link would write through it.
+ */
 function writeJson(path, value) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  const fd = openSync(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0o600);
+  try {
+    fchmodSync(fd, 0o600);
+    writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function emit(payload) {
@@ -639,6 +703,9 @@ function runSnapshot(args) {
     sessionsRoot: root,
     knownDescendantSessionIds,
   };
+  // `delta` creates its `--out-dir`; the documented snapshot invocation writes
+  // into the same directory one step earlier, when nothing has created it yet.
+  mkdirSync(dirname(resolve(args.out)), { recursive: true, mode: 0o700 });
   writeJson(args.out, snapshot);
   return emit({
     mode: 'snapshot',
@@ -652,27 +719,55 @@ function runSnapshot(args) {
   });
 }
 
+/**
+ * Read a start snapshot, reporting why it was refused.
+ *
+ * The reason matters because the caller must not treat "no `--start` was
+ * given" and "the `--start` file was rejected" the same way. The first is a
+ * standalone pass, which legitimately falls back to discovery; the second is a
+ * scoped pass whose baseline is gone, and re-running discovery there is
+ * exactly the silent retarget this file's discovery contract rules out.
+ */
 function readSnapshot(path) {
   if (!path) {
-    return null;
+    return { snapshot: null, rejected: null };
   }
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'));
   } catch {
-    return null;
+    return { snapshot: null, rejected: 'the start snapshot could not be read' };
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { snapshot: null, rejected: 'the start snapshot was not an object' };
+  }
+  if (parsed['version'] !== SNAPSHOT_VERSION) {
+    return {
+      snapshot: null,
+      rejected: `the start snapshot is version ${JSON.stringify(parsed['version'])}, not ${SNAPSHOT_VERSION}`,
+    };
   }
   if (
-    !parsed ||
-    typeof parsed !== 'object' ||
-    parsed['version'] !== SNAPSHOT_VERSION ||
     typeof parsed['sessionLog'] !== 'string' ||
     typeof parsed['offset'] !== 'number' ||
     typeof parsed['sessionId'] !== 'string'
   ) {
-    return null;
+    return {
+      snapshot: null,
+      rejected: 'the start snapshot is missing a required field',
+    };
   }
-  return parsed;
+  // `runSnapshot` only ever writes values that passed these guards, but the
+  // file is read back from disk in a directory this process does not own
+  // exclusively. `model` and `effort` become the bucket identity in the emitted
+  // record and `engineVersion` becomes a record field, all of which reach a
+  // comment on a public repository — so the boundary is re-applied on read
+  // rather than trusted from the write.
+  parsed['model'] = safeToken(parsed['model']);
+  parsed['effort'] = safeToken(parsed['effort']);
+  parsed['engineVersion'] = safeToken(parsed['engineVersion']);
+  parsed['totals'] = readCumulative(parsed['totals']);
+  return { snapshot: parsed, rejected: null };
 }
 
 function runDelta(args) {
@@ -680,9 +775,14 @@ function runDelta(args) {
     throw new Error('delta requires --out-dir');
   }
   mkdirSync(args.outDir, { recursive: true, mode: 0o700 });
+  chmodSync(args.outDir, 0o700);
 
-  const snapshot = readSnapshot(args.start);
-  const sessionLog = snapshot ? snapshot.sessionLog : discoverSessionLog(args);
+  const { snapshot, rejected } = readSnapshot(args.start);
+  const sessionLog = snapshot
+    ? snapshot.sessionLog
+    : rejected === null
+      ? discoverSessionLog(args)
+      : null;
 
   const unavailable = (error) =>
     emit({
@@ -701,11 +801,11 @@ function runDelta(args) {
     });
 
   if (sessionLog === null) {
-    return unavailable(null);
+    return unavailable(rejected);
   }
   const chunk = readCompleteWindow(sessionLog, snapshot ? snapshot.offset : 0);
   if (chunk === null) {
-    return unavailable(null);
+    return unavailable('the session log could not be read');
   }
 
   const meta = sessionMeta(sessionLog);
@@ -728,6 +828,8 @@ function runDelta(args) {
   mergeRawBuckets(aggregateBuckets, collected.buckets);
 
   let regressed = collected.regressed;
+  let unmeasurableInterval = collected.incomplete;
+  let unparsed = collected.unparsed;
   let events = collected.events;
   let lastTimestamp = collected.lastTimestamp;
   let childIncomplete = false;
@@ -749,11 +851,17 @@ function runDelta(args) {
       }
       const childCollected = collect(childWindow.text, null, true);
       if (childCollected.buckets.length === 0) {
-        childIncomplete = true;
+        // A descendant that has not reported usage yet contributes nothing.
+        // That is an ordinary state — a session spawned late in the pass, one
+        // that used no tokens, one that was cancelled — and is not the same as
+        // a window that could not be read, which is handled above. Treating it
+        // as incomplete data would discard the parent's exact measurement.
         continue;
       }
       mergeRawBuckets(aggregateBuckets, childCollected.buckets);
       regressed ||= childCollected.regressed;
+      unmeasurableInterval ||= childCollected.incomplete;
+      unparsed += childCollected.unparsed;
       events += childCollected.events;
       if (
         childCollected.lastTimestamp !== null &&
@@ -782,7 +890,13 @@ function runDelta(args) {
     (snapshot ? (snapshot.engineVersion ?? null) : null);
 
   let tokenSource;
-  if (tokens.length === 0 || childIncomplete || invalidProjection) {
+  if (
+    tokens.length === 0 ||
+    childIncomplete ||
+    invalidProjection ||
+    unmeasurableInterval ||
+    unparsed > 0
+  ) {
     tokenSource = 'unavailable';
   } else if (!snapshot || chunk.rewound || regressed) {
     // Without a start snapshot, or after the log rewound or the counter reset
@@ -828,7 +942,11 @@ function runDelta(args) {
       ? 'a descendant session had incomplete usage data'
       : invalidProjection
         ? 'provider token subsets did not reconcile'
-        : null,
+        : unmeasurableInterval
+          ? 'an interval had no measurable baseline'
+          : unparsed > 0
+            ? 'the session log window contained an unparseable event'
+            : null,
   });
 }
 
@@ -866,6 +984,20 @@ function main(argv) {
     }
     throw new Error('mode must be "snapshot" or "delta"');
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (args.mode === 'snapshot') {
+      // A caller reads `scoped` and `snapshotFile` to find out whether the
+      // snapshot succeeded. Emitting the delta shape here would leave both
+      // undefined and hide the failure behind fields this mode never sets.
+      return emit({
+        mode: 'snapshot',
+        enabled: true,
+        sessionLog: null,
+        snapshotFile: null,
+        scoped: false,
+        error: message,
+      });
+    }
     return emit({
       mode: args.mode ?? null,
       enabled: true,
@@ -874,7 +1006,7 @@ function main(argv) {
       lanesFile: null,
       engineVersion: null,
       durationSeconds: null,
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     });
   }
 }

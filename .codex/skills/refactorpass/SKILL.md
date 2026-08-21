@@ -60,13 +60,16 @@ Run these lanes as independently as the active runtime permits:
    list, and diff stat once and build the ledger's immutable review packet. Pass
    the literal `<base-sha>..<head-sha>` range to every cleanup lane; never let
    lanes re-resolve a mutable ref or rebuild the packet independently.
-4. Skip if the changeset is docs/config-only. Treat source files such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash` as review-worthy.
+4. Skip if the changeset is docs/config-only. Treat source files such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash` as review-worthy. Emit the step 14
+   record with `--status skipped` before stopping — the classification read that
+   reached this decision is itself part of what the pass cost.
 5. Check the once-per-engine latch. Search the PR's comments for
    `local-review-refactor:v1 engine=codex`, authored by the actor running this
    review. If it is present, this PR has already had its Codex cleanup pass:
-   report the skip with the head the earlier pass ran on and stop without running
-   a lane. Continue only when the marker is absent or the caller explicitly asked
-   to force a re-run, and say which of the two applied.
+   report the skip with the head the earlier pass ran on, emit the step 14
+   record with `--status clean`, and stop without running a lane. Continue only
+   when the marker is absent or the caller explicitly asked to force a re-run,
+   and say which of the two applied.
 
    The rule exists because the second pass over an already-simplified diff
    returns naming and shape churn, not cleanups. That churn moves the head and
@@ -103,8 +106,13 @@ Run these lanes as independently as the active runtime permits:
     also `clean`, not `skipped` — its changeset was reviewable, this engine had
     simply already spent its one pass, and the record rejects a `skipped` pass
     carrying review-significant files. A docs/config-only skip is the case that
-    genuinely reports `skipped`. Emission exits zero whether or not it
-    succeeded: report the outcome and move on.
+    genuinely reports `skipped`. A pass that could not complete at all reports
+    `blocked`. Emission exits zero whether or not it succeeded: report the
+    outcome and move on.
+
+    Steps 4 and 5 return before reaching this step, so each names the record it
+    emits rather than relying on the pass reaching the end. Skip emission
+    entirely when the telemetry helper reports `enabled: false`.
 
 ## Output
 

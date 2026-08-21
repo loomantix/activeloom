@@ -60,9 +60,17 @@ def meta(
     session_id: str = "01a0-session",
     parent_thread_id: str | None = None,
 ) -> str:
+    """A session header in the shape the CLI actually writes.
+
+    Measured across the rollout headers under a real sessions root: a root
+    session carries `id == session_id`, while a child carries its own `id` and
+    repeats its parent's id in **both** `session_id` and `parent_thread_id`.
+    Writing `session_id == id` on a child would be a shape the CLI never emits,
+    and it hides the case where a log's own identity has to be read from `id`.
+    """
     payload = {
         "id": session_id,
-        "session_id": session_id,
+        "session_id": parent_thread_id if parent_thread_id is not None else session_id,
         "cwd": str(cwd),
         "cli_version": version,
     }
@@ -611,3 +619,217 @@ def test_no_bucket_is_ever_negative(tmp_path: Path, session: Path) -> None:
         for key, value in bucket.items():
             if isinstance(value, int):
                 assert value >= 0, key
+
+
+def test_a_log_own_identity_is_read_from_id_not_session_id(
+    tmp_path: Path, session: Path
+) -> None:
+    """A child header repeats its parent's id in `session_id`.
+
+    Reading identity from `session_id` first gives a child the parent's id,
+    which makes the descendant walk reject every child as already-seen and
+    makes discovery by host session id ambiguous. Both failures are silent:
+    the record still claims `session-log-delta`.
+    """
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=150, output=20))
+
+    child = session.with_name("rollout-child.jsonl")
+    child.write_text(
+        meta(tmp_path, session_id="01a0-child", parent_thread_id="01a0-session")
+        + context()
+        + counted(input_tokens=9000, output=900)
+    )
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "session-log-delta"
+    bucket = tokens_of(payload)[0]
+    assert bucket["providerBuckets"]["reported_input_tokens"] == 9050
+    assert bucket["output"] == 910
+
+
+def test_discovery_by_host_session_id_ignores_child_logs(
+    tmp_path: Path, session: Path
+) -> None:
+    """A child shares the cwd but is not a second candidate for the root id."""
+    session.with_name("rollout-child.jsonl").write_text(
+        meta(tmp_path, session_id="01a0-child", parent_thread_id="01a0-session")
+        + context()
+        + counted(input_tokens=5, output=1)
+    )
+    payload = run(
+        "snapshot",
+        "--out",
+        str(tmp_path / "start.json"),
+        "--session-id",
+        "01a0-session",
+        "--sessions-dir",
+        str(session.parents[3]),
+        "--cwd",
+        str(tmp_path),
+    )
+    assert payload["sessionLog"] == str(session)
+    assert payload["scoped"] is True
+
+
+def test_an_unparseable_event_in_the_window_makes_usage_unavailable(
+    tmp_path: Path, session: Path
+) -> None:
+    """A complete-but-corrupt line may have been the closing `token_count`.
+
+    The incomplete-trailing-line guard covers the newline boundary, not JSON
+    validity, so without this the window silently under-reports and is still
+    labelled exact.
+    """
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=200, output=20))
+        handle.write('{"type":"event_msg","payload":{"type":"token_c' + "\n")
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
+    assert payload["error"] == "the session log window contained an unparseable event"
+
+
+def test_an_unmeasurable_interval_is_not_dropped_silently(
+    tmp_path: Path, session: Path
+) -> None:
+    """Dropping an interval removes usage from the record.
+
+    One surviving bucket would otherwise hide the loss behind a
+    `session-log-delta` label, under-reporting the pass by whatever the dropped
+    interval cost.
+    """
+    with session.open("a") as handle:
+        handle.write(context(effort="medium"))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=5000, output=500))
+        handle.write(context(effort="high"))
+        handle.write(counted(input_tokens=5100, output=530))
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
+    assert payload["error"] == "an interval had no measurable baseline"
+
+
+def test_a_descendant_with_no_usage_yet_keeps_the_record(
+    tmp_path: Path, session: Path
+) -> None:
+    """A spawned-but-idle child is an ordinary state, not corrupt data."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=1100, output=510))
+
+    session.with_name("rollout-idle.jsonl").write_text(
+        meta(tmp_path, session_id="01a0-idle", parent_thread_id="01a0-session")
+    )
+
+    payload = delta(tmp_path, start)
+    assert payload["tokenSource"] == "session-log-delta"
+    assert tokens_of(payload)[0]["output"] == 500
+
+
+def test_snapshot_creates_its_own_output_directory(
+    tmp_path: Path, session: Path
+) -> None:
+    """The documented invocation writes into a telemetry dir nothing creates."""
+    out = tmp_path / "telemetry" / "usage-start.json"
+    payload = run(
+        "snapshot",
+        "--out",
+        str(out),
+        "--session-log",
+        str(session),
+        "--sessions-dir",
+        str(session.parents[3]),
+    )
+    assert payload["error"] is None
+    assert payload["scoped"] is True
+    assert out.exists()
+
+
+def test_telemetry_files_are_owner_only_and_never_follow_a_symlink(
+    tmp_path: Path, session: Path
+) -> None:
+    """`mode` on write applies only at creation, so it is enforced explicitly."""
+    start = tmp_path / "start.json"
+    start.write_text("{}")
+    start.chmod(0o644)
+    snapshot(session, tmp_path)
+    assert start.stat().st_mode & 0o777 == 0o600
+
+    outdir = tmp_path / "out"
+    outdir.mkdir(mode=0o755)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("ORIGINAL")
+    (outdir / "telemetry-tokens.json").symlink_to(victim)
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=10, output=1))
+
+    delta(tmp_path, start)
+    assert victim.read_text() == "ORIGINAL"
+    assert outdir.stat().st_mode & 0o777 == 0o700
+
+
+def test_a_tampered_snapshot_cannot_put_free_text_in_the_record(
+    tmp_path: Path, session: Path
+) -> None:
+    """`model` and `effort` become the bucket identity in a public record."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    payload = json.loads(start.read_text())
+    payload["model"] = "MODEL /home/someone/private path prose"
+    payload["effort"] = "<script>"
+    start.write_text(json.dumps(payload))
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=150, output=15))
+
+    result = delta(tmp_path, start)
+    assert result["tokensFile"] is None or all(
+        " " not in record["model"] for record in tokens_of(result)
+    )
+
+
+def test_a_rejected_start_snapshot_says_so_and_does_not_rediscover(
+    tmp_path: Path, session: Path
+) -> None:
+    """A scoped pass whose baseline is gone must not fall back to discovery.
+
+    Falling back is the silent retarget the discovery contract rules out, and
+    it lands as `unscoped-session` with no sign the start file was refused.
+    """
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    stale = json.loads(start.read_text())
+    stale["version"] = 1
+    start.write_text(json.dumps(stale))
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=110, output=11))
+
+    payload = delta(
+        tmp_path,
+        start,
+        sessions_dir=str(session.parents[3]),
+        cwd=str(tmp_path),
+    )
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
+    assert payload["error"] == "the start snapshot is version 1, not 2"

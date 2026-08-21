@@ -385,7 +385,11 @@ file-editing tool — never a heredoc or command substitution:
 }
 ```
 
-Count only threads this pass posted or dispositioned. `chainInducedRegressions`
+Count only threads this pass posted or dispositioned, and keep `posted`
+greater than or equal to the sum of every disposition: the emitter checks that
+and refuses the record otherwise. A pass that dispositions a thread an earlier
+pass posted — fixing a deferred finding, say — therefore counts it in `posted`
+as well, so the record stays internally consistent. `chainInducedRegressions`
 counts new fingerprints whose diff anchor traces via `git blame` to a commit
 recorded as a fix SHA in an earlier disposition **on this PR** — rework the
 chain caused itself, which is far more expensive than either a finding or a
@@ -407,6 +411,14 @@ node <ledger-helper> emit-telemetry \
   --findings-file <path>
 ```
 
+**Skip this step entirely when the helper reports `enabled: false`.** With the
+gate off, `delta` reports `tokenSource: null` and omits `engineVersion` and
+`durationSeconds` rather than returning them as null. Passing that through
+would omit `--token-source`, which `emit-telemetry` requires, so a pass that
+emitted anyway would fail on every run — and a pass that "repaired" the gap by
+substituting `unavailable` would post a telemetry record on a repository that
+opted out. There is nothing to record when the gate is off.
+
 Omit `--engine-version`, `--duration-seconds`, and `--tokens-file` whenever
 `delta` reported the corresponding value as null.
 Omit `--changeset-file` and the classifier runs over `<base>..<head>` itself.
@@ -419,15 +431,15 @@ the exact pattern that otherwise reads as efficiency.
 
 ### What each pass emits
 
-| Pass                                  | `--pass-type` | `--status` |
-| ------------------------------------- | ------------- | ---------- |
-| Adversarial pass, nothing to fix      | `review`      | `clean`    |
-| Adversarial pass that committed a fix | `review`      | `changed`  |
-| Pass that could not complete          | `review`      | `blocked`  |
-| Docs/config-only skip                 | `review`      | `skipped`  |
-| Cleanup pass that committed           | `refactor`    | `changed`  |
-| Cleanup pass that found nothing       | `refactor`    | `clean`    |
-| Cleanup skipped on a spent latch      | `refactor`    | `clean`    |
+| Pass                                  | `--pass-type`      | `--status` |
+| ------------------------------------- | ------------------ | ---------- |
+| Adversarial pass, nothing to fix      | `review`           | `clean`    |
+| Adversarial pass that committed a fix | `review`           | `changed`  |
+| Pass that could not complete          | `review`           | `blocked`  |
+| Docs/config-only skip                 | matching pass-type | `skipped`  |
+| Cleanup pass that committed           | `refactor`         | `changed`  |
+| Cleanup pass that found nothing       | `refactor`         | `clean`    |
+| Cleanup skipped on a spent latch      | `refactor`         | `clean`    |
 
 A skip still burns tokens reading and classifying the PR, and "we spent eight
 thousand tokens deciding not to review" is exactly the machinery overhead worth
