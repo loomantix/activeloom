@@ -8,6 +8,7 @@ missing. Report only evidence-backed findings.
 
 - Swallowed exceptions, broad catches, ignored promises, and missing awaits.
 - Async races, retries, backoff, timeout, cancellation, and shutdown behavior.
+- State-change invariants and stale cached state: reactive hooks, effects, polling loops, or event handlers that wait for an asynchronous recovery or external transition (e.g. re-auth, token refresh, connection reconnect, cache invalidation) firing against stale pre-failure state and declaring success before an actual transition occurs. Require proof of state change (e.g., changed session ID, updated epoch/generation ID, sequence number, or nonce) rather than evaluating static boolean readiness against cached state.
 - Partial writes, idempotency gaps, duplicate processing, and rollback safety.
 - Missing logs, metrics, alerts, or error propagation for critical failure paths.
 - Tests that cover happy paths but not failure, retry, or concurrency paths.

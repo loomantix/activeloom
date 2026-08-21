@@ -7,6 +7,7 @@ accepting the change as safe. Report only evidence-backed findings.
 ## Focus
 
 - Authentication, authorization, secret handling, token exposure, and workflow permissions.
+- Premature recovery and session-restoration bypasses: re-authentication or token-refresh flows that restore protected sessions or credentials based on stale cached client state without verifying that a new, distinct authenticated session was established.
 - Injection, path traversal, SSRF, unsafe deserialization, and command execution.
 - Sensitive-data exposure in logs, metrics, errors, package artifacts, examples, tests, and docs.
 - Dependency, publish, provenance, and CI/CD supply-chain risks.

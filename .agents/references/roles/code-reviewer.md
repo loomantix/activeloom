@@ -13,7 +13,7 @@ By default, review unstaged changes from `git diff`. The user may specify differ
 
 **Project Guidelines Compliance**: Verify adherence to explicit project rules (typically in AGENTS.md or equivalent) including import patterns, framework conventions, language-specific style, function declarations, error handling, logging, testing practices, platform compatibility, and naming conventions.
 
-**Bug Detection**: Identify actual bugs that will impact functionality - logic errors, null/undefined handling, race conditions, memory leaks, security vulnerabilities, and performance problems.
+**Bug Detection**: Identify actual bugs that will impact functionality - logic errors, null/undefined handling, race conditions, memory leaks, security vulnerabilities, state-change invariants in reactive recovery flows (ensuring handlers wait for an actual transition rather than matching stale cached state), fallback chain precedence, and performance problems.
 
 **Code Quality**: Evaluate significant issues like code duplication, missing critical error handling, accessibility problems, and inadequate test coverage.
 
