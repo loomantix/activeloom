@@ -77,6 +77,15 @@ targets:
     substitutions: []
     mode: '0644'
 
+  # Auto-relay launcher for the local `gemini` reviewer. Pins the model,
+  # effort, permission, output, and timeout contract so no caller can
+  # hand-compose an unattended reviewer command; executable because the
+  # skills invoke it directly.
+  - source: .claude/skills/critique/scripts/run-agy-review.sh
+    destination: .claude/skills/critique/scripts/run-agy-review.sh
+    substitutions: []
+    mode: '0755'
+
   - source: .claude/skills/deepcritique/SKILL.md
     destination: .claude/skills/deepcritique/SKILL.md
     substitutions: []

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-r"""Lint `claude` CLI invocations inside synced shell scripts.
+r"""Lint unattended agent-CLI invocations inside synced shell scripts.
 
 Scope (the scan set is the union of):
   - every `.sh` file tracked under `.claude/skills/` (SCOPE_DIRS), AND
   - every `.sh` `source:` entry in `scripts/sync-targets.yml`.
 
-Every `claude` invocation (or use of `--permission-mode` / `bypassPermissions`)
+Every `claude` or `agy` invocation (or use of `--permission-mode`,
+`bypassPermissions`, or `--dangerously-skip-permissions`)
 inside that scope must sit inside a `# claude-cli-invocations:start` / `:end`
 marker pair, and the bytes between those markers must hash to a
 `(sha256, path)` entry in `.claude/claude-cli-invocations.allowlist`. Any
@@ -41,6 +42,7 @@ SYNC_TARGETS_PATH = "scripts/sync-targets.yml"
 # moving it outside SCOPE_DIRS while keeping it synced from a fresh entry.
 REQUIRED_FILES = [
     ".claude/skills/agent-loop/scripts/agent-loop.sh",
+    ".claude/skills/critique/scripts/run-agy-review.sh",
 ]
 
 START_MARKER = "# claude-cli-invocations:start"
@@ -52,9 +54,13 @@ END_MARKER = "# claude-cli-invocations:end"
 # `/usr/local/bin/claude --print`. The lookbehind allows `/` so path-prefixed
 # invocations are detected, but blocks `\w` and `.-` so `.claude/skills/...`
 # path mentions and `claude.err` filename mentions don't false-flag. The
-# `--permission-mode` and `bypassPermissions` literals catch the dangerous
-# escalation signal directly even when the binary name has been variable-
-# aliased (`CMD=claude; $CMD --permission-mode bypassPermissions ...`).
+# `--permission-mode`, `bypassPermissions`, and `--dangerously-skip-permissions`
+# literals catch the dangerous escalation signal directly even when the binary
+# name has been variable-aliased (`CMD=claude; $CMD --permission-mode
+# bypassPermissions ...`, `CLI=agy; $CLI --dangerously-skip-permissions ...`).
+# `agy` is scanned on the same terms as `claude`: it is the other agent CLI a
+# synced script launches unattended, and its permission-skip flag grants the
+# same tool authority.
 #
 # Out-of-model (explicitly NOT caught — relies on CODEOWNERS + reviewer
 # attention as the structural defense):
@@ -66,8 +72,10 @@ END_MARKER = "# claude-cli-invocations:end"
 #    `bypa""ssPermissions`. Same false-flag-vs-coverage trade-off.
 SENSITIVE_TOKEN_RE = re.compile(
     r"(?<![\w.-])claude\s+(?:--?|[\"'$<])"
+    r"|(?<![\w.-])agy\s+(?:--?|[\"'$<])"
     r"|--permission-mode"
     r"|bypassPermissions"
+    r"|--dangerously-skip-permissions"
 )
 
 COMMENT_LINE_RE = re.compile(r"^\s*#")
@@ -355,8 +363,9 @@ def scan(paths: list[str], allowlist_entries: list[AllowlistEntry]) -> int:
         for inv_line, inv_text in find_sensitive_token_lines(path, text):
             if not any(r.start_line < inv_line < r.end_line for r in regions):
                 print(
-                    f"{path}:{inv_line}: sensitive token (`claude` / `--permission-mode` / "
-                    f"`bypassPermissions`) outside any {START_MARKER!r}/{END_MARKER!r} pair."
+                    f"{path}:{inv_line}: sensitive token (`claude` / `agy` / `--permission-mode` / "
+                    f"`bypassPermissions` / `--dangerously-skip-permissions`) "
+                    f"outside any {START_MARKER!r}/{END_MARKER!r} pair."
                 )
                 print(f"    > {inv_text.rstrip()}")
                 print(
@@ -516,6 +525,35 @@ CMD=claude
 $CMD --permission-mode bypassPermissions --print "$PROMPT"
 """
 
+# The other agent CLI a synced script launches unattended. Scanned on the
+# same terms as `claude`, with its own permission-skip literal.
+_FIXTURE_AGY_BARE_INVOCATION = """\
+#!/bin/bash
+agy --print "leak"
+"""
+_FIXTURE_AGY_SKIP_PERMISSIONS_OUTSIDE = """\
+#!/bin/bash
+CLI=agy
+$CLI --dangerously-skip-permissions --print "$PROMPT"
+"""
+_FIXTURE_AGY_POSITIONAL_VAR = """\
+#!/bin/bash
+agy "$EVIL"
+"""
+
+# Negative fixtures for the `agy` widening — the launcher's own variable
+# names and the relay surface's directory name must not false-flag.
+_FIXTURE_AGY_VARIABLE_NAMES = """\
+#!/bin/bash
+agy_pid=""
+agy_exit=0
+run_agy_managed "$result_file" 61m
+"""
+_FIXTURE_AGENTS_DIR_MENTION = """\
+#!/bin/bash
+echo "$SURFACE/.agents/skills/critique/SKILL.md"
+"""
+
 # Widened-regex coverage — exercises every alternative trailing-context
 # branch that was added to `SENSITIVE_TOKEN_RE`. Each line MUST match so a
 # future regex narrowing can't silently re-open one of these bypass forms.
@@ -657,6 +695,23 @@ def run_self_test() -> int:
     # would change and the test should be updated deliberately.
     inv = find_sensitive_token_lines("x.sh", _FIXTURE_BYPASS_FLAG_OUTSIDE)
     check("BYPASS TOKENS", len(inv) == 1, f"got {inv!r}")
+
+    # `agy` is in scope on the same terms as `claude`. Line 2 of the
+    # skip-permissions fixture (`CLI=agy`) is deliberately NOT expected to
+    # match, mirroring the `CMD=claude` case above.
+    for label, fixture in [
+        ("AGY BARE", _FIXTURE_AGY_BARE_INVOCATION),
+        ("AGY SKIP-PERMISSIONS FLAG", _FIXTURE_AGY_SKIP_PERMISSIONS_OUTSIDE),
+        ("AGY POSITIONAL \"$VAR\"", _FIXTURE_AGY_POSITIONAL_VAR),
+    ]:
+        inv = find_sensitive_token_lines("x.sh", fixture)
+        check(f"REGEX/{label}", len(inv) == 1, f"got {inv!r}")
+    for label, fixture in [
+        ("agy_* variable names", _FIXTURE_AGY_VARIABLE_NAMES),
+        (".agents/ path mention", _FIXTURE_AGENTS_DIR_MENTION),
+    ]:
+        inv = find_sensitive_token_lines("x.sh", fixture)
+        check(f"REGEX-NEG/{label}", inv == [], f"got {inv!r}")
 
     # Every widened-regex case must produce exactly one match — locks in
     # the iter-2 widening so a future narrowing reopens a documented bypass.
@@ -800,6 +855,18 @@ def run_self_test() -> int:
         check(
             "SCAN(two-regions) flags unallowlisted second region",
             n == 1 and "not in allowlist for this path" in out,
+            f"got {n}; output:\n{out}",
+        )
+
+        # --dangerously-skip-permissions outside any marker pair → finding.
+        # This is the escalation literal the Agy relay launcher locks.
+        skip_path = os.path.join(tmp, "agy-skip.sh")
+        with open(skip_path, "w") as fh:
+            fh.write(_FIXTURE_AGY_SKIP_PERMISSIONS_OUTSIDE)
+        n, out = scan_into([skip_path], [])
+        check(
+            "SCAN(agy-skip-permissions) catches token outside marker",
+            n >= 1 and "sensitive token" in out,
             f"got {n}; output:\n{out}",
         )
 

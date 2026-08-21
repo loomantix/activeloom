@@ -113,7 +113,37 @@ least one fixed finding fails closed. Do not emit `clean` for a cleanup-moved en
 For a blocked pass, put the safe blocker in an owner-only
 regular file and call `write-blocked-result`.
 
-## Phase 3: Handoff
+## Phase 3: Auto-mode relay
+
+Skip this phase in session mode, where the user starts the next reviewer in a
+fresh terminal.
+
+In auto mode, read the effective roster and exact-head coverage from the ledger,
+then start each declared reviewer that holds no attestation at the current head.
+Honour the roster as declared; treat `gemini` as a default only when declaring a
+new relay, and supersede an existing declaration explicitly rather than swapping
+a reviewer already in flight.
+
+Start the `gemini` reviewer only through its launcher, which owns the model,
+effort, permission, output, and timeout contract:
+
+```bash
+.claude/skills/critique/scripts/run-agy-review.sh \
+  --repo <owner/repo> --pr <pr-number> --base <review-base-sha> \
+  --head <reviewed-head-sha> --round <round>
+```
+
+An engine with no checked-in launcher runs in session mode.
+
+The launcher exiting zero is necessary and not sufficient. After it returns,
+confirm that engine's authenticated attestation at the exact reviewed head with
+the ledger helper's `verify-coverage`. A nonzero exit with attestation present
+means the reviewer's CLI reported a turn-level error over work that landed —
+report it, re-run the round, and change nothing in the launcher. A zero exit
+with no attestation at that head means the round is not covered. State the
+launcher exit, the structured status, and the coverage result.
+
+## Phase 4: Handoff
 
 Print:
 
@@ -122,13 +152,15 @@ Print:
 - Reviewed head: <sha>
 - Tier: deep (trigger: <trigger>)
 - Round: <n> (<adversarial | convergence>)
+- Relay: <auto: engines launched and their coverage | session>
 - Refactor pass: <ran | already spent at <sha> | docs-config skip>
 - Findings: <posted/replied/resolved counts>
 - Review depth: <agents run>
 - Classification: <clean | minor | material>
 
 Next local step:
-  Run each declared reviewer that has not attested this head.
+  Run each declared reviewer that has not attested this head — through its
+  launcher in auto mode, or in a fresh terminal in session mode.
   A fix invalidates only the attestations naming the superseded head; a
   reviewer that already attested this head does not re-run.
   The outer runner decides convergence from the exact-head v3 results.
