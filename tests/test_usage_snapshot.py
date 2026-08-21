@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".codex" / "skills" / "critique" / "scripts" / "usage-snapshot.js"
 
 
-def run(*args: str, enabled: bool = True, **env: str) -> dict:
+def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
     environment = dict(os.environ)
     environment.pop("LOOM_REVIEW_TELEMETRY", None)
     environment.pop("CODEX_SESSION_LOG", None)
@@ -43,7 +44,8 @@ def run(*args: str, enabled: bool = True, **env: str) -> dict:
     # Emission never fails the pass that produced the record, so a non-zero
     # exit is itself a defect regardless of what went wrong inside.
     assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
+    payload: dict[str, Any] = json.loads(result.stdout)
+    return payload
 
 
 def meta(cwd: Path, version: str = "0.148.0") -> str:
@@ -90,7 +92,7 @@ def counted(
     The CLI reports session-to-date totals, so a fixture builds a timeline by
     handing successive calls increasing numbers.
     """
-    totals: dict = {
+    totals: dict[str, Any] = {
         "input_tokens": input_tokens,
         "cached_input_tokens": cached,
         "cache_write_input_tokens": cache_write,
@@ -131,7 +133,7 @@ def snapshot(session: Path, tmp_path: Path) -> Path:
     return out
 
 
-def delta(tmp_path: Path, start: Path | None = None, **extra: str) -> dict:
+def delta(tmp_path: Path, start: Path | None = None, **extra: str) -> dict[str, Any]:
     args = ["delta", "--out-dir", str(tmp_path / "out")]
     if start is not None:
         args += ["--start", str(start)]
@@ -140,9 +142,10 @@ def delta(tmp_path: Path, start: Path | None = None, **extra: str) -> dict:
     return run(*args)
 
 
-def tokens_of(payload: dict) -> list[dict]:
+def tokens_of(payload: dict[str, Any]) -> list[dict[str, Any]]:
     assert payload["tokensFile"] is not None
-    return json.loads(Path(payload["tokensFile"]).read_text())
+    records: list[dict[str, Any]] = json.loads(Path(payload["tokensFile"]).read_text())
+    return records
 
 
 def test_gate_off_writes_nothing(tmp_path: Path, session: Path) -> None:
