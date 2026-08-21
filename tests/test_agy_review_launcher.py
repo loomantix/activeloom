@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = ROOT / ".codex/skills/critique/scripts/run-agy-review.sh"
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
+AGY_SURFACE_SHA = "3d7ad7c6d1e088faca88d52490bda1f45ce7e1fd"
 
 
 def _trusted_environment(
@@ -30,7 +31,7 @@ def _trusted_environment(
     fake_git = bin_dir / "git"
     fake_git.write_text(
         "#!/usr/bin/env python3\n"
-        "import sys\n"
+        "import os, pathlib, sys\n"
         "args = sys.argv[1:]\n"
         f"local_head = {local_head!r}\n"
         f"remote_head = {remote_head!r}\n"
@@ -40,6 +41,14 @@ def _trusted_environment(
         "    print(remote_head + '\\trefs/heads/feature')\n"
         "elif args == ['status', '--porcelain']:\n"
         "    pass\n"
+        "elif len(args) >= 4 and args[0] == '-C' and args[2:] == ['rev-parse', '--show-toplevel']:\n"
+        "    print(pathlib.Path(args[1]).parent)\n"
+        "elif len(args) >= 5 and args[0] == '-C' and args[2:] == ['remote', 'get-url', 'origin']:\n"
+        "    print('https://github.com/loomantix/gemini-platform.git')\n"
+        "elif len(args) >= 4 and args[0] == '-C' and args[2:] == ['rev-parse', 'HEAD']:\n"
+        f"    print({AGY_SURFACE_SHA!r})\n"
+        "elif len(args) >= 4 and args[0] == '-C' and args[2:] == ['status', '--porcelain']:\n"
+        "    if os.environ.get('AGY_TEST_SURFACE_DIRTY') == '1': print(' M .agents/skills/critique/SKILL.md')\n"
         "else:\n"
         "    raise SystemExit('unexpected git invocation: ' + ' '.join(args))\n",
         encoding="utf-8",
@@ -177,6 +186,7 @@ def test_launcher_executes_agy_with_pinned_model_and_high_effort(tmp_path: Path)
         "--print-timeout",
         "60m",
     ]
+    assert len(argv) == 15
     assert argv[13] == "--print"
     assert argv[14].startswith("/deepcritique 123\n")
     assert "Continue review on PR #123" in argv[14]
@@ -184,6 +194,7 @@ def test_launcher_executes_agy_with_pinned_model_and_high_effort(tmp_path: Path)
     assert f"Agy relay surface is {surface}" in argv[14]
     assert HEAD in argv[14]
     assert "round 2" in argv[14]
+    assert not {"--continue", "-c", "--conversation", "--prompt-interactive", "-i"}.intersection(argv)
     assert invocation["env"] == {"base": HEAD, "engine": "gemini", "round": "2"}
     assert result.stdout == "review complete\n"
 
@@ -296,6 +307,25 @@ def test_launcher_rejects_incomplete_relay_surface_before_review(tmp_path: Path)
     assert result.returncode == 1
     assert "relay surface is incomplete" in result.stderr
     assert "REVIEW_WORKFLOW.md" in result.stderr
+    assert not argv_file.exists()
+
+
+def test_launcher_rejects_dirty_trusted_surface_before_review(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _ = _fake_agy(tmp_path)
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+        "AGY_TEST_SURFACE_DIRTY": "1",
+    }
+
+    result = subprocess.run(
+        _command(), check=False, capture_output=True, text=True, cwd=ROOT, env=environment
+    )
+
+    assert result.returncode == 1
+    assert "surface checkout must be clean" in result.stderr
     assert not argv_file.exists()
 
 

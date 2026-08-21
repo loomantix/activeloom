@@ -58,13 +58,15 @@ modes silently in the middle of a round.
 - **Auto mode** runs the complete bounded chain. Resolve the effective roster
   first and invoke each missing declared reviewer through its tested launcher;
   never change an in-flight roster implicitly. For a newly declared relay the
-  default direct interactive reviewer is Agy, started only through
+  default direct interactive reviewer engine is `gemini`, launched through the
+  Agy CLI only via
   `.codex/skills/critique/scripts/run-agy-review.sh`. That launcher pins
   `gemini-3.7-flash-high`, literal `--effort high`, accept-edits mode, unattended
   permissions, structured output, and a 60-minute print bound; callers cannot
   supply or override them. It also requires Agy to resolve the current
-  `deepcritique` skill, resolves its real target, and validates the complete Agy
-  relay surface before review. A
+  `deepcritique` skill, resolves its real target, and validates a structurally
+  compatible relay surface from a clean, exact-commit companion checkout before
+  review. A
   consumer may explicitly retain Claude through the tested
   `run-claude-review.sh` launcher, which keeps its literal `--effort low`
   contract. Agy starts a fresh one-shot by omitting continuation flags, but the

@@ -33,6 +33,8 @@ command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "gh is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
+agy_surface_sha="3d7ad7c6d1e088faca88d52490bda1f45ce7e1fd"
+
 current_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 actor="$(gh api user --jq .login)"
 pr_row="$(
@@ -126,9 +128,16 @@ required = [
     surface / "skills/critique/scripts/review-ledger.integrity",
     surface / "skills/refactorpass/SKILL.md",
 ]
-missing = [str(candidate) for candidate in required if not candidate.is_file()]
+missing = [str(candidate) for candidate in required if not candidate.is_file() or candidate.is_symlink()]
 if missing:
     raise SystemExit(f"agy deepcritique relay surface is incomplete: {', '.join(missing)}")
+
+try:
+    package = json.loads((surface / "skills/critique/scripts/package.json").read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    raise SystemExit(f"agy review-ledger package manifest is invalid: {error}")
+if package.get("type") != "module":
+    raise SystemExit("agy review-ledger package manifest must declare type=module")
 
 deep_contract = path.read_text(encoding="utf-8")
 critique_contract = (surface / "skills/critique/SKILL.md").read_text(encoding="utf-8")
@@ -145,6 +154,25 @@ if not surface.is_absolute() or "\n" in surface_text or "\r" in surface_text:
 print(surface_text)
 PY
 )"
+
+agy_surface_repo="$(git -C "$agy_surface_root" rev-parse --show-toplevel)"
+[ "$agy_surface_root" = "$agy_surface_repo/.agents" ] || {
+    echo "agy relay surface must be the .agents directory of its trusted checkout" >&2
+    exit 1
+}
+agy_surface_remote="$(git -C "$agy_surface_repo" remote get-url origin)"
+case "$agy_surface_remote" in
+    https://github.com/loomantix/gemini-platform.git|git@github.com:loomantix/gemini-platform.git) ;;
+    *) echo "agy relay surface has an untrusted Git remote" >&2; exit 1 ;;
+esac
+[ "$(git -C "$agy_surface_repo" rev-parse HEAD)" = "$agy_surface_sha" ] || {
+    echo "agy relay surface is not at the pinned gemini-platform commit $agy_surface_sha" >&2
+    exit 1
+}
+[ -z "$(git -C "$agy_surface_repo" status --porcelain)" ] || {
+    echo "agy relay surface checkout must be clean" >&2
+    exit 1
+}
 
 prompt="/deepcritique ${pr}
 
