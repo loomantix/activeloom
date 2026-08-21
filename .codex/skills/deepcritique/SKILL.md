@@ -49,11 +49,23 @@ when reading a Deep-versus-Lean series. See `.codex/REVIEW_WORKFLOW.md`
 "Pass Telemetry".
 
 Resolve the selected local session mode from repository instructions or the
-user. In handoff mode, if the user asks to continue or resume a review, run
-`local-review-handoff.py show-handoff --engine codex` before resolving the
-round. Continue only when the latest authenticated handoff targets Codex and
-its exact head remains current. If it targets Claude, stop and ask the user to
-start a fresh Claude terminal session.
+user. When the consumer declares no default, ask before running a lane rather
+than assuming one.
+
+Then read the prior pass, per
+`.codex/REVIEW_WORKFLOW.md` "Read the prior pass before every
+review". This read is unconditional — it does not depend on the
+session mode or on the user having said "continue" or "resume". Read every
+`local-review-pass:v3` and `local-review-complete:v3` attestation on the PR,
+their bodies, and the inline v3 threads their fingerprints name; that record,
+not a handoff comment, is the authority on what another engine already found
+here. A `local-review-handoff:v1` comment addressed to Codex is a richer read
+when one exists, and its absence is normal rather than a reason to refuse.
+
+Stop and hand back to the user only when a handoff comment exists and targets
+another engine — that pass is owed and belongs in its own fresh session. Another
+declared reviewer holding no attestation is not a stop: reviewer order within a
+round is a scheduling choice, not a protocol rule.
 
 Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
 when the runner set it, otherwise one past the count of `local-review-pass:v3`

@@ -331,10 +331,15 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     assert "maximum 1000 words" in normalized["ledger"]
     assert "Review-significant config" in normalized["ledger"]
     assert "dependency manifests and lockfiles" in normalized["ledger"]
-    assert (
-        "`attest --threads-file <path> --expected-threads-sha256 <sha256> "
-        "--allowed-heads-file <path>`" in ledger
-    )
+    assert "A standalone pass always has a reachable attestation" in normalized["ledger"]
+    assert "The snapshot flags are optional inputs, not preconditions" in normalized[
+        "ledger"
+    ]
+    assert "Omit both and the helper fetches the threads live from GitHub" in normalized[
+        "ledger"
+    ]
+    assert "--historical-comment-ids-file" in ledger
+    assert "--allowed-heads-file" in ledger
 
     for skill in (
         normalized["deepcritique"],
@@ -369,7 +374,10 @@ def test_local_review_documents_explicit_cross_engine_modes() -> None:
     assert "Handoff mode" in workflow
     assert "run-claude-review.sh" in workflow
     assert "literal `--effort low`" in workflow
-    assert "show-handoff --engine codex" in deepcritique
+    assert "read the prior pass" in deepcritique
+    assert "This read is unconditional" in deepcritique
+    assert "not a handoff comment, is the authority" in deepcritique
+    assert "its absence is normal rather than a reason to refuse" in deepcritique
     # The handoff protocol is engine-specific, so it lives in this engine's
     # REVIEW_WORKFLOW.md. `local-review-ledger.md` is a vendored artifact of
     # @loomantix/review-ledger and must stay byte-identical across every engine

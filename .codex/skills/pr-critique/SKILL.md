@@ -22,6 +22,14 @@ Take the pass telemetry snapshot before reading or classifying anything, per
 and costs like one; leaving it out would make cross-engine review look free. The
 helper is a no-op when telemetry is not enabled for this repository.
 
+Read the prior pass before running any lane, per
+`.codex/REVIEW_WORKFLOW.md` "Read the prior pass before every
+review". On this lane the originating engine has always already
+run, so starting without its `local-review-pass:v3` /
+`local-review-complete:v3` attestation, that attestation's body, and the inline
+v3 threads its fingerprints name means re-deriving what it already posted. Do
+not re-litigate a fingerprint it dispositioned at this head.
+
 This is **not** `deepcritique`. Both are PR-first and use the same thread ledger,
 but `deepcritique` runs the current engine's deep matrix, preceded by `refactorpass`
 on that engine's first pass over the PR. `pr-critique` is the cross-engine relay
