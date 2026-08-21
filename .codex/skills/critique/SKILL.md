@@ -18,11 +18,16 @@ Assess honestly:
 - Has this session been writing/editing the feature about to be critiqued? Long conversation, many file edits, dense planning?
 - Is the conversation about to brush against compaction territory?
 
-If either is yes, stop and tell the user:
+If either is yes, briefly tell the user:
 
-> Your context is heavy from the implementation work. Start a new Codex session and run `critique` (or `deepcritique`) there. `critique deep`'s full matrix especially needs cache headroom and a fresh session makes the chain materially cheaper.
+> This session already contains substantial implementation context. A fresh Codex session may make the review lanes cheaper, but I can continue here if that is the authorized task.
 
-Do not proceed in the current session unless the user explicitly overrides.
+This is cost and quality advice, not a workflow gate. Do not stop, defer the
+authorized task, or require a new session solely because context is heavy or
+compaction is approaching. Continue in the current session when the user has
+already authorized the review or asked you to proceed. Pause only when the user
+requested a fresh-session boundary, the runtime cannot continue safely, or a
+separate-session protocol transition requires another reviewer.
 
 ## Stance Resolution
 
@@ -122,9 +127,9 @@ urgent deferred issues.
 ## Mode
 
 - **Lean**: default. Run the lean two-lane review: code reviewer plus silent failure hunter. This is still an adversarial PR review, not a casual skim.
-- **Deep**: if the user passes `deep` or the change is high-risk. Run the full independent review matrix below. Deep mode is intentionally much heavier than lean mode; do not collapse it into one general review pass.
+- **Deep**: if the user passes `deep` or the diff materially changes high-risk behavior. Run the full independent review matrix below. Incidental proximity to a sensitive domain—for example, a version pin or deployment setting that only references an existing runtime secret—is not enough by itself. Deep mode is intentionally much heavier than lean mode; do not collapse it into one general review pass.
 
-If the diff touches customer/tenant-variable behavior—vendor integrations, per-tenant configuration, prompt/output generation, or data normalization—recommend deep mode. The tenant-coupling lens that catches one customer's values hardcoded into shared logic is intentionally not part of the lean two-lane set.
+If the diff materially changes customer/tenant-variable application behavior—vendor integrations, branching or transformation driven by per-tenant configuration, prompt/output generation, or data normalization—recommend deep mode. A deployment-only value or reference to an existing runtime secret is not enough unless the diff changes how that value is selected, authorized, transformed, exposed, or stored. The tenant-coupling lens that catches one customer's values hardcoded into shared logic is intentionally not part of the lean two-lane set.
 
 ## Lane Execution Ownership
 

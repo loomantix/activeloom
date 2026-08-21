@@ -19,11 +19,16 @@ Assess honestly:
 - Has this session been writing/editing the feature about to be cleaned up? Long conversation, many file edits, dense planning?
 - Is the conversation about to brush against compaction territory?
 
-If either is yes, stop and tell the user:
+If either is yes, briefly tell the user:
 
-> Your context is heavy from the implementation work. Start a new Codex session and run `refactorpass` (and `critique` / `deepcritique`) there. The downstream lanes need cache headroom and a fresh session makes the chain materially cheaper.
+> This session already contains substantial implementation context. A fresh Codex session may make the cleanup and review lanes cheaper, but I can continue here if that is the authorized task.
 
-Do not proceed in the current session unless the user explicitly overrides.
+This is cost and quality advice, not a workflow gate. Do not stop, defer the
+authorized task, or require a new session solely because context is heavy or
+compaction is approaching. Continue in the current session when the user has
+already authorized the cleanup or asked you to proceed. Pause only when the user
+requested a fresh-session boundary, the runtime cannot continue safely, or a
+separate-session protocol transition requires another reviewer.
 
 ## Fix Bias
 
