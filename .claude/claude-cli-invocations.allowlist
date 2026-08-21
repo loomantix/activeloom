@@ -11,3 +11,4 @@
 # inherit the approval; the reviewer has to add a separate entry.
 
 6a803458acd032b7304b57d4a2d3934dd767905fb951cbb60ed970fe6f3e8abd  .claude/skills/agent-loop/scripts/agent-loop.sh  agent-loop.sh: default-worker Claude CLI command builder (--print --permission-mode bypassPermissions, optional --model)
+6952e320b07ead05e4180052432a5b9fcbf752b6ba9a3439b43bdabed8664c40  .claude/skills/critique/scripts/run-agy-review.sh  run-agy-review.sh: unattended Antigravity reviewer launch (gemini-3.7-flash-high, --effort high, --mode accept-edits, --dangerously-skip-permissions, --add-dir <pinned surface>, --output-format json, --print-timeout 60m)
