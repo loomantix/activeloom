@@ -49,6 +49,7 @@
 .codex/skills/critique/scripts/review-ledger.integrity
 .codex/skills/critique/scripts/review-ledger.js
 .codex/skills/critique/scripts/review-ledger.version
+.codex/skills/critique/scripts/usage-snapshot.js
 .codex/skills/critique/scripts/local-review-handoff.py
 .codex/skills/critique/scripts/run-claude-review.sh
 .codex/skills/deepcritique/SKILL.md
