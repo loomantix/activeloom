@@ -37,7 +37,11 @@ Proceed in the current session only after an explicit override.
    and open a draft PR before invoking a review lane.
 4. Require local HEAD, remote head, and PR head to match.
 5. Record the PR number and exact base SHA. Read every prior review thread,
-   including resolved and outdated threads.
+   including resolved and outdated threads. Where any of them carry a v3
+   finding or disposition record, write their comment IDs to an owner-only file
+   before running a lane: that snapshot is the ledger's
+   `--historical-comment-ids-file`, and it is the one attestation input that
+   cannot be reconstructed once this pass has posted its own findings.
 6. Apply the docs/config-only skip, per the ledger's changeset classification.
    On a skip, finalize a clean v3 result using the ledger's wrapper/standalone
    ownership rule, report `docs-config skip`, and exit without spending the
