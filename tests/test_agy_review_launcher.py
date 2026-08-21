@@ -369,7 +369,7 @@ def test_launcher_forwards_termination_to_running_agy(tmp_path: Path) -> None:
     child_pid = int(child_pid_file.read_text(encoding="utf-8"))
 
     os.kill(process.pid, signal.SIGTERM)
-    stdout, stderr = process.communicate(timeout=5)
+    stdout, stderr = process.communicate(timeout=8)
 
     assert process.returncode == 143, (stdout, stderr)
     assert not completed_marker.exists()

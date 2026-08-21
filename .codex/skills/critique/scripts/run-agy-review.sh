@@ -32,6 +32,8 @@ done
 command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "gh is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+command -v setsid >/dev/null 2>&1 || { echo "setsid is required" >&2; exit 1; }
+command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; }
 
 agy_surface_sha="3d7ad7c6d1e088faca88d52490bda1f45ce7e1fd"
 
@@ -70,20 +72,42 @@ forward_signal() {
     local exit_code="$2"
     trap - INT TERM
     if [ -n "$agy_pid" ] && kill -0 "$agy_pid" 2>/dev/null; then
-        kill -s "$signal" "$agy_pid" 2>/dev/null || true
+        kill -s "$signal" -- "-$agy_pid" 2>/dev/null || true
+        for _ in {1..20}; do
+            kill -0 "$agy_pid" 2>/dev/null || break
+            sleep 0.25
+        done
+        if kill -0 "$agy_pid" 2>/dev/null; then
+            kill -KILL -- "-$agy_pid" 2>/dev/null || true
+        fi
         wait "$agy_pid" 2>/dev/null || true
     fi
     exit "$exit_code"
 }
 
+run_agy_managed() {
+    local output_file="$1"
+    local limit="$2"
+    shift 2
+    set +e
+    setsid timeout --signal=TERM --kill-after=5s "$limit" "$agy_review_cli" "$@" >"$output_file" &
+    agy_pid="$!"
+    wait "$agy_pid"
+    local child_exit="$?"
+    agy_pid=""
+    set -e
+    return "$child_exit"
+}
+
 trap 'forward_signal INT 130' INT
 trap 'forward_signal TERM 143' TERM
 
-"$agy_review_cli" \
+run_agy_managed "$skills_file" 2m \
     --model gemini-3.7-flash-high \
     --effort high \
     --output-format json \
-    --print '/skills' >"$skills_file"
+    --print-timeout 90s \
+    --print '/skills'
 
 agy_surface_root="$(python3 - "$skills_file" <<'PY'
 import json
@@ -194,8 +218,8 @@ export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="gemini"
 
-set +e
-"$agy_review_cli" \
+agy_exit=0
+run_agy_managed "$result_file" 61m \
     --model gemini-3.7-flash-high \
     --effort high \
     --mode accept-edits \
@@ -203,12 +227,7 @@ set +e
     --add-dir "$agy_surface_root" \
     --output-format json \
     --print-timeout 60m \
-    --print "$prompt" >"$result_file" &
-agy_pid="$!"
-wait "$agy_pid"
-agy_exit="$?"
-agy_pid=""
-set -e
+    --print "$prompt" || agy_exit="$?"
 
 python3 - "$result_file" "$agy_exit" <<'PY'
 import json
