@@ -1,6 +1,6 @@
 ---
 name: deepcritique
-description: High-fidelity PR-first Codex review chain. Opens or reuses a draft PR, records verified findings inline before fixes, and runs critique deep — preceded by refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use for complex or high-risk changes such as auth, crypto, secrets, data migrations, GitHub Actions, sync tooling, .codex/skills, large refactors, or when the user asks for a deep review.
+description: High-fidelity PR-first Codex review chain. Opens or reuses a draft PR, records verified findings inline before fixes, and runs critique deep — preceded by refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use when the user asks for deep review or for changes that materially alter high-risk behavior such as auth, crypto, secret handling, data migrations, GitHub Actions, sync tooling, .codex/skills, or large refactors.
 ---
 
 # Deep Critique
@@ -14,11 +14,16 @@ Assess honestly:
 - Has this session been writing/editing the feature about to be reviewed? Long conversation, many file edits, dense planning?
 - Is the conversation about to brush against compaction territory?
 
-If either is yes, stop and tell the user:
+If either is yes, briefly tell the user:
 
-> Your context is heavy from the implementation work. Start a new Codex session and run `deepcritique` there. `deepcritique` spawns up to seven review lanes and is the chain that benefits most from cache headroom. A fresh session makes the chain materially cheaper.
+> This session already contains substantial implementation context. A fresh Codex session may make `deepcritique`'s review lanes cheaper, but I can continue here if that is the authorized task.
 
-Do not proceed in the current session unless the user explicitly overrides.
+This is cost and quality advice, not a workflow gate. Do not stop, defer the
+authorized task, or require a new session solely because context is heavy or
+compaction is approaching. Continue in the current session when the user has
+already authorized the review or asked you to proceed. Pause only when the user
+requested a fresh-session boundary, the runtime cannot continue safely, or a
+separate-session protocol transition below requires another reviewer.
 
 ## PR-First Preflight
 
@@ -138,11 +143,24 @@ report only evidence-backed, actionable findings.
 Use this path when the change touches:
 
 - `.codex/skills/**`, `scripts/sync*`, or `.github/workflows/**`
-- authentication, authorization, crypto, secret handling, or sensitive data
+- authentication, authorization, crypto, secret-handling logic, or sensitive-data
+  handling where the diff changes a trust boundary, exposure path, storage,
+  transformation, logging, access control, or failure mode
 - database schema, data shape, migrations, or serialization contracts
 - more than roughly 20 files or 500 net lines
 - an area with recurring incidents
-- customer/tenant-variable behavior such as vendor integrations, per-tenant configuration, prompt/output generation, or data normalization
+- customer/tenant-variable application behavior such as vendor integrations,
+  branching or transformation driven by tenant configuration, prompt/output
+  generation, or data normalization
+
+Classify the behavior the diff changes, not merely the domain or value flowing
+through it. An ordinary version or image pin, deployment-only configuration
+update, environment-variable wiring, or reference to an existing secret does
+not require deep review solely because a sensitive runtime value will be
+supplied during deployment. This exception applies only when the diff does not
+embed, print, transform, authorize, persist, or otherwise change the handling
+of that value and no other deep trigger applies. Use the repository's focused
+validation and normal review path in that case.
 
 ## Handoff
 
