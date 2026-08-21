@@ -407,6 +407,33 @@ def test_launcher_forwards_termination_to_running_agy(
         os.kill(child_pid, 0)
 
 
+def test_launcher_tracks_child_when_signal_precedes_pid_assignment(tmp_path: Path) -> None:
+    race_marker = tmp_path / "race-triggered"
+    bash_env = tmp_path / "bash-env"
+    bash_env.write_text(
+        "set -T\n"
+        "trap 'if [[ $BASH_COMMAND == \"agy_pid=\\\"\\$!\\\"\" ]]; then "
+        "trap - DEBUG; : > \"$AGY_RACE_MARKER\"; kill -HUP \"$$\"; fi' DEBUG\n",
+        encoding="utf-8",
+    )
+    fake_agy, _ = _fake_agy(tmp_path)
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(tmp_path / "argv.json"),
+        "AGY_RACE_MARKER": str(race_marker),
+        "AGY_REVIEW_CLI": str(fake_agy),
+        "BASH_ENV": str(bash_env),
+    }
+
+    result = subprocess.run(
+        _command(), check=False, capture_output=True, text=True, cwd=ROOT, env=environment
+    )
+
+    assert race_marker.exists()
+    assert result.returncode == 129, (result.stdout, result.stderr)
+    assert not list(tmp_path.glob("agy-result-*"))
+
+
 def test_launcher_rejects_untrusted_surface_remote(tmp_path: Path) -> None:
     argv_file = tmp_path / "argv.json"
     fake_agy, _ = _fake_agy(tmp_path)

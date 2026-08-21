@@ -78,17 +78,24 @@ agy_pid=""
 forward_signal() {
     local signal="$1"
     local exit_code="$2"
+    local target_pid="$agy_pid"
     trap - INT TERM HUP
-    if [ -n "$agy_pid" ] && kill -0 "$agy_pid" 2>/dev/null; then
-        kill -s "$signal" -- "-$agy_pid" 2>/dev/null || true
+    # Bash registers an asynchronous job before returning from the launch
+    # command, but a pending trap may run before the following `$!` assignment.
+    # In that narrow window the jobs table is the authoritative PID source.
+    if [ -z "$target_pid" ]; then
+        target_pid="$(jobs -pr | head -n 1)"
+    fi
+    if [ -n "$target_pid" ] && kill -0 "$target_pid" 2>/dev/null; then
+        kill -s "$signal" -- "-$target_pid" 2>/dev/null || true
         for _ in {1..20}; do
-            kill -0 "$agy_pid" 2>/dev/null || break
+            kill -0 "$target_pid" 2>/dev/null || break
             sleep 0.25
         done
-        if kill -0 "$agy_pid" 2>/dev/null; then
-            kill -KILL -- "-$agy_pid" 2>/dev/null || true
+        if kill -0 "$target_pid" 2>/dev/null; then
+            kill -KILL -- "-$target_pid" 2>/dev/null || true
         fi
-        wait "$agy_pid" 2>/dev/null || true
+        wait "$target_pid" 2>/dev/null || true
     fi
     exit "$exit_code"
 }
