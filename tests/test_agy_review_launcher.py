@@ -72,6 +72,9 @@ def _trusted_environment(
         "elif args == ['status', '--porcelain']:\n"
         "    if os.environ.get('AGY_TEST_SURFACE_DIRTY') == '1':\n"
         "        print(' M .agents/skills/critique/SKILL.md')\n"
+        "    if os.environ.get('AGY_TEST_SURFACE_EXCLUDED') == '1':\n"
+        "        if 'core.excludesFile=/dev/null' in global_options:\n"
+        "            print('?? .agents/skills/critique/EXTRA.md')\n"
         "else:\n"
         "    raise SystemExit('unexpected git invocation: ' + ' '.join(args))\n",
         encoding="utf-8",
@@ -409,35 +412,58 @@ def test_launcher_forwards_termination_to_running_agy(
 
 def test_launcher_tracks_child_when_signal_precedes_pid_assignment(tmp_path: Path) -> None:
     race_marker = tmp_path / "race-triggered"
+    child_pid_file = tmp_path / "race-child.pid"
+    completed_marker = tmp_path / "race-child-completed"
     bash_env = tmp_path / "bash-env"
     bash_env.write_text(
         "set -T\n"
         "trap 'if [[ $BASH_COMMAND == \"agy_pid=\\\"\\$!\\\"\" ]]; then "
-        "trap - DEBUG; : > \"$AGY_RACE_MARKER\"; kill -HUP \"$$\"; fi' DEBUG\n",
+        "trap - DEBUG; "
+        "while [[ ! -s \"$AGY_CHILD_PID_FILE\" ]]; do sleep 0.01; done; "
+        ": > \"$AGY_RACE_MARKER\"; kill -HUP \"$$\"; fi' DEBUG\n",
         encoding="utf-8",
     )
-    fake_agy, _ = _fake_agy(tmp_path)
+    fake_agy, surface = _fake_agy(tmp_path)
+    fake_agy.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, time\n"
+        "with open(os.environ['AGY_CHILD_PID_FILE'], 'w', encoding='utf-8') as out:\n"
+        "    out.write(str(os.getpid()))\n"
+        "time.sleep(30)\n"
+        "with open(os.environ['AGY_COMPLETED_MARKER'], 'w', encoding='utf-8') as out:\n"
+        "    out.write('completed')\n",
+        encoding="utf-8",
+    )
     environment = {
         **_trusted_environment(tmp_path),
-        "AGY_ARGV_FILE": str(tmp_path / "argv.json"),
+        "AGY_CHILD_PID_FILE": str(child_pid_file),
+        "AGY_COMPLETED_MARKER": str(completed_marker),
         "AGY_RACE_MARKER": str(race_marker),
         "AGY_REVIEW_CLI": str(fake_agy),
         "BASH_ENV": str(bash_env),
     }
 
-    result = subprocess.run(
-        _command(),
-        check=False,
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        env=environment,
-        preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_DFL),
+    process = subprocess.Popen(
+        _command(), cwd=ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_DFL)
     )
+    try:
+        stdout, stderr = process.communicate(timeout=8)
+    finally:
+        if child_pid_file.exists():
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     assert race_marker.exists()
-    assert result.returncode == 129, (result.stdout, result.stderr)
-    assert not list(tmp_path.glob("agy-result-*"))
+    assert child_pid_file.exists()
+    assert process.returncode == 129, (stdout, stderr)
+    assert not completed_marker.exists()
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(child_pid_file.read_text(encoding="utf-8")), 0)
+    assert surface.exists()
 
 
 def test_launcher_rejects_untrusted_surface_remote(tmp_path: Path) -> None:
@@ -503,7 +529,27 @@ def test_launcher_neutralizes_config_execution_on_the_nominated_surface(tmp_path
     for options in invocations:
         assert "core.fsmonitor=" in options
         assert "core.hooksPath=/dev/null" in options
+        assert "core.excludesFile=/dev/null" in options
         assert "--no-optional-locks" in options
+
+
+def test_launcher_rejects_file_hidden_by_global_excludes(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _ = _fake_agy(tmp_path)
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+        "AGY_TEST_SURFACE_EXCLUDED": "1",
+    }
+
+    result = subprocess.run(
+        _command(), check=False, capture_output=True, text=True, cwd=ROOT, env=environment
+    )
+
+    assert result.returncode == 1
+    assert "surface checkout must be clean" in result.stderr
+    assert not argv_file.exists()
 
 
 def test_launcher_rejects_blank_review_response(tmp_path: Path) -> None:

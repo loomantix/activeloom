@@ -203,7 +203,8 @@ PY
 surface_git() {
     local dir="$1"
     shift
-    git -c core.fsmonitor= -c core.hooksPath=/dev/null --no-optional-locks \
+    git -c core.fsmonitor= -c core.hooksPath=/dev/null \
+        -c core.excludesFile=/dev/null --no-optional-locks \
         -C "$dir" "$@"
 }
 
