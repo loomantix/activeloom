@@ -371,6 +371,8 @@ def test_local_review_documents_explicit_cross_engine_modes() -> None:
     agent_loop_config = (SKILLS_ROOT / "agent-loop/agent-loop.config.template").read_text(
         encoding="utf-8"
     )
+    normalized_workflow = " ".join(workflow.split())
+    normalized_deepcritique = " ".join(deepcritique.split())
     assert "Auto mode" in workflow
     assert "Handoff mode" in workflow
     assert "run-agy-review.sh" in workflow
@@ -378,6 +380,21 @@ def test_local_review_documents_explicit_cross_engine_modes() -> None:
     assert "literal `--effort high`" in workflow
     assert "run-claude-review.sh" in workflow
     assert "literal `--effort low`" in workflow
+    claude_boundary = "Never invoke the raw `claude` CLI directly"
+    launcher_path = ".codex/skills/critique/scripts/run-claude-review.sh"
+    test_only_override = "Do not set `CLAUDE_REVIEW_CLI` outside launcher tests"
+    assert claude_boundary in normalized_workflow
+    assert claude_boundary in normalized_deepcritique
+    assert launcher_path in normalized_workflow
+    assert launcher_path in normalized_deepcritique
+    assert test_only_override in normalized_workflow
+    assert test_only_override in normalized_deepcritique
+    assert normalized_workflow.index(claude_boundary) < normalized_workflow.index(
+        "### Select the local session mode"
+    )
+    assert normalized_deepcritique.index(claude_boundary) < normalized_deepcritique.index(
+        "## Context Window Check"
+    )
     assert "read the prior pass" in deepcritique
     assert "This read is unconditional" in deepcritique
     assert "not a handoff comment, is the authority" in deepcritique

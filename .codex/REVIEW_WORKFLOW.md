@@ -49,6 +49,17 @@ longer need to be chosen between. See "Hosted Reviewers" below.
 
 ## Review Relay
 
+### Claude invocation boundary
+
+This boundary applies before selecting or entering a local session mode. Start
+an independent Claude reviewer only through the synced, tested
+`.codex/skills/critique/scripts/run-claude-review.sh` launcher. Never invoke the
+raw `claude` CLI directly or hand-compose an equivalent command. Never supply
+or override Claude's model, effort, permission, persistence, or output options;
+the launcher owns those settings and pins literal `--effort low`. Do not set
+`CLAUDE_REVIEW_CLI` outside launcher tests. A missing, incompatible, or failed
+launcher is a blocker, not permission to fall back to the raw CLI.
+
 ### Select the local session mode
 
 The local relay has two explicit session modes. A consumer may declare a default;
