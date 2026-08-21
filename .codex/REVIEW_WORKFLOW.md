@@ -59,19 +59,17 @@ modes silently in the middle of a round.
   first and invoke each missing declared reviewer through its tested launcher;
   never change an in-flight roster implicitly. For a newly declared relay the
   default direct interactive reviewer engine is `gemini`, launched through the
-  Agy CLI only via
-  `.codex/skills/critique/scripts/run-agy-review.sh`. That launcher pins
-  `gemini-3.7-flash-high`, literal `--effort high`, accept-edits mode, unattended
-  permissions, structured output, and a 60-minute print bound; callers cannot
-  supply or override them. It also requires Agy to resolve the current
-  `deepcritique` skill, resolves its real target, and validates a structurally
-  compatible relay surface from a clean, exact-commit companion checkout before
-  review. A
-  consumer may explicitly retain Claude through the tested
-  `run-claude-review.sh` launcher, which keeps its literal `--effort low`
+  Agy CLI only via `.codex/skills/critique/scripts/run-agy-review.sh`. That
+  launcher pins `gemini-3.7-flash-high`, literal `--effort high`, accept-edits
+  mode, unattended permissions, structured output, and a 60-minute print bound;
+  callers cannot supply or override them. It also requires Agy to resolve the
+  current `deepcritique` skill, resolves its real target, and validates a
+  structurally compatible relay surface from a clean, exact-commit companion
+  checkout before review. A consumer may explicitly retain Claude through the
+  tested `run-claude-review.sh` launcher, which keeps its literal `--effort low`
   contract. Agy starts a fresh one-shot by omitting continuation flags, but the
-  current CLI has no equivalent of Claude's `--no-session-persistence`; retain the
-  Claude path when local conversation persistence is prohibited. Never
+  current CLI has no equivalent of Claude's `--no-session-persistence`; retain
+  the Claude path when local conversation persistence is prohibited. Never
   hand-compose either CLI command. After the reviewer returns, validate its
   PR-head and ledger evidence and continue the chain until convergence or the
   configured cap. The separate `agent-loop` wrapper remains Codex-then-Claude
@@ -109,9 +107,9 @@ engine in a fresh terminal.
    one read.
 
    How the next reviewer starts is a mode choice, not a protocol rule. Auto
-   mode launches it from the current session through its roster-selected tested launcher and
-   continues when it returns. Handoff mode posts a handoff comment and
-   stops, so the next reviewer begins in a fresh user-started terminal. Both
+   mode launches it from the current session through its roster-selected tested
+   launcher and continues when it returns. Handoff mode posts a handoff comment
+   and stops, so the next reviewer begins in a fresh user-started terminal. Both
    modes carry the same comment/fix/reply/resolve contract, and neither changes
    which commit an attestation names.
 

@@ -35,6 +35,9 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; 
 command -v setsid >/dev/null 2>&1 || { echo "setsid is required" >&2; exit 1; }
 command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; }
 
+# Pinned loomantix/gemini-platform commit whose .agents tree is the only
+# relay surface this launcher will expose to unattended Agy. Bumping it
+# also requires updating AGY_SURFACE_SHA in tests/test_agy_review_launcher.py.
 agy_surface_sha="3d7ad7c6d1e088faca88d52490bda1f45ce7e1fd"
 
 current_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
@@ -102,6 +105,8 @@ run_agy_managed() {
 trap 'forward_signal INT 130' INT
 trap 'forward_signal TERM 143' TERM
 
+# The outer bound stays above --print-timeout so the CLI's own timeout fires
+# first and still writes a structured payload for the parser below.
 run_agy_managed "$skills_file" 2m \
     --model gemini-3.7-flash-high \
     --effort high \
@@ -127,9 +132,8 @@ matches = [row for row in skills if row.get("name") == "deepcritique"]
 if len(matches) != 1:
     raise SystemExit("agy must resolve exactly one deepcritique skill")
 
-display_path = pathlib.Path(str(matches[0].get("path", "")))
 try:
-    path = display_path.resolve(strict=True)
+    path = pathlib.Path(str(matches[0].get("path", ""))).resolve(strict=True)
 except OSError as error:
     raise SystemExit(f"agy deepcritique skill path cannot be resolved: {error}")
 if path.name != "SKILL.md" or path.parent.name != "deepcritique" or any(".bak." in part for part in path.parts):
@@ -219,6 +223,8 @@ export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="gemini"
 
 agy_exit=0
+# 61m outer bound against the 60m --print-timeout below, for the same reason as
+# the skill preflight: let Agy time out and report rather than be killed.
 run_agy_managed "$result_file" 61m \
     --model gemini-3.7-flash-high \
     --effort high \
