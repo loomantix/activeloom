@@ -5,6 +5,24 @@ description: High-fidelity PR-first Codex review chain. Opens or reuses a draft 
 
 # Deep Critique
 
+## Mandatory Claude Launcher Boundary
+
+Read and apply this boundary before any preflight, lane, or cross-engine
+transition. Whenever this skill or its caller starts the independent Claude
+reviewer, invoke only:
+
+```text
+.codex/skills/critique/scripts/run-claude-review.sh
+```
+
+Never invoke the raw `claude` CLI directly, through a hand-composed shell
+command, or through a replacement wrapper. Never supply or override Claude's
+model, effort, permission, persistence, or output options; the tested launcher
+owns those settings and pins literal `--effort low`. Do not set
+`CLAUDE_REVIEW_CLI` outside launcher tests. If the launcher is missing, rejects
+the exact-head preflight, or fails, stop and report the blocker. Do not fall
+back to a direct Claude invocation.
+
 ## Context Window Check
 
 Run this check before anything else. `deepcritique` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `critique deep` (six core independent review lanes, plus a conditional tenant-coupling lane). When subagents/delegation are available, the lanes run in parallel, each inheriting cache state from this session; when subagents are not available they run as serial local passes against the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.
