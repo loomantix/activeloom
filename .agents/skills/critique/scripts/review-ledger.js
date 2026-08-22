@@ -5,7 +5,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.1.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.3.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -62,6 +62,49 @@ var PASS_V3_RE = /^<!-- local-review-pass:v3 engine=(?<engine>codex|claude|gemin
 var COMPLETE_V3_RE = /^<!-- local-review-complete:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) base=(?<base>[0-9a-f]{40}) before=(?<before>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) classification=(?<classification>minor|material) fingerprints=(?<fingerprints>[A-Za-z0-9._:/,-]*) result-sha256=(?<result_sha>[0-9a-f]{64}) -->$/m;
 var FINDING_V1_RE = /^<!-- local-review:v1 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) -->$/m;
 var DISPOSITION_V1_RE = /^<!-- local-review-disposition:v1 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) outcome=(?<outcome>fixed|dismissed|deferred) -->$/m;
+var TELEMETRY_VERSION = 1;
+var TELEMETRY_MARKER_PREFIX = "<!-- local-review-telemetry:";
+var TELEMETRY_V1_MARKER = "<!-- local-review-telemetry:v1 -->";
+var OPEN_TOKEN_RE = /^[a-z0-9-]+$/;
+var PROVIDER_BUCKET_KEY_RE = /^[a-z0-9_]+$/;
+var UTC_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+var REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+var TELEMETRY_PASS_TYPES = [
+  "review",
+  "refactor",
+  "hosted"
+];
+var TELEMETRY_REVIEW_TIERS = [
+  "lean",
+  "deep"
+];
+var TELEMETRY_TRIGGERS = [
+  "autonomous",
+  "interactive"
+];
+var TELEMETRY_STANCES = [
+  "adversarial",
+  "convergence"
+];
+var TELEMETRY_STATUSES = [
+  "clean",
+  "changed",
+  "blocked",
+  "skipped"
+];
+var TELEMETRY_TOKEN_SOURCES = [
+  "session-log-delta",
+  "stream-json",
+  "unscoped-session",
+  "unavailable"
+];
+var CANONICAL_TOKEN_BUCKETS = [
+  "input",
+  "output",
+  "cacheRead",
+  "cacheWrite",
+  "reasoning"
+];
 
 // src/errors.ts
 var LedgerError = class extends Error {
@@ -323,14 +366,14 @@ function execFailureDetail(error) {
   return execError.stderr?.trim() || "no diagnostic returned";
 }
 var DefaultGitHubRunner = class {
-  actor = null;
+  actorOverride = null;
+  cachedActor = null;
   constructor(customActor) {
-    if (customActor) {
-      this.actor = requireToken(customActor, "actor");
-    }
+    this.setActor(customActor ?? null);
   }
   setActor(actor) {
-    this.actor = actor ? requireToken(actor, "actor") : null;
+    this.actorOverride = actor ? requireToken(actor, "actor") : null;
+    this.cachedActor = null;
   }
   runGh(args, payload) {
     const command = "gh";
@@ -353,11 +396,22 @@ var DefaultGitHubRunner = class {
     }
   }
   currentActor() {
-    if (this.actor !== null) {
-      return this.actor;
+    this.cachedActor ??= this.liveActor();
+    return this.cachedActor;
+  }
+  /**
+   * Resolve the actor bypassing the cache.
+   *
+   * An explicit pin outranks the session, so an `actorOverride` is returned
+   * without a lookup. That is deliberate, and it means a runner constructed
+   * with an actor performs no live check at all — seeding an actor disables
+   * rotation detection.
+   */
+  liveActor() {
+    if (this.actorOverride !== null) {
+      return this.actorOverride;
     }
-    this.actor = resolveLoginOrFail(this.runGh(["api", "user"]));
-    return this.actor;
+    return resolveLoginOrFail(this.runGh(["api", "user"]));
   }
   gitCompare(repo, before, after) {
     const raw = this.runGh([
@@ -461,11 +515,22 @@ function currentActor() {
     }
     login = defaultActor;
   }
+  return assertActorPins(login);
+}
+function assertActorPins(login, expected) {
   if (!login) {
     fail("GitHub returned an empty authenticated user");
   }
-  const expected = process.env[EXPECTED_ACTOR_ENV];
-  if (expected && login !== expected) {
+  const rawEnvironmentActor = process.env[EXPECTED_ACTOR_ENV];
+  if (rawEnvironmentActor !== void 0) {
+    const environmentActor = requireToken(rawEnvironmentActor, "actor");
+    if (login !== environmentActor) {
+      fail(
+        `authenticated GitHub actor changed: expected ${environmentActor}, found ${login}`
+      );
+    }
+  }
+  if (expected !== void 0 && requireToken(expected, "actor") !== login) {
     fail(
       `authenticated GitHub actor changed: expected ${expected}, found ${login}`
     );
@@ -473,16 +538,17 @@ function currentActor() {
   return login;
 }
 function assertActor(expected) {
-  const actor = currentActor();
-  if (expected !== void 0 && requireToken(expected, "actor") !== actor) {
-    fail(
-      `authenticated GitHub actor changed: expected ${expected}, found ${actor}`
-    );
+  return assertActorPins(currentActor(), expected);
+}
+function assertLiveActor(expected) {
+  if (!activeRunner.liveActor && activeRunner.currentActor) {
+    fail("GitHub runner cannot re-resolve the live authenticated actor");
   }
-  return actor;
+  const actor = activeRunner.liveActor ? activeRunner.liveActor() : resolveLoginOrFail(runGh(["api", "user"]));
+  return assertActorPins(actor, expected);
 }
 function authenticatedRows(rows, options) {
-  const actor = currentActor();
+  const actor = options?.actor === void 0 ? currentActor() : assertLiveActor(options.actor);
   return rows.filter((row) => {
     const user = row["user"];
     const author = row["author"];
@@ -607,15 +673,22 @@ function getReviewComments(repo, pr) {
   const rows = flattenPages(pages, "review-comments");
   return authenticatedRows(rows);
 }
-function getIssueComments(repo, pr) {
+function getIssueComments(repo, pr, expectedActor) {
+  if (expectedActor === void 0) {
+    return authenticatedRows(getAllIssueComments(repo, pr));
+  }
+  const actor = assertLiveActor(expectedActor);
+  const rows = getAllIssueComments(repo, pr);
+  return authenticatedRows(rows, { actor });
+}
+function getAllIssueComments(repo, pr) {
   const pages = jsonOutput([
     "api",
     "--paginate",
     "--slurp",
     `repos/${repo}/issues/${pr}/comments?per_page=100`
   ]);
-  const rows = flattenPages(pages, "PR-comments");
-  return authenticatedRows(rows);
+  return flattenPages(pages, "PR-comments");
 }
 function verifyComment(repo, commentId, expectedBody) {
   verifyOwnedComment(
@@ -625,18 +698,23 @@ function verifyComment(repo, commentId, expectedBody) {
     "review comment"
   );
 }
-function verifyIssueComment(repo, commentId, expectedBody) {
+function verifyIssueComment(repo, commentId, expectedBody, expectedActor) {
   verifyOwnedComment(
     `repos/${repo}/issues/comments/${commentId}`,
     commentId,
     expectedBody,
-    "PR comment"
+    "PR comment",
+    expectedActor
   );
 }
-function verifyOwnedComment(endpoint, commentId, expectedBody, label) {
+function verifyOwnedComment(endpoint, commentId, expectedBody, label, expectedActor) {
+  const actor = expectedActor === void 0 ? assertActor() : assertLiveActor(expectedActor);
   const response = jsonOutput(["api", endpoint]);
+  if (expectedActor !== void 0) {
+    assertLiveActor(actor);
+  }
   const user = response["user"] ?? response["author"];
-  if (typeof response !== "object" || response === null || response["body"] !== expectedBody || typeof user !== "object" || user === null || user.login !== currentActor()) {
+  if (typeof response !== "object" || response === null || response["body"] !== expectedBody || typeof user !== "object" || user === null || user.login !== actor) {
     fail(`could not verify ${label} ${commentId} after posting`);
   }
 }
@@ -661,7 +739,7 @@ function findMatchingAttestation(rows, engine, round, body) {
   return row["id"];
 }
 function issueCommentExists(repo, pr, commentId) {
-  return getIssueComments(repo, pr).some((row) => row["id"] === commentId);
+  return getAllIssueComments(repo, pr).some((row) => row["id"] === commentId);
 }
 function deleteIssueComment(repo, pr, commentId) {
   try {
@@ -1130,6 +1208,217 @@ function rowsHaveHistoricalMarkers(rows) {
     }
     return PSEUDO_V3_RE.test(body);
   });
+}
+
+// src/effect.ts
+var DOCS_CONFIG_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".md",
+  ".mdx",
+  ".txt",
+  ".rst",
+  ".yml",
+  ".yaml",
+  ".json",
+  ".toml",
+  ".ini",
+  ".csv"
+]);
+var DOCS_CONFIG_BASENAMES = /* @__PURE__ */ new Set([
+  "LICENSE",
+  "NOTICE",
+  "CHANGELOG",
+  "README",
+  ".gitignore",
+  ".gitattributes",
+  ".env.example"
+]);
+var PROMPT_SURFACE_RE = /(^|\/)\.(claude|codex|agents)\//;
+var EXECUTING_PATH_RES = [
+  /(^|\/)\.github\/workflows\//,
+  /(^|\/)\.github\/actions\//,
+  /(^|\/)CODEOWNERS$/,
+  /(^|\/)package\.json$/,
+  /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$/
+];
+var DOCS_DIR_RE = /(^|\/)docs\//;
+var TEST_PATH_RES = [
+  /(^|\/)__tests__\//,
+  /(^|\/)tests?\//,
+  /(^|\/)spec\//,
+  /\.(test|spec)\.[cm]?[jt]sx?$/,
+  /(^|\/)test_[^/]+\.py$/,
+  /_test\.(go|py|rb)$/
+];
+var COMMENT_SYNTAX = /* @__PURE__ */ new Map([
+  [".ts", { line: ["//"], block: [["/*", "*/"]] }],
+  [".tsx", { line: ["//"], block: [["/*", "*/"]] }],
+  [".js", { line: ["//"], block: [["/*", "*/"]] }],
+  [".jsx", { line: ["//"], block: [["/*", "*/"]] }],
+  [".mjs", { line: ["//"], block: [["/*", "*/"]] }],
+  [".cjs", { line: ["//"], block: [["/*", "*/"]] }],
+  [".go", { line: ["//"], block: [["/*", "*/"]] }],
+  [".rs", { line: ["//"], block: [["/*", "*/"]] }],
+  [".java", { line: ["//"], block: [["/*", "*/"]] }],
+  [".kt", { line: ["//"], block: [["/*", "*/"]] }],
+  [".swift", { line: ["//"], block: [["/*", "*/"]] }],
+  [".c", { line: ["//"], block: [["/*", "*/"]] }],
+  [".h", { line: ["//"], block: [["/*", "*/"]] }],
+  [".cpp", { line: ["//"], block: [["/*", "*/"]] }],
+  [".cs", { line: ["//"], block: [["/*", "*/"]] }],
+  [".tf", { line: ["#", "//"], block: [["/*", "*/"]] }],
+  [".tfvars", { line: ["#", "//"], block: [["/*", "*/"]] }],
+  [".hcl", { line: ["#", "//"], block: [["/*", "*/"]] }],
+  [".py", { line: ["#"], block: [] }],
+  [".rb", { line: ["#"], block: [] }],
+  [".sh", { line: ["#"], block: [] }],
+  [".bash", { line: ["#"], block: [] }],
+  [".sql", { line: ["--"], block: [["/*", "*/"]] }]
+]);
+function extensionOf(path) {
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  return dot <= 0 ? "" : base.slice(dot).toLowerCase();
+}
+function basenameOf(path) {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+function isPromptSurface(path) {
+  return PROMPT_SURFACE_RE.test(`/${path}`);
+}
+function isExecutingPath(path) {
+  return EXECUTING_PATH_RES.some((pattern) => pattern.test(`/${path}`));
+}
+function isDocsOrConfig(path) {
+  if (isPromptSurface(path) || isExecutingPath(path)) {
+    return false;
+  }
+  if (DOCS_DIR_RE.test(`/${path}`) && !COMMENT_SYNTAX.has(extensionOf(path))) {
+    return true;
+  }
+  const base = basenameOf(path);
+  if (DOCS_CONFIG_BASENAMES.has(base)) {
+    return true;
+  }
+  return DOCS_CONFIG_EXTENSIONS.has(extensionOf(path));
+}
+function isTestPath(path) {
+  if (isPromptSurface(path) || isExecutingPath(path)) {
+    return false;
+  }
+  return TEST_PATH_RES.some((pattern) => pattern.test(`/${path}`));
+}
+function classifyLine(text, syntax, inBlock) {
+  let rest = text.trim();
+  if (inBlock) {
+    const close = syntax.block[0]?.[1];
+    if (close === void 0) {
+      return { inert: false, inBlock: false };
+    }
+    const end = rest.indexOf(close);
+    if (end === -1) {
+      return { inert: true, inBlock: true };
+    }
+    rest = rest.slice(end + close.length).trim();
+    if (rest === "") {
+      return { inert: true, inBlock: false };
+    }
+    return { inert: false, inBlock: false };
+  }
+  if (rest === "") {
+    return { inert: true, inBlock: false };
+  }
+  if (syntax.line.some((marker) => rest.startsWith(marker))) {
+    return { inert: true, inBlock: false };
+  }
+  for (const [open, close] of syntax.block) {
+    if (!rest.startsWith(open)) {
+      continue;
+    }
+    const end = rest.indexOf(close, open.length);
+    if (end === -1) {
+      return { inert: true, inBlock: true };
+    }
+    const tail = rest.slice(end + close.length).trim();
+    return { inert: tail === "", inBlock: false };
+  }
+  return { inert: false, inBlock: false };
+}
+function isCommentOnlyPatch(patch, syntax) {
+  let leftBlock = false;
+  let rightBlock = false;
+  let inHunk = false;
+  for (const raw of patch.split(/\r?\n/)) {
+    if (raw.startsWith("@@")) {
+      inHunk = true;
+      leftBlock = false;
+      rightBlock = false;
+      continue;
+    }
+    if (!inHunk || raw.startsWith("\\ No newline")) {
+      continue;
+    }
+    const prefix = raw.slice(0, 1);
+    const text = raw.slice(1);
+    if (prefix === "-") {
+      const result = classifyLine(text, syntax, leftBlock);
+      leftBlock = result.inBlock;
+      if (!result.inert) {
+        return false;
+      }
+    } else if (prefix === "+") {
+      const result = classifyLine(text, syntax, rightBlock);
+      rightBlock = result.inBlock;
+      if (!result.inert) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+function classifyRangeEffect(before, after) {
+  if (before === after) {
+    return "non-behavioral";
+  }
+  const runner = getGitHubRunner();
+  if (!runner.runGit) {
+    return "behavioral";
+  }
+  const status = runner.runGit(["diff", "--name-status", "--no-renames", `${before}..${after}`]).trim();
+  if (status === "") {
+    return "non-behavioral";
+  }
+  const paths = [];
+  for (const row of status.split(/\r?\n/)) {
+    if (row === "") {
+      continue;
+    }
+    const [code, path] = row.split("	", 2);
+    if (code === void 0 || path === void 0 || !/^[AMD]$/.test(code)) {
+      return "behavioral";
+    }
+    paths.push(path);
+  }
+  for (const path of paths) {
+    if (isDocsOrConfig(path) || isTestPath(path)) {
+      continue;
+    }
+    const syntax = COMMENT_SYNTAX.get(extensionOf(path));
+    if (syntax === void 0) {
+      return "behavioral";
+    }
+    const patch = runner.runGit([
+      "diff",
+      "--unified=0",
+      "--no-renames",
+      `${before}..${after}`,
+      "--",
+      path
+    ]);
+    if (!isCommentOnlyPatch(patch, syntax)) {
+      return "behavioral";
+    }
+  }
+  return "non-behavioral";
 }
 
 // src/diff.ts
@@ -1768,8 +2057,8 @@ function verifyResultEvidence(args, threads, options) {
   if (evidence.length === 0) {
     fail("changed review results require ledger evidence");
   }
-  if (evidence.some(([, , hasMajorFix]) => hasMajorFix) && data.classification !== "material") {
-    fail("fixed blocking or major findings require material classification");
+  if (data.classification === "minor" && classifyRangeEffect(args.before, resultHead(args)) === "behavioral") {
+    fail("minor classification requires a non-behavioral change range");
   }
   if (!evidence.some(([, hasFix]) => hasFix)) {
     fail("changed review results require a fixed ledger finding");
@@ -1820,8 +2109,8 @@ function writeResult(params) {
   if (changed && params.round >= 3 && dispositions.some(([, , , hasNonblockingFix]) => hasNonblockingFix)) {
     fail("convergence review results cannot fix non-blocking findings");
   }
-  if (changed && params.classification !== "material" && dispositions.some(([, , hasMajorFix]) => hasMajorFix)) {
-    fail("fixed blocking or major findings require material classification");
+  if (changed && params.classification === "minor" && classifyRangeEffect(params.before, params.head) === "behavioral") {
+    fail("minor classification requires a non-behavioral change range");
   }
   const value = {
     version: PROTOCOL_VERSION,
@@ -2355,6 +2644,1098 @@ function verifyLedger(params) {
   return { actor, dispositions: matched.length, verified: true };
 }
 
+// src/changeset.ts
+var CHANGESET_CLASSIFIER_VERSION = 1;
+var DEFAULT_PROMPT_SURFACES = [
+  ".claude/",
+  ".codex/",
+  ".agents/",
+  ".gemini/",
+  ".github/copilot-instructions.md",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md"
+];
+var GENERATED_BASENAMES = /* @__PURE__ */ new Set([
+  "pnpm-lock.yaml",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "bun.lockb",
+  "cargo.lock",
+  "poetry.lock",
+  "uv.lock",
+  "gemfile.lock",
+  "composer.lock",
+  "go.sum",
+  "flake.lock",
+  "podfile.lock",
+  "pubspec.lock"
+]);
+var GENERATED_PREFIXES = [
+  "dist/",
+  "build/",
+  "vendor/",
+  "node_modules/",
+  "target/debug/",
+  "target/release/"
+];
+var GENERATED_SEGMENTS = ["/dist/", "/build/", "/vendor/"];
+var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
+  "package.json",
+  "pnpm-workspace.yaml",
+  "lerna.json",
+  "turbo.json",
+  "nx.json",
+  "pyproject.toml",
+  "setup.py",
+  "setup.cfg",
+  "cargo.toml",
+  "go.mod",
+  "gemfile",
+  "podfile",
+  "pubspec.yaml",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "composer.json",
+  "dockerfile",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  "makefile",
+  "justfile",
+  "procfile",
+  ".gitlab-ci.yml",
+  ".platform-config.yml"
+]);
+var CONFIG_PREFIXES = [
+  ".github/workflows/",
+  ".github/actions/",
+  "helm/",
+  "charts/",
+  "k8s/",
+  "kubernetes/",
+  "deploy/",
+  "terraform/",
+  "infra/",
+  "migrations/",
+  "db/migrations/",
+  "prisma/"
+];
+var CONFIG_SEGMENTS = ["/migrations/", "/helm/"];
+var CONFIG_EXTENSIONS = /* @__PURE__ */ new Set([
+  "tf",
+  "tfvars",
+  "sql",
+  "prisma",
+  "graphql",
+  "gql",
+  "proto"
+]);
+var DOCS_BASENAMES = /* @__PURE__ */ new Set([
+  "license",
+  "license.md",
+  "license.txt",
+  "notice",
+  "changelog",
+  "changelog.md",
+  "readme",
+  "readme.md",
+  "authors",
+  "codeowners",
+  ".gitignore",
+  ".gitattributes",
+  ".prettierignore",
+  ".npmignore",
+  ".editorconfig",
+  ".env.example"
+]);
+var DOCS_EXTENSIONS = /* @__PURE__ */ new Set([
+  "md",
+  "mdx",
+  "txt",
+  "rst",
+  "adoc"
+]);
+var DOCS_PREFIXES = ["docs/", "handbook/"];
+var DOCS_SEGMENTS = ["/docs/", "/__snapshots__/"];
+var TEST_SEGMENTS = [
+  "/__tests__/",
+  "/tests/",
+  "/test/",
+  "/spec/"
+];
+var TEST_PREFIXES = [
+  "__tests__/",
+  "tests/",
+  "test/",
+  "spec/",
+  "e2e/"
+];
+var TEST_BASENAMES = /* @__PURE__ */ new Set(["conftest.py"]);
+var LANGUAGE_BY_EXTENSION = {
+  ts: "ts",
+  tsx: "tsx",
+  js: "js",
+  jsx: "jsx",
+  mjs: "js",
+  cjs: "js",
+  py: "py",
+  rs: "rs",
+  go: "go",
+  java: "java",
+  kt: "kt",
+  kts: "kt",
+  swift: "swift",
+  rb: "rb",
+  cs: "cs",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  cc: "cpp",
+  cxx: "cpp",
+  hpp: "cpp",
+  sh: "sh",
+  bash: "sh",
+  sql: "sql",
+  tf: "tf",
+  tfvars: "tf",
+  prisma: "prisma",
+  graphql: "graphql",
+  gql: "graphql",
+  proto: "proto",
+  yml: "yaml",
+  yaml: "yaml",
+  json: "json",
+  toml: "toml",
+  md: "md",
+  mdx: "md",
+  vue: "vue",
+  svelte: "svelte",
+  dart: "dart",
+  php: "php",
+  scala: "scala"
+};
+function normalizePath(path) {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+function basename(path) {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+function extensionOf2(path) {
+  const name = basename(path);
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) {
+    return "";
+  }
+  return name.slice(dot + 1).toLowerCase();
+}
+function hasPrefix(path, prefixes) {
+  return prefixes.some((prefix) => path.startsWith(prefix));
+}
+function hasSegment(path, segments) {
+  return segments.some((segment) => path.includes(segment));
+}
+function isGenerated(path, name) {
+  return GENERATED_BASENAMES.has(name) || hasPrefix(path, GENERATED_PREFIXES) || hasSegment(path, GENERATED_SEGMENTS) || /\.min\.(js|css)$/.test(name) || /\.bundle\.(js|mjs|cjs)$/.test(name) || /\.generated\.[^.]+$/.test(name) || /\.snap$/.test(name) || /\.pb\.go$/.test(name) || /_pb2(_grpc)?\.py$/.test(name) || /\.g\.dart$/.test(name);
+}
+function isTest(path, name) {
+  return TEST_BASENAMES.has(name) || hasPrefix(path, TEST_PREFIXES) || hasSegment(path, TEST_SEGMENTS) || /\.(test|spec)\.[^.]+$/.test(name) || /_test\.(go|py|rb)$/.test(name);
+}
+function isFixture(path, name) {
+  return /\.fixture\.[^.]+$/.test(name) || path.startsWith("fixtures/") || path.includes("/fixtures/");
+}
+function isConfig(path, name, extension) {
+  return CONFIG_BASENAMES.has(name) || CONFIG_EXTENSIONS.has(extension) || hasPrefix(path, CONFIG_PREFIXES) || hasSegment(path, CONFIG_SEGMENTS) || /^dockerfile(\.|$)/.test(name) || /^tsconfig(\.[^.]+)?\.json$/.test(name) || /^requirements(-[^.]+)?\.txt$/.test(name);
+}
+function isDocs(path, name, extension) {
+  return DOCS_BASENAMES.has(name) || DOCS_EXTENSIONS.has(extension) || hasPrefix(path, DOCS_PREFIXES) || hasSegment(path, DOCS_SEGMENTS);
+}
+function classifyPath(rawPath, options) {
+  const path = normalizePath(rawPath);
+  const name = basename(path).toLowerCase();
+  const extension = extensionOf2(path);
+  const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
+  const language = LANGUAGE_BY_EXTENSION[extension] ?? null;
+  const classify = (cls, reviewSignificant) => ({ path, class: cls, reviewSignificant, language });
+  if (isGenerated(path, name)) {
+    return classify("generated", GENERATED_BASENAMES.has(name));
+  }
+  if (isTest(path, name)) {
+    return classify("test", true);
+  }
+  if (promptSurfaces.some(
+    (surface) => path === surface || surface.endsWith("/") && path.startsWith(surface) || path.endsWith(`/${surface}`)
+  )) {
+    return classify("app", true);
+  }
+  if (isFixture(path, name)) {
+    return classify("docsConfig", false);
+  }
+  if (isConfig(path, name, extension)) {
+    return classify("app", true);
+  }
+  if (isDocs(path, name, extension)) {
+    return classify("docsConfig", false);
+  }
+  return classify("app", true);
+}
+function emptyChangeset() {
+  return {
+    classifierVersion: CHANGESET_CLASSIFIER_VERSION,
+    reviewSignificantFiles: 0,
+    files: { app: 0, test: 0, docsConfig: 0, generated: 0 },
+    linesChanged: {
+      app: 0,
+      test: 0,
+      comment: null,
+      docsConfig: 0,
+      generated: 0,
+      blank: 0
+    },
+    linesByLanguage: {}
+  };
+}
+function classifyFiles(files, options) {
+  const changeset = emptyChangeset();
+  const classifications = [];
+  for (const file of files) {
+    const classification = classifyPath(file.path, options);
+    classifications.push(classification);
+    if (classification.reviewSignificant) {
+      changeset.reviewSignificantFiles += 1;
+    }
+    changeset.files[classification.class] += 1;
+    if (!Number.isSafeInteger(file.added) || file.added < 0 || !Number.isSafeInteger(file.deleted) || file.deleted < 0) {
+      fail(`changed file ${file.path} reports an invalid churn count`);
+    }
+    const churn = file.added + file.deleted;
+    if (!Number.isSafeInteger(churn)) {
+      fail(`changed file ${file.path} reports an invalid churn total`);
+    }
+    const blank = file.blank ?? 0;
+    if (!Number.isSafeInteger(blank) || blank < 0 || blank > churn) {
+      fail(`changed file ${file.path} reports an invalid blank count`);
+    }
+    const counted = churn - blank;
+    changeset.linesChanged.blank += blank;
+    changeset.linesChanged[classification.class] += counted;
+    if (classification.class !== "generated" && classification.language) {
+      const key = classification.language;
+      changeset.linesByLanguage[key] = (changeset.linesByLanguage[key] ?? 0) + counted;
+    }
+  }
+  return {
+    changeset,
+    classifications,
+    reviewSignificantFiles: changeset.reviewSignificantFiles,
+    skip: changeset.reviewSignificantFiles === 0
+  };
+}
+function unquotePath(raw) {
+  if (!raw.startsWith('"') || !raw.endsWith('"')) {
+    return raw;
+  }
+  const inner = raw.slice(1, -1);
+  const bytes = [];
+  const simple = {
+    n: 10,
+    t: 9,
+    r: 13,
+    '"': 34,
+    "\\": 92
+  };
+  for (let i = 0; i < inner.length; i++) {
+    const char = inner[i];
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char, "utf8"));
+      continue;
+    }
+    const next = inner[i + 1];
+    if (next === void 0) {
+      bytes.push(92);
+      continue;
+    }
+    const octal = inner.slice(i + 1, i + 4);
+    if (/^[0-7]{3}$/.test(octal)) {
+      bytes.push(parseInt(octal, 8));
+      i += 3;
+      continue;
+    }
+    const mapped = simple[next];
+    if (mapped === void 0) {
+      bytes.push(...Buffer.from(next, "utf8"));
+    } else {
+      bytes.push(mapped);
+    }
+    i += 1;
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+function headerPath(rest) {
+  const quoted = /^("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*")$/.exec(rest);
+  if (quoted) {
+    return stripSide(quoted[2]);
+  }
+  const splits = [];
+  let split = rest.indexOf(" b/");
+  while (split !== -1) {
+    splits.push(split);
+    split = rest.indexOf(" b/", split + 1);
+  }
+  if (splits.length !== 1) {
+    return null;
+  }
+  return stripSide(rest.slice(splits[0] + 1));
+}
+function stripSide(raw) {
+  if (raw === "/dev/null") {
+    return null;
+  }
+  const unquoted = unquotePath(raw);
+  return unquoted.replace(/^[ab]\//, "");
+}
+function markerPath(raw) {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('"')) {
+    const quoted = /^("(?:[^"\\]|\\.)*")/.exec(trimmed);
+    return quoted ? stripSide(quoted[1]) : null;
+  }
+  return stripSide(trimmed.split("	", 1)[0]);
+}
+function parseDiffPatch(patch) {
+  const files = [];
+  let current = null;
+  let inHunk = false;
+  let headerComplete = false;
+  let currentFromGit = false;
+  let oldLinesRemaining = 0;
+  let newLinesRemaining = 0;
+  const push = () => {
+    if (current !== null) {
+      if (!headerComplete) {
+        fail("unified diff contains an incomplete file header");
+      }
+      files.push(current);
+    }
+  };
+  const lines = patch.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index++) {
+    const rawLine = lines[index];
+    if (rawLine.startsWith("diff --git ")) {
+      push();
+      current = {
+        path: headerPath(rawLine.slice("diff --git ".length).trim()) ?? "",
+        added: 0,
+        deleted: 0,
+        blank: 0
+      };
+      inHunk = false;
+      headerComplete = true;
+      currentFromGit = true;
+      continue;
+    }
+    if (!inHunk && !currentFromGit && rawLine.startsWith("--- ") && lines[index + 1]?.startsWith("+++ ")) {
+      if (current !== null) {
+        push();
+      }
+      const left = markerPath(rawLine.slice(4));
+      const right = markerPath(lines[index + 1].slice(4));
+      current = { path: right ?? left ?? "", added: 0, deleted: 0, blank: 0 };
+      headerComplete = true;
+      currentFromGit = false;
+      index += 1;
+      continue;
+    }
+    if (current === null) {
+      continue;
+    }
+    if (!inHunk && rawLine.startsWith("--- ")) {
+      const left = stripSide(rawLine.slice(4).trim());
+      if (left !== null) {
+        current.path = left;
+      }
+      continue;
+    }
+    if (!inHunk && rawLine.startsWith("+++ ")) {
+      const right = markerPath(rawLine.slice(4));
+      if (right !== null) {
+        current.path = right;
+      }
+      headerComplete = true;
+      continue;
+    }
+    if (rawLine.startsWith("@@")) {
+      const range = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(rawLine);
+      if (!range) {
+        fail("unified diff contains an unreadable hunk header");
+      }
+      oldLinesRemaining = Number(range[1] ?? "1");
+      newLinesRemaining = Number(range[2] ?? "1");
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk || rawLine.startsWith("\\ No newline")) {
+      continue;
+    }
+    const prefix = rawLine.slice(0, 1);
+    if (prefix === " ") {
+      oldLinesRemaining -= 1;
+      newLinesRemaining -= 1;
+    } else if (prefix === "+") {
+      newLinesRemaining -= 1;
+    } else if (prefix === "-") {
+      oldLinesRemaining -= 1;
+    } else {
+      continue;
+    }
+    if (prefix === "+") {
+      current.added += 1;
+    } else if (prefix === "-") {
+      current.deleted += 1;
+    }
+    if ((prefix === "+" || prefix === "-") && rawLine.slice(1).trim() === "") {
+      current.blank = (current.blank ?? 0) + 1;
+    }
+    if (oldLinesRemaining < 0 || newLinesRemaining < 0) {
+      fail("unified diff hunk contains more lines than its header declares");
+    }
+    inHunk = oldLinesRemaining > 0 || newLinesRemaining > 0;
+  }
+  if (inHunk) {
+    fail("unified diff hunk ended before its declared line counts");
+  }
+  push();
+  if (files.length === 0 && patch.trim() !== "") {
+    fail("unified diff contains no readable file records");
+  }
+  const named = files.filter((file) => file.path !== "");
+  if (named.length !== files.length) {
+    fail("unified diff contains a file header with no readable path");
+  }
+  return named;
+}
+function classifyRange(params) {
+  requireSha(params.base, "base");
+  requireSha(params.head, "head");
+  const patch = runGit([
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--find-renames",
+    `${params.base}..${params.head}`
+  ]);
+  return classifyFiles(parseDiffPatch(patch), params.options);
+}
+
+// src/telemetry.ts
+function isTelemetryComment(body) {
+  return body.includes(TELEMETRY_MARKER_PREFIX);
+}
+function requireEnum(value, allowed, field) {
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    fail(`telemetry ${field} must be one of: ${allowed.join(", ")}`);
+  }
+  return value;
+}
+function requireCount(value, field) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
+    fail(`telemetry ${field} must be a non-negative integer`);
+  }
+  return value;
+}
+function requireNullableCount(value, field) {
+  if (value === null) {
+    return null;
+  }
+  return requireCount(value, field);
+}
+function requireNullableToken(value, field) {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string" || !TOKEN_RE.test(value)) {
+    fail(`telemetry ${field} must be a protocol token or null`);
+  }
+  return value;
+}
+function requireNullableSha256(value, field) {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string" || !SHA_64_RE.test(value)) {
+    fail(`telemetry ${field} must be a lowercase SHA-256 digest or null`);
+  }
+  return value;
+}
+function requireObject(value, field) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    fail(`telemetry ${field} must be an object`);
+  }
+  return value;
+}
+function validateProviderBuckets(value) {
+  const source = requireObject(value, "providerBuckets");
+  const buckets = {};
+  for (const [key, raw] of Object.entries(source)) {
+    if (!PROVIDER_BUCKET_KEY_RE.test(key)) {
+      fail(
+        `telemetry providerBuckets key must match ${PROVIDER_BUCKET_KEY_RE}`
+      );
+    }
+    if (CANONICAL_TOKEN_BUCKETS.includes(key)) {
+      fail(
+        `telemetry providerBuckets must not restate the canonical bucket ${key}`
+      );
+    }
+    buckets[key] = requireCount(raw, `providerBuckets.${key}`);
+  }
+  return buckets;
+}
+function validateTokenBucket(value) {
+  const source = requireObject(value, "tokens[]");
+  const model = source["model"];
+  if (typeof model !== "string" || !TOKEN_RE.test(model)) {
+    fail("telemetry tokens[].model must be a protocol token");
+  }
+  return {
+    model,
+    effort: requireNullableToken(source["effort"], "tokens[].effort"),
+    input: requireNullableCount(source["input"], "tokens[].input"),
+    output: requireNullableCount(source["output"], "tokens[].output"),
+    cacheRead: requireNullableCount(source["cacheRead"], "tokens[].cacheRead"),
+    cacheWrite: requireNullableCount(
+      source["cacheWrite"],
+      "tokens[].cacheWrite"
+    ),
+    reasoning: requireNullableCount(source["reasoning"], "tokens[].reasoning"),
+    providerBuckets: validateProviderBuckets(source["providerBuckets"])
+  };
+}
+function validateLane(value) {
+  const source = requireObject(value, "lanes[]");
+  const lens = source["lens"];
+  if (typeof lens !== "string" || !TOKEN_RE.test(lens)) {
+    fail("telemetry lanes[].lens must be a protocol token");
+  }
+  return {
+    lens,
+    model: requireNullableToken(source["model"], "lanes[].model"),
+    input: requireNullableCount(source["input"], "lanes[].input"),
+    output: requireNullableCount(source["output"], "lanes[].output"),
+    cacheRead: requireNullableCount(source["cacheRead"], "lanes[].cacheRead"),
+    cacheWrite: requireNullableCount(
+      source["cacheWrite"],
+      "lanes[].cacheWrite"
+    ),
+    reasoning: requireNullableCount(source["reasoning"], "lanes[].reasoning")
+  };
+}
+function validateChangeset(value) {
+  const source = requireObject(value, "changeset");
+  const files = requireObject(source["files"], "changeset.files");
+  const lines = requireObject(source["linesChanged"], "changeset.linesChanged");
+  const byLanguage = requireObject(
+    source["linesByLanguage"],
+    "changeset.linesByLanguage"
+  );
+  const linesChanged = {
+    app: requireCount(lines["app"], "changeset.linesChanged.app"),
+    test: requireCount(lines["test"], "changeset.linesChanged.test"),
+    comment: requireNullableCount(
+      lines["comment"],
+      "changeset.linesChanged.comment"
+    ),
+    docsConfig: requireCount(
+      lines["docsConfig"],
+      "changeset.linesChanged.docsConfig"
+    ),
+    generated: requireCount(
+      lines["generated"],
+      "changeset.linesChanged.generated"
+    ),
+    blank: requireCount(lines["blank"], "changeset.linesChanged.blank")
+  };
+  const languages = {};
+  for (const [key, raw] of Object.entries(byLanguage)) {
+    if (!OPEN_TOKEN_RE.test(key)) {
+      fail(
+        `telemetry changeset.linesByLanguage key must match ${OPEN_TOKEN_RE}`
+      );
+    }
+    languages[key] = requireCount(raw, `changeset.linesByLanguage.${key}`);
+  }
+  const validated = {
+    classifierVersion: requireCount(
+      source["classifierVersion"],
+      "changeset.classifierVersion"
+    ),
+    reviewSignificantFiles: requireCount(
+      source["reviewSignificantFiles"],
+      "changeset.reviewSignificantFiles"
+    ),
+    files: {
+      app: requireCount(files["app"], "changeset.files.app"),
+      test: requireCount(files["test"], "changeset.files.test"),
+      docsConfig: requireCount(
+        files["docsConfig"],
+        "changeset.files.docsConfig"
+      ),
+      generated: requireCount(files["generated"], "changeset.files.generated")
+    },
+    linesChanged,
+    linesByLanguage: languages
+  };
+  const totalFiles = Object.values(validated.files).reduce(
+    (total, count) => total + count,
+    0
+  );
+  const requiredReviewFiles = validated.files.app + validated.files.test;
+  if (!Number.isSafeInteger(totalFiles) || !Number.isSafeInteger(requiredReviewFiles)) {
+    fail("telemetry changeset file totals must be safe integers");
+  }
+  if (validated.reviewSignificantFiles < requiredReviewFiles || validated.reviewSignificantFiles > totalFiles) {
+    fail(
+      "telemetry changeset.reviewSignificantFiles must cover app/test files and not exceed total files"
+    );
+  }
+  return validated;
+}
+function validateFindings(value) {
+  const source = requireObject(value, "findings");
+  const ladder = requireObject(
+    source["bySeverityAndOutcome"],
+    "findings.bySeverityAndOutcome"
+  );
+  const unknown = Object.keys(ladder).filter(
+    (key) => !SUPPORTED_SEVERITIES.includes(key)
+  );
+  if (unknown.length > 0) {
+    fail(
+      `telemetry findings.bySeverityAndOutcome must use the severity ladder: ${SUPPORTED_SEVERITIES.join(", ")}`
+    );
+  }
+  const bySeverityAndOutcome = {};
+  let counted = 0;
+  for (const severity of SUPPORTED_SEVERITIES) {
+    const row = requireObject(
+      ladder[severity],
+      `findings.bySeverityAndOutcome.${severity}`
+    );
+    const outcomes = {
+      validFixed: requireCount(
+        row["validFixed"],
+        `findings.bySeverityAndOutcome.${severity}.validFixed`
+      ),
+      validDeferred: requireCount(
+        row["validDeferred"],
+        `findings.bySeverityAndOutcome.${severity}.validDeferred`
+      ),
+      invalidDismissed: requireCount(
+        row["invalidDismissed"],
+        `findings.bySeverityAndOutcome.${severity}.invalidDismissed`
+      )
+    };
+    counted += outcomes.validFixed + outcomes.validDeferred + outcomes.invalidDismissed;
+    bySeverityAndOutcome[severity] = outcomes;
+  }
+  const posted = requireCount(source["posted"], "findings.posted");
+  if (counted > posted) {
+    fail("telemetry findings dispositions exceed the findings posted");
+  }
+  return {
+    posted,
+    bySeverityAndOutcome,
+    chainInducedRegressions: requireCount(
+      source["chainInducedRegressions"],
+      "findings.chainInducedRegressions"
+    )
+  };
+}
+function telemetryIdempotencyKey(fields) {
+  return [
+    fields.repo,
+    String(fields.pr),
+    fields.engine,
+    fields.passType,
+    String(fields.round),
+    fields.headSha
+  ].join(":");
+}
+function validateTelemetryRecord(value) {
+  const source = requireObject(value, "record");
+  if (source["version"] !== TELEMETRY_VERSION) {
+    fail(`telemetry record version must be ${TELEMETRY_VERSION}`);
+  }
+  const emittedAt = source["emittedAt"];
+  if (typeof emittedAt !== "string" || !UTC_TIMESTAMP_RE.test(emittedAt) || Number.isNaN(Date.parse(emittedAt)) || new Date(emittedAt).toISOString().replace(".000Z", "Z") !== emittedAt) {
+    fail("telemetry emittedAt must be an RFC 3339 UTC timestamp");
+  }
+  const repo = source["repo"];
+  if (typeof repo !== "string" || !REPO_RE.test(repo)) {
+    fail("telemetry repo must be owner/name");
+  }
+  const pr = source["pr"];
+  if (typeof pr !== "number" || !Number.isSafeInteger(pr) || pr < 1) {
+    fail("telemetry pr must be a positive integer");
+  }
+  const engine = source["engine"];
+  if (typeof engine !== "string" || !OPEN_TOKEN_RE.test(engine)) {
+    fail(`telemetry engine must match ${OPEN_TOKEN_RE}`);
+  }
+  const round = source["round"];
+  if (typeof round !== "number" || !Number.isSafeInteger(round) || round < 1) {
+    fail("telemetry round must be a positive integer");
+  }
+  const baseSha = source["baseSha"];
+  const headSha = source["headSha"];
+  if (typeof baseSha !== "string" || !SHA_RE.test(baseSha) || typeof headSha !== "string" || !SHA_RE.test(headSha)) {
+    fail("telemetry baseSha and headSha must be full commit SHAs");
+  }
+  const truncated = source["truncated"];
+  if (typeof truncated !== "boolean") {
+    fail("telemetry truncated must be a boolean");
+  }
+  const durationSeconds = source["durationSeconds"];
+  if (durationSeconds !== null && (typeof durationSeconds !== "number" || !Number.isFinite(durationSeconds) || durationSeconds < 0)) {
+    fail("telemetry durationSeconds must be a non-negative number or null");
+  }
+  const passType = requireEnum(
+    source["passType"],
+    TELEMETRY_PASS_TYPES,
+    "passType"
+  );
+  const status = requireEnum(source["status"], TELEMETRY_STATUSES, "status");
+  const tokenSource = requireEnum(
+    source["tokenSource"],
+    TELEMETRY_TOKEN_SOURCES,
+    "tokenSource"
+  );
+  const rawTokens = source["tokens"];
+  if (!Array.isArray(rawTokens)) {
+    fail("telemetry tokens must be an array");
+  }
+  const tokens = rawTokens.map(validateTokenBucket);
+  const models = tokens.map(
+    (bucket) => JSON.stringify([bucket.model, bucket.effort])
+  );
+  if (new Set(models).size !== models.length) {
+    fail("telemetry tokens must carry one bucket per model and effort");
+  }
+  if (tokenSource === "unavailable" && tokens.length > 0) {
+    fail("telemetry tokenSource unavailable cannot carry token buckets");
+  }
+  if (tokenSource !== "unavailable" && tokens.length === 0) {
+    fail("telemetry with no token buckets must record tokenSource unavailable");
+  }
+  const rawLanes = source["lanes"];
+  if (rawLanes !== void 0 && !Array.isArray(rawLanes)) {
+    fail("telemetry lanes must be an array when present");
+  }
+  if (Array.isArray(rawLanes) && rawLanes.length === 0) {
+    fail("telemetry lanes must be absent rather than empty");
+  }
+  const lanes = Array.isArray(rawLanes) ? rawLanes.map(validateLane) : void 0;
+  const changeset = validateChangeset(source["changeset"]);
+  if (status === "skipped" && changeset.reviewSignificantFiles > 0) {
+    fail("a skipped pass cannot carry review-significant files");
+  }
+  const idempotencyKey = source["idempotencyKey"];
+  if (typeof idempotencyKey !== "string" || !TOKEN_RE.test(idempotencyKey)) {
+    fail("telemetry idempotencyKey must be a protocol token");
+  }
+  const validated = {
+    ...source,
+    version: TELEMETRY_VERSION,
+    emittedAt,
+    repo,
+    pr,
+    idempotencyKey,
+    engine,
+    engineVersion: requireNullableToken(
+      source["engineVersion"],
+      "engineVersion"
+    ),
+    passType,
+    reviewTier: source["reviewTier"] === null ? null : requireEnum(
+      source["reviewTier"],
+      TELEMETRY_REVIEW_TIERS,
+      "reviewTier"
+    ),
+    trigger: requireEnum(source["trigger"], TELEMETRY_TRIGGERS, "trigger"),
+    round,
+    stance: requireEnum(source["stance"], TELEMETRY_STANCES, "stance"),
+    status,
+    baseSha,
+    headSha,
+    promptStackSha256: requireNullableSha256(
+      source["promptStackSha256"],
+      "promptStackSha256"
+    ),
+    promptStackVersion: requireNullableToken(
+      source["promptStackVersion"],
+      "promptStackVersion"
+    ),
+    repoInstructionsSha256: requireNullableSha256(
+      source["repoInstructionsSha256"],
+      "repoInstructionsSha256"
+    ),
+    tokenSource,
+    tokens,
+    ...lanes === void 0 ? {} : { lanes },
+    truncated,
+    durationSeconds,
+    changeset,
+    findings: validateFindings(source["findings"])
+  };
+  return validated;
+}
+function tokenBucketFrom(bucket) {
+  return validateTokenBucket({
+    model: bucket.model,
+    effort: bucket.effort ?? null,
+    input: bucket.input ?? null,
+    output: bucket.output ?? null,
+    cacheRead: bucket.cacheRead ?? null,
+    cacheWrite: bucket.cacheWrite ?? null,
+    reasoning: bucket.reasoning ?? null,
+    providerBuckets: bucket.providerBuckets ?? {}
+  });
+}
+function laneFrom(lane) {
+  return validateLane({
+    lens: lane.lens,
+    model: lane.model ?? null,
+    input: lane.input ?? null,
+    output: lane.output ?? null,
+    cacheRead: lane.cacheRead ?? null,
+    cacheWrite: lane.cacheWrite ?? null,
+    reasoning: lane.reasoning ?? null
+  });
+}
+function findingsFrom(findings) {
+  const ladder = {};
+  for (const severity of SUPPORTED_SEVERITIES) {
+    const row = findings?.bySeverityAndOutcome?.[severity];
+    ladder[severity] = {
+      validFixed: row?.validFixed ?? 0,
+      validDeferred: row?.validDeferred ?? 0,
+      invalidDismissed: row?.invalidDismissed ?? 0
+    };
+  }
+  return validateFindings({
+    posted: findings?.posted ?? 0,
+    bySeverityAndOutcome: ladder,
+    chainInducedRegressions: findings?.chainInducedRegressions ?? 0
+  });
+}
+function buildTelemetryRecord(params) {
+  const tokens = (params.tokens ?? []).map(tokenBucketFrom);
+  const lanes = params.lanes?.map(laneFrom);
+  const idempotencyKey = params.idempotencyKey ?? telemetryIdempotencyKey({
+    repo: params.repo,
+    pr: params.pr,
+    engine: params.engine,
+    passType: params.passType,
+    round: params.round,
+    headSha: params.headSha
+  });
+  return validateTelemetryRecord({
+    version: TELEMETRY_VERSION,
+    emittedAt: params.emittedAt,
+    repo: params.repo,
+    pr: params.pr,
+    idempotencyKey,
+    engine: params.engine,
+    engineVersion: params.engineVersion ?? null,
+    passType: params.passType,
+    reviewTier: params.reviewTier ?? null,
+    trigger: params.trigger,
+    round: params.round,
+    stance: params.stance,
+    status: params.status,
+    baseSha: params.baseSha,
+    headSha: params.headSha,
+    promptStackSha256: params.promptStackSha256 ?? null,
+    promptStackVersion: params.promptStackVersion ?? null,
+    repoInstructionsSha256: params.repoInstructionsSha256 ?? null,
+    tokenSource: params.tokenSource,
+    tokens,
+    ...lanes === void 0 ? {} : { lanes },
+    truncated: params.truncated,
+    durationSeconds: params.durationSeconds ?? null,
+    changeset: params.changeset,
+    findings: findingsFrom(params.findings)
+  });
+}
+function knownTelemetryRecord(value) {
+  const record = validateTelemetryRecord(value);
+  return {
+    version: record.version,
+    emittedAt: record.emittedAt,
+    repo: record.repo,
+    pr: record.pr,
+    idempotencyKey: record.idempotencyKey,
+    engine: record.engine,
+    engineVersion: record.engineVersion,
+    passType: record.passType,
+    reviewTier: record.reviewTier,
+    trigger: record.trigger,
+    round: record.round,
+    stance: record.stance,
+    status: record.status,
+    baseSha: record.baseSha,
+    headSha: record.headSha,
+    promptStackSha256: record.promptStackSha256,
+    promptStackVersion: record.promptStackVersion,
+    repoInstructionsSha256: record.repoInstructionsSha256,
+    tokenSource: record.tokenSource,
+    tokens: record.tokens,
+    ...!record.lanes ? {} : { lanes: record.lanes },
+    truncated: record.truncated,
+    durationSeconds: record.durationSeconds,
+    changeset: record.changeset,
+    findings: record.findings
+  };
+}
+function buildTelemetryBody(record) {
+  const safeRecord = knownTelemetryRecord(record);
+  return [
+    TELEMETRY_V1_MARKER,
+    "",
+    "```json",
+    JSON.stringify(safeRecord, null, 2),
+    "```"
+  ].join("\n");
+}
+function matchTelemetry(body) {
+  if (!isTelemetryComment(body)) {
+    return null;
+  }
+  const prefixIndex = body.indexOf(TELEMETRY_MARKER_PREFIX);
+  if (prefixIndex !== body.lastIndexOf(TELEMETRY_MARKER_PREFIX)) {
+    fail("a comment carries more than one local-review telemetry marker");
+  }
+  const markerIndex = body.indexOf(TELEMETRY_V1_MARKER);
+  if (markerIndex === -1) {
+    fail("local-review telemetry record is of an unsupported version");
+  }
+  const payload = body.slice(markerIndex + TELEMETRY_V1_MARKER.length).replace(/^\s*```(?:json)?\s*\n/, "").replace(/\n```\s*$/, "").trim();
+  if (payload === "") {
+    fail("local-review telemetry record carries no payload");
+  }
+  return validateTelemetryRecord(
+    parseJsonOrFail(
+      payload,
+      "local-review telemetry payload is not valid JSON"
+    )
+  );
+}
+function canonicalJson(value) {
+  if (value === void 0) {
+    return "undefined";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    const source = value;
+    return `{${Object.keys(source).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(source[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+function replayFingerprint(record) {
+  const known = knownTelemetryRecord(record);
+  return canonicalJson({
+    ...known,
+    emittedAt: null,
+    tokens: [...known.tokens].sort(
+      (left, right) => canonicalJson(left).localeCompare(canonicalJson(right))
+    ),
+    lanes: known.lanes ? [...known.lanes].sort(
+      (left, right) => canonicalJson(left).localeCompare(canonicalJson(right))
+    ) : void 0
+  });
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function prCommentSink(target) {
+  return {
+    name: "pr-comment",
+    emit({ record, body }) {
+      const actor = assertActor(target.actor);
+      const rows = getIssueComments(target.repo, target.pr, actor);
+      for (const row of rows) {
+        const existing = String(row["body"] ?? "");
+        if (!existing.includes(TELEMETRY_V1_MARKER)) {
+          continue;
+        }
+        let parsed;
+        try {
+          parsed = matchTelemetry(existing);
+        } catch {
+          continue;
+        }
+        if (parsed?.idempotencyKey === record.idempotencyKey) {
+          if (replayFingerprint(parsed) !== replayFingerprint(record)) {
+            fail("telemetry idempotency key conflicts with an existing record");
+          }
+          return { sink: "pr-comment", reference: String(row["id"] ?? "") };
+        }
+      }
+      assertLiveActor(actor);
+      const response = jsonOutput(
+        [
+          "api",
+          "-X",
+          "POST",
+          `repos/${target.repo}/issues/${target.pr}/comments`
+        ],
+        { body }
+      );
+      const commentId = getPostedCommentId(response);
+      try {
+        verifyIssueComment(target.repo, commentId, body, actor);
+      } catch (error) {
+        try {
+          deleteIssueComment(target.repo, target.pr, commentId);
+        } catch (rollbackError) {
+          throw new LedgerError(
+            `telemetry verification failed and rollback could not be verified: ${errorMessage(rollbackError)}; comment ${commentId} on ${target.repo}#${target.pr} may remain on the pull request; verification failed with: ${errorMessage(error)}`,
+            { cause: error }
+          );
+        }
+        throw error;
+      }
+      return { sink: "pr-comment", reference: String(commentId) };
+    }
+  };
+}
+function emitTelemetry(params) {
+  const { record, sink } = params;
+  try {
+    const body = buildTelemetryBody(record);
+    const result = sink.emit({ record, body });
+    return {
+      emitted: true,
+      sink: result.sink,
+      reference: result.reference,
+      idempotencyKey: record.idempotencyKey,
+      error: null
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      emitted: false,
+      sink: sink.name,
+      reference: null,
+      idempotencyKey: record.idempotencyKey,
+      error: message
+    };
+  }
+}
+
 // src/roster.ts
 function parseReviewers(raw, author) {
   if (raw === "none") {
@@ -2870,6 +4251,60 @@ function writeSortedJson(value) {
   }
   process.stdout.write(JSON.stringify(sorted) + "\n");
 }
+function readJsonFile(pathValue, label) {
+  assertRegularFile(pathValue, `${label} must be a regular non-symlink file`);
+  return parseJsonOrFail(
+    readFileSync4(pathValue, "utf8"),
+    `${label} must contain valid UTF-8 JSON`
+  );
+}
+function readJsonArray(pathValue, label) {
+  const parsed = readJsonFile(pathValue, label);
+  if (!Array.isArray(parsed)) {
+    fail(`${label} must contain a JSON array`);
+  }
+  return parsed;
+}
+function resolveChangesetReport(args) {
+  const options = args.promptSurfaces === void 0 ? void 0 : { promptSurfaces: args.promptSurfaces };
+  if (args.diffFile) {
+    assertRegularFile(
+      args.diffFile,
+      "diff file must be a regular non-symlink file"
+    );
+    return classifyFiles(
+      parseDiffPatch(readFileSync4(args.diffFile, "utf8")),
+      options
+    );
+  }
+  if (!args.base || !args.head) {
+    fail("changeset classification requires --diff-file or --base and --head");
+  }
+  return classifyRange({ base: args.base, head: args.head, options });
+}
+function parseDurationSeconds(raw) {
+  if (raw === void 0) {
+    return null;
+  }
+  if (!/^\d+(\.\d+)?$/.test(raw)) {
+    fail("--duration-seconds must be a non-negative number");
+  }
+  return Number(raw);
+}
+function normalizeChangesetInput(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    fail("changeset file must contain a JSON object");
+  }
+  const source = value;
+  const nested = source["changeset"];
+  if (typeof nested === "object" && nested !== null && !Array.isArray(nested)) {
+    return nested;
+  }
+  return source;
+}
+function nowUtcSecond() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
 function parsePositiveInteger(value, name) {
   if (!/^[1-9]\d*$/.test(value)) {
     fail(`${name} must be a positive integer`);
@@ -2911,6 +4346,16 @@ function parseCliArgs(argv) {
       i++;
       continue;
     }
+    if (arg === "--truncated") {
+      args.truncated = true;
+      i++;
+      continue;
+    }
+    if (arg === "--dry-run") {
+      args.dryRun = true;
+      i++;
+      continue;
+    }
     const next = argv[i + 1];
     const parseVal = (name) => {
       if (next === void 0 || next.startsWith("--")) {
@@ -2936,7 +4381,68 @@ function parseCliArgs(argv) {
         args.before = parseVal(arg);
         break;
       case "--engine":
-        args.engine = parseEnum(arg, parseVal(arg), SUPPORTED_ENGINES);
+        args.engineRaw = parseVal(arg);
+        break;
+      case "--engine-version":
+        args.engineVersion = parseVal(arg);
+        break;
+      case "--pass-type":
+        args.passType = parseEnum(arg, parseVal(arg), TELEMETRY_PASS_TYPES);
+        break;
+      case "--review-tier":
+        args.reviewTier = parseEnum(arg, parseVal(arg), TELEMETRY_REVIEW_TIERS);
+        break;
+      case "--trigger":
+        args.trigger = parseEnum(arg, parseVal(arg), TELEMETRY_TRIGGERS);
+        break;
+      case "--stance":
+        args.stance = parseEnum(arg, parseVal(arg), TELEMETRY_STANCES);
+        break;
+      case "--status":
+        args.status = parseEnum(arg, parseVal(arg), TELEMETRY_STATUSES);
+        break;
+      case "--token-source":
+        args.tokenSource = parseEnum(
+          arg,
+          parseVal(arg),
+          TELEMETRY_TOKEN_SOURCES
+        );
+        break;
+      case "--tokens-file":
+        args.tokensFile = parseVal(arg);
+        break;
+      case "--lanes-file":
+        args.lanesFile = parseVal(arg);
+        break;
+      case "--findings-file":
+        args.findingsFile = parseVal(arg);
+        break;
+      case "--changeset-file":
+        args.changesetFile = parseVal(arg);
+        break;
+      case "--diff-file":
+        args.diffFile = parseVal(arg);
+        break;
+      case "--prompt-stack-sha256":
+        args.promptStackSha256 = parseVal(arg);
+        break;
+      case "--prompt-stack-version":
+        args.promptStackVersion = parseVal(arg);
+        break;
+      case "--repo-instructions-sha256":
+        args.repoInstructionsSha256 = parseVal(arg);
+        break;
+      case "--duration-seconds":
+        args.durationSeconds = parseVal(arg);
+        break;
+      case "--emitted-at":
+        args.emittedAt = parseVal(arg);
+        break;
+      case "--idempotency-key":
+        args.idempotencyKey = parseVal(arg);
+        break;
+      case "--prompt-surface":
+        args.promptSurfaces = [...args.promptSurfaces ?? [], parseVal(arg)];
         break;
       case "--round":
         args.round = parsePositiveInteger(parseVal(arg), arg);
@@ -3037,6 +4543,9 @@ function validateArgs(args) {
   if (!args.command) {
     fail("subcommand required");
   }
+  if (args.engineRaw !== void 0 && args.command !== "emit-telemetry") {
+    args.engine = parseEnum("--engine", args.engineRaw, SUPPORTED_ENGINES);
+  }
   for (const name of ["head", "base", "before", "resultHead"]) {
     const val = args[name];
     if (val !== void 0) {
@@ -3075,8 +4584,16 @@ function validateArgs(args) {
     }
   }
 }
-function runCli(argv = process.argv.slice(2)) {
-  resetGitHubRunner();
+function telemetryFailure(error) {
+  return {
+    emitted: false,
+    sink: null,
+    reference: null,
+    idempotencyKey: null,
+    error: error instanceof Error ? error.message : String(error)
+  };
+}
+function runCliCommand(argv) {
   const args = parseCliArgs(argv);
   if (args.version) {
     process.stdout.write(`${PACKAGE_VERSION}
@@ -3382,6 +4899,81 @@ function runCli(argv = process.argv.slice(2)) {
       writeSortedJson(out);
       break;
     }
+    case "classify-changeset": {
+      const report = resolveChangesetReport(args);
+      writeSortedJson({
+        ...report.changeset,
+        skip: report.skip,
+        reviewSignificantFiles: report.reviewSignificantFiles,
+        classifications: report.classifications
+      });
+      break;
+    }
+    case "emit-telemetry": {
+      let outcome;
+      try {
+        if (!args.repo || args.pr === void 0 || !args.engineRaw) {
+          fail("emit-telemetry requires --repo, --pr, and --engine");
+        }
+        if (!args.passType || !args.trigger || !args.stance || !args.status || !args.tokenSource || args.round === void 0 || !args.base || !args.head) {
+          fail(
+            "emit-telemetry requires --pass-type, --trigger, --stance, --status, --token-source, --round, --base, and --head"
+          );
+        }
+        const changeset = args.changesetFile ? readJsonFile(args.changesetFile, "changeset file") : resolveChangesetReport(args).changeset;
+        const record = buildTelemetryRecord({
+          emittedAt: args.emittedAt ?? nowUtcSecond(),
+          repo: args.repo,
+          pr: args.pr,
+          idempotencyKey: args.idempotencyKey,
+          engine: args.engineRaw,
+          engineVersion: args.engineVersion ?? null,
+          passType: args.passType,
+          reviewTier: args.reviewTier ?? null,
+          trigger: args.trigger,
+          round: args.round,
+          stance: args.stance,
+          status: args.status,
+          baseSha: args.base,
+          headSha: args.head,
+          promptStackSha256: args.promptStackSha256 ?? null,
+          promptStackVersion: args.promptStackVersion ?? null,
+          repoInstructionsSha256: args.repoInstructionsSha256 ?? null,
+          tokenSource: args.tokenSource,
+          tokens: args.tokensFile ? readJsonArray(
+            args.tokensFile,
+            "tokens file"
+          ) : [],
+          lanes: args.lanesFile ? readJsonArray(
+            args.lanesFile,
+            "lanes file"
+          ) : void 0,
+          truncated: args.truncated === true,
+          durationSeconds: parseDurationSeconds(args.durationSeconds),
+          changeset: normalizeChangesetInput(changeset),
+          findings: args.findingsFile ? readJsonFile(
+            args.findingsFile,
+            "findings file"
+          ) : void 0
+        });
+        if (args.dryRun) {
+          process.stdout.write(buildTelemetryBody(record) + "\n");
+          return 0;
+        }
+        outcome = emitTelemetry({
+          record,
+          sink: prCommentSink({
+            repo: args.repo,
+            pr: args.pr,
+            actor: args.actor
+          })
+        });
+      } catch (error) {
+        outcome = telemetryFailure(error);
+      }
+      writeSortedJson(outcome);
+      break;
+    }
     case "read-result": {
       const targetFile = args.file ?? args.resultFile;
       if (!targetFile) {
@@ -3417,6 +5009,35 @@ function runCli(argv = process.argv.slice(2)) {
       fail(`unknown command: ${args.command}`);
   }
   return 0;
+}
+function commandFromArgv(argv) {
+  const booleanFlags = /* @__PURE__ */ new Set([
+    "--protocol-version",
+    "--version",
+    "--file-level",
+    "--truncated",
+    "--dry-run"
+  ]);
+  for (let i = 0; i < argv.length; ) {
+    const arg = argv[i];
+    if (!arg.startsWith("-")) {
+      return arg;
+    }
+    i += booleanFlags.has(arg) ? 1 : 2;
+  }
+  return void 0;
+}
+function runCli(argv = process.argv.slice(2)) {
+  resetGitHubRunner();
+  if (commandFromArgv(argv) !== "emit-telemetry") {
+    return runCliCommand(argv);
+  }
+  try {
+    return runCliCommand(argv);
+  } catch (error) {
+    writeSortedJson(telemetryFailure(error));
+    return 0;
+  }
 }
 
 // src/bin.ts
