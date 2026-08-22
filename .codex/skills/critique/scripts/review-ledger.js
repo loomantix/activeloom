@@ -5,7 +5,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.2.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.3.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -366,14 +366,14 @@ function execFailureDetail(error) {
   return execError.stderr?.trim() || "no diagnostic returned";
 }
 var DefaultGitHubRunner = class {
-  actor = null;
+  actorOverride = null;
+  cachedActor = null;
   constructor(customActor) {
-    if (customActor) {
-      this.actor = requireToken(customActor, "actor");
-    }
+    this.setActor(customActor ?? null);
   }
   setActor(actor) {
-    this.actor = actor ? requireToken(actor, "actor") : null;
+    this.actorOverride = actor ? requireToken(actor, "actor") : null;
+    this.cachedActor = null;
   }
   runGh(args, payload) {
     const command = "gh";
@@ -396,11 +396,22 @@ var DefaultGitHubRunner = class {
     }
   }
   currentActor() {
-    if (this.actor !== null) {
-      return this.actor;
+    this.cachedActor ??= this.liveActor();
+    return this.cachedActor;
+  }
+  /**
+   * Resolve the actor bypassing the cache.
+   *
+   * An explicit pin outranks the session, so an `actorOverride` is returned
+   * without a lookup. That is deliberate, and it means a runner constructed
+   * with an actor performs no live check at all — seeding an actor disables
+   * rotation detection.
+   */
+  liveActor() {
+    if (this.actorOverride !== null) {
+      return this.actorOverride;
     }
-    this.actor = resolveLoginOrFail(this.runGh(["api", "user"]));
-    return this.actor;
+    return resolveLoginOrFail(this.runGh(["api", "user"]));
   }
   gitCompare(repo, before, after) {
     const raw = this.runGh([
@@ -504,11 +515,22 @@ function currentActor() {
     }
     login = defaultActor;
   }
+  return assertActorPins(login);
+}
+function assertActorPins(login, expected) {
   if (!login) {
     fail("GitHub returned an empty authenticated user");
   }
-  const expected = process.env[EXPECTED_ACTOR_ENV];
-  if (expected && login !== expected) {
+  const rawEnvironmentActor = process.env[EXPECTED_ACTOR_ENV];
+  if (rawEnvironmentActor !== void 0) {
+    const environmentActor = requireToken(rawEnvironmentActor, "actor");
+    if (login !== environmentActor) {
+      fail(
+        `authenticated GitHub actor changed: expected ${environmentActor}, found ${login}`
+      );
+    }
+  }
+  if (expected !== void 0 && requireToken(expected, "actor") !== login) {
     fail(
       `authenticated GitHub actor changed: expected ${expected}, found ${login}`
     );
@@ -516,16 +538,17 @@ function currentActor() {
   return login;
 }
 function assertActor(expected) {
-  const actor = currentActor();
-  if (expected !== void 0 && requireToken(expected, "actor") !== actor) {
-    fail(
-      `authenticated GitHub actor changed: expected ${expected}, found ${actor}`
-    );
+  return assertActorPins(currentActor(), expected);
+}
+function assertLiveActor(expected) {
+  if (!activeRunner.liveActor && activeRunner.currentActor) {
+    fail("GitHub runner cannot re-resolve the live authenticated actor");
   }
-  return actor;
+  const actor = activeRunner.liveActor ? activeRunner.liveActor() : resolveLoginOrFail(runGh(["api", "user"]));
+  return assertActorPins(actor, expected);
 }
 function authenticatedRows(rows, options) {
-  const actor = currentActor();
+  const actor = options?.actor === void 0 ? currentActor() : assertLiveActor(options.actor);
   return rows.filter((row) => {
     const user = row["user"];
     const author = row["author"];
@@ -650,15 +673,22 @@ function getReviewComments(repo, pr) {
   const rows = flattenPages(pages, "review-comments");
   return authenticatedRows(rows);
 }
-function getIssueComments(repo, pr) {
+function getIssueComments(repo, pr, expectedActor) {
+  if (expectedActor === void 0) {
+    return authenticatedRows(getAllIssueComments(repo, pr));
+  }
+  const actor = assertLiveActor(expectedActor);
+  const rows = getAllIssueComments(repo, pr);
+  return authenticatedRows(rows, { actor });
+}
+function getAllIssueComments(repo, pr) {
   const pages = jsonOutput([
     "api",
     "--paginate",
     "--slurp",
     `repos/${repo}/issues/${pr}/comments?per_page=100`
   ]);
-  const rows = flattenPages(pages, "PR-comments");
-  return authenticatedRows(rows);
+  return flattenPages(pages, "PR-comments");
 }
 function verifyComment(repo, commentId, expectedBody) {
   verifyOwnedComment(
@@ -668,18 +698,23 @@ function verifyComment(repo, commentId, expectedBody) {
     "review comment"
   );
 }
-function verifyIssueComment(repo, commentId, expectedBody) {
+function verifyIssueComment(repo, commentId, expectedBody, expectedActor) {
   verifyOwnedComment(
     `repos/${repo}/issues/comments/${commentId}`,
     commentId,
     expectedBody,
-    "PR comment"
+    "PR comment",
+    expectedActor
   );
 }
-function verifyOwnedComment(endpoint, commentId, expectedBody, label) {
+function verifyOwnedComment(endpoint, commentId, expectedBody, label, expectedActor) {
+  const actor = expectedActor === void 0 ? assertActor() : assertLiveActor(expectedActor);
   const response = jsonOutput(["api", endpoint]);
+  if (expectedActor !== void 0) {
+    assertLiveActor(actor);
+  }
   const user = response["user"] ?? response["author"];
-  if (typeof response !== "object" || response === null || response["body"] !== expectedBody || typeof user !== "object" || user === null || user.login !== currentActor()) {
+  if (typeof response !== "object" || response === null || response["body"] !== expectedBody || typeof user !== "object" || user === null || user.login !== actor) {
     fail(`could not verify ${label} ${commentId} after posting`);
   }
 }
@@ -704,7 +739,7 @@ function findMatchingAttestation(rows, engine, round, body) {
   return row["id"];
 }
 function issueCommentExists(repo, pr, commentId) {
-  return getIssueComments(repo, pr).some((row) => row["id"] === commentId);
+  return getAllIssueComments(repo, pr).some((row) => row["id"] === commentId);
 }
 function deleteIssueComment(repo, pr, commentId) {
   try {
@@ -3622,11 +3657,15 @@ function replayFingerprint(record) {
     ) : void 0
   });
 }
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
 function prCommentSink(target) {
   return {
     name: "pr-comment",
     emit({ record, body }) {
-      const rows = getIssueComments(target.repo, target.pr);
+      const actor = assertActor(target.actor);
+      const rows = getIssueComments(target.repo, target.pr, actor);
       for (const row of rows) {
         const existing = String(row["body"] ?? "");
         if (!existing.includes(TELEMETRY_V1_MARKER)) {
@@ -3645,6 +3684,7 @@ function prCommentSink(target) {
           return { sink: "pr-comment", reference: String(row["id"] ?? "") };
         }
       }
+      assertLiveActor(actor);
       const response = jsonOutput(
         [
           "api",
@@ -3655,7 +3695,19 @@ function prCommentSink(target) {
         { body }
       );
       const commentId = getPostedCommentId(response);
-      verifyIssueComment(target.repo, commentId, body);
+      try {
+        verifyIssueComment(target.repo, commentId, body, actor);
+      } catch (error) {
+        try {
+          deleteIssueComment(target.repo, target.pr, commentId);
+        } catch (rollbackError) {
+          throw new LedgerError(
+            `telemetry verification failed and rollback could not be verified: ${errorMessage(rollbackError)}; comment ${commentId} on ${target.repo}#${target.pr} may remain on the pull request; verification failed with: ${errorMessage(error)}`,
+            { cause: error }
+          );
+        }
+        throw error;
+      }
       return { sink: "pr-comment", reference: String(commentId) };
     }
   };
@@ -4910,7 +4962,11 @@ function runCliCommand(argv) {
         }
         outcome = emitTelemetry({
           record,
-          sink: prCommentSink({ repo: args.repo, pr: args.pr })
+          sink: prCommentSink({
+            repo: args.repo,
+            pr: args.pr,
+            actor: args.actor
+          })
         });
       } catch (error) {
         outcome = telemetryFailure(error);
