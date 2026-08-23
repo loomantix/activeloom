@@ -1,6 +1,6 @@
 ---
 name: reviewit
-description: Post-push AI review orchestrator for pull requests. Use when the user asks Codex to run AI review on a PR, address Gemini or Copilot findings, dedupe reviewer comments, push fixes, reply in PR threads, or complete the platform review chain. Both modes fire Gemini Flash + Copilot only — no in-skill local review during the loop. Accepts a PR number, optional `deep` (4-iter cap + early-exit on no-fix iters + final `deepcritique`), and optional `--resume`.
+description: Post-push AI review orchestrator for pull requests. Use when the user asks Codex to run AI review on a PR, address Gemini or Copilot findings, dedupe reviewer comments, push fixes, reply in PR threads, or complete the platform review chain. Both modes fire Gemini Flash + Copilot only — no in-skill local review during the loop. Accepts a PR number, optional `deep` (4-iter cap + early-exit on no-fix iters + final `deepcritique`) which asserts the resolved review tier rather than choosing it, and optional `--resume`.
 ---
 
 # Reviewit
