@@ -63,8 +63,9 @@ Resolve the changed-file list once with
    machines, partial-failure and rollback paths: correctness that is not
    readable from the diff.
 5. **Recurring-incident area** — the touched paths produced a post-merge defect,
-   revert, or hotfix in roughly the last 90 days
-   (`git log --oneline --since=90.days -- <paths>`).
+   revert, or hotfix in roughly the last 90 days. Evidence is a specific defect,
+   revert, or hotfix commit you can name; ordinary commit traffic on an actively
+   developed path is not evidence, and neither is the path being important.
 6. **Explicitly requested** — a human directly asked for a deep review, or the
    change is a first of its kind the author cannot self-assess. An internal
    `deep` argument passed between tier-aware skills only asserts the recorded
