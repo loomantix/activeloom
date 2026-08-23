@@ -61,6 +61,7 @@
 .claude/skills/critique/scripts/review-ledger.version
 .claude/skills/critique/scripts/review-ledger.integrity
 .claude/skills/critique/scripts/usage-snapshot.js
+.claude/skills/critique/scripts/prompt-stack-hash.js
 .claude/skills/critique/scripts/run-agy-review.sh
 .claude/skills/deepcritique/SKILL.md
 .claude/skills/diagnosing-bugs/SKILL.md

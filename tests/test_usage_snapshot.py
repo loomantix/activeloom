@@ -29,6 +29,7 @@ SCRIPT = REPO_ROOT / ".claude" / "skills" / "critique" / "scripts" / "usage-snap
 def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
     environment = dict(os.environ)
     environment.pop("LOOM_REVIEW_TELEMETRY", None)
+    environment.pop("LOOM_REVIEW_TELEMETRY_EXTRACT", None)
     environment.pop("CLAUDE_SESSION_LOG", None)
     environment.pop("CLAUDE_PROJECTS_DIR", None)
     environment.pop("CLAUDE_CODE_SESSION_ID", None)
@@ -63,6 +64,7 @@ def turn(
     lens: str | None = None,
     version: str = "2.1.238",
     timestamp: str = "2026-08-20T12:00:00.000Z",
+    extra: dict[str, Any] | None = None,
 ) -> str:
     usage: dict[str, Any] = {}
     for key, value in (
@@ -75,6 +77,8 @@ def turn(
             usage[key] = value
     if thinking is not None:
         usage["output_tokens_details"] = {"thinking_tokens": thinking}
+    if extra is not None:
+        usage.update(extra)
     entry: dict[str, Any] = {
         "type": "assistant",
         "requestId": request_id,
@@ -767,3 +771,203 @@ def test_a_lane_spanning_models_reports_no_single_model(
     }
     assert lanes["w"]["model"] is None
     assert lanes["s"]["model"] == "claude-opus-5"
+
+
+def test_an_unknown_provider_bucket_is_preserved(
+    tmp_path: Path, session: Path
+) -> None:
+    """A bucket the provider reported and the extractor discarded looks
+    measured and isn't."""
+    start = snapshot(session, tmp_path)
+    session.write_text(
+        turn(request_id="a", output=1, extra={"web_search_requests": 3})
+        + turn(request_id="b", output=1, extra={"web_search_requests": 4})
+    )
+    [bucket] = tokens_of(delta(tmp_path, start))
+    assert bucket["providerBuckets"] == {"web_search_requests": 7}
+
+
+def test_a_canonical_bucket_is_never_restated_as_a_provider_bucket(
+    tmp_path: Path, session: Path
+) -> None:
+    """The record refuses a restated canonical bucket; make it unproducible."""
+    start = snapshot(session, tmp_path)
+    session.write_text(
+        turn(
+            request_id="a",
+            output=1,
+            extra={"input": 999, "output": 999, "output_tokens_details": {}},
+        )
+    )
+    [bucket] = tokens_of(delta(tmp_path, start))
+    assert "providerBuckets" not in bucket
+    # The source keys the canonical buckets read are excluded too, so no count
+    # can arrive twice under two names.
+    assert bucket["input"] == 10
+    assert bucket["output"] == 1
+
+
+def test_a_malformed_provider_key_is_dropped_not_passed_through(
+    tmp_path: Path, session: Path
+) -> None:
+    """Provider keys are transcript-derived strings heading for a public
+    comment."""
+    start = snapshot(session, tmp_path)
+    session.write_text(
+        turn(
+            request_id="a",
+            output=1,
+            extra={
+                "Mixed-Case": 1,
+                "has space": 2,
+                "<!-- local-review:v3": 3,
+                "kept_key": 4,
+            },
+        )
+    )
+    [bucket] = tokens_of(delta(tmp_path, start))
+    assert bucket["providerBuckets"] == {"kept_key": 4}
+
+
+def test_an_oversized_provider_key_is_dropped_not_passed_through(
+    tmp_path: Path, session: Path
+) -> None:
+    """The key grammar alone puts no bound on what a key can carry."""
+    start = snapshot(session, tmp_path)
+    session.write_text(
+        turn(request_id="a", output=1, extra={"a" * 65: 1, "b" * 64: 2})
+    )
+    [bucket] = tokens_of(delta(tmp_path, start))
+    assert bucket["providerBuckets"] == {"b" * 64: 2}
+
+
+def test_a_non_integer_provider_value_is_absent_not_zero(
+    tmp_path: Path, session: Path
+) -> None:
+    """Absence is never zero, for provider buckets as for canonical ones."""
+    start = snapshot(session, tmp_path)
+    session.write_text(
+        turn(
+            request_id="a",
+            output=1,
+            extra={"tier": "standard", "ratio": 1.5, "negative": -1, "real": 2},
+        )
+    )
+    [bucket] = tokens_of(delta(tmp_path, start))
+    assert bucket["providerBuckets"] == {"real": 2}
+
+
+def test_provider_buckets_are_absent_when_the_provider_reports_none(
+    tmp_path: Path, session: Path
+) -> None:
+    """An empty object on every row reads as "asked and answered nothing"."""
+    start = snapshot(session, tmp_path)
+    session.write_text(turn(request_id="a", output=1))
+    [bucket] = tokens_of(delta(tmp_path, start))
+    assert "providerBuckets" not in bucket
+
+
+def test_lanes_carry_no_provider_buckets(tmp_path: Path, session: Path) -> None:
+    """The lane rows have no provider key space; one attached there would be
+    measured, serialised, and then silently dropped on validation."""
+    start = snapshot(session, tmp_path)
+    session.write_text("")
+    subagents = Path(str(session)[: -len(".jsonl")]) / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "lane.jsonl").write_text(
+        turn(
+            request_id="a",
+            output=1,
+            sidechain=True,
+            lens="code-reviewer",
+            extra={"web_search_requests": 3},
+        )
+    )
+    payload = delta(tmp_path, start)
+    lanes = json.loads(Path(payload["lanesFile"]).read_text())
+    assert all("providerBuckets" not in lane for lane in lanes)
+    # The same turn still contributes its provider bucket to the model row.
+    assert tokens_of(payload)[0]["providerBuckets"] == {"web_search_requests": 3}
+
+
+def test_extraction_runs_with_emission_off(tmp_path: Path, session: Path) -> None:
+    """A local consumer needs measurement without publication."""
+    out = tmp_path / "start.json"
+    payload = run(
+        "snapshot",
+        "--out",
+        str(out),
+        "--session-log",
+        str(session),
+        enabled=False,
+        LOOM_REVIEW_TELEMETRY_EXTRACT="on",
+    )
+    assert payload["enabled"] is True
+    assert payload["emit"] is False
+    assert payload["emitReason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert out.exists()
+
+
+def test_emission_stays_on_with_extraction_off(tmp_path: Path) -> None:
+    """Extraction off is not a measurement; it must not serialise as zero."""
+    payload = run(
+        "delta",
+        "--out-dir",
+        str(tmp_path / "out"),
+        LOOM_REVIEW_TELEMETRY_EXTRACT="off",
+    )
+    assert payload["enabled"] is False
+    assert payload["emit"] is True
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
+    assert payload["turns"] is None
+
+
+def test_the_extraction_gate_defaults_to_the_emission_gate(
+    tmp_path: Path, session: Path
+) -> None:
+    """No existing configuration changes meaning when the gate is split."""
+    on = run(
+        "snapshot", "--out", str(tmp_path / "on.json"), "--session-log", str(session)
+    )
+    assert on["enabled"] is True
+    assert on["emit"] is True
+
+    off = run("snapshot", "--out", str(tmp_path / "off.json"), enabled=False)
+    assert off["enabled"] is False
+    assert off["emit"] is False
+    assert off["reason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert not (tmp_path / "off.json").exists()
+
+
+def test_an_extraction_gate_typo_is_not_an_opt_out(tmp_path: Path) -> None:
+    """A typo must read as off and say so, never as on and never silently."""
+    payload = run(
+        "snapshot",
+        "--out",
+        str(tmp_path / "start.json"),
+        LOOM_REVIEW_TELEMETRY_EXTRACT="true",
+    )
+    assert payload["enabled"] is False
+    assert payload["emit"] is True
+    assert payload["reason"] == (
+        'LOOM_REVIEW_TELEMETRY_EXTRACT must be exactly "on" or "off"'
+    )
+    assert payload["error"] == (
+        'LOOM_REVIEW_TELEMETRY_EXTRACT must be exactly "on" or "off"'
+    )
+
+
+def test_every_payload_reports_the_emission_gate(tmp_path: Path) -> None:
+    """The caller reads one field to decide whether to emit, on every path."""
+    payloads = [
+        run("snapshot", "--out", str(tmp_path / "s.json"), enabled=False),
+        run("delta", "--out-dir", str(tmp_path / "out")),
+        run("snapshot"),
+        run("delta"),
+        run("--bogus"),
+        run("nonsense"),
+    ]
+    for payload in payloads:
+        assert "emit" in payload
+        assert "emitReason" in payload

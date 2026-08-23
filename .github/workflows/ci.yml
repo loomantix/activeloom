@@ -294,11 +294,14 @@ jobs:
             .claude/REVIEW_WORKFLOW.md \
             .claude/skills/critique/SKILL.md \
             .claude/skills/critique/scripts/usage-snapshot.js \
+            .claude/skills/critique/scripts/prompt-stack-hash.js \
             .claude/skills/deepcritique/SKILL.md \
             .claude/skills/refactorpass/SKILL.md; do
             cmp "$path" "$RENDER_DIR/$path"
           done
-          test "$(stat -c '%a' "$RENDER_DIR/.claude/skills/critique/scripts/usage-snapshot.js")" = 644
+          for script in usage-snapshot.js prompt-stack-hash.js; do
+            test "$(stat -c '%a' "$RENDER_DIR/.claude/skills/critique/scripts/$script")" = 644
+          done
       - name: Render fidelity fixture and compare against golden
         run: |
           set -euo pipefail
