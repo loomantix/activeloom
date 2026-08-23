@@ -55,7 +55,9 @@ Run these lanes as independently as the active runtime permits:
    `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry". A cleanup pass spends tokens
    and moves lines; leaving it out would attribute its churn to nobody while
    its cost vanished, which corrupts the per-line denominator directly. The
-   helper is a no-op when telemetry is not enabled for this repository.
+   helper is a no-op when extraction is not enabled for this repository, and
+   it reports the separate emission gate that decides whether this pass may
+   publish a record at all.
 2. Verify the branch is not `main`, `master`, or `staging`. Resolve or create
    its draft PR before running cleanup lanes, and require local, remote, and PR
    heads to match. Read all prior review threads.
@@ -105,8 +107,11 @@ Run these lanes as independently as the active runtime permits:
     skip leaves the latch open, so a later round whose changeset contains source
     can still spend the one pass.
 
-14. Emit this pass's telemetry record per `.codex/REVIEW_WORKFLOW.md` "Pass
-    Telemetry" with `--pass-type refactor`. A pass that committed is `changed`;
+14. Take the prompt-stack digests and emit this pass's telemetry record per
+    `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry" with `--pass-type refactor`. A
+    record that cannot name the prompt generation it ran on cannot be compared
+    against the next one, so the two digests are part of emitting, not an
+    optional extra. A pass that committed is `changed`;
     one that found nothing is `clean`. A pass that stopped on a spent latch is
     also `clean`, not `skipped` — its changeset was reviewable, this engine had
     simply already spent its one pass, and the record rejects a `skipped` pass
@@ -117,7 +122,7 @@ Run these lanes as independently as the active runtime permits:
 
     Steps 4 and 5 return before reaching this step, so each names the record it
     emits rather than relying on the pass reaching the end. Skip emission
-    entirely when the telemetry helper reports `enabled: false`.
+    entirely when the telemetry helper reports `emit: false`.
 
 ## Output
 

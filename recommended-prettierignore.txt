@@ -50,6 +50,7 @@
 .codex/skills/critique/scripts/review-ledger.js
 .codex/skills/critique/scripts/review-ledger.version
 .codex/skills/critique/scripts/usage-snapshot.js
+.codex/skills/critique/scripts/prompt-stack-hash.js
 .codex/skills/critique/scripts/local-review-handoff.py
 .codex/skills/critique/scripts/run-claude-review.sh
 .codex/skills/critique/scripts/run-agy-review.sh

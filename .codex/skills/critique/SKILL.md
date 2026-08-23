@@ -186,8 +186,9 @@ Run these lanes as independently as the active runtime permits:
    1a. Take the pass telemetry snapshot before reading or classifying anything, per
    `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry". The reading and classification
    the steps below do is part of what the pass costs, so a snapshot taken later
-   would quietly under-report it. The helper is a no-op when telemetry is not
-   enabled for this repository.
+   would quietly under-report it. The helper is a no-op when extraction is not
+   enabled for this repository, and it reports the separate emission gate that
+   decides whether this pass may publish a record at all.
 2. Resolve the PR number, verify it is open and its head is the current branch,
    and require local HEAD, remote head, and PR head to match. If the branch has
    no PR, push it and open a draft PR before reviewing.
@@ -254,9 +255,12 @@ Run these lanes as independently as the active runtime permits:
     `--expected-result-sha256` from `validate-result` before publishing, so
     manual and automated passes share one protocol.
 
-14. Once the v3 result is finalized and any fix commits are pushed, emit this
-    pass's telemetry record per `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry",
-    with `--pass-type review` and the status this pass reached. Emission runs
+14. Once the v3 result is finalized and any fix commits are pushed, take the
+    prompt-stack digests and emit this pass's telemetry record per
+    `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry", with `--pass-type review` and
+    the status this pass reached. A record that cannot name the prompt
+    generation it ran on cannot be compared against the next one, so the two
+    digests are part of emitting, not an optional extra. Emission runs
     last because it must describe the finished pass, and it exits zero whether
     or not it succeeded: unlike every other step above, a telemetry failure is
     reported and never stops the pass, never retried into the review, and never

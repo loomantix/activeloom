@@ -20,7 +20,9 @@ into a lane prompt or packet.
 Take the pass telemetry snapshot before reading or classifying anything, per
 `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry". A relay leg is a full review pass
 and costs like one; leaving it out would make cross-engine review look free. The
-helper is a no-op when telemetry is not enabled for this repository.
+helper is a no-op when extraction is not enabled for this repository, and it
+reports the separate emission gate that decides whether this pass may publish a
+record at all.
 
 Read the prior pass before running any lane, per
 `.codex/REVIEW_WORKFLOW.md` "Read the prior pass before every
@@ -207,9 +209,12 @@ commit or push. Report the clean result.
 
 ## Phase 4: Hand back
 
-Once the pass result is finalized and any fix commits are pushed, emit this
-pass's telemetry record per `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry", with
-`--pass-type review` and the status this pass reached. Emission exits zero
+Once the pass result is finalized and any fix commits are pushed, take the
+prompt-stack digests and emit this pass's telemetry record per
+`.codex/REVIEW_WORKFLOW.md` "Pass Telemetry", with `--pass-type review` and the
+status this pass reached. A record that cannot name the prompt generation it ran
+on cannot be compared against the next one, so the two digests are part of
+emitting, not an optional extra. Emission exits zero
 whether or not it succeeded: report the outcome and move on. Reporting this
 pass's own measured spend in the summary below is permitted; reading any earlier
 pass's record is not.

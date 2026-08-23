@@ -29,6 +29,7 @@ SCRIPT = REPO_ROOT / ".codex" / "skills" / "critique" / "scripts" / "usage-snaps
 def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
     environment = dict(os.environ)
     environment.pop("LOOM_REVIEW_TELEMETRY", None)
+    environment.pop("LOOM_REVIEW_TELEMETRY_EXTRACT", None)
     environment.pop("CODEX_SESSION_LOG", None)
     environment.pop("CODEX_SESSIONS_DIR", None)
     environment.pop("CODEX_SESSION_ID", None)
@@ -103,6 +104,7 @@ def counted(
     output: int = 0,
     reasoning: int | None = 0,
     timestamp: str = "2026-08-20T12:00:02.000Z",
+    extra: dict[str, Any] | None = None,
 ) -> str:
     """One cumulative `token_count` event.
 
@@ -117,6 +119,8 @@ def counted(
     }
     if reasoning is not None:
         totals["reasoning_output_tokens"] = reasoning
+    if extra is not None:
+        totals.update(extra)
     return json_line(
         {
             "timestamp": timestamp,
@@ -798,12 +802,14 @@ def test_a_tampered_snapshot_cannot_put_free_text_in_the_record(
     payload["effort"] = "<script>"
     start.write_text(json.dumps(payload))
     with session.open("a") as handle:
+        handle.write(context())
         handle.write(counted(input_tokens=150, output=15))
 
     result = delta(tmp_path, start)
-    assert result["tokensFile"] is None or all(
-        " " not in record["model"] for record in tokens_of(result)
-    )
+    assert result["tokensFile"] is not None
+    records = tokens_of(result)
+    assert all(" " not in record["model"] for record in records)
+    assert all(record["effort"] != "<script>" for record in records)
 
 
 def test_a_rejected_start_snapshot_says_so_and_does_not_rediscover(
@@ -833,3 +839,320 @@ def test_a_rejected_start_snapshot_says_so_and_does_not_rediscover(
     assert payload["tokenSource"] == "unavailable"
     assert payload["tokensFile"] is None
     assert payload["error"] == "the start snapshot is version 1, not 2"
+
+
+def test_an_unknown_provider_bucket_is_preserved(
+    tmp_path: Path, session: Path
+) -> None:
+    """A bucket the CLI reported and the extractor discarded looks measured and
+    isn't."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10, extra={"tool_calls": 2}))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=300, output=40, extra={"tool_calls": 9}))
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    # Cumulative, so the pass window is the difference — never the end total.
+    assert bucket["providerBuckets"]["tool_calls"] == 7
+    assert bucket["providerBuckets"]["reported_input_tokens"] == 200
+
+
+def test_a_canonical_bucket_is_never_restated_as_a_provider_bucket(
+    tmp_path: Path, session: Path
+) -> None:
+    """The record refuses a restated canonical bucket; make it unproducible."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(
+            counted(
+                input_tokens=300,
+                output=40,
+                extra={"input": 1, "output": 2, "cacheRead": 3},
+            )
+        )
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    assert set(bucket["providerBuckets"]) == {"reported_input_tokens"}
+    assert bucket["input"] == 200
+    assert bucket["output"] == 30
+
+
+def test_a_reserved_provider_bucket_name_cannot_be_overwritten(
+    tmp_path: Path, session: Path
+) -> None:
+    """`reported_input_tokens` is this helper's own projection, not the CLI's."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(
+            counted(
+                input_tokens=300, output=40, extra={"reported_input_tokens": 999_999}
+            )
+        )
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    assert bucket["providerBuckets"]["reported_input_tokens"] == 200
+
+
+def test_a_malformed_provider_key_is_dropped_not_passed_through(
+    tmp_path: Path, session: Path
+) -> None:
+    """Provider keys are transcript-derived strings heading for a public
+    comment."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(
+            counted(
+                input_tokens=100,
+                output=10,
+                extra={
+                    "Mixed-Case": 0,
+                    "has space": 0,
+                    "<!-- local-review:v3": 0,
+                    "kept_key": 1,
+                },
+            )
+        )
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(
+            counted(
+                input_tokens=300,
+                output=40,
+                extra={
+                    "Mixed-Case": 5,
+                    "has space": 5,
+                    "<!-- local-review:v3": 5,
+                    "kept_key": 4,
+                },
+            )
+        )
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    assert set(bucket["providerBuckets"]) == {"reported_input_tokens", "kept_key"}
+    assert bucket["providerBuckets"]["kept_key"] == 3
+
+
+def test_an_oversized_provider_key_is_dropped_not_passed_through(
+    tmp_path: Path, session: Path
+) -> None:
+    """The key grammar alone puts no bound on what a key can carry."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(
+            counted(input_tokens=100, output=10, extra={"a" * 65: 0, "b" * 64: 0})
+        )
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(
+            counted(input_tokens=300, output=40, extra={"a" * 65: 1, "b" * 64: 2})
+        )
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    assert set(bucket["providerBuckets"]) == {"reported_input_tokens", "b" * 64}
+
+
+def test_a_non_integer_provider_value_is_absent_not_zero(
+    tmp_path: Path, session: Path
+) -> None:
+    """Absence is never zero, for provider buckets as for canonical ones."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(
+            counted(
+                input_tokens=100,
+                output=10,
+                extra={"tier": "standard", "ratio": 1.5, "negative": -1, "real": 1},
+            )
+        )
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(
+            counted(
+                input_tokens=300,
+                output=40,
+                extra={"tier": "priority", "ratio": 2.5, "negative": -2, "real": 4},
+            )
+        )
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    assert set(bucket["providerBuckets"]) == {"reported_input_tokens", "real"}
+    assert bucket["providerBuckets"]["real"] == 3
+
+
+def test_a_provider_bucket_first_reported_after_snapshot_is_absent(
+    tmp_path: Path, session: Path
+) -> None:
+    """How much of it accrued inside the window is unknown, so it is not a
+    count."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=300, output=40, extra={"late_key": 7}))
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    assert set(bucket["providerBuckets"]) == {"reported_input_tokens"}
+
+
+def test_a_tampered_snapshot_cannot_put_a_free_text_provider_key_in_the_record(
+    tmp_path: Path, session: Path
+) -> None:
+    """The start file is re-validated on read, not trusted from the write."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10, extra={"kept_key": 1}))
+    start = snapshot(session, tmp_path)
+    tampered = json.loads(start.read_text())
+    tampered["totals"]["<!-- local-review:v3 -->"] = 1
+    start.write_text(json.dumps(tampered))
+    with session.open("a") as handle:
+        handle.write(
+            counted(
+                input_tokens=300,
+                output=40,
+                extra={"kept_key": 4, "<!-- local-review:v3 -->": 9},
+            )
+        )
+
+    bucket = tokens_of(delta(tmp_path, start))[0]
+    assert set(bucket["providerBuckets"]) == {"reported_input_tokens", "kept_key"}
+
+
+def test_extraction_runs_with_emission_off(tmp_path: Path, session: Path) -> None:
+    """A local consumer needs measurement without publication."""
+    out = tmp_path / "start.json"
+    payload = run(
+        "snapshot",
+        "--out",
+        str(out),
+        "--session-log",
+        str(session),
+        "--sessions-dir",
+        str(session.parents[3]),
+        enabled=False,
+        LOOM_REVIEW_TELEMETRY_EXTRACT="on",
+    )
+    assert payload["enabled"] is True
+    assert payload["emit"] is False
+    assert payload["emitReason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert out.exists()
+
+
+def test_delta_measures_and_writes_files_with_emission_off(
+    tmp_path: Path, session: Path
+) -> None:
+    """A local delta pass needs pass-scoped token files without publishing."""
+    with session.open("a") as handle:
+        handle.write(context())
+        handle.write(counted(input_tokens=100, output=10))
+    start = snapshot(session, tmp_path)
+    with session.open("a") as handle:
+        handle.write(counted(input_tokens=150, output=15))
+    payload = run(
+        "delta",
+        "--out-dir",
+        str(tmp_path / "out"),
+        "--start",
+        str(start),
+        enabled=False,
+        LOOM_REVIEW_TELEMETRY_EXTRACT="on",
+    )
+    assert payload["enabled"] is True
+    assert payload["emit"] is False
+    assert payload["emitReason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert payload["tokenSource"] == "session-log-delta"
+    assert payload["tokensFile"] is not None
+    assert tokens_of(payload)[0]["output"] == 5
+
+
+def test_snapshot_reports_snapshot_schema_with_extraction_off(tmp_path: Path) -> None:
+    """Disabled extraction must return the snapshot contract, not delta."""
+    out = tmp_path / "start.json"
+    payload = run(
+        "snapshot",
+        "--out",
+        str(out),
+        LOOM_REVIEW_TELEMETRY_EXTRACT="off",
+    )
+    assert payload["mode"] == "snapshot"
+    assert payload["enabled"] is False
+    assert payload["scoped"] is False
+    assert payload["snapshotFile"] is None
+    assert payload["sessionLog"] is None
+    assert "tokenSource" not in payload
+
+
+def test_emission_stays_on_with_extraction_off(tmp_path: Path) -> None:
+    """Extraction off is not a measurement; it must not serialise as zero."""
+    payload = run(
+        "delta",
+        "--out-dir",
+        str(tmp_path / "out"),
+        LOOM_REVIEW_TELEMETRY_EXTRACT="off",
+    )
+    assert payload["enabled"] is False
+    assert payload["emit"] is True
+    assert payload["tokenSource"] == "unavailable"
+    assert payload["tokensFile"] is None
+
+
+def test_the_extraction_gate_defaults_to_the_emission_gate(
+    tmp_path: Path, session: Path
+) -> None:
+    """No existing configuration changes meaning when the gate is split."""
+    on = run(
+        "snapshot",
+        "--out",
+        str(tmp_path / "on.json"),
+        "--session-log",
+        str(session),
+        "--sessions-dir",
+        str(session.parents[3]),
+    )
+    assert on["enabled"] is True
+    assert on["emit"] is True
+
+    off = run("snapshot", "--out", str(tmp_path / "off.json"), enabled=False)
+    assert off["enabled"] is False
+    assert off["emit"] is False
+    assert off["reason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert not (tmp_path / "off.json").exists()
+
+
+def test_an_extraction_gate_typo_is_not_an_opt_out(tmp_path: Path) -> None:
+    """A typo must read as off and say so, never as on and never silently."""
+    payload = run(
+        "snapshot",
+        "--out",
+        str(tmp_path / "start.json"),
+        LOOM_REVIEW_TELEMETRY_EXTRACT="true",
+    )
+    assert payload["enabled"] is False
+    assert payload["emit"] is True
+    assert payload["reason"] == (
+        'LOOM_REVIEW_TELEMETRY_EXTRACT must be exactly "on" or "off"'
+    )
+
+
+def test_every_payload_reports_the_emission_gate(tmp_path: Path) -> None:
+    """The caller reads one field to decide whether to emit, on every path."""
+    payloads = [
+        run("snapshot", "--out", str(tmp_path / "s.json"), enabled=False),
+        run("delta", "--out-dir", str(tmp_path / "out")),
+        run("snapshot"),
+        run("delta"),
+        run("--bogus"),
+        run("nonsense"),
+    ]
+    for payload in payloads:
+        assert "emit" in payload
+        assert "emitReason" in payload
