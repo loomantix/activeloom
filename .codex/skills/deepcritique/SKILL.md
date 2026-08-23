@@ -1,6 +1,6 @@
 ---
 name: deepcritique
-description: High-fidelity PR-first Codex review chain. Opens or reuses a draft PR, records verified findings inline before fixes, and runs critique deep — preceded by refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use when the user asks for deep review or for changes that materially alter high-risk behavior such as auth, crypto, secret handling, data migrations, GitHub Actions, sync tooling, .codex/skills, or large refactors.
+description: High-fidelity PR-first Codex review chain that opens or reuses a draft PR, records verified findings inline before fixes, and runs critique deep — preceded by refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Runs only when the review tier resolved to Deep; hands a Lean changeset back to critique.
 ---
 
 # Deep Critique
@@ -156,29 +156,32 @@ defects, search for the highest-impact failure modes first, and require code,
 tests, or documented constraints to disprove each risk. Do not report guesses;
 report only evidence-backed, actionable findings.
 
-## Deep Triggers
+## Tier Gate
 
-Use this path when the change touches:
+This lane runs only when the review tier resolved to Deep. The triggers and the
+evidence rules are defined once, in
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) under "Review Tier" —
+this skill does not carry its own list, and a repo-local list never overrides
+that one. **Lean is the default; Deep is the exception you justify.**
 
-- `.codex/skills/**`, `scripts/sync*`, or `.github/workflows/**`
-- authentication, authorization, crypto, secret-handling logic, or sensitive-data
-  handling where the diff changes a trust boundary, exposure path, storage,
-  transformation, logging, access control, or failure mode
-- database schema, data shape, migrations, or serialization contracts
-- more than roughly 20 files or 500 net lines
-- an area with recurring incidents
-- customer/tenant-variable application behavior such as vendor integrations,
-  branching or transformation driven by tenant configuration, prompt/output
-  generation, or data normalization
+Resolve the effective `local-review-tier:v1` marker under the ledger's
+authenticated, forward-only transition rule. If no accepted marker exists,
+classify against the workflow doc's triggers and post the marker before starting
+a lane. A pass that exits on the docs/config-only skip never needs a tier.
+
+**If the tier is Lean, do not run this chain.** Report the resolved tier and
+hand the changeset to `critique <pr-number>`, which owns the Lean lane set.
+Continue here only on a resolved Deep tier or an explicit human request, which
+is trigger 6 and is recorded as one. Typing this skill's name does not select
+the deep path.
 
 Classify the behavior the diff changes, not merely the domain or value flowing
 through it. An ordinary version or image pin, deployment-only configuration
 update, environment-variable wiring, or reference to an existing secret does
-not require deep review solely because a sensitive runtime value will be
-supplied during deployment. This exception applies only when the diff does not
-embed, print, transform, authorize, persist, or otherwise change the handling
-of that value and no other deep trigger applies. Use the repository's focused
-validation and normal review path in that case.
+not trip trigger 1 solely because a sensitive runtime value will be supplied
+during deployment. That exception applies only when the diff does not embed,
+print, transform, authorize, persist, or otherwise change the handling of that
+value and no other trigger applies.
 
 ## Handoff
 
