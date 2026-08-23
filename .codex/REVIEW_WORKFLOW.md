@@ -350,10 +350,33 @@ rates move and a subscription's marginal cost is zero, so a stored dollar figure
 is wrong when written and unverifiable later. Counts keep the whole series
 re-priceable.
 
-Emission is opt-in while extraction is being proven on one repository. The
-snapshot helper reads `LOOM_REVIEW_TELEMETRY` and does nothing unless it is
-exactly `on`. It is environment configuration set once, never an interactive
-prompt during a pass — a prompt would block an autonomous run.
+### Two gates: measuring and publishing
+
+Extraction and emission are separate decisions and have separate gates. Both
+are read by the usage helper and nowhere else; both are environment
+configuration set once, never an interactive prompt during a pass, because a
+prompt would block an autonomous run.
+
+| Variable                        | Governs                             | Default           |
+| ------------------------------- | ----------------------------------- | ----------------- |
+| `LOOM_REVIEW_TELEMETRY`         | emitting a record to a pull request | off               |
+| `LOOM_REVIEW_TELEMETRY_EXTRACT` | measuring this pass at all          | the emission gate |
+
+Each accepts exactly `on` or `off`. Any other non-empty value is neither: the
+helper stays disabled and says why, so a typo reads as a misconfiguration
+rather than as a deliberate opt-out.
+
+Publication is the part that warrants an opt-in rollout, so it is the part that
+keeps the original variable and its original meaning — nothing changes for a
+repository that has already set it. Measurement is separable because a local
+consumer of usage data has no business publishing anything: set
+`LOOM_REVIEW_TELEMETRY_EXTRACT=on` with the emission gate off and the numbers
+are available while emission is structurally unreachable rather than merely
+unrequested.
+
+The helper reports `enabled` for extraction and `emit` for emission on every
+payload, in every mode and on every failure path. **Invoke `emit-telemetry`
+only when `emit` is true**, and never derive that from anything else.
 
 ### Never read a telemetry marker
 
@@ -393,8 +416,8 @@ node <usage-helper> delta \
   --start "<telemetry-dir>/usage-start.json" --out-dir "<telemetry-dir>"
 ```
 
-`delta` prints `tokenSource`, nullable `engineVersion`, nullable
-`durationSeconds`, and the paths it wrote. This engine reports no per-lane
+`delta` prints `enabled`, `emit`, `tokenSource`, nullable `engineVersion`,
+nullable `durationSeconds`, and the paths it wrote. This engine reports no per-lane
 attribution, so `lanesFile` is always null and `lanes` is absent from the record
 rather than empty. Pass non-null values through verbatim and omit their flags
 when null. `tokenSource` is the provenance of the numbers and must never be
@@ -409,6 +432,81 @@ upgraded by hand:
 the engine look free and skews every average in its favour, and it is the kind
 of defect that survives a year because the dashboard still looks plausible.
 Aggregation excludes a missing measurement; nothing zero-fills it.
+
+### Identify the prompt stack
+
+A record that says what a pass cost but not what it was running cannot answer
+"did that prompt change help" — findings-per-token is a property of the prompt
+as much as of the model. `<hash-helper>` is
+`.codex/skills/critique/scripts/prompt-stack-hash.js`. Run it once per pass,
+any time after the boundary and before emission:
+
+```bash
+node <hash-helper> --repo-root "<repository root>"
+```
+
+It reads only files already checked into the repository — no session log, no
+path under a home directory — so it is ungated and safe to run anywhere. It
+always exits 0 and always prints one JSON object carrying `promptStackSha256`,
+`repoInstructionsSha256`, and `hashInputVersion`. Pass the two digests through
+verbatim and omit the corresponding flag when one is null. Nothing else it
+prints is an `emit-telemetry` argument.
+
+**The two digests are never collapsed into one.** The synced stack is
+fleet-wide and moves when upstream moves; repo-local instructions are per
+repository. A combined digest would make every repository look like a different
+prompt generation forever, which destroys the cross-repository correlation the
+hash exists to enable.
+
+#### Hash input, version 1
+
+The digest input is a definition, not an implementation detail. Two engines
+that hashed the same stack in different orders would mint two identities for
+one prompt generation, which reads downstream as a real difference and is worse
+than having no hash. Version 1 is:
+
+- **Prompt stack** — an enumerated list of synced review prompt files, not a
+  glob: `REVIEW_WORKFLOW.md`, `references/local-review-ledger.md`, the six
+  review lens roles under `references/roles/`, and the `critique`,
+  `deepcritique`, `pr-critique`, `refactorpass`, and `reviewit` skill bodies.
+  `code-architect` and `code-explorer` are excluded because no review pass loads
+  them. Scripts are excluded too: the ledger bundle and the usage extractor are
+  not prompts, and folding them in would move the digest on every ledger
+  release. This engine's lens prompts sit inside its synced surface and the
+  sibling engine's do not, which is a difference in what each engine can read in
+  a consumer checkout rather than a difference in method — the two stack digests
+  were never comparable to each other, since each names one engine's own prompt
+  generation.
+- **Repo instructions** — root `AGENTS.md` and root `CLAUDE.md`, both declared
+  for both engines so the same repository state yields the same digest whichever
+  engine emitted the record. Nested instruction files are out of scope: their
+  discovery depends on which directories a pass happened to touch.
+- **Order** — paths sorted byte-wise, computed from the set rather than taken
+  from the order the list is written in.
+- **Normalisation** — a leading UTF-8 BOM is stripped and CRLF and lone CR
+  become LF, so a checkout with `core.autocrlf` on holds the same prompt
+  generation as one without. Nothing else is normalised: trailing whitespace
+  and blank-line changes are real edits to a prompt and must move the digest.
+- **Framing** — the digest is taken over per-file digests, each record carrying
+  its path, prefixed by a domain string that names the hash-input version and
+  which set it is. A rename is a change, a file moved between the two sets
+  cannot collide, and no byte can be shifted across a file boundary unnoticed.
+- **Absence** — a declared file that is absent is recorded as absent rather than
+  skipped, so a consumer that opted out or drifted has a visibly different
+  identity. A set with nothing present at all yields null, not the digest of
+  "everything absent".
+- **Failure** — a declared file that exists and cannot be read yields null for
+  that whole digest. Never a partial hash: one covering part of the stack is
+  indistinguishable from one covering all of it.
+
+The version is mixed into the digest rather than reported beside it, so a later
+redefinition cannot silently rewrite the meaning of records already emitted —
+version 2 produces different digests by construction. Changing the file list,
+the order, the normalisation, or the framing **is** a redefinition and bumps it.
+
+`hashInputVersion` is not `promptStackVersion`. The latter is the prompt stack's
+semantic version, which nothing computes yet; it stays null and is not this
+helper's to fill.
 
 ### Count the findings
 
@@ -451,19 +549,25 @@ node <ledger-helper> emit-telemetry \
   --token-source <from delta> --engine-version <from delta> \
   --duration-seconds <from delta> \
   --tokens-file <from delta> \
+  --prompt-stack-sha256 <from hash helper> \
+  --repo-instructions-sha256 <from hash helper> \
   --findings-file <path>
 ```
 
-**Skip this step entirely when the helper reports `enabled: false`.** With the
-gate off, `delta` reports `tokenSource: null` and omits `engineVersion` and
-`durationSeconds` rather than returning them as null. Passing that through
-would omit `--token-source`, which `emit-telemetry` requires, so a pass that
-emitted anyway would fail on every run — and a pass that "repaired" the gap by
-substituting `unavailable` would post a telemetry record on a repository that
-opted out. There is nothing to record when the gate is off.
+**Skip this step entirely when the helper reports `emit: false`.** A pass that
+emitted anyway would post a telemetry record on a repository that opted out.
+There is nothing to publish when the emission gate is off, whatever extraction
+did.
+
+`emit: true` with `enabled: false` — extraction switched off on a repository
+that still publishes — is a legitimate combination. The helper reports
+`tokenSource: unavailable` itself and the record carries no usage; pass that
+through like any other value rather than repairing the gap by hand.
 
 Omit `--engine-version`, `--duration-seconds`, and `--tokens-file` whenever
-`delta` reported the corresponding value as null.
+`delta` reported the corresponding value as null, and
+`--prompt-stack-sha256` / `--repo-instructions-sha256` whenever the hash helper
+did.
 Omit `--changeset-file` and the classifier runs over `<base>..<head>` itself.
 Add `--truncated` when a lane silently truncated the diff it was given: a lane
 that reviewed less than it was asked to produces cheap, bad findings, which is

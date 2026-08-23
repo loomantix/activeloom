@@ -43,27 +43,61 @@ const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = constants;
 const SNAPSHOT_VERSION = 2;
 
 /**
- * Emission is opt-in while the extraction is being proven on a single
- * repository. The gate is read here rather than decided by the model so that
- * one place governs whether a pass emits at all, and so widening it later is a
- * one-line change in a synced file rather than an edit in every skill.
+ * Two gates, because extraction and emission are different decisions.
+ *
+ * `LOOM_REVIEW_TELEMETRY` keeps its name and its meaning: it governs whether a
+ * pass **emits** a record to a pull request, which is the thing that warrants
+ * an opt-in rollout. `LOOM_REVIEW_TELEMETRY_EXTRACT` governs whether this
+ * helper **measures** at all, and defaults to the emission gate so no existing
+ * configuration changes meaning.
+ *
+ * Splitting them is what makes measurement usable without publication: a cost
+ * join, an offline run, or any local analysis can set the extraction gate on
+ * and leave the emission gate off, and emission is then structurally
+ * unreachable rather than merely unrequested. One variable meaning both
+ * forecloses that combination entirely.
+ *
+ * Both gates are read here and nowhere else, so widening either is a one-line
+ * change in a synced file rather than an edit in every skill, and no model
+ * decides the question by reading the environment itself.
+ *
+ * A misconfigured value is not an opt-out: the helper stays disabled and says
+ * why, so a typo that switches the rollout off cannot pass for a deliberate
+ * `off`.
  */
-function gateState() {
-  const raw = process.env['LOOM_REVIEW_TELEMETRY'];
+const EMISSION_GATE = 'LOOM_REVIEW_TELEMETRY';
+const EXTRACTION_GATE = 'LOOM_REVIEW_TELEMETRY_EXTRACT';
+
+function readGate(name) {
+  const raw = process.env[name];
   if (raw === undefined || raw === '') {
-    return { enabled: false, reason: 'LOOM_REVIEW_TELEMETRY is unset' };
+    return { set: false, enabled: false, reason: `${name} is unset` };
   }
   if (raw === 'on') {
-    return { enabled: true, reason: null };
+    return { set: true, enabled: true, reason: null };
   }
   if (raw === 'off') {
-    return { enabled: false, reason: 'LOOM_REVIEW_TELEMETRY is off' };
+    return { set: true, enabled: false, reason: `${name} is off` };
   }
   return {
+    set: true,
     enabled: false,
-    reason: 'LOOM_REVIEW_TELEMETRY must be exactly "on" or "off"',
+    reason: `${name} must be exactly "on" or "off"`,
   };
 }
+
+function resolveGates() {
+  const emission = readGate(EMISSION_GATE);
+  const declared = readGate(EXTRACTION_GATE);
+  // An unset extraction gate inherits the emission gate rather than defaulting
+  // to on. Reading session transcripts on a repository that never opted in
+  // would be a new behaviour for every existing consumer, and the reason it
+  // reports stays the one that is actually true.
+  const extraction = declared.set ? declared : emission;
+  return { emission, extraction };
+}
+
+const GATES = resolveGates();
 
 function parseArgs(argv) {
   const args = { mode: undefined };
@@ -356,6 +390,80 @@ const REPORTED_FIELDS = [
 ];
 
 /**
+ * The canonical bucket names the record uses, as distinct from the CLI field
+ * names above that `toCanonical` projects onto them.
+ */
+const CANONICAL_BUCKET_NAMES = new Set([
+  'input',
+  'output',
+  'cacheRead',
+  'cacheWrite',
+  'reasoning',
+]);
+
+/**
+ * Provider bucket names this helper mints itself, which an incoming CLI field
+ * of the same name must not be allowed to overwrite.
+ */
+const RESERVED_PROVIDER_BUCKETS = new Set(['reported_input_tokens']);
+
+/**
+ * Provider-specific integer buckets, preserved rather than dropped.
+ *
+ * `REPORTED_FIELDS` is what this CLI reports today, and everything else in a
+ * usage object used to be discarded. A bucket the provider reported and this
+ * helper threw away is the same "looks measured, isn't" failure the canonical
+ * buckets go to such lengths to avoid, one level up: the record reads as a
+ * complete account of the pass and silently is not. The record schema has
+ * always allowed an open integer key space alongside the canonical set; the
+ * gap was here, in the extractor.
+ *
+ * Only the token buckets carry these. The lane rows in the record have no
+ * provider key space at all — and this engine reports no lanes regardless.
+ *
+ * Provider keys are transcript-derived strings heading for a comment on a
+ * public repository, so they are bounded the same way model and effort are.
+ * The pattern is the record's own key grammar; the length bound is this side's,
+ * because the grammar alone puts no limit on what a key can carry. Restating a
+ * canonical bucket under a provider key is refused by the record, so the source
+ * fields are excluded here and the extractor cannot produce one.
+ */
+const PROVIDER_BUCKET_KEY_RE = /^[a-z0-9_]+$/;
+const PROVIDER_BUCKET_KEY_MAX_LENGTH = 64;
+
+function providerBucketKey(key) {
+  return key.length <= PROVIDER_BUCKET_KEY_MAX_LENGTH &&
+    PROVIDER_BUCKET_KEY_RE.test(key) &&
+    !REPORTED_FIELDS.includes(key) &&
+    !CANONICAL_BUCKET_NAMES.has(key) &&
+    !RESERVED_PROVIDER_BUCKETS.has(key)
+    ? key
+    : null;
+}
+
+/**
+ * The fields one totals object spans: the canonical five, plus every provider
+ * key any of the given objects carries.
+ *
+ * Provider keys are sorted so the serialised record does not depend on the
+ * order a JSONL event happened to list them in.
+ */
+function totalsFields(...sources) {
+  const extra = new Set();
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+    for (const key of Object.keys(source)) {
+      if (!REPORTED_FIELDS.includes(key)) {
+        extra.add(key);
+      }
+    }
+  }
+  return [...REPORTED_FIELDS, ...[...extra].sort()];
+}
+
+/**
  * Read a cumulative usage object, keeping "never reported" apart from
  * "reported zero".
  *
@@ -375,6 +483,23 @@ function readCumulative(source) {
     if (value !== null) {
       any = true;
     }
+  }
+  // Unknown integer keys ride along as provider buckets. `any` deliberately
+  // stays canonical-only: an object carrying nothing but unrecognised keys is
+  // not a usage report this helper can price, and treating it as one would put
+  // a bucket set with no canonical content into the record.
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const key = providerBucketKey(rawKey);
+    if (key === null) {
+      continue;
+    }
+    const value = nonNegativeInteger(rawValue);
+    if (value === null) {
+      // Absence is not zero here either. A key the CLI never sent, or sent as
+      // something other than a count, stays out of the object entirely.
+      continue;
+    }
+    totals[key] = value;
   }
   return any ? totals : null;
 }
@@ -417,7 +542,7 @@ function subtract(end, start, zeroBaseline = false) {
   const delta = {};
   let regressed = false;
   let unmeasurable = false;
-  for (const field of REPORTED_FIELDS) {
+  for (const field of totalsFields(end, start)) {
     const endValue = end?.[field] ?? null;
     if (endValue === null) {
       delta[field] = null;
@@ -440,6 +565,17 @@ function subtract(end, start, zeroBaseline = false) {
   return { delta, regressed, unmeasurable };
 }
 
+/**
+ * Emptiness is judged on the canonical fields alone, deliberately.
+ *
+ * An interval whose canonical side is unmeasurable is dropped, and dropping it
+ * is what keeps `unmeasurable` able to flag the record as incomplete. If a
+ * provider bucket could keep such an interval alive, the record would carry a
+ * bucket set with no canonical content and no downgrade — measured-looking and
+ * missing a stretch of the pass, which is the exact failure the flag exists to
+ * prevent. Provider counts therefore ride along with intervals that had
+ * canonical content rather than standing an interval up on their own.
+ */
 function isEmpty(totals) {
   return REPORTED_FIELDS.every(
     (field) => totals[field] === null || totals[field] === 0,
@@ -479,8 +615,21 @@ function toCanonical(totals) {
     cacheWrite,
     reasoning: totals['reasoning_output_tokens'],
   };
+  const providerBuckets = {};
   if (reportedInput !== null) {
-    bucket.providerBuckets = { reported_input_tokens: reportedInput };
+    providerBuckets['reported_input_tokens'] = reportedInput;
+  }
+  for (const field of totalsFields(totals)) {
+    if (REPORTED_FIELDS.includes(field)) {
+      continue;
+    }
+    const value = totals[field];
+    if (value !== null && value !== undefined) {
+      providerBuckets[field] = value;
+    }
+  }
+  if (Object.keys(providerBuckets).length > 0) {
+    bucket.providerBuckets = providerBuckets;
   }
   return { bucket, invalidProjection };
 }
@@ -497,9 +646,11 @@ function mergeRawBuckets(target, source) {
       });
       continue;
     }
-    for (const field of REPORTED_FIELDS) {
-      const left = existing.totals[field];
-      const right = bucket.totals[field];
+    for (const field of totalsFields(existing.totals, bucket.totals)) {
+      // A provider key one side never reported is absent, not zero: summing it
+      // as zero would turn a partial observation into a measured total.
+      const left = existing.totals[field] ?? null;
+      const right = bucket.totals[field] ?? null;
       existing.totals[field] =
         left === null || right === null ? null : left + right;
     }
@@ -637,8 +788,19 @@ function writeJson(path, value) {
   }
 }
 
+/**
+ * Every payload reports the emission gate, in every mode and on every error
+ * path. The caller decides whether to invoke `emit-telemetry` from this field
+ * alone; a payload that omitted it on the failure branches would push the
+ * decision back into the model, which is what having one reader avoids.
+ */
 function emit(payload) {
-  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  const decorated = {
+    ...payload,
+    emit: GATES.emission.enabled,
+    emitReason: GATES.emission.enabled ? null : GATES.emission.reason,
+  };
+  process.stdout.write(`${JSON.stringify(decorated, null, 2)}\n`);
   return 0;
 }
 
@@ -962,15 +1124,21 @@ function main(argv) {
     });
   }
 
-  const gate = gateState();
-  if (!gate.enabled) {
+  if (!GATES.extraction.enabled) {
     return emit({
       mode: args.mode ?? null,
       enabled: false,
-      reason: gate.reason,
-      tokenSource: null,
+      reason: GATES.extraction.reason,
+      // A pass whose extraction is off but whose emission is on still emits,
+      // and `unavailable` is the truthful provenance for a measurement that
+      // was never taken. Reporting null here would leave the caller to
+      // substitute a value by hand, which is the one thing `tokenSource` may
+      // never allow.
+      tokenSource: args.mode === 'delta' ? 'unavailable' : null,
       tokensFile: null,
       lanesFile: null,
+      engineVersion: null,
+      durationSeconds: null,
       error: null,
     });
   }
