@@ -39,8 +39,10 @@ session. Continue only after an explicit override.
 7. Take the pass telemetry snapshot now that its mandatory repository, PR,
    base, head, round, and stance identity exists, per
    [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". The
-   helper is a no-op when telemetry is not enabled for this repository. The
-   skill and identity-resolution setup above is outside the measurement boundary.
+   helper is a no-op when extraction is not enabled for this repository, and it
+   reports the separate emission gate that decides whether this pass may publish
+   a record at all. The skill and identity-resolution setup above is outside the
+   measurement boundary.
 8. Read all prior review threads. Telemetry markers are not review context:
    exclude them by marker prefix and never carry one into context assembly.
    Apply the docs/config-only classification. On a skip, set the telemetry
@@ -117,9 +119,11 @@ enclosing Claude review hook, and the outer wrapper owns its attestation.
 
 ## Output
 
-Emit this pass's telemetry record per
+Take the prompt-stack digests and emit this pass's telemetry record per
 [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry" with
-`--pass-type refactor`, whichever of the three outcomes above applied. A pass
+`--pass-type refactor`, whichever of the three outcomes above applied. A record
+that cannot name the prompt generation it ran on cannot be compared against the
+next one, so the two digests are part of emitting, not an optional extra. A pass
 that committed is `changed`; one that found nothing is `clean`. A pass that
 stopped on a spent latch is also `clean`, not `skipped` — its changeset was
 reviewable, this engine had simply already spent its one pass, and the record

@@ -41,32 +41,62 @@ import { dirname, join, resolve, sep } from 'node:path';
 const SNAPSHOT_VERSION = 1;
 
 /**
- * Emission is opt-in while the extraction is being proven on a single
- * repository. The gate is read here rather than decided by the model so that
- * one place governs whether a pass emits at all, and so widening it later is a
- * one-line change in a synced file rather than an edit in every skill.
+ * Two gates, because extraction and emission are different decisions.
+ *
+ * `LOOM_REVIEW_TELEMETRY` keeps its name and its meaning: it governs whether a
+ * pass **emits** a record to a pull request, which is the thing that warrants
+ * an opt-in rollout. `LOOM_REVIEW_TELEMETRY_EXTRACT` governs whether this
+ * helper **measures** at all, and defaults to the emission gate so no existing
+ * configuration changes meaning.
+ *
+ * Splitting them is what makes measurement usable without publication: a cost
+ * join, an offline run, or any local analysis can set the extraction gate on
+ * and leave the emission gate off, and emission is then structurally
+ * unreachable rather than merely unrequested. One variable meaning both
+ * forecloses that combination entirely.
+ *
+ * Both gates are read here and nowhere else, so widening either is a one-line
+ * change in a synced file rather than an edit in every skill, and no model
+ * decides the question by reading the environment itself.
  */
-function gateState() {
-  const raw = process.env['LOOM_REVIEW_TELEMETRY'];
+const EMISSION_GATE = 'LOOM_REVIEW_TELEMETRY';
+const EXTRACTION_GATE = 'LOOM_REVIEW_TELEMETRY_EXTRACT';
+
+function readGate(name) {
+  const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') {
-    return { enabled: false, reason: 'LOOM_REVIEW_TELEMETRY is unset' };
+    return { set: false, enabled: false, reason: `${name} is unset` };
   }
   const value = raw.trim().toLowerCase();
   if (value === 'on') {
-    return { enabled: true, reason: null };
+    return { set: true, enabled: true, reason: null };
   }
   if (value === 'off') {
-    return { enabled: false, reason: 'LOOM_REVIEW_TELEMETRY is off' };
+    return { set: true, enabled: false, reason: `${name} is off` };
   }
   // A misconfigured value is not an opt-out. Reporting it only as a reason
   // would make a typo that disables the whole rollout indistinguishable from a
   // deliberate `off`.
   return {
+    set: true,
     enabled: false,
-    reason: 'LOOM_REVIEW_TELEMETRY must be exactly "on" or "off"',
-    error: 'LOOM_REVIEW_TELEMETRY must be exactly "on" or "off"',
+    reason: `${name} must be exactly "on" or "off"`,
+    error: `${name} must be exactly "on" or "off"`,
   };
 }
+
+function resolveGates() {
+  const emission = readGate(EMISSION_GATE);
+  const declared = readGate(EXTRACTION_GATE);
+  // An unset extraction gate inherits the emission gate rather than defaulting
+  // to on. Reading session transcripts on a repository that never opted in
+  // would be a new behaviour for every existing consumer, and the reason it
+  // reports stays the one that is actually true.
+  const extraction = declared.set ? declared : emission;
+  return { emission, extraction };
+}
+
+const GATES = resolveGates();
 
 function parseArgs(argv) {
   const args = { mode: undefined };
@@ -338,6 +368,84 @@ const USAGE_FIELDS = [
 ];
 
 /**
+ * Provider-specific integer buckets, preserved rather than dropped.
+ *
+ * `USAGE_FIELDS` above is the canonical five, and everything else in a
+ * provider's `usage` object used to be discarded. A bucket the provider
+ * reported and this helper threw away is the same "looks measured, isn't"
+ * failure the canonical buckets go to such lengths to avoid, one level up: the
+ * record reads as a complete account of the pass and silently is not. The
+ * record schema has always allowed an open integer key space alongside the
+ * canonical set; the gap was here, in the extractor.
+ *
+ * Only the token buckets carry these. The lane rows in the record have no
+ * provider key space at all, so attaching one there would be dropped on
+ * validation — measured, serialised, and then silently gone.
+ *
+ * The two exclusion sets below are what keep a canonical count from arriving
+ * twice under two names — once as itself and once as a provider bucket, which
+ * the record refuses outright and which would read as corroboration if it did
+ * not. Excluding both the canonical names and the provider keys they are read
+ * from makes the extractor incapable of producing that record rather than
+ * merely unlikely to.
+ */
+const CANONICAL_BUCKET_NAMES = new Set(USAGE_FIELDS.map(([key]) => key));
+
+/** The provider keys `USAGE_FIELDS` already reads. */
+
+const CANONICAL_USAGE_KEYS = new Set([
+  'input_tokens',
+  'output_tokens',
+  'cache_read_input_tokens',
+  'cache_creation_input_tokens',
+  'output_tokens_details',
+]);
+
+/**
+ * Provider keys are transcript-derived strings heading for a comment on a
+ * public repository, so they are bounded the same way `safeToken` bounds model
+ * and lens. The pattern is the record's own key grammar; the length bound is
+ * this side's, because the grammar alone puts no limit on what a key can
+ * carry.
+ */
+const PROVIDER_BUCKET_KEY_RE = /^[a-z0-9_]+$/;
+const PROVIDER_BUCKET_KEY_MAX_LENGTH = 64;
+
+function providerBucketKey(key) {
+  return key.length <= PROVIDER_BUCKET_KEY_MAX_LENGTH &&
+    PROVIDER_BUCKET_KEY_RE.test(key) &&
+    !CANONICAL_USAGE_KEYS.has(key) &&
+    !CANONICAL_BUCKET_NAMES.has(key)
+    ? key
+    : null;
+}
+
+/**
+ * A key that cannot be represented safely is dropped, and dropping it does not
+ * downgrade the record.
+ *
+ * An unrecognised model id degrades because it makes two aggregates in one
+ * record disagree. An unrepresentable extra key does no such thing: the
+ * canonical buckets are still exact. Throwing away a valid measurement over a
+ * key the schema could never have carried would cost more than it protects.
+ */
+function accumulateProvider(provider, usage) {
+  for (const [rawKey, rawValue] of Object.entries(usage)) {
+    const key = providerBucketKey(rawKey);
+    if (key === null) {
+      continue;
+    }
+    const amount = nonNegativeInteger(rawValue);
+    if (amount === null) {
+      // Absence is not zero here either. A key the provider never sent stays
+      // out of the object entirely rather than arriving as a measured nothing.
+      continue;
+    }
+    provider[key] = (provider[key] ?? 0) + amount;
+  }
+}
+
+/**
  * Accumulate one bucket set, keeping "never reported" apart from "reported
  * zero".
  *
@@ -558,10 +666,12 @@ function collect(sessionLog, offsets, identities = {}) {
           model: turn.model,
           effort: turn.effort,
           counters: makeCounters(),
+          provider: {},
         };
         byModel.set(bucketKey, bucket);
       }
       accumulate(bucket.counters, turn.usage);
+      accumulateProvider(bucket.provider, turn.usage);
     }
 
     if (turn.lens !== null) {
@@ -596,11 +706,21 @@ function collect(sessionLog, offsets, identities = {}) {
     }
   }
 
-  const tokens = [...byModel.values()].map((bucket) => ({
-    model: bucket.model,
-    effort: bucket.effort,
-    ...bucket.counters,
-  }));
+  const tokens = [...byModel.values()].map((bucket) => {
+    const record = {
+      model: bucket.model,
+      effort: bucket.effort,
+      ...bucket.counters,
+    };
+    // Omitted rather than emitted empty: the record defaults an absent
+    // `providerBuckets` to `{}` itself, and an empty object on every row would
+    // read as "asked and answered nothing" instead of "this provider reports
+    // nothing beyond the canonical set".
+    if (Object.keys(bucket.provider).length > 0) {
+      record.providerBuckets = bucket.provider;
+    }
+    return record;
+  });
   const lanes = [...byLens.values()].map((lane) => ({
     lens: lane.lens,
     // A lane that spanned models has no single model id to report, and naming
@@ -657,8 +777,19 @@ function ensureOwnerOnlyDir(path) {
   }
 }
 
+/**
+ * Every payload reports the emission gate, in every mode and on every error
+ * path. The caller decides whether to invoke `emit-telemetry` from this field
+ * alone; a payload that omitted it on the failure branches would push the
+ * decision back into the model, which is what having one reader avoids.
+ */
 function emit(payload) {
-  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  const decorated = {
+    ...payload,
+    emit: GATES.emission.enabled,
+    emitReason: GATES.emission.enabled ? null : GATES.emission.reason,
+  };
+  process.stdout.write(`${JSON.stringify(decorated, null, 2)}\n`);
   return 0;
 }
 
@@ -906,16 +1037,34 @@ function main(argv) {
     return emit({ mode: null, enabled: false, error: message });
   }
 
-  const gate = gateState();
-  if (!gate.enabled) {
+  if (!GATES.extraction.enabled) {
+    if (args.mode === 'snapshot') {
+      return emit({
+        mode: 'snapshot',
+        enabled: false,
+        reason: GATES.extraction.reason,
+        sessionLog: null,
+        snapshotFile: null,
+        scoped: false,
+        error: GATES.extraction.error ?? GATES.emission.error ?? null,
+      });
+    }
     return emit({
       mode: args.mode ?? null,
       enabled: false,
-      reason: gate.reason,
-      tokenSource: null,
+      reason: GATES.extraction.reason,
+      // A pass whose extraction is off but whose emission is on still emits,
+      // and `unavailable` is the truthful provenance for a measurement that
+      // was never taken. Reporting null here would leave the caller to
+      // substitute a value by hand, which is the one thing `tokenSource` may
+      // never allow.
+      tokenSource: args.mode === 'delta' ? 'unavailable' : null,
       tokensFile: null,
       lanesFile: null,
-      error: gate.error ?? null,
+      engineVersion: null,
+      durationSeconds: null,
+      turns: null,
+      error: GATES.extraction.error ?? GATES.emission.error ?? null,
     });
   }
 

@@ -81,8 +81,10 @@ contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 7. Take the pass telemetry snapshot now that its mandatory repository, PR,
    base, head, round, and stance identity exists, per
    [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". The
-   helper is a no-op when telemetry is not enabled for this repository. The
-   skill and identity-resolution setup above is outside the measurement boundary.
+   helper is a no-op when extraction is not enabled for this repository, and it
+   reports the separate emission gate that decides whether this pass may publish
+   a record at all. The skill and identity-resolution setup above is outside the
+   measurement boundary.
 8. Read every prior review thread, including resolved and outdated threads.
    Telemetry markers are not review context: exclude them by marker prefix and
    never carry one into a finder prompt or packet. Where any remaining thread
@@ -279,9 +281,12 @@ attestations that named the superseded commit.
 
 ## Phase 4: Output
 
-Once the v3 result is finalized and any fix commits are pushed, emit this
-pass's telemetry record per [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md)
-"Pass Telemetry", with `--pass-type review` and the status this pass reached.
+Once the v3 result is finalized and any fix commits are pushed, take the
+prompt-stack digests and emit this pass's telemetry record per
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry", with
+`--pass-type review` and the status this pass reached. A record that cannot name
+the prompt generation it ran on cannot be compared against the next one, so the
+two digests are part of emitting, not an optional extra.
 Emission runs last because it must describe the finished pass, and it exits zero
 whether or not it succeeded: a telemetry failure is reported and never retried
 into the review, never changes the v3 result, and never delays marking the PR

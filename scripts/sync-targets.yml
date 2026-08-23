@@ -75,6 +75,16 @@ targets:
     substitutions: []
     mode: '0644'
 
+  # The prompt-stack hasher, which gives a telemetry record its prompt
+  # identity. Separate from the usage extractor beside it because it reads only
+  # files already checked into the consumer's repository — none of the
+  # transcript-trust argument that keeps extraction out of the ledger applies
+  # to it. Also ESM, and also covered by the directory's `package.json` below.
+  - source: .claude/skills/critique/scripts/prompt-stack-hash.js
+    destination: .claude/skills/critique/scripts/prompt-stack-hash.js
+    substitutions: []
+    mode: '0644'
+
   # The bundle is ESM. Node resolves module type from the NEAREST package.json
   # walking up from the file, which in a consumer is that repo's root — so
   # without this the ledger's module type depends on the consumer's manifest:
