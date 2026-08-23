@@ -122,7 +122,7 @@ Run these lanes as independently as the active runtime permits:
 
     Steps 4 and 5 return before reaching this step, so each names the record it
     emits rather than relying on the pass reaching the end. Skip emission
-    entirely when the telemetry helper reports `enabled: false`.
+    entirely when the telemetry helper reports `emit: false`.
 
 ## Output
 

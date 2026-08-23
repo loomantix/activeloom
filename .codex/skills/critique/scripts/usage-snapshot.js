@@ -910,9 +910,10 @@ function readSnapshot(path) {
     };
   }
   if (
-    typeof parsed['sessionLog'] !== 'string' ||
+    (parsed['sessionLog'] !== null &&
+      typeof parsed['sessionLog'] !== 'string') ||
     typeof parsed['offset'] !== 'number' ||
-    typeof parsed['sessionId'] !== 'string'
+    (parsed['sessionId'] !== null && typeof parsed['sessionId'] !== 'string')
   ) {
     return {
       snapshot: null,
@@ -1125,6 +1126,17 @@ function main(argv) {
   }
 
   if (!GATES.extraction.enabled) {
+    if (args.mode === 'snapshot') {
+      return emit({
+        mode: 'snapshot',
+        enabled: false,
+        reason: GATES.extraction.reason,
+        sessionLog: null,
+        snapshotFile: null,
+        scoped: false,
+        error: GATES.extraction.error ?? GATES.emission.error ?? null,
+      });
+    }
     return emit({
       mode: args.mode ?? null,
       enabled: false,
@@ -1139,7 +1151,8 @@ function main(argv) {
       lanesFile: null,
       engineVersion: null,
       durationSeconds: null,
-      error: null,
+      events: args.mode === 'delta' ? 0 : null,
+      error: GATES.extraction.error ?? GATES.emission.error ?? null,
     });
   }
 
