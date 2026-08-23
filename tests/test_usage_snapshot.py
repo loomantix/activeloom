@@ -908,6 +908,46 @@ def test_extraction_runs_with_emission_off(tmp_path: Path, session: Path) -> Non
     assert out.exists()
 
 
+def test_delta_measures_and_writes_files_with_emission_off(
+    tmp_path: Path, session: Path
+) -> None:
+    """A local delta pass needs pass-scoped token files without publishing."""
+    start = snapshot(session, tmp_path)
+    session.write_text(turn(request_id="a", output=5))
+    payload = run(
+        "delta",
+        "--out-dir",
+        str(tmp_path / "out"),
+        "--start",
+        str(start),
+        enabled=False,
+        LOOM_REVIEW_TELEMETRY_EXTRACT="on",
+    )
+    assert payload["enabled"] is True
+    assert payload["emit"] is False
+    assert payload["emitReason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert payload["tokenSource"] == "session-log-delta"
+    assert payload["tokensFile"] is not None
+    assert tokens_of(payload)[0]["output"] == 5
+
+
+def test_snapshot_reports_snapshot_schema_with_extraction_off(tmp_path: Path) -> None:
+    """Disabled extraction must return the snapshot contract, not delta."""
+    out = tmp_path / "start.json"
+    payload = run(
+        "snapshot",
+        "--out",
+        str(out),
+        LOOM_REVIEW_TELEMETRY_EXTRACT="off",
+    )
+    assert payload["mode"] == "snapshot"
+    assert payload["enabled"] is False
+    assert payload["scoped"] is False
+    assert payload["snapshotFile"] is None
+    assert payload["sessionLog"] is None
+    assert "tokenSource" not in payload
+
+
 def test_emission_stays_on_with_extraction_off(tmp_path: Path) -> None:
     """Extraction off is not a measurement; it must not serialise as zero."""
     payload = run(

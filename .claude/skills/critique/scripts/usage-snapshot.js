@@ -1038,6 +1038,17 @@ function main(argv) {
   }
 
   if (!GATES.extraction.enabled) {
+    if (args.mode === 'snapshot') {
+      return emit({
+        mode: 'snapshot',
+        enabled: false,
+        reason: GATES.extraction.reason,
+        sessionLog: null,
+        snapshotFile: null,
+        scoped: false,
+        error: GATES.extraction.error ?? GATES.emission.error ?? null,
+      });
+    }
     return emit({
       mode: args.mode ?? null,
       enabled: false,
