@@ -1,6 +1,6 @@
 ---
 name: deepcritique
-description: High-fidelity PR-first Codex review chain. Opens or reuses a draft PR, records verified findings inline before fixes, and runs critique deep — preceded by refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Use for complex or high-risk changes such as auth, crypto, secrets, data migrations, GitHub Actions, sync tooling, .agents/skills, large refactors, or when the user asks for a deep review.
+description: High-fidelity PR-first review chain that opens or reuses a draft PR, records verified findings inline before fixes, and runs critique deep — preceded by refactorpass on this engine's first pass only. Rounds 3+ run in convergence mode. Runs only when the review tier resolved to Deep; hands a Lean changeset back to critique.
 ---
 
 # Deep Critique
@@ -99,16 +99,24 @@ defects, search for the highest-impact failure modes first, and require code,
 tests, or documented constraints to disprove each risk. Do not report guesses;
 report only evidence-backed, actionable findings.
 
-## Deep Triggers
+## Tier Gate
 
-Use this path when the change touches:
+This lane runs only when the review tier resolved to Deep. The triggers and the
+evidence rules are defined once, in
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) under "Review Tier" —
+this skill does not carry its own list, and a repo-local list never overrides
+that one. **Lean is the default; Deep is the exception you justify.**
 
-- `.agents/skills/**`, `scripts/sync*`, or `.github/workflows/**`
-- authentication, authorization, crypto, secret handling, or sensitive data
-- database schema, data shape, migrations, or serialization contracts
-- more than roughly 20 files or 500 net lines
-- an area with recurring incidents
-- customer/tenant-variable behavior such as vendor integrations, per-tenant configuration, prompt/output generation, or data normalization
+Resolve the effective `local-review-tier:v1` marker under the ledger's
+authenticated, forward-only transition rule. If no accepted marker exists,
+classify against the workflow doc's triggers and post the marker before starting
+a lane. A pass that exits on the docs/config-only skip never needs a tier.
+
+**If the tier is Lean, do not run this chain.** Report the resolved tier and
+hand the changeset to `critique <pr-number>`, which owns the Lean lane set.
+Continue here only on a resolved Deep tier or an explicit human request, which
+is trigger 6 and is recorded as one. Typing this skill's name does not select
+the deep path.
 
 ## Handoff
 

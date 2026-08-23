@@ -1,6 +1,6 @@
 ---
 name: critique
-description: PR-first adversarial code review for Codex. Use after implementation or refactorpass on an open draft PR, especially when the user asks to critique, review hard, find bugs, or run the platform review chain. Posts verified findings inline before fixing, then replies and resolves. Supports lean and deep modes.
+description: PR-first adversarial code review for Codex. Use after implementation or refactorpass on an open draft PR, especially when the user asks to critique, review hard, find bugs, or run the platform review chain. Posts verified findings inline before fixing, then replies and resolves. Lean mode runs the two highest-signal lanes; the deep matrix runs only when the resolved review tier is Deep.
 ---
 
 # Critique
@@ -123,10 +123,31 @@ urgent deferred issues.
 
 ## Mode
 
-- **Lean**: default. Run the lean two-lane review: code reviewer plus silent failure hunter. This is still an adversarial PR review, not a casual skim.
-- **Deep**: if the user passes `deep` or the change is high-risk. Run the full independent review matrix below. Deep mode is intentionally much heavier than lean mode; do not collapse it into one general review pass.
+Mode follows the resolved review tier, not the caller's habit. The tier triggers
+and the evidence rules live in
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) under "Review Tier" and
+are the only definition; this skill does not carry its own list. **Lean is the
+default; Deep is the exception you justify.**
 
-If the diff touches customer/tenant-variable behavior—vendor integrations, per-tenant configuration, prompt/output generation, or data normalization—recommend deep mode. The tenant-coupling lens that catches one customer's values hardcoded into shared logic is intentionally not part of the lean two-lane set.
+Resolve the effective `local-review-tier:v1` marker under the ledger's
+authenticated, forward-only transition rule. If none exists, classify against
+the workflow doc's triggers and post the marker before starting a lane. Lean is
+the tier when no trigger matches.
+
+- **Lean**: the default. Run the lean two-lane review: code reviewer plus silent failure hunter. This is still an adversarial PR review, not a casual skim.
+- **Deep**: run the full independent review matrix below only when the recorded tier is Deep. A `deep` argument handed down from `deepcritique` asserts that recorded tier; a direct human `deep` request is trigger 6 and posts a Deep replacement marker that preserves the recorded triggers and adds 6 before lanes start. Deep mode is intentionally much heavier than lean mode; do not collapse it into one general review pass.
+
+Escalate mid-pass only on a confirmed finding that reaches a trigger, per the
+workflow doc's evidence rule, and post the replacement marker naming it. A
+suspicion is not evidence. State the resolved tier and the trigger that selected
+it in the output.
+
+The tenant-coupling lane catches one customer's values hardcoded into shared
+logic and is intentionally not part of the lean two-lane set. A diff that
+materially changes customer/tenant-variable behavior — vendor integrations,
+per-tenant configuration, prompt/output generation, or data normalization —
+trips trigger 1's isolation clause and is classified there rather than by a
+separate recommendation here.
 
 ## Lane Execution Ownership
 

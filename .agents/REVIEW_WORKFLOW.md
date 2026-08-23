@@ -108,6 +108,135 @@ the opposite of the cold read the relay exists to obtain. `coverage` reports it
 as `authorAttested` so the fact stays visible, but the tier counts distinct
 non-author engines only.
 
+## Review Tier
+
+Resolve the tier **before the first reviewer runs**, on every path. An
+unresolved tier is not a neutral state — it is how the expensive path becomes
+the default. **Lean is the default; Deep is the exception you justify.**
+
+State the resolved tier and the trigger that selected it — or `no trigger` — in
+the pass output, and post the ledger's `local-review-tier:v1` marker once per
+PR. The marker is per-PR and shared across engines: later rounds resolve the
+effective marker under the ledger's authenticated, forward-only transition rule
+instead of reclassifying the unchanged range. A tier re-derived from scratch
+each round, or re-derived against a different list in each engine, drifts back
+to Deep.
+
+### What sets the tier
+
+Tier is set by what a missed defect reaches, not by how hard the change is to
+review. Difficulty is the wrong input: every subtle diff feels like it deserves
+more scrutiny, and that feeling is what pulls a whole repo onto the deep path.
+
+Resolve the changed-file list once with
+`git diff --name-only <base-sha>..<head-sha>`, then walk the triggers below.
+**Any one selects Deep; no trigger means Lean.**
+
+1. **Sensitive path** — authentication, authorization, cryptography, secret or
+   credential handling, PHI/PII, tenant or customer isolation. However small
+   the edit.
+2. **Irreversible in production data or a published artifact** — migration,
+   backfill, a published package's API or version: anything a revert cannot
+   undo.
+3. **Fans out past this repo** — the synced `.agents/**` surface, the sync
+   engine, a published package, a contract other repositories consume. One
+   defect lands in every consumer.
+4. **Non-obvious behaviour in deployed runtime code** — concurrency, retries or
+   idempotency, cache invalidation, money or clinical calculation, state
+   machines, partial-failure and rollback paths: correctness that is not
+   readable from the diff.
+5. **Recurring-incident area** — the touched paths produced a post-merge defect,
+   revert, or hotfix in roughly the last 90 days. Evidence is a specific defect,
+   revert, or hotfix commit you can name; an active path with ordinary commit
+   traffic is not evidence.
+6. **Explicitly requested** — a human directly asked for a deep review, or the
+   change is a first of its kind the author cannot self-assess. An internal
+   `deep` argument passed between tier-aware skills only asserts the recorded
+   tier; it is not a new request.
+
+### What does not set the tier
+
+Subtlety does not: a change can be hard to reason about and still be Lean. Nor
+does diff size — a large mechanical refactor is Lean unless it also trips
+trigger 4. Nor does topic adjacency: code _about_ security that does not itself
+enforce a sensitive boundary is not trigger 1.
+
+**The dominant rule: when the worst outcome of a missed defect is a red CI run,
+a broken build, or a broken developer workflow, the change is Lean.** CI
+scripts, lint rules, build tooling, developer utilities, fixtures, and test
+harnesses land here even when they are subtle and even when a defect in them
+fails open. That class of defect is caught by the next person the tool touches
+and fixed by editing the tool.
+
+Classify enforcement controls by the consequence of failure, not by their CI
+location. A secret/privacy scanner, provenance gate, or release guard is Deep
+when failing open can expose protected data, grant access, or compromise a
+published artifact; that outcome trips trigger 1 or 2 rather than this rule.
+
+**Precedence: walk triggers 1–6 first. The dominant rule only resolves a change
+that matched no trigger.** It is dominant over the difficulty instinct, not over
+the trigger list. Tooling that also fans out past this repo — the sync engine, a
+shared CI action, anything under `.agents/` — is trigger 3 and therefore Deep,
+because its blast radius is not confined to the developer who runs it.
+
+### Round budget and stopping rule
+
+A round is one complete pass per available engine at the same head.
+
+- **Lean — cap 2.** Round 1 is adversarial. Round 2 runs only if round 1 made a
+  material fix, and runs in convergence mode.
+- **Deep — cap 4.** Rounds 1–2 adversarial, rounds 3–4 convergence.
+
+**Stop as soon as a complete round produces no material fix.** That is the
+stopping rule for both tiers, and it is a rule rather than a budget to spend: a
+Lean change that lands after one clean round has had enough review.
+
+A Lean change that reaches round 3 has either been mis-tiered — escalate it
+deliberately, below — or is not converging, which is a signal about the change
+rather than a licence for another round. Say which, and stop.
+
+### Escalate and de-escalate on evidence
+
+Both moves require a confirmed finding. A suspicion, an unverified severity
+label, or "this feels risky" is not evidence and does not move a tier.
+
+**Lean → Deep.** Escalate when a confirmed finding shows the change reaches a
+trigger the classification missed — a real authorization or isolation bypass, a
+real data-shape change, a real break in a contract another repository consumes —
+or when the human directly requests Deep, which is trigger 6. Name the finding
+or request and the trigger, post a replacement tier marker that preserves every
+recorded trigger and adds the new one, and adopt the Deep budget. The round
+already run counts as Deep round 1; do not restart the count.
+**The first round after an escalation is adversarial whatever its ordinal.**
+
+**Deep → Lean.** De-escalate when Deep round 1 completes and _every_ lane owning
+a recorded trigger returned no confirmed finding. Finish at Lean: the lean lane
+set, one further round at most. Running the full matrix again over a
+substantively unchanged diff audits the review rather than the change. Record
+the de-escalation and the lanes that came back clean.
+
+Trigger 6 — an explicitly requested deep review — is never de-escalated. The
+request is the evidence, and no clean lane overrides it. For the rest, a trigger
+de-escalates only through the lane that owns it:
+
+| Trigger                          | Owning lane                               |
+| -------------------------------- | ----------------------------------------- |
+| 1 sensitive path                 | security reviewer                         |
+| 2 irreversible data or artifact  | code reviewer (migration/compat pass)     |
+| 3 fans out past this repo        | code reviewer on the consumed contract    |
+| 4 non-obvious deployed behaviour | silent failure hunter + code reviewer     |
+| 5 recurring-incident area        | code reviewer scoped to the incident path |
+| 6 explicitly requested           | not de-escalatable                        |
+
+Tier selection narrows which lanes run and how many rounds are owed. It never
+narrows what a lane may report, and it never relaxes the post-before-editing,
+reply, or resolve contract.
+
+`deepcritique` runs only on a resolved Deep tier and hands a Lean changeset back
+to `critique`; typing the deep skill does not select the deep path. `reviewit`'s
+iteration cap matches the tier's round cap numerically — two at Lean, four at
+Deep.
+
 ## Hosted Reviewers
 
 Hosted AI reviewers — the Gemini Flash and Copilot passes `reviewit` drives on
