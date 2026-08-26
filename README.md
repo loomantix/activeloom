@@ -97,6 +97,10 @@ See [`docs/getting-started.md`](docs/getting-started.md) for the full walkthroug
 4. Set the App-token secrets on the downstream repo or organization.
 5. Run the workflow once via `gh workflow run "Sync from upstream"` — the first PR opens cleanly.
 
+### Feeding lessons back
+
+Review cycles teach things the generic prompts cannot know. [`docs/review-learning-loop.md`](docs/review-learning-loop.md) says where each lesson goes — a rule true of any codebase belongs in a role prompt or the `critique` skill here, and a rule that names one repo's flags, paths, or past incidents belongs in that repo's consumer-owned `.review/addendum.local.md`, which no sync can overwrite.
+
 ## How to think about this project
 
 The skills assume a PR-first local review chain: open a draft, use inline
