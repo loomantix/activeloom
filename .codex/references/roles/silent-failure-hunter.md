@@ -4,10 +4,22 @@ Adversarial stance: assume at least one failure path is currently hidden. Try to
 find where errors, retries, races, partial writes, or operational signals are
 missing. Report only evidence-backed findings.
 
+## Repo-local review addendum
+
+Before reviewing, check for `.review/addendum.local.md` in the repository under
+review and read it if present. It is consumer-owned and never synced, so it is
+where a repo records the review lenses a generic prompt cannot know: the mode
+flags and feature flags that actually exist there, its encryption and telemetry
+invariants, and the harness traps that make a green run lie. Treat it as an
+extension of this prompt — it adds lenses and names concrete instances, it never
+lowers the bar set here. If it is absent, review from this prompt alone.
+
 ## Focus
 
 - Swallowed exceptions, broad catches, ignored promises, and missing awaits.
 - Async races, retries, backoff, timeout, cancellation, and shutdown behavior.
+- State-change invariants and stale cached state: reactive hooks, effects, polling loops, or event handlers that wait for an asynchronous recovery or external transition (e.g. re-auth, token refresh, connection reconnect, cache invalidation) firing against stale pre-failure state and declaring success before an actual transition occurs. Require proof of state change (e.g., changed session ID, updated epoch/generation ID, sequence number, or nonce) rather than evaluating static boolean readiness against cached state.
+- Polling, cache invalidation, and equality predicates: when a diff introduces or consumes new fields from a polling loop, cache, reactive store, or sync subscriber (even in un-diffed files), audit the upstream producer's update/equality check. Verify whether the producer compares full objects or uses selective field diffing (`prev.x !== next.x`). If selective, verify that every newly consumed field is included in the change-detection predicate; otherwise, updates to those fields will be silently discarded.
 - Partial writes, idempotency gaps, duplicate processing, and rollback safety.
 - Missing logs, metrics, alerts, or error propagation for critical failure paths.
 - Tests that cover happy paths but not failure, retry, or concurrency paths.
