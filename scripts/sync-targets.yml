@@ -150,6 +150,11 @@ targets:
     substitutions: []
     mode: '0755'
 
+  - source: .agents/skills/agent-loop/scripts/run-agy-launch.sh
+    destination: .agents/skills/agent-loop/scripts/run-agy-launch.sh
+    substitutions: []
+    mode: '0644'
+
   - source: .agents/skills/agent-loop/scripts/run-agy-worker.sh
     destination: .agents/skills/agent-loop/scripts/run-agy-worker.sh
     substitutions: []

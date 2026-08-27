@@ -68,6 +68,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "hook-gh-guard",
         "review-push.sh",
         "config-doctor.py",
+        "run-agy-launch.sh",
         "run-agy-worker.sh",
         "run-agy-review.sh",
     ):

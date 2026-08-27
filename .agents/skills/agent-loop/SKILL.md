@@ -184,7 +184,9 @@ will not advance to the next issue until the current issue is safely finalized
 or an operator explicitly records it as bailed; uncertain push, PR, or ledger
 state always stops recovery.
 
-Do not invoke hosted Gemini, Copilot, `reviewit`, or any other GitHub-hosted AI reviewer. The configured local Agy Gemini and Claude hooks are the review path.
+Do not invoke hosted Gemini, Copilot, `reviewit`, or any other GitHub-hosted AI
+reviewer. The configured local Agy Gemini and Claude hooks are the review
+path.
 
 ## Dependency Gate
 

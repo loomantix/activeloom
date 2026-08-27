@@ -4,8 +4,8 @@ Work autonomously on one assigned GitHub issue. Read this file and the exact
 issue title/body from `AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY`,
 then implement, validate, refactor, and commit locally. Stop after the local
 commit. Do not push, open a pull request, or invoke hosted Gemini, Copilot,
-`reviewit`, or any other GitHub-hosted AI reviewer. Do not call `gh`; the wrapper owns GitHub
-access, review, and publication.
+`reviewit`, or any other GitHub-hosted AI reviewer. Do not call `gh`; the
+wrapper owns GitHub access, review, and publication.
 
 > Customize every `TODO` before using the loop. This consumer-owned file is
 > bootstrapped once and is not overwritten by later syncs.

@@ -22,6 +22,7 @@ def _project(tmp_path: Path) -> Path:
     ledger_dir.mkdir(parents=True)
     shutil.copy2(ROOT / ".agents/skills/agent-loop/scripts/agent-loop-state.py", scripts)
     shutil.copy2(ROOT / ".agents/skills/agent-loop/scripts/review-push.sh", scripts)
+    shutil.copy2(ROOT / ".agents/skills/agent-loop/scripts/run-agy-launch.sh", scripts)
     shutil.copy2(ROOT / ".agents/skills/agent-loop/scripts/run-agy-worker.sh", scripts)
     shutil.copy2(ROOT / ".agents/skills/agent-loop/scripts/run-agy-review.sh", scripts)
     shutil.copy2(ROOT / ".agents/skills/critique/scripts/review-ledger.js", ledger_dir)

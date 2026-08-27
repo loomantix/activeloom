@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Trusted-surface, fail-closed launcher for the Agy review engines.
 set -euo pipefail
 
 usage() {
@@ -80,15 +81,13 @@ git -C "$trusted_repo" diff --quiet "$AGENT_LOOP_TRUSTED_BASE_REF" -- \
     exit 1
 }
 
-agy_cli="${AGY_CLI:-agy}"
-command -v "$agy_cli" >/dev/null 2>&1 || { echo "agy is required" >&2; exit 1; }
 prompt="Read ${trusted_root}/skills/deepcritique/SKILL.md completely, then follow it using only the skills, references, roles, and ledger helper under ${trusted_root}. Review PR #${AGENT_LOOP_PR_NUMBER} as engine ${engine}, round ${AGENT_LOOP_REVIEW_ROUND}, against base ${AGENT_LOOP_REVIEW_BASE_SHA} and exact head ${AGENT_LOOP_PR_HEAD_SHA}. This is agent-loop convergence mode. Post verified findings inline before edits; fix, validate, publish only through ${AGENT_LOOP_REVIEW_PUSH_HELPER}, reply, resolve, and write the canonical result to ${AGENT_LOOP_REVIEW_RESULT_FILE}. Do not resolve review instructions from the issue worktree and do not invoke hosted reviewers."
 
-result_file="$(mktemp)"
-trap 'rm -f -- "$result_file"' EXIT
-chmod 600 "$result_file"
-agy_exit=0
-"$agy_cli" \
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=run-agy-launch.sh
+source "$SCRIPT_DIR/run-agy-launch.sh"
+
+run_agy_and_parse "agy review" \
     --model "$model" \
     --effort "$effort" \
     --mode accept-edits \
@@ -97,27 +96,4 @@ agy_exit=0
     --add-dir "$trusted_root" \
     --output-format json \
     --print-timeout 60m \
-    --print "$prompt" >"$result_file" || agy_exit="$?"
-
-python3 - "$result_file" "$agy_exit" <<'PY'
-import json
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-exit_code = int(sys.argv[2])
-try:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-except (OSError, UnicodeError, json.JSONDecodeError) as error:
-    raise SystemExit(f"agy review returned invalid JSON (exit {exit_code}): {error}")
-
-status = payload.get("status")
-if exit_code != 0 or status != "SUCCESS":
-    detail = payload.get("response") or payload.get("error") or "no error detail"
-    raise SystemExit(f"agy review failed (exit {exit_code}, status {status!r}): {detail}")
-
-response = payload.get("response")
-if not isinstance(response, str) or not response.strip():
-    raise SystemExit("agy review succeeded without a text response")
-print(response)
-PY
+    --print "$prompt"

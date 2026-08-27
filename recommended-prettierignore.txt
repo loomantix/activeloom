@@ -18,6 +18,7 @@
 .agents/skills/agent-loop/scripts/hook-gh-guard
 .agents/skills/agent-loop/scripts/hook-git-guard
 .agents/skills/agent-loop/scripts/review-push.sh
+.agents/skills/agent-loop/scripts/run-agy-launch.sh
 .agents/skills/agent-loop/scripts/run-agy-review.sh
 .agents/skills/agent-loop/scripts/run-agy-worker.sh
 .agents/skills/backlog-refinement/SKILL.md

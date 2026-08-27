@@ -57,6 +57,7 @@ def doctor(project: Path, claude_effort: str | None) -> None:
     review_push = skill / "scripts/review-push.sh"
     worker_launcher = skill / "scripts/run-agy-worker.sh"
     review_launcher = skill / "scripts/run-agy-review.sh"
+    launch_helper = skill / "scripts/run-agy-launch.sh"
     for path in (
         config_path,
         prompt_path,
@@ -66,6 +67,7 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         review_push,
         worker_launcher,
         review_launcher,
+        launch_helper,
     ):
         if not path.is_file() or path.is_symlink():
             raise DoctorError(f"required agent-loop file is missing: {path.relative_to(root)}")

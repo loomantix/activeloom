@@ -286,6 +286,7 @@ def test_new_script_modes_are_executable() -> None:
     expected = {
         ".agents/skills/agent-loop/scripts/agent-loop.sh": 0o755,
         ".agents/skills/agent-loop/scripts/agent-loop-state.py": 0o755,
+        ".agents/skills/agent-loop/scripts/run-agy-launch.sh": 0o644,
         ".agents/skills/agent-loop/scripts/run-agy-worker.sh": 0o755,
         ".agents/skills/agent-loop/scripts/run-agy-review.sh": 0o755,
         ".agents/skills/agent-loop/scripts/hook-gh-guard": 0o755,

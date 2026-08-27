@@ -157,6 +157,7 @@ HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
 AGY_WORKER_LAUNCHER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-agy-worker.sh"
 AGY_REVIEW_LAUNCHER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-agy-review.sh"
+AGY_LAUNCH_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-agy-launch.sh"
 TRUSTED_AGENTS_ROOT="$(cd "$PACKAGED_SKILL_BASE/.." && pwd)"
 
 BASE_BRANCH=""
@@ -298,8 +299,8 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
     expected_claude_hook="\"\$AGENT_LOOP_AGY_REVIEW_LAUNCHER\" --engine claude"
     for hook_key in claude_review_hook gemini_review_hook; do
         case "$hook_key" in
-            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
-            gemini_review_hook) hook_value="$GEMINI_REVIEW_HOOK" ;;
+            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK"; expected_hook="$expected_claude_hook" ;;
+            gemini_review_hook) hook_value="$GEMINI_REVIEW_HOOK"; expected_hook="$expected_gemini_hook" ;;
             *) echo "unhandled hook key in contract-v3 preflight: $hook_key" >&2; exit 1 ;;
         esac
         [ -n "$hook_value" ] || {
@@ -307,13 +308,7 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
             exit 1
         }
         builtin_hook=false
-        if [ "$hook_key" = gemini_review_hook ] && \
-           [ "$hook_value" = "$expected_gemini_hook" ]; then
-            builtin_hook=true
-        elif [ "$hook_key" = claude_review_hook ] && \
-             [ "$hook_value" = "$expected_claude_hook" ]; then
-            builtin_hook=true
-        fi
+        [ "$hook_value" = "$expected_hook" ] && builtin_hook=true
         if [ "$builtin_hook" != true ]; then
             [[ "$hook_value" == *AGENT_LOOP_REVIEW_PUSH_HELPER* ]] || {
                 echo "$hook_key must use AGENT_LOOP_REVIEW_PUSH_HELPER for review contract v3" >&2
@@ -371,6 +366,10 @@ uses_builtin_agy=false
 if [ -z "$WORKER_HOOK" ]; then
     [ -n "$WORKER_MODEL" ] || { echo "worker_model must be configured for the default Agy worker" >&2; exit 1; }
     [ -x "$AGY_WORKER_LAUNCHER" ] || { echo "Agy worker launcher not found or not executable: $AGY_WORKER_LAUNCHER" >&2; exit 1; }
+    [ -f "$AGY_LAUNCH_HELPER" ] && [ -r "$AGY_LAUNCH_HELPER" ] && [ ! -L "$AGY_LAUNCH_HELPER" ] || {
+        echo "Agy launch helper not found, unreadable, or symlinked: $AGY_LAUNCH_HELPER" >&2
+        exit 1
+    }
     uses_builtin_agy=true
 elif [ -n "$WORKER_FALLBACK_MODEL" ]; then
     echo "worker_fallback_model cannot be used with a custom worker_hook" >&2
@@ -379,6 +378,10 @@ fi
 case "$GEMINI_REVIEW_HOOK|$CLAUDE_REVIEW_HOOK" in
     *AGENT_LOOP_AGY_REVIEW_LAUNCHER*)
         [ -x "$AGY_REVIEW_LAUNCHER" ] || { echo "Agy review launcher not found or not executable: $AGY_REVIEW_LAUNCHER" >&2; exit 1; }
+        [ -f "$AGY_LAUNCH_HELPER" ] && [ -r "$AGY_LAUNCH_HELPER" ] && [ ! -L "$AGY_LAUNCH_HELPER" ] || {
+            echo "Agy launch helper not found, unreadable, or symlinked: $AGY_LAUNCH_HELPER" >&2
+            exit 1
+        }
         uses_builtin_agy=true
         ;;
 esac
