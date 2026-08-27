@@ -14,6 +14,18 @@ REVIEW = ROOT / ".agents/skills/agent-loop/scripts/run-agy-review.sh"
 SHA = "a" * 40
 
 
+def _subprocess_env() -> dict[str, str]:
+    # These launchers intentionally execute standalone Python helpers and fake
+    # CLIs. Pytest-cov exports COV_CORE_* for worker collection; inheriting it
+    # makes those subprocesses emit statement-only data that cannot be combined
+    # with this repository's branch coverage.
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("COV_CORE_")
+    }
+
+
 def _executable(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
@@ -36,7 +48,7 @@ def _fake_agy(tmp_path: Path, status: str = "SUCCESS") -> tuple[Path, Path]:
 def test_worker_uses_selected_model_and_requires_success_status(tmp_path: Path) -> None:
     agy, argv_file = _fake_agy(tmp_path)
     env = {
-        **os.environ,
+        **_subprocess_env(),
         "AGY_CLI": str(agy),
         "AGY_ARGV_FILE": str(argv_file),
         "AGENT_LOOP_PROMPT": "Implement the bounded issue.",
@@ -107,7 +119,7 @@ def test_review_uses_truthful_engine_trusted_surface_and_fail_closed_json(
     issue.mkdir()
     agy, argv_file = _fake_agy(tmp_path)
     env = {
-        **os.environ,
+        **_subprocess_env(),
         "AGY_CLI": str(agy),
         "AGY_ARGV_FILE": str(argv_file),
         "AGENT_LOOP_REVIEW_ENGINE": "gemini",
@@ -172,7 +184,7 @@ def test_review_rejects_modified_trusted_surface_before_agy(tmp_path: Path) -> N
     marker = tmp_path / "agy-called"
     agy = _executable(tmp_path / "agy", f"#!/usr/bin/env bash\ntouch {marker}\n")
     env = {
-        **os.environ,
+        **_subprocess_env(),
         "AGY_CLI": str(agy),
         "AGENT_LOOP_REVIEW_ENGINE": "gemini",
         "AGENT_LOOP_REVIEW_BASE_SHA": SHA,
