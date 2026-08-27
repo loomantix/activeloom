@@ -192,7 +192,12 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     ]
     for path in consumer_owned:
         assert path.is_file()
-    for guard_name in ("hook-gh-guard", "hook-git-guard"):
+    for guard_name in (
+        "hook-gh-guard",
+        "hook-git-guard",
+        "run-agy-worker.sh",
+        "run-agy-review.sh",
+    ):
         relative = Path(".agents/skills/agent-loop/scripts") / guard_name
         synced_guard = consumer / relative
         upstream_guard = REPO_ROOT / relative
@@ -281,6 +286,9 @@ def test_new_script_modes_are_executable() -> None:
     expected = {
         ".agents/skills/agent-loop/scripts/agent-loop.sh": 0o755,
         ".agents/skills/agent-loop/scripts/agent-loop-state.py": 0o755,
+        ".agents/skills/agent-loop/scripts/run-agy-launch.sh": 0o644,
+        ".agents/skills/agent-loop/scripts/run-agy-worker.sh": 0o755,
+        ".agents/skills/agent-loop/scripts/run-agy-review.sh": 0o755,
         ".agents/skills/agent-loop/scripts/hook-gh-guard": 0o755,
         ".agents/skills/agent-loop/scripts/hook-git-guard": 0o755,
         ".agents/skills/backlog-refinement/scripts/bail-report.py": 0o755,
@@ -442,4 +450,3 @@ def test_action_pin_drift_inventory_is_hermetic() -> None:
                 all_workflow_files.add(yaml_path.relative_to(REPO_ROOT).as_posix())
 
     assert declared_files == all_workflow_files
-

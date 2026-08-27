@@ -65,6 +65,7 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
     assert stat.S_IMODE(state.stat().st_mode) == 0o600
     assert stat.S_IMODE(state.parent.stat().st_mode) == 0o700
     value = json.loads(created.stdout)
+    assert value["version"] == 2
     assert value["phase"] == "draft-open"
     assert value["reviewEngine"] is None
     missing_engine = _run(
@@ -95,14 +96,14 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
         "--head-sha",
         "c" * 40,
         "--review-engine",
-        "codex",
+        "gemini",
     )
     assert updated.returncode == 0, updated.stderr
     shown = _run("show", "--file", str(state))
     assert shown.returncode == 0, shown.stderr
     shown_value = json.loads(shown.stdout)
     assert shown_value["round"] == 2
-    assert shown_value["reviewEngine"] == "codex"
+    assert shown_value["reviewEngine"] == "gemini"
 
 
 def test_batch_state_persists_order_cursor_statuses_and_child_paths(tmp_path: Path) -> None:
@@ -218,10 +219,40 @@ def test_state_rejects_permissive_or_unknown_content(tmp_path: Path) -> None:
     assert "missing or unknown" in result.stderr
 
 
-def test_state_rejects_json_booleans_for_integer_fields(tmp_path: Path) -> None:
+def test_state_rejects_pre_gemini_protocol_checkpoint(tmp_path: Path) -> None:
     state = tmp_path / "run-state.json"
     value = {
         "version": 1,
+        "runId": "run-1",
+        "repo": "example/repository",
+        "issue": 7,
+        "issueTitleSha256": TITLE_HASH,
+        "issueBodySha256": BODY_HASH,
+        "baseBranch": "main",
+        "branch": "agent-loop/issue-7-run-1",
+        "worktree": str((tmp_path / "worktree").resolve()),
+        "logDir": str((tmp_path / "logs").resolve()),
+        "prNumber": 9,
+        "prUrl": "https://example.invalid/pr/9",
+        "baseSha": BASE,
+        "headSha": HEAD,
+        "phase": "draft-open",
+        "round": 1,
+        "reviewEngine": None,
+        "geminiResultSha256": None,
+        "claudeResultSha256": None,
+    }
+    state.write_text(json.dumps(value), encoding="utf-8")
+    state.chmod(0o600)
+    result = _run("show", "--file", str(state))
+    assert result.returncode != 0
+    assert "unsupported run state version" in result.stderr
+
+
+def test_state_rejects_json_booleans_for_integer_fields(tmp_path: Path) -> None:
+    state = tmp_path / "run-state.json"
+    value = {
+        "version": 2,
         "runId": "run-1",
         "repo": "example/repository",
         "issue": True,
@@ -238,7 +269,7 @@ def test_state_rejects_json_booleans_for_integer_fields(tmp_path: Path) -> None:
         "phase": "draft-open",
         "round": 1,
         "reviewEngine": None,
-        "codexResultSha256": None,
+        "geminiResultSha256": None,
         "claudeResultSha256": None,
     }
     state.write_text(json.dumps(value), encoding="utf-8")
@@ -340,14 +371,14 @@ def test_converged_state_requires_and_preserves_review_result_hashes(
         str(state),
         "--phase",
         "converged",
-        "--codex-result-sha256",
+        "--gemini-result-sha256",
         "c" * 64,
         "--claude-result-sha256",
         "d" * 64,
     )
     assert updated.returncode == 0, updated.stderr
     value = json.loads(state.read_text(encoding="utf-8"))
-    assert value["codexResultSha256"] == "c" * 64
+    assert value["geminiResultSha256"] == "c" * 64
     assert value["claudeResultSha256"] == "d" * 64
     assert value["reviewEngine"] is None
 
@@ -360,7 +391,7 @@ def test_converged_state_requires_and_preserves_review_result_hashes(
     )
     assert finalizing.returncode == 0, finalizing.stderr
     value = json.loads(state.read_text(encoding="utf-8"))
-    assert value["codexResultSha256"] == "c" * 64
+    assert value["geminiResultSha256"] == "c" * 64
 
     finalized = _run(
         "update",
@@ -371,4 +402,4 @@ def test_converged_state_requires_and_preserves_review_result_hashes(
     )
     assert finalized.returncode == 0, finalized.stderr
     value = json.loads(state.read_text(encoding="utf-8"))
-    assert value["codexResultSha256"] == "c" * 64
+    assert value["geminiResultSha256"] == "c" * 64

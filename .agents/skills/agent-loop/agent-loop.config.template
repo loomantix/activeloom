@@ -19,12 +19,12 @@ validation_hook =
 review_contract_version = 3
 config_doctor = true
 # Optional literal policy enforced by the doctor, for example `low`.
-claude_effort_policy =
+claude_effort_policy = low
 
-# Both review hooks are required. The wrapper runs Codex first, then Claude, and
+# Both review hooks are required. The wrapper runs Gemini first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
-# Codex-then-Claude round with no material fixes. The Codex hook must run
+# Gemini-then-Claude round with no material fixes. The Gemini hook must run
 # `deepcritique`; the Claude hook must run `deepcritique`.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
@@ -42,21 +42,16 @@ claude_effort_policy =
 # write-result` to create the canonical `$AGENT_LOOP_REVIEW_RESULT_FILE`; reviewers
 # never copy fingerprint arrays. A blocked hook must use the deterministic
 # `review-ledger.js write-blocked-result` command documented by deepcritique and
-# return without claiming a clean
-# or changed pass. Hooks use
-# the deterministic ledger helper for findings and the resumable `dispose`
-# transaction, but never post pass/completion markers; the wrapper validates the
-# result and posts those attestations. Later hooks and final validation must not
-# create, remove, or alter an accepted result file.
-claude_review_hook =
-codex_review_hook =
+# return without claiming a clean or changed pass.
+gemini_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine gemini
+claude_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine claude
 review_max_rounds = 4
 
-# Optional worker override. When empty, the wrapper runs `codex exec` with the
+# Optional worker override. When empty, the wrapper runs `agy` with the
 # prompt from prompt.txt. The default worker honors the model settings below.
 worker_hook =
-worker_model =
-worker_fallback_model =
+worker_model = gemini-3.7-flash-high
+worker_fallback_model = gemini-3.1-pro-high
 worker_retries = 1
 # Both timeout values must be positive; GNU `timeout 0` would disable the bound.
 worker_timeout_seconds = 3600

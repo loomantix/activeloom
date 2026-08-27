@@ -155,12 +155,16 @@ REVIEW_PUSH_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/review-push.sh"
 CONFIG_DOCTOR_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/config-doctor.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
+AGY_WORKER_LAUNCHER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-agy-worker.sh"
+AGY_REVIEW_LAUNCHER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-agy-review.sh"
+AGY_LAUNCH_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-agy-launch.sh"
+TRUSTED_AGENTS_ROOT="$(cd "$PACKAGED_SKILL_BASE/.." && pwd)"
 
 BASE_BRANCH=""
 SETUP_HOOK=""
 VALIDATION_HOOK=""
 CLAUDE_REVIEW_HOOK=""
-CODEX_REVIEW_HOOK=""
+GEMINI_REVIEW_HOOK=""
 WORKER_HOOK=""
 WORKER_MODEL=""
 WORKER_FALLBACK_MODEL=""
@@ -187,7 +191,11 @@ assign_config() {
         setup_hook) SETUP_HOOK="$value" ;;
         validation_hook) VALIDATION_HOOK="$value" ;;
         claude_review_hook) CLAUDE_REVIEW_HOOK="$value" ;;
-        codex_review_hook) CODEX_REVIEW_HOOK="$value" ;;
+        gemini_review_hook) GEMINI_REVIEW_HOOK="$value" ;;
+        codex_review_hook)
+            echo "codex_review_hook is not valid in gemini-platform; migrate it to the dedicated gemini_review_hook and Agy launcher" >&2
+            exit 1
+            ;;
         worker_hook) WORKER_HOOK="$value" ;;
         worker_model) WORKER_MODEL="$value" ;;
         worker_fallback_model) WORKER_FALLBACK_MODEL="$value" ;;
@@ -244,15 +252,15 @@ if [ -n "$RESUME_BATCH_FILE" ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; then
 fi
 # Catch retired reviewer names before any issue mutation. Both local engines
 # use the canonical deepcritique skill name.
-for hook_key in claude_review_hook codex_review_hook; do
+for hook_key in claude_review_hook gemini_review_hook; do
     case "$hook_key" in
         claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
-        codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
+        gemini_review_hook) hook_value="$GEMINI_REVIEW_HOOK" ;;
         *) echo "unhandled hook key in retired-name preflight: $hook_key" >&2; exit 1 ;;
     esac
     invalid_pattern='(^|[^[:alnum:]_-])(deepgrill|pr-grill|grill)([^[:alnum:]_-]|$)'
     if [[ "$hook_value" =~ $invalid_pattern ]]; then
-        echo "$hook_key names an incorrect reviewer skill; Codex and Claude use deepcritique" >&2
+        echo "$hook_key names an incorrect reviewer skill; Gemini and Claude use deepcritique" >&2
         exit 1
     fi
     # The Python ledger was retired for the vendored `review-ledger.js` bundle,
@@ -287,28 +295,34 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v3 requires 3" >&2
         exit 1
     }
-    for hook_key in claude_review_hook codex_review_hook; do
+    expected_gemini_hook="\"\$AGENT_LOOP_AGY_REVIEW_LAUNCHER\" --engine gemini"
+    expected_claude_hook="\"\$AGENT_LOOP_AGY_REVIEW_LAUNCHER\" --engine claude"
+    for hook_key in claude_review_hook gemini_review_hook; do
         case "$hook_key" in
-            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
-            codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
+            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK"; expected_hook="$expected_claude_hook" ;;
+            gemini_review_hook) hook_value="$GEMINI_REVIEW_HOOK"; expected_hook="$expected_gemini_hook" ;;
             *) echo "unhandled hook key in contract-v3 preflight: $hook_key" >&2; exit 1 ;;
         esac
         [ -n "$hook_value" ] || {
             echo "$hook_key must be configured for review contract v3" >&2
             exit 1
         }
-        [[ "$hook_value" == *AGENT_LOOP_REVIEW_PUSH_HELPER* ]] || {
-            echo "$hook_key must use AGENT_LOOP_REVIEW_PUSH_HELPER for review contract v3" >&2
-            exit 1
-        }
-        [[ "$hook_value" == *AGENT_LOOP_REVIEW_RESULT_FILE* ]] || {
-            echo "$hook_key must write AGENT_LOOP_REVIEW_RESULT_FILE for review contract v3" >&2
-            exit 1
-        }
-        [[ "$hook_value" == *write-result* ]] || {
-            echo "$hook_key must use review-ledger.js write-result for review contract v3" >&2
-            exit 1
-        }
+        builtin_hook=false
+        [ "$hook_value" = "$expected_hook" ] && builtin_hook=true
+        if [ "$builtin_hook" != true ]; then
+            [[ "$hook_value" == *AGENT_LOOP_REVIEW_PUSH_HELPER* ]] || {
+                echo "$hook_key must use AGENT_LOOP_REVIEW_PUSH_HELPER for review contract v3" >&2
+                exit 1
+            }
+            [[ "$hook_value" == *AGENT_LOOP_REVIEW_RESULT_FILE* ]] || {
+                echo "$hook_key must write AGENT_LOOP_REVIEW_RESULT_FILE for review contract v3" >&2
+                exit 1
+            }
+            [[ "$hook_value" == *write-result* ]] || {
+                echo "$hook_key must use review-ledger.js write-result for review contract v3" >&2
+                exit 1
+            }
+        fi
     done
 fi
 
@@ -348,12 +362,32 @@ REAL_GIT_BIN="$(type -P git)"
 REAL_GH_BIN="$(type -P gh)"
 [ -x "$REAL_GIT_BIN" ] || { echo "required Git executable not found" >&2; exit 1; }
 [ -x "$REAL_GH_BIN" ] || { echo "required gh executable not found" >&2; exit 1; }
+uses_builtin_agy=false
 if [ -z "$WORKER_HOOK" ]; then
-    DEFAULT_CODEX_BIN="$(command -v codex 2>/dev/null || true)"
-    [ -n "$DEFAULT_CODEX_BIN" ] || {
-        echo "required command not found for default worker: codex" >&2
+    [ -n "$WORKER_MODEL" ] || { echo "worker_model must be configured for the default Agy worker" >&2; exit 1; }
+    [ -x "$AGY_WORKER_LAUNCHER" ] || { echo "Agy worker launcher not found or not executable: $AGY_WORKER_LAUNCHER" >&2; exit 1; }
+    [ -f "$AGY_LAUNCH_HELPER" ] && [ -r "$AGY_LAUNCH_HELPER" ] && [ ! -L "$AGY_LAUNCH_HELPER" ] || {
+        echo "Agy launch helper not found, unreadable, or symlinked: $AGY_LAUNCH_HELPER" >&2
         exit 1
     }
+    uses_builtin_agy=true
+elif [ -n "$WORKER_FALLBACK_MODEL" ]; then
+    echo "worker_fallback_model cannot be used with a custom worker_hook" >&2
+    exit 1
+fi
+case "$GEMINI_REVIEW_HOOK|$CLAUDE_REVIEW_HOOK" in
+    *AGENT_LOOP_AGY_REVIEW_LAUNCHER*)
+        [ -x "$AGY_REVIEW_LAUNCHER" ] || { echo "Agy review launcher not found or not executable: $AGY_REVIEW_LAUNCHER" >&2; exit 1; }
+        [ -f "$AGY_LAUNCH_HELPER" ] && [ -r "$AGY_LAUNCH_HELPER" ] && [ ! -L "$AGY_LAUNCH_HELPER" ] || {
+            echo "Agy launch helper not found, unreadable, or symlinked: $AGY_LAUNCH_HELPER" >&2
+            exit 1
+        }
+        uses_builtin_agy=true
+        ;;
+esac
+if [ "$uses_builtin_agy" = true ]; then
+    agy_cli="${AGY_CLI:-agy}"
+    command -v "$agy_cli" >/dev/null 2>&1 || { echo "required command not found: agy" >&2; exit 1; }
 fi
 [ -x "$HOOK_GIT_GUARD" ] || { echo "hook Git guard not found or not executable: $HOOK_GIT_GUARD" >&2; exit 1; }
 [ -x "$HOOK_GH_GUARD" ] || { echo "hook gh guard not found or not executable: $HOOK_GH_GUARD" >&2; exit 1; }
@@ -364,7 +398,7 @@ fi
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
 [ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
-[ -n "$CODEX_REVIEW_HOOK" ] || { echo "codex_review_hook must be configured before running agent-loop" >&2; exit 1; }
+[ -n "$GEMINI_REVIEW_HOOK" ] || { echo "gemini_review_hook must be configured before running agent-loop" >&2; exit 1; }
 
 if [ "$CONFIG_DOCTOR" = true ]; then
     doctor_command=(python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR")
@@ -401,6 +435,9 @@ GH_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || {
     exit 1
 }
 export GH_REPO
+export AGENT_LOOP_AGY_REVIEW_LAUNCHER="$AGY_REVIEW_LAUNCHER"
+export AGENT_LOOP_TRUSTED_AGENTS_ROOT="$TRUSTED_AGENTS_ROOT"
+export AGENT_LOOP_TRUSTED_BASE_REF="$BASE_REMOTE_REF"
 
 ORIGIN_FETCH_URLS="$(git remote get-url --all origin)" || {
     echo "could not capture origin fetch identity" >&2
@@ -556,15 +593,15 @@ print_batch_bail_command() {
 
 update_run_state() {
     local phase="$1" round="$2" base_sha="$3" head_sha="$4"
-    local codex_result_sha256="${5:-}" claude_result_sha256="${6:-}"
+    local gemini_result_sha256="${5:-}" claude_result_sha256="${6:-}"
     local review_engine="${7:-}"
     local -a command
     [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] || return 0
     command=(python3 "$RUN_STATE_HELPER" update --file "$AGENT_LOOP_RUN_STATE_FILE"
         --phase "$phase" --round "$round" --base-sha "$base_sha"
         --head-sha "$head_sha")
-    if [ -n "$codex_result_sha256" ]; then
-        command+=(--codex-result-sha256 "$codex_result_sha256")
+    if [ -n "$gemini_result_sha256" ]; then
+        command+=(--gemini-result-sha256 "$gemini_result_sha256")
     fi
     if [ -n "$claude_result_sha256" ]; then
         command+=(--claude-result-sha256 "$claude_result_sha256")
@@ -1109,18 +1146,15 @@ run_bounded_hook() {
 }
 
 worker_command() {
-    local model="$1" codex_command model_arg
+    local model="$1" launcher_command model_arg
     if [ -n "$WORKER_HOOK" ]; then
         printf '%s' "$WORKER_HOOK"
         return
     fi
-    printf -v codex_command '%q' "$DEFAULT_CODEX_BIN"
-    local rendered_command="$codex_command exec --dangerously-bypass-approvals-and-sandbox -C \"\$AGENT_LOOP_WORKTREE\""
-    if [ -n "$model" ]; then
-        printf -v model_arg '%q' "$model"
-        rendered_command+=" -m $model_arg"
-    fi
-    rendered_command+=" \"\$AGENT_LOOP_PROMPT\""
+    [ -n "$model" ] || { echo "worker_model must be configured for the default Agy worker" >&2; return 1; }
+    printf -v launcher_command '%q' "$AGY_WORKER_LAUNCHER"
+    printf -v model_arg '%q' "$model"
+    local rendered_command="$launcher_command --model $model_arg"
     printf '%s' "$rendered_command"
 }
 
@@ -1214,7 +1248,7 @@ classify_review_result() {
     fi
 
     # Backward-compatible fail-safe: an existing hook that commits without using
-    # the outcome file is material and therefore restarts at Codex.
+    # the outcome file is material and therefore restarts at Gemini.
     if [ ! -e "$outcome_file" ] && [ ! -L "$outcome_file" ]; then
         REVIEW_FIX_CLASSIFICATION=material
         return 0
@@ -1316,18 +1350,18 @@ verify_v3_result_attestation() {
 }
 
 verify_converged_review_outcomes() {
-    if [ -z "${CONVERGED_CODEX_OUTCOME_FILE:-}" ] || \
+    if [ -z "${CONVERGED_GEMINI_OUTCOME_FILE:-}" ] || \
        [ -z "${CONVERGED_CLAUDE_OUTCOME_FILE:-}" ]; then
         recovery_message "Converged review outcome attestations are missing."
         return 1
     fi
-    require_review_outcome_signature Codex "$CONVERGED_CODEX_OUTCOME_FILE" \
-        "$CONVERGED_CODEX_OUTCOME_SIGNATURE" "before publication" || return 1
+    require_review_outcome_signature Gemini "$CONVERGED_GEMINI_OUTCOME_FILE" \
+        "$CONVERGED_GEMINI_OUTCOME_SIGNATURE" "before publication" || return 1
     require_review_outcome_signature Claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
         "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" "before publication" || return 1
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
-        verify_v3_result_attestation Codex codex "$CONVERGED_CODEX_OUTCOME_FILE" \
-            "$CONVERGED_CODEX_OUTCOME_SIGNATURE" || return 1
+        verify_v3_result_attestation Gemini gemini "$CONVERGED_GEMINI_OUTCOME_FILE" \
+            "$CONVERGED_GEMINI_OUTCOME_SIGNATURE" || return 1
         verify_v3_result_attestation Claude claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
             "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" || return 1
     fi
@@ -1583,11 +1617,11 @@ require_fast_forward_base_advance() {
 }
 
 run_review_convergence() {
-    local round="${1:-1}" codex_classification claude_classification
-    local resume_engine="${2:-codex}"
+    local round="${1:-1}" gemini_classification claude_classification
+    local resume_engine="${2:-gemini}"
     local recovered_complete_round=false
-    local codex_outcome_signature claude_outcome_signature
-    local codex_outcome_file claude_outcome_file
+    local gemini_outcome_signature claude_outcome_signature
+    local gemini_outcome_file claude_outcome_file
     local round_base_sha latest_base_sha pass_status
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
@@ -1621,13 +1655,13 @@ run_review_convergence() {
             }
         fi
         if [ "$resume_engine" = complete ]; then
-            recover_v3_review_pass Codex codex "$round" "$round_base_sha" true || {
-                recovery_message "Could not recover the completed Codex leg for final-round completion."
+            recover_v3_review_pass Gemini gemini "$round" "$round_base_sha" true || {
+                recovery_message "Could not recover the completed Gemini leg for final-round completion."
                 return 1
             }
-            codex_classification="$REVIEW_PASS_CLASSIFICATION"
-            codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
-            codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+            gemini_classification="$REVIEW_PASS_CLASSIFICATION"
+            gemini_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            gemini_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
             recover_v3_review_pass Claude claude "$round" "$round_base_sha" || {
                 recovery_message "Could not recover the completed Claude leg for final-round completion."
                 return 1
@@ -1636,34 +1670,34 @@ run_review_convergence() {
             claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
             claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
             recovered_complete_round=true
-            resume_engine=codex
-            echo "   Recovered authenticated Codex and Claude evidence for the interrupted final round"
+            resume_engine=gemini
+            echo "   Recovered authenticated Gemini and Claude evidence for the interrupted final round"
         elif [ "$resume_engine" = claude ]; then
-            recover_v3_review_pass Codex codex "$round" "$round_base_sha" || {
-                recovery_message "Could not recover the completed Codex leg for final-round continuation."
+            recover_v3_review_pass Gemini gemini "$round" "$round_base_sha" || {
+                recovery_message "Could not recover the completed Gemini leg for final-round continuation."
                 return 1
             }
-            echo "   Recovered authenticated Codex evidence; resuming the interrupted Claude leg"
-            resume_engine=codex
+            echo "   Recovered authenticated Gemini evidence; resuming the interrupted Claude leg"
+            resume_engine=gemini
         else
             update_run_state reviewing "$round" "$round_base_sha" "$(git rev-parse HEAD)" \
-                "" "" codex || {
+                "" "" gemini || {
                 recovery_message "Could not checkpoint review round $round."
                 return 1
             }
             pass_status=0
-            run_review_pass Codex codex "$CODEX_REVIEW_HOOK" "$round" \
-                "configured Codex review hook" "Configured Codex review hook" \
-                "Configured Codex review hook" \
-                "the configured Codex review hook" || pass_status=$?
+            run_review_pass Gemini gemini "$GEMINI_REVIEW_HOOK" "$round" \
+                "configured Gemini review hook" "Configured Gemini review hook" \
+                "Configured Gemini review hook" \
+                "the configured Gemini review hook" || pass_status=$?
             if [ "$pass_status" -eq 2 ]; then
                 require_fast_forward_base_advance "$round_base_sha" \
-                    "during review round $round (Codex boundary)" || return 1
-                echo "   PR base advanced during Codex review; restart at Codex on the next round"
+                    "during review round $round (Gemini boundary)" || return 1
+                echo "   PR base advanced during Gemini review; restart at Gemini on the next round"
                 round=$((round + 1))
                 update_run_state reviewing "$round" \
                     "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
-                    "" "" codex || {
+                    "" "" gemini || {
                     recovery_message "Could not checkpoint the next review round."
                     return 1
                 }
@@ -1673,12 +1707,12 @@ run_review_convergence() {
             fi
         fi
         if [ "$recovered_complete_round" != true ]; then
-            codex_classification="$REVIEW_PASS_CLASSIFICATION"
-            codex_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
-            codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+            gemini_classification="$REVIEW_PASS_CLASSIFICATION"
+            gemini_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
+            gemini_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
             update_run_state reviewing "$round" "$round_base_sha" \
                 "$(git rev-parse HEAD)" "" "" claude || {
-                recovery_message "Could not checkpoint the Claude leg after Codex completed round $round."
+                recovery_message "Could not checkpoint the Claude leg after Gemini completed round $round."
                 return 1
             }
 
@@ -1689,11 +1723,11 @@ run_review_convergence() {
             if [ "$pass_status" -eq 2 ]; then
                 require_fast_forward_base_advance "$round_base_sha" \
                     "during review round $round (Claude boundary)" || return 1
-                echo "   PR base advanced during Claude review; restart at Codex on the next round"
+                echo "   PR base advanced during Claude review; restart at Gemini on the next round"
                 round=$((round + 1))
                 update_run_state reviewing "$round" \
                     "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
-                    "" "" codex || {
+                    "" "" gemini || {
                     recovery_message "Could not checkpoint the next review round."
                     return 1
                 }
@@ -1705,8 +1739,8 @@ run_review_convergence() {
             claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
             claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
         fi
-        require_review_outcome_signature Codex "$codex_outcome_file" \
-            "$codex_outcome_signature" "before the round decision" || return 1
+        require_review_outcome_signature Gemini "$gemini_outcome_file" \
+            "$gemini_outcome_signature" "before the round decision" || return 1
         require_review_outcome_signature Claude "$claude_outcome_file" \
             "$claude_outcome_signature" "before the round decision" || return 1
         REVIEW_ROUNDS_USED="$round"
@@ -1718,7 +1752,7 @@ run_review_convergence() {
             return 1
         fi
 
-        if [ "$codex_classification" != material ] && \
+        if [ "$gemini_classification" != material ] && \
            [ "$claude_classification" != material ] && \
            [ "$latest_base_sha" = "$round_base_sha" ]; then
             verify_local_review_threads || {
@@ -1726,13 +1760,13 @@ run_review_convergence() {
                 return 1
             }
             REVIEWED_BASE_SHA="$AGENT_LOOP_REVIEW_BASE_SHA"
-            CONVERGED_CODEX_OUTCOME_FILE="$codex_outcome_file"
-            CONVERGED_CODEX_OUTCOME_SIGNATURE="$codex_outcome_signature"
+            CONVERGED_GEMINI_OUTCOME_FILE="$gemini_outcome_file"
+            CONVERGED_GEMINI_OUTCOME_SIGNATURE="$gemini_outcome_signature"
             CONVERGED_CLAUDE_OUTCOME_FILE="$claude_outcome_file"
             CONVERGED_CLAUDE_OUTCOME_SIGNATURE="$claude_outcome_signature"
             update_run_state converged "$round" "$REVIEWED_BASE_SHA" \
                 "$(git rev-parse HEAD)" \
-                "${codex_outcome_signature#file:}" \
+                "${gemini_outcome_signature#file:}" \
                 "${claude_outcome_signature#file:}" || {
                 recovery_message "Could not checkpoint converged review state."
                 return 1
@@ -1741,18 +1775,18 @@ run_review_convergence() {
                 AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
                 AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
                 AGENT_LOOP_REVIEW_PUSH_STATE_FILE
-            echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reported no material fixes in a complete round after $round round(s)"
+            echo -e "${GREEN}✓${NC} Configured Gemini and Claude hooks reported no material fixes in a complete round after $round round(s)"
             return 0
         fi
 
         if [ "$latest_base_sha" != "$round_base_sha" ]; then
-            echo "   Base advanced during the round; integrate it on the draft PR and restart at Codex"
+            echo "   Base advanced during the round; integrate it on the draft PR and restart at Gemini"
         else
-            echo "   Review outcomes: Codex=$codex_classification Claude=$claude_classification; material fixes restart at Codex"
+            echo "   Review outcomes: Gemini=$gemini_classification Claude=$claude_classification; material fixes restart at Gemini"
         fi
         round=$((round + 1))
         update_run_state reviewing "$round" "$latest_base_sha" \
-            "$(git rev-parse HEAD)" "" "" codex || {
+            "$(git rev-parse HEAD)" "" "" gemini || {
             recovery_message "Could not checkpoint the next review round."
             return 1
         }
@@ -1929,9 +1963,9 @@ verify_committed_pass_evidence() {
     jq -e --arg reviewer "$CURRENT_LOGIN" --arg engine "$engine" \
         --argjson round "$round" --arg after "$after_sha" '
       def finding:
-        capture("<!-- local-review:v1 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) -->");
+        capture("<!-- local-review:v1 engine=(?<engine>gemini|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) -->");
       def disposition:
-        capture("<!-- local-review-disposition:v1 engine=(?<engine>codex|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) outcome=(?<outcome>fixed|dismissed|deferred) -->");
+        capture("<!-- local-review-disposition:v1 engine=(?<engine>gemini|claude) round=(?<round>[0-9]+) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) outcome=(?<outcome>fixed|dismissed|deferred) -->");
       all(.[]; (.errors // []) | length == 0)
       and ([.[].data.repository.pullRequest.reviewThreads.nodes[]] as $threads
         | ($threads | all(.comments.pageInfo.hasNextPage | not))
@@ -2027,7 +2061,7 @@ verify_local_review_threads() {
     ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         if [ "${REVIEW_ROUNDS_USED:-0}" -gt 0 ]; then
-            historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/codex-review-round-$REVIEW_ROUNDS_USED-historical-comment-ids.json"
+            historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/gemini-review-round-$REVIEW_ROUNDS_USED-historical-comment-ids.json"
         else
             historical_comment_ids_file="${AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE:-}"
         fi
@@ -2111,12 +2145,12 @@ open_draft_pr() {
     {
         echo "## Summary"
         echo
-        echo "Implementation complete. Local Codex and Claude review is running on this draft PR."
+        echo "Implementation complete. Local Gemini and Claude review is running on this draft PR."
         echo
         echo "## Test plan"
         echo
         if [ -n "$SETUP_HOOK" ]; then echo "- [x] configured setup hook completed"; fi
-        echo "- [ ] local Codex and Claude review ledger converged"
+        echo "- [ ] local Gemini and Claude review ledger converged"
         echo "- [ ] every local-review thread replied to and resolved"
         echo "- [x] configured non-mutating local validation hook"
         echo
@@ -2162,13 +2196,13 @@ finalize_pr() {
     {
         echo "## Summary"
         echo
-        echo "Configured Codex and Claude review hooks reported no material fixes in a complete round after"
+        echo "Configured Gemini and Claude review hooks reported no material fixes in a complete round after"
         echo "$REVIEW_ROUNDS_USED round(s) against fresh \`origin/$BASE_BRANCH\`."
         echo
         echo "## Test plan"
         echo
         if [ -n "$SETUP_HOOK" ]; then echo "- [x] configured setup hook completed"; fi
-        echo "- [x] configured Codex and Claude hooks reported no material fixes in a complete round ($REVIEW_ROUNDS_USED round(s))"
+        echo "- [x] configured Gemini and Claude hooks reported no material fixes in a complete round ($REVIEW_ROUNDS_USED round(s))"
         echo "- [x] every local-review thread contains a disposition reply and is resolved"
         echo "- [x] fresh-base integration and publication-diff inspection"
         echo "- [x] configured non-mutating local validation hook"
@@ -2232,7 +2266,7 @@ resume_review_run() {
     local resume_boundary_status=0 checkpoint_base latest_base attestation_status
     local issue_title_sha256 issue_body_sha256
     local ready_finalization=false pr_draft_state state_review_engine
-    local restart_after_interrupted_pass=false resume_review_engine=codex
+    local restart_after_interrupted_pass=false resume_review_engine=gemini
     local finalizing_head_drift=false
     SELECTED_ID="$(jq -r '.issue' <<<"$RESUME_STATE_JSON")"
     issue_json_value="$(issue_json "$SELECTED_ID")" || {
@@ -2303,8 +2337,8 @@ resume_review_run() {
     export AGENT_LOOP_REVIEW_BASE="$BASE_REMOTE_REF"
     REVIEW_ROUNDS_USED=0
     REVIEWED_BASE_SHA=""
-    CONVERGED_CODEX_OUTCOME_FILE=""
-    CONVERGED_CODEX_OUTCOME_SIGNATURE=""
+    CONVERGED_GEMINI_OUTCOME_FILE=""
+    CONVERGED_GEMINI_OUTCOME_SIGNATURE=""
     CONVERGED_CLAUDE_OUTCOME_FILE=""
     CONVERGED_CLAUDE_OUTCOME_SIGNATURE=""
 
@@ -2316,9 +2350,9 @@ resume_review_run() {
         }
         REVIEW_ROUNDS_USED="$state_round"
         REVIEWED_BASE_SHA="$checkpoint_base"
-        CONVERGED_CODEX_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json"
+        CONVERGED_GEMINI_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/gemini-review-round-$state_round.result.json"
         CONVERGED_CLAUDE_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/claude-review-round-$state_round.result.json"
-        CONVERGED_CODEX_OUTCOME_SIGNATURE="file:$(jq -r '.codexResultSha256' <<<"$RESUME_STATE_JSON")"
+        CONVERGED_GEMINI_OUTCOME_SIGNATURE="file:$(jq -r '.geminiResultSha256' <<<"$RESUME_STATE_JSON")"
         CONVERGED_CLAUDE_OUTCOME_SIGNATURE="file:$(jq -r '.claudeResultSha256' <<<"$RESUME_STATE_JSON")"
         attest_ready_pr_head "$state_head" "$checkpoint_base" \
             "before finalized batch recovery" || {
@@ -2354,15 +2388,15 @@ resume_review_run() {
         echo -e "${GREEN}✓${NC} Re-attested finalized issue #$SELECTED_ID; local branch retained at $AGENT_LOOP_BRANCH"
         return 0
     fi
-    if [ "$state_phase" = reviewing ] && [ "$state_review_engine" = codex ] && \
+    if [ "$state_phase" = reviewing ] && [ "$state_review_engine" = gemini ] && \
        [ "$current_head" = "$state_head" ]; then
         attestation_status=0
-        review_pass_identity_is_attested codex "$state_round" \
+        review_pass_identity_is_attested gemini "$state_round" \
             "$checkpoint_base" "$state_head" || attestation_status=$?
         if [ "$attestation_status" -eq 0 ]; then
             restart_after_interrupted_pass=true
         elif [ "$attestation_status" -ne 1 ]; then
-            recovery_message "Could not reconcile the interrupted Codex pass attestation."
+            recovery_message "Could not reconcile the interrupted Gemini pass attestation."
             return 1
         fi
     fi
@@ -2377,7 +2411,7 @@ resume_review_run() {
             if [ -f "$AGENT_LOOP_LOG_DIR/claude-review-round-$state_round.result.json" ]; then
                 resume_review_engine=complete
                 echo "   Final configured review round was interrupted; recovering its completed legs"
-            elif [ -f "$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json" ]; then
+            elif [ -f "$AGENT_LOOP_LOG_DIR/gemini-review-round-$state_round.result.json" ]; then
                 resume_review_engine=claude
                 echo "   Final configured review round was interrupted; resuming its remaining leg"
             else
@@ -2427,7 +2461,7 @@ resume_review_run() {
         fi
         state_phase=reviewing
         update_run_state reviewing "$state_round" "$latest_base" "$current_head" \
-            "" "" codex || {
+            "" "" gemini || {
             recovery_message "Could not checkpoint the resumed review round."
             return 1
         }
@@ -2445,7 +2479,7 @@ resume_review_run() {
         state_round=$((state_round + 1))
         state_phase=reviewing
         update_run_state reviewing "$state_round" "$checkpoint_base" "$current_head" \
-            "" "" codex || {
+            "" "" gemini || {
             recovery_message "Could not checkpoint review restart after finalizing head drift."
             return 1
         }
@@ -2454,7 +2488,7 @@ resume_review_run() {
         state_round=$((state_round + 1))
         state_phase=reviewing
         update_run_state reviewing "$state_round" "$checkpoint_base" "$current_head" \
-            "" "" codex || {
+            "" "" gemini || {
             recovery_message "Could not checkpoint review restart after converged head drift."
             return 1
         }
@@ -2464,9 +2498,9 @@ resume_review_run() {
        [ "$current_head" = "$state_head" ]; then
         REVIEW_ROUNDS_USED="$state_round"
         REVIEWED_BASE_SHA="$(jq -r '.baseSha' <<<"$RESUME_STATE_JSON")"
-        CONVERGED_CODEX_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json"
+        CONVERGED_GEMINI_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/gemini-review-round-$state_round.result.json"
         CONVERGED_CLAUDE_OUTCOME_FILE="$AGENT_LOOP_LOG_DIR/claude-review-round-$state_round.result.json"
-        CONVERGED_CODEX_OUTCOME_SIGNATURE="file:$(jq -r '.codexResultSha256' <<<"$RESUME_STATE_JSON")"
+        CONVERGED_GEMINI_OUTCOME_SIGNATURE="file:$(jq -r '.geminiResultSha256' <<<"$RESUME_STATE_JSON")"
         CONVERGED_CLAUDE_OUTCOME_SIGNATURE="file:$(jq -r '.claudeResultSha256' <<<"$RESUME_STATE_JSON")"
         if ! verify_converged_review_outcomes; then
             if [ "$ready_finalization" = true ]; then
@@ -2639,7 +2673,7 @@ echo "   Hooks:"
 echo "     setup: ${SETUP_HOOK:-<none>}"
 echo "     validation: ${VALIDATION_HOOK:-<none>}"
 echo "     Claude review hook: $CLAUDE_REVIEW_HOOK"
-echo "     Codex review hook: $CODEX_REVIEW_HOOK"
+echo "     Gemini review hook: $GEMINI_REVIEW_HOOK"
 echo "     convergence cap: $REVIEW_MAX_ROUNDS round(s)"
 
 ITERATION=0
@@ -2681,7 +2715,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     echo "   Branch: $branch"
     echo "   Setup hook: ${SETUP_HOOK:-<none>}"
     echo "   Publication: open draft PR before review; PR base $BASE_BRANCH"
-    echo "   Review order: configured Codex hook -> configured Claude hook -> repeat only after material fixes"
+    echo "   Review order: configured Gemini hook -> configured Claude hook -> repeat only after material fixes"
 
     if [ "$DRY_RUN" = true ]; then
         echo -e "${GREEN}✓${NC} Dry-run only: no claim, worktree, hook, push, or PR mutation"
@@ -2846,8 +2880,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     export AGENT_LOOP_REVIEW_BASE="$BASE_REMOTE_REF"
     REVIEW_ROUNDS_USED=0
     REVIEWED_BASE_SHA=""
-    CONVERGED_CODEX_OUTCOME_FILE=""
-    CONVERGED_CODEX_OUTCOME_SIGNATURE=""
+    CONVERGED_GEMINI_OUTCOME_FILE=""
+    CONVERGED_GEMINI_OUTCOME_SIGNATURE=""
     CONVERGED_CLAUDE_OUTCOME_FILE=""
     CONVERGED_CLAUDE_OUTCOME_SIGNATURE=""
     # Keep this as a simple command instead of placing the function in an `||`

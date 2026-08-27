@@ -61,7 +61,7 @@ with the issue worktree as the current directory.
 | `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.                                                                                |
 | `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                                                                                           |
 | `claude_review_hook`                             | Required fresh local Claude review on the draft PR. It must post confirmed findings inline before fixes, publish through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply, resolve, and fail on undisposed findings. |
-| `codex_review_hook`                              | Required fresh Codex/Gemini `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                                                            |
+| `gemini_review_hook`                             | Required fresh local Gemini `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                                                            |
 | `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                                                                         |
 | `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.                                                                                     |
 | `claude_effort_policy`                           | Optional literal Claude effort policy checked by the doctor, such as `low`.                                                                                                                                 |
@@ -104,7 +104,7 @@ canonical pass/completion marker itself. Material means any substantive
 behavior, correctness, security/privacy, data-safety, compatibility,
 deployment/sync, or review-integrity change; it is not inferred from file type.
 Minor means low-risk, non-behavioral cleanup, clarity, or test/docs polish. Only
-material fixes restart at Codex. A missing, invalid, or blocked result stops
+material fixes restart at Gemini. A missing, invalid, or blocked result stops
 clearly even if the hook process exits zero. Accepted result bytes remain
 unchanged through final validation.
 
@@ -124,25 +124,24 @@ disposition reply or remains unresolved.
 
 The wrapper is upstream-owned, but config, worker instructions, and the prompt
 are `create_if_missing` consumer files. Existing consumers must therefore merge
-the current templates manually before the synced wrapper can run:
+the current templates manually before the synced wrapper can run. State protocol
+2 deliberately rejects old Codex-shaped run and batch checkpoints; finish or
+discard those runs under their original wrapper before migrating.
 
-1. Update both hooks to run a fresh `deepcritique
-$AGENT_LOOP_PR_NUMBER` with their respective local engine. Scope both to
+1. Replace `codex_review_hook` with the dedicated `gemini_review_hook`, and set
+   both review hooks to the exact `$AGENT_LOOP_AGY_REVIEW_LAUNCHER` commands in
+   the current config template. The trusted launcher selects each local engine,
+   pins the upstream review surface, and scopes the pass to
    `$AGENT_LOOP_REVIEW_BASE_SHA`.
    The wrapper rejects either review hook naming a retired `grill`-family skill
    or path during startup, before it claims an issue. The check applies to
    every accepted contract version, including an existing version 3 config.
-2. Make both hooks load `.agents/references/local-review-ledger.md`, read all
-   prior threads, post confirmed findings inline before editing, commit and use
-   `$AGENT_LOOP_REVIEW_PUSH_HELPER` to publish
-   fixes, reply with the fix and validation, resolve the threads, leave the
-   issue branch attached and clean, and exit nonzero if findings remain.
+2. Leave `worker_hook` empty so the default Agy worker launcher consumes
+   `worker_model` and `worker_fallback_model`; a hard-coded nonempty hook cannot
+   change models during a capacity retry.
 3. Configure a non-mutating `validation_hook`, add
-   `review_contract_version = 3`, make every successfully completed clean or
-   changed hook write the v3 result to `$AGENT_LOOP_REVIEW_RESULT_FILE` through
-   `review-ledger.js write-result`, use `review-ledger.js
-write-blocked-result` for blocked results, and optionally override
-   `review_max_rounds = 4` with another positive cap.
+   `review_contract_version = 3`, enable `config_doctor = true`, and optionally
+   override `review_max_rounds = 4` with another positive cap.
 4. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync
    will not overwrite those consumer-owned files.
@@ -166,14 +165,14 @@ and never copies issue bodies, model logs, or findings into GitHub.
 4. Run the isolated setup hook.
 5. Run the worker and require a clean local commit.
 6. Integrate the fresh base, validate, push, and open a draft PR.
-7. Run a fresh Codex `deepcritique` followed by a fresh Claude review on that PR,
+7. Run a fresh Gemini `deepcritique` followed by a fresh Claude review on that PR,
    validating and attesting the PR head after each pass.
-8. If either reviewer commits a material fix, restart at Codex. Minor-only fixes
+8. If either reviewer commits a material fix, restart at Gemini. Minor-only fixes
    are validated and retained without restarting. Convergence requires one
-   entire Codex-then-Claude round with no material fixes. Exhausting
+   entire Gemini-then-Claude round with no material fixes. Exhausting
    `review_max_rounds` blocks publication and preserves the worktree.
 9. If the base advances, integrate and push it on the draft PR before restarting
-   at Codex. A non-fast-forward base move stops the loop.
+   at Gemini. A non-fast-forward base move stops the loop.
 10. Re-attest unchanged issue requirements/readiness while excluding only the
     wrapper-captured PR from the open-PR addressed check, require every marked
     review thread to contain a reply and be resolved, then mark the PR ready.
@@ -185,7 +184,9 @@ will not advance to the next issue until the current issue is safely finalized
 or an operator explicitly records it as bailed; uncertain push, PR, or ledger
 state always stops recovery.
 
-Do not invoke Gemini, Copilot, `reviewit`, or any GitHub-hosted AI reviewer.
+Do not invoke hosted Gemini, Copilot, `reviewit`, or any other GitHub-hosted AI
+reviewer. The configured local Agy Gemini and Claude hooks are the review
+path.
 
 ## Dependency Gate
 

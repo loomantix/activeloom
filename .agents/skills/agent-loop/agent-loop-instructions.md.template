@@ -3,9 +3,9 @@
 Work autonomously on one assigned GitHub issue. Read this file and the exact
 issue title/body from `AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY`,
 then implement, validate, refactor, and commit locally. Stop after the local
-commit. Do not push, open a pull request, or invoke Gemini, Copilot, `reviewit`,
-or any GitHub-hosted AI reviewer. Do not call `gh`; the wrapper owns GitHub
-access, review, and publication.
+commit. Do not push, open a pull request, or invoke hosted Gemini, Copilot,
+`reviewit`, or any other GitHub-hosted AI reviewer. Do not call `gh`; the
+wrapper owns GitHub access, review, and publication.
 
 > Customize every `TODO` before using the loop. This consumer-owned file is
 > bootstrapped once and is not overwritten by later syncs.
@@ -34,7 +34,7 @@ target a frontend test as `pnpm --filter frontend test:run TestName`. Do not add
 
 - Use the repository's commit convention and targeted staging.
 - Leave a clean worktree with at least one local commit.
-- Never push or create a PR. The wrapper will alternate fresh local Codex
+- Never push or create a PR. The wrapper will alternate fresh local Gemini
   `deepcritique` and Claude `deepcritique` review passes on a draft PR until a
   complete round produces no material fixes. Each reviewer posts findings
   before fixes, publishes through the wrapper-owned safe review-push helper,
