@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterator, NoReturn
 
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
@@ -72,7 +72,7 @@ def _validate(value: dict[str, Any]) -> None:
         "phase",
         "round",
         "reviewEngine",
-        "codexResultSha256",
+        "geminiResultSha256",
         "claudeResultSha256",
     }
     if set(value) != required:
@@ -92,11 +92,11 @@ def _validate(value: dict[str, Any]) -> None:
         _fail("run state phase is invalid")
     review_engine = value["reviewEngine"]
     if value["phase"] == "reviewing":
-        if review_engine not in {"codex", "claude"}:
+        if review_engine not in {"gemini", "claude"}:
             _fail("reviewing run state requires a current review engine")
     elif review_engine is not None:
         _fail("only reviewing run state may name a current review engine")
-    for key in ("codexResultSha256", "claudeResultSha256"):
+    for key in ("geminiResultSha256", "claudeResultSha256"):
         digest = value[key]
         if digest is not None and (
             not isinstance(digest, str) or not SHA256_RE.fullmatch(digest)
@@ -107,7 +107,7 @@ def _validate(value: dict[str, Any]) -> None:
             _fail(f"run state {key} must be a lowercase SHA-256 digest")
     if value["phase"] in {"converged", "finalizing", "finalized"} and any(
         value[key] is None
-        for key in ("codexResultSha256", "claudeResultSha256")
+        for key in ("geminiResultSha256", "claudeResultSha256")
     ):
         _fail("converged, finalizing, or finalized run state requires both review result hashes")
     worktree = Path(value["worktree"])
@@ -191,7 +191,7 @@ def _create(args: argparse.Namespace) -> None:
         "phase": "draft-open",
         "round": 1,
         "reviewEngine": None,
-        "codexResultSha256": None,
+        "geminiResultSha256": None,
         "claudeResultSha256": None,
     }
     _atomic_write(path, value, replace=False)
@@ -210,12 +210,12 @@ def _update(args: argparse.Namespace) -> None:
     if args.head_sha is not None:
         value["headSha"] = args.head_sha
     if args.phase in {"draft-open", "reviewing"}:
-        value["codexResultSha256"] = None
+        value["geminiResultSha256"] = None
         value["claudeResultSha256"] = None
     elif args.phase == "converged":
-        if args.codex_result_sha256 is None or args.claude_result_sha256 is None:
+        if args.gemini_result_sha256 is None or args.claude_result_sha256 is None:
             _fail("converged state requires both review result hashes")
-        value["codexResultSha256"] = args.codex_result_sha256
+        value["geminiResultSha256"] = args.gemini_result_sha256
         value["claudeResultSha256"] = args.claude_result_sha256
     _atomic_write(path, value)
     print(json.dumps(value, sort_keys=True))
@@ -408,10 +408,10 @@ def _parser() -> argparse.ArgumentParser:
     update.add_argument("--file", required=True)
     update.add_argument("--phase", required=True, choices=sorted(PHASES))
     update.add_argument("--round", type=int)
-    update.add_argument("--review-engine", choices=("codex", "claude"))
+    update.add_argument("--review-engine", choices=("gemini", "claude"))
     update.add_argument("--base-sha")
     update.add_argument("--head-sha")
-    update.add_argument("--codex-result-sha256")
+    update.add_argument("--gemini-result-sha256")
     update.add_argument("--claude-result-sha256")
     update.set_defaults(handler=_update)
     show = commands.add_parser("show")

@@ -22,6 +22,8 @@ def _project(tmp_path: Path) -> Path:
     ledger_dir.mkdir(parents=True)
     shutil.copy2(ROOT / ".agents/skills/agent-loop/scripts/agent-loop-state.py", scripts)
     shutil.copy2(ROOT / ".agents/skills/agent-loop/scripts/review-push.sh", scripts)
+    shutil.copy2(ROOT / ".agents/skills/agent-loop/scripts/run-agy-worker.sh", scripts)
+    shutil.copy2(ROOT / ".agents/skills/agent-loop/scripts/run-agy-review.sh", scripts)
     shutil.copy2(ROOT / ".agents/skills/critique/scripts/review-ledger.js", ledger_dir)
     # See tests/test_agent_loop.py: sync ships the sibling ESM manifest, and a
     # CommonJS consumer root is the context that needs it.
@@ -40,8 +42,11 @@ def _project(tmp_path: Path) -> Path:
     )
     (skill / "agent-loop.config").write_text(
         "review_contract_version = 3\n"
-        "codex_review_hook = deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n"
-        "claude_review_hook = claude --effort low /deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n",
+        'gemini_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine gemini\n'
+        'claude_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine claude\n'
+        "worker_hook =\n"
+        "worker_model = gemini-primary\n"
+        "worker_fallback_model = gemini-fallback\n",
         encoding="utf-8",
     )
     return project
@@ -69,10 +74,10 @@ def test_doctor_accepts_current_contract_without_mutation(tmp_path: Path) -> Non
     ("old", "new", "message"),
     [
         ("review_contract_version = 3", "review_contract_version = 2", "must be 3"),
-        ("write-result", "AGENT_LOOP_REVIEW_OUTCOME_FILE", "obsolete review ownership"),
-        ("/deepcritique", "/deepgrill", "must invoke deepcritique"),
-        ("--effort low", "--effort medium", "literal --effort low"),
-        ("AGENT_LOOP_REVIEW_PUSH_HELPER", "git push", "review push helper"),
+        ("--engine gemini", "--engine codex", "dedicated Agy launcher"),
+        ("--engine claude", "--engine gemini", "dedicated Agy launcher"),
+        ("gemini_review_hook", "codex_review_hook", "dedicated Agy launcher"),
+        ("worker_model = gemini-primary", "worker_model =", "worker_model is required"),
     ],
 )
 def test_doctor_failure_fixtures(

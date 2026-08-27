@@ -55,15 +55,26 @@ def doctor(project: Path, claude_effort: str | None) -> None:
     ledger = root / ".agents/skills/critique/scripts/review-ledger.js"
     state = skill / "scripts/agent-loop-state.py"
     review_push = skill / "scripts/review-push.sh"
-    for path in (config_path, prompt_path, instructions_path, ledger, state, review_push):
-        if not path.is_file():
+    worker_launcher = skill / "scripts/run-agy-worker.sh"
+    review_launcher = skill / "scripts/run-agy-review.sh"
+    for path in (
+        config_path,
+        prompt_path,
+        instructions_path,
+        ledger,
+        state,
+        review_push,
+        worker_launcher,
+        review_launcher,
+    ):
+        if not path.is_file() or path.is_symlink():
             raise DoctorError(f"required agent-loop file is missing: {path.relative_to(root)}")
     values = _config(config_path)
     if values.get("review_contract_version") != "3":
         raise DoctorError("review_contract_version must be 3")
     if _version(["node", str(ledger), "--protocol-version"], "review ledger") != "3":
         raise DoctorError("review-ledger protocol is incompatible with contract v3")
-    if _version([sys.executable, str(state), "--state-version"], "run state") != "1":
+    if _version([sys.executable, str(state), "--state-version"], "run state") != "2":
         raise DoctorError("agent-loop state protocol is incompatible")
     if _version([str(review_push), "--protocol-version"], "review push") != "1":
         raise DoctorError("review-push protocol is incompatible")
@@ -81,33 +92,27 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         raise DoctorError("worker instructions must describe wrapper-provided issue context")
 
     hooks = {
-        "codex": values.get("codex_review_hook", ""),
+        "gemini": values.get("gemini_review_hook", ""),
         "claude": values.get("claude_review_hook", ""),
     }
-    for engine, hook in hooks.items():
-        if not hook:
-            raise DoctorError(f"{engine}_review_hook is missing")
-        obsolete = (
-            "AGENT_LOOP_REVIEW_OUTCOME_FILE",
-            "local-review-pass:v1",
-            "local-review-complete:v1",
-            "local-review-disposition:v1",
-            "review-ledger.py",
-        )
-        if any(token in hook for token in obsolete):
-            raise DoctorError(f"{engine}_review_hook contains obsolete review ownership")
-        if "AGENT_LOOP_REVIEW_RESULT_FILE" not in hook or "write-result" not in hook:
-            raise DoctorError(f"{engine}_review_hook must use helper-owned contract-v3 results")
-        if "AGENT_LOOP_REVIEW_PUSH_HELPER" not in hook or re.search(r"\bgit\s+push\b", hook):
-            raise DoctorError(f"{engine}_review_hook must use the wrapper-owned review push helper")
-    if not re.search(r"(?:^|[ /])deepcritique(?:[ $\"']|$)", hooks["codex"]):
-        raise DoctorError("codex_review_hook must invoke deepcritique")
-    if not re.search(r"(?:^|[ /])deepcritique(?:[ $\"']|$)", hooks["claude"]):
-        raise DoctorError("claude_review_hook must invoke deepcritique")
+    expected_hooks = {
+        "gemini": '"$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine gemini',
+        "claude": '"$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine claude',
+    }
+    for engine, expected in expected_hooks.items():
+        if hooks[engine] != expected:
+            raise DoctorError(f"{engine}_review_hook must use the dedicated Agy launcher")
+    if values.get("worker_hook", ""):
+        if values.get("worker_fallback_model", ""):
+            raise DoctorError("worker_fallback_model cannot be used with a custom worker_hook")
+    elif not values.get("worker_model", ""):
+        raise DoctorError("worker_model is required for the default Agy worker")
+    launcher_text = review_launcher.read_text(encoding="utf-8")
     if claude_effort and not re.search(
-        rf"(?:^|\s)--effort(?:=|\s+){re.escape(claude_effort)}(?:\s|$)", hooks["claude"]
+        rf'claude\) model="[^"]+"; effort="{re.escape(claude_effort)}"',
+        launcher_text,
     ):
-        raise DoctorError(f"claude_review_hook must use literal --effort {claude_effort}")
+        raise DoctorError(f"Agy review launcher must use literal Claude effort {claude_effort}")
 
 
 def main() -> int:

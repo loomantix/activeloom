@@ -63,7 +63,14 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     script.parent.mkdir(parents=True)
     ready.parent.mkdir(parents=True)
     shutil.copy2(AGENT_LOOP, script)
-    for guard_name in ("hook-git-guard", "hook-gh-guard", "review-push.sh", "config-doctor.py"):
+    for guard_name in (
+        "hook-git-guard",
+        "hook-gh-guard",
+        "review-push.sh",
+        "config-doctor.py",
+        "run-agy-worker.sh",
+        "run-agy-review.sh",
+    ):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
     ledger_source = REPO_ROOT / ".agents/skills/critique/scripts/review-ledger.js"
@@ -293,7 +300,7 @@ elif args[:2] == ['pr', 'ready']:
                 'isResolved': False,
                 'comments': {
                     'nodes': [{
-                        'body': '<!-- local-review:v1 engine=codex round=9 '
+                        'body': '<!-- local-review:v1 engine=gemini round=9 '
                                 'head=' + 'a' * 40 + ' fingerprint=ready-race -->',
                         'databaseId': 99,
                         'author': {'login': 'tester'},
@@ -310,14 +317,14 @@ elif args[:2] == ['pr', 'ready']:
             finding_content = 'Late same-round blocker.'
             disposition_content = 'Claimed fixed without a new commit.'
             finding = (
-                '<!-- local-review:v3 engine=codex round=1 head=' + head +
+                '<!-- local-review:v3 engine=gemini round=1 head=' + head +
                 ' fingerprint=late-clean-fix occurrence=1 severity=blocking '
                 'lens=correctness content-sha256=' +
                 hashlib.sha256(finding_content.encode()).hexdigest() + ' -->\n' +
                 finding_content
             )
             disposition = (
-                '<!-- local-review-disposition:v3 engine=codex round=1 head=' + head +
+                '<!-- local-review-disposition:v3 engine=gemini round=1 head=' + head +
                 ' fingerprint=late-clean-fix occurrence=1 outcome=fixed '
                 'content-sha256=' +
                 hashlib.sha256(disposition_content.encode()).hexdigest() + ' -->\n' +
@@ -473,7 +480,7 @@ def _config(
         "setup_hook": "printf 'setup\\n' >> \"$EVENT_LOG\"",
         "validation_hook": "printf 'validate\\n' >> \"$EVENT_LOG\"",
         "claude_review_hook": "printf 'claude\\n' >> \"$EVENT_LOG\"",
-        "codex_review_hook": "printf 'codex\\n' >> \"$EVENT_LOG\"",
+        "gemini_review_hook": "printf 'gemini\\n' >> \"$EVENT_LOG\"",
         "worker_hook": "printf 'worker\\n' >> \"$EVENT_LOG\"; printf 'done\\n' > result.txt; git add result.txt; git commit -m 'fix: worker'",
         "worker_retries": 1,
         "worker_timeout_seconds": 5,
@@ -490,7 +497,7 @@ def _config(
         "output_max_lines": 10,
     }
     values.update(overrides)
-    for key in ("codex_review_hook", "claude_review_hook"):
+    for key in ("gemini_review_hook", "claude_review_hook"):
         engine = key.removesuffix("_review_hook")
         command = str(values[key])
         clean_attestation = (
@@ -546,11 +553,11 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
     )
     values: dict[str, str | int] = {
         "review_contract_version": 3,
-        "codex_review_hook": result_command,
+        "gemini_review_hook": result_command,
         "claude_review_hook": result_command,
     }
     values.update(overrides)
-    for key in ("codex_review_hook", "claude_review_hook"):
+    for key in ("gemini_review_hook", "claude_review_hook"):
         values[key] = (
             ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
             f'"$AGENT_LOOP_REVIEW_RESULT_FILE" write-result; {values[key]}'
@@ -658,6 +665,33 @@ def _run(
 def test_script_remains_executable_and_valid_bash() -> None:
     assert stat.S_IMODE(AGENT_LOOP.stat().st_mode) == 0o755
     subprocess.run(["bash", "-n", str(AGENT_LOOP)], check=True)
+
+
+def test_dedicated_agy_review_hooks_pass_wrapper_preflight(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _write_executable(consumer[2] / "agy", "#!/usr/bin/env bash\nexit 0\n")
+    config = _config(tmp_path, review_contract_version=3)
+    config = re.sub(
+        r"^gemini_review_hook = .*?$",
+        'gemini_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine gemini',
+        config,
+        flags=re.MULTILINE,
+    )
+    config = re.sub(
+        r"^claude_review_hook = .*?$",
+        'claude_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine claude',
+        config,
+        flags=re.MULTILINE,
+    )
+    result = _run(
+        consumer,
+        ["--issues", "1", "--dry-run"],
+        issues=[_issue(1)],
+        config=config,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "configured Gemini hook -> configured Claude hook" in result.stdout
 
 
 def test_issue_allowlist_never_selects_unrelated_ready_work(
@@ -771,7 +805,7 @@ def test_dry_run_shows_plan_without_mutation(
     assert result.returncode == 0, result.stderr
     assert "Setup hook:" in result.stdout
     assert (
-        "Review order: configured Codex hook -> configured Claude hook -> repeat only after material fixes"
+        "Review order: configured Gemini hook -> configured Claude hook -> repeat only after material fixes"
         in result.stdout
     )
     assert "Publication:" in result.stdout
@@ -801,7 +835,7 @@ def test_per_issue_worktrees_and_hook_order(
         "worker",
         "validate",
         "validate",
-        "codex",
+        "gemini",
         "validate",
         "claude",
         "validate",
@@ -817,13 +851,13 @@ def test_per_issue_worktrees_and_hook_order(
         body = body_file.read_text(encoding="utf-8")
         assert "configured setup hook completed" in body
         assert "isolated dependency bootstrap" not in body
-        assert "Local Codex and Claude review is running" in body
+        assert "Local Gemini and Claude review is running" in body
     final_bodies = list((tmp_path / "logs").glob("*/pr-body-final.md"))
     assert len(final_bodies) == 2
     for body_file in final_bodies:
         body = body_file.read_text(encoding="utf-8")
         assert "reported no material fixes in a complete round" in body
-        assert "Configured Codex and Claude review hooks reported" in body
+        assert "Configured Gemini and Claude review hooks reported" in body
         assert "configured non-mutating local validation hook" in body
         assert "local Claude deep critique" not in body
 
@@ -870,7 +904,7 @@ def test_ambient_gh_repo_is_replaced_with_checkout_repository(
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_unclassified_review_fix_defaults_material_and_restarts_at_codex(
+def test_unclassified_review_fix_defaults_material_and_restarts_at_gemini(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     claude_hook = (
@@ -894,11 +928,11 @@ def test_unclassified_review_fix_defaults_material_and_restarts_at_codex(
         "worker",
         "validate",
         "validate",
-        "codex",
+        "gemini",
         "validate",
         "claude",
         "validate",
-        "codex",
+        "gemini",
         "validate",
         "claude",
         "validate",
@@ -906,21 +940,21 @@ def test_unclassified_review_fix_defaults_material_and_restarts_at_codex(
     ]
 
 
-def test_codex_material_fix_restarts_the_next_round_at_codex(
+def test_gemini_material_fix_restarts_the_next_round_at_gemini(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = (
-        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
-        "if [ ! -e \"$AGENT_STATE_DIR/codex-fixed\" ]; then "
-        "touch \"$AGENT_STATE_DIR/codex-fixed\"; "
-        "printf 'codex fix\\n' >> result.txt; git add result.txt; "
-        "git commit -m 'fix: codex material review'; fi"
+    gemini_hook = (
+        "printf 'gemini\\n' >> \"$EVENT_LOG\"; "
+        "if [ ! -e \"$AGENT_STATE_DIR/gemini-fixed\" ]; then "
+        "touch \"$AGENT_STATE_DIR/gemini-fixed\"; "
+        "printf 'gemini fix\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'fix: gemini material review'; fi"
     )
     result = _run(
         consumer,
         ["--issues", "46"],
         issues=[_issue(46)],
-        config=_config(tmp_path, codex_review_hook=codex_hook),
+        config=_config(tmp_path, gemini_review_hook=gemini_hook),
     )
     assert result.returncode == 0, result.stderr + result.stdout
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
@@ -929,11 +963,11 @@ def test_codex_material_fix_restarts_the_next_round_at_codex(
         "worker",
         "validate",
         "validate",
-        "codex",
+        "gemini",
         "validate",
         "claude",
         "validate",
-        "codex",
+        "gemini",
         "validate",
         "claude",
         "validate",
@@ -944,10 +978,10 @@ def test_codex_material_fix_restarts_the_next_round_at_codex(
 def test_minor_only_review_fixes_converge_without_restarting(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = (
-        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
-        "printf 'codex minor\\n' >> result.txt; git add result.txt; "
-        "git commit -m 'docs: codex minor review polish'; "
+    gemini_hook = (
+        "printf 'gemini\\n' >> \"$EVENT_LOG\"; "
+        "printf 'gemini minor\\n' >> result.txt; git add result.txt; "
+        "git commit -m 'docs: gemini minor review polish'; "
         "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
     )
     claude_hook = (
@@ -962,7 +996,7 @@ def test_minor_only_review_fixes_converge_without_restarting(
         issues=[_issue(36)],
         config=_config(
             tmp_path,
-            codex_review_hook=codex_hook,
+            gemini_review_hook=gemini_hook,
             claude_review_hook=claude_hook,
         ),
     )
@@ -974,7 +1008,7 @@ def test_minor_only_review_fixes_converge_without_restarting(
         "worker",
         "validate",
         "validate",
-        "codex",
+        "gemini",
         "validate",
         "claude",
         "validate",
@@ -982,7 +1016,7 @@ def test_minor_only_review_fixes_converge_without_restarting(
     ]
     branch = _agent_loop_branches(consumer[1]).strip()
     published = _run_git("show", f"{branch}:result.txt", cwd=consumer[1]).stdout
-    assert "codex minor" in published
+    assert "gemini minor" in published
     assert "claude minor" in published
 
 
@@ -1023,12 +1057,12 @@ def test_committed_review_with_invalid_classification_blocks_publication(
 def test_review_classification_without_commit_blocks_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
+    gemini_hook = "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
     result = _run(
         consumer,
         ["--issues", "48"],
         issues=[_issue(48)],
-        config=_config(tmp_path, codex_review_hook=codex_hook),
+        config=_config(tmp_path, gemini_review_hook=gemini_hook),
     )
     assert result.returncode != 0
     assert "wrote a fix classification without committing a fix" in result.stderr
@@ -1040,15 +1074,15 @@ def test_review_classification_without_commit_blocks_publication(
 def test_validation_cannot_change_accepted_review_classification(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = (
-        "touch \"$AGENT_STATE_DIR/codex-reviewed\"; "
+    gemini_hook = (
+        "touch \"$AGENT_STATE_DIR/gemini-reviewed\"; "
         "printf 'minor fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'docs: minor review fix'; "
         "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
     )
     validation_hook = (
         "printf 'validate\\n' >> \"$EVENT_LOG\"; "
-        "if [ -e \"$AGENT_STATE_DIR/codex-reviewed\" ]; then "
+        "if [ -e \"$AGENT_STATE_DIR/gemini-reviewed\" ]; then "
         "printf 'material\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; fi"
     )
     result = _run(
@@ -1057,7 +1091,7 @@ def test_validation_cannot_change_accepted_review_classification(
         issues=[_issue(38)],
         config=_config(
             tmp_path,
-            codex_review_hook=codex_hook,
+            gemini_review_hook=gemini_hook,
             validation_hook=validation_hook,
         ),
     )
@@ -1070,14 +1104,14 @@ def test_validation_cannot_change_accepted_review_classification(
 def test_validation_cannot_create_a_missing_material_outcome(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = (
-        "touch \"$AGENT_STATE_DIR/codex-reviewed\"; "
+    gemini_hook = (
+        "touch \"$AGENT_STATE_DIR/gemini-reviewed\"; "
         "printf 'material fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'fix: material review fix'"
     )
     validation_hook = (
         "printf 'validate\\n' >> \"$EVENT_LOG\"; "
-        "if [ -e \"$AGENT_STATE_DIR/codex-reviewed\" ]; then "
+        "if [ -e \"$AGENT_STATE_DIR/gemini-reviewed\" ]; then "
         "printf 'material\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\"; fi"
     )
     result = _run(
@@ -1086,7 +1120,7 @@ def test_validation_cannot_create_a_missing_material_outcome(
         issues=[_issue(47)],
         config=_config(
             tmp_path,
-            codex_review_hook=codex_hook,
+            gemini_review_hook=gemini_hook,
             validation_hook=validation_hook,
         ),
     )
@@ -1099,14 +1133,14 @@ def test_validation_cannot_create_a_missing_material_outcome(
 def test_later_reviewer_cannot_change_an_accepted_outcome(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = (
+    gemini_hook = (
         "printf 'minor fix\\n' >> result.txt; git add result.txt; "
         "git commit -m 'docs: minor review fix'; "
         "printf 'minor\\n' > \"$AGENT_LOOP_REVIEW_OUTCOME_FILE\""
     )
     claude_hook = (
         "printf 'material\\n' > "
-        '"$AGENT_LOOP_LOG_DIR/codex-review-round-$AGENT_LOOP_REVIEW_ROUND.outcome"'
+        '"$AGENT_LOOP_LOG_DIR/gemini-review-round-$AGENT_LOOP_REVIEW_ROUND.outcome"'
     )
     result = _run(
         consumer,
@@ -1114,18 +1148,18 @@ def test_later_reviewer_cannot_change_an_accepted_outcome(
         issues=[_issue(49)],
         config=_config(
             tmp_path,
-            codex_review_hook=codex_hook,
+            gemini_review_hook=gemini_hook,
             claude_review_hook=claude_hook,
         ),
     )
     assert result.returncode != 0
-    assert "Codex review outcome file changed" in result.stderr
+    assert "Gemini review outcome file changed" in result.stderr
     assert "Worktree preserved:" in result.stderr
     assert "issue-49" in _agent_loop_branches(consumer[1])
     assert not (consumer[3] / "pr-ready").exists()
 
 
-@pytest.mark.parametrize("engine", ["codex", "claude"])
+@pytest.mark.parametrize("engine", ["gemini", "claude"])
 def test_final_validation_cannot_change_an_accepted_outcome(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path, engine: str
 ) -> None:
@@ -1146,9 +1180,9 @@ def test_final_validation_cannot_change_an_accepted_outcome(
         _config(
             tmp_path,
             validation_hook=validation_hook,
-            codex_review_hook=review_hook,
+            gemini_review_hook=review_hook,
         )
-        if engine == "codex"
+        if engine == "gemini"
         else _config(
             tmp_path,
             validation_hook=validation_hook,
@@ -1171,10 +1205,10 @@ def test_final_validation_cannot_change_an_accepted_outcome(
 def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = (
-        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
-        "printf 'codex round %s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" >> result.txt; "
-        'git add result.txt; git commit -m "fix: codex round $AGENT_LOOP_REVIEW_ROUND"'
+    gemini_hook = (
+        "printf 'gemini\\n' >> \"$EVENT_LOG\"; "
+        "printf 'gemini round %s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" >> result.txt; "
+        'git add result.txt; git commit -m "fix: gemini round $AGENT_LOOP_REVIEW_ROUND"'
     )
     result = _run(
         consumer,
@@ -1182,7 +1216,7 @@ def test_review_cap_preserves_non_converged_worktree_and_blocks_publication(
         issues=[_issue(19)],
         config=_config(
             tmp_path,
-            codex_review_hook=codex_hook,
+            gemini_review_hook=gemini_hook,
             review_max_rounds=2,
         ),
     )
@@ -1201,17 +1235,17 @@ def test_v3_resume_cannot_rerun_the_capped_round(
 ) -> None:
     finding_hash = "4be82179d3761dd716ff1e62c19138fc105495b9a66528678e0e76e253adb577"
     disposition_hash = "13079c2612a9ead4818ab21ef90bf6b7c457916144d8cbaeeff74befa4f4cc8d"
-    codex_hook = (
-        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
+    gemini_hook = (
+        "printf 'gemini\\n' >> \"$EVENT_LOG\"; "
         "before=$AGENT_LOOP_PR_HEAD_SHA; "
-        "printf 'codex round %s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" >> result.txt; "
-        "git add result.txt; git commit -m \"fix: codex round $AGENT_LOOP_REVIEW_ROUND\"; "
+        "printf 'gemini round %s\\n' \"$AGENT_LOOP_REVIEW_ROUND\" >> result.txt; "
+        "git add result.txt; git commit -m \"fix: gemini round $AGENT_LOOP_REVIEW_ROUND\"; "
         '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
         "after=$(git rev-parse HEAD); fingerprint=cap-$AGENT_LOOP_REVIEW_ROUND; "
-        "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex round=$AGENT_LOOP_REVIEW_ROUND "
+        "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=gemini round=$AGENT_LOOP_REVIEW_ROUND "
         "head=$before fingerprint=$fingerprint occurrence=1 severity=major "
         f"lens=correctness content-sha256={finding_hash} -->\" 'Finding.'; "
-        "printf -v disposition '%s\\n%s' \"<!-- local-review-disposition:v3 engine=codex "
+        "printf -v disposition '%s\\n%s' \"<!-- local-review-disposition:v3 engine=gemini "
         "round=$AGENT_LOOP_REVIEW_ROUND head=$after fingerprint=$fingerprint "
         f"occurrence=1 outcome=fixed content-sha256={disposition_hash} -->\" 'Fixed.'; "
         "jq -n --arg finding \"$finding\" --arg disposition \"$disposition\" "
@@ -1222,7 +1256,7 @@ def test_v3_resume_cannot_rerun_the_capped_round(
         "jq -n --argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
         "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" --arg before \"$before\" "
         "--arg after \"$after\" --arg fingerprint \"$fingerprint\" "
-        "'{version:3,status:\"changed\",engine:\"codex\",round:$round,"
+        "'{version:3,status:\"changed\",engine:\"gemini\",round:$round,"
         "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"material\","
         "findingFingerprints:[$fingerprint],finalLaneComplete:true}' "
         "> \"$AGENT_LOOP_REVIEW_RESULT_FILE\""
@@ -1233,7 +1267,7 @@ def test_v3_resume_cannot_rerun_the_capped_round(
         issues=[_issue(32)],
         config=_config_v3(
             tmp_path,
-            codex_review_hook=codex_hook,
+            gemini_review_hook=gemini_hook,
             review_max_rounds=2,
         ),
         timeout=60,
@@ -1250,7 +1284,7 @@ def test_v3_resume_cannot_rerun_the_capped_round(
         issues=[_issue(32, assigned=True)],
         config=_config_v3(
             tmp_path,
-            codex_review_hook=codex_hook,
+            gemini_review_hook=gemini_hook,
             review_max_rounds=2,
         ),
         timeout=30,
@@ -1264,11 +1298,11 @@ def test_v3_resume_cannot_rerun_the_capped_round(
 def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker = consumer[3] / "fail-gemini-review-validation"
     fail_marker.touch()
     validation = (
-        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
-        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        'if [ -e "$AGENT_STATE_DIR/fail-gemini-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/gemini-review-round-1-validation.log" ]; '
         "then exit 71; fi"
     )
     config = _config_v3(tmp_path, validation_hook=validation, review_max_rounds=1)
@@ -1285,7 +1319,7 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state["phase"] == "reviewing"
     assert state["round"] == 1
-    assert state["reviewEngine"] == "codex"
+    assert state["reviewEngine"] == "gemini"
 
     fail_marker.unlink()
     resumed = _run(
@@ -1299,19 +1333,19 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     assert resumed.returncode == 0, resumed.stderr + resumed.stdout
     assert "resuming its remaining leg" in resumed.stdout
     comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
-    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-pass:v3 engine=gemini round=1") == 1
     assert comments.count("local-review-pass:v3 engine=claude round=1") == 1
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
 
-def test_v3_final_round_recovery_rejects_stale_codex_result(
+def test_v3_final_round_recovery_rejects_stale_gemini_result(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker = consumer[3] / "fail-gemini-review-validation"
     fail_marker.touch()
     validation = (
-        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
-        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        'if [ -e "$AGENT_STATE_DIR/fail-gemini-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/gemini-review-round-1-validation.log" ]; '
         "then exit 71; fi"
     )
     config = _config_v3(tmp_path, validation_hook=validation, review_max_rounds=1)
@@ -1344,7 +1378,7 @@ def test_v3_final_round_recovery_rejects_stale_codex_result(
     assert resumed.returncode != 0
     assert "result does not match the current review head" in resumed.stderr
     comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
-    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-pass:v3 engine=gemini round=1") == 1
     assert "local-review-pass:v3 engine=claude round=1" not in comments
     assert not (consumer[3] / "pr-ready").exists()
 
@@ -1390,9 +1424,9 @@ def test_v3_final_round_recovery_accepts_completed_claude_transition(
 
     assert resumed.returncode == 0, resumed.stderr + resumed.stdout
     assert "recovering its completed legs" in resumed.stdout
-    assert "Recovered authenticated Codex and Claude evidence" in resumed.stdout
+    assert "Recovered authenticated Gemini and Claude evidence" in resumed.stdout
     comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
-    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-pass:v3 engine=gemini round=1") == 1
     assert comments.count("local-review-complete:v3 engine=claude round=1") == 1
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
@@ -1402,26 +1436,26 @@ def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
 ) -> None:
     finding_hash = "4be82179d3761dd716ff1e62c19138fc105495b9a66528678e0e76e253adb577"
     disposition_hash = "13079c2612a9ead4818ab21ef90bf6b7c457916144d8cbaeeff74befa4f4cc8d"
-    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker = consumer[3] / "fail-gemini-review-validation"
     fail_marker.touch()
     validation = (
-        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
-        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        'if [ -e "$AGENT_STATE_DIR/fail-gemini-review-validation" ] && '
+        '[ -e "$AGENT_LOOP_LOG_DIR/gemini-review-round-1-validation.log" ]; '
         "then exit 71; fi"
     )
-    codex_hook = (
-        "printf 'codex-material\\n' >> \"$EVENT_LOG\"; "
+    gemini_hook = (
+        "printf 'gemini-material\\n' >> \"$EVENT_LOG\"; "
         "before=$AGENT_LOOP_PR_HEAD_SHA; "
         "printf 'material fix\\n' > final-round-fix.txt; "
         "git add final-round-fix.txt; git commit -m 'fix: final round finding'; "
         '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
         "after=$(git rev-parse HEAD); "
-        "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=codex "
+        "printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine=gemini "
         "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=final-round-material "
         "occurrence=1 severity=major lens=recovery "
         f"content-sha256={finding_hash} -->\" 'Finding.'; "
         "printf -v disposition '%s\\n%s' \"<!-- local-review-disposition:v3 "
-        "engine=codex round=$AGENT_LOOP_REVIEW_ROUND head=$after "
+        "engine=gemini round=$AGENT_LOOP_REVIEW_ROUND head=$after "
         "fingerprint=final-round-material occurrence=1 outcome=fixed "
         f"content-sha256={disposition_hash} -->\" 'Fixed.'; "
         "jq -n --arg finding \"$finding\" --arg disposition \"$disposition\" "
@@ -1432,7 +1466,7 @@ def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
         "jq -n --argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
         "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" --arg before \"$before\" "
         "--arg after \"$after\" "
-        "'{version:3,status:\"changed\",engine:\"codex\",round:$round,"
+        "'{version:3,status:\"changed\",engine:\"gemini\",round:$round,"
         "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"material\","
         "findingFingerprints:[\"final-round-material\"],finalLaneComplete:true}' "
         '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
@@ -1440,7 +1474,7 @@ def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
     config = _config_v3(
         tmp_path,
         validation_hook=validation,
-        codex_review_hook=codex_hook,
+        gemini_review_hook=gemini_hook,
         review_max_rounds=1,
     )
 
@@ -1466,11 +1500,11 @@ def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
     assert resumed.returncode != 0
     assert "did not converge within 1 round(s)" in resumed.stderr
     assert "resuming its remaining leg" in resumed.stdout
-    assert "Recovered authenticated Codex evidence" in resumed.stdout
+    assert "Recovered authenticated Gemini evidence" in resumed.stdout
     events = (consumer[3] / "events.log").read_text(encoding="utf-8")
-    assert events.count("codex-material\n") == 1
+    assert events.count("gemini-material\n") == 1
     comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
-    assert comments.count("local-review-complete:v3 engine=codex round=1") == 1
+    assert comments.count("local-review-complete:v3 engine=gemini round=1") == 1
     assert comments.count("local-review-pass:v3 engine=claude round=1") == 1
     assert "conflicting attestation" not in resumed.stderr
 
@@ -1485,7 +1519,7 @@ def _thread_comment(
     }
 
 
-def _finding(round_number: int, engine: str = "codex") -> str:
+def _finding(round_number: int, engine: str = "gemini") -> str:
     return (
         f"<!-- local-review:v1 engine={engine} round={round_number} "
         f"head={'a' * 40} fingerprint=f -->"
@@ -1611,7 +1645,7 @@ def test_committed_review_requires_structured_fix_and_completion_evidence(
         issues=[_issue(76)],
         config=_config(
             tmp_path,
-            codex_review_hook=review_hook,
+            gemini_review_hook=review_hook,
             auto_committed_evidence=False,
         ),
     )
@@ -1667,7 +1701,7 @@ def test_later_review_thread_page_cannot_hide_an_incomplete_finding(
                 "nodes": [
                     _thread_comment(
                         2,
-                        "<!-- local-review:v1 engine=codex round=2 "
+                        "<!-- local-review:v1 engine=gemini round=2 "
                         f"head={'a' * 40} fingerprint=second-page -->",
                     )
                 ],
@@ -1705,7 +1739,7 @@ def test_review_hooks_can_publish_clean_ledger_attestations(
     assert gh_log.count("pr review 1 --comment --body") == 2
     reviews = json.loads((consumer[3] / "reviews.json").read_text(encoding="utf-8"))
     assert {review["body"].split(" engine=", 1)[1].split(" ", 1)[0] for review in reviews} == {
-        "codex",
+        "gemini",
         "claude",
     }
 
@@ -1939,7 +1973,7 @@ def test_interrupted_ready_finalization_rolls_back_if_evidence_changes(
         consumer,
         ["--issues", "85"],
         issues=[_issue(85)],
-        config=_config_v3(tmp_path, codex_review_hook=_v3_changed_hook()),
+        config=_config_v3(tmp_path, gemini_review_hook=_v3_changed_hook()),
         extra_env={"AGENT_INTERRUPT_AFTER_READY": "true"},
         timeout=60,
     )
@@ -1953,7 +1987,7 @@ def test_interrupted_ready_finalization_rolls_back_if_evidence_changes(
         consumer,
         ["--resume-run", str(state_file)],
         issues=[_issue(85, assigned=True)],
-        config=_config_v3(tmp_path, codex_review_hook=_v3_changed_hook()),
+        config=_config_v3(tmp_path, gemini_review_hook=_v3_changed_hook()),
         timeout=60,
     )
     assert second.returncode != 0
@@ -1996,7 +2030,7 @@ def test_finalization_revalidates_changed_result_ledger_evidence(
         consumer,
         ["--issues", "84"],
         issues=[_issue(84)],
-        config=_config_v3(tmp_path, codex_review_hook=_v3_changed_hook()),
+        config=_config_v3(tmp_path, gemini_review_hook=_v3_changed_hook()),
         extra_env={"AGENT_DROP_THREADS_ON_READY": "true"},
         timeout=60,
     )
@@ -2061,7 +2095,7 @@ def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
         tmp_path,
         review_contract_version=3,
         config_doctor="false",
-        codex_review_hook=complete,
+        gemini_review_hook=complete,
         claude_review_hook=complete,
     )
     config = config.replace(missing_token, "missing")
@@ -2083,9 +2117,9 @@ def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
 @pytest.mark.parametrize(
     ("hook_key", "hook_value"),
     [
-        ("codex_review_hook", "codex exec --skill grill"),
-        ("codex_review_hook", "python3 .agents/skills/grill/scripts/review-ledger.py attest"),
-        ("codex_review_hook", "codex exec --skill deepgrill"),
+        ("gemini_review_hook", "gemini exec --skill grill"),
+        ("gemini_review_hook", "python3 .agents/skills/grill/scripts/review-ledger.py attest"),
+        ("gemini_review_hook", "gemini exec --skill deepgrill"),
         ("claude_review_hook", "claude -p /deepgrill"),
         ("claude_review_hook", "claude -p /pr-grill"),
         # Bare command names pin the `^` branch of the guard's word-boundary
@@ -2123,7 +2157,7 @@ def test_grill_substring_in_unrelated_hook_path_is_not_rejected(
         consumer,
         ["--issues", "20"],
         issues=[_issue(20)],
-        config=_config_v3(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
+        config=_config_v3(tmp_path, gemini_review_hook="bash /opt/grill-app/review.sh"),
     )
     assert "names an incorrect reviewer skill" not in result.stderr
     # Absence of the message alone would also hold if the run died earlier for
@@ -2179,7 +2213,7 @@ def test_v3_wrapper_owns_clean_attestations_and_finalizes_state(
     assert state["phase"] == "finalized"
     assert re.fullmatch(r"[0-9a-f]{64}", state["issueTitleSha256"])
     assert re.fullmatch(r"[0-9a-f]{64}", state["issueBodySha256"])
-    assert re.fullmatch(r"[0-9a-f]{64}", state["codexResultSha256"])
+    assert re.fullmatch(r"[0-9a-f]{64}", state["geminiResultSha256"])
     assert re.fullmatch(r"[0-9a-f]{64}", state["claudeResultSha256"])
     comments = json.loads((consumer[3] / "issue-comments.json").read_text())
     assert len(comments) == 2
@@ -2250,7 +2284,7 @@ def test_v3_review_hook_cannot_self_authorize_direct_push(
         "findingFingerprints:[],finalLaneComplete:true}' "
         '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
     )
-    codex_hook = (
+    gemini_hook = (
         "if AGENT_LOOP_SAFE_REVIEW_PUSH=1 git push origin "
         '"HEAD:refs/heads/$AGENT_LOOP_BRANCH" '
         '2> "$AGENT_STATE_DIR/direct-v3-push.stderr"; then exit 89; fi; '
@@ -2261,7 +2295,7 @@ def test_v3_review_hook_cannot_self_authorize_direct_push(
         consumer,
         ["--issues", "91"],
         issues=[_issue(91)],
-        config=_config_v3(tmp_path, codex_review_hook=codex_hook),
+        config=_config_v3(tmp_path, gemini_review_hook=gemini_hook),
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
@@ -2277,7 +2311,7 @@ def test_v3_review_hook_cannot_self_authorize_direct_push(
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
 
-def test_v3_finalization_revalidates_historical_codex_head_after_claude_minor_fix(
+def test_v3_finalization_revalidates_historical_gemini_head_after_claude_minor_fix(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     result = _run(
@@ -2303,7 +2337,7 @@ def test_v3_missing_result_blocks_without_false_clean_marker(
         issues=[_issue(26)],
         config=_config_v3(
             tmp_path,
-            codex_review_hook="true",
+            gemini_review_hook="true",
             claude_review_hook="true",
         ),
     )
@@ -2325,7 +2359,7 @@ def test_resume_run_continues_preserved_draft_review(
         issues=[_issue(27)],
         config=_config_v3(
             tmp_path,
-            codex_review_hook="true",
+            gemini_review_hook="true",
             claude_review_hook="true",
         ),
     )
@@ -2362,7 +2396,7 @@ def test_resume_run_accepts_canonicalized_relative_path_roots(
         config=relative_roots(
             _config_v3(
                 tmp_path,
-                codex_review_hook="true",
+                gemini_review_hook="true",
                 claude_review_hook="true",
             )
         ),
@@ -2383,13 +2417,13 @@ def test_resume_run_accepts_canonicalized_relative_path_roots(
     assert json.loads(state_file.read_text())["phase"] == "finalized"
 
 
-def test_resume_run_advances_identity_after_uncheckpointed_codex_fix(
+def test_resume_run_advances_identity_after_uncheckpointed_gemini_fix(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    fail_after_codex_fix = (
-        'if [ "${AGENT_LOOP_REVIEW_ENGINE:-}" = codex ] && '
-        '[ ! -e "$AGENT_STATE_DIR/codex-validation-failed" ]; then '
-        'touch "$AGENT_STATE_DIR/codex-validation-failed"; exit 73; fi; '
+    fail_after_gemini_fix = (
+        'if [ "${AGENT_LOOP_REVIEW_ENGINE:-}" = gemini ] && '
+        '[ ! -e "$AGENT_STATE_DIR/gemini-validation-failed" ]; then '
+        'touch "$AGENT_STATE_DIR/gemini-validation-failed"; exit 73; fi; '
         'printf "validate\\n" >> "$EVENT_LOG"'
     )
     first = _run(
@@ -2398,8 +2432,8 @@ def test_resume_run_advances_identity_after_uncheckpointed_codex_fix(
         issues=[_issue(89)],
         config=_config_v3(
             tmp_path,
-            codex_review_hook=_v3_changed_hook(),
-            validation_hook=fail_after_codex_fix,
+            gemini_review_hook=_v3_changed_hook(),
+            validation_hook=fail_after_gemini_fix,
         ),
         timeout=60,
     )
@@ -2409,7 +2443,7 @@ def test_resume_run_advances_identity_after_uncheckpointed_codex_fix(
     state = json.loads(state_file.read_text())
     assert state["phase"] == "reviewing"
     assert state["round"] == 1
-    assert state["reviewEngine"] == "codex"
+    assert state["reviewEngine"] == "gemini"
     assert _run_git("rev-parse", "HEAD", cwd=Path(state["worktree"])).stdout.strip() != state["headSha"]
 
     second = _run(
@@ -2428,13 +2462,13 @@ def test_resume_run_advances_identity_after_uncheckpointed_codex_fix(
 def test_resume_run_advances_identity_after_uncheckpointed_clean_attestation(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    fail_after_codex_attestation = (
-        'if [ "${AGENT_LOOP_REVIEW_ENGINE:-}" = codex ] && '
-        '[ ! -e "$AGENT_STATE_DIR/codex-clean-validation-failed" ]; then '
-        'touch "$AGENT_STATE_DIR/codex-clean-validation-failed"; exit 73; fi; '
+    fail_after_gemini_attestation = (
+        'if [ "${AGENT_LOOP_REVIEW_ENGINE:-}" = gemini ] && '
+        '[ ! -e "$AGENT_STATE_DIR/gemini-clean-validation-failed" ]; then '
+        'touch "$AGENT_STATE_DIR/gemini-clean-validation-failed"; exit 73; fi; '
         'printf "validate\\n" >> "$EVENT_LOG"'
     )
-    config = _config_v3(tmp_path, validation_hook=fail_after_codex_attestation)
+    config = _config_v3(tmp_path, validation_hook=fail_after_gemini_attestation)
     first = _run(
         consumer,
         ["--issues", "91"],
@@ -2446,7 +2480,7 @@ def test_resume_run_advances_identity_after_uncheckpointed_clean_attestation(
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
     state = json.loads(state_file.read_text())
     assert state["round"] == 1
-    assert state["reviewEngine"] == "codex"
+    assert state["reviewEngine"] == "gemini"
     assert state["headSha"] == _run_git(
         "rev-parse", "HEAD", cwd=Path(state["worktree"])
     ).stdout.strip()
@@ -2463,12 +2497,12 @@ def test_resume_run_advances_identity_after_uncheckpointed_clean_attestation(
     assert final_state["phase"] == "finalized"
     assert final_state["round"] == 2
     comments = json.loads((consumer[3] / "issue-comments.json").read_text())
-    codex_round_one = [
+    gemini_round_one = [
         row
         for row in comments
-        if "local-review-pass:v3 engine=codex round=1" in row["body"]
+        if "local-review-pass:v3 engine=gemini round=1" in row["body"]
     ]
-    assert len(codex_round_one) == 1
+    assert len(gemini_round_one) == 1
 
 
 def test_resume_run_rejects_changed_issue_contract(
@@ -2480,7 +2514,7 @@ def test_resume_run_rejects_changed_issue_contract(
         issues=[_issue(29, body="original requirements")],
         config=_config_v3(
             tmp_path,
-            codex_review_hook="true",
+            gemini_review_hook="true",
             claude_review_hook="true",
         ),
     )
@@ -2506,7 +2540,7 @@ def test_resume_run_rejects_a_concurrent_owner(
         issues=[_issue(30)],
         config=_config_v3(
             tmp_path,
-            codex_review_hook="true",
+            gemini_review_hook="true",
             claude_review_hook="true",
         ),
     )
@@ -2544,7 +2578,7 @@ def test_resume_run_rejects_a_concurrent_owner(
         locker.wait(timeout=5)
 
 
-def test_partial_final_round_checkpoint_resumes_after_codex_pass(
+def test_partial_final_round_checkpoint_resumes_after_gemini_pass(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     first = _run(
@@ -2579,7 +2613,7 @@ def test_partial_final_round_checkpoint_resumes_after_codex_pass(
     assert final_state["phase"] == "finalized"
     comments = json.loads((consumer[3] / "issue-comments.json").read_text())
     assert sum(
-        "local-review-pass:v3 engine=codex round=1" in row["body"]
+        "local-review-pass:v3 engine=gemini round=1" in row["body"]
         for row in comments
     ) == 1
     assert sum(
@@ -2617,7 +2651,7 @@ def test_converged_resume_rejects_tampered_review_result(
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
     state = json.loads(state_file.read_text())
     assert state["phase"] == "finalizing"
-    result_file = state_file.parent / f"codex-review-round-{state['round']}.result.json"
+    result_file = state_file.parent / f"gemini-review-round-{state['round']}.result.json"
     result_file.write_text("{}\n", encoding="utf-8")
 
     second = _run(
@@ -2794,8 +2828,8 @@ def test_setup_commit_cannot_satisfy_worker_commit_requirement(
 def test_detached_reviewer_commit_blocks_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = (
-        "printf 'codex\\n' >> \"$EVENT_LOG\"; "
+    gemini_hook = (
+        "printf 'gemini\\n' >> \"$EVENT_LOG\"; "
         'if [ ! -e "$AGENT_STATE_DIR/detached-reviewed" ]; then '
         'touch "$AGENT_STATE_DIR/detached-reviewed"; '
         "git checkout --detach >/dev/null; "
@@ -2806,7 +2840,7 @@ def test_detached_reviewer_commit_blocks_publication(
         consumer,
         ["--issues", "23"],
         issues=[_issue(23)],
-        config=_config(tmp_path, codex_review_hook=codex_hook),
+        config=_config(tmp_path, gemini_review_hook=gemini_hook),
     )
     assert result.returncode != 0
     assert "moved HEAD away from the issue branch" in result.stderr
@@ -2946,7 +2980,7 @@ exec "$AGENT_TEST_REAL_GIT" "$@"
         extra_env={"AGENT_TEST_REAL_GIT": real_git},
     )
     assert result.returncode != 0
-    assert "Could not inspect Git status after the configured Codex review hook" in result.stderr
+    assert "Could not inspect Git status after the configured Gemini review hook" in result.stderr
     assert "issue-42" in _agent_loop_branches(remote)
     assert not (consumer[3] / "pr-ready").exists()
 
@@ -2964,9 +2998,9 @@ def test_hook_origin_push_is_disabled_until_wrapper_publication(
         "printf 'worker\\n' >> \"$EVENT_LOG\"; printf 'done\\n' > result.txt; "
         "git add result.txt; git commit -m 'fix: worker after blocked push'"
     )
-    codex_hook = (
+    gemini_hook = (
         'if git -C "$PWD" push origin HEAD:refs/heads/main >/dev/null 2>&1; then exit 46; fi; '
-        "printf 'codex\\n' >> \"$EVENT_LOG\""
+        "printf 'gemini\\n' >> \"$EVENT_LOG\""
     )
     result = _run(
         consumer,
@@ -2975,7 +3009,7 @@ def test_hook_origin_push_is_disabled_until_wrapper_publication(
         config=_config(
             tmp_path,
             worker_hook=worker_hook,
-            codex_review_hook=codex_hook,
+            gemini_review_hook=gemini_hook,
         ),
     )
     assert result.returncode == 0, result.stderr + result.stdout
@@ -3199,7 +3233,7 @@ def test_hook_preserves_auth_environment_for_git_credential_reads(
 def test_reviewer_history_rewrite_blocks_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex_hook = (
+    gemini_hook = (
         'git reset --hard "$AGENT_LOOP_REVIEW_BASE_SHA" >/dev/null; '
         "printf 'replacement\\n' > replacement.txt; git add replacement.txt; "
         "git commit -m 'fix: replace reviewed history'"
@@ -3208,7 +3242,7 @@ def test_reviewer_history_rewrite_blocks_publication(
         consumer,
         ["--issues", "26"],
         issues=[_issue(26)],
-        config=_config(tmp_path, codex_review_hook=codex_hook),
+        config=_config(tmp_path, gemini_review_hook=gemini_hook),
     )
     assert result.returncode != 0
     assert "rewrote or dropped previously reviewed commits" in result.stderr
@@ -3502,14 +3536,15 @@ def test_created_pr_head_mismatch_closes_pr_and_preserves_worktree(
 def test_default_worker_model_is_passed_as_one_shell_safe_argument(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex = consumer[2] / "codex"
+    agy = consumer[2] / "agy"
     _write_executable(
-        codex,
+        agy,
         """#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$AGENT_STATE_DIR/model-args.log"
 printf 'done\\n' > result.txt
 git add result.txt
-git commit -m 'fix: shell-safe model worker'
+git commit -m 'fix: shell-safe model worker' >/dev/null
+printf '{"status":"SUCCESS","response":"done"}\\n'
 """,
     )
     injected = tmp_path / "model-injection-ran"
@@ -3519,7 +3554,7 @@ git commit -m 'fix: shell-safe model worker'
         ["--issues", "28"],
         issues=[_issue(28)],
         config=_config(tmp_path, worker_hook="", worker_model=model),
-        extra_env={"INJECTED": str(injected)},
+        extra_env={"INJECTED": str(injected), "AGY_CLI": str(agy)},
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert not injected.exists()
@@ -3860,18 +3895,19 @@ def test_worker_failure_preserves_worktree(
 def test_capacity_failure_uses_fallback_model(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    codex = consumer[2] / "codex"
+    agy = consumer[2] / "agy"
     _write_executable(
-        codex,
+        agy,
         """#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$AGENT_STATE_DIR/models.log"
-if [[ "$*" == *" -m primary "* ]]; then
-  echo 'capacity exhausted' >&2
-  exit 9
+if [[ "$*" == *"--model primary"* ]]; then
+  printf '{"status":"ERROR","error":"capacity exhausted"}\n'
+  exit 0
 fi
 printf 'done\n' > result.txt
 git add result.txt
-git commit -m 'fix: fallback worker'
+git commit -m 'fix: fallback worker' >/dev/null
+printf '{"status":"SUCCESS","response":"done"}\n'
 """,
     )
     result = _run(
@@ -3885,11 +3921,12 @@ git commit -m 'fix: fallback worker'
             worker_fallback_model="fallback",
             worker_retries=1,
         ),
+        extra_env={"AGY_CLI": str(agy)},
     )
     assert result.returncode == 0, result.stderr + result.stdout
     models = (consumer[3] / "models.log").read_text(encoding="utf-8")
-    assert "-m primary" in models
-    assert "-m fallback" in models
+    assert "--model primary" in models
+    assert "--model fallback" in models
 
 
 def test_timeout_retries_only_an_unchanged_worktree(
@@ -3982,7 +4019,7 @@ def test_fresh_base_is_integrated_and_validated_before_publication(
         """#!/usr/bin/env bash
 set -e
 git --git-dir="$REMOTE_PATH" update-ref refs/heads/main "$ADVANCED_BASE"
-printf 'codex\n' >> "$EVENT_LOG"
+printf 'gemini\n' >> "$EVENT_LOG"
 """,
     )
     claude = (
@@ -3997,7 +4034,7 @@ printf 'codex\n' >> "$EVENT_LOG"
         issues=[_issue(9)],
         config=_config(
             tmp_path,
-            codex_review_hook=str(updater),
+            gemini_review_hook=str(updater),
             claude_review_hook=claude,
         ),
         extra_env={"REMOTE_PATH": str(remote), "ADVANCED_BASE": advanced_base},
@@ -4456,12 +4493,12 @@ exec "$AGENT_TEST_REAL_GIT" "$@"
     assert Path(child["worktree"]).exists()
 
 
-def test_missing_default_codex_fails_before_claim(
+def test_missing_default_agy_fails_before_claim(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     repo, _, bin_dir, state_dir = consumer
-    no_codex_bin = tmp_path / "no-codex-bin"
-    no_codex_bin.mkdir()
+    no_agy_bin = tmp_path / "no-agy-bin"
+    no_agy_bin.mkdir()
     for command in (
         "bash",
         "dirname",
@@ -4475,18 +4512,18 @@ def test_missing_default_codex_fails_before_claim(
     ):
         executable = shutil.which(command)
         assert executable is not None
-        (no_codex_bin / command).symlink_to(executable)
-    (no_codex_bin / "gh").symlink_to(bin_dir / "gh")
+        (no_agy_bin / command).symlink_to(executable)
+    (no_agy_bin / "gh").symlink_to(bin_dir / "gh")
 
     result = _run(
         consumer,
         ["--issues", "14"],
         issues=[_issue(14)],
-        config=_config(tmp_path, worker_hook=""),
-        extra_env={"PATH": str(no_codex_bin)},
+        config=_config(tmp_path, worker_hook="", worker_model="primary"),
+        extra_env={"PATH": str(no_agy_bin)},
     )
     assert result.returncode != 0
-    assert "required command not found for default worker: codex" in result.stderr
+    assert "required command not found: agy" in result.stderr
     gh_log = state_dir / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()

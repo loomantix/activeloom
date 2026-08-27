@@ -21,10 +21,10 @@ config_doctor = true
 # Optional literal policy enforced by the doctor, for example `low`.
 claude_effort_policy = low
 
-# Both review hooks are required. The wrapper runs Codex/Gemini first, then Claude, and
+# Both review hooks are required. The wrapper runs Gemini first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
-# Codex-then-Claude round with no material fixes. The Codex hook must run
+# Gemini-then-Claude round with no material fixes. The Gemini hook must run
 # `deepcritique`; the Claude hook must run `deepcritique`.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
@@ -43,13 +43,13 @@ claude_effort_policy = low
 # never copy fingerprint arrays. A blocked hook must use the deterministic
 # `review-ledger.js write-blocked-result` command documented by deepcritique and
 # return without claiming a clean or changed pass.
-codex_review_hook = agy --model gemini-3.7-flash-high --effort high --mode accept-edits --dangerously-skip-permissions --output-format json --print-timeout 60m --print "/deepcritique $AGENT_LOOP_PR_NUMBER --base-sha $AGENT_LOOP_REVIEW_BASE_SHA --result-file $AGENT_LOOP_REVIEW_RESULT_FILE --push-helper $AGENT_LOOP_REVIEW_PUSH_HELPER write-result"
-claude_review_hook = agy --model claude-sonnet-4-6 --effort low --mode accept-edits --dangerously-skip-permissions --output-format json --print-timeout 60m --print "/deepcritique $AGENT_LOOP_PR_NUMBER --base-sha $AGENT_LOOP_REVIEW_BASE_SHA --result-file $AGENT_LOOP_REVIEW_RESULT_FILE --push-helper $AGENT_LOOP_REVIEW_PUSH_HELPER write-result"
+gemini_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine gemini
+claude_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine claude
 review_max_rounds = 4
 
 # Optional worker override. When empty, the wrapper runs `agy` with the
 # prompt from prompt.txt. The default worker honors the model settings below.
-worker_hook = agy --model gemini-3.7-flash-high --effort high --mode accept-edits --dangerously-skip-permissions --output-format json --print-timeout 60m --print "$AGENT_LOOP_PROMPT"
+worker_hook =
 worker_model = gemini-3.7-flash-high
 worker_fallback_model = gemini-3.1-pro-high
 worker_retries = 1
