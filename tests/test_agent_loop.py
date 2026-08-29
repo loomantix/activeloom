@@ -107,7 +107,10 @@ if [ "${1:-}" = --wrapper-paths ]; then
         .codex/skills/agent-loop/scripts/hook-git-guard \
         .codex/skills/agent-loop/scripts/hook-gh-guard \
         .codex/skills/agent-loop/scripts/review-push.sh \
-        .codex/skills/agent-loop/scripts/process-supervisor.py
+        .codex/skills/agent-loop/scripts/process-supervisor.py \
+        .codex/skills/agent-loop/scripts/config-doctor.py \
+        .codex/skills/agent-loop/scripts/agent-loop-state.py \
+        .codex/skills/critique/scripts/review-ledger.js
     exit 0
 fi
 if false; then

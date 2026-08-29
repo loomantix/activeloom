@@ -53,7 +53,9 @@ def _require_base_blob(project: Path, base_ref: str, relative: str) -> tuple[str
         check=False,
     )
     if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip() or "<no stderr>"
+        detail = (
+            result.stderr.decode("utf-8", errors="replace").strip() or "<no stderr>"
+        )
         raise DoctorError(f"could not inspect pinned base review surface: {detail}")
     records = [record for record in result.stdout.split(b"\0") if record]
     if len(records) != 1:
@@ -67,8 +69,19 @@ def _require_base_blob(project: Path, base_ref: str, relative: str) -> tuple[str
         or fields[0] not in {b"100644", b"100755"}
         or fields[1] != b"blob"
     ):
-        raise DoctorError(f"pinned base review surface is not a regular blob: {relative}")
+        raise DoctorError(
+            f"pinned base review surface is not a regular blob: {relative}"
+        )
     return fields[0].decode(), fields[2].decode()
+
+
+def _verify_protocols(ledger: Path, state: Path, review_push: Path) -> None:
+    if _version(["node", str(ledger), "--protocol-version"], "review ledger") != "3":
+        raise DoctorError("review-ledger protocol is incompatible with contract v3")
+    if _version([sys.executable, str(state), "--state-version"], "run state") != "1":
+        raise DoctorError("agent-loop state protocol is incompatible")
+    if _version([str(review_push), "--protocol-version"], "review push") != "1":
+        raise DoctorError("review-push protocol is incompatible")
 
 
 def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> None:
@@ -98,13 +111,6 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
     contract = values.get("review_contract_version")
     if contract not in {"3", "4"}:
         raise DoctorError("review_contract_version must be 3 or 4")
-    if _version(["node", str(ledger), "--protocol-version"], "review ledger") != "3":
-        raise DoctorError("review-ledger protocol is incompatible with contract v3")
-    if _version([sys.executable, str(state), "--state-version"], "run state") != "1":
-        raise DoctorError("agent-loop state protocol is incompatible")
-    if _version([str(review_push), "--protocol-version"], "review push") != "1":
-        raise DoctorError("review-push protocol is incompatible")
-
     prompt = prompt_path.read_text(encoding="utf-8")
     instructions = instructions_path.read_text(encoding="utf-8")
     for token in ("AGENT_LOOP_ISSUE_TITLE", "AGENT_LOOP_ISSUE_BODY"):
@@ -173,14 +179,24 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
         if not wrapper_paths or len(wrapper_paths) != len(set(wrapper_paths)):
             raise DoctorError("wrapper required review tools are invalid")
         for relative in wrapper_paths:
-            if not relative.startswith(".codex/skills/agent-loop/scripts/"):
-                raise DoctorError(f"wrapper required review path is invalid: {relative}")
+            if not (
+                relative.startswith(".codex/skills/agent-loop/scripts/")
+                or relative == ".codex/skills/critique/scripts/review-ledger.js"
+            ):
+                raise DoctorError(
+                    f"wrapper required review path is invalid: {relative}"
+                )
             local_path = root / relative
             if not local_path.is_file() or local_path.is_symlink():
                 raise DoctorError(f"required review tool is missing: {relative}")
             mode, oid = _require_base_blob(root, base_ref, relative)
-            if mode != "100755":
-                raise DoctorError(f"pinned review tool is not executable: {relative}")
+            expected_mode = (
+                "100644"
+                if relative == ".codex/skills/critique/scripts/review-ledger.js"
+                else "100755"
+            )
+            if mode != expected_mode:
+                raise DoctorError(f"pinned review tool has an unsafe mode: {relative}")
             local_oid = _version(
                 [
                     "git",
@@ -193,7 +209,10 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
                 f"review tool {relative}",
             )
             if local_oid != oid:
-                raise DoctorError(f"review tool differs from the pinned base blob: {relative}")
+                raise DoctorError(
+                    f"review tool differs from the pinned base blob: {relative}"
+                )
+        _verify_protocols(ledger, state, review_push)
         supervisor = root / ".codex/skills/agent-loop/scripts/process-supervisor.py"
         if _version([str(supervisor), "--self-test"], "hook process supervisor") != (
             "linux-subreaper-v1"
@@ -208,9 +227,12 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
                 raise DoctorError(f"{engine} required review surface is invalid")
             for relative in required_paths:
                 if not relative.startswith(prefix):
-                    raise DoctorError(f"{engine} required review path is invalid: {relative}")
+                    raise DoctorError(
+                        f"{engine} required review path is invalid: {relative}"
+                    )
                 _require_base_blob(root, base_ref, relative)
     else:
+        _verify_protocols(ledger, state, review_push)
         obsolete = (
             "AGENT_LOOP_REVIEW_OUTCOME_FILE",
             "local-review-pass:v1",

@@ -18,6 +18,9 @@ WRAPPER_REQUIRED_PATHS=(
     .codex/skills/agent-loop/scripts/hook-gh-guard
     .codex/skills/agent-loop/scripts/review-push.sh
     .codex/skills/agent-loop/scripts/process-supervisor.py
+    .codex/skills/agent-loop/scripts/config-doctor.py
+    .codex/skills/agent-loop/scripts/agent-loop-state.py
+    .codex/skills/critique/scripts/review-ledger.js
 )
 
 # Test-runner coverage instrumentation is scoped to the wrapper's repository.

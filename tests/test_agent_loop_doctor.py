@@ -28,6 +28,7 @@ def _project(tmp_path: Path) -> Path:
     shutil.copy2(
         ROOT / ".codex/skills/agent-loop/scripts/process-supervisor.py", scripts
     )
+    shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/config-doctor.py", scripts)
     shutil.copy2(ROOT / ".codex/skills/critique/scripts/review-ledger.js", ledger_dir)
     # See tests/test_agent_loop.py: sync ships the sibling ESM manifest, and a
     # CommonJS consumer root is the context that needs it.
@@ -163,16 +164,19 @@ def test_doctor_rejects_preexisting_launcher_drift(tmp_path: Path) -> None:
 
 def test_doctor_rejects_preexisting_review_tool_drift(tmp_path: Path) -> None:
     project = _project(tmp_path)
+    marker = tmp_path / "drifted-helper-ran"
     helper = project / ".codex/skills/agent-loop/scripts/review-push.sh"
     helper.write_text(
-        helper.read_text(encoding="utf-8") + "\n# pre-existing drift\n",
+        f"#!/usr/bin/env bash\ntouch {marker}\nprintf '1\\n'\n",
         encoding="utf-8",
     )
+    helper.chmod(0o755)
 
     result = _run(project)
 
     assert result.returncode != 0
     assert "review tool differs from the pinned base blob" in result.stderr
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize(
@@ -266,6 +270,12 @@ def test_doctor_rejects_incompatible_review_push_protocol(tmp_path: Path) -> Non
     review_push = project / ".codex/skills/agent-loop/scripts/review-push.sh"
     review_push.write_text("#!/usr/bin/env bash\nprintf '2\\n'\n", encoding="utf-8")
     review_push.chmod(0o755)
+    subprocess.run(["git", "add", str(review_push)], cwd=project, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "change review push protocol"],
+        cwd=project,
+        check=True,
+    )
     result = _run(project)
     assert result.returncode != 0
     assert "review-push protocol is incompatible" in result.stderr
