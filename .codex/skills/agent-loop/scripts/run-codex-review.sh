@@ -39,9 +39,15 @@ esac
 git_bin="${AGENT_LOOP_REAL_GIT:-$(type -P git 2>/dev/null || true)}"
 [ -x "$git_bin" ] || { echo "trusted Git executable is unavailable" >&2; exit 1; }
 
-trusted_root="$(realpath -e -- "$AGENT_LOOP_TRUSTED_CODEX_ROOT")"
+trusted_root="$(realpath -e -- "$AGENT_LOOP_TRUSTED_CODEX_ROOT")" || {
+    echo "trusted Codex review surface is unavailable" >&2
+    exit 1
+}
 [ -d "$trusted_root" ] || { echo "trusted Codex review surface is unavailable" >&2; exit 1; }
-review_worktree="$(realpath -e -- "$PWD")"
+review_worktree="$(realpath -e -- "$PWD")" || {
+    echo "review worktree is unavailable" >&2
+    exit 1
+}
 
 trusted_git() {
     local dir="$1"
@@ -50,6 +56,30 @@ trusted_git() {
         -c core.fsmonitor= -c core.hooksPath=/dev/null \
         -c core.excludesFile=/dev/null --no-optional-locks \
         -C "$dir" "$@"
+}
+
+verify_trusted_surface() {
+    local phase="$1"
+    local diff_message="trusted Codex review surface differs from the fetched base"
+    local status_message="trusted Codex review surface contains local or untracked changes"
+    if [ "$phase" = after ]; then
+        diff_message="reviewer modified the trusted Codex review surface"
+        status_message="reviewer left local or untracked changes in the trusted Codex review surface"
+    fi
+    trusted_git "$trusted_repo" diff --quiet --no-ext-diff --no-textconv \
+        "$AGENT_LOOP_REVIEW_BASE_SHA" -- .codex AGENTS.md CLAUDE.md || {
+        echo "$diff_message" >&2
+        exit 1
+    }
+    trusted_status="$(trusted_git "$trusted_repo" status --porcelain \
+        --untracked-files=all -- .codex AGENTS.md CLAUDE.md)" || {
+        echo "could not inspect the trusted Codex review surface${phase:+ $phase review}" >&2
+        exit 1
+    }
+    [ -z "$trusted_status" ] || {
+        echo "$status_message" >&2
+        exit 1
+    }
 }
 
 trusted_repo="$(trusted_git "$trusted_root" rev-parse --show-toplevel)"
@@ -105,20 +135,7 @@ trusted_base_sha="$(trusted_git "$trusted_repo" rev-parse --verify \
     echo "trusted base ref no longer resolves to AGENT_LOOP_REVIEW_BASE_SHA" >&2
     exit 1
 }
-trusted_git "$trusted_repo" diff --quiet --no-ext-diff --no-textconv \
-    "$AGENT_LOOP_REVIEW_BASE_SHA" -- .codex AGENTS.md CLAUDE.md || {
-    echo "trusted Codex review surface differs from the fetched base" >&2
-    exit 1
-}
-trusted_status="$(trusted_git "$trusted_repo" status --porcelain \
-    --untracked-files=all -- .codex AGENTS.md CLAUDE.md)" || {
-    echo "could not inspect the trusted Codex review surface" >&2
-    exit 1
-}
-[ -z "$trusted_status" ] || {
-    echo "trusted Codex review surface contains local or untracked changes" >&2
-    exit 1
-}
+verify_trusted_surface before
 
 prompt="Read ${trusted_root}/skills/deepcritique/SKILL.md completely, plus ${trusted_repo}/AGENTS.md and ${trusted_repo}/CLAUDE.md when those files exist, then follow that verified guidance using only the skills, references, roles, and ledger helper under ${trusted_root}. Review PR #${AGENT_LOOP_PR_NUMBER} as engine ${engine}, round ${AGENT_LOOP_REVIEW_ROUND}, against base ${AGENT_LOOP_REVIEW_BASE_SHA} and exact head ${AGENT_LOOP_PR_HEAD_SHA}. The review target is the separate issue worktree ${review_worktree}; make every source edit and Git operation there, never in the trusted source checkout ${trusted_repo}. This is agent-loop convergence mode. Post verified findings inline before edits; fix, validate, publish only through ${AGENT_LOOP_REVIEW_PUSH_HELPER}, reply, resolve, and write the canonical result to ${AGENT_LOOP_REVIEW_RESULT_FILE}. Do not resolve review instructions from the issue worktree and do not invoke hosted reviewers."
 
@@ -179,18 +196,5 @@ esac
 # A reviewer operates with unattended permissions. Recheck the complete
 # instruction surface after it returns so a mutation cannot authorize a later
 # review pass even if the current pass otherwise reports success.
-trusted_git "$trusted_repo" diff --quiet --no-ext-diff --no-textconv \
-    "$AGENT_LOOP_REVIEW_BASE_SHA" -- .codex AGENTS.md CLAUDE.md || {
-    echo "reviewer modified the trusted Codex review surface" >&2
-    exit 1
-}
-trusted_status="$(trusted_git "$trusted_repo" status --porcelain \
-    --untracked-files=all -- .codex AGENTS.md CLAUDE.md)" || {
-    echo "could not inspect the trusted Codex review surface after review" >&2
-    exit 1
-}
-[ -z "$trusted_status" ] || {
-    echo "reviewer left local or untracked changes in the trusted Codex review surface" >&2
-    exit 1
-}
+verify_trusted_surface after
 exit "$review_status"

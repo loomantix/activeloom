@@ -901,14 +901,15 @@ def test_outer_review_environment_is_not_leaked_to_worker(
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_worker_cannot_replace_the_pinned_review_launcher(
+def test_worker_does_not_receive_the_pinned_review_launcher(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    marker = tmp_path / "mutated-launcher-ran"
     worker_hook = (
-        "printf '%s\\n' '#!/usr/bin/env bash' "
-        f"'touch {marker}' > \"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER\"; "
-        'chmod 755 "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER"; '
+        'test -z "${AGENT_LOOP_CODEX_REVIEW_LAUNCHER:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_CODEX_ROOT:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_BASE_REF:-}"; '
+        'test -z "${CODEX_REVIEW_CLI:-}"; '
+        'test -z "${CLAUDE_REVIEW_CLI:-}"; '
         "printf 'done\\n' > result.txt; git add result.txt; "
         "git commit -m 'fix: worker result'"
     )
@@ -918,9 +919,7 @@ def test_worker_cannot_replace_the_pinned_review_launcher(
         issues=[_issue(59)],
         config=_config_v3(tmp_path, worker_hook=worker_hook),
     )
-    assert result.returncode != 0
-    assert "Trusted Codex review launcher changed after startup" in result.stderr
-    assert not marker.exists()
+    assert result.returncode == 0, result.stderr + result.stdout
 
 
 def test_ambient_gh_repo_is_replaced_with_checkout_repository(

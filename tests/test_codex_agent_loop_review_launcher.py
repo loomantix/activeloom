@@ -117,6 +117,19 @@ def _environment(
     }
 
 
+def _run_launcher(
+    issue: Path, engine: str, environment: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(LAUNCHER), "--engine", engine],
+        cwd=issue,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     tmp_path: Path,
 ) -> None:
@@ -124,15 +137,12 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     issue, base, head = _issue_worktree(tmp_path, trusted_repo)
 
     codex = _fake_cli(tmp_path / "codex")
-    result = subprocess.run(
-        [str(LAUNCHER), "--engine", "codex"],
-        cwd=issue,
-        env=_environment(
+    result = _run_launcher(
+        issue,
+        "codex",
+        _environment(
             tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=codex
         ),
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert result.returncode == 0, result.stderr
     invocation = json.loads((tmp_path / "invocation.json").read_text(encoding="utf-8"))
@@ -149,15 +159,12 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     assert "worker-authored" not in prompt
 
     claude = _fake_cli(tmp_path / "claude")
-    result = subprocess.run(
-        [str(LAUNCHER), "--engine", "claude"],
-        cwd=issue,
-        env=_environment(
+    result = _run_launcher(
+        issue,
+        "claude",
+        _environment(
             tmp_path, engine="claude", trusted=trusted, base=base, head=head, cli=claude
         ),
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert result.returncode == 0, result.stderr
     invocation = json.loads((tmp_path / "invocation.json").read_text(encoding="utf-8"))
@@ -186,15 +193,12 @@ def test_launcher_rejects_a_modified_trusted_surface_before_review(
     cli.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n", encoding="utf-8")
     cli.chmod(0o755)
 
-    result = subprocess.run(
-        [str(LAUNCHER), "--engine", "codex"],
-        cwd=issue,
-        env=_environment(
+    result = _run_launcher(
+        issue,
+        "codex",
+        _environment(
             tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
         ),
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert result.returncode != 0
     assert "differs from the fetched base" in result.stderr
@@ -212,14 +216,7 @@ def test_launcher_rejects_a_trusted_ref_that_moved_from_the_pinned_base(
     )
     environment["AGENT_LOOP_TRUSTED_BASE_REF"] = "issue"
 
-    result = subprocess.run(
-        [str(LAUNCHER), "--engine", "codex"],
-        cwd=issue,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _run_launcher(issue, "codex", environment)
     assert result.returncode != 0
     assert "no longer resolves to AGENT_LOOP_REVIEW_BASE_SHA" in result.stderr
     assert not (tmp_path / "invocation.json").exists()
@@ -233,15 +230,12 @@ def test_launcher_rejects_a_symlinked_required_instruction(tmp_path: Path) -> No
     skill.symlink_to(trusted / "REVIEW_WORKFLOW.md")
     cli = _fake_cli(tmp_path / "codex")
 
-    result = subprocess.run(
-        [str(LAUNCHER), "--engine", "codex"],
-        cwd=issue,
-        env=_environment(
+    result = _run_launcher(
+        issue,
+        "codex",
+        _environment(
             tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
         ),
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert result.returncode != 0
     assert "contains a symlink" in result.stderr
@@ -264,17 +258,8 @@ def test_launcher_rejects_a_reviewer_mutation_of_the_trusted_surface(
     environment = _environment(
         tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
     )
-    environment["MUTATE_TRUSTED_PATH"] = str(
-        trusted / "skills/deepcritique/SKILL.md"
-    )
+    environment["MUTATE_TRUSTED_PATH"] = str(trusted / "skills/deepcritique/SKILL.md")
 
-    result = subprocess.run(
-        [str(LAUNCHER), "--engine", "codex"],
-        cwd=issue,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _run_launcher(issue, "codex", environment)
     assert result.returncode != 0
     assert "reviewer modified the trusted Codex review surface" in result.stderr

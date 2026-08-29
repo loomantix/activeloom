@@ -409,13 +409,6 @@ GH_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || {
     exit 1
 }
 export GH_REPO
-if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
-    export AGENT_LOOP_CODEX_REVIEW_LAUNCHER="$CODEX_REVIEW_LAUNCHER"
-    export AGENT_LOOP_TRUSTED_CODEX_ROOT="$TRUSTED_CODEX_ROOT"
-    export AGENT_LOOP_TRUSTED_BASE_REF="$BASE_REMOTE_REF"
-    export CODEX_REVIEW_CLI="$CODEX_REVIEW_BIN"
-    export CLAUDE_REVIEW_CLI="$CLAUDE_REVIEW_BIN"
-fi
 
 ORIGIN_FETCH_URLS="$(git remote get-url --all origin)" || {
     echo "could not capture origin fetch identity" >&2
@@ -1428,6 +1421,11 @@ run_review_pass() {
         return 1
     fi
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        export AGENT_LOOP_CODEX_REVIEW_LAUNCHER="$CODEX_REVIEW_LAUNCHER"
+        export AGENT_LOOP_TRUSTED_CODEX_ROOT="$TRUSTED_CODEX_ROOT"
+        export AGENT_LOOP_TRUSTED_BASE_REF="$BASE_REMOTE_REF"
+        export CODEX_REVIEW_CLI="$CODEX_REVIEW_BIN"
+        export CLAUDE_REVIEW_CLI="$CLAUDE_REVIEW_BIN"
         pre_pass_threads_file="$(fetch_local_review_threads)" || {
             recovery_message "Could not snapshot review history before $engine round $round."
             return 1
