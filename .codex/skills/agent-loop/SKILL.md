@@ -120,6 +120,15 @@ strings byte-for-byte; an existing consumer must migrate them before
 contract-v4 auto mode will run. Contract v3 retains its configurable hook
 semantics for staged migration.
 
+The wrapper treats the selected Codex and Claude reviewer processes as trusted
+participants. Its command guards and review-push helper constrain cooperative
+review execution; they are not credential or same-UID isolation. In particular,
+they do not defend against a reviewer deliberately rewriting its own tools or a
+hook delegating work to an unrelated pre-existing user service. That stronger
+boundary requires the credential-isolation redesign tracked in platform issue
+#37. The Linux subreaper does fail closed and removes ordinary hook descendants,
+including detached and double-forked children, before the next phase starts.
+
 Every successfully completed clean or changed contract-v3/v4 review hook calls
 `review-ledger.js write-result`; the helper derives the complete
 same-engine/same-round fingerprint set, including fixed, deferred, and
@@ -140,7 +149,7 @@ unchanged through final validation.
 The wrapper pins `GH_REPO` from the current checkout before any
 repository-scoped GitHub operation. Setup, worker, and validation hooks cannot
 push or call ordinary `gh`; review hooks run only after draft PR creation and
-may mutate that PR and publish a committed fix only through
+are instructed to mutate that PR and publish a committed fix through
 `$AGENT_LOOP_REVIEW_PUSH_HELPER`. The helper owns the exact fully qualified
 destination and rejects arguments, force, stale remote heads, rewritten
 history, and the wrong branch. After each review hook, the wrapper

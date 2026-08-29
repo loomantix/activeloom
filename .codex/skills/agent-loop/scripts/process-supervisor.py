@@ -16,6 +16,11 @@ import time
 PR_SET_CHILD_SUBREAPER = 36
 
 
+class TerminationRequested(BaseException):
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+
+
 def _become_subreaper() -> None:
     if not Path("/proc/self/stat").is_file():
         raise RuntimeError("hook supervision requires Linux procfs")
@@ -54,19 +59,14 @@ def _descendants(root_pid: int) -> set[int]:
     return found
 
 
-def _signal_descendants(root_pid: int, sig: signal.Signals) -> None:
-    # Repeat because a hostile descendant can fork while the first snapshot is
-    # being signalled. Killing deepest children first avoids gratuitous reparenting.
-    for _ in range(8):
-        descendants = _descendants(root_pid)
-        if not descendants:
-            return
-        for pid in sorted(descendants, reverse=True):
-            try:
-                os.kill(pid, sig)
-            except ProcessLookupError:
-                pass
-        time.sleep(0.025)
+def _signal_descendants(root_pid: int, sig: signal.Signals) -> bool:
+    descendants = _descendants(root_pid)
+    for pid in sorted(descendants, reverse=True):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+    return bool(descendants)
 
 
 def _reap() -> None:
@@ -80,19 +80,21 @@ def _reap() -> None:
 
 
 def _cleanup(root_pid: int, grace_seconds: float) -> None:
-    _signal_descendants(root_pid, signal.SIGTERM)
     deadline = time.monotonic() + grace_seconds
     while time.monotonic() < deadline:
+        if not _signal_descendants(root_pid, signal.SIGTERM):
+            _reap()
+            if not _descendants(root_pid):
+                return
         _reap()
-        if not _descendants(root_pid):
-            return
         time.sleep(0.025)
-    _signal_descendants(root_pid, signal.SIGKILL)
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
+        if not _signal_descendants(root_pid, signal.SIGKILL):
+            _reap()
+            if not _descendants(root_pid):
+                return
         _reap()
-        if not _descendants(root_pid):
-            return
         time.sleep(0.025)
     raise RuntimeError("hook descendants survived forced cleanup")
 
@@ -119,9 +121,22 @@ def main() -> int:
     ):
         parser.error("a command and positive timeout are required")
 
-    child = subprocess.Popen(command, start_new_session=True)
+    received_signal: int | None = None
+
+    def request_termination(signum: int, _frame: object) -> None:
+        nonlocal received_signal
+        if received_signal is None:
+            received_signal = signum
+            raise TerminationRequested(signum)
+
+    handled_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+    previous_handlers = {
+        sig: signal.signal(sig, request_termination) for sig in handled_signals
+    }
+    child: subprocess.Popen[bytes] | None = None
     timed_out = False
     try:
+        child = subprocess.Popen(command, start_new_session=True)
         try:
             return_code = child.wait(timeout=args.timeout_seconds)
         except subprocess.TimeoutExpired:
@@ -139,9 +154,18 @@ def main() -> int:
                     pass
                 child.wait()
             return_code = 124
+    except TerminationRequested as interrupted:
+        return_code = 128 + interrupted.signum
+        if child is not None and child.poll() is None:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
     finally:
         _cleanup(os.getpid(), args.kill_after_seconds)
         _reap()
+        for sig, previous in previous_handlers.items():
+            signal.signal(sig, previous)
 
     if timed_out:
         return 124

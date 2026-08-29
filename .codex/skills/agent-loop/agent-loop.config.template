@@ -33,12 +33,13 @@ claude_effort_policy = low
 # review threads, post every confirmed finding inline before editing, fix and
 # commit it, call `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply with the fix and validation, resolve the
 # thread, and fail if any valid finding or local-review thread remains. Hooks
-# may use `gh` only for that draft PR review contract; direct `git push` is rejected. They must
+# may use `gh` only for that draft PR review contract; the cooperative command
+# guard rejects direct `git push`, but is not same-UID or credential isolation. They must
 # not mutate the base branch, other issues/PRs, or invoke hosted reviewers.
 # Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
 # round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
-# ref. The wrapper rejects consumer hook overrides so this trust boundary cannot
-# be configured away.
+# ref. The wrapper rejects consumer hook overrides so this review-routing
+# contract cannot be configured away.
 # Hooks also receive `$AGENT_LOOP_PR_NUMBER`, `$AGENT_LOOP_PR_URL`, and
 # `$AGENT_LOOP_PR_HEAD_SHA`. The last value is the exact head at pass start.
 # Every successfully completed clean or changed hook must call `review-ledger.js

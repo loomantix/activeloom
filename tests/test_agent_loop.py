@@ -1056,6 +1056,7 @@ def test_worker_descendants_cannot_race_trusted_review_tools(
 
     assert result.returncode == 0, result.stderr
     assert watcher_pid.exists()
+    assert not Path(f"/proc/{watcher_pid.read_text(encoding='utf-8').strip()}").exists()
     assert not marker.exists()
 
 
