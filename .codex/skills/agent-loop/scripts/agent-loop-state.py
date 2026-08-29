@@ -75,7 +75,13 @@ def _validate(value: dict[str, Any]) -> None:
         "codexResultSha256",
         "claudeResultSha256",
     }
-    if set(value) != required:
+    legacy_extended = required | {"gitConfigSha256"}
+    extended = legacy_extended | {"projectDir", "projectGitConfigSha256"}
+    if set(value) not in {
+        frozenset(required),
+        frozenset(legacy_extended),
+        frozenset(extended),
+    }:
         _fail("run state has missing or unknown fields")
     if type(value["version"]) is not int or value["version"] != STATE_VERSION:
         _fail("unsupported run state version")
@@ -105,6 +111,22 @@ def _validate(value: dict[str, Any]) -> None:
     for key in ("issueTitleSha256", "issueBodySha256"):
         if not isinstance(value[key], str) or not SHA256_RE.fullmatch(value[key]):
             _fail(f"run state {key} must be a lowercase SHA-256 digest")
+    if "gitConfigSha256" in value and (
+        not isinstance(value["gitConfigSha256"], str)
+        or not SHA256_RE.fullmatch(value["gitConfigSha256"])
+    ):
+        _fail("run state gitConfigSha256 must be a lowercase SHA-256 digest")
+    if "projectDir" in value:
+        if not isinstance(value["projectDir"], str) or not value["projectDir"]:
+            _fail("run state projectDir must be a non-empty string")
+        if not Path(value["projectDir"]).is_absolute():
+            _fail("run state projectDir must be absolute")
+        if not isinstance(
+            value["projectGitConfigSha256"], str
+        ) or not SHA256_RE.fullmatch(value["projectGitConfigSha256"]):
+            _fail(
+                "run state projectGitConfigSha256 must be a lowercase SHA-256 digest"
+            )
     if value["phase"] in {"converged", "finalizing", "finalized"} and any(
         value[key] is None
         for key in ("codexResultSha256", "claudeResultSha256")
@@ -194,6 +216,13 @@ def _create(args: argparse.Namespace) -> None:
         "codexResultSha256": None,
         "claudeResultSha256": None,
     }
+    if args.git_config_sha256 is not None:
+        value["gitConfigSha256"] = args.git_config_sha256
+    if args.project_dir is not None and args.project_git_config_sha256 is not None:
+        value["projectDir"] = str(Path(args.project_dir).resolve())
+        value["projectGitConfigSha256"] = args.project_git_config_sha256
+    elif args.project_dir is not None or args.project_git_config_sha256 is not None:
+        _fail("run project dir and project Git config digest must be provided together")
     _atomic_write(path, value, replace=False)
     print(json.dumps(value, sort_keys=True))
 
@@ -226,12 +255,33 @@ def _show(args: argparse.Namespace) -> None:
 
 
 def _validate_batch(value: dict[str, Any]) -> None:
-    required = {"version", "kind", "runId", "repo", "baseBranch", "allowlist", "cursor", "issues"}
-    if set(value) != required or value.get("version") != STATE_VERSION or value.get("kind") != "batch":
+    required = {
+        "version",
+        "kind",
+        "runId",
+        "repo",
+        "baseBranch",
+        "allowlist",
+        "cursor",
+        "issues",
+    }
+    extended = required | {"projectDir", "gitConfigSha256"}
+    if set(value) not in {frozenset(required), frozenset(extended)} or value.get(
+        "version"
+    ) != STATE_VERSION or value.get("kind") != "batch":
         _fail("batch state has missing, unknown, or unsupported fields")
     for key in ("runId", "repo", "baseBranch"):
         if not isinstance(value[key], str) or not value[key]:
             _fail(f"batch state {key} must be a non-empty string")
+    if "projectDir" in value:
+        if not isinstance(value["projectDir"], str) or not value["projectDir"]:
+            _fail("batch state projectDir must be a non-empty string")
+        if not Path(value["projectDir"]).is_absolute():
+            _fail("batch state projectDir must be absolute")
+        if not isinstance(value["gitConfigSha256"], str) or not SHA256_RE.fullmatch(
+            value["gitConfigSha256"]
+        ):
+            _fail("batch state gitConfigSha256 must be a lowercase SHA-256 digest")
     allowlist = value["allowlist"]
     if (
         not isinstance(allowlist, list)
@@ -341,6 +391,11 @@ def _batch_create(args: argparse.Namespace) -> None:
             for issue in allowlist
         ],
     }
+    if args.project_dir is not None and args.git_config_sha256 is not None:
+        value["projectDir"] = str(Path(args.project_dir).resolve())
+        value["gitConfigSha256"] = args.git_config_sha256
+    elif args.project_dir is not None or args.git_config_sha256 is not None:
+        _fail("batch project dir and Git config digest must be provided together")
     path = Path(args.file)
     with _batch_lock(path):
         _atomic_write_batch(path, value, replace=False)
@@ -395,6 +450,9 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--issue", required=True, type=int)
     create.add_argument("--issue-title-sha256", required=True)
     create.add_argument("--issue-body-sha256", required=True)
+    create.add_argument("--git-config-sha256")
+    create.add_argument("--project-dir")
+    create.add_argument("--project-git-config-sha256")
     create.add_argument("--base-branch", required=True)
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)
@@ -422,6 +480,8 @@ def _parser() -> argparse.ArgumentParser:
     batch_create.add_argument("--run-id", required=True)
     batch_create.add_argument("--repo", required=True)
     batch_create.add_argument("--base-branch", required=True)
+    batch_create.add_argument("--project-dir")
+    batch_create.add_argument("--git-config-sha256")
     batch_create.add_argument("--issues", required=True)
     batch_create.set_defaults(handler=_batch_create)
     batch_update = commands.add_parser("batch-update")

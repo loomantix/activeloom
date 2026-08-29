@@ -2,6 +2,7 @@
 # Deterministic, per-issue agent loop with PR-first local review convergence.
 
 set -euo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
 # Worktrees and persistent worker/reviewer logs can contain sensitive source or
 # test output. Default every path this wrapper creates to owner-only access.
 umask 077
@@ -29,7 +30,11 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
     AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-    AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+    AGENT_LOOP_REVIEW_PUSH_STATE_FILE AGENT_LOOP_CODEX_REVIEW_LAUNCHER \
+    AGENT_LOOP_TRUSTED_REPO_ROOT AGENT_LOOP_TRUSTED_BASE_REF \
+    AGENT_LOOP_REVIEW_BIN AGENT_LOOP_REVIEW_BIN_SHA256 \
+    AGENT_LOOP_REVIEW_INSTALL_ROOT AGENT_LOOP_REVIEW_INSTALL_SHA256 \
+    CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -127,27 +132,32 @@ if [ -n "$RESUME_BATCH_FILE" ] && { [ -n "$RESUME_RUN_FILE" ] || [ -n "$ISSUE_AL
     exit 2
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${AGENT_LOOP_PROJECT_DIR:-}" ]; then
-    PROJECT_DIR="$AGENT_LOOP_PROJECT_DIR"
+    PROJECT_DIR="$(git -C "$AGENT_LOOP_PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 else
-    PROJECT_DIR="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    PROJECT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 fi
 if [ -z "$PROJECT_DIR" ]; then
-    echo "Could not find a Git repository from $SCRIPT_DIR" >&2
+    echo "Could not find a Git repository from the invocation directory" >&2
     exit 1
 fi
 
-CONFIG_FILE="$PROJECT_DIR/.codex/skills/agent-loop/agent-loop.config"
-PROMPT_FILE="$PROJECT_DIR/.codex/skills/agent-loop/prompt.txt"
+PROJECT_SKILL_BASE="$PROJECT_DIR/.codex/skills"
+PACKAGED_SKILL_BASE="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+CONFIG_FILE="$PROJECT_SKILL_BASE/agent-loop/agent-loop.config"
+PROMPT_FILE="$PROJECT_SKILL_BASE/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
-ISSUES_READY="$PROJECT_DIR/.codex/skills/issues/scripts/ready.py"
-REVIEW_LEDGER="$PROJECT_DIR/.codex/skills/critique/scripts/review-ledger.js"
-RUN_STATE_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop-state.py"
-REVIEW_PUSH_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/review-push.sh"
-CONFIG_DOCTOR_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/config-doctor.py"
+ISSUES_READY="$PACKAGED_SKILL_BASE/issues/scripts/ready.py"
+REVIEW_LEDGER="$PACKAGED_SKILL_BASE/critique/scripts/review-ledger.js"
+RUN_STATE_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/agent-loop-state.py"
+REVIEW_PUSH_HELPER_SOURCE="$PACKAGED_SKILL_BASE/agent-loop/scripts/review-push.sh"
+PROCESS_SUPERVISOR="$PACKAGED_SKILL_BASE/agent-loop/scripts/process-supervisor.py"
+CONFIG_DOCTOR_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/config-doctor.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
+CODEX_REVIEW_LAUNCHER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-codex-review.sh"
 
 BASE_BRANCH=""
 SETUP_HOOK=""
@@ -227,12 +237,13 @@ if [ -e "$CONFIG_FILE" ]; then
     done < "$CONFIG_FILE"
 fi
 
-if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; then
-    echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
+if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ] && \
+   [ "$REVIEW_CONTRACT_VERSION" != 4 ]; then
+    echo "agent-loop config must set review_contract_version = 2, 3, or 4" >&2
     exit 1
 fi
-if [ -n "$RESUME_BATCH_FILE" ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; then
-    echo "--resume-batch requires review_contract_version = 3" >&2
+if [ -n "$RESUME_BATCH_FILE" ] && [ "$REVIEW_CONTRACT_VERSION" -lt 3 ]; then
+    echo "--resume-batch requires review_contract_version = 3 or 4" >&2
     exit 1
 fi
 # Catch retired reviewer names before any issue mutation. Both local engines
@@ -259,56 +270,63 @@ for hook_key in claude_review_hook codex_review_hook; do
     fi
 done
 
-if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
     if [ ! -f "$REVIEW_LEDGER" ] || [ ! -r "$REVIEW_LEDGER" ]; then
-        echo "review contract v3 helper is unavailable: $REVIEW_LEDGER" >&2
+        echo "review contract v$REVIEW_CONTRACT_VERSION helper is unavailable: $REVIEW_LEDGER" >&2
         exit 1
     fi
     command -v node >/dev/null 2>&1 || {
-        echo "review contract v3 requires Node.js to run $REVIEW_LEDGER" >&2
+        echo "review contract v$REVIEW_CONTRACT_VERSION requires Node.js to run $REVIEW_LEDGER" >&2
         exit 1
     }
     # Capture status separately: command substitution inside `[ ]` is exempt
     # from `set -e`, so comparing stdout alone reports a crashed or unparsable
     # bundle as a protocol mismatch. Node too old for the bundle's ESM syntax
     # is the reachable case, and it deserves its own message.
-    if ! ledger_protocol="$(node "$REVIEW_LEDGER" --protocol-version 2>&1)"; then
-        echo "node could not execute $REVIEW_LEDGER: $ledger_protocol" >&2
-        exit 1
+    if [ "$REVIEW_CONTRACT_VERSION" != 4 ]; then
+        if ! ledger_protocol="$(node "$REVIEW_LEDGER" --protocol-version 2>&1)"; then
+            echo "node could not execute $REVIEW_LEDGER: $ledger_protocol" >&2
+            exit 1
+        fi
+        [ "$ledger_protocol" = 3 ] || {
+            echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v$REVIEW_CONTRACT_VERSION requires 3" >&2
+            exit 1
+        }
     fi
-    [ "$ledger_protocol" = 3 ] || {
-        echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v3 requires 3" >&2
-        exit 1
-    }
-    for hook_key in claude_review_hook codex_review_hook; do
-        case "$hook_key" in
-            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
-            codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
-            *) echo "unhandled hook key in contract-v3 preflight: $hook_key" >&2; exit 1 ;;
-        esac
-        [ -n "$hook_value" ] || {
-            echo "$hook_key must be configured for review contract v3" >&2
-            exit 1
-        }
-        [[ "$hook_value" == *AGENT_LOOP_REVIEW_PUSH_HELPER* ]] || {
-            echo "$hook_key must use AGENT_LOOP_REVIEW_PUSH_HELPER for review contract v3" >&2
-            exit 1
-        }
-        [[ "$hook_value" == *AGENT_LOOP_REVIEW_RESULT_FILE* ]] || {
-            echo "$hook_key must write AGENT_LOOP_REVIEW_RESULT_FILE for review contract v3" >&2
-            exit 1
-        }
-        [[ "$hook_value" == *write-result* ]] || {
-            echo "$hook_key must use review-ledger.js write-result for review contract v3" >&2
-            exit 1
-        }
-    done
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        expected_codex_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex'
+        expected_claude_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude'
+        for hook_key in claude_review_hook codex_review_hook; do
+            case "$hook_key" in
+                claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK"; expected_hook="$expected_claude_hook" ;;
+                codex_review_hook) hook_value="$CODEX_REVIEW_HOOK"; expected_hook="$expected_codex_hook" ;;
+                *) echo "unhandled hook key in contract-v4 preflight: $hook_key" >&2; exit 1 ;;
+            esac
+            [ "$hook_value" = "$expected_hook" ] || {
+                echo "$hook_key must use the dedicated contract-v4 review launcher" >&2
+                exit 1
+            }
+        done
+    else
+        for hook_key in claude_review_hook codex_review_hook; do
+            case "$hook_key" in
+                claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
+                codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
+            esac
+            [[ "$hook_value" == *AGENT_LOOP_REVIEW_PUSH_HELPER* ]] && \
+                [[ "$hook_value" == *AGENT_LOOP_REVIEW_RESULT_FILE* ]] && \
+                [[ "$hook_value" == *write-result* ]] || {
+                echo "$hook_key must preserve the contract-v3 result and push helper contract" >&2
+                exit 1
+            }
+        done
+    fi
     [ "$CONFIG_DOCTOR" = true ] || {
-        echo "review contract v3 auto mode requires config_doctor = true" >&2
+        echo "review contract v$REVIEW_CONTRACT_VERSION auto mode requires config_doctor = true" >&2
         exit 1
     }
     [ "$CLAUDE_EFFORT_POLICY" = low ] || {
-        echo "review contract v3 auto mode requires claude_effort_policy = low" >&2
+        echo "review contract v$REVIEW_CONTRACT_VERSION auto mode requires claude_effort_policy = low" >&2
         exit 1
     }
 fi
@@ -342,9 +360,50 @@ case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be tru
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
-for cmd in git gh jq node python3 timeout flock realpath; do
+for cmd in git gh jq node python3 timeout flock realpath sha256sum awk; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
+
+file_sha256() { sha256sum "$1" | awk '{print $1}'; }
+# Resolve the complete install surface an npm-packaged reviewer loads at
+# runtime. Both engines must use this: pinning only the entry file leaves every
+# sibling module it imports unattested, so `install_tree_sha256` would collapse
+# to a second digest of the binary already covered by its own hash.
+reviewer_install_root() {
+    local bin="$1" entry_dir candidate package_root
+    entry_dir="$(dirname -- "$bin")"
+    for candidate in "$entry_dir" "$entry_dir/.."; do
+        package_root="$(realpath -e -- "$candidate" 2>/dev/null || true)"
+        [ -n "$package_root" ] || continue
+        [ -f "$package_root/package.json" ] && \
+            [ ! -L "$package_root/package.json" ] || continue
+        case "$bin" in "$package_root"/*) printf '%s\n' "$package_root"; return ;; esac
+    done
+    if python3 -I -c 'import sys; magic=open(sys.argv[1], "rb").read(4); raise SystemExit(magic != b"\x7fELF" and magic not in {b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"})' "$bin"; then
+        printf '%s\n' "$bin"
+        return
+    fi
+    echo "reviewer install layout is not a pinned package or native executable: $bin" >&2
+    return 1
+}
+install_tree_sha256() {
+    local root="$1"
+    if [ -f "$root" ] && [ ! -L "$root" ]; then
+        file_sha256 "$root"
+        return
+    fi
+    [ -d "$root" ] && [ ! -L "$root" ] || return 1
+    if find -P "$root" -mindepth 1 \! -type d \! -type f -print -quit | grep -q .; then
+        return 1
+    fi
+    (
+        cd "$root"
+        while IFS= read -r -d '' relative; do
+            printf '%s\0' "$relative"
+            sha256sum -- "$relative"
+        done < <(find -P . -type f -print0 | LC_ALL=C sort -z)
+    ) | sha256sum | awk '{print $1}'
+}
 REAL_GIT_BIN="$(type -P git)"
 REAL_GH_BIN="$(type -P gh)"
 [ -x "$REAL_GIT_BIN" ] || { echo "required Git executable not found" >&2; exit 1; }
@@ -360,19 +419,45 @@ fi
 [ -x "$HOOK_GH_GUARD" ] || { echo "hook gh guard not found or not executable: $HOOK_GH_GUARD" >&2; exit 1; }
 [ -x "$ISSUES_READY" ] || { echo "issues ready.py not found or not executable: $ISSUES_READY" >&2; exit 1; }
 [ -x "$RUN_STATE_HELPER" ] || { echo "agent-loop run-state helper not found or not executable: $RUN_STATE_HELPER" >&2; exit 1; }
-[ -x "$REVIEW_PUSH_HELPER" ] || { echo "agent-loop review push helper not found or not executable: $REVIEW_PUSH_HELPER" >&2; exit 1; }
+[ -x "$REVIEW_PUSH_HELPER_SOURCE" ] || { echo "agent-loop review push helper not found or not executable: $REVIEW_PUSH_HELPER_SOURCE" >&2; exit 1; }
+[ -x "$PROCESS_SUPERVISOR" ] || { echo "agent-loop process supervisor not found or not executable: $PROCESS_SUPERVISOR" >&2; exit 1; }
 [ -x "$CONFIG_DOCTOR_HELPER" ] || { echo "agent-loop config doctor not found or not executable: $CONFIG_DOCTOR_HELPER" >&2; exit 1; }
+[ -f "$CODEX_REVIEW_LAUNCHER" ] && [ -x "$CODEX_REVIEW_LAUNCHER" ] && [ ! -L "$CODEX_REVIEW_LAUNCHER" ] || {
+    echo "Codex review launcher not found, executable, or is symlinked: $CODEX_REVIEW_LAUNCHER" >&2
+    exit 1
+}
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
 [ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CODEX_REVIEW_HOOK" ] || { echo "codex_review_hook must be configured before running agent-loop" >&2; exit 1; }
 
-if [ "$CONFIG_DOCTOR" = true ]; then
-    doctor_command=(python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR")
-    if [ -n "$CLAUDE_EFFORT_POLICY" ]; then
-        doctor_command+=(--claude-effort "$CLAUDE_EFFORT_POLICY")
-    fi
-    "${doctor_command[@]}" || exit 1
+if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    # The round-time pin compares this launcher against a blob in the project's
+    # own base commit, so a launcher outside the project tree can never satisfy
+    # it. Reject that here, before the issue is claimed, rather than after the
+    # worker has run and the draft PR exists.
+    case "$CODEX_REVIEW_LAUNCHER" in
+        "$PROJECT_DIR"/*) ;;
+        *)
+            echo "contract v4 requires this repository's own review launcher, but agent-loop resolved $CODEX_REVIEW_LAUNCHER, which is outside $PROJECT_DIR" >&2
+            echo "Invoke $PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop.sh instead of a global install." >&2
+            exit 1
+            ;;
+    esac
+    CODEX_REVIEW_BIN="$(realpath -e -- "$(type -P codex 2>/dev/null || true)" 2>/dev/null || true)"
+    CLAUDE_REVIEW_BIN="$(realpath -e -- "$(type -P claude 2>/dev/null || true)" 2>/dev/null || true)"
+    [ -n "$CODEX_REVIEW_BIN" ] || { echo "required command not found for Codex review: codex" >&2; exit 1; }
+    [ -n "$CLAUDE_REVIEW_BIN" ] || { echo "required command not found for Claude review: claude" >&2; exit 1; }
+    CODEX_REVIEW_BIN_SHA256="$(file_sha256 "$CODEX_REVIEW_BIN")"
+    CLAUDE_REVIEW_BIN_SHA256="$(file_sha256 "$CLAUDE_REVIEW_BIN")"
+    CODEX_REVIEW_INSTALL_ROOT="$(reviewer_install_root "$CODEX_REVIEW_BIN")"
+    CLAUDE_REVIEW_INSTALL_ROOT="$(reviewer_install_root "$CLAUDE_REVIEW_BIN")"
+    CODEX_REVIEW_INSTALL_SHA256="$(install_tree_sha256 "$CODEX_REVIEW_INSTALL_ROOT")" || {
+        echo "Codex reviewer install root is unsafe" >&2; exit 1;
+    }
+    CLAUDE_REVIEW_INSTALL_SHA256="$(install_tree_sha256 "$CLAUDE_REVIEW_INSTALL_ROOT")" || {
+        echo "Claude reviewer install root is unsafe" >&2; exit 1;
+    }
 fi
 
 if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
@@ -413,8 +498,8 @@ ORIGIN_PUSH_URLS="$(git remote get-url --push --all origin)" || {
 }
 require_origin_identity() {
     local fetch_urls push_urls
-    fetch_urls="$(git remote get-url --all origin)" || return 1
-    push_urls="$(git remote get-url --push --all origin)" || return 1
+    fetch_urls="$(timeout 10 "$REAL_GIT_BIN" remote get-url --all origin)" || return 1
+    push_urls="$(timeout 10 "$REAL_GIT_BIN" remote get-url --push --all origin)" || return 1
     if [ "$fetch_urls" != "$ORIGIN_FETCH_URLS" ] || [ "$push_urls" != "$ORIGIN_PUSH_URLS" ]; then
         echo "origin fetch/push identity changed during agent-loop" >&2
         return 1
@@ -423,10 +508,11 @@ require_origin_identity() {
 
 fetch_base() {
     require_origin_identity || return 1
-    git fetch origin "$BASE_FETCH_REFSPEC" --quiet
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+        fetch origin "$BASE_FETCH_REFSPEC" --quiet
 }
 
-if [ "$DRY_RUN" = false ]; then
+if [ "$DRY_RUN" = false ] && [ -z "$RESUME_RUN_FILE" ] && [ -z "$RESUME_BATCH_FILE" ]; then
     fetch_base
 fi
 git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
@@ -434,6 +520,268 @@ git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
     [ "$DRY_RUN" = true ] && echo "Dry-run does not fetch; fetch the base branch once and retry." >&2
     exit 1
 }
+"$REAL_GIT_BIN" --no-replace-objects -c core.fsmonitor= \
+    -c core.hooksPath=/dev/null -c core.excludesFile=/dev/null \
+    --no-optional-locks -C "$PROJECT_DIR" fsck --strict --no-dangling \
+    "$BASE_REMOTE_REF" >/dev/null || {
+    echo "configured base object graph failed integrity verification" >&2
+    exit 1
+}
+require_base_pinned_tool() {
+    local path="$1" relative="$2" expected_mode="$3" label="$4"
+    local expected_path entry oid local_oid
+    expected_path="$PROJECT_DIR/$relative"
+    [ -f "$path" ] && [ ! -L "$path" ] || {
+        echo "$label is not a regular file: $path" >&2
+        return 1
+    }
+    [ "$(realpath -e -- "$path")" = "$(realpath -e -- "$expected_path")" ] || {
+        echo "$label must resolve inside the project checkout: $expected_path" >&2
+        return 1
+    }
+    entry="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        ls-tree "$BASE_REMOTE_REF" -- "$relative")" || return 1
+    case "$entry" in
+        "$expected_mode blob "*$'\t'"$relative") ;;
+        *)
+            echo "$label is missing or has an unsafe mode in the pinned base: $relative" >&2
+            return 1
+            ;;
+    esac
+    oid="${entry#"$expected_mode blob "}"
+    oid="${oid%%$'\t'*}"
+    [[ "$oid" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "$label has an invalid pinned base object id" >&2
+        return 1
+    }
+    local_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$path")" || return 1
+    [ "$local_oid" = "$oid" ] || {
+        echo "$label differs from the pinned base blob" >&2
+        return 1
+    }
+    printf '%s\n' "$oid"
+}
+if [ "$CONFIG_DOCTOR" = true ]; then
+    doctor_command=(--project-dir "$PROJECT_DIR" --base-ref "$BASE_REMOTE_REF")
+    if [ -n "$CLAUDE_EFFORT_POLICY" ]; then
+        doctor_command+=(--claude-effort "$CLAUDE_EFFORT_POLICY")
+    fi
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        pinned_doctor_oid="$(require_base_pinned_tool "$CONFIG_DOCTOR_HELPER" \
+            ".codex/skills/agent-loop/scripts/config-doctor.py" 100755 \
+            "agent-loop config doctor")" || exit 1
+        # Execute the authenticated base blob instead of reopening the mutable
+        # working-tree path after the hash check.
+        "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+            cat-file blob "$pinned_doctor_oid" | \
+            AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN" GIT_NO_REPLACE_OBJECTS=1 \
+            python3 -I - "${doctor_command[@]}" || exit 1
+    else
+        AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN" \
+            python3 -I "$CONFIG_DOCTOR_HELPER" "${doctor_command[@]}" || exit 1
+    fi
+fi
+PINNED_RUN_STATE_OID=""
+PINNED_REVIEW_LEDGER_OID=""
+PINNED_ISSUES_READY_OID=""
+PINNED_AGENT_LOOP_OID=""
+PINNED_REVIEW_LAUNCHER_OID=""
+PINNED_REVIEW_PUSH_OID=""
+PINNED_PROCESS_SUPERVISOR_OID=""
+PINNED_HOOK_GIT_GUARD_OID=""
+PINNED_HOOK_GH_GUARD_OID=""
+PINNED_RUNTIME_ROOT=""
+PINNED_RUN_STATE_PATH=""
+PINNED_ISSUES_READY_PATH=""
+PINNED_REVIEW_LEDGER_PATH=""
+if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    PINNED_AGENT_LOOP_OID="$(require_base_pinned_tool "$SCRIPT_DIR/agent-loop.sh" \
+        ".codex/skills/agent-loop/scripts/agent-loop.sh" 100755 \
+        "agent-loop entrypoint")" || exit 1
+    PINNED_RUN_STATE_OID="$(require_base_pinned_tool "$RUN_STATE_HELPER" \
+        ".codex/skills/agent-loop/scripts/agent-loop-state.py" 100755 \
+        "agent-loop state helper")" || exit 1
+    PINNED_REVIEW_LEDGER_OID="$(require_base_pinned_tool "$REVIEW_LEDGER" \
+        ".codex/skills/critique/scripts/review-ledger.js" 100644 \
+        "review ledger")" || exit 1
+    PINNED_ISSUES_READY_OID="$(require_base_pinned_tool "$ISSUES_READY" \
+        ".codex/skills/issues/scripts/ready.py" 100755 \
+        "issues readiness helper")" || exit 1
+    PINNED_REVIEW_LAUNCHER_OID="$(require_base_pinned_tool "$CODEX_REVIEW_LAUNCHER" \
+        ".codex/skills/agent-loop/scripts/run-codex-review.sh" 100755 \
+        "review launcher")" || exit 1
+    PINNED_REVIEW_PUSH_OID="$(require_base_pinned_tool "$REVIEW_PUSH_HELPER_SOURCE" \
+        ".codex/skills/agent-loop/scripts/review-push.sh" 100755 \
+        "review push helper")" || exit 1
+    PINNED_PROCESS_SUPERVISOR_OID="$(require_base_pinned_tool "$PROCESS_SUPERVISOR" \
+        ".codex/skills/agent-loop/scripts/process-supervisor.py" 100755 \
+        "process supervisor")" || exit 1
+    PINNED_HOOK_GIT_GUARD_OID="$(require_base_pinned_tool "$HOOK_GIT_GUARD" \
+        ".codex/skills/agent-loop/scripts/hook-git-guard" 100755 \
+        "hook Git guard")" || exit 1
+    PINNED_HOOK_GH_GUARD_OID="$(require_base_pinned_tool "$HOOK_GH_GUARD" \
+        ".codex/skills/agent-loop/scripts/hook-gh-guard" 100755 \
+        "hook gh guard")" || exit 1
+fi
+
+cleanup_pinned_runtime() {
+    [ -n "$PINNED_RUNTIME_ROOT" ] || return 0
+    case "$PINNED_RUNTIME_ROOT" in /tmp/codex-agent-loop-runtime.*) ;; *) return 1 ;; esac
+    [ ! -L "$PINNED_RUNTIME_ROOT" ] || return 1
+    rm -rf -- "$PINNED_RUNTIME_ROOT"
+    PINNED_RUNTIME_ROOT=""
+}
+
+install_pinned_runtime_blob() {
+    local oid="$1" destination="$2" label="$3" actual_oid
+    "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        cat-file blob "$oid" > "$destination" || return 1
+    chmod 600 "$destination" || return 1
+    actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$destination")" || return 1
+    [ "$actual_oid" = "$oid" ] || {
+        echo "materialized $label differs from the pinned base blob" >&2
+        return 1
+    }
+}
+
+if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    PINNED_RUNTIME_ROOT="$(mktemp -d /tmp/codex-agent-loop-runtime.XXXXXXXX)" || exit 1
+    chmod 700 "$PINNED_RUNTIME_ROOT" || { cleanup_pinned_runtime; exit 1; }
+    trap cleanup_pinned_runtime EXIT
+    PINNED_RUN_STATE_PATH="$PINNED_RUNTIME_ROOT/agent-loop-state.py"
+    PINNED_ISSUES_READY_PATH="$PINNED_RUNTIME_ROOT/ready.py"
+    PINNED_REVIEW_LEDGER_PATH="$PINNED_RUNTIME_ROOT/review-ledger.mjs"
+    install_pinned_runtime_blob "$PINNED_RUN_STATE_OID" "$PINNED_RUN_STATE_PATH" \
+        "agent-loop state helper" || { cleanup_pinned_runtime; exit 1; }
+    install_pinned_runtime_blob "$PINNED_ISSUES_READY_OID" "$PINNED_ISSUES_READY_PATH" \
+        "issues readiness helper" || { cleanup_pinned_runtime; exit 1; }
+    install_pinned_runtime_blob "$PINNED_REVIEW_LEDGER_OID" "$PINNED_REVIEW_LEDGER_PATH" \
+        "review ledger" || { cleanup_pinned_runtime; exit 1; }
+fi
+
+require_pinned_runtime_blob() {
+    local path="$1" oid="$2" label="$3" actual_oid
+    [ -f "$path" ] && [ ! -L "$path" ] || {
+        echo "pinned $label is unavailable" >&2
+        return 1
+    }
+    actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$path")" || return 1
+    [ "$actual_oid" = "$oid" ] || {
+        echo "pinned $label changed after materialization" >&2
+        return 1
+    }
+}
+
+run_state_helper() {
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        require_pinned_runtime_blob "$PINNED_RUN_STATE_PATH" "$PINNED_RUN_STATE_OID" \
+            "agent-loop state helper" || return 1
+        GIT_NO_REPLACE_OBJECTS=1 python3 -I "$PINNED_RUN_STATE_PATH" "$@"
+    else
+        python3 -I "$RUN_STATE_HELPER" "$@"
+    fi
+}
+
+run_issues_ready() {
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        require_pinned_runtime_blob "$PINNED_ISSUES_READY_PATH" "$PINNED_ISSUES_READY_OID" \
+            "issues readiness helper" || return 1
+        GIT_NO_REPLACE_OBJECTS=1 python3 -I "$PINNED_ISSUES_READY_PATH" "$@"
+    else
+        python3 -I "$ISSUES_READY" "$@"
+    fi
+}
+
+run_review_ledger() {
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        require_pinned_runtime_blob "$PINNED_REVIEW_LEDGER_PATH" "$PINNED_REVIEW_LEDGER_OID" \
+            "review ledger" || return 1
+        GIT_NO_REPLACE_OBJECTS=1 node "$PINNED_REVIEW_LEDGER_PATH" "$@"
+    else
+        node "$REVIEW_LEDGER" "$@"
+    fi
+}
+
+require_pinned_agent_loop_entrypoint() {
+    local actual_oid
+    [ "$REVIEW_CONTRACT_VERSION" = 4 ] || return 0
+    [ -f "$SCRIPT_DIR/agent-loop.sh" ] && [ ! -L "$SCRIPT_DIR/agent-loop.sh" ] && \
+        [ -x "$SCRIPT_DIR/agent-loop.sh" ] || return 1
+    actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$SCRIPT_DIR/agent-loop.sh")" || return 1
+    [ "$actual_oid" = "$PINNED_AGENT_LOOP_OID" ]
+}
+
+TRUSTED_GIT_CONFIG_SHA256=""
+GIT_CONFIG_UNTRUSTED=false
+git_config_fingerprint() {
+    local directory="${1:-$PWD}"
+    timeout 10 "$REAL_GIT_BIN" --no-replace-objects -C "$directory" config \
+        --null --list | sha256sum | awk '{print $1}'
+}
+
+capture_trusted_git_config() {
+    local directory="${1:-$PWD}"
+    TRUSTED_GIT_CONFIG_SHA256="$(git_config_fingerprint "$directory")" || {
+        echo "could not capture trusted Git configuration" >&2
+        return 1
+    }
+    export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
+}
+
+require_trusted_git_config() {
+    local current
+    [ -n "$TRUSTED_GIT_CONFIG_SHA256" ] || {
+        echo "trusted Git configuration was not captured" >&2
+        return 1
+    }
+    [ "$GIT_CONFIG_UNTRUSTED" = false ] || return 1
+    current="$(git_config_fingerprint)" || {
+        GIT_CONFIG_UNTRUSTED=true
+        return 1
+    }
+    [ "$current" = "$TRUSTED_GIT_CONFIG_SHA256" ] || {
+        GIT_CONFIG_UNTRUSTED=true
+        echo "Git configuration changed after trusted setup" >&2
+        return 1
+    }
+}
+capture_trusted_git_config "$PROJECT_DIR" || exit 1
+PROJECT_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
+
+require_trusted_project_git_config() {
+    local current
+    [ "$GIT_CONFIG_UNTRUSTED" = false ] || return 1
+    current="$(git_config_fingerprint "$PROJECT_DIR")" || {
+        GIT_CONFIG_UNTRUSTED=true
+        return 1
+    }
+    [ "$current" = "$PROJECT_GIT_CONFIG_SHA256" ] || {
+        GIT_CONFIG_UNTRUSTED=true
+        echo "Controller Git configuration changed after trusted setup" >&2
+        return 1
+    }
+}
+
+activate_trusted_project_git_config() {
+    TRUSTED_GIT_CONFIG_SHA256="$PROJECT_GIT_CONFIG_SHA256"
+    export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
+    require_trusted_git_config
+}
+if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    HOOK_GIT_GUARD_SHA256="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" cat-file blob "$PINNED_HOOK_GIT_GUARD_OID" | sha256sum | awk '{print $1}')"
+    HOOK_GH_GUARD_SHA256="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" cat-file blob "$PINNED_HOOK_GH_GUARD_OID" | sha256sum | awk '{print $1}')"
+    REVIEW_PUSH_HELPER_SHA256="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" cat-file blob "$PINNED_REVIEW_PUSH_OID" | sha256sum | awk '{print $1}')"
+    PROCESS_SUPERVISOR_SHA256="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" cat-file blob "$PINNED_PROCESS_SUPERVISOR_OID" | sha256sum | awk '{print $1}')"
+else
+    HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
+    HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"
+    REVIEW_PUSH_HELPER_SHA256="$(file_sha256 "$REVIEW_PUSH_HELPER_SOURCE")"
+    PROCESS_SUPERVISOR_SHA256="$(file_sha256 "$PROCESS_SUPERVISOR")"
+fi
 
 # Resolve the current login once, up front. Doing it per-candidate inside an
 # unchecked command substitution meant a transient gh failure silently rendered a
@@ -490,11 +838,11 @@ acquire_batch_lock() {
 }
 
 if [ -n "$RESUME_RUN_FILE" ]; then
-    [ "$REVIEW_CONTRACT_VERSION" = 3 ] || {
-        echo "--resume-run requires review_contract_version = 3" >&2
+    [ "$REVIEW_CONTRACT_VERSION" -ge 3 ] || {
+        echo "--resume-run requires review_contract_version = 3 or 4" >&2
         exit 1
     }
-    RESUME_RUN_FILE="$(python3 -c '
+    RESUME_RUN_FILE="$(python3 -I -c '
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
@@ -506,7 +854,7 @@ print(path.resolve(strict=True))
     resume_log_dir="$(dirname "$RESUME_RUN_FILE")"
     case "$resume_log_dir" in "$LOG_ROOT"/*) ;; *) echo "run state log directory is outside configured log_root" >&2; exit 1 ;; esac
     acquire_run_lock "$resume_log_dir" || exit 1
-    RESUME_STATE_JSON="$(python3 "$RUN_STATE_HELPER" show --file "$RESUME_RUN_FILE")" || exit 1
+    RESUME_STATE_JSON="$(run_state_helper show --file "$RESUME_RUN_FILE")" || exit 1
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
         exit 1
@@ -515,6 +863,25 @@ print(path.resolve(strict=True))
         echo "run state base branch does not match $BASE_BRANCH" >&2
         exit 1
     }
+    expected_resume_config="$(jq -r '.gitConfigSha256 // empty' <<<"$RESUME_STATE_JSON")"
+    expected_resume_project="$(jq -r '.projectDir // empty' <<<"$RESUME_STATE_JSON")"
+    expected_resume_project_config="$(jq -r '.projectGitConfigSha256 // empty' <<<"$RESUME_STATE_JSON")"
+    resume_config_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
+    actual_resume_config="$(git_config_fingerprint "$resume_config_worktree")" || exit 1
+    actual_resume_project_config="$(git_config_fingerprint "$PROJECT_DIR")" || exit 1
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        [ -n "$expected_resume_config" ] && \
+            [ "$actual_resume_config" = "$expected_resume_config" ] && \
+            [ "$expected_resume_project" = "$PROJECT_DIR" ] && \
+            [ -n "$expected_resume_project_config" ] && \
+            [ "$actual_resume_project_config" = "$expected_resume_project_config" ] || {
+            echo "Git configuration differs from the trusted run-state boundary" >&2
+            exit 1
+        }
+    fi
+    TRUSTED_GIT_CONFIG_SHA256="$actual_resume_config"
+    export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
+    fetch_base
     resume_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
     recorded_log_dir="$(jq -r '.logDir' <<<"$RESUME_STATE_JSON")"
     [ "$recorded_log_dir" = "$resume_log_dir" ] || {
@@ -542,17 +909,30 @@ recovery_message() {
         echo "No worktree exists at $ACTIVE_WORKTREE (creation did not complete)." >&2
         echo "If issue #${SELECTED_ID:-?} was claimed, unassign it before it is re-selected." >&2
     fi
-    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
-        echo "Resume review with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
-    fi
-    if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
-        echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
+    if { [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; } || \
+       { [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; }; then
+        if require_trusted_git_config && require_pinned_agent_loop_entrypoint; then
+            if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+                echo "Resume review with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
+            fi
+            if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
+                echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
+            fi
+        else
+            echo "The controller trust boundary changed after startup; restore the pinned entrypoint and trusted Git configuration before resuming." >&2
+        fi
     fi
 }
 
 print_batch_bail_command() {
     local issue="$1" expected_status="$2"
-    echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$issue' --expected-status '$expected_status' --status bailed" >&2
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        printf 'Explicit bail command: %q --no-replace-objects -C %q cat-file blob %q | python3 -I - batch-update --file %q --issue %q --expected-status %q --status bailed\n' \
+            "$REAL_GIT_BIN" "$PROJECT_DIR" "$PINNED_RUN_STATE_OID" \
+            "$BATCH_STATE_FILE" "$issue" "$expected_status" >&2
+    else
+        echo "Explicit bail command: python3 -I '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$issue' --expected-status '$expected_status' --status bailed" >&2
+    fi
 }
 
 update_run_state() {
@@ -561,7 +941,7 @@ update_run_state() {
     local review_engine="${7:-}"
     local -a command
     [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] || return 0
-    command=(python3 "$RUN_STATE_HELPER" update --file "$AGENT_LOOP_RUN_STATE_FILE"
+    command=(run_state_helper update --file "$AGENT_LOOP_RUN_STATE_FILE"
         --phase "$phase" --round "$round" --base-sha "$base_sha"
         --head-sha "$head_sha")
     if [ -n "$codex_result_sha256" ]; then
@@ -590,6 +970,7 @@ on_exit() {
     if [ "$rc" -ne 0 ] && [ "$RECOVERY_EMITTED" = false ] && [ -n "$ACTIVE_WORKTREE" ]; then
         recovery_message "agent-loop aborted (exit $rc) with issue #${SELECTED_ID:-unknown} claimed."
     fi
+    cleanup_pinned_runtime || true
 }
 trap on_interrupt INT TERM
 trap on_exit EXIT
@@ -649,7 +1030,7 @@ set_selected_issue_context() {
 }
 
 sha256_text() {
-    python3 -c '
+    python3 -I -c '
 from hashlib import sha256
 import sys
 sys.stdout.write(sha256(sys.stdin.buffer.read()).hexdigest())
@@ -697,7 +1078,7 @@ select_next_issue() {
         # An allowlist is a scope ceiling, not an eligibility bypass. Resolve the
         # same hard excludes, open blockers, and addressed-PR checks as the normal
         # ready queue, while retaining assigned-but-ready rows for --resume.
-        allowlist_ready_json="$("$ISSUES_READY" --agent --limit 1000 --json)" || return 2
+        allowlist_ready_json="$(run_issues_ready --agent --limit 1000 --json)" || return 2
         ready_queue_numbers <<< "$allowlist_ready_json" >/dev/null || {
             echo "could not validate ready-queue data" >&2
             return 2
@@ -706,7 +1087,7 @@ select_next_issue() {
         if [ -n "$BATCH_STATE_FILE" ]; then
             local batch_selection_json batch_selection_cursor batch_selection_count
             local batch_selection_status
-            batch_selection_json="$(python3 "$RUN_STATE_HELPER" batch-show \
+            batch_selection_json="$(run_state_helper batch-show \
                 --file "$BATCH_STATE_FILE")" || return 2
             batch_selection_cursor="$(jq -r '.cursor' <<<"$batch_selection_json")"
             batch_selection_count="$(jq -r '.issues | length' <<<"$batch_selection_json")"
@@ -760,9 +1141,9 @@ select_next_issue() {
 
     local ready_json ready_numbers
     if [ "$INCLUDE_ASSIGNED" = true ]; then
-        ready_json="$("$ISSUES_READY" --agent --limit 100 --json)" || return 2
+        ready_json="$(run_issues_ready --agent --limit 100 --json)" || return 2
     else
-        ready_json="$("$ISSUES_READY" --unassigned --agent --limit 100 --json)" || return 2
+        ready_json="$(run_issues_ready --unassigned --agent --limit 100 --json)" || return 2
     fi
     ready_numbers="$(ready_queue_numbers <<< "$ready_json")" || {
         echo "could not validate ready-queue data" >&2
@@ -821,7 +1202,7 @@ issue_dependency_merged() {
 }
 
 dependency_refs() {
-    python3 -c 'import re,sys
+    python3 -I -c 'import re,sys
 body=sys.stdin.read()
 pattern=re.compile(r"(?im)^\s*[-*]?\s*(?:blocked\s+by|depends\s+on)[:\s]+(?:(pr)\s*)?#(\d+)\b")
 for kind, number in pattern.findall(body):
@@ -864,7 +1245,7 @@ check_dependencies() {
 
 ready_queue_contains_issue() {
     local number="$1" excluded_pr="${2:-}" ready_json status=0
-    local -a ready_command=("$ISSUES_READY" --agent --limit 1000 --json)
+    local -a ready_command=(run_issues_ready --agent --limit 1000 --json)
     if [ -n "$excluded_pr" ]; then
         ready_command+=(--exclude-addressed-by-pr "$excluded_pr")
     fi
@@ -1001,7 +1382,7 @@ verify_issue_for_publication() {
 
 worktree_has_work() {
     local start_sha="$1" status head
-    status="$(git status --porcelain)" || {
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || {
         echo "could not inspect worktree state after worker failure; preserving it" >&2
         return 0
     }
@@ -1021,12 +1402,95 @@ require_issue_branch_head() {
     [ "$head_sha" = "$branch_sha" ]
 }
 
+require_pinned_executable() {
+    local path="$1" expected_sha="$2" label="$3" actual_sha
+    [ -f "$path" ] && [ ! -L "$path" ] && [ -x "$path" ] || {
+        echo "$label is not a regular executable file: $path" >&2
+        return 1
+    }
+    actual_sha="$(file_sha256 "$path")" || return 1
+    [ "$actual_sha" = "$expected_sha" ] || {
+        echo "$label changed after startup" >&2
+        return 1
+    }
+}
+
+install_review_push_helper() {
+    local trusted_dir="$AGENT_LOOP_LOG_DIR/trusted-review-tools"
+    local destination="$trusted_dir/review-push.sh"
+    require_pinned_executable "$REVIEW_PUSH_HELPER_SOURCE" \
+        "$REVIEW_PUSH_HELPER_SHA256" "review push helper" || return 1
+    if [ -L "$trusted_dir" ] || { [ -e "$trusted_dir" ] && [ ! -d "$trusted_dir" ]; }; then
+        echo "trusted review tool path is not a real directory: $trusted_dir" >&2
+        return 1
+    fi
+    mkdir -p "$trusted_dir" || return 1
+    chmod 700 "$trusted_dir" || return 1
+    if [ -L "$destination" ] || { [ -e "$destination" ] && [ ! -f "$destination" ]; }; then
+        echo "trusted review push helper path is not a regular file: $destination" >&2
+        return 1
+    fi
+    rm -f -- "$destination" || return 1
+    cp "$REVIEW_PUSH_HELPER_SOURCE" "$destination" || return 1
+    chmod 700 "$destination" || return 1
+    require_pinned_executable "$destination" "$REVIEW_PUSH_HELPER_SHA256" \
+        "installed review push helper" || return 1
+    export AGENT_LOOP_REVIEW_PUSH_HELPER="$destination"
+}
+
+install_pinned_review_launcher() {
+    local trusted_dir="$AGENT_LOOP_LOG_DIR/trusted-review-tools"
+    local destination="$trusted_dir/run-codex-review.sh" actual_oid
+    local round_base="$1" round_entry round_oid
+    [ "$REVIEW_CONTRACT_VERSION" = 4 ] || return 0
+    round_entry="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        ls-tree "$round_base" -- ".codex/skills/agent-loop/scripts/run-codex-review.sh")" || return 1
+    case "$round_entry" in
+        "100755 blob "*$'\t'".codex/skills/agent-loop/scripts/run-codex-review.sh") ;;
+        *)
+            echo "review launcher is missing or has an unsafe mode in the exact round base" >&2
+            return 1
+            ;;
+    esac
+    round_oid="${round_entry#"100755 blob "}"
+    round_oid="${round_oid%%$'\t'*}"
+    [ "$round_oid" = "$PINNED_REVIEW_LAUNCHER_OID" ] || {
+        echo "review launcher changed after the controller compatibility preflight" >&2
+        return 1
+    }
+    if [ -L "$trusted_dir" ] || { [ -e "$trusted_dir" ] && [ ! -d "$trusted_dir" ]; }; then
+        echo "trusted review tool path is not a real directory: $trusted_dir" >&2
+        return 1
+    fi
+    mkdir -p "$trusted_dir" || return 1
+    chmod 700 "$trusted_dir" || return 1
+    if [ -L "$destination" ] || { [ -e "$destination" ] && [ ! -f "$destination" ]; }; then
+        echo "trusted review launcher path is not a regular file: $destination" >&2
+        return 1
+    fi
+    rm -f -- "$destination" || return 1
+    "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        cat-file blob "$PINNED_REVIEW_LAUNCHER_OID" > "$destination" || return 1
+    chmod 700 "$destination" || return 1
+    actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$destination")" || return 1
+    [ "$actual_oid" = "$PINNED_REVIEW_LAUNCHER_OID" ] || {
+        echo "installed review launcher differs from the pinned base blob" >&2
+        return 1
+    }
+    export AGENT_LOOP_CODEX_REVIEW_LAUNCHER="$destination"
+}
+
 run_bounded_hook() {
     local phase="$1" hook_command="$2" timeout_seconds="$3" log_file="$4"
     local allow_review_mutations="${5:-false}"
+    local direct_review_engine="${6:-}"
+    local disable_consumer_git_extensions="${7:-false}"
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0
-    local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
+    local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards" guard_entries
     echo -e "${BLUE}▸${NC} $phase"
+    require_pinned_executable "$PROCESS_SUPERVISOR" "$PROCESS_SUPERVISOR_SHA256" \
+        "hook process supervisor" || return 1
     # Bound the captured log to its trailing LOG_MAX_KB with `tail -c`, NOT with a
     # process-wide `ulimit -f`: that rlimit is inherited by the worker and every hook
     # and would SIGXFSZ-kill (and truncate) any repo file they legitimately write
@@ -1038,14 +1502,28 @@ run_bounded_hook() {
         echo "hook command guard path is not a real directory: $guard_bin" >&2
         return 1
     fi
+    # Recreate the directory empty rather than removing only the two guards it is
+    # supposed to hold. It is prepended to PATH for every hook, including the
+    # unattended worker, which is handed the path in AGENT_LOOP_HOOK_GUARD_BIN. A
+    # leftover entry under any other name — python3, sha256sum, realpath, awk —
+    # would shadow the real command for the controller's own supervisor launch and
+    # for every pin the review path resolves through PATH.
+    rm -rf -- "$guard_bin" || {
+        echo "could not clear prior hook command guards" >&2
+        return 1
+    }
     mkdir -p "$guard_bin" || {
         echo "could not create hook command guard directory" >&2
         return 1
     }
-    rm -f -- "$guard_bin/git" "$guard_bin/gh" || {
-        echo "could not clear prior hook command guards" >&2
+    chmod 700 "$guard_bin" || {
+        echo "could not secure hook command guard directory" >&2
         return 1
     }
+    require_pinned_executable "$HOOK_GIT_GUARD" "$HOOK_GIT_GUARD_SHA256" \
+        "hook Git guard" || return 1
+    require_pinned_executable "$HOOK_GH_GUARD" "$HOOK_GH_GUARD_SHA256" \
+        "hook GitHub guard" || return 1
     cp "$HOOK_GIT_GUARD" "$guard_bin/git" || {
         echo "could not install hook Git guard" >&2
         return 1
@@ -1058,12 +1536,18 @@ run_bounded_hook() {
         echo "could not secure hook command guards" >&2
         return 1
     }
-    for guard in "$guard_bin/git" "$guard_bin/gh"; do
-        if [ ! -f "$guard" ] || [ -L "$guard" ] || [ ! -x "$guard" ]; then
-            echo "installed hook command guard is not a real executable file: $guard" >&2
-            return 1
-        fi
-    done
+    require_pinned_executable "$guard_bin/git" "$HOOK_GIT_GUARD_SHA256" \
+        "installed hook Git guard" || return 1
+    require_pinned_executable "$guard_bin/gh" "$HOOK_GH_GUARD_SHA256" \
+        "installed hook GitHub guard" || return 1
+    guard_entries="$(find "$guard_bin" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)" || {
+        echo "could not inspect hook command guard directory" >&2
+        return 1
+    }
+    [ "$guard_entries" = "$(printf 'gh\ngit')" ] || {
+        echo "hook command guard directory holds unexpected entries" >&2
+        return 1
+    }
     (
         set +e
         if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then
@@ -1085,18 +1569,41 @@ run_bounded_hook() {
             export AGENT_LOOP_ORIGIN_PUSH_URLS="$ORIGIN_PUSH_URLS"
         else
             unset AGENT_LOOP_REVIEW_CONTRACT_VERSION AGENT_LOOP_ORIGIN_FETCH_URLS \
-                AGENT_LOOP_ORIGIN_PUSH_URLS
+                AGENT_LOOP_ORIGIN_PUSH_URLS AGENT_LOOP_REVIEW_PUSH_HELPER
         fi
-        export AGENT_LOOP_HOOK_COMMAND="$hook_command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
-        # shellcheck disable=SC2016 # expanded by the bounded login shell
-        timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
-            'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
-            | tail -c "$max_bytes"
+        export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"
+        if [ "$disable_consumer_git_extensions" = true ]; then
+            # A worker can rewrite the executable behind an otherwise unchanged
+            # core.fsmonitor or hooksPath value. Post-worker validation and review
+            # hooks must not execute either consumer-owned extension.
+            export GIT_CONFIG_COUNT=2
+            export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
+            export GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null
+        fi
+        if [ -n "$direct_review_engine" ]; then
+            python3 -I "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
+                --kill-after-seconds 15 -- "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" \
+                --engine "$direct_review_engine" 2>&1 \
+                | tail -c "$max_bytes"
+        else
+            export AGENT_LOOP_HOOK_COMMAND="$hook_command"
+            # shellcheck disable=SC2016 # expanded by the bounded login shell
+            python3 -I "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
+                --kill-after-seconds 15 -- bash -lc \
+                'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
+                | tail -c "$max_bytes"
+        fi
         exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?
-    if ! require_origin_identity; then
+    if ! require_trusted_git_config; then
+        echo "hook changed trusted Git configuration" >>"$log_file"
+        status=1
+    elif ! require_trusted_project_git_config; then
+        echo "hook changed trusted controller Git configuration" >>"$log_file"
+        status=1
+    elif ! require_origin_identity; then
         echo "hook changed origin fetch/push identity" >>"$log_file"
         status=1
     fi
@@ -1134,6 +1641,10 @@ run_worker() {
         status=0
         run_bounded_hook "worker attempt $attempt" "$command" "$WORKER_TIMEOUT_SECONDS" "$log" || status=$?
         [ "$status" -eq 0 ] && return 0
+        if [ "$GIT_CONFIG_UNTRUSTED" = true ]; then
+            recovery_message "Worker changed or obstructed trusted Git configuration."
+            return "$status"
+        fi
 
         if worktree_has_work "$start_sha"; then
             recovery_message "Worker exited $status after changing or committing work."
@@ -1158,7 +1669,7 @@ run_worker() {
 
 require_clean_committed_tree() {
     local phase="$1" start_sha="$2" status
-    status="$(git status --porcelain)" || {
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || {
         recovery_message "Could not inspect Git status after $phase."
         return 1
     }
@@ -1188,8 +1699,8 @@ run_validation() {
     fi
     before_sha="$(git rev-parse HEAD)" || return 1
     run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$HOOK_TIMEOUT_SECONDS" \
-        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" || return 1
-    status="$(git status --porcelain)" || return 1
+        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" false "" true || return 1
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || return 1
     after_sha="$(git rev-parse HEAD)" || return 1
     if [ -n "$status" ] || [ "$after_sha" != "$before_sha" ]; then
         echo "$label validation mutated the worktree or HEAD; validation hooks must be non-mutating" >&2
@@ -1224,7 +1735,7 @@ classify_review_result() {
         recovery_message "$engine review outcome must be a readable regular file."
         return 1
     fi
-    classification="$(python3 -c '
+    classification="$(python3 -I -c '
 from pathlib import Path
 import sys
 
@@ -1243,7 +1754,7 @@ sys.stdout.write(values[data])
 
 review_outcome_signature() {
     local outcome_file="$1"
-    python3 -c '
+    python3 -I -c '
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -1285,7 +1796,7 @@ verify_v3_result_attestation() {
     esac
     before_sha="$(jq -r '.beforeSha' "$outcome_file")" || return 1
     after_sha="$(jq -r '.afterSha' "$outcome_file")" || return 1
-    node "$REVIEW_LEDGER" validate-result \
+    run_review_ledger validate-result \
         --engine "$slug" --round "$REVIEW_ROUNDS_USED" --base "$REVIEWED_BASE_SHA" \
         --before "$before_sha" --head "$after_sha" \
         --result-file "$outcome_file" >/dev/null || {
@@ -1326,7 +1837,7 @@ verify_converged_review_outcomes() {
         "$CONVERGED_CODEX_OUTCOME_SIGNATURE" "before publication" || return 1
     require_review_outcome_signature Claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
         "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" "before publication" || return 1
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         verify_v3_result_attestation Codex codex "$CONVERGED_CODEX_OUTCOME_FILE" \
             "$CONVERGED_CODEX_OUTCOME_SIGNATURE" || return 1
         verify_v3_result_attestation Claude claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
@@ -1387,7 +1898,8 @@ run_review_pass() {
     local before_sha after_sha status classification outcome_signature outcome_file
     local result_file result_json result_status result_hash allowed_heads_file blocker
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
-    local historical_comment_ids_signature
+    local historical_comment_ids_signature direct_review_engine
+    local review_hook_status
     local boundary_status
 
     export AGENT_LOOP_REVIEW_ENGINE="$slug"
@@ -1395,7 +1907,7 @@ run_review_pass() {
     result_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.result.json"
     rm -f -- "$outcome_file"
     rm -f -- "$result_file"
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         unset AGENT_LOOP_REVIEW_OUTCOME_FILE
         export AGENT_LOOP_REVIEW_RESULT_FILE="$result_file"
     else
@@ -1413,7 +1925,7 @@ run_review_pass() {
         recovery_message "PR head attestation failed before $engine review round $round."
         return 1
     fi
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         pre_pass_threads_file="$(fetch_local_review_threads)" || {
             recovery_message "Could not snapshot review history before $engine round $round."
             return 1
@@ -1439,21 +1951,55 @@ run_review_pass() {
             return 1
         }
         export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
+
+        if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+            install_pinned_review_launcher "$AGENT_LOOP_REVIEW_BASE_SHA" || {
+                recovery_message "Could not install the pinned review launcher for $engine round $round."
+                return 1
+            }
+            export AGENT_LOOP_TRUSTED_REPO_ROOT="$PROJECT_DIR"
+            export AGENT_LOOP_TRUSTED_BASE_REF="$BASE_REMOTE_REF"
+            if [ "$slug" = codex ]; then
+                export AGENT_LOOP_REVIEW_BIN="$CODEX_REVIEW_BIN"
+                export AGENT_LOOP_REVIEW_BIN_SHA256="$CODEX_REVIEW_BIN_SHA256"
+                export AGENT_LOOP_REVIEW_INSTALL_ROOT="$CODEX_REVIEW_INSTALL_ROOT"
+                export AGENT_LOOP_REVIEW_INSTALL_SHA256="$CODEX_REVIEW_INSTALL_SHA256"
+            else
+                export AGENT_LOOP_REVIEW_BIN="$CLAUDE_REVIEW_BIN"
+                export AGENT_LOOP_REVIEW_BIN_SHA256="$CLAUDE_REVIEW_BIN_SHA256"
+                export AGENT_LOOP_REVIEW_INSTALL_ROOT="$CLAUDE_REVIEW_INSTALL_ROOT"
+                export AGENT_LOOP_REVIEW_INSTALL_SHA256="$CLAUDE_REVIEW_INSTALL_SHA256"
+            fi
+        fi
     else
         unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
-    run_bounded_hook "$hook_description (round $round)" "$hook" \
-        "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
-        recovery_message "$hook_failure_description failed in review round $round."
+    direct_review_engine=""
+    [ "$REVIEW_CONTRACT_VERSION" = 4 ] && direct_review_engine="$slug"
+    install_review_push_helper || {
+        recovery_message "Could not install the pinned review push helper for $engine round $round."
         return 1
     }
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    review_hook_status=0
+    run_bounded_hook "$hook_description (round $round)" "$hook" \
+        "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true \
+        "$direct_review_engine" true || review_hook_status=$?
+    unset AGENT_LOOP_CODEX_REVIEW_LAUNCHER AGENT_LOOP_TRUSTED_REPO_ROOT \
+        AGENT_LOOP_TRUSTED_BASE_REF AGENT_LOOP_REVIEW_BIN \
+        AGENT_LOOP_REVIEW_BIN_SHA256 AGENT_LOOP_REVIEW_PUSH_HELPER \
+        AGENT_LOOP_REVIEW_INSTALL_ROOT AGENT_LOOP_REVIEW_INSTALL_SHA256 \
+        CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
+    if [ "$review_hook_status" -ne 0 ]; then
+        recovery_message "$hook_failure_description failed in review round $round."
+        return 1
+    fi
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         require_review_outcome_signature "$engine pre-pass history" \
             "$historical_comment_ids_file" "$historical_comment_ids_signature" \
             "after review round $round" || return 1
     fi
-    status="$(git status --porcelain)" || {
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || {
         recovery_message "Could not inspect Git status after the $hook_description in round $round."
         return 1
     }
@@ -1470,14 +2016,14 @@ run_review_pass() {
         recovery_message "$review_description rewrote or dropped previously reviewed commits in round $round."
         return 1
     }
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         [ "$(cat "$review_push_state_file")" = "$after_sha" ] || {
             recovery_message "$engine review push checkpoint did not match its final head in round $round."
             return 1
         }
     fi
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
-        result_json="$(node "$REVIEW_LEDGER" validate-result \
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
+        result_json="$(run_review_ledger validate-result \
             --engine "$slug" --round "$round" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
             --before "$before_sha" --head "$after_sha" --result-file "$result_file")" || {
             recovery_message "$engine review did not produce a valid contract v3 result in round $round."
@@ -1501,7 +2047,7 @@ run_review_pass() {
         return 1
     fi
     export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$result_json")"
         allowed_heads_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-heads.json"
         write_review_transition_heads "$before_sha" "$after_sha" \
@@ -1542,7 +2088,7 @@ run_review_pass() {
             }
         fi
     fi
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         outcome_signature="file:$result_hash"
         require_review_outcome_signature "$engine" "$outcome_file" \
             "$outcome_signature" "after attestation in round $round" || return 1
@@ -1602,8 +2148,10 @@ run_review_convergence() {
         AGENT_LOOP_REVIEW_BASE_SHA="$round_base_sha"
         if ! git merge-base --is-ancestor "$round_base_sha" HEAD; then
             echo -e "${BLUE}▸${NC} Integrating fresh base before review round $round"
-            if ! git merge --no-edit "$round_base_sha"; then
-                git merge --abort >/dev/null 2>&1 || true
+            if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+                merge --no-edit "$round_base_sha"; then
+                "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+                    merge --abort >/dev/null 2>&1 || true
                 recovery_message "Fresh-base merge conflicted before review round $round."
                 return 1
             fi
@@ -1831,7 +2379,7 @@ attest_ready_pr_head() {
 
 attest_review_head() {
     local phase="$1" expected_base="$2" local_sha status
-    status="$(git status --porcelain)" || return 1
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || return 1
     [ -z "$status" ] || {
         echo "review worktree is dirty $phase" >&2
         return 1
@@ -1849,7 +2397,9 @@ push_review_head() {
     local phase="$1" expected_base="$2" sha
     require_issue_branch_head || return 1
     sha="$(git rev-parse HEAD)" || return 1
-    git push origin "$sha:refs/heads/$AGENT_LOOP_BRANCH" || return 1
+    require_trusted_git_config || return 1
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null push origin \
+        "$sha:refs/heads/$AGENT_LOOP_BRANCH" || return 1
     attest_remote_branch "$AGENT_LOOP_BRANCH" "$sha" "$phase" || return 1
     attest_pr_head "$sha" "$expected_base" "$phase"
 }
@@ -1978,7 +2528,7 @@ verify_v3_committed_pass_evidence() {
     # between fetch and verify fails closed. The retired Python did not check
     # this, so these call sites did not compute it.
     ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
-    node "$REVIEW_LEDGER" verify-ledger \
+    run_review_ledger verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$live_head" \
         --result-head "$after_sha" \
         --threads-file "$ledger_file" --actor "$CURRENT_LOGIN" \
@@ -2006,7 +2556,7 @@ attest_v3_review_result() {
     local ledger_file ledger_signature attestation_json observed_result_hash
     ledger_file="$(fetch_local_review_threads)" || return 1
     ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
-    attestation_json="$(node "$REVIEW_LEDGER" attest \
+    attestation_json="$(run_review_ledger attest \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$after_sha" \
         --engine "$engine" --round "$round" --base "$base_sha" \
         --before "$before_sha" --result-file "$result_file" \
@@ -2026,7 +2576,7 @@ verify_local_review_threads() {
     local -a historical_args=()
     ledger_file="$(fetch_local_review_threads)" || return 1
     ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         if [ "${REVIEW_ROUNDS_USED:-0}" -gt 0 ]; then
             historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/codex-review-round-$REVIEW_ROUNDS_USED-historical-comment-ids.json"
         else
@@ -2044,7 +2594,7 @@ verify_local_review_threads() {
     # length: the ledger requires a recurring root cause to reuse its existing
     # thread, so a resolved round-1 thread that gains an unanswered round-2
     # finding still has two or more comments and would pass a length check.
-    node "$REVIEW_LEDGER" verify-ledger \
+    run_review_ledger verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
         --head "$(git rev-parse HEAD)" --threads-file "$ledger_file" \
         --expected-threads-sha256 "${ledger_signature#file:}" \
@@ -2104,10 +2654,11 @@ open_draft_pr() {
     }
     # Create-only lease: fail if the branch appeared after the absence check.
     # This never rewrites an existing remote ref.
-    git push --force-with-lease="refs/heads/$branch:" origin \
+    require_trusted_git_config || return 1
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null \
+        push --force-with-lease="refs/heads/$branch:" origin \
         "$publication_sha:refs/heads/$branch"
     attest_remote_branch "$branch" "$publication_sha" "after draft publication push" || return 1
-    git branch --set-upstream-to="origin/$branch" "$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
     {
         echo "## Summary"
@@ -2269,7 +2820,7 @@ resume_review_run() {
         recovery_message "Recorded recovery log directory is unavailable or unsafe."
         return 1
     fi
-    branch_status="$(git -C "$ACTIVE_WORKTREE" status --porcelain)" || return 1
+    branch_status="$("$REAL_GIT_BIN" -c core.fsmonitor=false -C "$ACTIVE_WORKTREE" status --porcelain)" || return 1
     [ -z "$branch_status" ] || {
         recovery_message "Recorded recovery worktree is dirty."
         return 1
@@ -2296,7 +2847,6 @@ resume_review_run() {
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
-    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
     AGENT_LOOP_PR_NUMBER="$(jq -r '.prNumber' <<<"$RESUME_STATE_JSON")" || return 1
     AGENT_LOOP_PR_URL="$(jq -r '.prUrl' <<<"$RESUME_STATE_JSON")" || return 1
     export AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL
@@ -2346,8 +2896,13 @@ resume_review_run() {
             return 1
         }
         cd "$PROJECT_DIR"
+        activate_trusted_project_git_config || {
+            recovery_message "Controller Git configuration changed before finalized recovery cleanup."
+            return 1
+        }
         if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
-            git worktree remove "$ACTIVE_WORKTREE"
+            "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+                worktree remove "$ACTIVE_WORKTREE"
             ACTIVE_WORKTREE=""
         else
             echo "   Finalized worktree preserved for parent batch checkpointing: $ACTIVE_WORKTREE"
@@ -2551,8 +3106,13 @@ resume_review_run() {
         finalize_pr
     fi
     cd "$PROJECT_DIR"
+    activate_trusted_project_git_config || {
+        recovery_message "Controller Git configuration changed before recovery cleanup."
+        return 1
+    }
     if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
-        git worktree remove "$ACTIVE_WORKTREE"
+        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            worktree remove "$ACTIVE_WORKTREE"
         ACTIVE_WORKTREE=""
     else
         echo "   Finalized worktree preserved for parent batch checkpointing: $ACTIVE_WORKTREE"
@@ -2571,9 +3131,25 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
     BATCH_STATE_FILE="$(realpath -- "$RESUME_BATCH_FILE")" || exit 1
     case "$BATCH_STATE_FILE" in "$LOG_ROOT"/*) ;; *) echo "batch state is outside configured log_root" >&2; exit 1 ;; esac
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
-    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+    batch_json="$(run_state_helper batch-show --file "$BATCH_STATE_FILE")" || exit 1
+    expected_batch_config="$(jq -r '.gitConfigSha256 // empty' <<<"$batch_json")"
+    expected_batch_project="$(jq -r '.projectDir // empty' <<<"$batch_json")"
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        # The digest alone does not identify a checkout: linked worktrees share
+        # .git/config, so it is byte-identical across them, and log_root is
+        # shared machine-wide rather than derived per checkout. Enforce the
+        # recorded project directory too, as the run-state path does.
+        [ -n "$expected_batch_config" ] && \
+            [ "$PROJECT_GIT_CONFIG_SHA256" = "$expected_batch_config" ] && \
+            [ -n "$expected_batch_project" ] && \
+            [ "$expected_batch_project" = "$PROJECT_DIR" ] || {
+            echo "Git configuration differs from the trusted batch-state boundary" >&2
+            exit 1
+        }
+    fi
     [ "$(jq -r '.repo' <<<"$batch_json")" = "$GH_REPO" ] || { echo "batch state repository mismatch" >&2; exit 1; }
     [ "$(jq -r '.baseBranch' <<<"$batch_json")" = "$BASE_BRANCH" ] || { echo "batch state base branch mismatch" >&2; exit 1; }
+    fetch_base
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
     batch_count="$(jq -r '.issues | length' <<<"$batch_json")"
     if [ "$batch_cursor" -lt "$batch_count" ] && \
@@ -2582,10 +3158,10 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
         child_state="$(jq -r --argjson cursor "$batch_cursor" '.issues[$cursor].childRunState // empty' <<<"$batch_json")"
         [ -n "$child_state" ] || {
             recovery_message "Batch issue #$batch_issue is active without a child review checkpoint; inspect its worktree, remote branch, PR, and ledger before explicitly bailing it."
-            echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$batch_issue' --expected-status active --status bailed" >&2
+            print_batch_bail_command "$batch_issue" active
             exit 1
         }
-        child_json="$(python3 "$RUN_STATE_HELPER" show --file "$child_state")" || exit 1
+        child_json="$(run_state_helper show --file "$child_state")" || exit 1
         [ "$(jq -r '.issue' <<<"$child_json")" = "$batch_issue" ] && \
         [ "$(jq -r '.repo' <<<"$child_json")" = "$GH_REPO" ] && \
         [ "$(jq -r '.baseBranch' <<<"$child_json")" = "$BASE_BRANCH" ] || {
@@ -2593,18 +3169,23 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             exit 1
         }
         child_worktree="$(jq -r '.worktree' <<<"$child_json")"
+        require_trusted_git_config && require_pinned_agent_loop_entrypoint || {
+            recovery_message "The controller trust boundary changed after startup; restore the pinned entrypoint and trusted Git configuration before batch resume."
+            exit 1
+        }
         AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" \
             "$SCRIPT_DIR/agent-loop.sh" --resume-run "$child_state" || {
             recovery_message "Current batch issue #$batch_issue did not resume to a safely finalized state."
             exit 1
         }
-        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+        run_state_helper batch-update --file "$BATCH_STATE_FILE" \
             --issue "$batch_issue" --expected-status active \
             --status finalized >/dev/null || exit 1
-        git worktree remove "$child_worktree" || {
+        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            worktree remove "$child_worktree" || {
             echo "warning: finalized batch child worktree cleanup failed and was preserved: $child_worktree" >&2
         }
-        batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+        batch_json="$(run_state_helper batch-show --file "$BATCH_STATE_FILE")" || exit 1
         batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
     fi
     ISSUE_ALLOWLIST="$(jq -r --argjson cursor "$batch_cursor" '.allowlist[$cursor:] | map(tostring) | join(",")' <<<"$batch_json")"
@@ -2615,13 +3196,14 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
     remaining_count="$(jq -r --argjson cursor "$batch_cursor" '.allowlist[$cursor:] | length' <<<"$batch_json")"
     [ "$MAX_ITERATIONS" -le "$remaining_count" ] || MAX_ITERATIONS="$remaining_count"
 elif [[ "$ISSUE_ALLOWLIST" == *,* ]] && [ "$DRY_RUN" = false ] && \
-     [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+     [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
     mkdir -p "$LOG_ROOT"
     chmod 700 "$LOG_ROOT"
     safe_repo="${REPO_NAME//[^A-Za-z0-9._-]/-}"
     BATCH_STATE_FILE="$LOG_ROOT/$safe_repo-batch-$RUN_TAG.json"
-    python3 "$RUN_STATE_HELPER" batch-create --file "$BATCH_STATE_FILE" \
+    run_state_helper batch-create --file "$BATCH_STATE_FILE" \
         --run-id "$RUN_TAG" --repo "$GH_REPO" --base-branch "$BASE_BRANCH" \
+        --project-dir "$PROJECT_DIR" --git-config-sha256 "$PROJECT_GIT_CONFIG_SHA256" \
         --issues "$ISSUE_ALLOWLIST" >/dev/null || exit 1
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     echo "   Batch recovery state: $BATCH_STATE_FILE"
@@ -2691,7 +3273,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
 
     if [ -n "$BATCH_STATE_FILE" ]; then
-        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+        run_state_helper batch-update --file "$BATCH_STATE_FILE" \
             --issue "$SELECTED_ID" --expected-status pending \
             --status active >/dev/null || exit 1
     fi
@@ -2754,8 +3336,17 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would
     # otherwise target the integration branch and bypass local review.
-    git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "$BASE_REMOTE_REF"
+    require_trusted_project_git_config || {
+        recovery_message "Controller Git configuration changed before issue worktree creation."
+        exit 1
+    }
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+        worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "$BASE_REMOTE_REF"
     cd "$ACTIVE_WORKTREE"
+    capture_trusted_git_config "$ACTIVE_WORKTREE" || {
+        recovery_message "Could not establish the issue-worktree Git configuration boundary."
+        exit 1
+    }
 
     export AGENT_LOOP_ISSUE_ID="$SELECTED_ID"
     # Ordinary gh commands are masked, so the worker cannot fetch its own issue
@@ -2773,23 +3364,26 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             recovery_message "Setup hook failed."
             exit 1
         }
-        setup_status="$(git status --porcelain)" || { recovery_message "Could not inspect Git status after setup."; exit 1; }
+        setup_status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || {
+            recovery_message "Could not inspect Git status after setup."
+            exit 1
+        }
         [ -z "$setup_status" ] || { recovery_message "Setup hook left Git-visible worktree changes."; exit 1; }
         require_issue_branch_head || { recovery_message "Setup hook moved HEAD away from the issue branch."; exit 1; }
         setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup."; exit 1; }
         [ "$setup_after_sha" = "$start_sha" ] || { recovery_message "Setup hook changed HEAD; setup hooks must not commit."; exit 1; }
     fi
-
     run_worker "$start_sha" || exit 1
-    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
 
     echo -e "${BLUE}▸${NC} Initial fresh-base integration"
     fetch_base
     initial_base_sha="$(git rev-parse "$BASE_REMOTE_REF")"
-    if ! git merge --no-edit "$initial_base_sha"; then
-        git merge --abort >/dev/null 2>&1 || true
+    if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+        merge --no-edit "$initial_base_sha"; then
+        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            merge --abort >/dev/null 2>&1 || true
         recovery_message "Initial fresh-base merge conflicted; original commits were preserved."
         exit 1
     fi
@@ -2815,13 +3409,16 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     initial_pr_sha="$(git rev-parse HEAD)"
     open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
 
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"
-        python3 "$RUN_STATE_HELPER" create --file "$AGENT_LOOP_RUN_STATE_FILE" \
+        run_state_helper create --file "$AGENT_LOOP_RUN_STATE_FILE" \
             --run-id "$RUN_TAG-issue-$SELECTED_ID" --repo "$GH_REPO" \
             --issue "$SELECTED_ID" --base-branch "$BASE_BRANCH" \
             --issue-title-sha256 "$(printf '%s' "$SELECTED_TITLE" | sha256_text)" \
             --issue-body-sha256 "$(printf '%s' "$SELECTED_BODY" | sha256_text)" \
+            --git-config-sha256 "$TRUSTED_GIT_CONFIG_SHA256" \
+            --project-dir "$PROJECT_DIR" \
+            --project-git-config-sha256 "$PROJECT_GIT_CONFIG_SHA256" \
             --branch "$branch" --worktree "$ACTIVE_WORKTREE" \
             --log-dir "$AGENT_LOOP_LOG_DIR" --pr "$AGENT_LOOP_PR_NUMBER" \
             --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \
@@ -2834,7 +3431,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             exit 1
         }
         if [ -n "$BATCH_STATE_FILE" ]; then
-            python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+            run_state_helper batch-update --file "$BATCH_STATE_FILE" \
                 --issue "$SELECTED_ID" --expected-status active --status active \
                 --child-run-state "$AGENT_LOOP_RUN_STATE_FILE" >/dev/null || {
                 recovery_message "Could not attach the child review checkpoint to batch state."
@@ -2880,19 +3477,24 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     finalize_pr
 
     cd "$PROJECT_DIR"
+    activate_trusted_project_git_config || {
+        recovery_message "Controller Git configuration changed before issue cleanup."
+        exit 1
+    }
     if [ "${AGENT_INTERRUPT_AFTER_CHILD_FINALIZED:-0}" = 1 ]; then
         recovery_message "Synthetic interruption after child finalization checkpoint."
         exit 92
     fi
     if [ -n "$BATCH_STATE_FILE" ]; then
-        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+        run_state_helper batch-update --file "$BATCH_STATE_FILE" \
             --issue "$SELECTED_ID" --expected-status active \
             --status finalized >/dev/null || {
             recovery_message "Issue finalized but the batch cursor could not be checkpointed; the worktree was preserved."
             exit 1
         }
     fi
-    git worktree remove "$ACTIVE_WORKTREE" || {
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+        worktree remove "$ACTIVE_WORKTREE" || {
         echo "warning: finalized issue worktree cleanup failed and was preserved: $ACTIVE_WORKTREE" >&2
     }
     ACTIVE_WORKTREE=""
@@ -2900,13 +3502,17 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 done
 
 if [ -n "$BATCH_STATE_FILE" ]; then
-    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+    batch_json="$(run_state_helper batch-show --file "$BATCH_STATE_FILE")" || exit 1
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
     batch_count="$(jq -r '.issues | length' <<<"$batch_json")"
     if [ "$batch_cursor" -lt "$batch_count" ]; then
         if [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
             echo -e "${YELLOW}○${NC} Ordered batch paused cleanly at the $MAX_ITERATIONS-issue iteration cap."
-            echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+            if require_trusted_git_config && require_pinned_agent_loop_entrypoint; then
+                echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+            else
+                echo "The controller trust boundary changed after startup; restore the pinned entrypoint and trusted Git configuration before resuming." >&2
+            fi
             exit 0
         fi
         recovery_message "Ordered batch stopped before every issue reached a finalized or explicitly bailed state."

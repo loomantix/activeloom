@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Run one hook and ensure none of its descendants survive."""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+
+PR_SET_CHILD_SUBREAPER = 36
+
+
+class TerminationRequested(BaseException):
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+
+
+def _become_subreaper() -> None:
+    if not Path("/proc/self/stat").is_file():
+        raise RuntimeError("hook supervision requires Linux procfs")
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _direct_children(pid: int, proc_root: Path) -> set[int]:
+    children: set[int] = set()
+    task_root = proc_root / str(pid) / "task"
+    try:
+        tasks = list(task_root.iterdir())
+    except (FileNotFoundError, ProcessLookupError):
+        return children
+    except PermissionError as error:
+        raise RuntimeError(f"could not inspect tasks for owned process {pid}") from error
+    for task in tasks:
+        if not task.name.isdigit():
+            continue
+        try:
+            values = task.joinpath("children").read_text(encoding="utf-8").split()
+            children.update(int(value) for value in values)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except (PermissionError, ValueError) as error:
+            raise RuntimeError(
+                f"could not reliably inspect children of owned process {pid}"
+            ) from error
+    return children
+
+
+def _descendants(root_pid: int, proc_root: Path = Path("/proc")) -> set[int]:
+    found: set[int] = set()
+    frontier = {root_pid}
+    while frontier:
+        children: set[int] = set()
+        for pid in frontier:
+            children.update(_direct_children(pid, proc_root))
+        children -= found
+        if not children:
+            break
+        found.update(children)
+        frontier = children
+    return found
+
+
+def _signal_descendants(root_pid: int, sig: signal.Signals) -> bool:
+    descendants = _descendants(root_pid)
+    for pid in sorted(descendants, reverse=True):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+    return bool(descendants)
+
+
+def _reap() -> None:
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
+
+
+def _cleanup(root_pid: int, grace_seconds: float) -> None:
+    # The SIGKILL budget tracks the caller's grace period rather than a fixed
+    # second: a descendant blocked in uninterruptible sleep routinely outlives
+    # 1s, and that is the case the raise below reports.
+    for sig, budget in (
+        (signal.SIGTERM, grace_seconds),
+        (signal.SIGKILL, max(grace_seconds, 1.0)),
+    ):
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            if not _signal_descendants(root_pid, sig):
+                _reap()
+                if not _descendants(root_pid):
+                    return
+            _reap()
+            time.sleep(0.025)
+    raise RuntimeError("hook descendants survived forced cleanup")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--timeout-seconds", type=float)
+    parser.add_argument("--kill-after-seconds", type=float, default=15.0)
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    _become_subreaper()
+    if args.self_test:
+        _descendants(os.getpid())
+        print("linux-subreaper-v1")
+        return 0
+    command = args.command
+    if command[:1] == ["--"]:
+        command = command[1:]
+    if (
+        not command
+        or args.timeout_seconds is None
+        or args.timeout_seconds <= 0
+        or args.kill_after_seconds < 0
+    ):
+        parser.error("a command and positive timeout are required")
+
+    received_signal: int | None = None
+    cleaning_up = False
+    cleanup_failed = False
+
+    def request_termination(signum: int, _frame: object) -> None:
+        nonlocal received_signal, cleaning_up
+        if received_signal is None:
+            received_signal = signum
+            if not cleaning_up:
+                raise TerminationRequested(signum)
+
+    handled_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+    previous_handlers = {
+        sig: signal.signal(sig, request_termination) for sig in handled_signals
+    }
+    child: subprocess.Popen[bytes] | None = None
+    timed_out = False
+    return_code = 0
+    try:
+        child = subprocess.Popen(command, start_new_session=True)
+        try:
+            return_code = child.wait(timeout=args.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                child.wait(timeout=args.kill_after_seconds)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    child.wait(timeout=args.kill_after_seconds)
+                except subprocess.TimeoutExpired as error:
+                    raise RuntimeError("hook process survived SIGKILL") from error
+    except TerminationRequested:
+        if child is not None and child.poll() is None:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    finally:
+        cleaning_up = True
+        # A containment failure must stay visible without destroying the status
+        # computed below. Raising out of `finally` replaced the real exit code
+        # with 1, which both reported a successful hook as failed and hid the
+        # 124 that `agent-loop.sh`'s timeout-retry classifier matches on.
+        try:
+            _cleanup(os.getpid(), args.kill_after_seconds)
+        except RuntimeError as error:
+            print(f"process-supervisor: {error}", file=sys.stderr)
+            cleanup_failed = True
+        _reap()
+        for sig, previous in previous_handlers.items():
+            signal.signal(sig, previous)
+
+    # Surviving descendants make every ordinary status unsafe to act on. In
+    # particular, returning 124 would tell agent-loop to start a replacement
+    # worker in a worktree the timed-out process may still be mutating.
+    if cleanup_failed:
+        return 125
+    if received_signal is not None:
+        return 128 + received_signal
+    if timed_out:
+        return 124
+    if return_code < 0:
+        return 128 - return_code
+    return return_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

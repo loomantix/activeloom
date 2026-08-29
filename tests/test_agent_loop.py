@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -22,6 +24,16 @@ def _run_git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess
     return subprocess.run(
         ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
     )
+
+
+def _git_config_sha256(repo: Path) -> str:
+    config = subprocess.run(
+        ["git", "--no-replace-objects", "config", "--null", "--list"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return hashlib.sha256(config).hexdigest()
 
 
 def _agent_loop_branches(repo: Path) -> str:
@@ -52,6 +64,10 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     state_dir = tmp_path / "state"
     bin_dir.mkdir()
     state_dir.mkdir()
+    reviewer_stub = "#!/usr/bin/env bash\nexit 0\n"
+    _write_executable(bin_dir / "codex", reviewer_stub)
+    _write_executable(bin_dir / "claude", reviewer_stub)
+    (bin_dir / "package.json").write_text("{}\n", encoding="utf-8")
 
     _run_git("init", "--bare", str(remote))
     _run_git("init", "-b", "main", str(repo))
@@ -63,9 +79,81 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     script.parent.mkdir(parents=True)
     ready.parent.mkdir(parents=True)
     shutil.copy2(AGENT_LOOP, script)
-    for guard_name in ("hook-git-guard", "hook-gh-guard", "review-push.sh", "config-doctor.py"):
+    for guard_name in (
+        "hook-git-guard",
+        "hook-gh-guard",
+        "review-push.sh",
+        "config-doctor.py",
+        "process-supervisor.py",
+    ):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
+    _write_executable(
+        script.parent / "run-codex-review.sh",
+        """#!/usr/bin/env bash
+# Fixture launcher mirrors the pinned production entrypoint while allowing the
+# integration suite to inject deterministic reviewer behavior through comments
+# in its generated config. The real launcher's trust boundary has a dedicated
+# execution-level test module.
+if [ "${1:-}" = --contract-version ]; then echo 4; exit 0; fi
+if [ "${1:-}" = --claude-effort-policy ]; then echo low; exit 0; fi
+if [ "${1:-}" = --required-paths ]; then
+    case "${2:-}" in
+        codex)
+            printf '%s\n' \
+                .codex/REVIEW_WORKFLOW.md \
+                .codex/references/local-review-ledger.md \
+                .codex/skills/deepcritique/SKILL.md \
+                .codex/skills/critique/SKILL.md \
+                .codex/skills/critique/scripts/review-ledger.js \
+                .codex/skills/refactorpass/SKILL.md
+            ;;
+        claude)
+            printf '%s\n' \
+                .claude/REVIEW_WORKFLOW.md \
+                .claude/references/local-review-ledger.md \
+                .claude/skills/deepcritique/SKILL.md \
+                .claude/skills/critique/SKILL.md \
+                .claude/skills/critique/scripts/package.json \
+                .claude/skills/critique/scripts/review-ledger.js \
+                .claude/skills/refactorpass/SKILL.md
+            ;;
+        *) exit 2 ;;
+    esac
+    exit 0
+fi
+if [ "${1:-}" = --wrapper-paths ]; then
+    printf '%s\n' \
+        .codex/skills/agent-loop/scripts/agent-loop.sh \
+        .codex/skills/agent-loop/scripts/run-codex-review.sh \
+        .codex/skills/agent-loop/scripts/hook-git-guard \
+        .codex/skills/agent-loop/scripts/hook-gh-guard \
+        .codex/skills/agent-loop/scripts/review-push.sh \
+        .codex/skills/agent-loop/scripts/process-supervisor.py \
+        .codex/skills/agent-loop/scripts/config-doctor.py \
+        .codex/skills/agent-loop/scripts/agent-loop-state.py \
+        .codex/skills/issues/scripts/ready.py \
+        .codex/skills/critique/scripts/review-ledger.js
+    exit 0
+fi
+if false; then
+    claude \\
+        --effort low \\
+        --print ignored
+fi
+exec python3 - "$@" <<'PY'
+import argparse, base64, os, pathlib, subprocess
+parser = argparse.ArgumentParser()
+parser.add_argument('--engine', choices=('codex', 'claude'), required=True)
+engine = parser.parse_args().engine
+config = pathlib.Path(os.environ['AGENT_LOOP_TRUSTED_REPO_ROOT']) / '.codex/skills/agent-loop/agent-loop.config'
+prefix = f'# agent_test_{engine}_review_command_b64 = '
+encoded = next(line.removeprefix(prefix) for line in config.read_text().splitlines() if line.startswith(prefix))
+command = base64.b64decode(encoded).decode()
+raise SystemExit(subprocess.run(['bash', '-lc', command], env=os.environ).returncode)
+PY
+""",
+    )
     ledger_source = REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.js"
     ledger_target = repo / ".codex/skills/critique/scripts/review-ledger.js"
     ledger_target.parent.mkdir(parents=True)
@@ -76,6 +164,40 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         REPO_ROOT / ".codex/skills/critique/scripts/package.json",
         ledger_target.parent / "package.json",
     )
+    codex_review_skill = repo / ".codex/skills/deepcritique/SKILL.md"
+    codex_review_skill.parent.mkdir(parents=True, exist_ok=True)
+    codex_review_skill.write_text("# Trusted Codex deep review fixture\n", encoding="utf-8")
+    claude_review_skill = repo / ".claude/skills/deepcritique/SKILL.md"
+    claude_review_skill.parent.mkdir(parents=True, exist_ok=True)
+    claude_review_skill.write_text("# Trusted Claude deep review fixture\n", encoding="utf-8")
+    for relative in (
+        ".claude/REVIEW_WORKFLOW.md",
+        ".claude/references/local-review-ledger.md",
+        ".claude/skills/critique/SKILL.md",
+        ".claude/skills/refactorpass/SKILL.md",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("trusted Claude review fixture\n", encoding="utf-8")
+    claude_ledger_dir = repo / ".claude/skills/critique/scripts"
+    claude_ledger_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.js",
+        claude_ledger_dir,
+    )
+    shutil.copy2(
+        REPO_ROOT / ".codex/skills/critique/scripts/package.json",
+        claude_ledger_dir,
+    )
+    for relative in (
+        ".codex/REVIEW_WORKFLOW.md",
+        ".codex/references/local-review-ledger.md",
+        ".codex/skills/critique/SKILL.md",
+        ".codex/skills/refactorpass/SKILL.md",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("trusted Codex review fixture\n", encoding="utf-8")
     # codex-platform has no root manifest, which is the most permissive module
     # resolution context there is — the bundle would load here even with no
     # sibling manifest at all. Give the fixture consumer a CommonJS root, the
@@ -548,7 +670,7 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
         '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
     )
     values: dict[str, str | int] = {
-        "review_contract_version": 3,
+        "review_contract_version": 4,
         "config_doctor": "true",
         "claude_effort_policy": "low",
         "codex_review_hook": result_command,
@@ -566,12 +688,24 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
             + ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
             f'"$AGENT_LOOP_REVIEW_RESULT_FILE" write-result; {values[key]}'
         )
-    return _config(
+    rendered = _config(
         tmp_path,
         auto_clean_attestation=False,
         auto_committed_evidence=False,
         **values,
     )
+    commands: dict[str, str] = {}
+    for engine in ("codex", "claude"):
+        key = f"{engine}_review_hook"
+        match = re.search(rf"^{key} = (.*)$", rendered, flags=re.MULTILINE)
+        assert match is not None
+        commands[engine] = match.group(1)
+        pinned = f'{key} = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine {engine}'
+        rendered = re.sub(rf"^{key} = .*$", pinned, rendered, flags=re.MULTILINE)
+    for engine, command in commands.items():
+        encoded = base64.b64encode(command.encode()).decode()
+        rendered += f"# agent_test_{engine}_review_command_b64 = {encoded}\n"
+    return rendered
 
 
 def _v3_changed_hook() -> str:
@@ -720,7 +854,9 @@ def test_dependency_parser_failure_blocks_the_run(
     _write_executable(
         consumer[2] / "python3",
         """#!/usr/bin/env bash
-if [ "$1" = -c ]; then exit 74; fi
+for arg in "$@"; do
+    if [ "$arg" = -c ]; then exit 74; fi
+done
 exec "$AGENT_TEST_REAL_PYTHON" "$@"
 """,
     )
@@ -861,6 +997,693 @@ def test_outer_review_environment_is_not_leaked_to_worker(
         },
     )
     assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_worker_does_not_receive_the_pinned_review_launcher(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker_hook = (
+        'test -z "${AGENT_LOOP_CODEX_REVIEW_LAUNCHER:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_CODEX_ROOT:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_REPO_ROOT:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_BASE_REF:-}"; '
+        'test -z "${AGENT_LOOP_REVIEW_BIN:-}"; '
+        'test -z "${AGENT_LOOP_REVIEW_BIN_SHA256:-}"; '
+        'test -z "${CODEX_REVIEW_CLI:-}"; '
+        'test -z "${CLAUDE_REVIEW_CLI:-}"; '
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "59"],
+        issues=[_issue(59)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_drifted_config_doctor_is_not_executed(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, _, _, state_dir = consumer
+    marker = tmp_path / "mutated-config-doctor-ran"
+    doctor = repo / ".codex/skills/agent-loop/scripts/config-doctor.py"
+    _write_executable(
+        doctor,
+        f"#!/usr/bin/env bash\ntouch {marker}\nexit 0\n",
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "65"],
+        issues=[_issue(65)],
+        config=_config_v3(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert "agent-loop config doctor differs from the pinned base blob" in result.stderr
+    assert not marker.exists()
+    gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit" not in gh_log
+
+
+def test_replacement_ref_cannot_redefine_the_pinned_config_doctor(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, _, _, state_dir = consumer
+    marker = tmp_path / "replacement-config-doctor-ran"
+    doctor = repo / ".codex/skills/agent-loop/scripts/config-doctor.py"
+    _write_executable(
+        doctor,
+        f"#!/usr/bin/env bash\ntouch {marker}\nexit 0\n",
+    )
+    base_sha = _run_git(
+        "rev-parse", "refs/remotes/origin/main", cwd=repo
+    ).stdout.strip()
+    replacement_index = tmp_path / "replacement.index"
+    replacement_env = os.environ.copy()
+    replacement_env["GIT_INDEX_FILE"] = str(replacement_index)
+    subprocess.run(
+        ["git", "read-tree", base_sha],
+        cwd=repo,
+        env=replacement_env,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "add", ".codex/skills/agent-loop/scripts/config-doctor.py"],
+        cwd=repo,
+        env=replacement_env,
+        check=True,
+    )
+    replacement_tree = subprocess.run(
+        ["git", "write-tree"],
+        cwd=repo,
+        env=replacement_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    replacement_commit = subprocess.run(
+        ["git", "commit-tree", replacement_tree, "-p", base_sha, "-m", "replacement"],
+        cwd=repo,
+        env=replacement_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _run_git("replace", base_sha, replacement_commit, cwd=repo)
+
+    result = _run(
+        consumer,
+        ["--issues", "66"],
+        issues=[_issue(66)],
+        config=_config_v3(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert "agent-loop config doctor differs from the pinned base blob" in result.stderr
+    assert not marker.exists()
+    gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit" not in gh_log
+
+
+def test_worker_cannot_replace_the_base_pinned_review_launcher(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "mutated-launcher-ran"
+    worker_hook = (
+        "launcher=\"$AGENT_LOOP_PROJECT_DIR/.codex/skills/agent-loop/scripts/run-codex-review.sh\"; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$launcher\"; chmod 755 \"$launcher\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "62"],
+        issues=[_issue(62)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not marker.exists()
+
+
+def test_replacement_ref_cannot_redefine_the_pinned_review_launcher(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    """The round-time launcher pin must not resolve the base through refs/replace.
+
+    The worker owns a linked worktree of the project checkout, so it shares the
+    object store and the refs/replace namespace. Rewriting the launcher alone is
+    already refused; this covers the worker additionally pointing the pinned base
+    commit at a tree that names the rewritten blob, which would make a bare
+    `ls-tree`/`rev-parse` agree with `hash-object` on the mutated file.
+    """
+    marker = tmp_path / "replacement-launcher-ran"
+    launcher_relative = ".codex/skills/agent-loop/scripts/run-codex-review.sh"
+    worker_hook = (
+        f'launcher="$AGENT_LOOP_PROJECT_DIR/{launcher_relative}"; '
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$launcher\"; chmod 755 \"$launcher\"; "
+        'base="$(git rev-parse refs/remotes/origin/main)"; '
+        'blob="$(git hash-object -w "$launcher")"; '
+        'export GIT_INDEX_FILE="$AGENT_LOOP_LOG_DIR/replacement.index"; '
+        'git read-tree "$base"; '
+        f'git update-index --cacheinfo "100755,$blob,{launcher_relative}"; '
+        'tree="$(git write-tree)"; '
+        'commit="$(git commit-tree "$tree" -p "$base" -m replacement)"; '
+        'git replace "$base" "$commit"; '
+        'unset GIT_INDEX_FILE; '
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "67"],
+        issues=[_issue(67)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not marker.exists()
+
+
+def test_fresh_base_launcher_change_fails_the_round_time_boundary(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, _, _ = consumer
+    clone = tmp_path / "advanced-launcher-base"
+    _clone_test_repo(remote, clone)
+    launcher = clone / ".codex/skills/agent-loop/scripts/run-codex-review.sh"
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        f"printf '%s\\n' '# incompatible launcher' >> {launcher}; "
+        f'"$AGENT_LOOP_REAL_GIT" -C {clone} add .codex/skills/agent-loop/scripts/run-codex-review.sh; '
+        f'"$AGENT_LOOP_REAL_GIT" -C {clone} commit -m "test: advance launcher"; '
+        f'"$AGENT_LOOP_REAL_GIT" -C {clone} push origin main'
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "78"],
+        issues=[_issue(78)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=120,
+    )
+
+    assert result.returncode != 0
+    assert "review launcher changed after the controller compatibility preflight" in result.stderr
+
+
+def test_worker_cannot_replace_runtime_helpers_or_shadow_python_imports(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    state_marker = tmp_path / "mutated-state-helper-ran"
+    ledger_marker = tmp_path / "mutated-ledger-ran"
+    ready_marker = tmp_path / "mutated-ready-helper-ran"
+    import_marker = tmp_path / "shadowed-python-import-ran"
+    worker_hook = (
+        'state="$AGENT_LOOP_PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop-state.py"; '
+        "printf '%s\\n' '#!/usr/bin/env python3' "
+        f"'from pathlib import Path; Path(\"{state_marker}\").touch()' "
+        "'raise SystemExit(0)' > \"$state\"; chmod 755 \"$state\"; "
+        'ledger="$AGENT_LOOP_PROJECT_DIR/.codex/skills/critique/scripts/review-ledger.js"; '
+        "printf '%s\\n' "
+        f"'import {{ writeFileSync }} from \"fs\"; writeFileSync(\"{ledger_marker}\", \"\")' "
+        "'process.exit(0)' > \"$ledger\"; chmod 644 \"$ledger\"; "
+        'ready="$AGENT_LOOP_PROJECT_DIR/.codex/skills/issues/scripts/ready.py"; '
+        "printf '%s\\n' '#!/usr/bin/env python3' "
+        f"'from pathlib import Path; Path(\"{ready_marker}\").touch()' "
+        "'print(\"[]\")' > \"$ready\"; chmod 755 \"$ready\"; "
+        'shadow="$AGENT_LOOP_PROJECT_DIR/json.py"; '
+        f"printf '%s\\n' 'from pathlib import Path' 'Path(\"{import_marker}\").touch()' "
+        "> \"$shadow\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "68"],
+        issues=[_issue(68)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not state_marker.exists()
+    assert not ledger_marker.exists()
+    assert not ready_marker.exists()
+    assert not import_marker.exists()
+
+
+def test_worker_cannot_install_git_hooks_for_wrapper_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "worker-pre-push-ran"
+    hooks = tmp_path / "worker-hooks"
+    worker_hook = (
+        f"mkdir -p {hooks}; "
+        f"printf '%s\\n' '#!/usr/bin/env bash' 'touch {marker}' > {hooks}/pre-push; "
+        f"chmod 755 {hooks}/pre-push; git config core.hooksPath {hooks}; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "69"],
+        issues=[_issue(69)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+    )
+
+    assert result.returncode != 0
+    assert "hook changed trusted Git configuration" in result.stderr
+    assert not marker.exists()
+
+
+def test_worker_cannot_rewrite_preconfigured_fsmonitor_for_controller(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    project, _, _, _ = consumer
+    marker = tmp_path / "worker-fsmonitor-ran"
+    fsmonitor = tmp_path / "trusted-fsmonitor"
+    _write_executable(fsmonitor, "#!/usr/bin/env bash\nprintf '0\\n'\n")
+    _run_git("config", "core.fsmonitor", str(fsmonitor), cwd=project)
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' 'printf \"0\\\\n\"' > {fsmonitor}; "
+        f"chmod 755 {fsmonitor}"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "73"],
+        issues=[_issue(73)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not marker.exists()
+
+
+def test_worker_git_config_fifo_fails_closed_without_hanging(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fifo = tmp_path / "blocking-git-config"
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        'common="$(git rev-parse --git-common-dir)"; '
+        f"mkfifo {fifo}; printf '%s\\n' '[include]' 'path = {fifo}' >> \"$common/config\""
+    )
+
+    started = time.monotonic()
+    result = _run(
+        consumer,
+        ["--issues", "71"],
+        issues=[_issue(71)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=worker_hook,
+            worker_retries=0,
+            hook_timeout_seconds=3,
+        ),
+        timeout=35,
+    )
+
+    assert time.monotonic() - started < 30
+    assert result.returncode != 0
+    assert "hook changed trusted Git configuration" in result.stderr
+    assert "Resume review with:" not in result.stderr
+
+
+def test_worker_cannot_install_post_merge_hook_for_fresh_base_merge(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    project, remote, _, _ = consumer
+    marker = tmp_path / "worker-post-merge-ran"
+    reference_marker = tmp_path / "worker-reference-transaction-ran"
+    hooks = tmp_path / "consumer-hooks"
+    hooks.mkdir()
+    _run_git("config", "core.hooksPath", str(hooks), cwd=project)
+    clone = tmp_path / "advanced-base"
+    _clone_test_repo(remote, clone)
+    (clone / "fresh-base.txt").write_text("fresh\n", encoding="utf-8")
+    _run_git("add", "fresh-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: advance base", cwd=clone)
+    worker_hook = (
+        'hooks="$(git rev-parse --git-path hooks)"; mkdir -p "$hooks"; '
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$hooks/post-merge\"; chmod 755 \"$hooks/post-merge\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {reference_marker}' > \"$hooks/reference-transaction\"; "
+        "chmod 755 \"$hooks/reference-transaction\"; "
+        f'"$AGENT_LOOP_REAL_GIT" -C {clone} push origin main'
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "72"],
+        issues=[_issue(72)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not marker.exists()
+    assert not reference_marker.exists()
+
+
+def test_recovery_does_not_print_a_mutated_entrypoint(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "mutated-entrypoint-ran"
+    worker_hook = (
+        'entrypoint="$AGENT_LOOP_PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop.sh"; '
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$entrypoint\"; chmod 755 \"$entrypoint\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "70"],
+        issues=[_issue(70)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=worker_hook,
+            codex_review_hook="exit 72",
+        ),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+        timeout=120,
+    )
+
+    assert result.returncode != 0
+    assert "controller trust boundary changed after startup" in result.stderr
+    assert "Resume review with:" not in result.stderr
+    assert not marker.exists()
+
+
+def test_resume_rejects_git_config_drift_from_the_original_run(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, _, bin_dir, _ = consumer
+    first = _run(
+        consumer,
+        ["--issues", "73"],
+        issues=[_issue(73)],
+        config=_config_v3(tmp_path, codex_review_hook="exit 72"),
+        timeout=120,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    hooks = tmp_path / "resume-hooks"
+    hooks.mkdir()
+    _run_git("config", "core.hooksPath", str(hooks), cwd=consumer[0])
+    fetch_marker = tmp_path / "resume-fetch-ran"
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+for argument in "$@"; do
+    if [ "$argument" = fetch ]; then touch "$AGENT_FETCH_MARKER"; fi
+done
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(73, assigned=True)],
+        config=_config_v3(tmp_path),
+        extra_env={
+            "AGENT_FETCH_MARKER": str(fetch_marker),
+            "AGENT_TEST_REAL_GIT": real_git,
+        },
+    )
+
+    assert resumed.returncode != 0
+    assert "Git configuration differs from the trusted run-state boundary" in resumed.stderr
+    assert not fetch_marker.exists()
+
+
+def test_resume_rejects_distinct_controller_worktree_config_drift(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    project, _, _, _ = consumer
+    _run_git("config", "extensions.worktreeConfig", "true", cwd=project)
+    _run_git("config", "--worktree", "core.fsmonitor", "false", cwd=project)
+    first = _run(
+        consumer,
+        ["--issues", "74"],
+        issues=[_issue(74)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook="exit 72",
+        ),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(project)},
+        timeout=120,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    with (project / ".git/config.worktree").open("a", encoding="utf-8") as handle:
+        handle.write("[core]\nfsmonitor = false\n")
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(74, assigned=True)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(project)},
+    )
+
+    assert resumed.returncode != 0
+    assert "Git configuration differs from the trusted run-state boundary" in resumed.stderr
+
+
+def test_worker_cannot_change_distinct_controller_worktree_config(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    project, remote, _, _ = consumer
+    _run_git("config", "extensions.worktreeConfig", "true", cwd=project)
+    _run_git("config", "--worktree", "core.fsmonitor", "false", cwd=project)
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        "printf '%s\\n' '[core]' 'fsmonitor = false' "
+        '>> "$AGENT_LOOP_PROJECT_DIR/.git/config.worktree"'
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "75"],
+        issues=[_issue(75)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(project)},
+        timeout=120,
+    )
+
+    assert result.returncode != 0
+    assert "Controller Git configuration changed after trusted setup" in result.stderr
+    assert "issue-75" not in _agent_loop_branches(remote)
+
+
+def test_worker_cannot_plant_extra_hook_command_guards(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "planted-guard-ran"
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' 'exit 99' "
+        '> "$AGENT_LOOP_HOOK_GUARD_BIN/python3"; '
+        'chmod 700 "$AGENT_LOOP_HOOK_GUARD_BIN/python3"'
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "76"],
+        issues=[_issue(76)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+    )
+
+    # The guard directory is prepended to PATH, so a planted `python3` would
+    # otherwise shadow the controller's own supervisor launch in the next hook.
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not marker.exists()
+    assert "unexpected entries" not in result.stderr
+
+
+def test_worker_cannot_replace_the_pinned_review_push_helper(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "mutated-review-push-ran"
+    worker_hook = (
+        "helper=\"$AGENT_LOOP_PROJECT_DIR/.codex/skills/agent-loop/scripts/review-push.sh\"; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$helper\"; chmod 755 \"$helper\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "63"],
+        issues=[_issue(63)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+    )
+
+    assert result.returncode != 0
+    assert "review push helper changed after startup" in result.stderr
+    assert not marker.exists()
+
+
+def test_worker_descendants_cannot_race_trusted_review_tools(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "raced-review-tool-ran"
+    watcher_pid = tmp_path / "watcher.pid"
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        'trusted="$AGENT_LOOP_LOG_DIR/trusted-review-tools/review-push.sh"; '
+        'guards="$AGENT_LOOP_LOG_DIR/hook-command-guards"; '
+        "(while :; do for target in \"$trusted\" \"$guards/git\" \"$guards/gh\"; do "
+        "if [ -e \"$target\" ]; then printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' 'exit 99' > \"$target\"; chmod 700 \"$target\"; fi; "
+        "done; sleep 0.01; done) >/dev/null 2>&1 & "
+        f"printf '%s\\n' $! > {watcher_pid}"
+    )
+    validation_hook = (
+        '[ -z "${AGENT_LOOP_REVIEW_PUSH_HELPER+x}" ] || '
+        "{ echo 'review helper leaked into validation' >&2; exit 1; }"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "64"],
+        issues=[_issue(64)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=worker_hook,
+            validation_hook=validation_hook,
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert watcher_pid.exists()
+    assert not Path(f"/proc/{watcher_pid.read_text(encoding='utf-8').strip()}").exists()
+    assert not marker.exists()
+
+
+def test_later_worker_does_not_inherit_review_only_state(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker_hook = (
+        'test -z "${AGENT_LOOP_CODEX_REVIEW_LAUNCHER:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_REPO_ROOT:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_BASE_REF:-}"; '
+        'test -z "${AGENT_LOOP_REVIEW_BIN:-}"; '
+        'test -z "${AGENT_LOOP_REVIEW_BIN_SHA256:-}"; '
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "59,60", "--iterations", "2"],
+        issues=[_issue(59), _issue(60)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_contract_v4_wrapper_uses_the_real_launcher_for_both_reviewers(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, _, bin_dir, _ = consumer
+    trusted_files = (
+        ".codex/REVIEW_WORKFLOW.md",
+        ".codex/references/local-review-ledger.md",
+        ".codex/skills/deepcritique/SKILL.md",
+        ".codex/skills/critique/SKILL.md",
+        ".codex/skills/critique/scripts/review-ledger.js",
+        ".codex/skills/refactorpass/SKILL.md",
+        ".codex/skills/agent-loop/scripts/run-codex-review.sh",
+    )
+    for relative in trusted_files:
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+    for relative in (
+        ".claude/REVIEW_WORKFLOW.md",
+        ".claude/references/local-review-ledger.md",
+        ".claude/skills/deepcritique/SKILL.md",
+        ".claude/skills/critique/SKILL.md",
+        ".claude/skills/refactorpass/SKILL.md",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# Trusted Claude review fixture\n", encoding="utf-8")
+    claude_ledger_dir = repo / ".claude/skills/critique/scripts"
+    claude_ledger_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        REPO_ROOT / ".codex/skills/critique/scripts/package.json", claude_ledger_dir
+    )
+    shutil.copy2(
+        REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.js",
+        claude_ledger_dir,
+    )
+    (repo / "AGENTS.md").write_text("# Trusted repository instructions\n", encoding="utf-8")
+    _run_git("add", ".", cwd=repo)
+    _run_git("commit", "-m", "test: install trusted review surfaces", cwd=repo)
+    _run_git("push", "origin", "main", cwd=repo)
+
+    reviewer = """#!/usr/bin/env python3
+import json, os, pathlib, sys
+engine = os.environ['AGENT_LOOP_REVIEW_ENGINE']
+with pathlib.Path(os.environ['REVIEW_INVOCATIONS']).open('a', encoding='utf-8') as stream:
+    stream.write(json.dumps({'engine': engine, 'base': os.environ['AGENT_LOOP_REVIEW_BASE_SHA'], 'head': os.environ['AGENT_LOOP_PR_HEAD_SHA'], 'argv': sys.argv[1:]}) + '\\n')
+head = os.environ['AGENT_LOOP_PR_HEAD_SHA']
+pathlib.Path(os.environ['AGENT_LOOP_REVIEW_RESULT_FILE']).write_text(json.dumps({'version': 3, 'status': 'clean', 'engine': engine, 'round': int(os.environ['AGENT_LOOP_REVIEW_ROUND']), 'baseSha': os.environ['AGENT_LOOP_REVIEW_BASE_SHA'], 'beforeSha': head, 'afterSha': head, 'classification': None, 'findingFingerprints': [], 'finalLaneComplete': True}), encoding='utf-8')
+    """
+    _write_executable(bin_dir / "codex", reviewer)
+    _write_executable(bin_dir / "claude", reviewer)
+    (bin_dir / "package.json").write_text("{}\n", encoding="utf-8")
+    invocations = tmp_path / "review-invocations.jsonl"
+    result = _run(
+        consumer,
+        ["--issues", "61"],
+        issues=[_issue(61)],
+        config=_config_v3(tmp_path),
+        extra_env={"REVIEW_INVOCATIONS": str(invocations)},
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    rows = [json.loads(line) for line in invocations.read_text(encoding="utf-8").splitlines()]
+    assert [row["engine"] for row in rows] == ["codex", "claude"]
+    assert rows[0]["base"] == rows[1]["base"]
+    assert rows[0]["head"] == rows[1]["head"]
+    assert rows[0]["argv"][:2] == ["exec", "--dangerously-bypass-approvals-and-sandbox"]
+    assert rows[1]["argv"][:2] == ["--effort", "low"]
 
 
 def test_ambient_gh_repo_is_replaced_with_checkout_repository(
@@ -1851,6 +2674,9 @@ def test_uncertain_finalized_checkpoint_restores_resumable_finalizing_state(
     print(json.dumps(value, sort_keys=True))"""
     assert needle in source
     helper.write_text(source.replace(needle, replacement), encoding="utf-8")
+    _run_git("add", str(helper.relative_to(consumer[0])), cwd=consumer[0])
+    _run_git("commit", "-m", "test: pin finalized checkpoint fault", cwd=consumer[0])
+    _run_git("push", "origin", "main", cwd=consumer[0])
 
     first = _run(
         consumer,
@@ -1926,7 +2752,8 @@ def test_interrupted_ready_finalization_restarts_from_draft_after_head_drift(
     (worktree / "post-finalizing.txt").write_text("new head\n", encoding="utf-8")
     _run_git("add", "post-finalizing.txt", cwd=worktree)
     _run_git("commit", "-m", "fix: move ready head", cwd=worktree)
-    _run_git("push", cwd=worktree)
+    branch = _run_git("branch", "--show-current", cwd=worktree).stdout.strip()
+    _run_git("push", "origin", f"HEAD:refs/heads/{branch}", cwd=worktree)
 
     second = _run(
         consumer,
@@ -2087,31 +2914,31 @@ def test_v3_auto_policy_is_required_before_claim(
 
 
 @pytest.mark.parametrize(
-    ("missing_token", "expected_error"),
+    ("hook_key", "engine", "replacement"),
     [
-        ("AGENT_LOOP_REVIEW_PUSH_HELPER", "must use AGENT_LOOP_REVIEW_PUSH_HELPER"),
-        ("AGENT_LOOP_REVIEW_RESULT_FILE", "must write AGENT_LOOP_REVIEW_RESULT_FILE"),
-        ("write-result", "must use review-ledger.js write-result"),
+        ("codex_review_hook", "codex", '"$OTHER_LAUNCHER" --engine codex'),
+        ("claude_review_hook", "claude", '"$OTHER_LAUNCHER" --engine claude'),
+        (
+            "codex_review_hook",
+            "codex",
+            '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude',
+        ),
     ],
 )
-def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
+def test_v4_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
     consumer: tuple[Path, Path, Path, Path],
     tmp_path: Path,
-    missing_token: str,
-    expected_error: str,
+    hook_key: str,
+    engine: str,
+    replacement: str,
 ) -> None:
-    complete = (
-        ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
-        '"$AGENT_LOOP_REVIEW_RESULT_FILE" write-result'
+    expected = (
+        f'{hook_key} = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine {engine}'
     )
-    config = _config(
-        tmp_path,
-        review_contract_version=3,
-        config_doctor="false",
-        codex_review_hook=complete,
-        claude_review_hook=complete,
+    config = _config_v3(tmp_path).replace(
+        "config_doctor = true", "config_doctor = false"
     )
-    config = config.replace(missing_token, "missing")
+    config = config.replace(expected, f"{hook_key} = {replacement}")
 
     result = _run(
         consumer,
@@ -2121,7 +2948,7 @@ def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
     )
 
     assert result.returncode != 0
-    assert expected_error in result.stderr
+    assert f"{hook_key} must use the dedicated contract-v4 review launcher" in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
@@ -2149,11 +2976,16 @@ def test_incorrect_reviewer_hook_is_rejected_before_claim(
     hook_key: str,
     hook_value: str,
 ) -> None:
+    engine = hook_key.removesuffix("_review_hook")
+    expected = (
+        f'{hook_key} = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine {engine}'
+    )
+    config = _config_v3(tmp_path).replace(expected, f"{hook_key} = {hook_value}")
     result = _run(
         consumer,
         ["--issues", "20"],
         issues=[_issue(20)],
-        config=_config_v3(tmp_path, **{hook_key: hook_value}),
+        config=config,
     )
     assert result.returncode != 0
     assert f"{hook_key} names an incorrect reviewer skill" in result.stderr
@@ -2170,7 +3002,7 @@ def test_grill_substring_in_unrelated_hook_path_is_not_rejected(
         consumer,
         ["--issues", "20"],
         issues=[_issue(20)],
-        config=_config_v3(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
+        config=_config(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
     )
     assert "names an incorrect reviewer skill" not in result.stderr
     # Absence of the message alone would also hold if the run died earlier for
@@ -2284,7 +3116,7 @@ def test_v3_finalization_reuses_sealed_pseudo_v3_history(
     assert all("local-review-pass:v3" in row["body"] for row in comments)
 
 
-def test_v3_review_hook_cannot_self_authorize_direct_push(
+def test_structured_review_hook_cannot_self_authorize_direct_push(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     clean_result = (
@@ -2313,7 +3145,7 @@ def test_v3_review_hook_cannot_self_authorize_direct_push(
 
     assert result.returncode == 0, result.stderr + result.stdout
     rejection = (consumer[3] / "direct-v3-push.stderr").read_text(encoding="utf-8")
-    assert "contract-v3 review hooks must publish" in rejection
+    assert "structured review hooks must publish" in rejection
     branch = _agent_loop_branches(consumer[1]).strip()
     assert "issue-91" in branch
     assert (
@@ -2938,7 +3770,7 @@ def test_hook_origin_url_change_blocks_publication(
         extra_env={"REDIRECTED_REMOTE": str(redirected)},
     )
     assert result.returncode != 0
-    assert "hook changed origin fetch/push identity" in result.stderr
+    assert "Git configuration changed after trusted setup" in result.stderr
     assert "issue-41" not in _agent_loop_branches(remote)
     assert "issue-41" not in _agent_loop_branches(redirected)
 
@@ -2963,7 +3795,7 @@ def test_hook_origin_fetch_url_change_blocks_publication(
         extra_env={"REDIRECTED_REMOTE": str(redirected)},
     )
     assert result.returncode != 0
-    assert "hook changed origin fetch/push identity" in result.stderr
+    assert "Git configuration changed after trusted setup" in result.stderr
     assert "issue-58" not in _agent_loop_branches(remote)
 
 
@@ -2976,7 +3808,7 @@ def test_post_review_git_status_failure_blocks_publication(
     _write_executable(
         bin_dir / "git",
         """#!/usr/bin/env bash
-if [ "$1" = status ]; then
+if [[ " $* " == *" status "* ]]; then
     count_file="$AGENT_STATE_DIR/status-count"
     count=$(($(cat "$count_file" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$count" > "$count_file"
@@ -3455,7 +4287,7 @@ def test_remote_branch_rewrite_after_push_blocks_pr_creation(
         """#!/usr/bin/env bash
 "$AGENT_TEST_REAL_GIT" "$@"
 status=$?
-if [ "$status" -eq 0 ] && [ "${1:-}" = push ] && \
+if [ "$status" -eq 0 ] && [[ " $* " == *" push "* ]] && \
    [[ " $* " == *" --force-with-lease="* ]] && \
    [ ! -e "$AGENT_STATE_DIR/remote-branch-rewritten" ]; then
     "$AGENT_TEST_REAL_GIT" --git-dir="$AGENT_TEST_REMOTE" update-ref \
@@ -4134,7 +4966,7 @@ def test_issue_branch_has_no_upstream_during_worker(
         f"refs/heads/{branch}",
         cwd=consumer[0],
     ).stdout.strip()
-    assert upstream == f"origin/{branch}"
+    assert upstream == ""
     assert (
         _run_git("rev-parse", branch, cwd=consumer[0]).stdout.strip()
         == _run_git("rev-parse", branch, cwd=consumer[1]).stdout.strip()
@@ -4274,6 +5106,8 @@ def test_batch_resume_rejects_a_child_checkpoint_for_another_issue(
 def test_batch_iteration_cap_pauses_cleanly_and_only_one_resume_process_owns_it(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
+    _run_git("config", "extensions.worktreeConfig", "true", cwd=consumer[0])
+    _run_git("config", "--worktree", "core.fsmonitor", "false", cwd=consumer[0])
     first = _run(
         consumer,
         ["--issues", "72,73", "--iterations", "1"],
@@ -4353,6 +5187,8 @@ def test_batch_cursor_issue_cannot_be_skipped_for_a_later_ready_issue(
             "python3", str(helper), "batch-create", "--file", str(batch_file),
             "--run-id", "manual", "--repo", "fixture/consumer",
             "--base-branch", "main", "--issues", "74,75",
+            "--project-dir", str(consumer[0]),
+            "--git-config-sha256", _git_config_sha256(consumer[0]),
         ],
         capture_output=True,
         text=True,
@@ -4368,15 +5204,116 @@ def test_batch_cursor_issue_cannot_be_skipped_for_a_later_ready_issue(
     )
     assert result.returncode != 0
     assert "Ordered batch cursor issue #74 is not ready" in result.stderr
+    assert "cat-file blob" in result.stderr
     assert (
-        f"batch-update --file '{batch_file}' --issue '74' "
-        "--expected-status 'pending' --status bailed"
+        f"batch-update --file {batch_file} --issue 74 "
+        "--expected-status pending --status bailed"
     ) in result.stderr
     assert "issue-74" not in _agent_loop_branches(consumer[1])
     assert "issue-75" not in _agent_loop_branches(consumer[1])
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
     assert batch["cursor"] == 0
     assert [row["status"] for row in batch["issues"]] == ["pending", "pending"]
+
+
+def test_batch_resume_rejects_a_different_project_checkout(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, _, bin_dir, _ = consumer
+    batch_file = tmp_path / "logs/wrong-project-batch.json"
+    helper = consumer[0] / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
+    created = subprocess.run(
+        [
+            "python3", str(helper), "batch-create", "--file", str(batch_file),
+            "--run-id", "wrong-project", "--repo", "fixture/consumer",
+            "--base-branch", "main", "--issues", "76",
+            "--project-dir", str(tmp_path / "different-checkout"),
+            "--git-config-sha256", _git_config_sha256(consumer[0]),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    fetch_marker = tmp_path / "batch-resume-fetch-ran"
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+for argument in "$@"; do
+    if [ "$argument" = fetch ]; then touch "$AGENT_FETCH_MARKER"; fi
+done
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
+
+    result = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(76)],
+        config=_config_v3(tmp_path),
+        extra_env={
+            "AGENT_FETCH_MARKER": str(fetch_marker),
+            "AGENT_TEST_REAL_GIT": real_git,
+        },
+    )
+
+    assert result.returncode != 0
+    assert "Git configuration differs from the trusted batch-state boundary" in result.stderr
+    assert "issue edit 76 --add-assignee @me" not in (
+        consumer[3] / "gh.log"
+    ).read_text(encoding="utf-8")
+    assert not fetch_marker.exists()
+
+
+def test_batch_resume_rejects_a_different_base_before_fetch(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    project, _, bin_dir, _ = consumer
+    _run_git("push", "origin", "main:other", cwd=project)
+    batch_file = tmp_path / "logs/wrong-base-batch.json"
+    helper = project / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
+    created = subprocess.run(
+        [
+            "python3", str(helper), "batch-create", "--file", str(batch_file),
+            "--run-id", "wrong-base", "--repo", "fixture/consumer",
+            "--base-branch", "main", "--issues", "77",
+            "--project-dir", str(project),
+            "--git-config-sha256", _git_config_sha256(project),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    fetch_marker = tmp_path / "batch-base-fetch-ran"
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+for argument in "$@"; do
+    if [ "$argument" = fetch ]; then touch "$AGENT_FETCH_MARKER"; fi
+done
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
+
+    result = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(77)],
+        config=_config_v3(tmp_path, base_branch="other"),
+        extra_env={
+            "AGENT_FETCH_MARKER": str(fetch_marker),
+            "AGENT_TEST_REAL_GIT": real_git,
+        },
+    )
+
+    assert result.returncode != 0
+    assert "batch state base branch mismatch" in result.stderr
+    assert not fetch_marker.exists()
 
 
 def test_batch_resume_rejects_contract_v2_before_state_mutation(
@@ -4415,7 +5352,7 @@ def test_batch_resume_rejects_contract_v2_before_state_mutation(
     )
 
     assert result.returncode != 0
-    assert "--resume-batch requires review_contract_version = 3" in result.stderr
+    assert "--resume-batch requires review_contract_version = 3 or 4" in result.stderr
     assert batch_file.read_bytes() == before
 
 
@@ -4429,6 +5366,8 @@ def test_dependency_blocked_batch_cursor_prints_pending_bail_command(
             "python3", str(helper), "batch-create", "--file", str(batch_file),
             "--run-id", "dependency", "--repo", "fixture/consumer",
             "--base-branch", "main", "--issues", "78,79",
+            "--project-dir", str(consumer[0]),
+            "--git-config-sha256", _git_config_sha256(consumer[0]),
         ],
         capture_output=True,
         text=True,
@@ -4445,9 +5384,10 @@ def test_dependency_blocked_batch_cursor_prints_pending_bail_command(
     )
     assert result.returncode != 0
     assert "Ordered batch stopped at dependency-blocked issue #78" in result.stderr
+    assert "cat-file blob" in result.stderr
     assert (
-        f"batch-update --file '{batch_file}' --issue '78' "
-        "--expected-status 'pending' --status bailed"
+        f"batch-update --file {batch_file} --issue 78 "
+        "--expected-status pending --status bailed"
     ) in result.stderr
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
     assert batch["cursor"] == 0
@@ -4462,10 +5402,14 @@ def test_batch_advances_cursor_and_preserves_leaked_worktree_when_cleanup_fails(
     _write_executable(
         consumer[2] / "git",
         """#!/usr/bin/env bash
-if [ "$1" = worktree ] && [ "$2" = remove ] && [ ! -e "$AGENT_STATE_DIR/cleanup-failed" ]; then
-    touch "$AGENT_STATE_DIR/cleanup-failed"
-    exit 75
-fi
+previous=""
+for argument in "$@"; do
+    if [ "$previous" = worktree ] && [ "$argument" = remove ] && [ ! -e "$AGENT_STATE_DIR/cleanup-failed" ]; then
+        touch "$AGENT_STATE_DIR/cleanup-failed"
+        exit 75
+    fi
+    previous="$argument"
+done
 exec "$AGENT_TEST_REAL_GIT" "$@"
 """,
     )
@@ -4511,6 +5455,7 @@ def test_missing_default_codex_fails_before_claim(
     no_codex_bin.mkdir()
     for command in (
         "bash",
+        "awk",
         "dirname",
         "flock",
         "git",
@@ -4518,6 +5463,7 @@ def test_missing_default_codex_fails_before_claim(
         "node",
         "python3",
         "realpath",
+        "sha256sum",
         "timeout",
     ):
         executable = shutil.which(command)
@@ -4592,3 +5538,74 @@ def test_persistent_logs_are_owner_only(
     assert stat.S_IMODE(log_dirs[0].stat().st_mode) == 0o700
     for log_file in log_dirs[0].iterdir():
         assert stat.S_IMODE(log_file.stat().st_mode) & 0o077 == 0
+
+
+def _reviewer_install_root(tmp_path: Path, binary: Path) -> str:
+    """Invoke `reviewer_install_root` from agent-loop.sh in isolation."""
+    source = AGENT_LOOP.read_text(encoding="utf-8")
+    start = source.index("reviewer_install_root() {")
+    end = source.index("\n}\n", start) + len("\n}\n")
+    snippet = tmp_path / "reviewer_install_root.sh"
+    snippet.write_text(source[start:end], encoding="utf-8")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'set -euo pipefail; source "{snippet}"; reviewer_install_root "{binary}"',
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def test_reviewer_install_root_covers_the_npm_package_for_either_engine(
+    tmp_path: Path,
+) -> None:
+    """An npm-layout reviewer must pin the package, not just its entry file.
+
+    Both engines resolve through this helper. Pinning the entry file alone
+    leaves every sibling module it imports at runtime unattested, and the
+    install digest collapses to a second hash of the binary that the reviewer
+    binary pin already covers.
+    """
+    package = tmp_path / "node_modules/@vendor/reviewer"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text("{}\n", encoding="utf-8")
+    entry = package / "bin/reviewer"
+    entry.write_text("#!/bin/sh\n", encoding="utf-8")
+    entry.chmod(0o755)
+    (package / "sdk.mjs").write_text("export const x = 1;\n", encoding="utf-8")
+
+    assert _reviewer_install_root(tmp_path, entry) == str(package.resolve())
+    root_entry = package / "cli.js"
+    root_entry.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    root_entry.chmod(0o755)
+    assert _reviewer_install_root(tmp_path, root_entry) == str(package.resolve())
+
+
+def test_reviewer_install_root_keeps_a_self_contained_binary(tmp_path: Path) -> None:
+    """A native launcher has no package layout, so it is its own surface."""
+    native_dir = tmp_path / "versions"
+    native_dir.mkdir()
+    native = native_dir / "reviewer"
+    shutil.copy2("/bin/true", native)
+
+    assert _reviewer_install_root(tmp_path, native) == str(native)
+
+
+def test_reviewer_install_root_ignores_a_symlinked_package_manifest(
+    tmp_path: Path,
+) -> None:
+    """A symlinked manifest must not widen the attested surface."""
+    package = tmp_path / "pkg"
+    (package / "bin").mkdir(parents=True)
+    (tmp_path / "outside.json").write_text("{}\n", encoding="utf-8")
+    (package / "package.json").symlink_to(tmp_path / "outside.json")
+    entry = package / "bin/reviewer"
+    entry.write_text("#!/bin/sh\n", encoding="utf-8")
+    entry.chmod(0o755)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _reviewer_install_root(tmp_path, entry)

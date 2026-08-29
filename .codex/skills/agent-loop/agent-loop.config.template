@@ -16,27 +16,30 @@ validation_hook =
 
 # Required acknowledgement of the current review-hook contract. Existing
 # consumer configs must migrate the hooks below before adding this marker.
-review_contract_version = 3
+review_contract_version = 4
 config_doctor = true
-# Required for contract-v3 auto mode. The doctor rejects any Claude hook whose
-# effort options are not exactly one literal `--effort low`.
+# Required for contract-v4 auto mode. The pinned launcher owns Claude's `low`
+# effort policy; the doctor verifies the launcher's contract query.
 claude_effort_policy = low
 
-# Both review hooks are required. The wrapper runs Codex first, then Claude, and
+# Contract v4 pins both review hooks to the upstream-owned trusted launcher. The
+# wrapper runs Codex first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
-# Codex-then-Claude round with no material fixes. The Codex hook must run
-# `deepcritique`; the Claude hook must run `deepcritique`.
+# Codex-then-Claude round with no material fixes. The launcher runs each engine
+# from an empty session root, materializes engine-native guidance from immutable
+# base-commit blobs, and exposes the issue worktree only as the review target.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
 # commit it, call `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply with the fix and validation, resolve the
 # thread, and fail if any valid finding or local-review thread remains. Hooks
-# may use `gh` only for that draft PR review contract; direct `git push` is rejected. They must
+# may use `gh` only for that draft PR review contract; the cooperative command
+# guard rejects direct `git push`, but is not same-UID or credential isolation. They must
 # not mutate the base branch, other issues/PRs, or invoke hosted reviewers.
 # Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
 # round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
-# ref. The wrapper validates exit status and Git state but cannot prove which
-# engine an arbitrary command launches; these commands own that guarantee.
+# ref. The wrapper rejects consumer hook overrides so this review-routing
+# contract cannot be configured away.
 # Hooks also receive `$AGENT_LOOP_PR_NUMBER`, `$AGENT_LOOP_PR_URL`, and
 # `$AGENT_LOOP_PR_HEAD_SHA`. The last value is the exact head at pass start.
 # Every successfully completed clean or changed hook must call `review-ledger.js
@@ -49,8 +52,8 @@ claude_effort_policy = low
 # transaction, but never post pass/completion markers; the wrapper validates the
 # result and posts those attestations. Later hooks and final validation must not
 # create, remove, or alter an accepted result file.
-claude_review_hook =
-codex_review_hook =
+claude_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude
+codex_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex
 review_max_rounds = 4
 
 # Optional worker override. When empty, the wrapper runs `codex exec` with the

@@ -60,6 +60,13 @@ the launcher owns those settings and pins literal `--effort low`. Do not set
 `CLAUDE_REVIEW_CLI` outside launcher tests. A missing, incompatible, or failed
 launcher is a blocker, not permission to fall back to the raw CLI.
 
+The contract-v4 `agent-loop` is the sole exception: its wrapper directly
+invokes the separately tested
+`.codex/skills/agent-loop/scripts/run-codex-review.sh`, which starts Claude with
+the same pinned effort, permission, persistence, and output policy against an
+immutable base-blob `.claude` snapshot. Interactive review and every
+non-agent-loop caller continue to use `run-claude-review.sh` only.
+
 ### Select the local session mode
 
 The local relay has two explicit session modes. A consumer may declare a default;
@@ -177,7 +184,7 @@ required non-mutating validation hook plus `review_max_rounds`,
 `codex_review_hook`, and `claude_review_hook`. It still encodes a fixed
 Codex-then-Claude order and a position-based restart rather than the head rule
 above; that is deliberate for now, and the roster and head-exact rules do not
-yet reach it. Under contract v3 every hook writes a structured clean,
+yet reach it. Under contract v3 and v4 every hook writes a structured clean,
 changed, or blocked result to `$AGENT_LOOP_REVIEW_RESULT_FILE`. The wrapper
 validates that result against observed Git state and the v3 ledger, then posts
 the canonical pass/completion attestation itself. It opens a draft PR before
@@ -187,9 +194,10 @@ aligned. Consumer hooks own semantic finding verification, deterministic inline
 posting and disposition, and classification; they must fail or return blocked
 if a valid finding or undisposed local-review thread remains.
 
-An automated wrapper must make its mode explicit. Contract-v3 auto mode requires
-`config_doctor = true` and `claude_effort_policy = low`; the doctor requires
-exactly one literal `--effort low` option in the Claude hook before selection or
+An automated wrapper must make its mode explicit. Contract-v3/v4 auto mode requires
+`config_doctor = true` and `claude_effort_policy = low`; for v3 the doctor
+requires exactly one literal `--effort low` option in the Claude hook, while for
+v4 it verifies the pinned launcher's effort-policy query before selection or
 claim. Handoff mode stops after each nonterminal engine leg and uses the same
 PR-comment protocol as an interactive review.
 
