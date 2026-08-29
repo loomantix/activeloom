@@ -62,14 +62,32 @@ def test_supervisor_self_test() -> None:
     assert result.stdout.strip() == "linux-subreaper-v1"
 
 
-def test_descendant_enumeration_fails_closed_on_malformed_stat(tmp_path: Path) -> None:
+def test_descendant_enumeration_fails_closed_on_malformed_children(
+    tmp_path: Path,
+) -> None:
     supervisor = _load_supervisor()
-    process = tmp_path / "123"
-    process.mkdir()
-    (process / "stat").write_text("malformed\n", encoding="utf-8")
+    root_task = tmp_path / "1/task/1"
+    child_task = tmp_path / "123/task/123"
+    root_task.mkdir(parents=True)
+    child_task.mkdir(parents=True)
+    (root_task / "children").write_text("123\n", encoding="utf-8")
+    (child_task / "children").write_text("malformed\n", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="could not reliably inspect process 123"):
+    with pytest.raises(
+        RuntimeError, match="could not reliably inspect children of owned process 123"
+    ):
         supervisor._descendants(1, tmp_path)
+
+
+def test_descendant_enumeration_ignores_unrelated_proc_entries(tmp_path: Path) -> None:
+    supervisor = _load_supervisor()
+    root_task = tmp_path / "1/task/1"
+    root_task.mkdir(parents=True)
+    (root_task / "children").write_text("\n", encoding="utf-8")
+    unrelated = tmp_path / "999"
+    unrelated.mkdir()
+
+    assert supervisor._descendants(1, tmp_path) == set()
 
 
 def test_supervisor_kills_double_forked_session(tmp_path: Path) -> None:

@@ -30,31 +30,37 @@ def _become_subreaper() -> None:
         raise OSError(error, os.strerror(error))
 
 
-def _descendants(root_pid: int, proc_root: Path = Path("/proc")) -> set[int]:
-    parents: dict[int, int] = {}
-    for entry in proc_root.iterdir():
-        if not entry.name.isdigit():
+def _direct_children(pid: int, proc_root: Path) -> set[int]:
+    children: set[int] = set()
+    task_root = proc_root / str(pid) / "task"
+    try:
+        tasks = list(task_root.iterdir())
+    except (FileNotFoundError, ProcessLookupError):
+        return children
+    except PermissionError as error:
+        raise RuntimeError(f"could not inspect tasks for owned process {pid}") from error
+    for task in tasks:
+        if not task.name.isdigit():
             continue
         try:
-            # The comm field can contain spaces and parentheses; PPID follows its
-            # final closing parenthesis in /proc/<pid>/stat.
-            fields = (
-                entry.joinpath("stat")
-                .read_text(encoding="utf-8")
-                .rsplit(")", 1)[1]
-                .split()
-            )
-            parents[int(entry.name)] = int(fields[1])
+            values = task.joinpath("children").read_text(encoding="utf-8").split()
+            children.update(int(value) for value in values)
         except (FileNotFoundError, ProcessLookupError):
             continue
-        except (IndexError, PermissionError, ValueError) as error:
+        except (PermissionError, ValueError) as error:
             raise RuntimeError(
-                f"could not reliably inspect process {entry.name}"
+                f"could not reliably inspect children of owned process {pid}"
             ) from error
+    return children
+
+
+def _descendants(root_pid: int, proc_root: Path = Path("/proc")) -> set[int]:
     found: set[int] = set()
     frontier = {root_pid}
     while frontier:
-        children = {pid for pid, parent in parents.items() if parent in frontier}
+        children: set[int] = set()
+        for pid in frontier:
+            children.update(_direct_children(pid, proc_root))
         children -= found
         if not children:
             break
@@ -105,6 +111,7 @@ def main() -> int:
     args = parser.parse_args()
     _become_subreaper()
     if args.self_test:
+        _descendants(os.getpid())
         print("linux-subreaper-v1")
         return 0
     command = args.command
