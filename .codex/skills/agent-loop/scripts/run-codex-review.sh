@@ -138,21 +138,20 @@ materialize_record() {
     if [ "$mode" = 100755 ]; then chmod 700 "$destination"; else chmod 600 "$destination"; fi
 }
 
-materialize_prefix() {
-    local prefix="$1" manifest="$launch_root/tree-$RANDOM"
-    trusted_git ls-tree -r -z "$AGENT_LOOP_REVIEW_BASE_SHA" -- "$prefix" > "$manifest"
-    while IFS= read -r -d '' record; do materialize_record "$record"; done < "$manifest"
-}
-
 engine_surface=.codex
 [ "$engine" = claude ] && engine_surface=.claude
-materialize_prefix "$engine_surface"
-instruction_manifest="$launch_root/tree-instructions"
-trusted_git ls-tree -r -z "$AGENT_LOOP_REVIEW_BASE_SHA" > "$instruction_manifest"
+# One walk of the pinned tree feeds both selections: the engine-native surface and
+# every applicable instruction file. Two walks materialized the instruction files
+# under the engine surface twice.
+base_manifest="$launch_root/tree-base"
+trusted_git ls-tree -r -z "$AGENT_LOOP_REVIEW_BASE_SHA" > "$base_manifest"
 while IFS= read -r -d '' record; do
-    instruction_path="${record#*$'\t'}"
-    case "$instruction_path" in AGENTS.md|CLAUDE.md|*/AGENTS.md|*/CLAUDE.md) materialize_record "$record" ;; esac
-done < "$instruction_manifest"
+    entry_path="${record#*$'\t'}"
+    case "$entry_path" in
+        "$engine_surface"|"$engine_surface"/*|AGENTS.md|CLAUDE.md|*/AGENTS.md|*/CLAUDE.md)
+            materialize_record "$record" ;;
+    esac
+done < "$base_manifest"
 
 trusted_root="$snapshot/$engine_surface"
 if [ "$engine" = codex ]; then

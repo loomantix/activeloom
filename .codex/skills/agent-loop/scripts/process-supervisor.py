@@ -80,22 +80,15 @@ def _reap() -> None:
 
 
 def _cleanup(root_pid: int, grace_seconds: float) -> None:
-    deadline = time.monotonic() + grace_seconds
-    while time.monotonic() < deadline:
-        if not _signal_descendants(root_pid, signal.SIGTERM):
+    for sig, budget in ((signal.SIGTERM, grace_seconds), (signal.SIGKILL, 1.0)):
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            if not _signal_descendants(root_pid, sig):
+                _reap()
+                if not _descendants(root_pid):
+                    return
             _reap()
-            if not _descendants(root_pid):
-                return
-        _reap()
-        time.sleep(0.025)
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline:
-        if not _signal_descendants(root_pid, signal.SIGKILL):
-            _reap()
-            if not _descendants(root_pid):
-                return
-        _reap()
-        time.sleep(0.025)
+            time.sleep(0.025)
     raise RuntimeError("hook descendants survived forced cleanup")
 
 
@@ -137,6 +130,7 @@ def main() -> int:
     }
     child: subprocess.Popen[bytes] | None = None
     timed_out = False
+    return_code = 0
     try:
         child = subprocess.Popen(command, start_new_session=True)
         try:
@@ -155,9 +149,7 @@ def main() -> int:
                 except ProcessLookupError:
                     pass
                 child.wait()
-            return_code = 124
-    except TerminationRequested as interrupted:
-        return_code = 128 + interrupted.signum
+    except TerminationRequested:
         if child is not None and child.poll() is None:
             try:
                 os.killpg(child.pid, signal.SIGTERM)

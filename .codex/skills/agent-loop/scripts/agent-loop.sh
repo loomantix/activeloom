@@ -151,7 +151,6 @@ ISSUES_READY="$PACKAGED_SKILL_BASE/issues/scripts/ready.py"
 REVIEW_LEDGER="$PACKAGED_SKILL_BASE/critique/scripts/review-ledger.js"
 RUN_STATE_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/agent-loop-state.py"
 REVIEW_PUSH_HELPER_SOURCE="$PACKAGED_SKILL_BASE/agent-loop/scripts/review-push.sh"
-REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER_SOURCE"
 PROCESS_SUPERVISOR="$PACKAGED_SKILL_BASE/agent-loop/scripts/process-supervisor.py"
 CONFIG_DOCTOR_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/config-doctor.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
@@ -360,6 +359,8 @@ case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate mus
 for cmd in git gh jq node python3 timeout flock realpath sha256sum awk; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
+
+file_sha256() { sha256sum "$1" | awk '{print $1}'; }
 REAL_GIT_BIN="$(type -P git)"
 REAL_GH_BIN="$(type -P gh)"
 [ -x "$REAL_GIT_BIN" ] || { echo "required Git executable not found" >&2; exit 1; }
@@ -392,8 +393,8 @@ if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     CLAUDE_REVIEW_BIN="$(realpath -e -- "$(type -P claude 2>/dev/null || true)" 2>/dev/null || true)"
     [ -n "$CODEX_REVIEW_BIN" ] || { echo "required command not found for Codex review: codex" >&2; exit 1; }
     [ -n "$CLAUDE_REVIEW_BIN" ] || { echo "required command not found for Claude review: claude" >&2; exit 1; }
-    CODEX_REVIEW_BIN_SHA256="$(sha256sum "$CODEX_REVIEW_BIN" | awk '{print $1}')"
-    CLAUDE_REVIEW_BIN_SHA256="$(sha256sum "$CLAUDE_REVIEW_BIN" | awk '{print $1}')"
+    CODEX_REVIEW_BIN_SHA256="$(file_sha256 "$CODEX_REVIEW_BIN")"
+    CLAUDE_REVIEW_BIN_SHA256="$(file_sha256 "$CLAUDE_REVIEW_BIN")"
 fi
 
 if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
@@ -463,10 +464,10 @@ if [ "$CONFIG_DOCTOR" = true ]; then
     fi
     "${doctor_command[@]}" || exit 1
 fi
-HOOK_GIT_GUARD_SHA256="$(sha256sum "$HOOK_GIT_GUARD" | awk '{print $1}')"
-HOOK_GH_GUARD_SHA256="$(sha256sum "$HOOK_GH_GUARD" | awk '{print $1}')"
-REVIEW_PUSH_HELPER_SHA256="$(sha256sum "$REVIEW_PUSH_HELPER_SOURCE" | awk '{print $1}')"
-PROCESS_SUPERVISOR_SHA256="$(sha256sum "$PROCESS_SUPERVISOR" | awk '{print $1}')"
+HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
+HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"
+REVIEW_PUSH_HELPER_SHA256="$(file_sha256 "$REVIEW_PUSH_HELPER_SOURCE")"
+PROCESS_SUPERVISOR_SHA256="$(file_sha256 "$PROCESS_SUPERVISOR")"
 
 # Resolve the current login once, up front. Doing it per-candidate inside an
 # unchecked command substitution meant a transient gh failure silently rendered a
@@ -1060,7 +1061,7 @@ require_pinned_executable() {
         echo "$label is not a regular executable file: $path" >&2
         return 1
     }
-    actual_sha="$(sha256sum "$path" | awk '{print $1}')" || return 1
+    actual_sha="$(file_sha256 "$path")" || return 1
     [ "$actual_sha" = "$expected_sha" ] || {
         echo "$label changed after startup" >&2
         return 1
@@ -1087,8 +1088,7 @@ install_review_push_helper() {
     chmod 700 "$destination" || return 1
     require_pinned_executable "$destination" "$REVIEW_PUSH_HELPER_SHA256" \
         "installed review push helper" || return 1
-    REVIEW_PUSH_HELPER="$destination"
-    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    export AGENT_LOOP_REVIEW_PUSH_HELPER="$destination"
 }
 
 run_bounded_hook() {
@@ -1139,12 +1139,6 @@ run_bounded_hook() {
         "installed hook Git guard" || return 1
     require_pinned_executable "$guard_bin/gh" "$HOOK_GH_GUARD_SHA256" \
         "installed hook GitHub guard" || return 1
-    for guard in "$guard_bin/git" "$guard_bin/gh"; do
-        if [ ! -f "$guard" ] || [ -L "$guard" ] || [ ! -x "$guard" ]; then
-            echo "installed hook command guard is not a real executable file: $guard" >&2
-            return 1
-        fi
-    done
     (
         set +e
         if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then
