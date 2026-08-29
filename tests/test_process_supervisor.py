@@ -243,7 +243,7 @@ while True:
             sys.executable,
             str(SUPERVISOR),
             "--timeout-seconds",
-            "0.2",
+            "1",
             "--kill-after-seconds",
             "0.1",
             "--",
