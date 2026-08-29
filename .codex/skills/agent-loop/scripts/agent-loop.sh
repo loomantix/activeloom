@@ -174,6 +174,9 @@ REVIEW_CONTRACT_VERSION=""
 CONFIG_DOCTOR=false
 CLAUDE_EFFORT_POLICY=""
 REVIEW_MAX_ROUNDS=4
+REVIEW_TIMEOUT_SECONDS=7200
+REVIEW_DEADLINE_EPOCH=0
+REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
 DEPENDENCY_GATE=ready
@@ -201,6 +204,7 @@ assign_config() {
         config_doctor) CONFIG_DOCTOR="$value" ;;
         claude_effort_policy) CLAUDE_EFFORT_POLICY="$value" ;;
         review_max_rounds) REVIEW_MAX_ROUNDS="$value" ;;
+        review_timeout_seconds) REVIEW_TIMEOUT_SECONDS="$value" ;;
         retry_on_timeout) RETRY_ON_TIMEOUT="$value" ;;
         retry_delay_seconds) RETRY_DELAY_SECONDS="$value" ;;
         dependency_gate) DEPENDENCY_GATE="$value" ;;
@@ -350,12 +354,15 @@ BASE_REMOTE_REF="refs/remotes/origin/$BASE_BRANCH"
 BASE_FETCH_REFSPEC="+refs/heads/$BASE_BRANCH:$BASE_REMOTE_REF"
 
 for value in "$WORKER_RETRIES" "$WORKER_TIMEOUT_SECONDS" "$HOOK_TIMEOUT_SECONDS" \
-             "$REVIEW_MAX_ROUNDS" "$RETRY_DELAY_SECONDS" "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
+             "$REVIEW_MAX_ROUNDS" "$REVIEW_TIMEOUT_SECONDS" "$RETRY_DELAY_SECONDS" \
+             "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
     [[ "$value" =~ ^[0-9]+$ ]] || { echo "numeric agent-loop config value required: $value" >&2; exit 1; }
 done
 [ "$WORKER_TIMEOUT_SECONDS" -gt 0 ] || { echo "worker_timeout_seconds must be a positive integer" >&2; exit 1; }
 [ "$HOOK_TIMEOUT_SECONDS" -gt 0 ] || { echo "hook_timeout_seconds must be a positive integer" >&2; exit 1; }
 [ "$REVIEW_MAX_ROUNDS" -gt 0 ] || { echo "review_max_rounds must be a positive integer" >&2; exit 1; }
+[ "$REVIEW_MAX_ROUNDS" -le 4 ] || { echo "review_max_rounds cannot exceed the Deep review cap of 4" >&2; exit 1; }
+[ "$REVIEW_TIMEOUT_SECONDS" -gt 0 ] || { echo "review_timeout_seconds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
@@ -855,6 +862,17 @@ print(path.resolve(strict=True))
     case "$resume_log_dir" in "$LOG_ROOT"/*) ;; *) echo "run state log directory is outside configured log_root" >&2; exit 1 ;; esac
     acquire_run_lock "$resume_log_dir" || exit 1
     RESUME_STATE_JSON="$(run_state_helper show --file "$RESUME_RUN_FILE")" || exit 1
+    recorded_review_max_rounds="$(jq -r '.reviewMaxRounds // empty' <<<"$RESUME_STATE_JSON")"
+    if [ -n "$recorded_review_max_rounds" ] && \
+       [ "$REVIEW_MAX_ROUNDS" -gt "$recorded_review_max_rounds" ]; then
+        REVIEW_MAX_ROUNDS="$recorded_review_max_rounds"
+        echo "   Review round cap restored from run state: $REVIEW_MAX_ROUNDS"
+    fi
+    REVIEW_DEADLINE_EPOCH="$(jq -r '.reviewDeadlineEpoch // empty' <<<"$RESUME_STATE_JSON")"
+    if [ -z "$REVIEW_DEADLINE_EPOCH" ]; then
+        REVIEW_DEADLINE_EPOCH=$(( $(stat -c %Y "$RESUME_RUN_FILE") + REVIEW_TIMEOUT_SECONDS ))
+        echo "   Legacy run state uses its original checkpoint time for the review deadline"
+    fi
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
         exit 1
@@ -1898,6 +1916,7 @@ run_review_pass() {
     local before_sha after_sha status classification outcome_signature outcome_file
     local result_file result_json result_status result_hash allowed_heads_file blocker
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
+    local review_push_lock_file
     local historical_comment_ids_signature direct_review_engine
     local review_hook_status
     local boundary_status
@@ -1925,6 +1944,33 @@ run_review_pass() {
         recovery_message "PR head attestation failed before $engine review round $round."
         return 1
     fi
+    review_push_state_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-push-state.json"
+    review_push_lock_file="${review_push_state_file}.lock"
+    if [ ! -e "$review_push_state_file" ] && [ ! -e "$review_push_lock_file" ]; then
+        (umask 077; set -o noclobber
+            jq -n --arg start "$before_sha" \
+                '{version:2,startSha:$start,validatedSha:null,publishedSha:null,validationReceipt:null}' \
+                > "$review_push_state_file"
+            : > "$review_push_lock_file"
+        ) 2>/dev/null || {
+            recovery_message "Could not initialize the $engine review publication journal."
+            return 1
+        }
+    elif [ ! -f "$review_push_state_file" ] || [ -L "$review_push_state_file" ] || \
+         [ ! -f "$review_push_lock_file" ] || [ -L "$review_push_lock_file" ]; then
+        recovery_message "$engine review publication journal is incomplete or unsafe."
+        return 1
+    fi
+    chmod 600 "$review_push_state_file" "$review_push_lock_file" || {
+        recovery_message "Could not secure the $engine review publication journal."
+        return 1
+    }
+    jq -e --arg start "$before_sha" '.version == 2 and .startSha == $start' \
+        "$review_push_state_file" >/dev/null || {
+        recovery_message "$engine review publication journal does not match the pass start."
+        return 1
+    }
+    export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
     if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         pre_pass_threads_file="$(fetch_local_review_threads)" || {
             recovery_message "Could not snapshot review history before $engine round $round."
@@ -1941,17 +1987,6 @@ run_review_pass() {
             return 1
         }
         export AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE="$historical_comment_ids_file"
-        review_push_state_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-push-state"
-        printf '%s\n' "$before_sha" > "$review_push_state_file" || {
-            recovery_message "Could not initialize the $engine review push checkpoint."
-            return 1
-        }
-        chmod 600 "$review_push_state_file" || {
-            recovery_message "Could not secure the $engine review push checkpoint."
-            return 1
-        }
-        export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
-
         if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
             install_pinned_review_launcher "$AGENT_LOOP_REVIEW_BASE_SHA" || {
                 recovery_message "Could not install the pinned review launcher for $engine round $round."
@@ -1972,8 +2007,7 @@ run_review_pass() {
             fi
         fi
     else
-        unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-            AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+        unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE
     fi
     direct_review_engine=""
     [ "$REVIEW_CONTRACT_VERSION" = 4 ] && direct_review_engine="$slug"
@@ -1981,14 +2015,22 @@ run_review_pass() {
         recovery_message "Could not install the pinned review push helper for $engine round $round."
         return 1
     }
+    export AGENT_LOOP_REVIEW_VALIDATION_HOOK="$VALIDATION_HOOK"
+    export AGENT_LOOP_PROCESS_SUPERVISOR="$PROCESS_SUPERVISOR"
+    export AGENT_LOOP_PROCESS_SUPERVISOR_SHA256="$PROCESS_SUPERVISOR_SHA256"
+    export AGENT_LOOP_HOOK_TIMEOUT_SECONDS="$REVIEW_PASS_TIMEOUT_SECONDS"
+    export AGENT_LOOP_REVIEW_VALIDATION_LOG="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-prepublish-validation.log"
     review_hook_status=0
     run_bounded_hook "$hook_description (round $round)" "$hook" \
-        "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true \
+        "$REVIEW_PASS_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true \
         "$direct_review_engine" true || review_hook_status=$?
     unset AGENT_LOOP_CODEX_REVIEW_LAUNCHER AGENT_LOOP_TRUSTED_REPO_ROOT \
         AGENT_LOOP_TRUSTED_BASE_REF AGENT_LOOP_REVIEW_BIN \
         AGENT_LOOP_REVIEW_BIN_SHA256 AGENT_LOOP_REVIEW_PUSH_HELPER \
         AGENT_LOOP_REVIEW_INSTALL_ROOT AGENT_LOOP_REVIEW_INSTALL_SHA256 \
+        AGENT_LOOP_REVIEW_VALIDATION_HOOK AGENT_LOOP_PROCESS_SUPERVISOR \
+        AGENT_LOOP_PROCESS_SUPERVISOR_SHA256 AGENT_LOOP_HOOK_TIMEOUT_SECONDS \
+        AGENT_LOOP_REVIEW_VALIDATION_LOG \
         CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
     if [ "$review_hook_status" -ne 0 ]; then
         recovery_message "$hook_failure_description failed in review round $round."
@@ -2017,7 +2059,16 @@ run_review_pass() {
         return 1
     }
     if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
-        [ "$(cat "$review_push_state_file")" = "$after_sha" ] || {
+        jq -e --arg start "$before_sha" --arg head "$after_sha" '
+            .version == 2 and .startSha == $start and
+            (
+                ($head == $start and .validatedSha == null and
+                    .publishedSha == null and .validationReceipt == null) or
+                ($head != $start and .validatedSha == $head and
+                    .publishedSha == $head and
+                    (.validationReceipt | type == "string" and length == 64))
+            )
+        ' "$review_push_state_file" >/dev/null || {
             recovery_message "$engine review push checkpoint did not match its final head in round $round."
             return 1
         }
@@ -2098,10 +2149,21 @@ run_review_pass() {
             return 1
         }
     fi
-    run_validation "$slug-review-round-$round" || {
-        recovery_message "Validation after $validation_description failed in review round $round."
-        return 1
-    }
+    if [ "$after_sha" = "$before_sha" ]; then
+        run_validation "$slug-review-round-$round" || {
+            recovery_message "Validation after $validation_description failed in review round $round."
+            return 1
+        }
+    else
+        jq -e --arg start "$before_sha" --arg head "$after_sha" '
+            .version == 2 and .startSha == $start and
+            .validatedSha == $head and .publishedSha == $head and
+            (.validationReceipt | type == "string" and test("^[0-9a-f]{64}$"))
+        ' "$review_push_state_file" >/dev/null || {
+            recovery_message "Pre-publication validation receipt is missing for $engine round $round."
+            return 1
+        }
+    fi
     require_review_outcome_signature "$engine" "$outcome_file" \
         "$outcome_signature" "during validation in round $round" || return 1
     boundary_status=0
@@ -2129,6 +2191,23 @@ require_fast_forward_base_advance() {
     fi
 }
 
+prepare_review_pass_budget() {
+    local now remaining
+    now="$(date +%s)"
+    if [ "$REVIEW_DEADLINE_EPOCH" -eq 0 ]; then
+        REVIEW_DEADLINE_EPOCH=$((now + REVIEW_TIMEOUT_SECONDS))
+    fi
+    remaining=$((REVIEW_DEADLINE_EPOCH - now))
+    if [ "$remaining" -le 0 ]; then
+        recovery_message "Local review exceeded its configured whole-run time budget."
+        return 1
+    fi
+    REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
+    if [ "$remaining" -lt "$REVIEW_PASS_TIMEOUT_SECONDS" ]; then
+        REVIEW_PASS_TIMEOUT_SECONDS="$remaining"
+    fi
+}
+
 run_review_convergence() {
     local round="${1:-1}" codex_classification claude_classification
     local resume_engine="${2:-codex}"
@@ -2138,6 +2217,7 @@ run_review_convergence() {
     local round_base_sha latest_base_sha pass_status
 
     while [ "$round" -le "$REVIEW_MAX_ROUNDS" ]; do
+        prepare_review_pass_budget || return 1
         recovered_complete_round=false
         echo -e "${CYAN}↻${NC} Local review convergence round $round/$REVIEW_MAX_ROUNDS"
         export AGENT_LOOP_REVIEW_ROUND="$round"
@@ -2201,6 +2281,7 @@ run_review_convergence() {
                 return 1
             }
             pass_status=0
+            prepare_review_pass_budget || return 1
             run_review_pass Codex codex "$CODEX_REVIEW_HOOK" "$round" \
                 "configured Codex review hook" "Configured Codex review hook" \
                 "Configured Codex review hook" \
@@ -2232,6 +2313,7 @@ run_review_convergence() {
             }
 
             pass_status=0
+            prepare_review_pass_budget || return 1
             run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
                 "configured Claude review hook" "Claude review hook" "Claude review" \
                 "Claude review" || pass_status=$?
@@ -3411,6 +3493,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"
+        REVIEW_DEADLINE_EPOCH=$(( $(date +%s) + REVIEW_TIMEOUT_SECONDS ))
         run_state_helper create --file "$AGENT_LOOP_RUN_STATE_FILE" \
             --run-id "$RUN_TAG-issue-$SELECTED_ID" --repo "$GH_REPO" \
             --issue "$SELECTED_ID" --base-branch "$BASE_BRANCH" \
@@ -3422,7 +3505,9 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             --branch "$branch" --worktree "$ACTIVE_WORKTREE" \
             --log-dir "$AGENT_LOOP_LOG_DIR" --pr "$AGENT_LOOP_PR_NUMBER" \
             --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \
-            --head-sha "$initial_pr_sha" >/dev/null || {
+            --head-sha "$initial_pr_sha" \
+            --review-deadline-epoch "$REVIEW_DEADLINE_EPOCH" \
+            --review-max-rounds "$REVIEW_MAX_ROUNDS" >/dev/null || {
             recovery_message "Could not create the private review run-state checkpoint."
             exit 1
         }

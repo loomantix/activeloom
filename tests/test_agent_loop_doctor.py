@@ -336,7 +336,7 @@ def test_doctor_rejects_worker_instructions_that_require_masked_gh(
 def test_doctor_rejects_incompatible_review_push_protocol(tmp_path: Path) -> None:
     project = _project(tmp_path)
     review_push = project / ".codex/skills/agent-loop/scripts/review-push.sh"
-    review_push.write_text("#!/usr/bin/env bash\nprintf '2\\n'\n", encoding="utf-8")
+    review_push.write_text("#!/usr/bin/env bash\nprintf '1\\n'\n", encoding="utf-8")
     review_push.chmod(0o755)
     subprocess.run(["git", "add", str(review_push)], cwd=project, check=True)
     subprocess.run(

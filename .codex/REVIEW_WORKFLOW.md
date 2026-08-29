@@ -73,8 +73,9 @@ The local relay has two explicit session modes. A consumer may declare a default
 otherwise ask the user before the first cross-engine transition. Do not switch
 modes silently in the middle of a round.
 
-- **Auto mode** runs the complete bounded chain. Resolve the effective roster
-  first and invoke each missing declared reviewer through its tested launcher;
+- **Auto mode** lets the outer controller run the complete bounded chain.
+  Resolve the effective roster first and invoke each missing declared reviewer
+  through its tested launcher;
   never change an in-flight roster implicitly. For a newly declared relay the
   default direct interactive reviewer engine is `gemini`, launched through the
   Agy CLI only via `.codex/skills/critique/scripts/run-agy-review.sh`. That
@@ -89,8 +90,10 @@ modes silently in the middle of a round.
   current CLI has no equivalent of Claude's `--no-session-persistence`; retain
   the Claude path when local conversation persistence is prohibited. Never
   hand-compose either CLI command. After the reviewer returns, validate its
-  PR-head and ledger evidence and continue the chain until convergence or the
-  configured cap. The separate `agent-loop` wrapper remains Codex-then-Claude
+  PR-head and ledger evidence before the outer controller decides whether to
+  invoke another pass. Each launcher runs exactly one reviewer pass and must
+  never start another reviewer, retry itself, or continue the relay. Continue
+  until convergence or the tier cap. The separate `agent-loop` wrapper remains Codex-then-Claude
   until its fixed engine slots are migrated independently.
 - **Handoff mode** never starts the other engine. Each nonterminal pass posts an
   authenticated `local-review-handoff:v1` PR comment and returns control to the
@@ -106,6 +109,20 @@ engine in a fresh terminal.
 1. Make the change, run focused validation, and create a clean local commit.
 2. Push the feature branch and open or reuse its draft PR. Record the PR number,
    head SHA, and all existing review threads before any reviewer runs.
+   Resolve the tier, place the user's bounded-run authorization in a private
+   temporary file, and create the authenticated run marker before launching a
+   pass:
+
+   ```bash
+   local-review-handoff.py start-run --repo <owner/repo> --pr <number> \
+     --head <head-sha> --base <base-sha> --tier <lean|deep> \
+     --authorization-file <private-file>
+   ```
+
+   The helper fixes the cap at two Lean rounds or four Deep rounds. A later run
+   on the same PR requires the current run to be ended and a new, explicit user
+   authorization passed with `--restart`; a new session alone is not a restart.
+
 3. Declare the roster with the ledger helper's `post-roster`, naming the author
    engine and this PR's reviewer engines. Participation is declared, never
    inferred: an engine that has not attested is otherwise indistinguishable from
@@ -124,9 +141,10 @@ engine in a fresh terminal.
    scheduling choice, not a protocol rule — what matters is which commit each
    one read.
 
-   How the next reviewer starts is a mode choice, not a protocol rule. Auto
-   mode launches it from the current session through its roster-selected tested
-   launcher and continues when it returns. Handoff mode posts a handoff comment
+   How the next reviewer starts is a mode choice, not a protocol rule. In auto
+   mode the outer controller authorizes one pass, launches it through the
+   roster-selected tested launcher, and reassesses after it returns. Handoff
+   mode posts a handoff comment
    and stops, so the next reviewer begins in a fresh user-started terminal. Both
    modes carry the same comment/fix/reply/resolve contract, and neither changes
    which commit an attestation names.
@@ -164,14 +182,19 @@ engine in a fresh terminal.
      the narrowing is a disposition rule applied when consolidating lane output,
      never an instruction to a lane to withhold what it found.
 
-7. Cap the loop at four rounds unless the consumer explicitly configures a
-   different positive bound. At cap exhaustion, stop, preserve the branch,
+7. Cap the loop at two Lean rounds or four Deep rounds. Before each manual
+   pass, require `local-review-handoff.py authorize-pass` for its engine, exact
+   base/head, and round. The tested launchers perform this check themselves.
+   At cap exhaustion, stop, preserve the branch,
    worktree, and draft PR, and report non-convergence. Do not mark it ready.
 8. Converge when `verify-coverage` passes at the exact current head — a roster
    is declared and every declared reviewer holds an attestation naming that
    head — the round that produced those attestations had no material fix, and
    every local-review thread contains a disposition reply and is resolved.
-   Revalidate the exact PR head, then mark the PR ready.
+   Revalidate the exact PR head, then end the run with
+   `local-review-handoff.py finish-run --outcome converged` and mark the PR
+   ready. Record `exhausted` or `aborted` when those are the actual terminal
+   outcomes. Never leave a terminal run open merely to permit another pass.
 
 The author engine's own adversarial pass never counts toward coverage. It
 re-reads the change while still holding the rationale that produced it, which is

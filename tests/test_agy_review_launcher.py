@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -17,6 +18,26 @@ LAUNCHER = ROOT / ".codex/skills/critique/scripts/run-agy-review.sh"
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
 AGY_SURFACE_SHA = "3d7ad7c6d1e088faca88d52490bda1f45ce7e1fd"
+
+
+def _run_comment() -> str:
+    content = "Review explicitly authorized."
+    payload = {
+        "base": HEAD,
+        "content": content,
+        "max_rounds": 4,
+        "start_head": HEAD,
+        "supersedes": None,
+        "tier": "deep",
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return (
+        f"<!-- local-review-run:v1 id={digest} tier=deep max-rounds=4 "
+        f"base={HEAD} start-head={HEAD} supersedes=none "
+        f"content-sha256={digest} -->\n{content}"
+    )
 
 
 def _trusted_environment(
@@ -83,15 +104,22 @@ def _trusted_environment(
     fake_gh = bin_dir / "gh"
     fake_gh.write_text(
         "#!/usr/bin/env python3\n"
-        "import sys\n"
+        "import json, sys\n"
         "args = sys.argv[1:]\n"
         f"pr_head = {pr_head!r}\n"
+        f"run_comment = {_run_comment()!r}\n"
         "if args[:2] == ['repo', 'view']:\n"
         "    print('example/repository')\n"
         "elif args[:2] == ['api', 'user']:\n"
         "    print('reviewer')\n"
         "elif args[:2] == ['pr', 'view']:\n"
-        "    print(pr_head + '\\tfeature\\texample/repository\\treviewer')\n"
+        "    if 'author,headRefName,headRefOid,headRepository' in args:\n"
+        "        print(pr_head + '\\tfeature\\texample/repository\\treviewer')\n"
+        "    else:\n"
+        "        print(pr_head)\n"
+        "elif args[:3] == ['api', '--paginate', '--slurp']:\n"
+        "    print(json.dumps([[{'id': 10, 'body': run_comment, "
+        "'user': {'login': 'reviewer'}}]]))\n"
         "else:\n"
         "    raise SystemExit('unexpected gh invocation: ' + ' '.join(args))\n",
         encoding="utf-8",
@@ -173,7 +201,7 @@ def _command() -> list[str]:
         "--head",
         HEAD,
         "--round",
-        "2",
+        "1",
     ]
 
 
@@ -219,9 +247,9 @@ def test_launcher_executes_agy_with_pinned_model_and_high_effort(tmp_path: Path)
     assert "Use gemini as the active local-review engine identity" in argv[14]
     assert f"Agy relay surface is {surface}" in argv[14]
     assert HEAD in argv[14]
-    assert "round 2" in argv[14]
+    assert "round 1" in argv[14]
     assert not {"--continue", "-c", "--conversation", "--prompt-interactive", "-i"}.intersection(argv)
-    assert invocation["env"] == {"base": HEAD, "engine": "gemini", "round": "2"}
+    assert invocation["env"] == {"base": HEAD, "engine": "gemini", "round": "1"}
     assert result.stdout == "review complete\n"
 
 

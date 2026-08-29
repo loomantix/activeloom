@@ -70,6 +70,31 @@ def _body(handoff: ModuleType, from_engine: str, to_engine: str) -> str:
     return f"{marker}\n{content}"
 
 
+def _run_body(
+    handoff: ModuleType,
+    *,
+    tier: str = "deep",
+    supersedes: int | None = None,
+    content: str = "Review explicitly authorized.",
+) -> str:
+    max_rounds = handoff.TIER_CAPS[tier]
+    digest = handoff._run_digest(
+        tier=tier,
+        max_rounds=max_rounds,
+        base=BASE,
+        start_head=HEAD,
+        supersedes=supersedes,
+        content=content,
+    )
+    marker = (
+        f"<!-- local-review-run:v1 id={digest} tier={tier} "
+        f"max-rounds={max_rounds} base={BASE} start-head={HEAD} "
+        f"supersedes={supersedes if supersedes is not None else 'none'} "
+        f"content-sha256={digest} -->"
+    )
+    return f"{marker}\n{content}"
+
+
 def test_post_handoff_builds_prompt_and_replays(
     handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -125,6 +150,148 @@ def test_post_handoff_builds_prompt_and_replays(
     assert len(posted) == 1
 
 
+def test_authorize_pass_enforces_run_cap_and_duplicate_passes(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = [
+        _row(20, _run_body(handoff)),
+        _row(
+            21,
+            f"<!-- local-review-pass:v3 engine=codex round=1 base={BASE} "
+            f"head={HEAD} result-sha256={'c' * 64} -->",
+        ),
+    ]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+
+    assert (
+        handoff.main(
+            [
+                "authorize-pass",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--base",
+                BASE,
+                "--head",
+                HEAD,
+                "--engine",
+                "claude",
+                "--round",
+                "1",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["max_rounds"] == 4
+
+    with pytest.raises(handoff.HandoffError, match="already completed"):
+        handoff.main(
+            [
+                "authorize-pass",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--base",
+                BASE,
+                "--head",
+                HEAD,
+                "--engine",
+                "codex",
+                "--round",
+                "1",
+            ]
+        )
+    with pytest.raises(handoff.HandoffError, match="exceeds the deep cap"):
+        handoff.main(
+            [
+                "authorize-pass",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--base",
+                BASE,
+                "--head",
+                HEAD,
+                "--engine",
+                "codex",
+                "--round",
+                "5",
+            ]
+        )
+
+
+def test_restart_requires_terminal_prior_run(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authorization = tmp_path / "authorization.txt"
+    authorization.write_text("Explicit restart authorization.\n", encoding="utf-8")
+    rows = [_row(20, _run_body(handoff))]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+
+    with pytest.raises(handoff.HandoffError, match="must be ended"):
+        handoff.main(
+            [
+                "start-run",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--base",
+                BASE,
+                "--head",
+                HEAD,
+                "--tier",
+                "deep",
+                "--authorization-file",
+                str(authorization),
+                "--restart",
+            ]
+        )
+
+
+def test_ended_run_rejects_another_pass(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_body = _run_body(handoff, tier="lean")
+    run_id = handoff.RUN_V1_RE.search(run_body).group("run_id")
+    rows = [
+        _row(20, run_body),
+        _row(
+            21,
+            f"<!-- local-review-run-end:v1 id={run_id} outcome=exhausted "
+            f"head={HEAD} -->",
+        ),
+    ]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    with pytest.raises(handoff.HandoffError, match="has ended"):
+        handoff.main(
+            [
+                "authorize-pass",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--base",
+                BASE,
+                "--head",
+                HEAD,
+                "--engine",
+                "codex",
+                "--round",
+                "1",
+            ]
+        )
+
+
 def test_show_handoff_uses_latest_authenticated_comment(
     handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -147,9 +314,7 @@ def test_show_handoff_uses_latest_authenticated_comment(
     assert handoff.main(command) == 0
     assert json.loads(capsys.readouterr().out)["comment_id"] == 11
     with pytest.raises(handoff.HandoffError, match="targets claude, not codex"):
-        handoff.main(
-            ["show-handoff", "--repo", REPO, "--pr", "7", "--engine", "codex"]
-        )
+        handoff.main(["show-handoff", "--repo", REPO, "--pr", "7", "--engine", "codex"])
 
 
 def test_show_handoff_rejects_stale_head(
@@ -199,9 +364,7 @@ def test_show_handoff_rejects_malformed_newest_marker(
     ]
     monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
     with pytest.raises(handoff.HandoffError, match="marker is malformed"):
-        handoff.main(
-            ["show-handoff", "--repo", REPO, "--pr", "7", "--engine", "codex"]
-        )
+        handoff.main(["show-handoff", "--repo", REPO, "--pr", "7", "--engine", "codex"])
 
 
 def test_post_handoff_rejects_concurrent_duplicate(

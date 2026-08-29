@@ -320,10 +320,12 @@ End with:
   (with one-line evidence)
 - validation run
 - PR number, reviewed head, comments posted, replies posted, and threads resolved
-- the next step under `.codex/REVIEW_WORKFLOW.md`: hand back to the relay for
-  the declared reviewers that have not attested this head — in auto mode run
-  only the tested launcher matching each missing declared reviewer (defaulting
-  to Agy only when declaring a new relay), in handoff mode post
+- the next step under `.codex/REVIEW_WORKFLOW.md`: hand back to the outer relay
+  controller for the declared reviewers that have not attested this head. This
+  pass must not launch another reviewer or continue the relay itself. In auto
+  mode the outer controller runs only the tested launcher matching the next
+  missing declared reviewer (defaulting to Agy only when declaring a new
+  relay); in handoff mode post
   `local-review-handoff:v1` and stop — and add `reviewit <pr>` /
   `reviewit <pr> deep` whenever a hosted pass is wanted. When recommending
   `reviewit`, recommend a fresh session; the current one has absorbed critique

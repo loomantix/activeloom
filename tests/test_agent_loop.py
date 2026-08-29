@@ -605,6 +605,7 @@ def _config(
         "hook_timeout_seconds": 10,
         "review_contract_version": 2,
         "review_max_rounds": 3,
+        "review_timeout_seconds": 7200,
         "retry_on_timeout": "true",
         "retry_delay_seconds": 0,
         "dependency_gate": "ready",
@@ -1719,6 +1720,7 @@ def test_unclassified_review_fix_defaults_material_and_restarts_at_codex(
         ["--issues", "18"],
         issues=[_issue(18)],
         config=_config(tmp_path, claude_review_hook=claude_hook),
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert "reported no material fixes in a complete round after 2 round(s)" in result.stdout
@@ -2183,14 +2185,14 @@ def test_v3_final_round_recovery_rejects_stale_codex_result(
     assert not (consumer[3] / "pr-ready").exists()
 
 
-def test_v3_final_round_recovery_accepts_completed_claude_transition(
+def test_v3_claude_validation_failure_keeps_candidate_unpublished(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     fail_marker = consumer[3] / "fail-claude-review-validation"
     fail_marker.touch()
     validation = (
         'if [ -e "$AGENT_STATE_DIR/fail-claude-review-validation" ] && '
-        '[ -e "$AGENT_LOOP_LOG_DIR/claude-review-round-1-validation.log" ]; '
+        '[ -e "$AGENT_LOOP_LOG_DIR/claude-review-round-1-prepublish-validation.log" ]; '
         "then exit 71; fi"
     )
     config = _config_v3(
@@ -2212,26 +2214,20 @@ def test_v3_final_round_recovery_accepts_completed_claude_transition(
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state["phase"] == "reviewing"
     assert state["reviewEngine"] == "claude"
-    fail_marker.unlink()
-
-    resumed = _run(
-        consumer,
-        ["--resume-run", str(state_file)],
-        issues=[_issue(97, assigned=True)],
-        config=config,
-        timeout=60,
+    worktree = Path(state["worktree"])
+    assert _run_git("rev-parse", "HEAD", cwd=worktree).stdout.strip() != state["headSha"]
+    remote = _run_git(
+        "ls-remote", "--heads", "origin", f"refs/heads/{state['branch']}", cwd=worktree
+    ).stdout.split()[0]
+    assert remote == state["headSha"]
+    journal = json.loads(
+        (state_file.parent / "claude-review-round-1-push-state.json").read_text()
     )
-
-    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
-    assert "recovering its completed legs" in resumed.stdout
-    assert "Recovered authenticated Codex and Claude evidence" in resumed.stdout
-    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
-    assert comments.count("local-review-pass:v3 engine=codex round=1") == 1
-    assert comments.count("local-review-complete:v3 engine=claude round=1") == 1
-    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+    assert journal["validatedSha"] is None
+    assert journal["publishedSha"] is None
 
 
-def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
+def test_v3_codex_validation_failure_keeps_candidate_unpublished(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     finding_hash = "4be82179d3761dd716ff1e62c19138fc105495b9a66528678e0e76e253adb577"
@@ -2240,7 +2236,7 @@ def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
     fail_marker.touch()
     validation = (
         'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
-        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
+        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-prepublish-validation.log" ]; '
         "then exit 71; fi"
     )
     codex_hook = (
@@ -2287,26 +2283,22 @@ def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
     )
     assert first.returncode != 0
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
-    fail_marker.unlink()
-
-    resumed = _run(
-        consumer,
-        ["--resume-run", str(state_file)],
-        issues=[_issue(95, assigned=True)],
-        config=config,
-        timeout=60,
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    worktree = Path(state["worktree"])
+    assert _run_git("rev-parse", "HEAD", cwd=worktree).stdout.strip() != state["headSha"]
+    remote = _run_git(
+        "ls-remote", "--heads", "origin", f"refs/heads/{state['branch']}", cwd=worktree
+    ).stdout.split()[0]
+    assert remote == state["headSha"]
+    journal = json.loads(
+        (state_file.parent / "codex-review-round-1-push-state.json").read_text()
     )
-
-    assert resumed.returncode != 0
-    assert "did not converge within 1 round(s)" in resumed.stderr
-    assert "resuming its remaining leg" in resumed.stdout
-    assert "Recovered authenticated Codex evidence" in resumed.stdout
+    assert journal["validatedSha"] is None
+    assert journal["publishedSha"] is None
     events = (consumer[3] / "events.log").read_text(encoding="utf-8")
     assert events.count("codex-material\n") == 1
-    comments = (consumer[3] / "issue-comments.json").read_text(encoding="utf-8")
-    assert comments.count("local-review-complete:v3 engine=codex round=1") == 1
-    assert comments.count("local-review-pass:v3 engine=claude round=1") == 1
-    assert "conflicting attestation" not in resumed.stderr
+    comments_file = consumer[3] / "issue-comments.json"
+    assert not comments_file.exists()
 
 
 def _thread_comment(
@@ -2646,6 +2638,7 @@ def test_finalized_checkpoint_failure_is_restored_to_draft(
         issues=[_issue(82)],
         config=_config_v3(tmp_path),
         extra_env={"AGENT_FAIL_FINALIZED_CHECKPOINT": "true"},
+        timeout=60,
     )
     assert result.returncode != 0
     assert "finalized run-state checkpoint failed" in result.stderr
@@ -3265,11 +3258,10 @@ def test_resume_run_accepts_canonicalized_relative_path_roots(
 def test_resume_run_advances_identity_after_uncheckpointed_codex_fix(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    fail_after_codex_fix = (
-        'if [ "${AGENT_LOOP_REVIEW_ENGINE:-}" = codex ] && '
-        '[ ! -e "$AGENT_STATE_DIR/codex-validation-failed" ]; then '
-        'touch "$AGENT_STATE_DIR/codex-validation-failed"; exit 73; fi; '
-        'printf "validate\\n" >> "$EVENT_LOG"'
+    interrupt_after_codex_fix = (
+        _v3_changed_hook()
+        + '; if [ ! -e "$AGENT_STATE_DIR/codex-hook-interrupted" ]; then '
+        'touch "$AGENT_STATE_DIR/codex-hook-interrupted"; exit 73; fi'
     )
     first = _run(
         consumer,
@@ -3277,13 +3269,12 @@ def test_resume_run_advances_identity_after_uncheckpointed_codex_fix(
         issues=[_issue(89)],
         config=_config_v3(
             tmp_path,
-            codex_review_hook=_v3_changed_hook(),
-            validation_hook=fail_after_codex_fix,
+            codex_review_hook=interrupt_after_codex_fix,
         ),
         timeout=60,
     )
     assert first.returncode != 0
-    assert "Validation after" in first.stderr
+    assert "Configured Codex review hook failed" in first.stderr
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
     state = json.loads(state_file.read_text())
     assert state["phase"] == "reviewing"
@@ -3510,15 +3501,18 @@ def test_converged_resume_rejects_tampered_review_result(
     assert not (consumer[3] / "pr-ready").exists()
 
 
-@pytest.mark.parametrize("timeout_key", ["worker_timeout_seconds", "hook_timeout_seconds"])
+@pytest.mark.parametrize(
+    "timeout_key", ["worker_timeout_seconds", "hook_timeout_seconds", "review_timeout_seconds"]
+)
 def test_zero_timeout_is_rejected_before_claim(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path, timeout_key: str
 ) -> None:
-    config = (
-        _config(tmp_path, worker_timeout_seconds=0)
-        if timeout_key == "worker_timeout_seconds"
-        else _config(tmp_path, hook_timeout_seconds=0)
-    )
+    if timeout_key == "worker_timeout_seconds":
+        config = _config(tmp_path, worker_timeout_seconds=0)
+    elif timeout_key == "hook_timeout_seconds":
+        config = _config(tmp_path, hook_timeout_seconds=0)
+    else:
+        config = _config(tmp_path, review_timeout_seconds=0)
     result = _run(
         consumer,
         ["--issues", "57"],
@@ -3530,6 +3524,52 @@ def test_zero_timeout_is_rejected_before_claim(
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
+
+
+def test_review_round_cap_above_four_is_rejected_before_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "57"],
+        issues=[_issue(57)],
+        config=_config(tmp_path, review_max_rounds=5),
+    )
+    assert result.returncode != 0
+    assert "review_max_rounds cannot exceed the Deep review cap of 4" in result.stderr
+    gh_log = consumer[3] / "gh.log"
+    assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+    assert not (tmp_path / "worktrees").exists()
+
+
+def test_review_whole_run_deadline_bounds_a_pass_and_is_persisted(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    started = time.monotonic()
+    result = _run(
+        consumer,
+        ["--issues", "58"],
+        issues=[_issue(58)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook="sleep 3",
+            hook_timeout_seconds=10,
+            review_timeout_seconds=1,
+        ),
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert time.monotonic() - started < 20
+    assert (
+        "Configured Codex review hook failed" in result.stderr
+        or "configured whole-run time budget" in result.stderr
+    )
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["reviewMaxRounds"] == 3
+    assert isinstance(state["reviewDeadlineEpoch"], int)
+    assert state["phase"] == "reviewing"
+    assert not (consumer[3] / "pr-ready").exists()
 
 
 def test_validation_hook_is_required_before_claim(

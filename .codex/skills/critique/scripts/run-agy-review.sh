@@ -65,6 +65,11 @@ remote_head="${remote_row%%[[:space:]]*}"
 [ "$remote_head" = "$head" ] || { echo "remote branch head does not match --head" >&2; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo "review worktree must be clean" >&2; exit 1; }
 
+script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 -I "$script_dir/local-review-handoff.py" authorize-pass \
+    --repo "$repo" --pr "$pr" --base "$base" --head "$head" \
+    --engine gemini --round "$round" >/dev/null
+
 agy_review_cli="${AGY_REVIEW_CLI:-agy}"
 command -v "$agy_review_cli" >/dev/null 2>&1 || { echo "agy is required" >&2; exit 1; }
 
@@ -240,8 +245,9 @@ review worktree contains a .agents directory. Reconstruct context from the PR
 description, commits, diff, checks, and complete local-review ledger, including
 resolved threads and prior attestations. Post verified findings inline before
 edits, then validate, push, reply, resolve, and publish the normal review result.
-Do not invoke Codex; return control to the calling Codex session when the Gemini
-pass is complete."
+This invocation owns exactly one Gemini pass: do not invoke Codex, Claude,
+another reviewer, or any review launcher. Return control to the calling Codex
+session when the Gemini pass is complete."
 
 export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"

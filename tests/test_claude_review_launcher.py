@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -12,6 +13,26 @@ ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = ROOT / ".codex/skills/critique/scripts/run-claude-review.sh"
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
+
+
+def _run_comment() -> str:
+    content = "Review explicitly authorized."
+    payload = {
+        "base": HEAD,
+        "content": content,
+        "max_rounds": 4,
+        "start_head": HEAD,
+        "supersedes": None,
+        "tier": "deep",
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return (
+        f"<!-- local-review-run:v1 id={digest} tier=deep max-rounds=4 "
+        f"base={HEAD} start-head={HEAD} supersedes=none "
+        f"content-sha256={digest} -->\n{content}"
+    )
 
 
 def _trusted_environment(
@@ -44,15 +65,22 @@ def _trusted_environment(
     fake_gh = bin_dir / "gh"
     fake_gh.write_text(
         "#!/usr/bin/env python3\n"
-        "import sys\n"
+        "import json, sys\n"
         "args = sys.argv[1:]\n"
         f"pr_head = {pr_head!r}\n"
+        f"run_comment = {_run_comment()!r}\n"
         "if args[:2] == ['repo', 'view']:\n"
         "    print('example/repository')\n"
         "elif args[:2] == ['api', 'user']:\n"
         "    print('reviewer')\n"
         "elif args[:2] == ['pr', 'view']:\n"
-        "    print(pr_head + '\\tfeature\\texample/repository\\treviewer')\n"
+        "    if 'author,headRefName,headRefOid,headRepository' in args:\n"
+        "        print(pr_head + '\\tfeature\\texample/repository\\treviewer')\n"
+        "    else:\n"
+        "        print(pr_head)\n"
+        "elif args[:3] == ['api', '--paginate', '--slurp']:\n"
+        "    print(json.dumps([[{'id': 10, 'body': run_comment, "
+        "'user': {'login': 'reviewer'}}]]))\n"
         "else:\n"
         "    raise SystemExit('unexpected gh invocation: ' + ' '.join(args))\n",
         encoding="utf-8",
@@ -94,7 +122,7 @@ def test_launcher_executes_claude_with_literal_low_effort(tmp_path: Path) -> Non
             "--head",
             HEAD,
             "--round",
-            "2",
+            "1",
         ],
         check=True,
         cwd=ROOT,
@@ -115,8 +143,8 @@ def test_launcher_executes_claude_with_literal_low_effort(tmp_path: Path) -> Non
     assert argv[6].startswith("/deepcritique 123\n")
     assert "Continue review on PR #123" in argv[6]
     assert HEAD in argv[6]
-    assert "round 2" in argv[6]
-    assert invocation["env"] == {"base": HEAD, "engine": "claude", "round": "2"}
+    assert "round 1" in argv[6]
+    assert invocation["env"] == {"base": HEAD, "engine": "claude", "round": "1"}
 
 
 def test_launcher_rejects_a_caller_supplied_effort(tmp_path: Path) -> None:
