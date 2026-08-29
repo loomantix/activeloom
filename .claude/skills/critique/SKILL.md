@@ -143,6 +143,22 @@ radius — so lenses do not each invent their own scale. Do not ask finders to
 suppress findings by confidence. Run selected agents in parallel; the
 orchestrator verifies them.
 
+Explicitly audit claims about un-diffed plumbing: when a PR description or comment
+claims existing background plumbing already handles a new event, field, or state
+transition ("already re-polls", "already listened to", "existing pipe handles this"),
+treat the claim as an unverified hypothesis. Open and inspect the referenced producer
+or consumer directly to verify its dirty-checking, filtering, and propagation logic.
+
+Read the repo-local review addendum first. Check for
+`.review/addendum.local.md` in the repository under review; if it exists, read it
+before selecting lenses and fold each of its sections into the brief of the lens
+it names. It is consumer-owned and never synced, which is what makes it safe to
+append to — the role prompts and this skill are overwritten by the next sync, so
+a lens learned from a review cycle survives only if it lands there. If a lesson
+would be true of any codebase, it belongs in this skill or a role prompt
+upstream instead; if it names this repo's flags, paths, or past incidents, it
+belongs in the addendum.
+
 Brief each finder per the ledger's diff-delivery rules: resolve the changed-file
 list once, name the paths that lens owns, and prefer `git diff <base-sha>..HEAD
 -- <path>` over handing every agent one whole-diff artifact. Scope a lens by the
