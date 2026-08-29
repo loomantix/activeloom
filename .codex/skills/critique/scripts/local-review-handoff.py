@@ -49,9 +49,19 @@ RUN_END_V1_RE = re.compile(
     re.MULTILINE,
 )
 PASS_V3_RE = re.compile(
-    r"^<!-- local-review-(?:pass|complete):v3 "
+    r"^<!-- local-review-pass:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
-    r"round=(?P<round>[1-9][0-9]*) ",
+    r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
+    r"head=[0-9a-f]{40} result-sha256=[0-9a-f]{64} -->$",
+    re.MULTILINE,
+)
+COMPLETE_V3_RE = re.compile(
+    r"^<!-- local-review-complete:v3 "
+    r"engine=(?P<engine>codex|claude|gemini|antigravity) "
+    r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
+    r"before=[0-9a-f]{40} head=[0-9a-f]{40} "
+    r"classification=(?:minor|material) fingerprints=[A-Za-z0-9._:/,-]* "
+    r"result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
 )
 
@@ -262,9 +272,28 @@ def _run_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     records.sort(key=lambda record: cast(int, record["comment_id"]))
+    canonical: list[dict[str, Any]] = []
+    aliases: dict[int, int] = {}
+    by_run_id: dict[str, dict[str, Any]] = {}
+    for record in records:
+        prior = by_run_id.get(cast(str, record["run_id"]))
+        if prior is None:
+            by_run_id[cast(str, record["run_id"])] = record
+            canonical.append(record)
+            continue
+        if prior["body"] != record["body"]:
+            _fail("duplicate local-review run id has conflicting content")
+        aliases[cast(int, record["comment_id"])] = cast(int, prior["comment_id"])
+    records = canonical
+    for record in records:
+        supersedes = record["supersedes"]
+        if isinstance(supersedes, int) and supersedes in aliases:
+            record["supersedes"] = aliases[supersedes]
     for index, record in enumerate(records):
-        expected = None if index == 0 else records[index - 1]["comment_id"]
-        if record["supersedes"] != expected:
+        expected_parent: int | None = (
+            None if index == 0 else cast(int, records[index - 1]["comment_id"])
+        )
+        if record["supersedes"] != expected_parent:
             _fail("local-review run supersession chain is incomplete or forked")
     return records
 
@@ -298,8 +327,13 @@ def _start_run(args: argparse.Namespace) -> None:
     if not content:
         _fail("review-run authorization must not be empty")
     max_rounds = TIER_CAPS[args.tier]
+    previous_end = (
+        None if previous is None else _run_end(rows, cast(str, previous["run_id"]))
+    )
     if (
         previous is not None
+        and previous_end is None
+        and not args.restart
         and previous["tier"] == args.tier
         and previous["base"] == args.base
         and previous["start_head"] == args.head
@@ -322,7 +356,7 @@ def _start_run(args: argparse.Namespace) -> None:
         return
     if previous is not None and not args.restart:
         _fail("a local-review run already exists; an explicit restart is required")
-    if previous is not None and _run_end(rows, cast(str, previous["run_id"])) is None:
+    if previous is not None and previous_end is None:
         _fail("the previous local-review run must be ended before an explicit restart")
     supersedes = None if previous is None else cast(int, previous["comment_id"])
     run_id = _run_digest(
@@ -385,7 +419,7 @@ def _authorize_pass(args: argparse.Namespace) -> None:
         body = row.get("body")
         if not isinstance(body, str):
             continue
-        for marker in PASS_V3_RE.finditer(body):
+        for marker in (*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body)):
             engine = marker.group("engine")
             if engine == "antigravity":
                 engine = "gemini"
@@ -427,6 +461,7 @@ def _finish_run(args: argparse.Namespace) -> None:
     if existing is not None:
         if existing["head"] != args.head or existing["outcome"] != args.outcome:
             _fail("local-review run already ended with a different result")
+        _verify_head(args.repo, args.pr, args.head)
         print(
             json.dumps(
                 {**existing, "replayed": True, "run_id": run["run_id"]}, sort_keys=True

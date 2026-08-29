@@ -258,6 +258,82 @@ def test_restart_requires_terminal_prior_run(
         )
 
 
+def test_restart_supersedes_an_ended_same_head_run(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    authorization = tmp_path / "authorization.txt"
+    authorization.write_text("Explicit restart authorization.\n", encoding="utf-8")
+    prior_body = _run_body(handoff)
+    prior_id = handoff.RUN_V1_RE.search(prior_body).group("run_id")
+    rows = [
+        _row(20, prior_body),
+        _row(
+            21,
+            f"<!-- local-review-run-end:v1 id={prior_id} outcome=converged "
+            f"head={HEAD} -->",
+        ),
+    ]
+    posted: list[str] = []
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+
+    def fake_post(repo: str, pr: int, marker: str, body: str) -> tuple[int, bool]:
+        posted.append(body)
+        return 30, False
+
+    monkeypatch.setattr(handoff, "_post_issue_comment", fake_post)
+
+    assert (
+        handoff.main(
+            [
+                "start-run",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--base",
+                BASE,
+                "--head",
+                HEAD,
+                "--tier",
+                "deep",
+                "--authorization-file",
+                str(authorization),
+                "--restart",
+            ]
+        )
+        == 0
+    )
+    assert "supersedes=20" in posted[0]
+    assert json.loads(capsys.readouterr().out)["replayed"] is False
+
+
+def test_identical_concurrent_run_markers_are_canonicalized(
+    handoff: ModuleType,
+) -> None:
+    first = _run_body(handoff)
+    second = _run_body(handoff, supersedes=21, content="Restart authorized.")
+
+    records = handoff._run_records([_row(20, first), _row(21, first), _row(30, second)])
+
+    assert [record["comment_id"] for record in records] == [20, 30]
+    assert records[1]["supersedes"] == 20
+
+
+def test_concurrent_run_fork_is_rejected(handoff: ModuleType) -> None:
+    rows = [
+        _row(20, _run_body(handoff)),
+        _row(30, _run_body(handoff, supersedes=20, content="Restart A.")),
+        _row(31, _run_body(handoff, supersedes=20, content="Restart B.")),
+    ]
+
+    with pytest.raises(handoff.HandoffError, match="incomplete or forked"):
+        handoff._run_records(rows)
+
+
 def test_ended_run_rejects_another_pass(
     handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -290,6 +366,49 @@ def test_ended_run_rejects_another_pass(
                 "1",
             ]
         )
+
+
+def test_finish_run_replay_reverifies_the_current_head(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(run_body).group("run_id")
+    rows = [
+        _row(20, run_body),
+        _row(
+            21,
+            f"<!-- local-review-run-end:v1 id={run_id} outcome=converged "
+            f"head={HEAD} -->",
+        ),
+    ]
+    verified: list[str] = []
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(
+        handoff,
+        "_verify_head",
+        lambda repo, pr, head: verified.append(head),
+    )
+
+    assert (
+        handoff.main(
+            [
+                "finish-run",
+                "--repo",
+                REPO,
+                "--pr",
+                "7",
+                "--head",
+                HEAD,
+                "--outcome",
+                "converged",
+            ]
+        )
+        == 0
+    )
+    assert verified == [HEAD]
+    assert json.loads(capsys.readouterr().out)["replayed"] is True
 
 
 def test_show_handoff_uses_latest_authenticated_comment(

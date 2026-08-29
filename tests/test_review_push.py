@@ -64,6 +64,9 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
                 SUPERVISOR.read_bytes()
             ).hexdigest(),
             "AGENT_LOOP_HOOK_TIMEOUT_SECONDS": "30",
+            # Keep direct helper tests independent of wall-clock drift while
+            # exercising the wrapper-provided whole-run budget contract.
+            "AGENT_LOOP_REVIEW_DEADLINE_EPOCH": "2000000000",
             "AGENT_LOOP_REVIEW_VALIDATION_LOG": str(tmp_path / "validation.log"),
             "AGENT_LOOP_HOOK_GUARD_BIN": str(tmp_path / "guard-bin"),
             "AGENT_LOOP_REAL_GIT": shutil.which("git") or "git",
@@ -231,6 +234,56 @@ def test_validation_failure_leaves_remote_head_unchanged(
         ).split()[0]
         == start
     )
+    journal = json.loads(Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text())
+    assert journal["validatedSha"] is None
+    assert journal["publishedSha"] is None
+    assert journal["validationReceipt"] is None
+
+
+def test_reconciles_push_completed_after_validated_checkpoint(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, start = review_repo
+    head = _git(repo, "rev-parse", "HEAD")
+    state_file = Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"])
+    receipt = "c" * 64
+    state_file.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "startSha": start,
+                "validatedSha": head,
+                "publishedSha": None,
+                "validationReceipt": receipt,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _git(repo, "push", "origin", "HEAD:refs/heads/agent-loop/issue-7")
+
+    result = _run(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == head
+    journal = json.loads(state_file.read_text())
+    assert journal["validatedSha"] == head
+    assert journal["publishedSha"] == head
+    assert journal["validationReceipt"] == receipt
+
+
+def test_rejects_remote_advance_without_validated_checkpoint(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, _ = review_repo
+    _git(repo, "push", "origin", "HEAD:refs/heads/agent-loop/issue-7")
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "stale or uncertain remote head" in result.stderr
 
 
 def test_success_records_exact_validated_and_published_head(

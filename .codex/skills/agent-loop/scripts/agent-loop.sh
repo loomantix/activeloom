@@ -1710,13 +1710,17 @@ require_clean_committed_tree() {
 }
 
 run_validation() {
-    local label="$1" before_sha after_sha status
+    local label="$1" before_sha after_sha status timeout_seconds="$HOOK_TIMEOUT_SECONDS"
     if ! require_issue_branch_head; then
         echo "$label validation did not start on the issue branch" >&2
         return 1
     fi
     before_sha="$(git rev-parse HEAD)" || return 1
-    run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$HOOK_TIMEOUT_SECONDS" \
+    if [ "$REVIEW_DEADLINE_EPOCH" -gt 0 ]; then
+        prepare_review_pass_budget || return 1
+        timeout_seconds="$REVIEW_PASS_TIMEOUT_SECONDS"
+    fi
+    run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$timeout_seconds" \
         "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" false "" true || return 1
     status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || return 1
     after_sha="$(git rev-parse HEAD)" || return 1
@@ -1909,6 +1913,68 @@ recover_v3_review_pass() {
     REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
 }
 
+reset_interrupted_review_publication_journal() {
+    local slug="$1" round="$2" old_start="$3" new_start="$4"
+    local state_file lock_file archive_file state_dir state_tmp private_file
+    local journal_lock_fd
+    state_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-push-state.json"
+    lock_file="${state_file}.lock"
+    archive_file="${state_file}.interrupted-${old_start}-${new_start}"
+    for private_file in "$state_file" "$lock_file"; do
+        [ -f "$private_file" ] && [ ! -L "$private_file" ] || {
+            recovery_message "$slug interrupted review publication journal is incomplete or unsafe."
+            return 1
+        }
+        [ "$(stat -c '%u:%a' "$private_file")" = "$(id -u):600" ] || {
+            recovery_message "$slug interrupted review publication journal is not owner-only."
+            return 1
+        }
+    done
+    exec {journal_lock_fd}<>"$lock_file"
+    flock -x "$journal_lock_fd"
+
+    # A crash after this reset but before the replay starts is safe to resume:
+    # the fresh journal is already bound to the published candidate head.
+    if jq -e --arg start "$new_start" '
+        .version == 2 and .startSha == $start and
+        .validatedSha == null and .publishedSha == null and
+        .validationReceipt == null
+    ' "$state_file" >/dev/null; then
+        return 0
+    fi
+    jq -e --arg start "$old_start" --arg head "$new_start" '
+        .version == 2 and .startSha == $start and
+        .validatedSha == $head and .publishedSha == $head and
+        (.validationReceipt | type == "string" and test("^[0-9a-f]{64}$"))
+    ' "$state_file" >/dev/null || {
+        recovery_message "$slug interrupted review publication journal cannot prove the published candidate."
+        return 1
+    }
+
+    if [ -e "$archive_file" ]; then
+        [ -f "$archive_file" ] && [ ! -L "$archive_file" ] && \
+            cmp -s -- "$state_file" "$archive_file" || {
+            recovery_message "$slug interrupted review publication archive conflicts with the candidate."
+            return 1
+        }
+    else
+        install -m 600 -- "$state_file" "$archive_file" || {
+            recovery_message "Could not preserve the interrupted $slug review publication journal."
+            return 1
+        }
+    fi
+    state_dir="$(dirname -- "$state_file")"
+    state_tmp="$(mktemp "$state_dir/.review-push-state.XXXXXX")" || return 1
+    chmod 600 "$state_tmp"
+    jq -n --arg start "$new_start" \
+        '{version:2,startSha:$start,validatedSha:null,publishedSha:null,validationReceipt:null}' \
+        > "$state_tmp" || {
+        rm -f -- "$state_tmp"
+        return 1
+    }
+    mv -f -- "$state_tmp" "$state_file"
+}
+
 run_review_pass() {
     local engine="$1" slug="$2" hook="$3" round="$4"
     local hook_description="$5" hook_failure_description="$6"
@@ -2019,6 +2085,7 @@ run_review_pass() {
     export AGENT_LOOP_PROCESS_SUPERVISOR="$PROCESS_SUPERVISOR"
     export AGENT_LOOP_PROCESS_SUPERVISOR_SHA256="$PROCESS_SUPERVISOR_SHA256"
     export AGENT_LOOP_HOOK_TIMEOUT_SECONDS="$REVIEW_PASS_TIMEOUT_SECONDS"
+    export AGENT_LOOP_REVIEW_DEADLINE_EPOCH="$REVIEW_DEADLINE_EPOCH"
     export AGENT_LOOP_REVIEW_VALIDATION_LOG="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-prepublish-validation.log"
     review_hook_status=0
     run_bounded_hook "$hook_description (round $round)" "$hook" \
@@ -2030,7 +2097,7 @@ run_review_pass() {
         AGENT_LOOP_REVIEW_INSTALL_ROOT AGENT_LOOP_REVIEW_INSTALL_SHA256 \
         AGENT_LOOP_REVIEW_VALIDATION_HOOK AGENT_LOOP_PROCESS_SUPERVISOR \
         AGENT_LOOP_PROCESS_SUPERVISOR_SHA256 AGENT_LOOP_HOOK_TIMEOUT_SECONDS \
-        AGENT_LOOP_REVIEW_VALIDATION_LOG \
+        AGENT_LOOP_REVIEW_VALIDATION_LOG AGENT_LOOP_REVIEW_DEADLINE_EPOCH \
         CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
     if [ "$review_hook_status" -ne 0 ]; then
         recovery_message "$hook_failure_description failed in review round $round."
@@ -3019,7 +3086,17 @@ resume_review_run() {
                 resume_review_engine=claude
                 echo "   Final configured review round was interrupted; resuming its remaining leg"
             else
-                echo "   Final configured review round was interrupted; replaying it without consuming another round"
+                case "$state_review_engine" in codex|claude) ;; *)
+                    recovery_message "Interrupted final review checkpoint has no valid engine identity."
+                    return 1
+                    ;;
+                esac
+                resume_review_engine="$state_review_engine"
+                if [ "$current_head" != "$state_head" ]; then
+                    reset_interrupted_review_publication_journal \
+                        "$state_review_engine" "$state_round" "$state_head" "$current_head" || return 1
+                fi
+                echo "   Final configured review round was interrupted; replaying it from the published checkpoint without consuming another round"
             fi
         fi
     fi
@@ -3533,6 +3610,13 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     CONVERGED_CODEX_OUTCOME_SIGNATURE=""
     CONVERGED_CLAUDE_OUTCOME_FILE=""
     CONVERGED_CLAUDE_OUTCOME_SIGNATURE=""
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
+        update_run_state reviewing 1 "$initial_base_sha" "$initial_pr_sha" \
+            "" "" codex || {
+            recovery_message "Could not checkpoint the start of local review."
+            exit 1
+        }
+    fi
     # Keep this as a simple command instead of placing the function in an `||`
     # context. Bash disables `errexit` throughout a function invoked from an
     # AND/OR list, which would let an unguarded fetch or git query fail open.

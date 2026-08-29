@@ -23,6 +23,7 @@ fi
 : "${AGENT_LOOP_PROCESS_SUPERVISOR:?AGENT_LOOP_PROCESS_SUPERVISOR is required}"
 : "${AGENT_LOOP_PROCESS_SUPERVISOR_SHA256:?AGENT_LOOP_PROCESS_SUPERVISOR_SHA256 is required}"
 : "${AGENT_LOOP_HOOK_TIMEOUT_SECONDS:?AGENT_LOOP_HOOK_TIMEOUT_SECONDS is required}"
+: "${AGENT_LOOP_REVIEW_DEADLINE_EPOCH:?AGENT_LOOP_REVIEW_DEADLINE_EPOCH is required}"
 : "${AGENT_LOOP_REVIEW_VALIDATION_LOG:?AGENT_LOOP_REVIEW_VALIDATION_LOG is required}"
 : "${AGENT_LOOP_HOOK_GUARD_BIN:?AGENT_LOOP_HOOK_GUARD_BIN is required}"
 
@@ -134,7 +135,9 @@ jq -e '
     exit 1
 }
 expected_remote_head="$(jq -r '.startSha' <<<"$state_json")"
+validated_head="$(jq -r '.validatedSha // empty' <<<"$state_json")"
 published_head="$(jq -r '.publishedSha // empty' <<<"$state_json")"
+validation_receipt="$(jq -r '.validationReceipt // empty' <<<"$state_json")"
 [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] || {
     echo "review-push found an invalid remote-head checkpoint" >&2
     exit 1
@@ -155,13 +158,13 @@ remote_line="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRAN
 }
 remote_head="${remote_line%%[[:space:]]*}"
 [ "$remote_head" = "$expected_remote_head" ] || {
-    if [ "$remote_head" = "$local_head" ] && [ "$local_head" != "$expected_remote_head" ]; then
-        receipt="$(printf '%s\n' "reconciled:$local_head" | sha256sum | awk '{print $1}')"
+    if [ "$remote_head" = "$local_head" ] && [ "$validated_head" = "$local_head" ] && \
+       [[ "$validation_receipt" =~ ^[0-9a-f]{64}$ ]] && [ -z "$published_head" ]; then
         journal_dir="$(dirname -- "$state_file")"
         journal_tmp="$(mktemp "$journal_dir/.review-push-state.XXXXXX")"
         chmod 600 "$journal_tmp"
         jq -n --arg start "$expected_remote_head" --arg head "$local_head" \
-            --arg receipt "$receipt" \
+            --arg receipt "$validation_receipt" \
             '{version:2,startSha:$start,validatedSha:$head,publishedSha:$head,validationReceipt:$receipt}' \
             > "$journal_tmp"
         mv -f -- "$journal_tmp" "$state_file"
@@ -184,6 +187,17 @@ supervisor_sha="$(sha256sum "$AGENT_LOOP_PROCESS_SUPERVISOR" | awk '{print $1}')
     echo "review-push validation timeout is invalid" >&2
     exit 1
 }
+[[ "$AGENT_LOOP_REVIEW_DEADLINE_EPOCH" =~ ^[1-9][0-9]*$ ]] || {
+    echo "review-push whole-run deadline is invalid" >&2
+    exit 1
+}
+remaining_seconds=$((AGENT_LOOP_REVIEW_DEADLINE_EPOCH - $(date +%s)))
+[ "$remaining_seconds" -gt 0 ] || {
+    echo "review-push whole-run deadline is exhausted" >&2
+    exit 1
+}
+validation_timeout="$AGENT_LOOP_HOOK_TIMEOUT_SECONDS"
+[ "$remaining_seconds" -ge "$validation_timeout" ] || validation_timeout="$remaining_seconds"
 
 validation_status=0
 (
@@ -196,7 +210,7 @@ validation_status=0
     export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
     export GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null
     python3 -I "$AGENT_LOOP_PROCESS_SUPERVISOR" \
-        --timeout-seconds "$AGENT_LOOP_HOOK_TIMEOUT_SECONDS" \
+        --timeout-seconds "$validation_timeout" \
         --kill-after-seconds 15 -- bash -lc \
         'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"'
 ) >"$AGENT_LOOP_REVIEW_VALIDATION_LOG" 2>&1 || validation_status=$?
@@ -221,6 +235,14 @@ validation_receipt="$(
     { printf '%s\n' "$expected_remote_head" "$local_head" "$expected_config_sha256"; \
       sha256sum "$AGENT_LOOP_REVIEW_VALIDATION_LOG"; } | sha256sum | awk '{print $1}'
 )"
+journal_dir="$(dirname -- "$state_file")"
+journal_tmp="$(mktemp "$journal_dir/.review-push-state.XXXXXX")"
+chmod 600 "$journal_tmp"
+jq -n --arg start "$expected_remote_head" --arg head "$local_head" \
+    --arg receipt "$validation_receipt" \
+    '{version:2,startSha:$start,validatedSha:$head,publishedSha:null,validationReceipt:$receipt}' \
+    > "$journal_tmp"
+mv -f -- "$journal_tmp" "$state_file"
 
 require_origin_identity
 "$real_git" -c core.hooksPath=/dev/null -c core.fsmonitor=false push origin \
@@ -233,7 +255,6 @@ require_origin_identity
     echo "review-push could not attest the remote head" >&2
     exit 1
 }
-journal_dir="$(dirname -- "$state_file")"
 journal_tmp="$(mktemp "$journal_dir/.review-push-state.XXXXXX")"
 trap 'rm -f -- "$journal_tmp"' EXIT
 chmod 600 "$journal_tmp"

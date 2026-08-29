@@ -3295,6 +3295,56 @@ def test_resume_run_advances_identity_after_uncheckpointed_codex_fix(
     assert final_state["round"] == 2
 
 
+def test_final_round_resume_replays_from_an_interrupted_published_checkpoint(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    interrupt_after_publication = (
+        "printf 'interrupted review fix\\n' >> result.txt; "
+        "git add result.txt; git commit -m 'fix: interrupted review correction'; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; '
+        "exit 73"
+    )
+    first = _run(
+        consumer,
+        ["--issues", "98"],
+        issues=[_issue(98)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook=interrupt_after_publication,
+            review_max_rounds=1,
+        ),
+        timeout=60,
+    )
+    assert first.returncode != 0
+    assert "Configured Codex review hook failed" in first.stderr
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text())
+    worktree = Path(state["worktree"])
+    published_head = _run_git("rev-parse", "HEAD", cwd=worktree).stdout.strip()
+    assert published_head != state["headSha"]
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(98, assigned=True)],
+        config=_config_v3(tmp_path, review_max_rounds=1),
+        timeout=60,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "replaying it from the published checkpoint" in resumed.stdout
+    final_state = json.loads(state_file.read_text())
+    assert final_state["phase"] == "finalized"
+    assert final_state["round"] == 1
+    archives = list(
+        state_file.parent.glob("codex-review-round-1-push-state.json.interrupted-*")
+    )
+    assert len(archives) == 1
+    archived = json.loads(archives[0].read_text())
+    assert archived["startSha"] == state["headSha"]
+    assert archived["publishedSha"] == published_head
+
+
 def test_resume_run_advances_identity_after_uncheckpointed_clean_attestation(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
