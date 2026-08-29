@@ -62,7 +62,8 @@ with the issue worktree as the current directory.
 | `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility.                                          |
 | `config_doctor`                                  | Run the non-mutating compatibility preflight before issue selection or claim.                                                                        |
 | `claude_effort_policy`                           | Optional literal Claude effort policy enforced by the doctor.                                                                                        |
-| `review_max_rounds`                              | Maximum complete Codex→Claude rounds. Default `4`; cap exhaustion preserves the draft PR.                                                            |
+| `review_max_rounds`                              | Codex→Claude round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the draft PR.                                        |
+| `review_timeout_seconds`                         | Positive wall-clock budget for the complete review run, persisted across resume. Default `7200`; each pass is capped at the remaining budget.        |
 | `claude_review_hook`                             | Required local Claude PR review. Reads the ledger, comments before fixes, publishes through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, replies, and resolves. |
 | `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                                                                        |
 | `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                                        |
@@ -132,7 +133,7 @@ is not required on `PATH`.
    safe-push helper, posts structured fix and final-lane
    completion evidence, then resolves.
 8. If either engine made material fixes, restart from Codex. Stop after
-   `review_max_rounds` and preserve the draft.
+   `review_max_rounds` or the persisted whole-run deadline and preserve the draft.
 9. Re-attest the exact issue contract and dependencies, excluding only the
    wrapper-captured PR from the addressed-by-open-PR check. Require a complete
    clean round plus replies and resolutions on every marked thread, then mark

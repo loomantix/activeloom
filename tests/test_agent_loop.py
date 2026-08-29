@@ -2284,3 +2284,34 @@ def test_timeout_with_committed_work_does_not_retry(
     match = re.search(r"Worktree preserved: (.+)", result.stderr)
     assert match
     assert Path(match.group(1)).exists()
+
+
+@pytest.mark.parametrize(
+    ("config_key", "config_value", "message"),
+    [
+        ("review_max_rounds", 5, "review_max_rounds cannot exceed the Deep review cap of 4"),
+        ("review_timeout_seconds", 0, "review_timeout_seconds must be a positive integer"),
+    ],
+)
+def test_review_budget_config_fails_before_issue_mutation(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    config_key: str,
+    config_value: int,
+    message: str,
+) -> None:
+    config = (
+        _config(tmp_path, review_max_rounds=config_value)
+        if config_key == "review_max_rounds"
+        else _config(tmp_path, review_timeout_seconds=config_value)
+    )
+    result = _run(
+        consumer,
+        ["--issues", "27", "--dry-run"],
+        issues=[_issue(27)],
+        config=config,
+    )
+    assert result.returncode != 0
+    assert message in result.stderr
+    gh_log = consumer[3] / "gh.log"
+    assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")

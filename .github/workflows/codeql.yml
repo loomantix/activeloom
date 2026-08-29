@@ -14,10 +14,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   schedule:
     # Weekly scan so a query-suite improvement at upstream catches
     # latent vulnerabilities even if no PR touched the file.
     - cron: '17 9 * * 1'
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  # Preserve every main and scheduled baseline scan while cancelling obsolete
+  # PR heads.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -27,6 +34,7 @@ permissions:
 jobs:
   analyze:
     name: Analyze (Python)
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

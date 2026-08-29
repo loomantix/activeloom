@@ -256,8 +256,10 @@ review is permitted but must be declared with a reason; see step 2.
 Auto mode is available for the `gemini` reviewer, launched through
 [`skills/critique/scripts/run-agy-review.sh`](skills/critique/scripts/run-agy-review.sh).
 The launcher pins `gemini-3.7-flash-high`, literal `--effort high`, accept-edits
-mode, unattended permissions, structured JSON output, and a 60-minute print
-bound; a caller supplies only the repository, PR, base, head, and round. It
+mode, unattended permissions, and structured JSON output. A pass defaults to a
+30-minute bound through `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the
+hard 3600-second ceiling are rejected. A caller supplies only the repository,
+PR, base, head, and round. It
 refuses to start unless the current repository, the PR's ownership and head
 repository, local HEAD, PR head, and remote head all match the requested exact
 head over a clean worktree, and unless the reviewer CLI resolves exactly one

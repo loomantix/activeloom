@@ -98,6 +98,10 @@ remote_head="${remote_line%%[[:space:]]*}"
     echo "review-push rejects a stale or uncertain remote head" >&2
     exit 1
 }
+if [ "$expected_remote_head" != "$AGENT_LOOP_PR_HEAD_SHA" ]; then
+    echo "review-push permits only one publication per reviewer pass" >&2
+    exit 1
+fi
 
 require_origin_identity
 "$real_git" push origin \

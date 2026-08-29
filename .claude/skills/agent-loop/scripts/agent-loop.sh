@@ -165,6 +165,9 @@ REVIEW_CONTRACT_VERSION=""
 CONFIG_DOCTOR=true
 CLAUDE_EFFORT_POLICY=""
 REVIEW_MAX_ROUNDS=4
+REVIEW_TIMEOUT_SECONDS=7200
+REVIEW_DEADLINE_EPOCH=0
+REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
 DEPENDENCY_GATE=ready
@@ -192,6 +195,7 @@ assign_config() {
         config_doctor) CONFIG_DOCTOR="$value" ;;
         claude_effort_policy) CLAUDE_EFFORT_POLICY="$value" ;;
         review_max_rounds) REVIEW_MAX_ROUNDS="$value" ;;
+        review_timeout_seconds) REVIEW_TIMEOUT_SECONDS="$value" ;;
         retry_on_timeout) RETRY_ON_TIMEOUT="$value" ;;
         retry_delay_seconds) RETRY_DELAY_SECONDS="$value" ;;
         dependency_gate) DEPENDENCY_GATE="$value" ;;
@@ -325,12 +329,15 @@ BASE_REMOTE_REF="refs/remotes/origin/$BASE_BRANCH"
 BASE_FETCH_REFSPEC="+refs/heads/$BASE_BRANCH:$BASE_REMOTE_REF"
 
 for value in "$WORKER_RETRIES" "$WORKER_TIMEOUT_SECONDS" "$HOOK_TIMEOUT_SECONDS" \
-             "$REVIEW_MAX_ROUNDS" "$RETRY_DELAY_SECONDS" "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
+             "$REVIEW_MAX_ROUNDS" "$REVIEW_TIMEOUT_SECONDS" "$RETRY_DELAY_SECONDS" \
+             "$LOG_MAX_KB" "$OUTPUT_MAX_LINES"; do
     [[ "$value" =~ ^[0-9]+$ ]] || { echo "numeric agent-loop config value required: $value" >&2; exit 1; }
 done
 [ "$WORKER_TIMEOUT_SECONDS" -gt 0 ] || { echo "worker_timeout_seconds must be a positive integer" >&2; exit 1; }
 [ "$HOOK_TIMEOUT_SECONDS" -gt 0 ] || { echo "hook_timeout_seconds must be a positive integer" >&2; exit 1; }
 [ "$REVIEW_MAX_ROUNDS" -gt 0 ] || { echo "review_max_rounds must be a positive integer" >&2; exit 1; }
+[ "$REVIEW_MAX_ROUNDS" -le 4 ] || { echo "review_max_rounds cannot exceed the Deep review cap of 4" >&2; exit 1; }
+[ "$REVIEW_TIMEOUT_SECONDS" -gt 0 ] || { echo "review_timeout_seconds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
@@ -502,6 +509,16 @@ print(path.resolve(strict=True))
     case "$resume_log_dir" in "$LOG_ROOT"/*) ;; *) echo "run state log directory is outside configured log_root" >&2; exit 1 ;; esac
     acquire_run_lock "$resume_log_dir" || exit 1
     RESUME_STATE_JSON="$(python3 "$RUN_STATE_HELPER" show --file "$RESUME_RUN_FILE")" || exit 1
+    recorded_review_max_rounds="$(jq -r '.reviewMaxRounds // empty' <<<"$RESUME_STATE_JSON")"
+    if [ -n "$recorded_review_max_rounds" ] && [ "$REVIEW_MAX_ROUNDS" -gt "$recorded_review_max_rounds" ]; then
+        REVIEW_MAX_ROUNDS="$recorded_review_max_rounds"
+        echo "   Review round cap restored from run state: $REVIEW_MAX_ROUNDS"
+    fi
+    REVIEW_DEADLINE_EPOCH="$(jq -r '.reviewDeadlineEpoch // empty' <<<"$RESUME_STATE_JSON")"
+    if [ -z "$REVIEW_DEADLINE_EPOCH" ]; then
+        REVIEW_DEADLINE_EPOCH=$(( $(stat -c %Y "$RESUME_RUN_FILE") + REVIEW_TIMEOUT_SECONDS ))
+        echo "   Legacy run state uses its original checkpoint time for the review deadline"
+    fi
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
         exit 1
@@ -1178,13 +1195,18 @@ require_clean_committed_tree() {
 }
 
 run_validation() {
-    local label="$1" before_sha after_sha status
+    local label="$1" budgeted="${2:-false}" before_sha after_sha status
+    local timeout_seconds="$HOOK_TIMEOUT_SECONDS"
     if ! require_issue_branch_head; then
         echo "$label validation did not start on the issue branch" >&2
         return 1
     fi
     before_sha="$(git rev-parse HEAD)" || return 1
-    run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$HOOK_TIMEOUT_SECONDS" \
+    if [ "$budgeted" = true ]; then
+        prepare_review_pass_budget || return 1
+        timeout_seconds="$REVIEW_PASS_TIMEOUT_SECONDS"
+    fi
+    run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$timeout_seconds" \
         "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" || return 1
     status="$(git status --porcelain)" || return 1
     after_sha="$(git rev-parse HEAD)" || return 1
@@ -1376,6 +1398,8 @@ run_review_pass() {
     local historical_comment_ids_signature
     local boundary_status
 
+    prepare_review_pass_budget || return 1
+
     export AGENT_LOOP_REVIEW_ENGINE="$slug"
     outcome_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.outcome"
     result_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.result.json"
@@ -1429,8 +1453,9 @@ run_review_pass() {
         unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
+    export AGENT_LOOP_REVIEW_DEADLINE_EPOCH="$REVIEW_DEADLINE_EPOCH"
     run_bounded_hook "$hook_description (round $round)" "$hook" \
-        "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
+        "$REVIEW_PASS_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
         recovery_message "$hook_failure_description failed in review round $round."
         return 1
     }
@@ -1538,7 +1563,7 @@ run_review_pass() {
             return 1
         }
     fi
-    run_validation "$slug-review-round-$round" || {
+    run_validation "$slug-review-round-$round" true || {
         recovery_message "Validation after $validation_description failed in review round $round."
         return 1
     }
@@ -1566,6 +1591,23 @@ require_fast_forward_base_advance() {
     if ! git merge-base --is-ancestor "$reviewed_base" "$latest_base"; then
         recovery_message "Base branch moved non-fast-forward $phase."
         return 1
+    fi
+}
+
+prepare_review_pass_budget() {
+    local now remaining
+    now="$(date +%s)"
+    if [ "$REVIEW_DEADLINE_EPOCH" -eq 0 ]; then
+        REVIEW_DEADLINE_EPOCH=$((now + REVIEW_TIMEOUT_SECONDS))
+    fi
+    remaining=$((REVIEW_DEADLINE_EPOCH - now))
+    if [ "$remaining" -le 0 ]; then
+        recovery_message "Local review exceeded its configured whole-run time budget."
+        return 1
+    fi
+    REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
+    if [ "$remaining" -lt "$REVIEW_PASS_TIMEOUT_SECONDS" ]; then
+        REVIEW_PASS_TIMEOUT_SECONDS="$remaining"
     fi
 }
 
@@ -2794,6 +2836,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"
+        REVIEW_DEADLINE_EPOCH=$(( $(date +%s) + REVIEW_TIMEOUT_SECONDS ))
         python3 "$RUN_STATE_HELPER" create --file "$AGENT_LOOP_RUN_STATE_FILE" \
             --run-id "$RUN_TAG-issue-$SELECTED_ID" --repo "$GH_REPO" \
             --issue "$SELECTED_ID" --base-branch "$BASE_BRANCH" \
@@ -2802,7 +2845,9 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             --branch "$branch" --worktree "$ACTIVE_WORKTREE" \
             --log-dir "$AGENT_LOOP_LOG_DIR" --pr "$AGENT_LOOP_PR_NUMBER" \
             --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \
-            --head-sha "$initial_pr_sha" >/dev/null || {
+            --head-sha "$initial_pr_sha" \
+            --review-deadline-epoch "$REVIEW_DEADLINE_EPOCH" \
+            --review-max-rounds "$REVIEW_MAX_ROUNDS" >/dev/null || {
             recovery_message "Could not create the private review run-state checkpoint."
             exit 1
         }

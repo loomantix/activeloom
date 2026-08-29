@@ -37,6 +37,10 @@ review_contract_version = 3
 config_doctor = true
 claude_effort_policy =
 review_max_rounds = 4
+# Positive wall-clock budget for the complete review run. The deadline is
+# persisted so resume cannot reset it; each review pass receives only the
+# remaining time.
+review_timeout_seconds = 7200
 claude_review_hook =
 codex_review_hook =
 

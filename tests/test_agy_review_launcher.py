@@ -257,7 +257,7 @@ def test_launcher_executes_the_pinned_model_effort_and_permission_contract(tmp_p
         "--output-format",
         "json",
         "--print-timeout",
-        "60m",
+        "1800s",
     ]
     assert len(argv) == 15
     assert argv[13] == "--print"
