@@ -28,10 +28,17 @@ done
 [[ "$base" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$round" =~ ^[1-9][0-9]*$ ]] || usage
+review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
+[[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
+    [ "$review_timeout_seconds" -le 3600 ] || {
+    echo "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
+    exit 2
+}
 
 command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "gh is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; }
 
 current_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 actor="$(gh api user --jq .login)"
@@ -77,7 +84,8 @@ export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="claude"
 
-exec "$claude_review_cli" \
+exec timeout --signal=TERM --kill-after=30s "${review_timeout_seconds}s" \
+    "$claude_review_cli" \
     --effort low \
     --permission-mode bypassPermissions \
     --no-session-persistence \

@@ -1709,14 +1709,21 @@ require_clean_committed_tree() {
     fi
 }
 
+# The optional second argument charges this validation to the whole-run review
+# budget. Only validations that are part of a review round may set it. The
+# post-convergence validations (`final-reviewed-head`, the recovery paths) run
+# after review has finished and must NOT be charged: a run whose review spent
+# its window would otherwise converge and then abort here with no way to
+# publish, and resume reloads the same expired deadline and aborts again.
 run_validation() {
-    local label="$1" before_sha after_sha status timeout_seconds="$HOOK_TIMEOUT_SECONDS"
+    local label="$1" budgeted="${2:-false}"
+    local before_sha after_sha status timeout_seconds="$HOOK_TIMEOUT_SECONDS"
     if ! require_issue_branch_head; then
         echo "$label validation did not start on the issue branch" >&2
         return 1
     fi
     before_sha="$(git rev-parse HEAD)" || return 1
-    if [ "$REVIEW_DEADLINE_EPOCH" -gt 0 ]; then
+    if [ "$budgeted" = true ] && [ "$REVIEW_DEADLINE_EPOCH" -gt 0 ]; then
         prepare_review_pass_budget || return 1
         timeout_seconds="$REVIEW_PASS_TIMEOUT_SECONDS"
     fi
@@ -1896,7 +1903,7 @@ recover_v3_review_pass() {
         "$outcome_signature" || return 1
     classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' \
         "$outcome_file")" || return 1
-    run_validation "$slug-review-round-$round" || {
+    run_validation "$slug-review-round-$round" true || {
         recovery_message "Validation after recovered $engine review failed in review round $round."
         return 1
     }
@@ -2216,12 +2223,7 @@ run_review_pass() {
             return 1
         }
     fi
-    if [ "$after_sha" = "$before_sha" ]; then
-        run_validation "$slug-review-round-$round" || {
-            recovery_message "Validation after $validation_description failed in review round $round."
-            return 1
-        }
-    else
+    if [ "$after_sha" != "$before_sha" ]; then
         jq -e --arg start "$before_sha" --arg head "$after_sha" '
             .version == 2 and .startSha == $start and
             .validatedSha == $head and .publishedSha == $head and
@@ -2231,6 +2233,14 @@ run_review_pass() {
             return 1
         }
     fi
+    # The helper receipt makes crash recovery deterministic, but it is not an
+    # authentication boundary against the same-uid review process. Re-run the
+    # trusted parent validation after every pass so a forged journal or direct
+    # push cannot manufacture the wrapper's acceptance of a changed head.
+    run_validation "$slug-review-round-$round" true || {
+        recovery_message "Validation after $validation_description failed in review round $round."
+        return 1
+    }
     require_review_outcome_signature "$engine" "$outcome_file" \
         "$outcome_signature" "during validation in round $round" || return 1
     boundary_status=0
@@ -2306,7 +2316,7 @@ run_review_convergence() {
                 recovery_message "Publication diff inspection failed before review round $round."
                 return 1
             }
-            run_validation "fresh-base-round-$round" || {
+            run_validation "fresh-base-round-$round" true || {
                 recovery_message "Fresh-base validation failed before review round $round."
                 return 1
             }

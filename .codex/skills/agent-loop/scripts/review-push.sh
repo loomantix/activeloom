@@ -199,6 +199,28 @@ remaining_seconds=$((AGENT_LOOP_REVIEW_DEADLINE_EPOCH - $(date +%s)))
 validation_timeout="$AGENT_LOOP_HOOK_TIMEOUT_SECONDS"
 [ "$remaining_seconds" -ge "$validation_timeout" ] || validation_timeout="$remaining_seconds"
 
+# Never open the predictable final path for writing: the untrusted review can
+# pre-create it as a symlink. Write an owner-only random sibling and atomically
+# replace the final path after the validation process exits.
+validation_log_dir="$(dirname -- "$AGENT_LOOP_REVIEW_VALIDATION_LOG")"
+[ "$validation_log_dir" = "$(dirname -- "$state_file")" ] || {
+    echo "review-push validation log must share the private journal directory" >&2
+    exit 1
+}
+if [ -e "$AGENT_LOOP_REVIEW_VALIDATION_LOG" ] || [ -L "$AGENT_LOOP_REVIEW_VALIDATION_LOG" ]; then
+    [ -f "$AGENT_LOOP_REVIEW_VALIDATION_LOG" ] && [ ! -L "$AGENT_LOOP_REVIEW_VALIDATION_LOG" ] || {
+        echo "review-push requires a regular pre-publication validation log" >&2
+        exit 1
+    }
+    [ "$(stat -c '%u:%a' "$AGENT_LOOP_REVIEW_VALIDATION_LOG")" = "$(id -u):600" ] || {
+        echo "review-push pre-publication validation log must be owner-only" >&2
+        exit 1
+    }
+fi
+validation_log_tmp="$(mktemp "$validation_log_dir/.prepublish-validation.XXXXXX")"
+chmod 600 "$validation_log_tmp"
+trap 'rm -f -- "$validation_log_tmp"' EXIT
+
 validation_status=0
 (
     unset AGENT_LOOP_REVIEW_PUSH_HELPER AGENT_LOOP_ORIGIN_FETCH_URLS \
@@ -213,7 +235,9 @@ validation_status=0
         --timeout-seconds "$validation_timeout" \
         --kill-after-seconds 15 -- bash -lc \
         'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"'
-) >"$AGENT_LOOP_REVIEW_VALIDATION_LOG" 2>&1 || validation_status=$?
+) >"$validation_log_tmp" 2>&1 || validation_status=$?
+mv -f -- "$validation_log_tmp" "$AGENT_LOOP_REVIEW_VALIDATION_LOG"
+trap - EXIT
 if [ "$validation_status" -ne 0 ]; then
     echo "review-push pre-publication validation failed (exit $validation_status)" >&2
     tail -n 40 "$AGENT_LOOP_REVIEW_VALIDATION_LOG" >&2 || true

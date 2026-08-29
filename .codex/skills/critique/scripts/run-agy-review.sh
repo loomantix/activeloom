@@ -33,6 +33,12 @@ done
 [[ "$base" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$round" =~ ^[1-9][0-9]*$ ]] || usage
+review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
+[[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
+    [ "$review_timeout_seconds" -le 3600 ] || {
+    echo "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
+    exit 2
+}
 
 command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "gh is required" >&2; exit 1; }
@@ -254,16 +260,17 @@ export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="gemini"
 
 agy_exit=0
-# 61m outer bound against the 60m --print-timeout below, for the same reason as
-# the skill preflight: let Agy time out and report rather than be killed.
-run_agy_managed "$result_file" 61m \
+# Give Agy 30 seconds to serialize its own timeout response before the outer
+# process-group guard terminates the pass and every descendant.
+agy_outer_timeout_seconds=$((review_timeout_seconds + 30))
+run_agy_managed "$result_file" "${agy_outer_timeout_seconds}s" \
     --model gemini-3.7-flash-high \
     --effort high \
     --mode accept-edits \
     --dangerously-skip-permissions \
     --add-dir "$agy_surface_root" \
     --output-format json \
-    --print-timeout 60m \
+    --print-timeout "${review_timeout_seconds}s" \
     --print "$prompt" || agy_exit="$?"
 
 python3 - "$result_file" "$agy_exit" <<'PY'

@@ -21,7 +21,6 @@ OTHER_HEAD = "b" * 40
 AGY_SURFACE_SHA = "3d7ad7c6d1e088faca88d52490bda1f45ce7e1fd"
 
 
-
 def _trusted_environment(
     tmp_path: Path,
     *,
@@ -30,6 +29,7 @@ def _trusted_environment(
     remote_head: str = HEAD,
     surface_remote: str = "https://github.com/loomantix/gemini-platform.git",
     surface_head: str = AGY_SURFACE_SHA,
+    authorized: bool = True,
 ) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -100,8 +100,9 @@ def _trusted_environment(
         "    else:\n"
         "        print(pr_head)\n"
         "elif args[:3] == ['api', '--paginate', '--slurp']:\n"
-        "    print(json.dumps([[{'id': 10, 'body': run_comment, "
-        "'user': {'login': 'reviewer'}}]]))\n"
+        f"    rows = [[{{'id': 10, 'body': run_comment, "
+        f"'user': {{'login': 'reviewer'}}}}]] if {authorized!r} else [[]]\n"
+        "    print(json.dumps(rows))\n"
         "else:\n"
         "    raise SystemExit('unexpected gh invocation: ' + ' '.join(args))\n",
         encoding="utf-8",
@@ -220,7 +221,7 @@ def test_launcher_executes_agy_with_pinned_model_and_high_effort(tmp_path: Path)
         "--output-format",
         "json",
         "--print-timeout",
-        "60m",
+        "1800s",
     ]
     assert len(argv) == 15
     assert argv[13] == "--print"
@@ -614,3 +615,35 @@ def test_launcher_completes_under_inherited_job_control(tmp_path: Path) -> None:
 
     assert result.stdout == "review complete\n"
     assert argv_file.exists()
+
+
+def test_launcher_refuses_an_unauthorized_pass_without_starting_agy(
+    tmp_path: Path,
+) -> None:
+    """`authorize-pass` is the gate; prove it stops the pass, not just prints.
+
+    Without this the whole `authorize-pass` call could be deleted from the
+    launcher and every other test here would still pass, because they all
+    install a fake `gh` that unconditionally authorizes.
+    """
+    marker = tmp_path / "called"
+    fake_agy = tmp_path / "agy"
+    fake_agy.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n", encoding="utf-8")
+    fake_agy.chmod(0o755)
+    environment = {
+        **_trusted_environment(tmp_path, authorized=False),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = subprocess.run(
+        _command(),
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "no authenticated local-review run exists" in result.stderr
+    assert not marker.exists()

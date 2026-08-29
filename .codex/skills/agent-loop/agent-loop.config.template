@@ -57,8 +57,11 @@ claude_effort_policy = low
 claude_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude
 codex_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex
 review_max_rounds = 4
-# Whole review budget across every engine and round. Resume preserves the
-# original deadline; it never grants another full window.
+# Whole review budget across every engine and round. Resume reloads the
+# deadline recorded in run state, so it never grants another full window.
+# Legacy run state predating that field has no recorded deadline: resume
+# derives one from the state file's last checkpoint time instead, which does
+# extend the window. Size this value against the recorded-deadline case.
 review_timeout_seconds = 7200
 
 # Optional worker override. When empty, the wrapper runs `codex exec` with the

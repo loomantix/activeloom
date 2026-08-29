@@ -364,6 +364,9 @@ def test_local_review_skills_share_cache_stable_scoped_context() -> None:
     ]
     assert "Do not make each lane reload the PR ledger" in normalized["critique"]
     assert "do not hand every lane a whole-diff artifact" in normalized["refactorpass"]
+    assert "invoke the helper exactly once after the final fix" in normalized["critique"]
+    assert "invoke that wrapper-owned helper exactly once" in normalized["ledger"]
+    assert "permits exactly one publication" in normalized["refactorpass"]
 
 
 def test_local_review_documents_explicit_cross_engine_modes() -> None:

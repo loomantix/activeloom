@@ -59,6 +59,9 @@ or override Claude's model, effort, permission, persistence, or output options;
 the launcher owns those settings and pins literal `--effort low`. Do not set
 `CLAUDE_REVIEW_CLI` outside launcher tests. A missing, incompatible, or failed
 launcher is a blocker, not permission to fall back to the raw CLI.
+The launcher also owns a 30-minute pass timeout. Operators may lower it with
+`LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the hard 3600-second ceiling
+are rejected.
 
 The contract-v4 `agent-loop` is the sole exception: its wrapper directly
 invokes the separately tested
@@ -80,7 +83,8 @@ modes silently in the middle of a round.
   default direct interactive reviewer engine is `gemini`, launched through the
   Agy CLI only via `.codex/skills/critique/scripts/run-agy-review.sh`. That
   launcher pins `gemini-3.7-flash-high`, literal `--effort high`, accept-edits
-  mode, unattended permissions, structured output, and a 60-minute print bound;
+  mode, unattended permissions, structured output, and the same 30-minute
+  default / 3600-second hard pass bound;
   callers cannot supply or override them. It also requires Agy to resolve the
   current `deepcritique` skill, resolves its real target, and validates a
   structurally compatible relay surface from a clean, exact-commit companion
@@ -184,7 +188,10 @@ engine in a fresh terminal.
 
 7. Cap the loop at two Lean rounds or four Deep rounds. Before each manual
    pass, require `local-review-handoff.py authorize-pass` for its engine, exact
-   base/head, and round. The tested launchers perform this check themselves.
+   base/head, and round. Only `run-claude-review.sh` and `run-agy-review.sh`
+   perform this check themselves; a Codex leg and the `agent-loop` review hooks
+   are bounded by `review_max_rounds` and the whole-run deadline instead, so do
+   not assume a pass is budget-checked merely because it was launched.
    At cap exhaustion, stop, preserve the branch,
    worktree, and draft PR, and report non-convergence. Do not mark it ready.
 8. Converge when `verify-coverage` passes at the exact current head — a roster
@@ -195,6 +202,23 @@ engine in a fresh terminal.
    `local-review-handoff.py finish-run --outcome converged` and mark the PR
    ready. Record `exhausted` or `aborted` when those are the actual terminal
    outcomes. Never leave a terminal run open merely to permit another pass.
+
+### One publication per wrapper pass
+
+When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, the pass runs under the wrapper
+and `review-push.sh` permits **exactly one** publication for it. That overrides
+the per-finding publish cadence in
+[`references/local-review-ledger.md`](references/local-review-ledger.md)
+"Fix, reply, and resolve", whose step 2 reads as one helper call per finding:
+here, apply every fix the pass will make, commit them, and call the helper once.
+A cleanup lane running inside the same pass commits locally and does not publish
+for itself.
+
+The ledger's ordering contract is unchanged — each finding is still posted
+inline before it is edited, and each thread still gets its own disposition reply
+naming the fix SHA. Only the number of pushes changes: the second helper call in
+a pass exits with "review-push permits only one publication per reviewer pass"
+and aborts the pass mid-fix.
 
 The author engine's own adversarial pass never counts toward coverage. It
 re-reads the change while still holding the rationale that produced it, which is

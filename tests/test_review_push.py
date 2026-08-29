@@ -240,6 +240,28 @@ def test_validation_failure_leaves_remote_head_unchanged(
     assert journal["validationReceipt"] is None
 
 
+def test_validation_log_symlink_is_rejected_without_truncating_target(
+    review_repo: tuple[Path, dict[str, str], str], tmp_path: Path
+) -> None:
+    repo, env, start = review_repo
+    target = tmp_path / "protected-state.json"
+    target.write_text("preserve me\n", encoding="utf-8")
+    validation_log = Path(env["AGENT_LOOP_REVIEW_VALIDATION_LOG"])
+    validation_log.symlink_to(target)
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "regular pre-publication validation log" in result.stderr
+    assert target.read_text(encoding="utf-8") == "preserve me\n"
+    assert (
+        _git(
+            repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7"
+        ).split()[0]
+        == start
+    )
+
+
 def test_reconciles_push_completed_after_validated_checkpoint(
     review_repo: tuple[Path, dict[str, str], str],
 ) -> None:
@@ -516,6 +538,70 @@ def test_replacement_ref_cannot_forge_review_history(
         == helper_head
     )
 
+
+def test_rejects_non_forward_review_history(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    """Unrelated history must not publish, and must leave the remote untouched.
+
+    Both ancestry gates in the helper were uncovered: this one against
+    `AGENT_LOOP_PR_HEAD_SHA`, and the later one against the journal's own
+    `startSha`. The three tests that used to reach this area now stop at the
+    one-publication gate, so assert the ancestry refusal directly.
+    """
+    repo, env, start = review_repo
+    _git(repo, "switch", "--orphan", "unrelated")
+    (repo / "unrelated.txt").write_text("unrelated history\n", encoding="utf-8")
+    _git(repo, "add", "unrelated.txt")
+    _git(repo, "commit", "-m", "fix: unrelated review")
+    _git(repo, "branch", "-M", "agent-loop/issue-7")
+    assert _git(repo, "rev-parse", "HEAD") != start
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "rejects non-forward review history" in result.stderr
+    assert (
+        _git(
+            repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7"
+        ).split()[0]
+        == start
+    )
+    assert (
+        json.loads(
+            Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8")
+        )["publishedSha"]
+        is None
+    )
+
+
+def test_replacement_ref_cannot_satisfy_the_ancestry_gate(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    """A forged `refs/replace/*` must not make unrelated history look descended."""
+    repo, env, start = review_repo
+    _git(repo, "switch", "--orphan", "unrelated")
+    (repo / "unrelated.txt").write_text("unrelated history\n", encoding="utf-8")
+    _git(repo, "add", "unrelated.txt")
+    _git(repo, "commit", "-m", "fix: unrelated review")
+    _git(repo, "branch", "-M", "agent-loop/issue-7")
+    divergent = _git(repo, "rev-parse", "HEAD")
+
+    forged = _git(
+        repo, "commit-tree", f"{divergent}^{{tree}}", "-p", start, "-m", "forged"
+    )
+    _git(repo, "replace", "-f", divergent, forged)
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "rejects non-forward review history" in result.stderr
+    assert (
+        _git(
+            repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7"
+        ).split()[0]
+        == start
+    )
 
 def test_rejects_changed_origin_before_push(
     review_repo: tuple[Path, dict[str, str], str],
