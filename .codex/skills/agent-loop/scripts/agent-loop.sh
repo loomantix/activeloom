@@ -464,7 +464,7 @@ fetch_base() {
         fetch origin "$BASE_FETCH_REFSPEC" --quiet
 }
 
-if [ "$DRY_RUN" = false ]; then
+if [ "$DRY_RUN" = false ] && [ -z "$RESUME_RUN_FILE" ] && [ -z "$RESUME_BATCH_FILE" ]; then
     fetch_base
 fi
 git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
@@ -747,6 +747,7 @@ print(path.resolve(strict=True))
     fi
     TRUSTED_GIT_CONFIG_SHA256="$actual_resume_config"
     export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
+    fetch_base
     resume_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
     recorded_log_dir="$(jq -r '.logDir' <<<"$RESUME_STATE_JSON")"
     [ "$recorded_log_dir" = "$resume_log_dir" ] || {
@@ -3006,6 +3007,7 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             exit 1
         }
     fi
+    fetch_base
     [ "$(jq -r '.repo' <<<"$batch_json")" = "$GH_REPO" ] || { echo "batch state repository mismatch" >&2; exit 1; }
     [ "$(jq -r '.baseBranch' <<<"$batch_json")" = "$BASE_BRANCH" ] || { echo "batch state base branch mismatch" >&2; exit 1; }
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"

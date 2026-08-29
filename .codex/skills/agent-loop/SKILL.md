@@ -57,8 +57,21 @@ issue gets a unique `agent-loop/issue-<N>-<run>` branch and linked worktree.
   a local commit and forbid push/PR creation.
 - `.codex/skills/agent-loop/agent-loop.config`: hook and base configuration.
 - `.codex/skills/issues/scripts/ready.py`: ready-queue provider.
-- `.claude/skills/deepcritique/SKILL.md`: separately managed Claude-native
-  review guidance. Codex platform sync does not install or overwrite it.
+- At least one committed repository instruction file named `AGENTS.md` or
+  `CLAUDE.md` in the root or a nested directory.
+- The compatible Claude-native review bundle, managed and synced separately
+  from `loomantix/claude-platform`:
+  - `.claude/REVIEW_WORKFLOW.md`
+  - `.claude/references/local-review-ledger.md`
+  - `.claude/skills/deepcritique/SKILL.md`
+  - `.claude/skills/critique/SKILL.md`
+  - `.claude/skills/critique/scripts/review-ledger.js`
+  - `.claude/skills/refactorpass/SKILL.md`
+
+Codex platform sync does not install or overwrite `.claude/**`. Install or
+advance the compatible Claude-platform bundle before advancing the Codex
+agent-loop wrapper; a partial or out-of-order update fails closed before issue
+selection or claim.
 
 The config, instructions, and prompt are bootstrapped with
 `create_if_missing: true`; merge template changes manually into existing
@@ -170,17 +183,21 @@ The wrapper is upstream-owned, but config, worker instructions, and the prompt
 are `create_if_missing` consumer files. Existing consumers must therefore merge
 the current templates manually before the synced wrapper can run:
 
-1. Set `review_contract_version = 4` and both hooks to the dedicated trusted launcher exactly as shown in the
+1. Install the current compatible Claude-platform review bundle listed under
+   Required Consumer Files and commit at least one applicable `AGENTS.md` or
+   `CLAUDE.md`. Complete this separately managed sync before advancing the Codex
+   wrapper; there is no partial-bundle compatibility mode.
+2. Set `review_contract_version = 4` and both hooks to the dedicated trusted launcher exactly as shown in the
    current config template. Do not wrap, extend, or replace those commands; the
    launcher selects the engine, scopes the review to the immutable base and
    exact head, and owns the contract-v4 result path.
-2. Configure a non-mutating `validation_hook`, retain `config_doctor = true` and
+3. Configure a non-mutating `validation_hook`, retain `config_doctor = true` and
    `claude_effort_policy = low`, and optionally override
    `review_max_rounds = 4` with another positive cap. The launcher and reviewer
    skill own the result, push, and blocked-result contracts. Before issue
-   selection or claim, the doctor requires the fetched base to contain both
-   Codex and Claude native `deepcritique` skills as regular blobs.
-3. Merge the current local-only wording from the instruction and prompt
+   selection or claim, the doctor requires the fetched base to contain the full
+   Codex- and Claude-native review surfaces as regular blobs.
+4. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync
    will not overwrite those consumer-owned files.
 

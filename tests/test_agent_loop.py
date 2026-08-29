@@ -1372,6 +1372,7 @@ def test_recovery_does_not_print_a_mutated_entrypoint(
 def test_resume_rejects_git_config_drift_from_the_original_run(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
+    _, _, bin_dir, _ = consumer
     first = _run(
         consumer,
         ["--issues", "73"],
@@ -1384,16 +1385,33 @@ def test_resume_rejects_git_config_drift_from_the_original_run(
     hooks = tmp_path / "resume-hooks"
     hooks.mkdir()
     _run_git("config", "core.hooksPath", str(hooks), cwd=consumer[0])
+    fetch_marker = tmp_path / "resume-fetch-ran"
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+for argument in "$@"; do
+    if [ "$argument" = fetch ]; then touch "$AGENT_FETCH_MARKER"; fi
+done
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
 
     resumed = _run(
         consumer,
         ["--resume-run", str(state_file)],
         issues=[_issue(73, assigned=True)],
         config=_config_v3(tmp_path),
+        extra_env={
+            "AGENT_FETCH_MARKER": str(fetch_marker),
+            "AGENT_TEST_REAL_GIT": real_git,
+        },
     )
 
     assert resumed.returncode != 0
     assert "Git configuration differs from the trusted run-state boundary" in resumed.stderr
+    assert not fetch_marker.exists()
 
 
 def test_resume_rejects_distinct_controller_worktree_config_drift(
@@ -5154,6 +5172,7 @@ def test_batch_cursor_issue_cannot_be_skipped_for_a_later_ready_issue(
 def test_batch_resume_rejects_a_different_project_checkout(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
+    _, _, bin_dir, _ = consumer
     batch_file = tmp_path / "logs/wrong-project-batch.json"
     helper = consumer[0] / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
     created = subprocess.run(
@@ -5169,12 +5188,28 @@ def test_batch_resume_rejects_a_different_project_checkout(
         check=False,
     )
     assert created.returncode == 0, created.stderr
+    fetch_marker = tmp_path / "batch-resume-fetch-ran"
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+for argument in "$@"; do
+    if [ "$argument" = fetch ]; then touch "$AGENT_FETCH_MARKER"; fi
+done
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
 
     result = _run(
         consumer,
         ["--resume-batch", str(batch_file)],
         issues=[_issue(76)],
         config=_config_v3(tmp_path),
+        extra_env={
+            "AGENT_FETCH_MARKER": str(fetch_marker),
+            "AGENT_TEST_REAL_GIT": real_git,
+        },
     )
 
     assert result.returncode != 0
@@ -5182,6 +5217,7 @@ def test_batch_resume_rejects_a_different_project_checkout(
     assert "issue edit 76 --add-assignee @me" not in (
         consumer[3] / "gh.log"
     ).read_text(encoding="utf-8")
+    assert not fetch_marker.exists()
 
 
 def test_batch_resume_rejects_contract_v2_before_state_mutation(
