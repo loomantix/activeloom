@@ -28,9 +28,17 @@ done
 [[ "$base" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$round" =~ ^[1-9][0-9]*$ ]] || usage
+review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
+[[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
+    [ "$review_timeout_seconds" -le 3600 ] || {
+    echo "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
+    exit 2
+}
 
 command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "gh is required" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; }
 
 current_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 actor="$(gh api user --jq .login)"
@@ -52,6 +60,11 @@ remote_head="${remote_row%%[[:space:]]*}"
 [ "$remote_head" = "$head" ] || { echo "remote branch head does not match --head" >&2; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo "review worktree must be clean" >&2; exit 1; }
 
+script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 -I "$script_dir/local-review-handoff.py" authorize-pass \
+    --repo "$repo" --pr "$pr" --base "$base" --head "$head" \
+    --engine claude --round "$round" >/dev/null
+
 claude_review_cli="${CLAUDE_REVIEW_CLI:-claude}"
 prompt="/deepcritique ${pr}
 
@@ -63,14 +76,16 @@ ${head}. Reconstruct context from the PR description, commits, diff, checks,
 and complete local-review ledger,
 including resolved threads and prior attestations. Post verified findings inline
 before edits, then validate, push, reply, resolve, and publish the normal review
-result. Do not invoke Codex; return control to the calling Codex session when
-the Claude pass is complete."
+result. This invocation owns exactly one Claude pass: do not invoke Codex,
+Gemini, another reviewer, or any review launcher. Return control to the calling
+Codex session when the Claude pass is complete."
 
 export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="claude"
 
-exec "$claude_review_cli" \
+exec timeout --signal=TERM --kill-after=30s "${review_timeout_seconds}s" \
+    "$claude_review_cli" \
     --effort low \
     --permission-mode bypassPermissions \
     --no-session-persistence \

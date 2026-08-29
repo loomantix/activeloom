@@ -93,9 +93,12 @@ Run these lanes as independently as the active runtime permits:
 10. Do not introduce feature behavior, broad rewrites, unrelated style churn, formatting-only commits, or speculative abstraction.
 11. Run the smallest relevant formatter/test command if the repo documents one.
 12. If changes were made, commit them as `refactor: codex cleanup pass - <summary>`.
-    Publish through `$AGENT_LOOP_REVIEW_PUSH_HELPER` when it is set; otherwise
-    push without force. Reply to each cleanup thread with the commit and
-    validation, then resolve it.
+    When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set this pass is running inside a
+    wrapper review pass, which permits exactly one publication; commit locally
+    and leave publishing to the single publication the enclosing pass makes
+    after its fixes, so the cleanup and the fixes travel in one validated push.
+    Otherwise push without force. Reply to each cleanup thread with the commit
+    and validation, then resolve it.
 13. Whether or not the lanes produced changes, post one informational PR comment
     closing the latch for this engine, carrying the ledger's marker:
 

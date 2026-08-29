@@ -84,25 +84,26 @@ The config is parsed as literal `key = value` lines and is never sourced.
 Unknown or duplicate keys fail closed. Hook values are shell commands executed
 with the issue worktree as the current directory.
 
-| Key                                              | Purpose                                                                                                                      |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                               |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes. |
-| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                            |
-| `claude_review_hook`                             | Pinned trusted-launcher invocation for the fresh local Claude review. Consumer overrides are rejected.                       |
-| `codex_review_hook`                              | Pinned trusted-launcher invocation for the fresh local Codex review. Consumer overrides are rejected.                        |
-| `review_contract_version`                        | Required hook contract. New and migrated consumers use `4`; versions `2` and `3` remain accepted for staged migration.       |
-| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Contract-v3/v4 consumers set `true`.           |
-| `claude_effort_policy`                           | Auto mode requires `low`; v3 verifies the hook and v4 verifies the pinned launcher's contract.                               |
-| `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.         |
-| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                   |
-| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                 |
-| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                  |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                |
-| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                        |
-| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                        |
-| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                  |
-| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                             |
+| Key                                              | Purpose                                                                                                                                       |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.                  |
+| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                             |
+| `claude_review_hook`                             | Pinned trusted-launcher invocation for the fresh local Claude review. Consumer overrides are rejected.                                        |
+| `codex_review_hook`                              | Pinned trusted-launcher invocation for the fresh local Codex review. Consumer overrides are rejected.                                         |
+| `review_contract_version`                        | Required hook contract. New and migrated consumers use `4`; versions `2` and `3` remain accepted for staged migration.                        |
+| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Contract-v3/v4 consumers set `true`.                            |
+| `claude_effort_policy`                           | Auto mode requires `low`; v3 verifies the hook and v4 verifies the pinned launcher's contract.                                                |
+| `review_max_rounds`                              | Codex-then-Claude round cap from `1` through the hard ceiling `4`. Default `4`; cap exhaustion preserves the worktree and blocks publication. |
+| `review_timeout_seconds`                         | Positive wall-clock budget for the entire review run, persisted across resume. Default `7200`; each pass is capped at the remaining budget.   |
+| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                                    |
+| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                  |
+| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                   |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                                 |
+| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                         |
+| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                         |
+| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                   |
+| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                              |
 
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
 `AGENT_LOOP_ISSUE_BODY`, `AGENT_LOOP_BASE_BRANCH`, `AGENT_LOOP_BRANCH`,
@@ -197,7 +198,7 @@ the current templates manually before the synced wrapper can run:
    exact head, and owns the contract-v4 result path.
 3. Configure a non-mutating `validation_hook`, retain `config_doctor = true` and
    `claude_effort_policy = low`, and optionally override
-   `review_max_rounds = 4` with another positive cap. The launcher and reviewer
+   `review_max_rounds = 4` with another value from 1 through 4. The launcher and reviewer
    skill own the result, push, and blocked-result contracts. Before issue
    selection or claim, the doctor requires the fetched base to contain the full
    Codex- and Claude-native review surfaces as regular blobs.
@@ -226,7 +227,10 @@ and never copies issue bodies, model logs, or findings into GitHub.
 6. Integrate the fresh base, validate, push, and open a draft PR.
 7. Run a fresh Codex `deepcritique` followed by a fresh Claude review on that PR,
    validating and attesting the PR head after each pass.
-8. If either reviewer commits a material fix, restart at Codex. Minor-only fixes
+8. Each reviewer may publish at most one committed candidate. The guarded push
+   helper runs the configured validation before that publication and records the
+   exact validated and published SHA; validation is not repeated afterward.
+   If either reviewer commits a material fix, restart at Codex. Minor-only fixes
    are validated and retained without restarting. Convergence requires one
    entire Codex-then-Claude round with no material fixes. Exhausting
    `review_max_rounds` blocks publication and preserves the worktree.

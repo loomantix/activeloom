@@ -4,7 +4,7 @@
 set -euo pipefail
 
 if [ "$#" -eq 1 ] && [ "$1" = --protocol-version ]; then
-    printf '1\n'
+    printf '2\n'
     exit 0
 fi
 if [ "$#" -ne 0 ]; then
@@ -18,9 +18,33 @@ fi
 : "${AGENT_LOOP_REAL_GIT:?AGENT_LOOP_REAL_GIT is required}"
 : "${AGENT_LOOP_ORIGIN_FETCH_URLS:?AGENT_LOOP_ORIGIN_FETCH_URLS is required}"
 : "${AGENT_LOOP_ORIGIN_PUSH_URLS:?AGENT_LOOP_ORIGIN_PUSH_URLS is required}"
+: "${AGENT_LOOP_REVIEW_PUSH_STATE_FILE:?AGENT_LOOP_REVIEW_PUSH_STATE_FILE is required}"
+: "${AGENT_LOOP_REVIEW_VALIDATION_HOOK:?AGENT_LOOP_REVIEW_VALIDATION_HOOK is required}"
+: "${AGENT_LOOP_PROCESS_SUPERVISOR:?AGENT_LOOP_PROCESS_SUPERVISOR is required}"
+: "${AGENT_LOOP_PROCESS_SUPERVISOR_SHA256:?AGENT_LOOP_PROCESS_SUPERVISOR_SHA256 is required}"
+: "${AGENT_LOOP_HOOK_TIMEOUT_SECONDS:?AGENT_LOOP_HOOK_TIMEOUT_SECONDS is required}"
+: "${AGENT_LOOP_REVIEW_DEADLINE_EPOCH:?AGENT_LOOP_REVIEW_DEADLINE_EPOCH is required}"
+: "${AGENT_LOOP_REVIEW_VALIDATION_LOG:?AGENT_LOOP_REVIEW_VALIDATION_LOG is required}"
+: "${AGENT_LOOP_HOOK_GUARD_BIN:?AGENT_LOOP_HOOK_GUARD_BIN is required}"
 
 real_git="$AGENT_LOOP_REAL_GIT"
 expected_config_sha256="${AGENT_LOOP_GIT_CONFIG_SHA256:?AGENT_LOOP_GIT_CONFIG_SHA256 is required}"
+state_file="$AGENT_LOOP_REVIEW_PUSH_STATE_FILE"
+state_lock="${state_file}.lock"
+
+for private_file in "$state_file" "$state_lock"; do
+    [ -f "$private_file" ] && [ ! -L "$private_file" ] || {
+        echo "review-push requires its wrapper-owned private pass journal" >&2
+        exit 1
+    }
+    [ "$(stat -c '%u:%a' "$private_file")" = "$(id -u):600" ] || {
+        echo "review-push pass journal must be owner-only" >&2
+        exit 1
+    }
+done
+exec {state_lock_fd}<>"$state_lock"
+flock -x "$state_lock_fd"
+
 cd -- "$AGENT_LOOP_WORKTREE" || {
     echo "review-push could not enter the captured issue worktree" >&2
     exit 1
@@ -96,20 +120,30 @@ local_head="$("$real_git" rev-parse HEAD)"
     echo "review-push rejects non-forward review history" >&2
     exit 1
 }
-expected_remote_head="$AGENT_LOOP_PR_HEAD_SHA"
-if [ -n "${AGENT_LOOP_REVIEW_PUSH_STATE_FILE:-}" ]; then
-    if [ -L "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE" ] || \
-       [ ! -f "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE" ]; then
-        echo "review-push requires the wrapper-owned remote-head checkpoint" >&2
-        exit 1
-    fi
-    IFS= read -r expected_remote_head < "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE" || {
-        echo "review-push could not read the remote-head checkpoint" >&2
-        exit 1
-    }
-fi
+state_json="$(cat "$state_file")" || {
+    echo "review-push could not read its pass journal" >&2
+    exit 1
+}
+jq -e '
+    type == "object" and keys == ["publishedSha", "startSha", "validatedSha", "validationReceipt", "version"] and
+    .version == 2 and (.startSha | type == "string") and
+    ((.validatedSha == null) or (.validatedSha | type == "string")) and
+    ((.publishedSha == null) or (.publishedSha | type == "string")) and
+    ((.validationReceipt == null) or (.validationReceipt | type == "string"))
+' <<<"$state_json" >/dev/null || {
+    echo "review-push pass journal is invalid" >&2
+    exit 1
+}
+expected_remote_head="$(jq -r '.startSha' <<<"$state_json")"
+validated_head="$(jq -r '.validatedSha // empty' <<<"$state_json")"
+published_head="$(jq -r '.publishedSha // empty' <<<"$state_json")"
+validation_receipt="$(jq -r '.validationReceipt // empty' <<<"$state_json")"
 [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] || {
     echo "review-push found an invalid remote-head checkpoint" >&2
+    exit 1
+}
+[ -z "$published_head" ] || {
+    echo "review-push permits only one publication per reviewer pass" >&2
     exit 1
 }
 "$real_git" merge-base --is-ancestor "$expected_remote_head" "$local_head" || {
@@ -124,9 +158,115 @@ remote_line="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRAN
 }
 remote_head="${remote_line%%[[:space:]]*}"
 [ "$remote_head" = "$expected_remote_head" ] || {
+    if [ "$remote_head" = "$local_head" ] && [ "$validated_head" = "$local_head" ] && \
+       [[ "$validation_receipt" =~ ^[0-9a-f]{64}$ ]] && [ -z "$published_head" ]; then
+        journal_dir="$(dirname -- "$state_file")"
+        journal_tmp="$(mktemp "$journal_dir/.review-push-state.XXXXXX")"
+        chmod 600 "$journal_tmp"
+        jq -n --arg start "$expected_remote_head" --arg head "$local_head" \
+            --arg receipt "$validation_receipt" \
+            '{version:2,startSha:$start,validatedSha:$head,publishedSha:$head,validationReceipt:$receipt}' \
+            > "$journal_tmp"
+        mv -f -- "$journal_tmp" "$state_file"
+        printf '%s\n' "$local_head"
+        exit 0
+    fi
     echo "review-push rejects a stale or uncertain remote head" >&2
     exit 1
 }
+
+supervisor_sha="$(sha256sum "$AGENT_LOOP_PROCESS_SUPERVISOR" | awk '{print $1}')" || {
+    echo "review-push could not verify the process supervisor" >&2
+    exit 1
+}
+[ "$supervisor_sha" = "$AGENT_LOOP_PROCESS_SUPERVISOR_SHA256" ] || {
+    echo "review-push rejects a changed process supervisor" >&2
+    exit 1
+}
+[[ "$AGENT_LOOP_HOOK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+    echo "review-push validation timeout is invalid" >&2
+    exit 1
+}
+[[ "$AGENT_LOOP_REVIEW_DEADLINE_EPOCH" =~ ^[1-9][0-9]*$ ]] || {
+    echo "review-push whole-run deadline is invalid" >&2
+    exit 1
+}
+remaining_seconds=$((AGENT_LOOP_REVIEW_DEADLINE_EPOCH - $(date +%s)))
+[ "$remaining_seconds" -gt 0 ] || {
+    echo "review-push whole-run deadline is exhausted" >&2
+    exit 1
+}
+validation_timeout="$AGENT_LOOP_HOOK_TIMEOUT_SECONDS"
+[ "$remaining_seconds" -ge "$validation_timeout" ] || validation_timeout="$remaining_seconds"
+
+# Never open the predictable final path for writing: the untrusted review can
+# pre-create it as a symlink. Write an owner-only random sibling and atomically
+# replace the final path after the validation process exits.
+validation_log_dir="$(dirname -- "$AGENT_LOOP_REVIEW_VALIDATION_LOG")"
+[ "$validation_log_dir" = "$(dirname -- "$state_file")" ] || {
+    echo "review-push validation log must share the private journal directory" >&2
+    exit 1
+}
+if [ -e "$AGENT_LOOP_REVIEW_VALIDATION_LOG" ] || [ -L "$AGENT_LOOP_REVIEW_VALIDATION_LOG" ]; then
+    [ -f "$AGENT_LOOP_REVIEW_VALIDATION_LOG" ] && [ ! -L "$AGENT_LOOP_REVIEW_VALIDATION_LOG" ] || {
+        echo "review-push requires a regular pre-publication validation log" >&2
+        exit 1
+    }
+    [ "$(stat -c '%u:%a' "$AGENT_LOOP_REVIEW_VALIDATION_LOG")" = "$(id -u):600" ] || {
+        echo "review-push pre-publication validation log must be owner-only" >&2
+        exit 1
+    }
+fi
+validation_log_tmp="$(mktemp "$validation_log_dir/.prepublish-validation.XXXXXX")"
+chmod 600 "$validation_log_tmp"
+trap 'rm -f -- "$validation_log_tmp"' EXIT
+
+validation_status=0
+(
+    unset AGENT_LOOP_REVIEW_PUSH_HELPER AGENT_LOOP_ORIGIN_FETCH_URLS \
+        AGENT_LOOP_ORIGIN_PUSH_URLS AGENT_LOOP_REVIEW_CONTRACT_VERSION
+    export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS=false
+    export AGENT_LOOP_HOOK_COMMAND="$AGENT_LOOP_REVIEW_VALIDATION_HOOK"
+    export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"
+    export GIT_CONFIG_COUNT=2
+    export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
+    export GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null
+    python3 -I "$AGENT_LOOP_PROCESS_SUPERVISOR" \
+        --timeout-seconds "$validation_timeout" \
+        --kill-after-seconds 15 -- bash -lc \
+        'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"'
+) >"$validation_log_tmp" 2>&1 || validation_status=$?
+mv -f -- "$validation_log_tmp" "$AGENT_LOOP_REVIEW_VALIDATION_LOG"
+trap - EXIT
+if [ "$validation_status" -ne 0 ]; then
+    echo "review-push pre-publication validation failed (exit $validation_status)" >&2
+    tail -n 40 "$AGENT_LOOP_REVIEW_VALIDATION_LOG" >&2 || true
+    exit "$validation_status"
+fi
+require_origin_identity
+actual_config_sha256="$(timeout 10 "$real_git" --no-replace-objects config \
+        --null --list | sha256sum | awk '{print $1}')" || exit 1
+[ "$actual_config_sha256" = "$expected_config_sha256" ] || {
+    echo "review-push validation changed trusted Git configuration" >&2
+    exit 1
+}
+[ "$local_head" = "$("$real_git" rev-parse HEAD)" ] && \
+    [ -z "$("$real_git" -c core.fsmonitor=false status --porcelain)" ] || {
+    echo "review-push validation mutated the candidate head or worktree" >&2
+    exit 1
+}
+validation_receipt="$(
+    { printf '%s\n' "$expected_remote_head" "$local_head" "$expected_config_sha256"; \
+      sha256sum "$AGENT_LOOP_REVIEW_VALIDATION_LOG"; } | sha256sum | awk '{print $1}'
+)"
+journal_dir="$(dirname -- "$state_file")"
+journal_tmp="$(mktemp "$journal_dir/.review-push-state.XXXXXX")"
+chmod 600 "$journal_tmp"
+jq -n --arg start "$expected_remote_head" --arg head "$local_head" \
+    --arg receipt "$validation_receipt" \
+    '{version:2,startSha:$start,validatedSha:$head,publishedSha:null,validationReceipt:$receipt}' \
+    > "$journal_tmp"
+mv -f -- "$journal_tmp" "$state_file"
 
 require_origin_identity
 "$real_git" -c core.hooksPath=/dev/null -c core.fsmonitor=false push origin \
@@ -139,13 +279,13 @@ require_origin_identity
     echo "review-push could not attest the remote head" >&2
     exit 1
 }
-if [ -n "${AGENT_LOOP_REVIEW_PUSH_STATE_FILE:-}" ]; then
-    checkpoint_dir="$(dirname -- "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE")"
-    checkpoint_tmp="$(mktemp "$checkpoint_dir/.review-push-state.XXXXXX")"
-    trap 'rm -f -- "$checkpoint_tmp"' EXIT
-    chmod 600 "$checkpoint_tmp"
-    printf '%s\n' "$local_head" > "$checkpoint_tmp"
-    mv -f -- "$checkpoint_tmp" "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE"
-    trap - EXIT
-fi
+journal_tmp="$(mktemp "$journal_dir/.review-push-state.XXXXXX")"
+trap 'rm -f -- "$journal_tmp"' EXIT
+chmod 600 "$journal_tmp"
+jq -n --arg start "$expected_remote_head" --arg head "$local_head" \
+    --arg receipt "$validation_receipt" \
+    '{version:2,startSha:$start,validatedSha:$head,publishedSha:$head,validationReceipt:$receipt}' \
+    > "$journal_tmp"
+mv -f -- "$journal_tmp" "$state_file"
+trap - EXIT
 printf '%s\n' "$local_head"

@@ -30,9 +30,11 @@ claude_effort_policy = low
 # from an empty session root, materializes engine-native guidance from immutable
 # base-commit blobs, and exposes the issue worktree only as the review target.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
-# review threads, post every confirmed finding inline before editing, fix and
-# commit it, call `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply with the fix and validation, resolve the
-# thread, and fail if any valid finding or local-review thread remains. Hooks
+# review threads, post every confirmed finding inline before editing, collect
+# the pass's fixes into one committed candidate, then call
+# `$AGENT_LOOP_REVIEW_PUSH_HELPER` exactly once. The helper runs the configured
+# validation hook before publishing that candidate. The reviewer then replies,
+# resolves, and fails if any valid finding or local-review thread remains. Hooks
 # may use `gh` only for that draft PR review contract; the cooperative command
 # guard rejects direct `git push`, but is not same-UID or credential isolation. They must
 # not mutate the base branch, other issues/PRs, or invoke hosted reviewers.
@@ -55,6 +57,12 @@ claude_effort_policy = low
 claude_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude
 codex_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex
 review_max_rounds = 4
+# Whole review budget across every engine and round. Resume reloads the
+# deadline recorded in run state, so it never grants another full window.
+# Legacy run state predating that field has no recorded deadline: resume
+# derives one from the state file's last checkpoint time instead, which does
+# extend the window. Size this value against the recorded-deadline case.
+review_timeout_seconds = 7200
 
 # Optional worker override. When empty, the wrapper runs `codex exec` with the
 # prompt from prompt.txt. The default worker honors the model settings below.

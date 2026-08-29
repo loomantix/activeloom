@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 HELPER = ROOT / ".codex/skills/agent-loop/scripts/review-push.sh"
+SUPERVISOR = ROOT / ".codex/skills/agent-loop/scripts/process-supervisor.py"
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -56,6 +58,17 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
             "AGENT_LOOP_BRANCH": "agent-loop/issue-7",
             "AGENT_LOOP_PR_HEAD_SHA": start,
             "AGENT_LOOP_REVIEW_PUSH_STATE_FILE": str(tmp_path / "review-push-state"),
+            "AGENT_LOOP_REVIEW_VALIDATION_HOOK": "true",
+            "AGENT_LOOP_PROCESS_SUPERVISOR": str(SUPERVISOR),
+            "AGENT_LOOP_PROCESS_SUPERVISOR_SHA256": hashlib.sha256(
+                SUPERVISOR.read_bytes()
+            ).hexdigest(),
+            "AGENT_LOOP_HOOK_TIMEOUT_SECONDS": "30",
+            # Keep direct helper tests independent of wall-clock drift while
+            # exercising the wrapper-provided whole-run budget contract.
+            "AGENT_LOOP_REVIEW_DEADLINE_EPOCH": "2000000000",
+            "AGENT_LOOP_REVIEW_VALIDATION_LOG": str(tmp_path / "validation.log"),
+            "AGENT_LOOP_HOOK_GUARD_BIN": str(tmp_path / "guard-bin"),
             "AGENT_LOOP_REAL_GIT": shutil.which("git") or "git",
             "AGENT_LOOP_GIT_CONFIG_SHA256": hashlib.sha256(config_bytes).hexdigest(),
             "AGENT_LOOP_ORIGIN_FETCH_URLS": _git(
@@ -66,7 +79,25 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
             ),
         }
     )
-    (tmp_path / "review-push-state").write_text(f"{start}\n", encoding="utf-8")
+    (tmp_path / "guard-bin").mkdir()
+    (tmp_path / "review-push-state").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "startSha": start,
+                "validatedSha": None,
+                "publishedSha": None,
+                "validationReceipt": None,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "review-push-state").chmod(0o600)
+    (tmp_path / "review-push-state.lock").write_text("", encoding="utf-8")
+    (tmp_path / "review-push-state.lock").chmod(0o600)
     return repo, env, start
 
 
@@ -83,7 +114,7 @@ def test_reports_review_push_protocol_version() -> None:
         [str(HELPER), "--protocol-version"], capture_output=True, text=True
     )
     assert result.returncode == 0
-    assert result.stdout == "1\n"
+    assert result.stdout == "2\n"
 
 
 def test_exact_fully_qualified_review_push_succeeds(
@@ -157,7 +188,7 @@ def test_review_push_scrubs_non_config_git_environment(
     assert not marker.exists()
 
 
-def test_two_sequential_review_pushes_succeed(
+def test_second_review_push_in_the_same_pass_is_rejected(
     review_repo: tuple[Path, dict[str, str], str],
 ) -> None:
     repo, env, _ = review_repo
@@ -169,8 +200,8 @@ def test_two_sequential_review_pushes_succeed(
     _git(repo, "commit", "-m", "fix: second review")
     second = _run(repo, env)
 
-    assert second.returncode == 0, second.stderr
-    assert second.stdout.strip() == _git(repo, "rev-parse", "HEAD")
+    assert second.returncode != 0
+    assert "only one publication" in second.stderr
     assert (
         _git(
             repo,
@@ -179,8 +210,116 @@ def test_two_sequential_review_pushes_succeed(
             "origin",
             "refs/heads/agent-loop/issue-7",
         ).split()[0]
-        == second.stdout.strip()
+        == first.stdout.strip()
     )
+
+
+def test_validation_failure_leaves_remote_head_unchanged(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, start = review_repo
+    env["AGENT_LOOP_REVIEW_VALIDATION_HOOK"] = "exit 73"
+
+    result = _run(repo, env)
+
+    assert result.returncode == 73
+    assert "pre-publication validation failed" in result.stderr
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == start
+    )
+    journal = json.loads(Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text())
+    assert journal["validatedSha"] is None
+    assert journal["publishedSha"] is None
+    assert journal["validationReceipt"] is None
+
+
+def test_validation_log_symlink_is_rejected_without_truncating_target(
+    review_repo: tuple[Path, dict[str, str], str], tmp_path: Path
+) -> None:
+    repo, env, start = review_repo
+    target = tmp_path / "protected-state.json"
+    target.write_text("preserve me\n", encoding="utf-8")
+    validation_log = Path(env["AGENT_LOOP_REVIEW_VALIDATION_LOG"])
+    validation_log.symlink_to(target)
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "regular pre-publication validation log" in result.stderr
+    assert target.read_text(encoding="utf-8") == "preserve me\n"
+    assert (
+        _git(
+            repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7"
+        ).split()[0]
+        == start
+    )
+
+
+def test_reconciles_push_completed_after_validated_checkpoint(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, start = review_repo
+    head = _git(repo, "rev-parse", "HEAD")
+    state_file = Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"])
+    receipt = "c" * 64
+    state_file.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "startSha": start,
+                "validatedSha": head,
+                "publishedSha": None,
+                "validationReceipt": receipt,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _git(repo, "push", "origin", "HEAD:refs/heads/agent-loop/issue-7")
+
+    result = _run(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == head
+    journal = json.loads(state_file.read_text())
+    assert journal["validatedSha"] == head
+    assert journal["publishedSha"] == head
+    assert journal["validationReceipt"] == receipt
+
+
+def test_rejects_remote_advance_without_validated_checkpoint(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, _ = review_repo
+    _git(repo, "push", "origin", "HEAD:refs/heads/agent-loop/issue-7")
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "stale or uncertain remote head" in result.stderr
+
+
+def test_success_records_exact_validated_and_published_head(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    repo, env, _ = review_repo
+    result = _run(repo, env)
+    assert result.returncode == 0, result.stderr
+
+    journal = json.loads(Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text())
+    assert journal["version"] == 2
+    assert journal["validatedSha"] == result.stdout.strip()
+    assert journal["publishedSha"] == result.stdout.strip()
+    assert len(journal["validationReceipt"]) == 64
 
 
 def test_rejects_failed_worktree_status_inspection(
@@ -302,10 +441,12 @@ def test_rejects_external_head_incorporated_after_helper_push(
     result = _run(repo, env)
 
     assert result.returncode != 0
-    assert "stale or uncertain remote head" in result.stderr
+    assert "only one publication" in result.stderr
     assert (
-        Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8")
-        == f"{helper_head}\n"
+        json.loads(
+            Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8")
+        )["publishedSha"]
+        == helper_head
     )
     assert (
         _git(
@@ -335,10 +476,12 @@ def test_rejects_divergent_history_after_helper_push(
     result = _run(repo, env)
 
     assert result.returncode != 0
-    assert "drops a previously published review commit" in result.stderr
+    assert "only one publication" in result.stderr
     assert (
-        Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8")
-        == f"{helper_head}\n"
+        json.loads(
+            Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8")
+        )["publishedSha"]
+        == helper_head
     )
     assert (
         _git(
@@ -383,7 +526,7 @@ def test_replacement_ref_cannot_forge_review_history(
     result = _run(repo, env)
 
     assert result.returncode != 0
-    assert "drops a previously published review commit" in result.stderr
+    assert "only one publication" in result.stderr
     assert (
         _git(
             repo,
@@ -395,6 +538,70 @@ def test_replacement_ref_cannot_forge_review_history(
         == helper_head
     )
 
+
+def test_rejects_non_forward_review_history(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    """Unrelated history must not publish, and must leave the remote untouched.
+
+    Both ancestry gates in the helper were uncovered: this one against
+    `AGENT_LOOP_PR_HEAD_SHA`, and the later one against the journal's own
+    `startSha`. The three tests that used to reach this area now stop at the
+    one-publication gate, so assert the ancestry refusal directly.
+    """
+    repo, env, start = review_repo
+    _git(repo, "switch", "--orphan", "unrelated")
+    (repo / "unrelated.txt").write_text("unrelated history\n", encoding="utf-8")
+    _git(repo, "add", "unrelated.txt")
+    _git(repo, "commit", "-m", "fix: unrelated review")
+    _git(repo, "branch", "-M", "agent-loop/issue-7")
+    assert _git(repo, "rev-parse", "HEAD") != start
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "rejects non-forward review history" in result.stderr
+    assert (
+        _git(
+            repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7"
+        ).split()[0]
+        == start
+    )
+    assert (
+        json.loads(
+            Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8")
+        )["publishedSha"]
+        is None
+    )
+
+
+def test_replacement_ref_cannot_satisfy_the_ancestry_gate(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    """A forged `refs/replace/*` must not make unrelated history look descended."""
+    repo, env, start = review_repo
+    _git(repo, "switch", "--orphan", "unrelated")
+    (repo / "unrelated.txt").write_text("unrelated history\n", encoding="utf-8")
+    _git(repo, "add", "unrelated.txt")
+    _git(repo, "commit", "-m", "fix: unrelated review")
+    _git(repo, "branch", "-M", "agent-loop/issue-7")
+    divergent = _git(repo, "rev-parse", "HEAD")
+
+    forged = _git(
+        repo, "commit-tree", f"{divergent}^{{tree}}", "-p", start, "-m", "forged"
+    )
+    _git(repo, "replace", "-f", divergent, forged)
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "rejects non-forward review history" in result.stderr
+    assert (
+        _git(
+            repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7"
+        ).split()[0]
+        == start
+    )
 
 def test_rejects_changed_origin_before_push(
     review_repo: tuple[Path, dict[str, str], str],

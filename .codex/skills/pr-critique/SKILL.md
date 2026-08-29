@@ -219,8 +219,10 @@ whether or not it succeeded: report the outcome and move on. Reporting this
 pass's own measured spend in the summary below is permitted; reading any earlier
 pass's record is not.
 
-Follow the selected local session mode before returning. In auto mode, return to
-the calling orchestrator so it can continue the bounded chain. In handoff mode,
+Follow the selected local session mode before returning. This skill is one
+reviewer pass: never launch another reviewer, retry the pass, or continue the
+relay recursively. In auto mode, return to the calling orchestrator so it can
+authorize and, if needed, start the next bounded pass. In handoff mode,
 post a `local-review-handoff:v1` comment with the `local-review-handoff.py`
 helper. The comment
 targets the originating engine, pins the current head and review base, and

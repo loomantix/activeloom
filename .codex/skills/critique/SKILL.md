@@ -270,9 +270,10 @@ Run these lanes as independently as the active runtime permits:
 10. Apply the Disposition Bar. Fix only findings whose expected harm reduction
     justifies the churn. Defer the rest, and create an issue only for an urgent
     follow-up that should be scheduled within roughly two weeks.
-11. Run targeted validation and commit. Publish through
-    `$AGENT_LOOP_REVIEW_PUSH_HELPER` when it is set; otherwise push normally
-    with no force.
+11. Run targeted validation and commit. When
+    `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, accumulate every same-pass fix in
+    local commits and invoke the helper exactly once after the final fix;
+    otherwise push normally with no force.
 12. Use the ledger helper's resumable `dispose` transaction for every posted
     finding. Stop on any posting, push, disposition, or resolution failure; on
     an uncertain helper response, retry only the identical command.
@@ -320,10 +321,12 @@ End with:
   (with one-line evidence)
 - validation run
 - PR number, reviewed head, comments posted, replies posted, and threads resolved
-- the next step under `.codex/REVIEW_WORKFLOW.md`: hand back to the relay for
-  the declared reviewers that have not attested this head — in auto mode run
-  only the tested launcher matching each missing declared reviewer (defaulting
-  to Agy only when declaring a new relay), in handoff mode post
+- the next step under `.codex/REVIEW_WORKFLOW.md`: hand back to the outer relay
+  controller for the declared reviewers that have not attested this head. This
+  pass must not launch another reviewer or continue the relay itself. In auto
+  mode the outer controller runs only the tested launcher matching the next
+  missing declared reviewer (defaulting to Agy only when declaring a new
+  relay); in handoff mode post
   `local-review-handoff:v1` and stop — and add `reviewit <pr>` /
   `reviewit <pr> deep` whenever a hosted pass is wanted. When recommending
   `reviewit`, recommend a fresh session; the current one has absorbed critique

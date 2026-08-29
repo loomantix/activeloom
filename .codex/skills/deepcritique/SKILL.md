@@ -199,11 +199,12 @@ launch another engine from inside a wrapper-owned Codex hook; agent-loop owns
 the next engine and its separate result boundary.
 
 Outside agent-loop, when `$AGENT_LOOP_REVIEW_ENGINE` is set or this pass is part
-of a review relay, follow the selected session mode. In auto mode, invoke the
-next reviewer only through a tested launcher. First read the effective roster
-and exact-head coverage. Run each declared reviewer that lacks an attestation at
-the current head: use `run-agy-review.sh` for `gemini` and
-`run-claude-review.sh` for `claude`. Never replace a declared reviewer silently;
+of a review relay, follow the selected session mode. This skill performs exactly
+one review pass and returns its result. It never launches another reviewer,
+retries itself, or recursively continues the relay. In auto mode, the outer
+controller reads the effective roster and exact-head coverage, authorizes the
+next bounded pass, and invokes the matching tested launcher: use
+`run-agy-review.sh` for `gemini` and `run-claude-review.sh` for `claude`. Never replace a declared reviewer silently;
 changing an existing roster requires an explicit superseding declaration. When
 no roster exists yet, declare it before launching; Gemini is the default
 reviewer unless repository instructions or the user selected another roster.
@@ -229,8 +230,8 @@ Explicit Claude fallback:
   --head <reviewed-head-sha> --round <round>
 ```
 
-After the launcher returns, verify local, upstream, and PR heads plus the new
-ledger evidence before deciding whether the round converged. A fix invalidates
+After a launcher returns to the outer controller, it verifies local, upstream,
+and PR heads plus the new ledger evidence before deciding whether the round converged. A fix invalidates
 only the attestations naming the superseded head. A launcher failure stops the
 chain; never retry with a hand-composed command.
 
