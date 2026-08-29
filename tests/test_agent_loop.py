@@ -5220,6 +5220,55 @@ exec "$AGENT_TEST_REAL_GIT" "$@"
     assert not fetch_marker.exists()
 
 
+def test_batch_resume_rejects_a_different_base_before_fetch(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    project, _, bin_dir, _ = consumer
+    _run_git("push", "origin", "main:other", cwd=project)
+    batch_file = tmp_path / "logs/wrong-base-batch.json"
+    helper = project / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
+    created = subprocess.run(
+        [
+            "python3", str(helper), "batch-create", "--file", str(batch_file),
+            "--run-id", "wrong-base", "--repo", "fixture/consumer",
+            "--base-branch", "main", "--issues", "77",
+            "--project-dir", str(project),
+            "--git-config-sha256", _git_config_sha256(project),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    fetch_marker = tmp_path / "batch-base-fetch-ran"
+    real_git = shutil.which("git")
+    assert real_git is not None
+    _write_executable(
+        bin_dir / "git",
+        """#!/usr/bin/env bash
+for argument in "$@"; do
+    if [ "$argument" = fetch ]; then touch "$AGENT_FETCH_MARKER"; fi
+done
+exec "$AGENT_TEST_REAL_GIT" "$@"
+""",
+    )
+
+    result = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(77)],
+        config=_config_v3(tmp_path, base_branch="other"),
+        extra_env={
+            "AGENT_FETCH_MARKER": str(fetch_marker),
+            "AGENT_TEST_REAL_GIT": real_git,
+        },
+    )
+
+    assert result.returncode != 0
+    assert "batch state base branch mismatch" in result.stderr
+    assert not fetch_marker.exists()
+
+
 def test_batch_resume_rejects_contract_v2_before_state_mutation(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

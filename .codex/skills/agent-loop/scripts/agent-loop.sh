@@ -3007,9 +3007,9 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             exit 1
         }
     fi
-    fetch_base
     [ "$(jq -r '.repo' <<<"$batch_json")" = "$GH_REPO" ] || { echo "batch state repository mismatch" >&2; exit 1; }
     [ "$(jq -r '.baseBranch' <<<"$batch_json")" = "$BASE_BRANCH" ] || { echo "batch state base branch mismatch" >&2; exit 1; }
+    fetch_base
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
     batch_count="$(jq -r '.issues | length' <<<"$batch_json")"
     if [ "$batch_cursor" -lt "$batch_count" ] && \
