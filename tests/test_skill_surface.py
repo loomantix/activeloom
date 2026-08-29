@@ -201,13 +201,17 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     ]
     for path in consumer_owned:
         assert path.is_file()
-    for guard_name in ("hook-gh-guard", "hook-git-guard"):
-        relative = Path(".codex/skills/agent-loop/scripts") / guard_name
-        synced_guard = consumer / relative
-        upstream_guard = REPO_ROOT / relative
-        assert synced_guard.is_file()
-        assert synced_guard.read_bytes() == upstream_guard.read_bytes()
-        assert stat.S_IMODE(synced_guard.stat().st_mode) == 0o755
+    for script_name in (
+        "hook-gh-guard",
+        "hook-git-guard",
+        "run-codex-review.sh",
+    ):
+        relative = Path(".codex/skills/agent-loop/scripts") / script_name
+        synced_script = consumer / relative
+        upstream_script = REPO_ROOT / relative
+        assert synced_script.is_file()
+        assert synced_script.read_bytes() == upstream_script.read_bytes()
+        assert stat.S_IMODE(synced_script.stat().st_mode) == 0o755
     ledger_relative = Path(".codex/references/local-review-ledger.md")
     synced_ledger = consumer / ledger_relative
     assert synced_ledger.is_file()
@@ -292,6 +296,7 @@ def test_new_script_modes_are_executable() -> None:
         ".codex/skills/agent-loop/scripts/agent-loop-state.py": 0o755,
         ".codex/skills/agent-loop/scripts/hook-gh-guard": 0o755,
         ".codex/skills/agent-loop/scripts/hook-git-guard": 0o755,
+        ".codex/skills/agent-loop/scripts/run-codex-review.sh": 0o755,
         ".codex/skills/backlog-refinement/scripts/bail-report.py": 0o755,
         ".codex/skills/backlog-refinement/scripts/candidates.py": 0o755,
         ".codex/skills/critique/scripts/local-review-handoff.py": 0o755,

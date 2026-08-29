@@ -29,7 +29,8 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
     AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-    AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+    AGENT_LOOP_REVIEW_PUSH_STATE_FILE AGENT_LOOP_CODEX_REVIEW_LAUNCHER \
+    AGENT_LOOP_TRUSTED_CODEX_ROOT AGENT_LOOP_TRUSTED_BASE_REF
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -127,27 +128,32 @@ if [ -n "$RESUME_BATCH_FILE" ] && { [ -n "$RESUME_RUN_FILE" ] || [ -n "$ISSUE_AL
     exit 2
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${AGENT_LOOP_PROJECT_DIR:-}" ]; then
-    PROJECT_DIR="$AGENT_LOOP_PROJECT_DIR"
+    PROJECT_DIR="$(git -C "$AGENT_LOOP_PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 else
-    PROJECT_DIR="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    PROJECT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 fi
 if [ -z "$PROJECT_DIR" ]; then
-    echo "Could not find a Git repository from $SCRIPT_DIR" >&2
+    echo "Could not find a Git repository from the invocation directory" >&2
     exit 1
 fi
 
-CONFIG_FILE="$PROJECT_DIR/.codex/skills/agent-loop/agent-loop.config"
-PROMPT_FILE="$PROJECT_DIR/.codex/skills/agent-loop/prompt.txt"
+PROJECT_SKILL_BASE="$PROJECT_DIR/.codex/skills"
+PACKAGED_SKILL_BASE="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+CONFIG_FILE="$PROJECT_SKILL_BASE/agent-loop/agent-loop.config"
+PROMPT_FILE="$PROJECT_SKILL_BASE/agent-loop/prompt.txt"
 INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
-ISSUES_READY="$PROJECT_DIR/.codex/skills/issues/scripts/ready.py"
-REVIEW_LEDGER="$PROJECT_DIR/.codex/skills/critique/scripts/review-ledger.js"
-RUN_STATE_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop-state.py"
-REVIEW_PUSH_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/review-push.sh"
-CONFIG_DOCTOR_HELPER="$PROJECT_DIR/.codex/skills/agent-loop/scripts/config-doctor.py"
+ISSUES_READY="$PACKAGED_SKILL_BASE/issues/scripts/ready.py"
+REVIEW_LEDGER="$PACKAGED_SKILL_BASE/critique/scripts/review-ledger.js"
+RUN_STATE_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/agent-loop-state.py"
+REVIEW_PUSH_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/review-push.sh"
+CONFIG_DOCTOR_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/config-doctor.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
+CODEX_REVIEW_LAUNCHER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-codex-review.sh"
+TRUSTED_CODEX_ROOT="$(cd "$PACKAGED_SKILL_BASE/.." && pwd)"
 
 BASE_BRANCH=""
 SETUP_HOOK=""
@@ -280,26 +286,16 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v3 requires 3" >&2
         exit 1
     }
+    expected_codex_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex'
+    expected_claude_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude'
     for hook_key in claude_review_hook codex_review_hook; do
         case "$hook_key" in
-            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
-            codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
+            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK"; expected_hook="$expected_claude_hook" ;;
+            codex_review_hook) hook_value="$CODEX_REVIEW_HOOK"; expected_hook="$expected_codex_hook" ;;
             *) echo "unhandled hook key in contract-v3 preflight: $hook_key" >&2; exit 1 ;;
         esac
-        [ -n "$hook_value" ] || {
-            echo "$hook_key must be configured for review contract v3" >&2
-            exit 1
-        }
-        [[ "$hook_value" == *AGENT_LOOP_REVIEW_PUSH_HELPER* ]] || {
-            echo "$hook_key must use AGENT_LOOP_REVIEW_PUSH_HELPER for review contract v3" >&2
-            exit 1
-        }
-        [[ "$hook_value" == *AGENT_LOOP_REVIEW_RESULT_FILE* ]] || {
-            echo "$hook_key must write AGENT_LOOP_REVIEW_RESULT_FILE for review contract v3" >&2
-            exit 1
-        }
-        [[ "$hook_value" == *write-result* ]] || {
-            echo "$hook_key must use review-ledger.js write-result for review contract v3" >&2
+        [ "$hook_value" = "$expected_hook" ] || {
+            echo "$hook_key must use the dedicated Codex review launcher" >&2
             exit 1
         }
     done
@@ -362,10 +358,21 @@ fi
 [ -x "$RUN_STATE_HELPER" ] || { echo "agent-loop run-state helper not found or not executable: $RUN_STATE_HELPER" >&2; exit 1; }
 [ -x "$REVIEW_PUSH_HELPER" ] || { echo "agent-loop review push helper not found or not executable: $REVIEW_PUSH_HELPER" >&2; exit 1; }
 [ -x "$CONFIG_DOCTOR_HELPER" ] || { echo "agent-loop config doctor not found or not executable: $CONFIG_DOCTOR_HELPER" >&2; exit 1; }
+[ -f "$CODEX_REVIEW_LAUNCHER" ] && [ -x "$CODEX_REVIEW_LAUNCHER" ] && [ ! -L "$CODEX_REVIEW_LAUNCHER" ] || {
+    echo "Codex review launcher not found, executable, or is symlinked: $CODEX_REVIEW_LAUNCHER" >&2
+    exit 1
+}
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
 [ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CODEX_REVIEW_HOOK" ] || { echo "codex_review_hook must be configured before running agent-loop" >&2; exit 1; }
+
+if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    CODEX_REVIEW_BIN="$(type -P codex 2>/dev/null || true)"
+    CLAUDE_REVIEW_BIN="$(type -P claude 2>/dev/null || true)"
+    [ -n "$CODEX_REVIEW_BIN" ] || { echo "required command not found for Codex review: codex" >&2; exit 1; }
+    [ -n "$CLAUDE_REVIEW_BIN" ] || { echo "required command not found for Claude review: claude" >&2; exit 1; }
+fi
 
 if [ "$CONFIG_DOCTOR" = true ]; then
     doctor_command=(python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR")
@@ -402,6 +409,13 @@ GH_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || {
     exit 1
 }
 export GH_REPO
+if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    export AGENT_LOOP_CODEX_REVIEW_LAUNCHER="$CODEX_REVIEW_LAUNCHER"
+    export AGENT_LOOP_TRUSTED_CODEX_ROOT="$TRUSTED_CODEX_ROOT"
+    export AGENT_LOOP_TRUSTED_BASE_REF="$BASE_REMOTE_REF"
+    export CODEX_REVIEW_CLI="$CODEX_REVIEW_BIN"
+    export CLAUDE_REVIEW_CLI="$CLAUDE_REVIEW_BIN"
+fi
 
 ORIGIN_FETCH_URLS="$(git remote get-url --all origin)" || {
     echo "could not capture origin fetch identity" >&2
@@ -1387,7 +1401,7 @@ run_review_pass() {
     local before_sha after_sha status classification outcome_signature outcome_file
     local result_file result_json result_status result_hash allowed_heads_file blocker
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
-    local historical_comment_ids_signature
+    local historical_comment_ids_signature launcher_relative launcher_status
     local boundary_status
 
     export AGENT_LOOP_REVIEW_ENGINE="$slug"
@@ -1439,6 +1453,27 @@ run_review_pass() {
             return 1
         }
         export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
+
+        launcher_relative=""
+        case "$CODEX_REVIEW_LAUNCHER" in
+            "$PROJECT_DIR"/*) launcher_relative="${CODEX_REVIEW_LAUNCHER#"$PROJECT_DIR"/}" ;;
+        esac
+        launcher_status="invalid launcher path"
+        if [ -n "$launcher_relative" ]; then
+            launcher_status="$(git -C "$PROJECT_DIR" status --porcelain \
+                --untracked-files=all -- "$launcher_relative")" || {
+                recovery_message "Could not inspect the trusted Codex review launcher before $engine review round $round."
+                return 1
+            }
+        fi
+        if [ -z "$launcher_relative" ] || [ ! -f "$CODEX_REVIEW_LAUNCHER" ] || \
+            [ -L "$CODEX_REVIEW_LAUNCHER" ] || [ ! -x "$CODEX_REVIEW_LAUNCHER" ] || \
+            ! git -C "$PROJECT_DIR" diff --quiet --no-ext-diff --no-textconv \
+                "$AGENT_LOOP_REVIEW_BASE_SHA" -- "$launcher_relative" || \
+            [ -n "$launcher_status" ]; then
+            recovery_message "Trusted Codex review launcher changed after startup; refusing $engine review round $round."
+            return 1
+        fi
     else
         unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE

@@ -40,6 +40,7 @@
 .codex/skills/agent-loop/scripts/hook-gh-guard
 .codex/skills/agent-loop/scripts/hook-git-guard
 .codex/skills/agent-loop/scripts/review-push.sh
+.codex/skills/agent-loop/scripts/run-codex-review.sh
 .codex/skills/backlog-refinement/SKILL.md
 .codex/skills/backlog-refinement/scripts/bail-report.py
 .codex/skills/backlog-refinement/scripts/candidates.py

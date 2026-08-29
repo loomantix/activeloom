@@ -68,25 +68,25 @@ The config is parsed as literal `key = value` lines and is never sourced.
 Unknown or duplicate keys fail closed. Hook values are shell commands executed
 with the issue worktree as the current directory.
 
-| Key                                              | Purpose                                                                                                                                                                                                     |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                                                                              |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.                                                                                |
-| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                                                                                           |
-| `claude_review_hook`                             | Required fresh local Claude review on the draft PR. It must post confirmed findings inline before fixes, publish through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply, resolve, and fail on undisposed findings. |
-| `codex_review_hook`                              | Required fresh Codex `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                                                                   |
-| `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                                                                         |
-| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.                                                                                     |
-| `claude_effort_policy`                           | Contract-v3 auto mode requires literal `low`; the doctor rejects missing, different, or conflicting Claude effort options.                                                                                  |
-| `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.                                                                                        |
-| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                                                                                                  |
-| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                                                                |
-| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                 |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                                                                                               |
-| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                       |
-| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                                                                                       |
-| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                                                                 |
-| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                                                            |
+| Key                                              | Purpose                                                                                                                             |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                      |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.        |
+| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                   |
+| `claude_review_hook`                             | Pinned trusted-launcher invocation for the fresh local Claude review. Consumer overrides are rejected.                              |
+| `codex_review_hook`                              | Pinned trusted-launcher invocation for the fresh local Codex review. Consumer overrides are rejected.                               |
+| `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility. |
+| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.             |
+| `claude_effort_policy`                           | Contract-v3 auto mode requires literal `low`; the doctor rejects missing, different, or conflicting Claude effort options.          |
+| `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.                |
+| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                          |
+| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                        |
+| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                         |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                       |
+| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                               |
+| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                               |
+| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                         |
+| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                    |
 
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
 `AGENT_LOOP_ISSUE_BODY`, `AGENT_LOOP_BASE_BRANCH`, `AGENT_LOOP_BRANCH`,
@@ -103,6 +103,18 @@ fetch, `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_ENGINE`, and
 `AGENT_LOOP_REVIEW_RESULT_FILE` and `AGENT_LOOP_REVIEW_PUSH_HELPER` for
 contract v3. Both hooks must scope against the SHA so a
 mid-round remote update cannot give the engines different bases.
+
+The wrapper resolves both reviewers through the synced
+`.codex/skills/agent-loop/scripts/run-codex-review.sh` launcher in the source
+checkout. The launcher verifies that `.codex`, `AGENTS.md`, and `CLAUDE.md`
+match the fetched base and contain no local review-surface changes, then starts
+the reviewer from a fresh empty session root with the issue worktree exposed
+only as the edit target. It passes absolute paths to the verified guidance and
+disables Claude slash commands, project/local settings, added-directory
+instructions, and auto memory, so neither engine resolves review instructions
+from worker-authored files in the issue worktree. The wrapper pins both hook
+strings byte-for-byte; an existing consumer must migrate them before
+contract-v3 auto mode will run.
 
 Every successfully completed clean or changed v3 review hook calls
 `review-ledger.js write-result`; the helper derives the complete
@@ -139,24 +151,16 @@ The wrapper is upstream-owned, but config, worker instructions, and the prompt
 are `create_if_missing` consumer files. Existing consumers must therefore merge
 the current templates manually before the synced wrapper can run:
 
-1. Update both hooks to run a fresh `deepcritique
-$AGENT_LOOP_PR_NUMBER` with their respective local engine. Scope both to
-   `$AGENT_LOOP_REVIEW_BASE_SHA`.
-   The wrapper rejects either review hook naming a retired `grill`-family skill
-   or path during startup, before it claims an issue. The check applies to
-   every accepted contract version, including an existing version 3 config.
-2. Make both hooks load `.codex/references/local-review-ledger.md`, read all
-   prior threads, post confirmed findings inline before editing, commit and use
-   `$AGENT_LOOP_REVIEW_PUSH_HELPER` to publish
-   fixes, reply with the fix and validation, resolve the threads, leave the
-   issue branch attached and clean, and exit nonzero if findings remain.
-3. Configure a non-mutating `validation_hook`, add
-   `review_contract_version = 3`, make every successfully completed clean or
-   changed hook write the v3 result to `$AGENT_LOOP_REVIEW_RESULT_FILE` through
-   `review-ledger.js write-result`, use `review-ledger.js
-write-blocked-result` for blocked results, and optionally override
-   `review_max_rounds = 4` with another positive cap.
-4. Merge the current local-only wording from the instruction and prompt
+1. Set both hooks to the dedicated trusted launcher exactly as shown in the
+   current config template. Do not wrap, extend, or replace those commands; the
+   launcher selects the engine, scopes the review to the immutable base and
+   exact head, and owns the contract-v3 result path.
+2. Configure a non-mutating `validation_hook`, add
+   `review_contract_version = 3`, retain `config_doctor = true` and
+   `claude_effort_policy = low`, and optionally override
+   `review_max_rounds = 4` with another positive cap. The launcher and reviewer
+   skill own the result, push, and blocked-result contracts.
+3. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync
    will not overwrite those consumer-owned files.
 

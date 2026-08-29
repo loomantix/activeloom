@@ -22,11 +22,14 @@ config_doctor = true
 # effort options are not exactly one literal `--effort low`.
 claude_effort_policy = low
 
-# Both review hooks are required. The wrapper runs Codex first, then Claude, and
+# Both review hooks are pinned to the upstream-owned trusted launcher. The
+# wrapper runs Codex first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
-# Codex-then-Claude round with no material fixes. The Codex hook must run
-# `deepcritique`; the Claude hook must run `deepcritique`.
+# Codex-then-Claude round with no material fixes. The launcher runs each engine
+# from an empty session root, resolves verified guidance by absolute path from
+# the clean source checkout, and exposes the issue worktree only as the review
+# target.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
 # commit it, call `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply with the fix and validation, resolve the
@@ -35,8 +38,8 @@ claude_effort_policy = low
 # not mutate the base branch, other issues/PRs, or invoke hosted reviewers.
 # Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
 # round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
-# ref. The wrapper validates exit status and Git state but cannot prove which
-# engine an arbitrary command launches; these commands own that guarantee.
+# ref. The wrapper rejects consumer hook overrides so this trust boundary cannot
+# be configured away.
 # Hooks also receive `$AGENT_LOOP_PR_NUMBER`, `$AGENT_LOOP_PR_URL`, and
 # `$AGENT_LOOP_PR_HEAD_SHA`. The last value is the exact head at pass start.
 # Every successfully completed clean or changed hook must call `review-ledger.js
@@ -49,8 +52,8 @@ claude_effort_policy = low
 # transaction, but never post pass/completion markers; the wrapper validates the
 # result and posts those attestations. Later hooks and final validation must not
 # create, remove, or alter an accepted result file.
-claude_review_hook =
-codex_review_hook =
+claude_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude
+codex_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex
 review_max_rounds = 4
 
 # Optional worker override. When empty, the wrapper runs `codex exec` with the

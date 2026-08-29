@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -66,6 +67,31 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     for guard_name in ("hook-git-guard", "hook-gh-guard", "review-push.sh", "config-doctor.py"):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
+    _write_executable(
+        script.parent / "run-codex-review.sh",
+        """#!/usr/bin/env bash
+# Fixture launcher mirrors the pinned production entrypoint while allowing the
+# integration suite to inject deterministic reviewer behavior through comments
+# in its generated config. The real launcher's trust boundary has a dedicated
+# execution-level test module.
+if false; then
+    claude \\
+        --effort low \\
+        --print ignored
+fi
+exec python3 - "$@" <<'PY'
+import argparse, base64, os, pathlib, subprocess
+parser = argparse.ArgumentParser()
+parser.add_argument('--engine', choices=('codex', 'claude'), required=True)
+engine = parser.parse_args().engine
+config = pathlib.Path(os.environ['AGENT_LOOP_TRUSTED_CODEX_ROOT']) / 'skills/agent-loop/agent-loop.config'
+prefix = f'# agent_test_{engine}_review_command_b64 = '
+encoded = next(line.removeprefix(prefix) for line in config.read_text().splitlines() if line.startswith(prefix))
+command = base64.b64decode(encoded).decode()
+raise SystemExit(subprocess.run(['bash', '-lc', command], env=os.environ).returncode)
+PY
+""",
+    )
     ledger_source = REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.js"
     ledger_target = repo / ".codex/skills/critique/scripts/review-ledger.js"
     ledger_target.parent.mkdir(parents=True)
@@ -566,12 +592,24 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
             + ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
             f'"$AGENT_LOOP_REVIEW_RESULT_FILE" write-result; {values[key]}'
         )
-    return _config(
+    rendered = _config(
         tmp_path,
         auto_clean_attestation=False,
         auto_committed_evidence=False,
         **values,
     )
+    commands: dict[str, str] = {}
+    for engine in ("codex", "claude"):
+        key = f"{engine}_review_hook"
+        match = re.search(rf"^{key} = (.*)$", rendered, flags=re.MULTILINE)
+        assert match is not None
+        commands[engine] = match.group(1)
+        pinned = f'{key} = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine {engine}'
+        rendered = re.sub(rf"^{key} = .*$", pinned, rendered, flags=re.MULTILINE)
+    for engine, command in commands.items():
+        encoded = base64.b64encode(command.encode()).decode()
+        rendered += f"# agent_test_{engine}_review_command_b64 = {encoded}\n"
+    return rendered
 
 
 def _v3_changed_hook() -> str:
@@ -861,6 +899,28 @@ def test_outer_review_environment_is_not_leaked_to_worker(
         },
     )
     assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_worker_cannot_replace_the_pinned_review_launcher(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "mutated-launcher-ran"
+    worker_hook = (
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER\"; "
+        'chmod 755 "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER"; '
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "59"],
+        issues=[_issue(59)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+    )
+    assert result.returncode != 0
+    assert "Trusted Codex review launcher changed after startup" in result.stderr
+    assert not marker.exists()
 
 
 def test_ambient_gh_repo_is_replaced_with_checkout_repository(
@@ -2087,31 +2147,31 @@ def test_v3_auto_policy_is_required_before_claim(
 
 
 @pytest.mark.parametrize(
-    ("missing_token", "expected_error"),
+    ("hook_key", "engine", "replacement"),
     [
-        ("AGENT_LOOP_REVIEW_PUSH_HELPER", "must use AGENT_LOOP_REVIEW_PUSH_HELPER"),
-        ("AGENT_LOOP_REVIEW_RESULT_FILE", "must write AGENT_LOOP_REVIEW_RESULT_FILE"),
-        ("write-result", "must use review-ledger.js write-result"),
+        ("codex_review_hook", "codex", '"$OTHER_LAUNCHER" --engine codex'),
+        ("claude_review_hook", "claude", '"$OTHER_LAUNCHER" --engine claude'),
+        (
+            "codex_review_hook",
+            "codex",
+            '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude',
+        ),
     ],
 )
 def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
     consumer: tuple[Path, Path, Path, Path],
     tmp_path: Path,
-    missing_token: str,
-    expected_error: str,
+    hook_key: str,
+    engine: str,
+    replacement: str,
 ) -> None:
-    complete = (
-        ': "$AGENT_LOOP_REVIEW_PUSH_HELPER" '
-        '"$AGENT_LOOP_REVIEW_RESULT_FILE" write-result'
+    expected = (
+        f'{hook_key} = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine {engine}'
     )
-    config = _config(
-        tmp_path,
-        review_contract_version=3,
-        config_doctor="false",
-        codex_review_hook=complete,
-        claude_review_hook=complete,
+    config = _config_v3(tmp_path).replace(
+        "config_doctor = true", "config_doctor = false"
     )
-    config = config.replace(missing_token, "missing")
+    config = config.replace(expected, f"{hook_key} = {replacement}")
 
     result = _run(
         consumer,
@@ -2121,7 +2181,7 @@ def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
     )
 
     assert result.returncode != 0
-    assert expected_error in result.stderr
+    assert f"{hook_key} must use the dedicated Codex review launcher" in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
@@ -2149,11 +2209,16 @@ def test_incorrect_reviewer_hook_is_rejected_before_claim(
     hook_key: str,
     hook_value: str,
 ) -> None:
+    engine = hook_key.removesuffix("_review_hook")
+    expected = (
+        f'{hook_key} = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine {engine}'
+    )
+    config = _config_v3(tmp_path).replace(expected, f"{hook_key} = {hook_value}")
     result = _run(
         consumer,
         ["--issues", "20"],
         issues=[_issue(20)],
-        config=_config_v3(tmp_path, **{hook_key: hook_value}),
+        config=config,
     )
     assert result.returncode != 0
     assert f"{hook_key} names an incorrect reviewer skill" in result.stderr
@@ -2170,7 +2235,7 @@ def test_grill_substring_in_unrelated_hook_path_is_not_rejected(
         consumer,
         ["--issues", "20"],
         issues=[_issue(20)],
-        config=_config_v3(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
+        config=_config(tmp_path, codex_review_hook="bash /opt/grill-app/review.sh"),
     )
     assert "names an incorrect reviewer skill" not in result.stderr
     # Absence of the message alone would also hold if the run died earlier for
