@@ -45,6 +45,22 @@ def _project(tmp_path: Path) -> Path:
         'claude_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude\n',
         encoding="utf-8",
     )
+    for relative in (
+        ".codex/skills/deepcritique/SKILL.md",
+        ".claude/skills/deepcritique/SKILL.md",
+    ):
+        target = project / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("trusted native review skill\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "main"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=project,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=project, check=True)
     return project
 
 
@@ -57,6 +73,8 @@ def _run(project: Path) -> subprocess.CompletedProcess[str]:
             str(project),
             "--claude-effort",
             "low",
+            "--base-ref",
+            "HEAD",
         ],
         capture_output=True,
         text=True,
@@ -88,6 +106,25 @@ def test_doctor_retains_contract_v3_hook_compatibility(tmp_path: Path) -> None:
     )
     result = _run(project)
     assert result.returncode == 0, result.stderr
+
+
+def test_doctor_rejects_missing_native_skill_in_pinned_base(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    subprocess.run(
+        ["git", "rm", ".claude/skills/deepcritique/SKILL.md"],
+        cwd=project,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "remove Claude review skill"],
+        cwd=project,
+        check=True,
+    )
+
+    result = _run(project)
+
+    assert result.returncode != 0
+    assert "pinned base review surface is missing" in result.stderr
 
 
 @pytest.mark.parametrize(

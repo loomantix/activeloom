@@ -57,6 +57,8 @@ issue gets a unique `agent-loop/issue-<N>-<run>` branch and linked worktree.
   a local commit and forbid push/PR creation.
 - `.codex/skills/agent-loop/agent-loop.config`: hook and base configuration.
 - `.codex/skills/issues/scripts/ready.py`: ready-queue provider.
+- `.claude/skills/deepcritique/SKILL.md`: separately managed Claude-native
+  review guidance. Codex platform sync does not install or overwrite it.
 
 The config, instructions, and prompt are bootstrapped with
 `create_if_missing: true`; merge template changes manually into existing
@@ -160,8 +162,9 @@ the current templates manually before the synced wrapper can run:
 2. Configure a non-mutating `validation_hook`, retain `config_doctor = true` and
    `claude_effort_policy = low`, and optionally override
    `review_max_rounds = 4` with another positive cap. The launcher and reviewer
-   skill own the result, push, and blocked-result contracts. The pinned base
-   must contain both Codex and Claude native `deepcritique` skills.
+   skill own the result, push, and blocked-result contracts. Before issue
+   selection or claim, the doctor requires the fetched base to contain both
+   Codex and Claude native `deepcritique` skills as regular blobs.
 3. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync
    will not overwrite those consumer-owned files.

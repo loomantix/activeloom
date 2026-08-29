@@ -104,6 +104,12 @@ PY
         REPO_ROOT / ".codex/skills/critique/scripts/package.json",
         ledger_target.parent / "package.json",
     )
+    codex_review_skill = repo / ".codex/skills/deepcritique/SKILL.md"
+    codex_review_skill.parent.mkdir(parents=True, exist_ok=True)
+    codex_review_skill.write_text("# Trusted Codex deep review fixture\n", encoding="utf-8")
+    claude_review_skill = repo / ".claude/skills/deepcritique/SKILL.md"
+    claude_review_skill.parent.mkdir(parents=True, exist_ok=True)
+    claude_review_skill.write_text("# Trusted Claude deep review fixture\n", encoding="utf-8")
     # codex-platform has no root manifest, which is the most permissive module
     # resolution context there is — the bundle would load here even with no
     # sibling manifest at all. Give the fixture consumer a CommonJS root, the

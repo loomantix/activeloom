@@ -393,14 +393,6 @@ if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     CLAUDE_REVIEW_BIN_SHA256="$(sha256sum "$CLAUDE_REVIEW_BIN" | awk '{print $1}')"
 fi
 
-if [ "$CONFIG_DOCTOR" = true ]; then
-    doctor_command=(python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR")
-    if [ -n "$CLAUDE_EFFORT_POLICY" ]; then
-        doctor_command+=(--claude-effort "$CLAUDE_EFFORT_POLICY")
-    fi
-    "${doctor_command[@]}" || exit 1
-fi
-
 if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
     PROMPT_TEMPLATE="$(<"$PROMPT_FILE")"
 else
@@ -460,6 +452,14 @@ git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
     [ "$DRY_RUN" = true ] && echo "Dry-run does not fetch; fetch the base branch once and retry." >&2
     exit 1
 }
+if [ "$CONFIG_DOCTOR" = true ]; then
+    doctor_command=(python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR" \
+        --base-ref "$BASE_REMOTE_REF")
+    if [ -n "$CLAUDE_EFFORT_POLICY" ]; then
+        doctor_command+=(--claude-effort "$CLAUDE_EFFORT_POLICY")
+    fi
+    "${doctor_command[@]}" || exit 1
+fi
 
 # Resolve the current login once, up front. Doing it per-candidate inside an
 # unchecked command substitution meant a transient gh failure silently rendered a

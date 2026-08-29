@@ -46,7 +46,31 @@ def _version(command: list[str], label: str) -> str:
     return result.stdout.strip()
 
 
-def doctor(project: Path, claude_effort: str | None) -> None:
+def _require_base_blob(project: Path, base_ref: str, relative: str) -> None:
+    result = subprocess.run(
+        ["git", "-C", str(project), "ls-tree", "-z", base_ref, "--", relative],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip() or "<no stderr>"
+        raise DoctorError(f"could not inspect pinned base review surface: {detail}")
+    records = [record for record in result.stdout.split(b"\0") if record]
+    if len(records) != 1:
+        raise DoctorError(f"pinned base review surface is missing: {relative}")
+    metadata, separator, path = records[0].partition(b"\t")
+    fields = metadata.split()
+    if (
+        separator != b"\t"
+        or path != relative.encode()
+        or len(fields) != 3
+        or fields[0] not in {b"100644", b"100755"}
+        or fields[1] != b"blob"
+    ):
+        raise DoctorError(f"pinned base review surface is not a regular blob: {relative}")
+
+
+def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> None:
     root = project.resolve()
     skill = root / ".codex/skills/agent-loop"
     config_path = skill / "agent-loop.config"
@@ -102,6 +126,13 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         "claude": values.get("claude_review_hook", ""),
     }
     if contract == "4":
+        if not base_ref:
+            raise DoctorError("contract v4 compatibility requires --base-ref")
+        for relative in (
+            ".codex/skills/deepcritique/SKILL.md",
+            ".claude/skills/deepcritique/SKILL.md",
+        ):
+            _require_base_blob(root, base_ref, relative)
         expected_hooks = {
             "codex": '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex',
             "claude": '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude',
@@ -143,8 +174,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--claude-effort")
+    parser.add_argument("--base-ref")
     args = parser.parse_args()
-    doctor(Path(args.project_dir), args.claude_effort)
+    doctor(Path(args.project_dir), args.claude_effort, args.base_ref)
     print("agent-loop config doctor: compatible")
     return 0
 

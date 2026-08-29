@@ -81,10 +81,19 @@ def _fake_cli(path: Path) -> Path:
     path.write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, sys\n"
+        "prompt = sys.argv[-1]\n"
+        "skill_path = pathlib.Path(prompt.split('Read ', 1)[1].split(' completely', 1)[0])\n"
+        "snapshot_root = skill_path.parents[3]\n"
         "pathlib.Path(os.environ['REVIEW_INVOCATION']).write_text(json.dumps({\n"
         "  'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
         "  'additional_instructions': os.environ.get('CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD'),\n"
-        "  'auto_memory': os.environ.get('CLAUDE_CODE_DISABLE_AUTO_MEMORY')\n"
+        "  'auto_memory': os.environ.get('CLAUDE_CODE_DISABLE_AUTO_MEMORY'),\n"
+        "  'coverage_env': {key: os.environ.get(key) for key in (\n"
+        "    'COVERAGE_PROCESS_START', 'COV_CORE_SOURCE', 'COV_CORE_CONFIG',\n"
+        "    'COV_CORE_DATAFILE', 'COV_CORE_BRANCH'\n"
+        "  )},\n"
+        "  'skill_content': skill_path.read_text(),\n"
+        "  'nested_instructions': (snapshot_root / 'nested/AGENTS.md').read_text()\n"
         "}), encoding='utf-8')\n",
         encoding="utf-8",
     )
@@ -114,6 +123,11 @@ def _environment(
         "AGENT_LOOP_TRUSTED_BASE_REF": "main",
         "REVIEW_INVOCATION": str(tmp_path / "invocation.json"),
         "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1",
+        "COVERAGE_PROCESS_START": "fixture",
+        "COV_CORE_SOURCE": "fixture",
+        "COV_CORE_CONFIG": "fixture",
+        "COV_CORE_DATAFILE": "fixture",
+        "COV_CORE_BRANCH": "fixture",
         "TMPDIR": str(tmp_path / "issue"),
         f"{engine.upper()}_REVIEW_CLI": str(cli),
     }
@@ -160,6 +174,9 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     assert "round 2 (adversarial)" in prompt
     assert str(issue) in prompt
     assert "worker-authored" not in prompt
+    assert set(invocation["coverage_env"].values()) == {None}
+    assert invocation["skill_content"] == "trusted deep review\n"
+    assert invocation["nested_instructions"] == "trusted nested instructions\n"
 
     claude = _fake_cli(tmp_path / "claude")
     result = _run_launcher(
@@ -181,6 +198,9 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     assert "/trusted/.claude/skills/deepcritique/SKILL.md" in argv[-1]
     assert invocation["additional_instructions"] is None
     assert invocation["auto_memory"] == "1"
+    assert set(invocation["coverage_env"].values()) == {None}
+    assert invocation["skill_content"] == "trusted Claude deep review\n"
+    assert invocation["nested_instructions"] == "trusted nested instructions\n"
 
 
 def test_launcher_uses_base_blobs_when_the_source_checkout_is_modified(
@@ -204,6 +224,9 @@ def test_launcher_uses_base_blobs_when_the_source_checkout_is_modified(
     invocation = json.loads((tmp_path / "invocation.json").read_text(encoding="utf-8"))
     assert str(trusted) not in invocation["argv"][-1]
     assert "/trusted/.codex/skills/deepcritique/SKILL.md" in invocation["argv"][-1]
+    assert invocation["skill_content"] == "trusted deep review\n"
+    assert invocation["skill_content"] != "modified\n"
+    assert invocation["nested_instructions"] == "trusted nested instructions\n"
 
 
 def test_launcher_rejects_a_trusted_ref_that_moved_from_the_pinned_base(
@@ -239,7 +262,9 @@ def test_launcher_ignores_a_symlinked_working_tree_instruction(tmp_path: Path) -
         ),
     )
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "invocation.json").exists()
+    invocation = json.loads((tmp_path / "invocation.json").read_text(encoding="utf-8"))
+    assert invocation["skill_content"] == "trusted deep review\n"
+    assert invocation["skill_content"] != "trusted workflow\n"
 
 
 def test_launcher_rejects_a_reviewer_binary_that_changed_after_pinning(

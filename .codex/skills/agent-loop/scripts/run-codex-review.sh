@@ -4,6 +4,12 @@ set -euo pipefail
 
 CLAUDE_EFFORT_POLICY=low
 
+# Test-runner coverage instrumentation is scoped to the wrapper's repository.
+# A Python-based reviewer started from the private empty root would otherwise
+# emit incompatible coverage data without that repository's configuration.
+unset COVERAGE_PROCESS_START COV_CORE_SOURCE COV_CORE_CONFIG \
+    COV_CORE_DATAFILE COV_CORE_BRANCH
+
 usage() { echo "usage: $0 --engine codex|claude" >&2; exit 2; }
 case "${1:-}" in
     --contract-version) [ "$#" -eq 1 ] || usage; echo 4; exit 0 ;;
@@ -69,6 +75,11 @@ trusted_base_sha="$(trusted_git rev-parse --verify "$AGENT_LOOP_TRUSTED_BASE_REF
     echo "trusted base ref no longer resolves to AGENT_LOOP_REVIEW_BASE_SHA" >&2
     exit 1
 }
+trusted_git fsck --strict --connectivity-only --no-dangling \
+    "$AGENT_LOOP_REVIEW_BASE_SHA" >/dev/null || {
+    echo "pinned base object graph failed integrity verification" >&2
+    exit 1
+}
 
 launch_root="$(realpath -e -- "$(mktemp -d /tmp/codex-agent-loop-review.XXXXXXXX)")"
 cleanup_launch_root() { rm -rf -- "$launch_root"; }
@@ -77,7 +88,7 @@ snapshot="$launch_root/trusted"
 mkdir -p "$snapshot"
 
 materialize_record() {
-    local record="$1" metadata path mode type oid destination
+    local record="$1" metadata path mode type oid destination actual_oid
     metadata="${record%%$'\t'*}"
     path="${record#*$'\t'}"
     read -r mode type oid <<< "$metadata"
@@ -89,6 +100,11 @@ materialize_record() {
     destination="$snapshot/$path"
     mkdir -p "$(dirname "$destination")"
     trusted_git cat-file blob "$oid" > "$destination"
+    actual_oid="$(trusted_git hash-object --no-filters "$destination")"
+    [ "$actual_oid" = "$oid" ] || {
+        echo "trusted guidance blob failed integrity verification: $path" >&2
+        exit 1
+    }
     if [ "$mode" = 100755 ]; then chmod 700 "$destination"; else chmod 600 "$destination"; fi
 }
 
