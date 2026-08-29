@@ -25,6 +25,9 @@ def _project(tmp_path: Path) -> Path:
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/run-codex-review.sh", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/hook-git-guard", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/hook-gh-guard", scripts)
+    shutil.copy2(
+        ROOT / ".codex/skills/agent-loop/scripts/process-supervisor.py", scripts
+    )
     shutil.copy2(ROOT / ".codex/skills/critique/scripts/review-ledger.js", ledger_dir)
     # See tests/test_agent_loop.py: sync ships the sibling ESM manifest, and a
     # CommonJS consumer root is the context that needs it.

@@ -199,6 +199,11 @@ targets:
     substitutions: []
     mode: '0755'
 
+  - source: .codex/skills/agent-loop/scripts/process-supervisor.py
+    destination: .codex/skills/agent-loop/scripts/process-supervisor.py
+    substitutions: []
+    mode: '0755'
+
   # Both automatic reviewers enter through this trusted-source launcher; the
   # consumer config is pinned to its wrapper-owned absolute path at runtime.
   - source: .codex/skills/agent-loop/scripts/run-codex-review.sh

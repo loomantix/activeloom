@@ -64,7 +64,13 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     script.parent.mkdir(parents=True)
     ready.parent.mkdir(parents=True)
     shutil.copy2(AGENT_LOOP, script)
-    for guard_name in ("hook-git-guard", "hook-gh-guard", "review-push.sh", "config-doctor.py"):
+    for guard_name in (
+        "hook-git-guard",
+        "hook-gh-guard",
+        "review-push.sh",
+        "config-doctor.py",
+        "process-supervisor.py",
+    ):
         shutil.copy2(AGENT_LOOP.parent / guard_name, script.parent / guard_name)
     shutil.copy2(AGENT_LOOP.parent / "agent-loop-state.py", script.parent / "agent-loop-state.py")
     _write_executable(
@@ -97,7 +103,8 @@ if [ "${1:-}" = --wrapper-paths ]; then
         .codex/skills/agent-loop/scripts/run-codex-review.sh \
         .codex/skills/agent-loop/scripts/hook-git-guard \
         .codex/skills/agent-loop/scripts/hook-gh-guard \
-        .codex/skills/agent-loop/scripts/review-push.sh
+        .codex/skills/agent-loop/scripts/review-push.sh \
+        .codex/skills/agent-loop/scripts/process-supervisor.py
     exit 0
 fi
 if false; then
@@ -1012,6 +1019,43 @@ def test_worker_cannot_replace_the_pinned_review_push_helper(
 
     assert result.returncode != 0
     assert "review push helper changed after startup" in result.stderr
+    assert not marker.exists()
+
+
+def test_worker_descendants_cannot_race_trusted_review_tools(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "raced-review-tool-ran"
+    watcher_pid = tmp_path / "watcher.pid"
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        'trusted="$AGENT_LOOP_LOG_DIR/trusted-review-tools/review-push.sh"; '
+        'guards="$AGENT_LOOP_LOG_DIR/hook-command-guards"; '
+        "(while :; do for target in \"$trusted\" \"$guards/git\" \"$guards/gh\"; do "
+        "if [ -e \"$target\" ]; then printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' 'exit 99' > \"$target\"; chmod 700 \"$target\"; fi; "
+        "done; sleep 0.01; done) >/dev/null 2>&1 & "
+        f"printf '%s\\n' $! > {watcher_pid}"
+    )
+    validation_hook = (
+        '[ -z "${AGENT_LOOP_REVIEW_PUSH_HELPER+x}" ] || '
+        "{ echo 'review helper leaked into validation' >&2; exit 1; }"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "64"],
+        issues=[_issue(64)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=worker_hook,
+            validation_hook=validation_hook,
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert watcher_pid.exists()
     assert not marker.exists()
 
 

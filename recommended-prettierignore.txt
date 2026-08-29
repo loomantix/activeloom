@@ -39,6 +39,7 @@
 .codex/skills/agent-loop/scripts/config-doctor.py
 .codex/skills/agent-loop/scripts/hook-gh-guard
 .codex/skills/agent-loop/scripts/hook-git-guard
+.codex/skills/agent-loop/scripts/process-supervisor.py
 .codex/skills/agent-loop/scripts/review-push.sh
 .codex/skills/agent-loop/scripts/run-codex-review.sh
 .codex/skills/backlog-refinement/SKILL.md

@@ -152,6 +152,7 @@ REVIEW_LEDGER="$PACKAGED_SKILL_BASE/critique/scripts/review-ledger.js"
 RUN_STATE_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/agent-loop-state.py"
 REVIEW_PUSH_HELPER_SOURCE="$PACKAGED_SKILL_BASE/agent-loop/scripts/review-push.sh"
 REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER_SOURCE"
+PROCESS_SUPERVISOR="$PACKAGED_SKILL_BASE/agent-loop/scripts/process-supervisor.py"
 CONFIG_DOCTOR_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/config-doctor.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
@@ -375,6 +376,7 @@ fi
 [ -x "$ISSUES_READY" ] || { echo "issues ready.py not found or not executable: $ISSUES_READY" >&2; exit 1; }
 [ -x "$RUN_STATE_HELPER" ] || { echo "agent-loop run-state helper not found or not executable: $RUN_STATE_HELPER" >&2; exit 1; }
 [ -x "$REVIEW_PUSH_HELPER_SOURCE" ] || { echo "agent-loop review push helper not found or not executable: $REVIEW_PUSH_HELPER_SOURCE" >&2; exit 1; }
+[ -x "$PROCESS_SUPERVISOR" ] || { echo "agent-loop process supervisor not found or not executable: $PROCESS_SUPERVISOR" >&2; exit 1; }
 [ -x "$CONFIG_DOCTOR_HELPER" ] || { echo "agent-loop config doctor not found or not executable: $CONFIG_DOCTOR_HELPER" >&2; exit 1; }
 [ -f "$CODEX_REVIEW_LAUNCHER" ] && [ -x "$CODEX_REVIEW_LAUNCHER" ] && [ ! -L "$CODEX_REVIEW_LAUNCHER" ] || {
     echo "Codex review launcher not found, executable, or is symlinked: $CODEX_REVIEW_LAUNCHER" >&2
@@ -464,6 +466,7 @@ fi
 HOOK_GIT_GUARD_SHA256="$(sha256sum "$HOOK_GIT_GUARD" | awk '{print $1}')"
 HOOK_GH_GUARD_SHA256="$(sha256sum "$HOOK_GH_GUARD" | awk '{print $1}')"
 REVIEW_PUSH_HELPER_SHA256="$(sha256sum "$REVIEW_PUSH_HELPER_SOURCE" | awk '{print $1}')"
+PROCESS_SUPERVISOR_SHA256="$(sha256sum "$PROCESS_SUPERVISOR" | awk '{print $1}')"
 
 # Resolve the current login once, up front. Doing it per-candidate inside an
 # unchecked command substitution meant a transient gh failure silently rendered a
@@ -1095,6 +1098,8 @@ run_bounded_hook() {
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0
     local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
     echo -e "${BLUE}▸${NC} $phase"
+    require_pinned_executable "$PROCESS_SUPERVISOR" "$PROCESS_SUPERVISOR_SHA256" \
+        "hook process supervisor" || return 1
     # Bound the captured log to its trailing LOG_MAX_KB with `tail -c`, NOT with a
     # process-wide `ulimit -f`: that rlimit is inherited by the worker and every hook
     # and would SIGXFSZ-kill (and truncate) any repo file they legitimately write
@@ -1161,19 +1166,21 @@ run_bounded_hook() {
             export AGENT_LOOP_ORIGIN_PUSH_URLS="$ORIGIN_PUSH_URLS"
         else
             unset AGENT_LOOP_REVIEW_CONTRACT_VERSION AGENT_LOOP_ORIGIN_FETCH_URLS \
-                AGENT_LOOP_ORIGIN_PUSH_URLS
+                AGENT_LOOP_ORIGIN_PUSH_URLS AGENT_LOOP_REVIEW_PUSH_HELPER
         fi
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
         export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"
         if [ -n "$direct_review_engine" ]; then
-            timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" \
-                "$CODEX_REVIEW_LAUNCHER" --engine "$direct_review_engine" 2>&1 \
+            python3 "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
+                --kill-after-seconds 15 -- "$CODEX_REVIEW_LAUNCHER" \
+                --engine "$direct_review_engine" 2>&1 \
                 | tail -c "$max_bytes"
         else
             export AGENT_LOOP_HOOK_COMMAND="$hook_command"
             # shellcheck disable=SC2016 # expanded by the bounded login shell
-            timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
+            python3 "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
+                --kill-after-seconds 15 -- bash -lc \
                 'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
                 | tail -c "$max_bytes"
         fi
@@ -1562,13 +1569,18 @@ run_review_pass() {
     fi
     direct_review_engine=""
     [ "$REVIEW_CONTRACT_VERSION" = 4 ] && direct_review_engine="$slug"
+    install_review_push_helper || {
+        recovery_message "Could not install the pinned review push helper for $engine round $round."
+        return 1
+    }
     review_hook_status=0
     run_bounded_hook "$hook_description (round $round)" "$hook" \
         "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true \
         "$direct_review_engine" || review_hook_status=$?
     unset AGENT_LOOP_CODEX_REVIEW_LAUNCHER AGENT_LOOP_TRUSTED_REPO_ROOT \
         AGENT_LOOP_TRUSTED_BASE_REF AGENT_LOOP_REVIEW_BIN \
-        AGENT_LOOP_REVIEW_BIN_SHA256 CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
+        AGENT_LOOP_REVIEW_BIN_SHA256 AGENT_LOOP_REVIEW_PUSH_HELPER \
+        CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
     if [ "$review_hook_status" -ne 0 ]; then
         recovery_message "$hook_failure_description failed in review round $round."
         return 1
@@ -2421,10 +2433,6 @@ resume_review_run() {
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
-    install_review_push_helper || {
-        recovery_message "Could not install the pinned review push helper for recovery."
-        return 1
-    }
     AGENT_LOOP_PR_NUMBER="$(jq -r '.prNumber' <<<"$RESUME_STATE_JSON")" || return 1
     AGENT_LOOP_PR_URL="$(jq -r '.prUrl' <<<"$RESUME_STATE_JSON")" || return 1
     export AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL
@@ -2909,10 +2917,6 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
 
     run_worker "$start_sha" || exit 1
-    install_review_push_helper || {
-        recovery_message "Could not install the pinned review push helper."
-        exit 1
-    }
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
 

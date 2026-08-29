@@ -194,6 +194,11 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
             )
             if local_oid != oid:
                 raise DoctorError(f"review tool differs from the pinned base blob: {relative}")
+        supervisor = root / ".codex/skills/agent-loop/scripts/process-supervisor.py"
+        if _version([str(supervisor), "--self-test"], "hook process supervisor") != (
+            "linux-subreaper-v1"
+        ):
+            raise DoctorError("hook process supervisor self-test failed")
         for engine, prefix in (("codex", ".codex/"), ("claude", ".claude/")):
             required_paths = _version(
                 [str(review_launcher), "--required-paths", engine],
