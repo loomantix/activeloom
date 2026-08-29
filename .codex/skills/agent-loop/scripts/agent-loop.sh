@@ -694,19 +694,6 @@ print(path.resolve(strict=True))
     case "$resume_log_dir" in "$LOG_ROOT"/*) ;; *) echo "run state log directory is outside configured log_root" >&2; exit 1 ;; esac
     acquire_run_lock "$resume_log_dir" || exit 1
     RESUME_STATE_JSON="$(run_state_helper show --file "$RESUME_RUN_FILE")" || exit 1
-    expected_resume_config="$(jq -r '.gitConfigSha256 // empty' <<<"$RESUME_STATE_JSON")"
-    resume_config_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
-    actual_resume_config="$(git_config_fingerprint "$resume_config_worktree")" || exit 1
-    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
-        [ -n "$expected_resume_config" ] && \
-            [ "$actual_resume_config" = "$expected_resume_config" ] || {
-            echo "Git configuration differs from the trusted run-state boundary" >&2
-            exit 1
-        }
-    fi
-    TRUSTED_GIT_CONFIG_SHA256="$actual_resume_config"
-    export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
-    fetch_base
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
         exit 1
@@ -715,6 +702,25 @@ print(path.resolve(strict=True))
         echo "run state base branch does not match $BASE_BRANCH" >&2
         exit 1
     }
+    expected_resume_config="$(jq -r '.gitConfigSha256 // empty' <<<"$RESUME_STATE_JSON")"
+    expected_resume_project="$(jq -r '.projectDir // empty' <<<"$RESUME_STATE_JSON")"
+    expected_resume_project_config="$(jq -r '.projectGitConfigSha256 // empty' <<<"$RESUME_STATE_JSON")"
+    resume_config_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
+    actual_resume_config="$(git_config_fingerprint "$resume_config_worktree")" || exit 1
+    actual_resume_project_config="$(git_config_fingerprint "$PROJECT_DIR")" || exit 1
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        [ -n "$expected_resume_config" ] && \
+            [ "$actual_resume_config" = "$expected_resume_config" ] && \
+            [ "$expected_resume_project" = "$PROJECT_DIR" ] && \
+            [ -n "$expected_resume_project_config" ] && \
+            [ "$actual_resume_project_config" = "$expected_resume_project_config" ] || {
+            echo "Git configuration differs from the trusted run-state boundary" >&2
+            exit 1
+        }
+    fi
+    TRUSTED_GIT_CONFIG_SHA256="$actual_resume_config"
+    export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
+    fetch_base
     resume_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
     recorded_log_dir="$(jq -r '.logDir' <<<"$RESUME_STATE_JSON")"
     [ "$recorded_log_dir" = "$resume_log_dir" ] || {
@@ -3181,6 +3187,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             --issue-title-sha256 "$(printf '%s' "$SELECTED_TITLE" | sha256_text)" \
             --issue-body-sha256 "$(printf '%s' "$SELECTED_BODY" | sha256_text)" \
             --git-config-sha256 "$TRUSTED_GIT_CONFIG_SHA256" \
+            --project-dir "$PROJECT_DIR" \
+            --project-git-config-sha256 "$PROJECT_GIT_CONFIG_SHA256" \
             --branch "$branch" --worktree "$ACTIVE_WORKTREE" \
             --log-dir "$AGENT_LOOP_LOG_DIR" --pr "$AGENT_LOOP_PR_NUMBER" \
             --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \

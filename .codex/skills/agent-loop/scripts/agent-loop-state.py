@@ -75,7 +75,13 @@ def _validate(value: dict[str, Any]) -> None:
         "codexResultSha256",
         "claudeResultSha256",
     }
-    if set(value) not in {frozenset(required), frozenset(required | {"gitConfigSha256"})}:
+    legacy_extended = required | {"gitConfigSha256"}
+    extended = legacy_extended | {"projectDir", "projectGitConfigSha256"}
+    if set(value) not in {
+        frozenset(required),
+        frozenset(legacy_extended),
+        frozenset(extended),
+    }:
         _fail("run state has missing or unknown fields")
     if type(value["version"]) is not int or value["version"] != STATE_VERSION:
         _fail("unsupported run state version")
@@ -110,6 +116,17 @@ def _validate(value: dict[str, Any]) -> None:
         or not SHA256_RE.fullmatch(value["gitConfigSha256"])
     ):
         _fail("run state gitConfigSha256 must be a lowercase SHA-256 digest")
+    if "projectDir" in value:
+        if not isinstance(value["projectDir"], str) or not value["projectDir"]:
+            _fail("run state projectDir must be a non-empty string")
+        if not Path(value["projectDir"]).is_absolute():
+            _fail("run state projectDir must be absolute")
+        if not isinstance(
+            value["projectGitConfigSha256"], str
+        ) or not SHA256_RE.fullmatch(value["projectGitConfigSha256"]):
+            _fail(
+                "run state projectGitConfigSha256 must be a lowercase SHA-256 digest"
+            )
     if value["phase"] in {"converged", "finalizing", "finalized"} and any(
         value[key] is None
         for key in ("codexResultSha256", "claudeResultSha256")
@@ -201,6 +218,11 @@ def _create(args: argparse.Namespace) -> None:
     }
     if args.git_config_sha256 is not None:
         value["gitConfigSha256"] = args.git_config_sha256
+    if args.project_dir is not None and args.project_git_config_sha256 is not None:
+        value["projectDir"] = str(Path(args.project_dir).resolve())
+        value["projectGitConfigSha256"] = args.project_git_config_sha256
+    elif args.project_dir is not None or args.project_git_config_sha256 is not None:
+        _fail("run project dir and project Git config digest must be provided together")
     _atomic_write(path, value, replace=False)
     print(json.dumps(value, sort_keys=True))
 
@@ -429,6 +451,8 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--issue-title-sha256", required=True)
     create.add_argument("--issue-body-sha256", required=True)
     create.add_argument("--git-config-sha256")
+    create.add_argument("--project-dir")
+    create.add_argument("--project-git-config-sha256")
     create.add_argument("--base-branch", required=True)
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)

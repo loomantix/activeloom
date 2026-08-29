@@ -1357,6 +1357,45 @@ def test_resume_rejects_git_config_drift_from_the_original_run(
     assert "Git configuration differs from the trusted run-state boundary" in resumed.stderr
 
 
+def test_resume_rejects_distinct_controller_worktree_config_drift(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    project, _, _, _ = consumer
+    _run_git("config", "extensions.worktreeConfig", "true", cwd=project)
+    _run_git("config", "--worktree", "core.fsmonitor", "false", cwd=project)
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        "printf '%s\\n' '[core]' 'fsmonitor = false' "
+        '>> "$AGENT_LOOP_PROJECT_DIR/.git/config.worktree"'
+    )
+    first = _run(
+        consumer,
+        ["--issues", "74"],
+        issues=[_issue(74)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=worker_hook,
+            codex_review_hook="exit 72",
+        ),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(project)},
+        timeout=120,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(74, assigned=True)],
+        config=_config_v3(tmp_path),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(project)},
+    )
+
+    assert resumed.returncode != 0
+    assert "Git configuration differs from the trusted run-state boundary" in resumed.stderr
+
+
 def test_worker_cannot_replace_the_pinned_review_push_helper(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

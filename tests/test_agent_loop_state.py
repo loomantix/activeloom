@@ -44,6 +44,12 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
         TITLE_HASH,
         "--issue-body-sha256",
         BODY_HASH,
+        "--git-config-sha256",
+        "e" * 64,
+        "--project-dir",
+        str(tmp_path / "project"),
+        "--project-git-config-sha256",
+        "f" * 64,
         "--base-branch",
         "main",
         "--branch",
@@ -67,6 +73,9 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
     value = json.loads(created.stdout)
     assert value["phase"] == "draft-open"
     assert value["reviewEngine"] is None
+    assert value["gitConfigSha256"] == "e" * 64
+    assert value["projectDir"] == str((tmp_path / "project").resolve())
+    assert value["projectGitConfigSha256"] == "f" * 64
     missing_engine = _run(
         "update",
         "--file",
