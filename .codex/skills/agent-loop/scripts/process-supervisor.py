@@ -122,12 +122,14 @@ def main() -> int:
         parser.error("a command and positive timeout are required")
 
     received_signal: int | None = None
+    cleaning_up = False
 
     def request_termination(signum: int, _frame: object) -> None:
-        nonlocal received_signal
+        nonlocal received_signal, cleaning_up
         if received_signal is None:
             received_signal = signum
-            raise TerminationRequested(signum)
+            if not cleaning_up:
+                raise TerminationRequested(signum)
 
     handled_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
     previous_handlers = {
@@ -162,11 +164,14 @@ def main() -> int:
             except ProcessLookupError:
                 pass
     finally:
+        cleaning_up = True
         _cleanup(os.getpid(), args.kill_after_seconds)
         _reap()
         for sig, previous in previous_handlers.items():
             signal.signal(sig, previous)
 
+    if received_signal is not None:
+        return 128 + received_signal
     if timed_out:
         return 124
     if return_code < 0:

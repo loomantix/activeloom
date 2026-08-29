@@ -129,6 +129,53 @@ def test_supervisor_cleans_up_when_terminated(tmp_path: Path) -> None:
     _assert_recorded_process_dead(pid_file)
 
 
+def test_signal_during_cleanup_does_not_interrupt_reaping(tmp_path: Path) -> None:
+    pid_file = tmp_path / "cleanup-signal.pid"
+    child = f"""
+import os
+from pathlib import Path
+import signal
+import time
+
+parent = os.getpid()
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    path = Path({str(pid_file)!r})
+    path.write_text(str(os.getpid()), encoding="utf-8")
+    while os.getppid() == parent:
+        time.sleep(0.005)
+    os.kill(os.getppid(), signal.SIGTERM)
+    time.sleep(10)
+    os._exit(0)
+deadline = time.monotonic() + 2
+while not Path({str(pid_file)!r}).exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SUPERVISOR),
+            "--timeout-seconds",
+            "5",
+            "--kill-after-seconds",
+            "0.2",
+            "--",
+            sys.executable,
+            "-c",
+            child,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 128 + signal.SIGTERM, result.stderr
+    _assert_recorded_process_dead(pid_file)
+
+
 def test_supervisor_kills_active_fork_churn(tmp_path: Path) -> None:
     pid_file = tmp_path / "fork-churn.pids"
     child = f"""
