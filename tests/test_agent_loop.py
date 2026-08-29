@@ -1088,6 +1088,49 @@ def test_worker_cannot_replace_the_base_pinned_review_launcher(
     assert not marker.exists()
 
 
+def test_replacement_ref_cannot_redefine_the_pinned_review_launcher(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    """The round-time launcher pin must not resolve the base through refs/replace.
+
+    The worker owns a linked worktree of the project checkout, so it shares the
+    object store and the refs/replace namespace. Rewriting the launcher alone is
+    already refused; this covers the worker additionally pointing the pinned base
+    commit at a tree that names the rewritten blob, which would make a bare
+    `ls-tree`/`rev-parse` agree with `hash-object` on the mutated file.
+    """
+    marker = tmp_path / "replacement-launcher-ran"
+    launcher_relative = ".codex/skills/agent-loop/scripts/run-codex-review.sh"
+    worker_hook = (
+        f'launcher="$AGENT_LOOP_PROJECT_DIR/{launcher_relative}"; '
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$launcher\"; chmod 755 \"$launcher\"; "
+        'base="$(git rev-parse refs/remotes/origin/main)"; '
+        'blob="$(git hash-object -w "$launcher")"; '
+        'export GIT_INDEX_FILE="$AGENT_LOOP_LOG_DIR/replacement.index"; '
+        'git read-tree "$base"; '
+        f'git update-index --cacheinfo "100755,$blob,{launcher_relative}"; '
+        'tree="$(git write-tree)"; '
+        'commit="$(git commit-tree "$tree" -p "$base" -m replacement)"; '
+        'git replace "$base" "$commit"; '
+        'unset GIT_INDEX_FILE; '
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "67"],
+        issues=[_issue(67)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+    )
+
+    assert result.returncode != 0
+    assert "launcher bytes differ from the pinned base" in result.stderr
+    assert not marker.exists()
+
+
 def test_worker_cannot_replace_the_pinned_review_push_helper(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -2212,13 +2255,19 @@ def test_uncertain_finalized_checkpoint_restores_resumable_finalizing_state(
         raise StateError("simulated failure after finalized state replacement")
     print(json.dumps(value, sort_keys=True))"""
     assert needle in source
-    helper.write_text(source.replace(needle, replacement), encoding="utf-8")
+    mutated_helper = tmp_path / "mutated-agent-loop-state.py"
+    mutated_helper.write_text(source.replace(needle, replacement), encoding="utf-8")
+    worker_hook = (
+        f"cp {mutated_helper} {helper}; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
 
     first = _run(
         consumer,
         ["--issues", "92"],
         issues=[_issue(92)],
-        config=_config_v3(tmp_path),
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
         extra_env={"AGENT_FAIL_AFTER_FINALIZED_STATE_REPLACE": "true"},
     )
     assert first.returncode != 0
@@ -2226,6 +2275,10 @@ def test_uncertain_finalized_checkpoint_restores_resumable_finalizing_state(
     assert json.loads(state_file.read_text())["phase"] == "finalizing"
     assert not (consumer[3] / "pr-ready").exists()
 
+    # A resumed invocation must pass the same trusted-tool preflight as a fresh
+    # run. Restore the pinned helper; the finalized checkpoint already rolled
+    # back to the resumable finalizing phase.
+    helper.write_text(source, encoding="utf-8")
     second = _run(
         consumer,
         ["--resume-run", str(state_file)],

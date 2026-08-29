@@ -48,7 +48,17 @@ def _version(command: list[str], label: str) -> str:
 
 def _require_base_blob(project: Path, base_ref: str, relative: str) -> tuple[str, str]:
     result = subprocess.run(
-        ["git", "-C", str(project), "ls-tree", "-z", base_ref, "--", relative],
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(project),
+            "ls-tree",
+            "-z",
+            base_ref,
+            "--",
+            relative,
+        ],
         capture_output=True,
         check=False,
     )
@@ -144,6 +154,7 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
         local_launcher_oid = _version(
             [
                 "git",
+                "--no-replace-objects",
                 "-C",
                 str(root),
                 "hash-object",
@@ -200,6 +211,7 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
             local_oid = _version(
                 [
                     "git",
+                    "--no-replace-objects",
                     "-C",
                     str(root),
                     "hash-object",

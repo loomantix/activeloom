@@ -114,9 +114,9 @@ shell or `eval`. The launcher materializes `.codex` for Codex, `.claude` for
 Claude, and applicable `AGENTS.md`/`CLAUDE.md` files from base-tree blobs into a
 fresh empty session root. It passes absolute paths to that engine-native guidance and
 disables Claude's slash-command and Skill-tool loading, project/local settings,
-added-directory instructions, and auto memory. The launcher therefore passes
-the pinned Claude guidance as explicit prose rather than relying on a nested
-Skill invocation, so neither engine resolves review instructions from
+added-directory instructions, and auto memory. The launcher therefore names an
+absolute path into the pinned snapshot rather than a skill name it would have
+to resolve, so neither engine resolves review instructions from
 worker-authored files in the issue worktree. The wrapper pins both hook
 strings byte-for-byte; an existing consumer must migrate them before
 contract-v4 auto mode will run. Contract v3 retains its configurable hook

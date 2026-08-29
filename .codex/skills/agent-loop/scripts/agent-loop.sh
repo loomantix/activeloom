@@ -1592,13 +1592,17 @@ run_review_pass() {
             launcher_expected_oid=""
             launcher_actual_oid=""
             if [ -n "$launcher_relative" ]; then
-                launcher_mode="$(git -C "$PROJECT_DIR" ls-tree "$AGENT_LOOP_REVIEW_BASE_SHA" -- "$launcher_relative" | awk '{print $1}')"
-                launcher_expected_oid="$(git -C "$PROJECT_DIR" rev-parse "$AGENT_LOOP_REVIEW_BASE_SHA:$launcher_relative" 2>/dev/null || true)"
-                launcher_actual_oid="$(git -C "$PROJECT_DIR" hash-object --no-filters "$CODEX_REVIEW_LAUNCHER" 2>/dev/null || true)"
+                launcher_mode="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" ls-tree "$AGENT_LOOP_REVIEW_BASE_SHA" -- "$launcher_relative" | awk '{print $1}')"
+                launcher_expected_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" rev-parse "$AGENT_LOOP_REVIEW_BASE_SHA:$launcher_relative" || true)"
+                launcher_actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" hash-object --no-filters "$CODEX_REVIEW_LAUNCHER" || true)"
             fi
+            # Both oids are captured with `|| true`, so an empty value must never
+            # satisfy the equality test below by matching another empty value.
             if [ -z "$launcher_relative" ] || [ "$launcher_mode" != 100755 ] || \
                 [ ! -f "$CODEX_REVIEW_LAUNCHER" ] || [ -L "$CODEX_REVIEW_LAUNCHER" ] || \
                 [ ! -x "$CODEX_REVIEW_LAUNCHER" ] || \
+                ! [[ "$launcher_expected_oid" =~ ^[0-9a-f]{40}$ ]] || \
+                ! [[ "$launcher_actual_oid" =~ ^[0-9a-f]{40}$ ]] || \
                 [ "$launcher_actual_oid" != "$launcher_expected_oid" ]; then
                 recovery_message "Trusted review launcher bytes differ from the pinned base; refusing $engine review round $round."
                 return 1
