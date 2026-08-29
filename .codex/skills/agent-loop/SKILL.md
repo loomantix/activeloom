@@ -128,7 +128,10 @@ review execution; they are not credential or same-UID isolation. In particular,
 they do not defend against a reviewer deliberately rewriting its own tools or a
 hook delegating work to an unrelated pre-existing user service. That stronger
 boundary requires the credential-isolation redesign tracked in platform issue
-#37. The Linux subreaper does fail closed and removes ordinary hook descendants,
+#37. Operator-configured Git extensions that execute external programs must also
+remain trusted and immutable; the wrapper disables hooks and `core.fsmonitor`
+for its own post-worker operations and for post-worker validation and review
+execution. The Linux subreaper does fail closed and removes ordinary hook descendants,
 including detached and double-forked children, before the next phase starts.
 
 Every successfully completed clean or changed contract-v3/v4 review hook calls

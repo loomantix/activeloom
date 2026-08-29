@@ -122,7 +122,7 @@ def test_rejects_failed_worktree_status_inspection(
     failing_git = tmp_path / "git-with-failing-status"
     failing_git.write_text(
         "#!/bin/sh\n"
-        'if [ "$1" = status ]; then exit 42; fi\n'
+        'for arg in "$@"; do [ "$arg" = status ] && exit 42; done\n'
         'exec "$REAL_GIT_FOR_TEST" "$@"\n',
         encoding="utf-8",
     )

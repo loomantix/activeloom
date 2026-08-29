@@ -2,6 +2,7 @@
 # Deterministic, per-issue agent loop with PR-first local review convergence.
 
 set -euo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
 # Worktrees and persistent worker/reviewer logs can contain sensitive source or
 # test output. Default every path this wrapper creates to owner-only access.
 umask 077
@@ -459,7 +460,8 @@ require_origin_identity() {
 
 fetch_base() {
     require_origin_identity || return 1
-    git fetch origin "$BASE_FETCH_REFSPEC" --quiet
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+        fetch origin "$BASE_FETCH_REFSPEC" --quiet
 }
 
 if [ "$DRY_RUN" = false ] && [ -z "$RESUME_RUN_FILE" ] && [ -z "$RESUME_BATCH_FILE" ]; then
@@ -585,12 +587,14 @@ require_pinned_agent_loop_entrypoint() {
 TRUSTED_GIT_CONFIG_SHA256=""
 GIT_CONFIG_UNTRUSTED=false
 git_config_fingerprint() {
-    timeout 10 "$REAL_GIT_BIN" --no-replace-objects config \
+    local directory="${1:-$PWD}"
+    timeout 10 "$REAL_GIT_BIN" --no-replace-objects -C "$directory" config \
         --null --list | sha256sum | awk '{print $1}'
 }
 
 capture_trusted_git_config() {
-    TRUSTED_GIT_CONFIG_SHA256="$(git_config_fingerprint)" || {
+    local directory="${1:-$PWD}"
+    TRUSTED_GIT_CONFIG_SHA256="$(git_config_fingerprint "$directory")" || {
         echo "could not capture trusted Git configuration" >&2
         return 1
     }
@@ -611,7 +615,8 @@ require_trusted_git_config() {
         return 1
     }
 }
-capture_trusted_git_config || exit 1
+capture_trusted_git_config "$PROJECT_DIR" || exit 1
+PROJECT_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
 HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
 HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"
 REVIEW_PUSH_HELPER_SHA256="$(file_sha256 "$REVIEW_PUSH_HELPER_SOURCE")"
@@ -690,13 +695,17 @@ print(path.resolve(strict=True))
     acquire_run_lock "$resume_log_dir" || exit 1
     RESUME_STATE_JSON="$(run_state_helper show --file "$RESUME_RUN_FILE")" || exit 1
     expected_resume_config="$(jq -r '.gitConfigSha256 // empty' <<<"$RESUME_STATE_JSON")"
+    resume_config_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
+    actual_resume_config="$(git_config_fingerprint "$resume_config_worktree")" || exit 1
     if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
         [ -n "$expected_resume_config" ] && \
-            [ "$TRUSTED_GIT_CONFIG_SHA256" = "$expected_resume_config" ] || {
+            [ "$actual_resume_config" = "$expected_resume_config" ] || {
             echo "Git configuration differs from the trusted run-state boundary" >&2
             exit 1
         }
     fi
+    TRUSTED_GIT_CONFIG_SHA256="$actual_resume_config"
+    export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
     fetch_base
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
@@ -1205,7 +1214,7 @@ verify_issue_for_publication() {
 
 worktree_has_work() {
     local start_sha="$1" status head
-    status="$(git status --porcelain)" || {
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || {
         echo "could not inspect worktree state after worker failure; preserving it" >&2
         return 0
     }
@@ -1265,6 +1274,7 @@ run_bounded_hook() {
     local phase="$1" hook_command="$2" timeout_seconds="$3" log_file="$4"
     local allow_review_mutations="${5:-false}"
     local direct_review_engine="${6:-}"
+    local disable_consumer_git_extensions="${7:-false}"
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0
     local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
     echo -e "${BLUE}▸${NC} $phase"
@@ -1335,6 +1345,14 @@ run_bounded_hook() {
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
         export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"
+        if [ "$disable_consumer_git_extensions" = true ]; then
+            # A worker can rewrite the executable behind an otherwise unchanged
+            # core.fsmonitor or hooksPath value. Post-worker validation and review
+            # hooks must not execute either consumer-owned extension.
+            export GIT_CONFIG_COUNT=2
+            export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
+            export GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null
+        fi
         if [ -n "$direct_review_engine" ]; then
             python3 -I "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
                 --kill-after-seconds 15 -- "$CODEX_REVIEW_LAUNCHER" \
@@ -1419,7 +1437,7 @@ run_worker() {
 
 require_clean_committed_tree() {
     local phase="$1" start_sha="$2" status
-    status="$(git status --porcelain)" || {
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || {
         recovery_message "Could not inspect Git status after $phase."
         return 1
     }
@@ -1449,8 +1467,8 @@ run_validation() {
     fi
     before_sha="$(git rev-parse HEAD)" || return 1
     run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$HOOK_TIMEOUT_SECONDS" \
-        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" || return 1
-    status="$(git status --porcelain)" || return 1
+        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" false "" true || return 1
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || return 1
     after_sha="$(git rev-parse HEAD)" || return 1
     if [ -n "$status" ] || [ "$after_sha" != "$before_sha" ]; then
         echo "$label validation mutated the worktree or HEAD; validation hooks must be non-mutating" >&2
@@ -1751,7 +1769,7 @@ run_review_pass() {
     review_hook_status=0
     run_bounded_hook "$hook_description (round $round)" "$hook" \
         "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true \
-        "$direct_review_engine" || review_hook_status=$?
+        "$direct_review_engine" true || review_hook_status=$?
     unset AGENT_LOOP_CODEX_REVIEW_LAUNCHER AGENT_LOOP_TRUSTED_REPO_ROOT \
         AGENT_LOOP_TRUSTED_BASE_REF AGENT_LOOP_REVIEW_BIN \
         AGENT_LOOP_REVIEW_BIN_SHA256 AGENT_LOOP_REVIEW_PUSH_HELPER \
@@ -1765,7 +1783,7 @@ run_review_pass() {
             "$historical_comment_ids_file" "$historical_comment_ids_signature" \
             "after review round $round" || return 1
     fi
-    status="$(git status --porcelain)" || {
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || {
         recovery_message "Could not inspect Git status after the $hook_description in round $round."
         return 1
     }
@@ -1914,9 +1932,10 @@ run_review_convergence() {
         AGENT_LOOP_REVIEW_BASE_SHA="$round_base_sha"
         if ! git merge-base --is-ancestor "$round_base_sha" HEAD; then
             echo -e "${BLUE}▸${NC} Integrating fresh base before review round $round"
-            if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null \
+            if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
                 merge --no-edit "$round_base_sha"; then
-                git merge --abort >/dev/null 2>&1 || true
+                "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+                    merge --abort >/dev/null 2>&1 || true
                 recovery_message "Fresh-base merge conflicted before review round $round."
                 return 1
             fi
@@ -2144,7 +2163,7 @@ attest_ready_pr_head() {
 
 attest_review_head() {
     local phase="$1" expected_base="$2" local_sha status
-    status="$(git status --porcelain)" || return 1
+    status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || return 1
     [ -z "$status" ] || {
         echo "review worktree is dirty $phase" >&2
         return 1
@@ -2585,7 +2604,7 @@ resume_review_run() {
         recovery_message "Recorded recovery log directory is unavailable or unsafe."
         return 1
     fi
-    branch_status="$(git -C "$ACTIVE_WORKTREE" status --porcelain)" || return 1
+    branch_status="$("$REAL_GIT_BIN" -c core.fsmonitor=false -C "$ACTIVE_WORKTREE" status --porcelain)" || return 1
     [ -z "$branch_status" ] || {
         recovery_message "Recorded recovery worktree is dirty."
         return 1
@@ -2662,7 +2681,8 @@ resume_review_run() {
         }
         cd "$PROJECT_DIR"
         if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
-            git worktree remove "$ACTIVE_WORKTREE"
+            "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+                worktree remove "$ACTIVE_WORKTREE"
             ACTIVE_WORKTREE=""
         else
             echo "   Finalized worktree preserved for parent batch checkpointing: $ACTIVE_WORKTREE"
@@ -2867,7 +2887,8 @@ resume_review_run() {
     fi
     cd "$PROJECT_DIR"
     if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
-        git worktree remove "$ACTIVE_WORKTREE"
+        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            worktree remove "$ACTIVE_WORKTREE"
         ACTIVE_WORKTREE=""
     else
         echo "   Finalized worktree preserved for parent batch checkpointing: $ACTIVE_WORKTREE"
@@ -2890,7 +2911,7 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
     expected_batch_config="$(jq -r '.gitConfigSha256 // empty' <<<"$batch_json")"
     if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
         [ -n "$expected_batch_config" ] && \
-            [ "$TRUSTED_GIT_CONFIG_SHA256" = "$expected_batch_config" ] || {
+            [ "$PROJECT_GIT_CONFIG_SHA256" = "$expected_batch_config" ] || {
             echo "Git configuration differs from the trusted batch-state boundary" >&2
             exit 1
         }
@@ -2929,7 +2950,8 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
         run_state_helper batch-update --file "$BATCH_STATE_FILE" \
             --issue "$batch_issue" --expected-status active \
             --status finalized >/dev/null || exit 1
-        git worktree remove "$child_worktree" || {
+        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            worktree remove "$child_worktree" || {
             echo "warning: finalized batch child worktree cleanup failed and was preserved: $child_worktree" >&2
         }
         batch_json="$(run_state_helper batch-show --file "$BATCH_STATE_FILE")" || exit 1
@@ -2950,7 +2972,7 @@ elif [[ "$ISSUE_ALLOWLIST" == *,* ]] && [ "$DRY_RUN" = false ] && \
     BATCH_STATE_FILE="$LOG_ROOT/$safe_repo-batch-$RUN_TAG.json"
     run_state_helper batch-create --file "$BATCH_STATE_FILE" \
         --run-id "$RUN_TAG" --repo "$GH_REPO" --base-branch "$BASE_BRANCH" \
-        --project-dir "$PROJECT_DIR" --git-config-sha256 "$TRUSTED_GIT_CONFIG_SHA256" \
+        --project-dir "$PROJECT_DIR" --git-config-sha256 "$PROJECT_GIT_CONFIG_SHA256" \
         --issues "$ISSUE_ALLOWLIST" >/dev/null || exit 1
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     echo "   Batch recovery state: $BATCH_STATE_FILE"
@@ -3085,6 +3107,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     # otherwise target the integration branch and bypass local review.
     git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "$BASE_REMOTE_REF"
     cd "$ACTIVE_WORKTREE"
+    capture_trusted_git_config "$ACTIVE_WORKTREE" || {
+        recovery_message "Could not establish the issue-worktree Git configuration boundary."
+        exit 1
+    }
 
     export AGENT_LOOP_ISSUE_ID="$SELECTED_ID"
     # Ordinary gh commands are masked, so the worker cannot fetch its own issue
@@ -3102,7 +3128,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             recovery_message "Setup hook failed."
             exit 1
         }
-        setup_status="$(git status --porcelain)" || { recovery_message "Could not inspect Git status after setup."; exit 1; }
+        setup_status="$("$REAL_GIT_BIN" -c core.fsmonitor=false status --porcelain)" || {
+            recovery_message "Could not inspect Git status after setup."
+            exit 1
+        }
         [ -z "$setup_status" ] || { recovery_message "Setup hook left Git-visible worktree changes."; exit 1; }
         require_issue_branch_head || { recovery_message "Setup hook moved HEAD away from the issue branch."; exit 1; }
         setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup."; exit 1; }
@@ -3115,9 +3144,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     echo -e "${BLUE}▸${NC} Initial fresh-base integration"
     fetch_base
     initial_base_sha="$(git rev-parse "$BASE_REMOTE_REF")"
-    if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null \
+    if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
         merge --no-edit "$initial_base_sha"; then
-        git merge --abort >/dev/null 2>&1 || true
+        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            merge --abort >/dev/null 2>&1 || true
         recovery_message "Initial fresh-base merge conflicted; original commits were preserved."
         exit 1
     fi
@@ -3221,7 +3251,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             exit 1
         }
     fi
-    git worktree remove "$ACTIVE_WORKTREE" || {
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+        worktree remove "$ACTIVE_WORKTREE" || {
         echo "warning: finalized issue worktree cleanup failed and was preserved: $ACTIVE_WORKTREE" >&2
     }
     ACTIVE_WORKTREE=""

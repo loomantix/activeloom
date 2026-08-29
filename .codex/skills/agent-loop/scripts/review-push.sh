@@ -22,8 +22,14 @@ fi
 real_git="$AGENT_LOOP_REAL_GIT"
 expected_config_sha256="${AGENT_LOOP_GIT_CONFIG_SHA256:?AGENT_LOOP_GIT_CONFIG_SHA256 is required}"
 
-actual_config_sha256="$(timeout 10 "$real_git" --no-replace-objects config \
-    --null --list | sha256sum | awk '{print $1}')" || {
+# Review hooks receive two wrapper-owned command-scope overrides that disable
+# consumer executable extensions. Remove only those injected entries while
+# comparing the underlying configuration with the wrapper's captured boundary.
+actual_config_sha256="$(env -u GIT_CONFIG_COUNT \
+    -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 \
+    -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 \
+    timeout 10 "$real_git" --no-replace-objects config \
+        --null --list | sha256sum | awk '{print $1}')" || {
     echo "review-push could not verify trusted Git configuration" >&2
     exit 1
 }
@@ -64,7 +70,7 @@ actual_branch="$("$real_git" symbolic-ref --quiet --short HEAD)" || {
     echo "review-push rejects a different checked-out branch" >&2
     exit 1
 }
-worktree_status="$("$real_git" status --porcelain)" || {
+worktree_status="$("$real_git" -c core.fsmonitor=false status --porcelain)" || {
     echo "review-push could not inspect worktree cleanliness" >&2
     exit 1
 }

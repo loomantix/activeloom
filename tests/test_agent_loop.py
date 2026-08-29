@@ -1201,6 +1201,34 @@ def test_worker_cannot_install_git_hooks_for_wrapper_publication(
     assert not marker.exists()
 
 
+def test_worker_cannot_rewrite_preconfigured_fsmonitor_for_controller(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    project, _, _, _ = consumer
+    marker = tmp_path / "worker-fsmonitor-ran"
+    fsmonitor = tmp_path / "trusted-fsmonitor"
+    _write_executable(fsmonitor, "#!/usr/bin/env bash\nprintf '0\\n'\n")
+    _run_git("config", "core.fsmonitor", str(fsmonitor), cwd=project)
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' 'printf \"0\\\\n\"' > {fsmonitor}; "
+        f"chmod 755 {fsmonitor}"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "73"],
+        issues=[_issue(73)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not marker.exists()
+
+
 def test_worker_git_config_fifo_fails_closed_without_hanging(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1235,8 +1263,12 @@ def test_worker_git_config_fifo_fails_closed_without_hanging(
 def test_worker_cannot_install_post_merge_hook_for_fresh_base_merge(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    _, remote, _, _ = consumer
+    project, remote, _, _ = consumer
     marker = tmp_path / "worker-post-merge-ran"
+    reference_marker = tmp_path / "worker-reference-transaction-ran"
+    hooks = tmp_path / "consumer-hooks"
+    hooks.mkdir()
+    _run_git("config", "core.hooksPath", str(hooks), cwd=project)
     clone = tmp_path / "advanced-base"
     _clone_test_repo(remote, clone)
     (clone / "fresh-base.txt").write_text("fresh\n", encoding="utf-8")
@@ -1248,6 +1280,9 @@ def test_worker_cannot_install_post_merge_hook_for_fresh_base_merge(
         f"'touch {marker}' > \"$hooks/post-merge\"; chmod 755 \"$hooks/post-merge\"; "
         "printf 'done\\n' > result.txt; git add result.txt; "
         "git commit -m 'fix: worker result'; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {reference_marker}' > \"$hooks/reference-transaction\"; "
+        "chmod 755 \"$hooks/reference-transaction\"; "
         f'"$AGENT_LOOP_REAL_GIT" -C {clone} push origin main'
     )
 
@@ -1261,6 +1296,7 @@ def test_worker_cannot_install_post_merge_hook_for_fresh_base_merge(
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert not marker.exists()
+    assert not reference_marker.exists()
 
 
 def test_recovery_does_not_print_a_mutated_entrypoint(
@@ -3541,7 +3577,7 @@ def test_hook_origin_url_change_blocks_publication(
         extra_env={"REDIRECTED_REMOTE": str(redirected)},
     )
     assert result.returncode != 0
-    assert "hook changed origin fetch/push identity" in result.stderr
+    assert "Git configuration changed after trusted setup" in result.stderr
     assert "issue-41" not in _agent_loop_branches(remote)
     assert "issue-41" not in _agent_loop_branches(redirected)
 
@@ -3566,7 +3602,7 @@ def test_hook_origin_fetch_url_change_blocks_publication(
         extra_env={"REDIRECTED_REMOTE": str(redirected)},
     )
     assert result.returncode != 0
-    assert "hook changed origin fetch/push identity" in result.stderr
+    assert "Git configuration changed after trusted setup" in result.stderr
     assert "issue-58" not in _agent_loop_branches(remote)
 
 
