@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 import signal
 import subprocess
 import sys
 import time
+from typing import Any
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPERVISOR = ROOT / ".codex/skills/agent-loop/scripts/process-supervisor.py"
+
+
+def _load_supervisor() -> Any:
+    spec = importlib.util.spec_from_file_location("process_supervisor", SUPERVISOR)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _detaching_command(pid_file: Path, *, parent_sleep: float) -> str:
@@ -48,6 +60,16 @@ def test_supervisor_self_test() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "linux-subreaper-v1"
+
+
+def test_descendant_enumeration_fails_closed_on_malformed_stat(tmp_path: Path) -> None:
+    supervisor = _load_supervisor()
+    process = tmp_path / "123"
+    process.mkdir()
+    (process / "stat").write_text("malformed\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="could not reliably inspect process 123"):
+        supervisor._descendants(1, tmp_path)
 
 
 def test_supervisor_kills_double_forked_session(tmp_path: Path) -> None:

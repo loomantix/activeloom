@@ -30,9 +30,9 @@ def _become_subreaper() -> None:
         raise OSError(error, os.strerror(error))
 
 
-def _descendants(root_pid: int) -> set[int]:
+def _descendants(root_pid: int, proc_root: Path = Path("/proc")) -> set[int]:
     parents: dict[int, int] = {}
-    for entry in Path("/proc").iterdir():
+    for entry in proc_root.iterdir():
         if not entry.name.isdigit():
             continue
         try:
@@ -45,8 +45,12 @@ def _descendants(root_pid: int) -> set[int]:
                 .split()
             )
             parents[int(entry.name)] = int(fields[1])
-        except (FileNotFoundError, IndexError, PermissionError, ValueError):
+        except (FileNotFoundError, ProcessLookupError):
             continue
+        except (IndexError, PermissionError, ValueError) as error:
+            raise RuntimeError(
+                f"could not reliably inspect process {entry.name}"
+            ) from error
     found: set[int] = set()
     frontier = {root_pid}
     while frontier:

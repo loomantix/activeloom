@@ -529,6 +529,7 @@ PINNED_RUN_STATE_OID=""
 PINNED_REVIEW_LEDGER_OID=""
 PINNED_ISSUES_READY_OID=""
 PINNED_AGENT_LOOP_OID=""
+PINNED_REVIEW_LAUNCHER_OID=""
 if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     PINNED_AGENT_LOOP_OID="$(require_base_pinned_tool "$SCRIPT_DIR/agent-loop.sh" \
         ".codex/skills/agent-loop/scripts/agent-loop.sh" 100755 \
@@ -542,6 +543,9 @@ if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     PINNED_ISSUES_READY_OID="$(require_base_pinned_tool "$ISSUES_READY" \
         ".codex/skills/issues/scripts/ready.py" 100755 \
         "issues readiness helper")" || exit 1
+    PINNED_REVIEW_LAUNCHER_OID="$(require_base_pinned_tool "$CODEX_REVIEW_LAUNCHER" \
+        ".codex/skills/agent-loop/scripts/run-codex-review.sh" 100755 \
+        "review launcher")" || exit 1
 fi
 
 run_state_helper() {
@@ -603,7 +607,10 @@ capture_trusted_git_config() {
 
 require_trusted_git_config() {
     local current
-    [ -n "$TRUSTED_GIT_CONFIG_SHA256" ] || return 0
+    [ -n "$TRUSTED_GIT_CONFIG_SHA256" ] || {
+        echo "trusted Git configuration was not captured" >&2
+        return 1
+    }
     [ "$GIT_CONFIG_UNTRUSTED" = false ] || return 1
     current="$(git_config_fingerprint)" || {
         GIT_CONFIG_UNTRUSTED=true
@@ -1296,6 +1303,33 @@ install_review_push_helper() {
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$destination"
 }
 
+install_pinned_review_launcher() {
+    local trusted_dir="$AGENT_LOOP_LOG_DIR/trusted-review-tools"
+    local destination="$trusted_dir/run-codex-review.sh" actual_oid
+    [ "$REVIEW_CONTRACT_VERSION" = 4 ] || return 0
+    if [ -L "$trusted_dir" ] || { [ -e "$trusted_dir" ] && [ ! -d "$trusted_dir" ]; }; then
+        echo "trusted review tool path is not a real directory: $trusted_dir" >&2
+        return 1
+    fi
+    mkdir -p "$trusted_dir" || return 1
+    chmod 700 "$trusted_dir" || return 1
+    if [ -L "$destination" ] || { [ -e "$destination" ] && [ ! -f "$destination" ]; }; then
+        echo "trusted review launcher path is not a regular file: $destination" >&2
+        return 1
+    fi
+    rm -f -- "$destination" || return 1
+    "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        cat-file blob "$PINNED_REVIEW_LAUNCHER_OID" > "$destination" || return 1
+    chmod 700 "$destination" || return 1
+    actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$destination")" || return 1
+    [ "$actual_oid" = "$PINNED_REVIEW_LAUNCHER_OID" ] || {
+        echo "installed review launcher differs from the pinned base blob" >&2
+        return 1
+    }
+    export AGENT_LOOP_CODEX_REVIEW_LAUNCHER="$destination"
+}
+
 run_bounded_hook() {
     local phase="$1" hook_command="$2" timeout_seconds="$3" log_file="$4"
     local allow_review_mutations="${5:-false}"
@@ -1399,7 +1433,7 @@ run_bounded_hook() {
         fi
         if [ -n "$direct_review_engine" ]; then
             python3 -I "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
-                --kill-after-seconds 15 -- "$CODEX_REVIEW_LAUNCHER" \
+                --kill-after-seconds 15 -- "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" \
                 --engine "$direct_review_engine" 2>&1 \
                 | tail -c "$max_bytes"
         else
@@ -1713,8 +1747,7 @@ run_review_pass() {
     local before_sha after_sha status classification outcome_signature outcome_file
     local result_file result_json result_status result_hash allowed_heads_file blocker
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
-    local historical_comment_ids_signature launcher_relative launcher_mode
-    local launcher_expected_oid launcher_actual_oid direct_review_engine
+    local historical_comment_ids_signature direct_review_engine
     local review_hook_status
     local boundary_status
 
@@ -1768,31 +1801,11 @@ run_review_pass() {
         }
         export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
 
-        launcher_relative=""
-        case "$CODEX_REVIEW_LAUNCHER" in
-            "$PROJECT_DIR"/*) launcher_relative="${CODEX_REVIEW_LAUNCHER#"$PROJECT_DIR"/}" ;;
-        esac
         if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
-            launcher_mode=""
-            launcher_expected_oid=""
-            launcher_actual_oid=""
-            if [ -n "$launcher_relative" ]; then
-                launcher_mode="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" ls-tree "$AGENT_LOOP_REVIEW_BASE_SHA" -- "$launcher_relative" | awk '{print $1}')"
-                launcher_expected_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" rev-parse "$AGENT_LOOP_REVIEW_BASE_SHA:$launcher_relative" || true)"
-                launcher_actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" hash-object --no-filters "$CODEX_REVIEW_LAUNCHER" || true)"
-            fi
-            # Both oids are captured with `|| true`, so an empty value must never
-            # satisfy the equality test below by matching another empty value.
-            if [ -z "$launcher_relative" ] || [ "$launcher_mode" != 100755 ] || \
-                [ ! -f "$CODEX_REVIEW_LAUNCHER" ] || [ -L "$CODEX_REVIEW_LAUNCHER" ] || \
-                [ ! -x "$CODEX_REVIEW_LAUNCHER" ] || \
-                ! [[ "$launcher_expected_oid" =~ ^[0-9a-f]{40}$ ]] || \
-                ! [[ "$launcher_actual_oid" =~ ^[0-9a-f]{40}$ ]] || \
-                [ "$launcher_actual_oid" != "$launcher_expected_oid" ]; then
-                recovery_message "Trusted review launcher bytes differ from the pinned base; refusing $engine review round $round."
+            install_pinned_review_launcher || {
+                recovery_message "Could not install the pinned review launcher for $engine round $round."
                 return 1
-            fi
-            export AGENT_LOOP_CODEX_REVIEW_LAUNCHER="$CODEX_REVIEW_LAUNCHER"
+            }
             export AGENT_LOOP_TRUSTED_REPO_ROOT="$PROJECT_DIR"
             export AGENT_LOOP_TRUSTED_BASE_REF="$BASE_REMOTE_REF"
             if [ "$slug" = codex ]; then

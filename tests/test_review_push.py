@@ -88,6 +88,17 @@ def test_exact_fully_qualified_review_push_succeeds(review_repo: tuple[Path, dic
     assert _git(repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7").split()[0] == result.stdout.strip()
 
 
+def test_review_push_enters_the_captured_worktree(
+    review_repo: tuple[Path, dict[str, str], str], tmp_path: Path
+) -> None:
+    repo, env, _ = review_repo
+
+    result = _run(tmp_path, env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == _git(repo, "rev-parse", "HEAD")
+
+
 def test_two_sequential_review_pushes_succeed(
     review_repo: tuple[Path, dict[str, str], str]
 ) -> None:

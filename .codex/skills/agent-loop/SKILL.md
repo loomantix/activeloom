@@ -108,9 +108,10 @@ mid-round remote update cannot give the engines different bases.
 
 Contract v4 resolves both reviewers through the synced
 `.codex/skills/agent-loop/scripts/run-codex-review.sh` launcher in the source
-checkout. Immediately before execution the wrapper byte-compares the launcher
-with its immutable base-commit blob and invokes it directly without a login
-shell or `eval`. The launcher materializes `.codex` for Codex, `.claude` for
+checkout. The wrapper authenticates its immutable base-commit blob, materializes
+that blob into the controller-owned review-tool directory, re-verifies it, and
+invokes that copy without a login shell or `eval`. The launcher materializes
+`.codex` for Codex, `.claude` for
 Claude, and applicable `AGENTS.md`/`CLAUDE.md` files from base-tree blobs into a
 fresh empty session root. It passes absolute paths to that engine-native guidance and
 disables Claude's slash-command and Skill-tool loading, project/local settings,

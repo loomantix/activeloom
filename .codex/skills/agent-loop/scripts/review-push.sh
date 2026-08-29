@@ -21,6 +21,10 @@ fi
 
 real_git="$AGENT_LOOP_REAL_GIT"
 expected_config_sha256="${AGENT_LOOP_GIT_CONFIG_SHA256:?AGENT_LOOP_GIT_CONFIG_SHA256 is required}"
+cd -- "$AGENT_LOOP_WORKTREE" || {
+    echo "review-push could not enter the captured issue worktree" >&2
+    exit 1
+}
 
 # Review hooks receive two wrapper-owned command-scope overrides that disable
 # consumer executable extensions. Remove only those injected entries while

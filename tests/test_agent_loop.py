@@ -1087,8 +1087,7 @@ def test_worker_cannot_replace_the_base_pinned_review_launcher(
         config=_config_v3(tmp_path, worker_hook=worker_hook),
         extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
     )
-    assert result.returncode != 0
-    assert "launcher bytes differ from the pinned base" in result.stderr
+    assert result.returncode == 0, result.stderr + result.stdout
     assert not marker.exists()
 
 
@@ -1130,8 +1129,7 @@ def test_replacement_ref_cannot_redefine_the_pinned_review_launcher(
         extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
     )
 
-    assert result.returncode != 0
-    assert "launcher bytes differ from the pinned base" in result.stderr
+    assert result.returncode == 0, result.stderr + result.stdout
     assert not marker.exists()
 
 
