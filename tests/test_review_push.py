@@ -99,6 +99,32 @@ def test_review_push_enters_the_captured_worktree(
     assert result.stdout.strip() == _git(repo, "rev-parse", "HEAD")
 
 
+def test_review_push_ignores_injected_command_scope_config(
+    review_repo: tuple[Path, dict[str, str], str], tmp_path: Path
+) -> None:
+    repo, env, _ = review_repo
+    redirected = tmp_path / "redirected.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(redirected)], check=True, capture_output=True
+    )
+    env.update(
+        {
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": "/dev/null",
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": "remote.origin.pushurl",
+            "GIT_CONFIG_VALUE_2": str(redirected),
+        }
+    )
+
+    result = _run(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert not _git(repo, "ls-remote", "--heads", str(redirected))
+
+
 def test_two_sequential_review_pushes_succeed(
     review_repo: tuple[Path, dict[str, str], str]
 ) -> None:

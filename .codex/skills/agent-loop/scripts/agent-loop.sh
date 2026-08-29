@@ -464,7 +464,7 @@ fetch_base() {
         fetch origin "$BASE_FETCH_REFSPEC" --quiet
 }
 
-if [ "$DRY_RUN" = false ] && [ -z "$RESUME_RUN_FILE" ] && [ -z "$RESUME_BATCH_FILE" ]; then
+if [ "$DRY_RUN" = false ]; then
     fetch_base
 fi
 git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
@@ -747,7 +747,6 @@ print(path.resolve(strict=True))
     fi
     TRUSTED_GIT_CONFIG_SHA256="$actual_resume_config"
     export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
-    fetch_base
     resume_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
     recorded_log_dir="$(jq -r '.logDir' <<<"$RESUME_STATE_JSON")"
     [ "$recorded_log_dir" = "$resume_log_dir" ] || {
@@ -2993,14 +2992,20 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     batch_json="$(run_state_helper batch-show --file "$BATCH_STATE_FILE")" || exit 1
     expected_batch_config="$(jq -r '.gitConfigSha256 // empty' <<<"$batch_json")"
+    expected_batch_project="$(jq -r '.projectDir // empty' <<<"$batch_json")"
     if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        # The digest alone does not identify a checkout: linked worktrees share
+        # .git/config, so it is byte-identical across them, and log_root is
+        # shared machine-wide rather than derived per checkout. Enforce the
+        # recorded project directory too, as the run-state path does.
         [ -n "$expected_batch_config" ] && \
-            [ "$PROJECT_GIT_CONFIG_SHA256" = "$expected_batch_config" ] || {
+            [ "$PROJECT_GIT_CONFIG_SHA256" = "$expected_batch_config" ] && \
+            [ -n "$expected_batch_project" ] && \
+            [ "$expected_batch_project" = "$PROJECT_DIR" ] || {
             echo "Git configuration differs from the trusted batch-state boundary" >&2
             exit 1
         }
     fi
-    fetch_base
     [ "$(jq -r '.repo' <<<"$batch_json")" = "$GH_REPO" ] || { echo "batch state repository mismatch" >&2; exit 1; }
     [ "$(jq -r '.baseBranch' <<<"$batch_json")" = "$BASE_BRANCH" ] || { echo "batch state base branch mismatch" >&2; exit 1; }
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"

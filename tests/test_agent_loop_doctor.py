@@ -62,7 +62,12 @@ def _project(tmp_path: Path) -> Path:
         ".codex/skills/critique/SKILL.md",
         ".codex/skills/critique/scripts/review-ledger.js",
         ".codex/skills/refactorpass/SKILL.md",
+        ".claude/REVIEW_WORKFLOW.md",
+        ".claude/references/local-review-ledger.md",
         ".claude/skills/deepcritique/SKILL.md",
+        ".claude/skills/critique/SKILL.md",
+        ".claude/skills/critique/scripts/review-ledger.js",
+        ".claude/skills/refactorpass/SKILL.md",
     ):
         target = project / relative
         target.parent.mkdir(parents=True, exist_ok=True)

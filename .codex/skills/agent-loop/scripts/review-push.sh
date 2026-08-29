@@ -26,13 +26,16 @@ cd -- "$AGENT_LOOP_WORKTREE" || {
     exit 1
 }
 
-# Review hooks receive two wrapper-owned command-scope overrides that disable
-# consumer executable extensions. Remove only those injected entries while
-# comparing the underlying configuration with the wrapper's captured boundary.
-actual_config_sha256="$(env -u GIT_CONFIG_COUNT \
-    -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 \
-    -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 \
-    timeout 10 "$real_git" --no-replace-objects config \
+# Review hooks receive two wrapper-owned command-scope overrides through the
+# GIT_CONFIG_* environment family. Subtracting only those two entries would not
+# bound what the family can carry: unsetting GIT_CONFIG_COUNT suppresses every
+# GIT_CONFIG_KEY_n from `config --list` at any index, so an entry injected at
+# index 2 or beyond stays invisible to the comparison below while still applying
+# to the push. Drop the family outright — that makes the fingerprint cover the
+# configuration actually in effect — and re-apply the two wrapper-owned
+# overrides explicitly on the push itself.
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+actual_config_sha256="$(timeout 10 "$real_git" --no-replace-objects config \
         --null --list | sha256sum | awk '{print $1}')" || {
     echo "review-push could not verify trusted Git configuration" >&2
     exit 1
@@ -121,7 +124,7 @@ remote_head="${remote_line%%[[:space:]]*}"
 }
 
 require_origin_identity
-"$real_git" -c core.hooksPath=/dev/null push origin \
+"$real_git" -c core.hooksPath=/dev/null -c core.fsmonitor=false push origin \
     "--force-with-lease=refs/heads/$AGENT_LOOP_BRANCH:$expected_remote_head" \
     "$local_head:refs/heads/$AGENT_LOOP_BRANCH"
 require_origin_identity

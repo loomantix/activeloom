@@ -52,7 +52,12 @@ def _trusted_surface(tmp_path: Path) -> tuple[Path, Path]:
         ".codex/skills/critique/SKILL.md": "trusted critique\n",
         ".codex/skills/critique/scripts/review-ledger.js": "trusted helper\n",
         ".codex/skills/refactorpass/SKILL.md": "trusted refactor\n",
+        ".claude/REVIEW_WORKFLOW.md": "trusted Claude workflow\n",
+        ".claude/references/local-review-ledger.md": "trusted Claude ledger\n",
         ".claude/skills/deepcritique/SKILL.md": "trusted Claude deep review\n",
+        ".claude/skills/critique/SKILL.md": "trusted Claude critique\n",
+        ".claude/skills/critique/scripts/review-ledger.js": "trusted Claude helper\n",
+        ".claude/skills/refactorpass/SKILL.md": "trusted Claude refactor\n",
         "nested/AGENTS.md": "trusted nested instructions\n",
         "AGENTS.md": "trusted Codex instructions\n",
         "CLAUDE.md": "trusted Claude instructions\n",
@@ -263,6 +268,28 @@ def test_launcher_rejects_a_trusted_ref_that_moved_from_the_pinned_base(
     result = _run_launcher(issue, "codex", environment)
     assert result.returncode != 0
     assert "no longer resolves to AGENT_LOOP_REVIEW_BASE_SHA" in result.stderr
+    assert not (tmp_path / "invocation.json").exists()
+
+
+def test_launcher_rejects_an_empty_repository_instruction_surface(
+    tmp_path: Path,
+) -> None:
+    trusted_repo, trusted = _trusted_surface(tmp_path)
+    _git("rm", "AGENTS.md", "CLAUDE.md", "nested/AGENTS.md", cwd=trusted_repo)
+    _git("commit", "-m", "remove repository instructions", cwd=trusted_repo)
+    issue, base, head = _issue_worktree(tmp_path, trusted_repo)
+    cli = _fake_cli(tmp_path / "codex")
+
+    result = _run_launcher(
+        issue,
+        "codex",
+        _environment(
+            tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "pinned repository instruction surface is empty" in result.stderr
     assert not (tmp_path / "invocation.json").exists()
 
 

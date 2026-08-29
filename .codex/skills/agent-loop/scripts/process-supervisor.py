@@ -159,7 +159,10 @@ def main() -> int:
                     os.killpg(child.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                child.wait()
+                try:
+                    child.wait(timeout=args.kill_after_seconds)
+                except subprocess.TimeoutExpired as error:
+                    raise RuntimeError("hook process survived SIGKILL") from error
     except TerminationRequested:
         if child is not None and child.poll() is None:
             try:

@@ -11,7 +11,14 @@ CODEX_REQUIRED_PATHS=(
     .codex/skills/critique/scripts/review-ledger.js
     .codex/skills/refactorpass/SKILL.md
 )
-CLAUDE_REQUIRED_PATHS=(.claude/skills/deepcritique/SKILL.md)
+CLAUDE_REQUIRED_PATHS=(
+    .claude/REVIEW_WORKFLOW.md
+    .claude/references/local-review-ledger.md
+    .claude/skills/deepcritique/SKILL.md
+    .claude/skills/critique/SKILL.md
+    .claude/skills/critique/scripts/review-ledger.js
+    .claude/skills/refactorpass/SKILL.md
+)
 WRAPPER_REQUIRED_PATHS=(
     .codex/skills/agent-loop/scripts/agent-loop.sh
     .codex/skills/agent-loop/scripts/run-codex-review.sh
@@ -156,13 +163,22 @@ engine_surface=.codex
 # under the engine surface twice.
 base_manifest="$launch_root/tree-base"
 trusted_git ls-tree -r -z "$AGENT_LOOP_REVIEW_BASE_SHA" > "$base_manifest"
+instruction_count=0
 while IFS= read -r -d '' record; do
     entry_path="${record#*$'\t'}"
     case "$entry_path" in
-        "$engine_surface"|"$engine_surface"/*|AGENTS.md|CLAUDE.md|*/AGENTS.md|*/CLAUDE.md)
+        AGENTS.md|CLAUDE.md|*/AGENTS.md|*/CLAUDE.md)
+            materialize_record "$record"
+            instruction_count=$((instruction_count + 1))
+            ;;
+        "$engine_surface"|"$engine_surface"/*)
             materialize_record "$record" ;;
     esac
 done < "$base_manifest"
+[ "$instruction_count" -gt 0 ] || {
+    echo "pinned repository instruction surface is empty" >&2
+    exit 1
+}
 
 trusted_root="$snapshot/$engine_surface"
 if [ "$engine" = codex ]; then

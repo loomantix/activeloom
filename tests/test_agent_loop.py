@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,16 @@ def _run_git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess
     return subprocess.run(
         ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
     )
+
+
+def _git_config_sha256(repo: Path) -> str:
+    config = subprocess.run(
+        ["git", "--no-replace-objects", "config", "--null", "--list"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return hashlib.sha256(config).hexdigest()
 
 
 def _agent_loop_branches(repo: Path) -> str:
@@ -2676,7 +2687,8 @@ def test_interrupted_ready_finalization_restarts_from_draft_after_head_drift(
     (worktree / "post-finalizing.txt").write_text("new head\n", encoding="utf-8")
     _run_git("add", "post-finalizing.txt", cwd=worktree)
     _run_git("commit", "-m", "fix: move ready head", cwd=worktree)
-    _run_git("push", cwd=worktree)
+    branch = _run_git("branch", "--show-current", cwd=worktree).stdout.strip()
+    _run_git("push", "origin", f"HEAD:refs/heads/{branch}", cwd=worktree)
 
     second = _run(
         consumer,
@@ -3731,7 +3743,7 @@ def test_post_review_git_status_failure_blocks_publication(
     _write_executable(
         bin_dir / "git",
         """#!/usr/bin/env bash
-if [ "$1" = status ]; then
+if [[ " $* " == *" status "* ]]; then
     count_file="$AGENT_STATE_DIR/status-count"
     count=$(($(cat "$count_file" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$count" > "$count_file"
@@ -4210,7 +4222,7 @@ def test_remote_branch_rewrite_after_push_blocks_pr_creation(
         """#!/usr/bin/env bash
 "$AGENT_TEST_REAL_GIT" "$@"
 status=$?
-if [ "$status" -eq 0 ] && [ "${1:-}" = push ] && \
+if [ "$status" -eq 0 ] && [[ " $* " == *" push "* ]] && \
    [[ " $* " == *" --force-with-lease="* ]] && \
    [ ! -e "$AGENT_STATE_DIR/remote-branch-rewritten" ]; then
     "$AGENT_TEST_REAL_GIT" --git-dir="$AGENT_TEST_REMOTE" update-ref \
@@ -4889,7 +4901,7 @@ def test_issue_branch_has_no_upstream_during_worker(
         f"refs/heads/{branch}",
         cwd=consumer[0],
     ).stdout.strip()
-    assert upstream == f"origin/{branch}"
+    assert upstream == ""
     assert (
         _run_git("rev-parse", branch, cwd=consumer[0]).stdout.strip()
         == _run_git("rev-parse", branch, cwd=consumer[1]).stdout.strip()
@@ -5110,6 +5122,8 @@ def test_batch_cursor_issue_cannot_be_skipped_for_a_later_ready_issue(
             "python3", str(helper), "batch-create", "--file", str(batch_file),
             "--run-id", "manual", "--repo", "fixture/consumer",
             "--base-branch", "main", "--issues", "74,75",
+            "--project-dir", str(consumer[0]),
+            "--git-config-sha256", _git_config_sha256(consumer[0]),
         ],
         capture_output=True,
         text=True,
@@ -5125,15 +5139,49 @@ def test_batch_cursor_issue_cannot_be_skipped_for_a_later_ready_issue(
     )
     assert result.returncode != 0
     assert "Ordered batch cursor issue #74 is not ready" in result.stderr
+    assert "cat-file blob" in result.stderr
     assert (
-        f"batch-update --file '{batch_file}' --issue '74' "
-        "--expected-status 'pending' --status bailed"
+        f"batch-update --file {batch_file} --issue 74 "
+        "--expected-status pending --status bailed"
     ) in result.stderr
     assert "issue-74" not in _agent_loop_branches(consumer[1])
     assert "issue-75" not in _agent_loop_branches(consumer[1])
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
     assert batch["cursor"] == 0
     assert [row["status"] for row in batch["issues"]] == ["pending", "pending"]
+
+
+def test_batch_resume_rejects_a_different_project_checkout(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    batch_file = tmp_path / "logs/wrong-project-batch.json"
+    helper = consumer[0] / ".codex/skills/agent-loop/scripts/agent-loop-state.py"
+    created = subprocess.run(
+        [
+            "python3", str(helper), "batch-create", "--file", str(batch_file),
+            "--run-id", "wrong-project", "--repo", "fixture/consumer",
+            "--base-branch", "main", "--issues", "76",
+            "--project-dir", str(tmp_path / "different-checkout"),
+            "--git-config-sha256", _git_config_sha256(consumer[0]),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+
+    result = _run(
+        consumer,
+        ["--resume-batch", str(batch_file)],
+        issues=[_issue(76)],
+        config=_config_v3(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert "Git configuration differs from the trusted batch-state boundary" in result.stderr
+    assert "issue edit 76 --add-assignee @me" not in (
+        consumer[3] / "gh.log"
+    ).read_text(encoding="utf-8")
 
 
 def test_batch_resume_rejects_contract_v2_before_state_mutation(
@@ -5186,6 +5234,8 @@ def test_dependency_blocked_batch_cursor_prints_pending_bail_command(
             "python3", str(helper), "batch-create", "--file", str(batch_file),
             "--run-id", "dependency", "--repo", "fixture/consumer",
             "--base-branch", "main", "--issues", "78,79",
+            "--project-dir", str(consumer[0]),
+            "--git-config-sha256", _git_config_sha256(consumer[0]),
         ],
         capture_output=True,
         text=True,
@@ -5202,9 +5252,10 @@ def test_dependency_blocked_batch_cursor_prints_pending_bail_command(
     )
     assert result.returncode != 0
     assert "Ordered batch stopped at dependency-blocked issue #78" in result.stderr
+    assert "cat-file blob" in result.stderr
     assert (
-        f"batch-update --file '{batch_file}' --issue '78' "
-        "--expected-status 'pending' --status bailed"
+        f"batch-update --file {batch_file} --issue 78 "
+        "--expected-status pending --status bailed"
     ) in result.stderr
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
     assert batch["cursor"] == 0
