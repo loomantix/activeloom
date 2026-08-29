@@ -389,6 +389,18 @@ fi
 [ -n "$CODEX_REVIEW_HOOK" ] || { echo "codex_review_hook must be configured before running agent-loop" >&2; exit 1; }
 
 if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    # The round-time pin compares this launcher against a blob in the project's
+    # own base commit, so a launcher outside the project tree can never satisfy
+    # it. Reject that here, before the issue is claimed, rather than after the
+    # worker has run and the draft PR exists.
+    case "$CODEX_REVIEW_LAUNCHER" in
+        "$PROJECT_DIR"/*) ;;
+        *)
+            echo "contract v4 requires this repository's own review launcher, but agent-loop resolved $CODEX_REVIEW_LAUNCHER, which is outside $PROJECT_DIR" >&2
+            echo "Invoke $PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop.sh instead of a global install." >&2
+            exit 1
+            ;;
+    esac
     CODEX_REVIEW_BIN="$(realpath -e -- "$(type -P codex 2>/dev/null || true)" 2>/dev/null || true)"
     CLAUDE_REVIEW_BIN="$(realpath -e -- "$(type -P claude 2>/dev/null || true)" 2>/dev/null || true)"
     [ -n "$CODEX_REVIEW_BIN" ] || { echo "required command not found for Codex review: codex" >&2; exit 1; }

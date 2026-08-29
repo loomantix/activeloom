@@ -211,15 +211,39 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
                     raise DoctorError(f"{engine} required review path is invalid: {relative}")
                 _require_base_blob(root, base_ref, relative)
     else:
+        obsolete = (
+            "AGENT_LOOP_REVIEW_OUTCOME_FILE",
+            "local-review-pass:v1",
+            "local-review-complete:v1",
+            "local-review-disposition:v1",
+            "review-ledger.py",
+        )
         for engine, hook in hooks.items():
+            if any(token in hook for token in obsolete):
+                raise DoctorError(
+                    f"{engine}_review_hook contains obsolete review ownership"
+                )
             if (
                 "AGENT_LOOP_REVIEW_RESULT_FILE" not in hook
                 or "write-result" not in hook
-                or "AGENT_LOOP_REVIEW_PUSH_HELPER" not in hook
             ):
                 raise DoctorError(
                     f"{engine}_review_hook must preserve the contract-v3 result and push helper contract"
                 )
+            # v4 pins both hook strings byte-for-byte, so this stays the only
+            # thing standing between a v3 consumer and a hook that pushes
+            # directly instead of through the wrapper-owned helper.
+            if "AGENT_LOOP_REVIEW_PUSH_HELPER" not in hook or re.search(
+                r"\bgit\s+push\b", hook
+            ):
+                raise DoctorError(
+                    f"{engine}_review_hook must preserve the contract-v3 result and push helper contract"
+                )
+            # Accept any shell delimiter after the skill name; the point is to
+            # reject a different skill (a retired `grill` name, or a
+            # `deepcritique`-prefixed word), not to enumerate separators.
+            if not re.search(r"(?:^|[ /])deepcritique(?![\w-])", hook):
+                raise DoctorError(f"{engine}_review_hook must invoke deepcritique")
         if claude_effort:
             efforts = re.findall(r"(?:^|\s)--effort(?:=|\s+)([^\s;]+)", hooks["claude"])
             if efforts != [claude_effort]:

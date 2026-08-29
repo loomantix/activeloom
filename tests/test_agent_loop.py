@@ -4787,6 +4787,7 @@ def test_missing_default_codex_fails_before_claim(
     no_codex_bin.mkdir()
     for command in (
         "bash",
+        "awk",
         "dirname",
         "flock",
         "git",
@@ -4794,6 +4795,7 @@ def test_missing_default_codex_fails_before_claim(
         "node",
         "python3",
         "realpath",
+        "sha256sum",
         "timeout",
     ):
         executable = shutil.which(command)

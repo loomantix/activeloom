@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -139,6 +140,7 @@ def _environment(
         "AGENT_LOOP_REVIEW_PUSH_HELPER": str(tmp_path / "review-push.sh"),
         "AGENT_LOOP_TRUSTED_REPO_ROOT": str(trusted.parent),
         "AGENT_LOOP_TRUSTED_BASE_REF": "main",
+        "AGENT_LOOP_REVIEW_BIN_SHA256": hashlib.sha256(cli.read_bytes()).hexdigest(),
         "REVIEW_INVOCATION": str(tmp_path / "invocation.json"),
         "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1",
         "COVERAGE_PROCESS_START": "fixture",
