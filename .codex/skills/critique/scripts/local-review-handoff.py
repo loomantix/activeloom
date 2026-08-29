@@ -200,6 +200,20 @@ def _post_issue_comment(repo: str, pr: int, marker: str, body: str) -> tuple[int
     return comment_id, replayed
 
 
+def _canonical_digest(payload: dict[str, Any]) -> str:
+    """Hash a marker payload under the one canonicalization every marker uses.
+
+    Every replayed marker verifies by recomputing this digest, so the JSON
+    canonicalization has to be identical for all marker families. Keeping it in
+    one place means an `ensure_ascii` or separator change cannot silently apply
+    to one family and not another.
+    """
+    canonical = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _run_digest(
     *,
     tier: str,
@@ -209,18 +223,16 @@ def _run_digest(
     supersedes: int | None,
     content: str,
 ) -> str:
-    payload = {
-        "base": base,
-        "content": content,
-        "max_rounds": max_rounds,
-        "start_head": start_head,
-        "supersedes": supersedes,
-        "tier": tier,
-    }
-    canonical = json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    return _canonical_digest(
+        {
+            "base": base,
+            "content": content,
+            "max_rounds": max_rounds,
+            "start_head": start_head,
+            "supersedes": supersedes,
+            "tier": tier,
+        }
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _run_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -534,19 +546,17 @@ def _handoff_digest(
     outcome: str,
     content: str,
 ) -> str:
-    payload = {
-        "base": base,
-        "content": content,
-        "from_engine": from_engine,
-        "head": head,
-        "outcome": outcome,
-        "round": round_number,
-        "to_engine": to_engine,
-    }
-    canonical = json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    return _canonical_digest(
+        {
+            "base": base,
+            "content": content,
+            "from_engine": from_engine,
+            "head": head,
+            "outcome": outcome,
+            "round": round_number,
+            "to_engine": to_engine,
+        }
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _verify_issue_comment(repo: str, comment_id: int, expected_body: str) -> None:
