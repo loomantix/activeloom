@@ -352,6 +352,50 @@ def test_rejects_divergent_history_after_helper_push(
     )
 
 
+def test_replacement_ref_cannot_forge_review_history(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
+    """A worker-created `refs/replace/*` must not satisfy the ancestry gates."""
+    repo, env, start = review_repo
+    first = _run(repo, env)
+    assert first.returncode == 0, first.stderr
+    helper_head = first.stdout.strip()
+
+    # Divergent history that genuinely drops the published review commit.
+    _git(repo, "reset", "--hard", start)
+    (repo / "divergent.txt").write_text("divergent review fix\n", encoding="utf-8")
+    _git(repo, "add", "divergent.txt")
+    _git(repo, "commit", "-m", "fix: divergent review")
+    divergent = _git(repo, "rev-parse", "HEAD")
+
+    # Forge a graph in which the divergent head descends from the published one.
+    forged = _git(
+        repo,
+        "commit-tree",
+        f"{divergent}^{{tree}}",
+        "-p",
+        helper_head,
+        "-m",
+        "forged",
+    )
+    _git(repo, "replace", "-f", divergent, forged)
+
+    result = _run(repo, env)
+
+    assert result.returncode != 0
+    assert "drops a previously published review commit" in result.stderr
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == helper_head
+    )
+
+
 def test_rejects_changed_origin_before_push(
     review_repo: tuple[Path, dict[str, str], str],
 ) -> None:

@@ -35,6 +35,11 @@ while IFS= read -r variable; do
     case "$variable" in GIT_*) unset "$variable" ;; esac
 done < <(compgen -e)
 export GIT_TERMINAL_PROMPT=0
+# The purge above also drops GIT_NO_REPLACE_OBJECTS. `refs/replace/*` is a shared
+# ref namespace the review process may write and `config --list` never shows, so
+# restore it before the head-identity and ancestry gates below read the object
+# graph they are supposed to prove things about.
+export GIT_NO_REPLACE_OBJECTS=1
 actual_config_sha256="$(timeout 10 "$real_git" --no-replace-objects config \
         --null --list | sha256sum | awk '{print $1}')" || {
     echo "review-push could not verify trusted Git configuration" >&2
