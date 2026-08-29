@@ -67,6 +67,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     reviewer_stub = "#!/usr/bin/env bash\nexit 0\n"
     _write_executable(bin_dir / "codex", reviewer_stub)
     _write_executable(bin_dir / "claude", reviewer_stub)
+    (bin_dir / "package.json").write_text("{}\n", encoding="utf-8")
 
     _run_git("init", "--bare", str(remote))
     _run_git("init", "-b", "main", str(repo))

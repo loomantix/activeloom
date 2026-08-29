@@ -360,7 +360,7 @@ case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be tru
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
-for cmd in git gh jq node python3 timeout flock realpath sha256sum awk file; do
+for cmd in git gh jq node python3 timeout flock realpath sha256sum awk; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
 
@@ -370,7 +370,7 @@ file_sha256() { sha256sum "$1" | awk '{print $1}'; }
 # sibling module it imports unattested, so `install_tree_sha256` would collapse
 # to a second digest of the binary already covered by its own hash.
 reviewer_install_root() {
-    local bin="$1" entry_dir candidate package_root file_type
+    local bin="$1" entry_dir candidate package_root
     entry_dir="$(dirname -- "$bin")"
     for candidate in "$entry_dir" "$entry_dir/.."; do
         package_root="$(realpath -e -- "$candidate" 2>/dev/null || true)"
@@ -379,10 +379,10 @@ reviewer_install_root() {
             [ ! -L "$package_root/package.json" ] || continue
         case "$bin" in "$package_root"/*) printf '%s\n' "$package_root"; return ;; esac
     done
-    file_type="$(file --brief -- "$bin")" || return 1
-    case "$file_type" in
-        ELF\ *|Mach-O\ *) printf '%s\n' "$bin"; return ;;
-    esac
+    if python3 -I -c 'import sys; magic=open(sys.argv[1], "rb").read(4); raise SystemExit(magic != b"\x7fELF" and magic not in {b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"})' "$bin"; then
+        printf '%s\n' "$bin"
+        return
+    fi
     echo "reviewer install layout is not a pinned package or native executable: $bin" >&2
     return 1
 }
