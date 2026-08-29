@@ -21,6 +21,13 @@ case "$engine" in
     *) usage ;;
 esac
 
+review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
+[[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
+    [ "$review_timeout_seconds" -le 3600 ] || {
+    echo "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
+    exit 2
+}
+
 : "${AGENT_LOOP_REVIEW_ENGINE:?AGENT_LOOP_REVIEW_ENGINE is required}"
 : "${AGENT_LOOP_REVIEW_BASE_SHA:?AGENT_LOOP_REVIEW_BASE_SHA is required}"
 : "${AGENT_LOOP_REVIEW_ROUND:?AGENT_LOOP_REVIEW_ROUND is required}"
@@ -95,5 +102,5 @@ run_agy_and_parse "agy review" \
     --disable-slash-commands \
     --add-dir "$trusted_root" \
     --output-format json \
-    --print-timeout 60m \
+    --print-timeout "${review_timeout_seconds}s" \
     --print "$prompt"

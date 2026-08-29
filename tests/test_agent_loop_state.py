@@ -60,6 +60,10 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
         BASE,
         "--head-sha",
         HEAD,
+        "--review-deadline-epoch",
+        "2000000000",
+        "--review-max-rounds",
+        "4",
     )
     assert created.returncode == 0, created.stderr
     assert stat.S_IMODE(state.stat().st_mode) == 0o600
@@ -68,6 +72,8 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
     assert value["version"] == 2
     assert value["phase"] == "draft-open"
     assert value["reviewEngine"] is None
+    assert value["reviewDeadlineEpoch"] == 2000000000
+    assert value["reviewMaxRounds"] == 4
     missing_engine = _run(
         "update",
         "--file",

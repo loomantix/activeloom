@@ -253,9 +253,11 @@ Run these lanes as independently as the active runtime permits:
 10. Apply the Disposition Bar. Fix only findings whose expected harm reduction
     justifies the churn. Defer the rest, and create an issue only for an urgent
     follow-up that should be scheduled within roughly two weeks.
-11. Run targeted validation and commit. Publish through
-    `$AGENT_LOOP_REVIEW_PUSH_HELPER` when it is set; otherwise push normally
-    with no force.
+11. Run targeted validation and commit. When
+    `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, accumulate every local fix commit
+    across the wrapper pass and invoke the helper exactly once after the final
+    fix; a second publication fails closed. Otherwise push normally with no
+    force.
 12. Use the ledger helper's resumable `dispose` transaction for every posted
     finding. Stop on any posting, push, disposition, or resolution failure; on
     an uncertain helper response, retry only the identical command.
