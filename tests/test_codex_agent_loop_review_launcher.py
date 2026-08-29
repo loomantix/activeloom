@@ -113,13 +113,13 @@ def _delegating_git(path: Path) -> Path:
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        "for argument in \"$@\"; do\n"
-        "  if [ \"$argument\" = \"${AGENT_TEST_GIT_FAILURE}\" ]; then\n"
+        'for argument in "$@"; do\n'
+        '  if [ "$argument" = "${AGENT_TEST_GIT_FAILURE}" ]; then\n'
         "    if [ \"$argument\" = hash-object ]; then printf '%040d\\n' 0; exit 0; fi\n"
         "    exit 86\n"
         "  fi\n"
         "done\n"
-        "exec \"$AGENT_TEST_REAL_GIT\" \"$@\"\n",
+        'exec "$AGENT_TEST_REAL_GIT" "$@"\n',
         encoding="utf-8",
     )
     path.chmod(0o755)
@@ -147,6 +147,10 @@ def _environment(
         "AGENT_LOOP_TRUSTED_REPO_ROOT": str(trusted.parent),
         "AGENT_LOOP_TRUSTED_BASE_REF": "main",
         "AGENT_LOOP_REVIEW_BIN_SHA256": hashlib.sha256(cli.read_bytes()).hexdigest(),
+        "AGENT_LOOP_REVIEW_INSTALL_ROOT": str(cli),
+        "AGENT_LOOP_REVIEW_INSTALL_SHA256": hashlib.sha256(
+            cli.read_bytes()
+        ).hexdigest(),
         "REVIEW_INVOCATION": str(tmp_path / "invocation.json"),
         "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1",
         "COVERAGE_PROCESS_START": "fixture",
@@ -203,6 +207,7 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     assert set(invocation["coverage_env"].values()) == {None}
     assert invocation["skill_content"] == "trusted deep review\n"
     assert invocation["nested_instructions"] == "trusted nested instructions\n"
+    assert "--ignore-user-config" in invocation["argv"]
 
     claude = _fake_cli(tmp_path / "claude")
     result = _run_launcher(
@@ -219,7 +224,8 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     argv = invocation["argv"]
     assert argv[:2] == ["--effort", "low"]
     assert "--disable-slash-commands" in argv
-    assert argv[argv.index("--setting-sources") + 1] == "user"
+    assert "--safe-mode" in argv
+    assert "--setting-sources" not in argv
     assert argv[argv.index("--add-dir") + 1] == str(issue)
     assert "/trusted/.claude/skills/deepcritique/SKILL.md" in argv[-1]
     assert invocation["additional_instructions"] is None
@@ -227,6 +233,34 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     assert set(invocation["coverage_env"].values()) == {None}
     assert invocation["skill_content"] == "trusted Claude deep review\n"
     assert invocation["nested_instructions"] == "trusted nested instructions\n"
+
+
+def test_launcher_rejects_a_reviewer_install_that_changed_after_pinning(
+    tmp_path: Path,
+) -> None:
+    trusted_repo, trusted = _trusted_surface(tmp_path)
+    issue, base, head = _issue_worktree(tmp_path, trusted_repo)
+    install = tmp_path / "codex-install"
+    (install / "bin").mkdir(parents=True)
+    cli = _fake_cli(install / "bin/codex")
+    sibling = install / "runtime.js"
+    sibling.write_text("trusted runtime\n", encoding="utf-8")
+    environment = _environment(
+        tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
+    )
+    environment["AGENT_LOOP_REVIEW_INSTALL_ROOT"] = str(install)
+    manifest = b"bin/codex\0" + hashlib.sha256(cli.read_bytes()).hexdigest().encode()
+    # A deliberately stale digest proves sibling modules are included, without
+    # coupling this test to the shell manifest's representation.
+    environment["AGENT_LOOP_REVIEW_INSTALL_SHA256"] = hashlib.sha256(
+        manifest
+    ).hexdigest()
+
+    result = _run_launcher(issue, "codex", environment)
+
+    assert result.returncode != 0
+    assert "reviewer install changed after startup" in result.stderr
+    assert not (tmp_path / "invocation.json").exists()
 
 
 def test_launcher_uses_base_blobs_when_the_source_checkout_is_modified(

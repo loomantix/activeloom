@@ -33,6 +33,7 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_REVIEW_PUSH_STATE_FILE AGENT_LOOP_CODEX_REVIEW_LAUNCHER \
     AGENT_LOOP_TRUSTED_REPO_ROOT AGENT_LOOP_TRUSTED_BASE_REF \
     AGENT_LOOP_REVIEW_BIN AGENT_LOOP_REVIEW_BIN_SHA256 \
+    AGENT_LOOP_REVIEW_INSTALL_ROOT AGENT_LOOP_REVIEW_INSTALL_SHA256 \
     CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
 
 MAX_ITERATIONS=10
@@ -364,6 +365,24 @@ for cmd in git gh jq node python3 timeout flock realpath sha256sum awk; do
 done
 
 file_sha256() { sha256sum "$1" | awk '{print $1}'; }
+install_tree_sha256() {
+    local root="$1"
+    if [ -f "$root" ] && [ ! -L "$root" ]; then
+        file_sha256 "$root"
+        return
+    fi
+    [ -d "$root" ] && [ ! -L "$root" ] || return 1
+    if find -P "$root" -mindepth 1 \! -type d \! -type f -print -quit | grep -q .; then
+        return 1
+    fi
+    (
+        cd "$root"
+        while IFS= read -r -d '' relative; do
+            printf '%s\0' "$relative"
+            sha256sum -- "$relative"
+        done < <(find -P . -type f -print0 | LC_ALL=C sort -z)
+    ) | sha256sum | awk '{print $1}'
+}
 REAL_GIT_BIN="$(type -P git)"
 REAL_GH_BIN="$(type -P gh)"
 [ -x "$REAL_GIT_BIN" ] || { echo "required Git executable not found" >&2; exit 1; }
@@ -410,6 +429,23 @@ if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     [ -n "$CLAUDE_REVIEW_BIN" ] || { echo "required command not found for Claude review: claude" >&2; exit 1; }
     CODEX_REVIEW_BIN_SHA256="$(file_sha256 "$CODEX_REVIEW_BIN")"
     CLAUDE_REVIEW_BIN_SHA256="$(file_sha256 "$CLAUDE_REVIEW_BIN")"
+    codex_package_root="$(realpath -e -- "$(dirname -- "$CODEX_REVIEW_BIN")/..")"
+    if [ "$(basename -- "$(dirname -- "$CODEX_REVIEW_BIN")")" = bin ] && \
+       [ -f "$codex_package_root/package.json" ] && \
+       [ ! -L "$codex_package_root/package.json" ]; then
+        CODEX_REVIEW_INSTALL_ROOT="$codex_package_root"
+    else
+        # Native or test launchers that do not have the npm package layout are
+        # self-contained, so their executable is the complete install surface.
+        CODEX_REVIEW_INSTALL_ROOT="$CODEX_REVIEW_BIN"
+    fi
+    CLAUDE_REVIEW_INSTALL_ROOT="$CLAUDE_REVIEW_BIN"
+    CODEX_REVIEW_INSTALL_SHA256="$(install_tree_sha256 "$CODEX_REVIEW_INSTALL_ROOT")" || {
+        echo "Codex reviewer install root is unsafe" >&2; exit 1;
+    }
+    CLAUDE_REVIEW_INSTALL_SHA256="$(install_tree_sha256 "$CLAUDE_REVIEW_INSTALL_ROOT")" || {
+        echo "Claude reviewer install root is unsafe" >&2; exit 1;
+    }
 fi
 
 if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
@@ -520,7 +556,8 @@ if [ "$CONFIG_DOCTOR" = true ]; then
         # working-tree path after the hash check.
         "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
             cat-file blob "$pinned_doctor_oid" | \
-            GIT_NO_REPLACE_OBJECTS=1 python3 -I - "${doctor_command[@]}" || exit 1
+            AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN" GIT_NO_REPLACE_OBJECTS=1 \
+            python3 -I - "${doctor_command[@]}" || exit 1
     else
         python3 -I "$CONFIG_DOCTOR_HELPER" "${doctor_command[@]}" || exit 1
     fi
@@ -530,6 +567,10 @@ PINNED_REVIEW_LEDGER_OID=""
 PINNED_ISSUES_READY_OID=""
 PINNED_AGENT_LOOP_OID=""
 PINNED_REVIEW_LAUNCHER_OID=""
+PINNED_REVIEW_PUSH_OID=""
+PINNED_PROCESS_SUPERVISOR_OID=""
+PINNED_HOOK_GIT_GUARD_OID=""
+PINNED_HOOK_GH_GUARD_OID=""
 if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     PINNED_AGENT_LOOP_OID="$(require_base_pinned_tool "$SCRIPT_DIR/agent-loop.sh" \
         ".codex/skills/agent-loop/scripts/agent-loop.sh" 100755 \
@@ -546,6 +587,18 @@ if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     PINNED_REVIEW_LAUNCHER_OID="$(require_base_pinned_tool "$CODEX_REVIEW_LAUNCHER" \
         ".codex/skills/agent-loop/scripts/run-codex-review.sh" 100755 \
         "review launcher")" || exit 1
+    PINNED_REVIEW_PUSH_OID="$(require_base_pinned_tool "$REVIEW_PUSH_HELPER_SOURCE" \
+        ".codex/skills/agent-loop/scripts/review-push.sh" 100755 \
+        "review push helper")" || exit 1
+    PINNED_PROCESS_SUPERVISOR_OID="$(require_base_pinned_tool "$PROCESS_SUPERVISOR" \
+        ".codex/skills/agent-loop/scripts/process-supervisor.py" 100755 \
+        "process supervisor")" || exit 1
+    PINNED_HOOK_GIT_GUARD_OID="$(require_base_pinned_tool "$HOOK_GIT_GUARD" \
+        ".codex/skills/agent-loop/scripts/hook-git-guard" 100755 \
+        "hook Git guard")" || exit 1
+    PINNED_HOOK_GH_GUARD_OID="$(require_base_pinned_tool "$HOOK_GH_GUARD" \
+        ".codex/skills/agent-loop/scripts/hook-gh-guard" 100755 \
+        "hook gh guard")" || exit 1
 fi
 
 run_state_helper() {
@@ -644,10 +697,17 @@ activate_trusted_project_git_config() {
     export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
     require_trusted_git_config
 }
-HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
-HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"
-REVIEW_PUSH_HELPER_SHA256="$(file_sha256 "$REVIEW_PUSH_HELPER_SOURCE")"
-PROCESS_SUPERVISOR_SHA256="$(file_sha256 "$PROCESS_SUPERVISOR")"
+if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    HOOK_GIT_GUARD_SHA256="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" cat-file blob "$PINNED_HOOK_GIT_GUARD_OID" | sha256sum | awk '{print $1}')"
+    HOOK_GH_GUARD_SHA256="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" cat-file blob "$PINNED_HOOK_GH_GUARD_OID" | sha256sum | awk '{print $1}')"
+    REVIEW_PUSH_HELPER_SHA256="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" cat-file blob "$PINNED_REVIEW_PUSH_OID" | sha256sum | awk '{print $1}')"
+    PROCESS_SUPERVISOR_SHA256="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" cat-file blob "$PINNED_PROCESS_SUPERVISOR_OID" | sha256sum | awk '{print $1}')"
+else
+    HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
+    HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"
+    REVIEW_PUSH_HELPER_SHA256="$(file_sha256 "$REVIEW_PUSH_HELPER_SOURCE")"
+    PROCESS_SUPERVISOR_SHA256="$(file_sha256 "$PROCESS_SUPERVISOR")"
+fi
 
 # Resolve the current login once, up front. Doing it per-candidate inside an
 # unchecked command substitution meant a transient gh failure silently rendered a
@@ -1827,9 +1887,13 @@ run_review_pass() {
             if [ "$slug" = codex ]; then
                 export AGENT_LOOP_REVIEW_BIN="$CODEX_REVIEW_BIN"
                 export AGENT_LOOP_REVIEW_BIN_SHA256="$CODEX_REVIEW_BIN_SHA256"
+                export AGENT_LOOP_REVIEW_INSTALL_ROOT="$CODEX_REVIEW_INSTALL_ROOT"
+                export AGENT_LOOP_REVIEW_INSTALL_SHA256="$CODEX_REVIEW_INSTALL_SHA256"
             else
                 export AGENT_LOOP_REVIEW_BIN="$CLAUDE_REVIEW_BIN"
                 export AGENT_LOOP_REVIEW_BIN_SHA256="$CLAUDE_REVIEW_BIN_SHA256"
+                export AGENT_LOOP_REVIEW_INSTALL_ROOT="$CLAUDE_REVIEW_INSTALL_ROOT"
+                export AGENT_LOOP_REVIEW_INSTALL_SHA256="$CLAUDE_REVIEW_INSTALL_SHA256"
             fi
         fi
     else
@@ -1849,6 +1913,7 @@ run_review_pass() {
     unset AGENT_LOOP_CODEX_REVIEW_LAUNCHER AGENT_LOOP_TRUSTED_REPO_ROOT \
         AGENT_LOOP_TRUSTED_BASE_REF AGENT_LOOP_REVIEW_BIN \
         AGENT_LOOP_REVIEW_BIN_SHA256 AGENT_LOOP_REVIEW_PUSH_HELPER \
+        AGENT_LOOP_REVIEW_INSTALL_ROOT AGENT_LOOP_REVIEW_INSTALL_SHA256 \
         CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
     if [ "$review_hook_status" -ne 0 ]; then
         recovery_message "$hook_failure_description failed in review round $round."

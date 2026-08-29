@@ -25,8 +25,12 @@ def _git(repo: Path, *args: str) -> str:
 def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
     remote = tmp_path / "remote.git"
     repo = tmp_path / "repo"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
-    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repo)], check=True, capture_output=True
+    )
     _git(repo, "config", "user.name", "Test")
     _git(repo, "config", "user.email", "test@example.invalid")
     (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
@@ -66,7 +70,9 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
     return repo, env, start
 
 
-def _run(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    repo: Path, env: dict[str, str], *args: str
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(HELPER), *args], cwd=repo, env=env, capture_output=True, text=True
     )
@@ -80,12 +86,19 @@ def test_reports_review_push_protocol_version() -> None:
     assert result.stdout == "1\n"
 
 
-def test_exact_fully_qualified_review_push_succeeds(review_repo: tuple[Path, dict[str, str], str]) -> None:
+def test_exact_fully_qualified_review_push_succeeds(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
     repo, env, _ = review_repo
     result = _run(repo, env)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == _git(repo, "rev-parse", "HEAD")
-    assert _git(repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7").split()[0] == result.stdout.strip()
+    assert (
+        _git(
+            repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7"
+        ).split()[0]
+        == result.stdout.strip()
+    )
 
 
 def test_review_push_enters_the_captured_worktree(
@@ -125,8 +138,27 @@ def test_review_push_ignores_injected_command_scope_config(
     assert not _git(repo, "ls-remote", "--heads", str(redirected))
 
 
+def test_review_push_scrubs_non_config_git_environment(
+    review_repo: tuple[Path, dict[str, str], str], tmp_path: Path
+) -> None:
+    repo, env, _ = review_repo
+    marker = tmp_path / "ssh-command-ran"
+    env.update(
+        {
+            "GIT_DIR": str(tmp_path / "wrong.git"),
+            "GIT_INDEX_FILE": str(tmp_path / "wrong.index"),
+            "GIT_SSH_COMMAND": f"touch {marker}",
+        }
+    )
+
+    result = _run(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+
+
 def test_two_sequential_review_pushes_succeed(
-    review_repo: tuple[Path, dict[str, str], str]
+    review_repo: tuple[Path, dict[str, str], str],
 ) -> None:
     repo, env, _ = review_repo
     first = _run(repo, env)
@@ -193,7 +225,9 @@ def test_rejects_bare_ambiguous_wrong_destination_and_force_arguments(
     assert "accepts no arguments" in result.stderr
 
 
-def test_rejects_wrong_checked_out_branch(review_repo: tuple[Path, dict[str, str], str]) -> None:
+def test_rejects_wrong_checked_out_branch(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
     repo, env, _ = review_repo
     _git(repo, "switch", "-c", "other")
     result = _run(repo, env)
@@ -201,7 +235,9 @@ def test_rejects_wrong_checked_out_branch(review_repo: tuple[Path, dict[str, str
     assert "different checked-out branch" in result.stderr
 
 
-def test_rejects_stale_remote_head(review_repo: tuple[Path, dict[str, str], str]) -> None:
+def test_rejects_stale_remote_head(
+    review_repo: tuple[Path, dict[str, str], str],
+) -> None:
     repo, env, start = review_repo
     competing = repo.parent / "competing"
     subprocess.run(
@@ -235,7 +271,7 @@ def test_rejects_stale_remote_head(review_repo: tuple[Path, dict[str, str], str]
 
 
 def test_rejects_external_head_incorporated_after_helper_push(
-    review_repo: tuple[Path, dict[str, str], str]
+    review_repo: tuple[Path, dict[str, str], str],
 ) -> None:
     repo, env, _ = review_repo
     first = _run(repo, env)
@@ -267,9 +303,10 @@ def test_rejects_external_head_incorporated_after_helper_push(
 
     assert result.returncode != 0
     assert "stale or uncertain remote head" in result.stderr
-    assert Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(
-        encoding="utf-8"
-    ) == f"{helper_head}\n"
+    assert (
+        Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8")
+        == f"{helper_head}\n"
+    )
     assert (
         _git(
             repo,
@@ -283,7 +320,7 @@ def test_rejects_external_head_incorporated_after_helper_push(
 
 
 def test_rejects_divergent_history_after_helper_push(
-    review_repo: tuple[Path, dict[str, str], str]
+    review_repo: tuple[Path, dict[str, str], str],
 ) -> None:
     repo, env, start = review_repo
     first = _run(repo, env)
@@ -299,9 +336,10 @@ def test_rejects_divergent_history_after_helper_push(
 
     assert result.returncode != 0
     assert "drops a previously published review commit" in result.stderr
-    assert Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(
-        encoding="utf-8"
-    ) == f"{helper_head}\n"
+    assert (
+        Path(env["AGENT_LOOP_REVIEW_PUSH_STATE_FILE"]).read_text(encoding="utf-8")
+        == f"{helper_head}\n"
+    )
     assert (
         _git(
             repo,
@@ -315,7 +353,7 @@ def test_rejects_divergent_history_after_helper_push(
 
 
 def test_rejects_changed_origin_before_push(
-    review_repo: tuple[Path, dict[str, str], str]
+    review_repo: tuple[Path, dict[str, str], str],
 ) -> None:
     repo, env, _ = review_repo
     redirected = repo.parent / "redirected.git"

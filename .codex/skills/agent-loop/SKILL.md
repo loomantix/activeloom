@@ -128,8 +128,11 @@ invokes that copy without a login shell or `eval`. The launcher materializes
 `.codex` for Codex, `.claude` for
 Claude, and applicable `AGENTS.md`/`CLAUDE.md` files from base-tree blobs into a
 fresh empty session root. It passes absolute paths to that engine-native guidance and
-disables Claude's slash-command and Skill-tool loading, project/local settings,
-added-directory instructions, and auto memory. The launcher therefore names an
+starts Codex with user configuration ignored and Claude in safe mode, in addition
+to disabling Claude's slash-command and Skill-tool loading, added-directory
+instructions, and auto memory. The wrapper also fingerprints each resolved
+reviewer install surface before worker execution and the launcher rechecks it
+immediately before review. The launcher therefore names an
 absolute path into the pinned snapshot rather than a skill name it would have
 to resolve, so neither engine resolves review instructions from
 worker-authored files in the issue worktree. The wrapper pins both hook

@@ -26,15 +26,15 @@ cd -- "$AGENT_LOOP_WORKTREE" || {
     exit 1
 }
 
-# Review hooks receive two wrapper-owned command-scope overrides through the
-# GIT_CONFIG_* environment family. Subtracting only those two entries would not
-# bound what the family can carry: unsetting GIT_CONFIG_COUNT suppresses every
-# GIT_CONFIG_KEY_n from `config --list` at any index, so an entry injected at
-# index 2 or beyond stays invisible to the comparison below while still applying
-# to the push. Drop the family outright — that makes the fingerprint cover the
-# configuration actually in effect — and re-apply the two wrapper-owned
-# overrides explicitly on the push itself.
-unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+# The review process is untrusted and may export transport, repository, index,
+# config-location, or credential-helper overrides that never appear in
+# `git config --list`. Drop the complete Git environment namespace before the
+# first Git invocation. The helper's required inputs deliberately use the
+# AGENT_LOOP_* namespace, so none are lost here.
+while IFS= read -r variable; do
+    case "$variable" in GIT_*) unset "$variable" ;; esac
+done < <(compgen -e)
+export GIT_TERMINAL_PROMPT=0
 actual_config_sha256="$(timeout 10 "$real_git" --no-replace-objects config \
         --null --list | sha256sum | awk '{print $1}')" || {
     echo "review-push could not verify trusted Git configuration" >&2

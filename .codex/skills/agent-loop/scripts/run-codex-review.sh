@@ -78,6 +78,8 @@ case "$engine" in codex|claude) ;; *) usage ;; esac
 : "${AGENT_LOOP_TRUSTED_REPO_ROOT:?AGENT_LOOP_TRUSTED_REPO_ROOT is required}"
 : "${AGENT_LOOP_TRUSTED_BASE_REF:?AGENT_LOOP_TRUSTED_BASE_REF is required}"
 : "${AGENT_LOOP_REVIEW_BIN_SHA256:?AGENT_LOOP_REVIEW_BIN_SHA256 is required}"
+: "${AGENT_LOOP_REVIEW_INSTALL_ROOT:?AGENT_LOOP_REVIEW_INSTALL_ROOT is required}"
+: "${AGENT_LOOP_REVIEW_INSTALL_SHA256:?AGENT_LOOP_REVIEW_INSTALL_SHA256 is required}"
 [ "$AGENT_LOOP_REVIEW_ENGINE" = "$engine" ] || {
     echo "review engine does not match the configured launcher" >&2
     exit 1
@@ -122,7 +124,11 @@ trusted_base_sha="$(trusted_git rev-parse --verify "$AGENT_LOOP_TRUSTED_BASE_REF
     echo "trusted base ref no longer resolves to AGENT_LOOP_REVIEW_BASE_SHA" >&2
     exit 1
 }
-trusted_git fsck --strict --connectivity-only --no-dangling \
+# Not --connectivity-only: that skips object content hashing, so a substituted
+# loose tree object keeps its expected OID and silently remaps a pinned path to
+# an attacker-authored blob. materialize_record re-hashes blobs and would not
+# catch it, because the substituted blob hashes consistently.
+trusted_git fsck --strict --no-dangling \
     "$AGENT_LOOP_REVIEW_BASE_SHA" >/dev/null || {
     echo "pinned base object graph failed integrity verification" >&2
     exit 1
@@ -214,10 +220,46 @@ actual_bin_sha="$(sha256sum "$review_cli" | awk '{print $1}')"
     exit 1
 }
 
+review_install_digest() {
+    local root="$1"
+    if [ -f "$root" ] && [ ! -L "$root" ]; then
+        sha256sum "$root" | awk '{print $1}'
+        return
+    fi
+    [ -d "$root" ] && [ ! -L "$root" ] || return 1
+    if find -P "$root" -mindepth 1 \! -type d \! -type f -print -quit | grep -q .; then
+        return 1
+    fi
+    (
+        cd "$root"
+        while IFS= read -r -d '' relative; do
+            printf '%s\0' "$relative"
+            sha256sum -- "$relative"
+        done < <(find -P . -type f -print0 | LC_ALL=C sort -z)
+    ) | sha256sum | awk '{print $1}'
+}
+
+review_install_root="$(realpath -e -- "$AGENT_LOOP_REVIEW_INSTALL_ROOT")" || {
+    echo "$engine reviewer install root is unavailable" >&2
+    exit 1
+}
+case "$review_cli" in
+    "$review_install_root"|"$review_install_root"/*) ;;
+    *) echo "$engine reviewer executable is outside its attested install root" >&2; exit 1 ;;
+esac
+actual_install_sha="$(review_install_digest "$review_install_root")" || {
+    echo "$engine reviewer install root is unsafe" >&2
+    exit 1
+}
+[ "$actual_install_sha" = "$AGENT_LOOP_REVIEW_INSTALL_SHA256" ] || {
+    echo "$engine reviewer install changed after startup" >&2
+    exit 1
+}
+
 review_status=0
 if [ "$engine" = codex ]; then
     "$review_cli" exec --dangerously-bypass-approvals-and-sandbox --ephemeral \
-        --ignore-rules --skip-git-repo-check -C "$launch_root" \
+        --ignore-rules --ignore-user-config --skip-git-repo-check -C "$launch_root" \
         --add-dir "$review_worktree" "$prompt" || review_status="$?"
 else
     (
@@ -226,7 +268,7 @@ else
         export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
         "$review_cli" --effort "$CLAUDE_EFFORT_POLICY" \
             --permission-mode bypassPermissions --no-session-persistence \
-            --disable-slash-commands --setting-sources user \
+            --disable-slash-commands --safe-mode \
             --add-dir "$review_worktree" --print "$prompt"
     ) || review_status="$?"
 fi

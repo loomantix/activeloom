@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +15,34 @@ from pathlib import Path
 
 class DoctorError(RuntimeError):
     """An incompatible consumer configuration."""
+
+
+def _git(project: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    configured = os.environ.get("AGENT_LOOP_REAL_GIT")
+    git_bin = configured or shutil.which("git")
+    if git_bin is None:
+        raise DoctorError("trusted Git executable is unavailable")
+    resolved = Path(git_bin).resolve(strict=True)
+    if configured and (not resolved.is_absolute() or not os.access(resolved, os.X_OK)):
+        raise DoctorError("trusted Git executable is invalid")
+    return subprocess.run(
+        [
+            str(resolved),
+            "--no-replace-objects",
+            "-c",
+            "core.fsmonitor=",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.excludesFile=/dev/null",
+            "--no-optional-locks",
+            "-C",
+            str(project),
+            *args,
+        ],
+        capture_output=True,
+        check=False,
+    )
 
 
 def _config(path: Path) -> dict[str, str]:
@@ -48,21 +78,7 @@ def _version(command: list[str], label: str) -> str:
 
 
 def _require_base_blob(project: Path, base_ref: str, relative: str) -> tuple[str, str]:
-    result = subprocess.run(
-        [
-            "git",
-            "--no-replace-objects",
-            "-C",
-            str(project),
-            "ls-tree",
-            "-z",
-            base_ref,
-            "--",
-            relative,
-        ],
-        capture_output=True,
-        check=False,
-    )
+    result = _git(project, "ls-tree", "-z", base_ref, "--", relative)
     if result.returncode != 0:
         detail = (
             result.stderr.decode("utf-8", errors="replace").strip() or "<no stderr>"
@@ -87,13 +103,11 @@ def _require_base_blob(project: Path, base_ref: str, relative: str) -> tuple[str
 
 
 def _base_blob(project: Path, oid: str, label: str) -> bytes:
-    result = subprocess.run(
-        ["git", "--no-replace-objects", "-C", str(project), "cat-file", "blob", oid],
-        capture_output=True,
-        check=False,
-    )
+    result = _git(project, "cat-file", "blob", oid)
     if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip() or "<no stderr>"
+        detail = (
+            result.stderr.decode("utf-8", errors="replace").strip() or "<no stderr>"
+        )
         raise DoctorError(f"could not materialize pinned {label}: {detail}")
     return result.stdout
 
@@ -107,14 +121,24 @@ def _verify_claude_ledger_protocol(
         package = root / "package.json"
         ledger.write_bytes(_base_blob(project, ledger_oid, "Claude review ledger"))
         package.write_bytes(_base_blob(project, package_oid, "Claude ledger package"))
-        if _version(["node", str(ledger), "--protocol-version"], "Claude review ledger") != "3":
-            raise DoctorError("Claude review-ledger protocol is incompatible with contract v4")
+        if (
+            _version(
+                ["node", str(ledger), "--protocol-version"], "Claude review ledger"
+            )
+            != "3"
+        ):
+            raise DoctorError(
+                "Claude review-ledger protocol is incompatible with contract v4"
+            )
 
 
 def _verify_protocols(ledger: Path, state: Path, review_push: Path) -> None:
     if _version(["node", str(ledger), "--protocol-version"], "review ledger") != "3":
         raise DoctorError("review-ledger protocol is incompatible with contract v3")
-    if _version([sys.executable, "-I", str(state), "--state-version"], "run state") != "1":
+    if (
+        _version([sys.executable, "-I", str(state), "--state-version"], "run state")
+        != "1"
+    ):
         raise DoctorError("agent-loop state protocol is incompatible")
     if _version([str(review_push), "--protocol-version"], "review push") != "1":
         raise DoctorError("review-push protocol is incompatible")
@@ -256,9 +280,7 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
         if _version(
             [sys.executable, "-I", str(supervisor), "--self-test"],
             "hook process supervisor",
-        ) != (
-            "linux-subreaper-v1"
-        ):
+        ) != ("linux-subreaper-v1"):
             raise DoctorError("hook process supervisor self-test failed")
         claude_surface_oids: dict[str, str] = {}
         for engine, prefix in (("codex", ".codex/"), ("claude", ".claude/")):
