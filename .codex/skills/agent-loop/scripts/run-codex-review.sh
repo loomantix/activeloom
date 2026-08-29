@@ -16,6 +16,7 @@ CLAUDE_REQUIRED_PATHS=(
     .claude/references/local-review-ledger.md
     .claude/skills/deepcritique/SKILL.md
     .claude/skills/critique/SKILL.md
+    .claude/skills/critique/scripts/package.json
     .claude/skills/critique/scripts/review-ledger.js
     .claude/skills/refactorpass/SKILL.md
 )

@@ -56,6 +56,7 @@ def _trusted_surface(tmp_path: Path) -> tuple[Path, Path]:
         ".claude/references/local-review-ledger.md": "trusted Claude ledger\n",
         ".claude/skills/deepcritique/SKILL.md": "trusted Claude deep review\n",
         ".claude/skills/critique/SKILL.md": "trusted Claude critique\n",
+        ".claude/skills/critique/scripts/package.json": '{"type":"module"}\n',
         ".claude/skills/critique/scripts/review-ledger.js": "trusted Claude helper\n",
         ".claude/skills/refactorpass/SKILL.md": "trusted Claude refactor\n",
         "nested/AGENTS.md": "trusted nested instructions\n",

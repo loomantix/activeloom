@@ -7,6 +7,7 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -83,6 +84,31 @@ def _require_base_blob(project: Path, base_ref: str, relative: str) -> tuple[str
             f"pinned base review surface is not a regular blob: {relative}"
         )
     return fields[0].decode(), fields[2].decode()
+
+
+def _base_blob(project: Path, oid: str, label: str) -> bytes:
+    result = subprocess.run(
+        ["git", "--no-replace-objects", "-C", str(project), "cat-file", "blob", oid],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip() or "<no stderr>"
+        raise DoctorError(f"could not materialize pinned {label}: {detail}")
+    return result.stdout
+
+
+def _verify_claude_ledger_protocol(
+    project: Path, ledger_oid: str, package_oid: str
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="agent-loop-claude-ledger-") as directory:
+        root = Path(directory)
+        ledger = root / "review-ledger.js"
+        package = root / "package.json"
+        ledger.write_bytes(_base_blob(project, ledger_oid, "Claude review ledger"))
+        package.write_bytes(_base_blob(project, package_oid, "Claude ledger package"))
+        if _version(["node", str(ledger), "--protocol-version"], "Claude review ledger") != "3":
+            raise DoctorError("Claude review-ledger protocol is incompatible with contract v4")
 
 
 def _verify_protocols(ledger: Path, state: Path, review_push: Path) -> None:
@@ -234,6 +260,7 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
             "linux-subreaper-v1"
         ):
             raise DoctorError("hook process supervisor self-test failed")
+        claude_surface_oids: dict[str, str] = {}
         for engine, prefix in (("codex", ".codex/"), ("claude", ".claude/")):
             required_paths = _version(
                 [str(review_launcher), "--required-paths", engine],
@@ -246,7 +273,14 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
                     raise DoctorError(
                         f"{engine} required review path is invalid: {relative}"
                     )
-                _require_base_blob(root, base_ref, relative)
+                _, oid = _require_base_blob(root, base_ref, relative)
+                if engine == "claude":
+                    claude_surface_oids[relative] = oid
+        _verify_claude_ledger_protocol(
+            root,
+            claude_surface_oids[".claude/skills/critique/scripts/review-ledger.js"],
+            claude_surface_oids[".claude/skills/critique/scripts/package.json"],
+        )
     else:
         _verify_protocols(ledger, state, review_push)
         obsolete = (

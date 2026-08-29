@@ -37,6 +37,14 @@ def _project(tmp_path: Path) -> Path:
     # See tests/test_agent_loop.py: sync ships the sibling ESM manifest, and a
     # CommonJS consumer root is the context that needs it.
     shutil.copy2(ROOT / ".codex/skills/critique/scripts/package.json", ledger_dir)
+    claude_ledger_dir = project / ".claude/skills/critique/scripts"
+    claude_ledger_dir.mkdir(parents=True)
+    shutil.copy2(
+        ROOT / ".codex/skills/critique/scripts/review-ledger.js", claude_ledger_dir
+    )
+    shutil.copy2(
+        ROOT / ".codex/skills/critique/scripts/package.json", claude_ledger_dir
+    )
     (project / "package.json").write_text(
         '{"name": "fixture-consumer", "private": true, "type": "commonjs"}\n',
         encoding="utf-8",
@@ -66,6 +74,7 @@ def _project(tmp_path: Path) -> Path:
         ".claude/references/local-review-ledger.md",
         ".claude/skills/deepcritique/SKILL.md",
         ".claude/skills/critique/SKILL.md",
+        ".claude/skills/critique/scripts/package.json",
         ".claude/skills/critique/scripts/review-ledger.js",
         ".claude/skills/refactorpass/SKILL.md",
     ):
@@ -133,6 +142,7 @@ def test_doctor_retains_contract_v3_hook_compatibility(tmp_path: Path) -> None:
     "relative",
     [
         ".claude/skills/deepcritique/SKILL.md",
+        ".claude/skills/critique/scripts/package.json",
         ".codex/REVIEW_WORKFLOW.md",
     ],
 )
@@ -155,6 +165,23 @@ def test_doctor_rejects_missing_required_file_in_pinned_base(
 
     assert result.returncode != 0
     assert "pinned base review surface is missing" in result.stderr
+
+
+def test_doctor_rejects_an_incompatible_pinned_claude_ledger(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    ledger = project / ".claude/skills/critique/scripts/review-ledger.js"
+    ledger.write_text("throw new Error('incompatible fixture');\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(ledger)], cwd=project, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "break Claude review ledger"],
+        cwd=project,
+        check=True,
+    )
+
+    result = _run(project)
+
+    assert result.returncode != 0
+    assert "Claude review ledger compatibility query failed" in result.stderr
 
 
 def test_doctor_rejects_preexisting_launcher_drift(tmp_path: Path) -> None:

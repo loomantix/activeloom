@@ -1609,12 +1609,20 @@ def test_contract_v4_wrapper_uses_the_real_launcher_for_both_reviewers(
         ".claude/references/local-review-ledger.md",
         ".claude/skills/deepcritique/SKILL.md",
         ".claude/skills/critique/SKILL.md",
-        ".claude/skills/critique/scripts/review-ledger.js",
         ".claude/skills/refactorpass/SKILL.md",
     ):
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("# Trusted Claude review fixture\n", encoding="utf-8")
+    claude_ledger_dir = repo / ".claude/skills/critique/scripts"
+    claude_ledger_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        REPO_ROOT / ".codex/skills/critique/scripts/package.json", claude_ledger_dir
+    )
+    shutil.copy2(
+        REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.js",
+        claude_ledger_dir,
+    )
     (repo / "AGENTS.md").write_text("# Trusted repository instructions\n", encoding="utf-8")
     _run_git("add", ".", cwd=repo)
     _run_git("commit", "-m", "test: install trusted review surfaces", cwd=repo)
