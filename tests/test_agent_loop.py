@@ -1131,6 +1131,38 @@ def test_replacement_ref_cannot_redefine_the_pinned_review_launcher(
     assert not marker.exists()
 
 
+def test_worker_cannot_replace_state_or_ledger_helpers(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    state_marker = tmp_path / "mutated-state-helper-ran"
+    ledger_marker = tmp_path / "mutated-ledger-ran"
+    worker_hook = (
+        'state="$AGENT_LOOP_PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop-state.py"; '
+        "printf '%s\\n' '#!/usr/bin/env python3' "
+        f"'from pathlib import Path; Path(\"{state_marker}\").touch()' "
+        "'raise SystemExit(0)' > \"$state\"; chmod 755 \"$state\"; "
+        'ledger="$AGENT_LOOP_PROJECT_DIR/.codex/skills/critique/scripts/review-ledger.js"; '
+        "printf '%s\\n' "
+        f"'import {{ writeFileSync }} from \"fs\"; writeFileSync(\"{ledger_marker}\", \"\")' "
+        "'process.exit(0)' > \"$ledger\"; chmod 644 \"$ledger\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "68"],
+        issues=[_issue(68)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not state_marker.exists()
+    assert not ledger_marker.exists()
+
+
 def test_worker_cannot_replace_the_pinned_review_push_helper(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -2255,19 +2287,16 @@ def test_uncertain_finalized_checkpoint_restores_resumable_finalizing_state(
         raise StateError("simulated failure after finalized state replacement")
     print(json.dumps(value, sort_keys=True))"""
     assert needle in source
-    mutated_helper = tmp_path / "mutated-agent-loop-state.py"
-    mutated_helper.write_text(source.replace(needle, replacement), encoding="utf-8")
-    worker_hook = (
-        f"cp {mutated_helper} {helper}; "
-        "printf 'done\\n' > result.txt; git add result.txt; "
-        "git commit -m 'fix: worker result'"
-    )
+    helper.write_text(source.replace(needle, replacement), encoding="utf-8")
+    _run_git("add", str(helper.relative_to(consumer[0])), cwd=consumer[0])
+    _run_git("commit", "-m", "test: pin finalized checkpoint fault", cwd=consumer[0])
+    _run_git("push", "origin", "main", cwd=consumer[0])
 
     first = _run(
         consumer,
         ["--issues", "92"],
         issues=[_issue(92)],
-        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        config=_config_v3(tmp_path),
         extra_env={"AGENT_FAIL_AFTER_FINALIZED_STATE_REPLACE": "true"},
     )
     assert first.returncode != 0
@@ -2275,10 +2304,6 @@ def test_uncertain_finalized_checkpoint_restores_resumable_finalizing_state(
     assert json.loads(state_file.read_text())["phase"] == "finalizing"
     assert not (consumer[3] / "pr-ready").exists()
 
-    # A resumed invocation must pass the same trusted-tool preflight as a fresh
-    # run. Restore the pinned helper; the finalized checkpoint already rolled
-    # back to the resumable finalizing phase.
-    helper.write_text(source, encoding="utf-8")
     second = _run(
         consumer,
         ["--resume-run", str(state_file)],

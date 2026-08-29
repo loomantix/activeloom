@@ -281,14 +281,16 @@ if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
     # from `set -e`, so comparing stdout alone reports a crashed or unparsable
     # bundle as a protocol mismatch. Node too old for the bundle's ESM syntax
     # is the reachable case, and it deserves its own message.
-    if ! ledger_protocol="$(node "$REVIEW_LEDGER" --protocol-version 2>&1)"; then
-        echo "node could not execute $REVIEW_LEDGER: $ledger_protocol" >&2
-        exit 1
+    if [ "$REVIEW_CONTRACT_VERSION" != 4 ]; then
+        if ! ledger_protocol="$(node "$REVIEW_LEDGER" --protocol-version 2>&1)"; then
+            echo "node could not execute $REVIEW_LEDGER: $ledger_protocol" >&2
+            exit 1
+        fi
+        [ "$ledger_protocol" = 3 ] || {
+            echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v$REVIEW_CONTRACT_VERSION requires 3" >&2
+            exit 1
+        }
     fi
-    [ "$ledger_protocol" = 3 ] || {
-        echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v$REVIEW_CONTRACT_VERSION requires 3" >&2
-        exit 1
-    }
     if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
         expected_codex_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex'
         expected_claude_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude'
@@ -521,6 +523,36 @@ if [ "$CONFIG_DOCTOR" = true ]; then
         python3 "$CONFIG_DOCTOR_HELPER" "${doctor_command[@]}" || exit 1
     fi
 fi
+PINNED_RUN_STATE_OID=""
+PINNED_REVIEW_LEDGER_OID=""
+if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    PINNED_RUN_STATE_OID="$(require_base_pinned_tool "$RUN_STATE_HELPER" \
+        ".codex/skills/agent-loop/scripts/agent-loop-state.py" 100755 \
+        "agent-loop state helper")" || exit 1
+    PINNED_REVIEW_LEDGER_OID="$(require_base_pinned_tool "$REVIEW_LEDGER" \
+        ".codex/skills/critique/scripts/review-ledger.js" 100644 \
+        "review ledger")" || exit 1
+fi
+
+run_state_helper() {
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+            cat-file blob "$PINNED_RUN_STATE_OID" | \
+            GIT_NO_REPLACE_OBJECTS=1 python3 - "$@"
+    else
+        python3 "$RUN_STATE_HELPER" "$@"
+    fi
+}
+
+run_review_ledger() {
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+            cat-file blob "$PINNED_REVIEW_LEDGER_OID" | \
+            GIT_NO_REPLACE_OBJECTS=1 node --input-type=module - "$@"
+    else
+        node "$REVIEW_LEDGER" "$@"
+    fi
+}
 HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
 HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"
 REVIEW_PUSH_HELPER_SHA256="$(file_sha256 "$REVIEW_PUSH_HELPER_SOURCE")"
@@ -597,7 +629,7 @@ print(path.resolve(strict=True))
     resume_log_dir="$(dirname "$RESUME_RUN_FILE")"
     case "$resume_log_dir" in "$LOG_ROOT"/*) ;; *) echo "run state log directory is outside configured log_root" >&2; exit 1 ;; esac
     acquire_run_lock "$resume_log_dir" || exit 1
-    RESUME_STATE_JSON="$(python3 "$RUN_STATE_HELPER" show --file "$RESUME_RUN_FILE")" || exit 1
+    RESUME_STATE_JSON="$(run_state_helper show --file "$RESUME_RUN_FILE")" || exit 1
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
         exit 1
@@ -652,7 +684,7 @@ update_run_state() {
     local review_engine="${7:-}"
     local -a command
     [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] || return 0
-    command=(python3 "$RUN_STATE_HELPER" update --file "$AGENT_LOOP_RUN_STATE_FILE"
+    command=(run_state_helper update --file "$AGENT_LOOP_RUN_STATE_FILE"
         --phase "$phase" --round "$round" --base-sha "$base_sha"
         --head-sha "$head_sha")
     if [ -n "$codex_result_sha256" ]; then
@@ -797,7 +829,7 @@ select_next_issue() {
         if [ -n "$BATCH_STATE_FILE" ]; then
             local batch_selection_json batch_selection_cursor batch_selection_count
             local batch_selection_status
-            batch_selection_json="$(python3 "$RUN_STATE_HELPER" batch-show \
+            batch_selection_json="$(run_state_helper batch-show \
                 --file "$BATCH_STATE_FILE")" || return 2
             batch_selection_cursor="$(jq -r '.cursor' <<<"$batch_selection_json")"
             batch_selection_count="$(jq -r '.issues | length' <<<"$batch_selection_json")"
@@ -1426,7 +1458,7 @@ verify_v3_result_attestation() {
     esac
     before_sha="$(jq -r '.beforeSha' "$outcome_file")" || return 1
     after_sha="$(jq -r '.afterSha' "$outcome_file")" || return 1
-    node "$REVIEW_LEDGER" validate-result \
+    run_review_ledger validate-result \
         --engine "$slug" --round "$REVIEW_ROUNDS_USED" --base "$REVIEWED_BASE_SHA" \
         --before "$before_sha" --head "$after_sha" \
         --result-file "$outcome_file" >/dev/null || {
@@ -1669,7 +1701,7 @@ run_review_pass() {
         }
     fi
     if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
-        result_json="$(node "$REVIEW_LEDGER" validate-result \
+        result_json="$(run_review_ledger validate-result \
             --engine "$slug" --round "$round" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
             --before "$before_sha" --head "$after_sha" --result-file "$result_file")" || {
             recovery_message "$engine review did not produce a valid contract v3 result in round $round."
@@ -2170,7 +2202,7 @@ verify_v3_committed_pass_evidence() {
     # between fetch and verify fails closed. The retired Python did not check
     # this, so these call sites did not compute it.
     ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
-    node "$REVIEW_LEDGER" verify-ledger \
+    run_review_ledger verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$live_head" \
         --result-head "$after_sha" \
         --threads-file "$ledger_file" --actor "$CURRENT_LOGIN" \
@@ -2198,7 +2230,7 @@ attest_v3_review_result() {
     local ledger_file ledger_signature attestation_json observed_result_hash
     ledger_file="$(fetch_local_review_threads)" || return 1
     ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
-    attestation_json="$(node "$REVIEW_LEDGER" attest \
+    attestation_json="$(run_review_ledger attest \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" --head "$after_sha" \
         --engine "$engine" --round "$round" --base "$base_sha" \
         --before "$before_sha" --result-file "$result_file" \
@@ -2236,7 +2268,7 @@ verify_local_review_threads() {
     # length: the ledger requires a recurring root cause to reuse its existing
     # thread, so a resolved round-1 thread that gains an unanswered round-2
     # finding still has two or more comments and would pass a length check.
-    node "$REVIEW_LEDGER" verify-ledger \
+    run_review_ledger verify-ledger \
         --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" \
         --head "$(git rev-parse HEAD)" --threads-file "$ledger_file" \
         --expected-threads-sha256 "${ledger_signature#file:}" \
@@ -2762,7 +2794,7 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
     BATCH_STATE_FILE="$(realpath -- "$RESUME_BATCH_FILE")" || exit 1
     case "$BATCH_STATE_FILE" in "$LOG_ROOT"/*) ;; *) echo "batch state is outside configured log_root" >&2; exit 1 ;; esac
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
-    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+    batch_json="$(run_state_helper batch-show --file "$BATCH_STATE_FILE")" || exit 1
     [ "$(jq -r '.repo' <<<"$batch_json")" = "$GH_REPO" ] || { echo "batch state repository mismatch" >&2; exit 1; }
     [ "$(jq -r '.baseBranch' <<<"$batch_json")" = "$BASE_BRANCH" ] || { echo "batch state base branch mismatch" >&2; exit 1; }
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
@@ -2776,7 +2808,7 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$batch_issue' --expected-status active --status bailed" >&2
             exit 1
         }
-        child_json="$(python3 "$RUN_STATE_HELPER" show --file "$child_state")" || exit 1
+        child_json="$(run_state_helper show --file "$child_state")" || exit 1
         [ "$(jq -r '.issue' <<<"$child_json")" = "$batch_issue" ] && \
         [ "$(jq -r '.repo' <<<"$child_json")" = "$GH_REPO" ] && \
         [ "$(jq -r '.baseBranch' <<<"$child_json")" = "$BASE_BRANCH" ] || {
@@ -2789,13 +2821,13 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             recovery_message "Current batch issue #$batch_issue did not resume to a safely finalized state."
             exit 1
         }
-        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+        run_state_helper batch-update --file "$BATCH_STATE_FILE" \
             --issue "$batch_issue" --expected-status active \
             --status finalized >/dev/null || exit 1
         git worktree remove "$child_worktree" || {
             echo "warning: finalized batch child worktree cleanup failed and was preserved: $child_worktree" >&2
         }
-        batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+        batch_json="$(run_state_helper batch-show --file "$BATCH_STATE_FILE")" || exit 1
         batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
     fi
     ISSUE_ALLOWLIST="$(jq -r --argjson cursor "$batch_cursor" '.allowlist[$cursor:] | map(tostring) | join(",")' <<<"$batch_json")"
@@ -2811,7 +2843,7 @@ elif [[ "$ISSUE_ALLOWLIST" == *,* ]] && [ "$DRY_RUN" = false ] && \
     chmod 700 "$LOG_ROOT"
     safe_repo="${REPO_NAME//[^A-Za-z0-9._-]/-}"
     BATCH_STATE_FILE="$LOG_ROOT/$safe_repo-batch-$RUN_TAG.json"
-    python3 "$RUN_STATE_HELPER" batch-create --file "$BATCH_STATE_FILE" \
+    run_state_helper batch-create --file "$BATCH_STATE_FILE" \
         --run-id "$RUN_TAG" --repo "$GH_REPO" --base-branch "$BASE_BRANCH" \
         --issues "$ISSUE_ALLOWLIST" >/dev/null || exit 1
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
@@ -2882,7 +2914,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
 
     if [ -n "$BATCH_STATE_FILE" ]; then
-        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+        run_state_helper batch-update --file "$BATCH_STATE_FILE" \
             --issue "$SELECTED_ID" --expected-status pending \
             --status active >/dev/null || exit 1
     fi
@@ -3007,7 +3039,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"
-        python3 "$RUN_STATE_HELPER" create --file "$AGENT_LOOP_RUN_STATE_FILE" \
+        run_state_helper create --file "$AGENT_LOOP_RUN_STATE_FILE" \
             --run-id "$RUN_TAG-issue-$SELECTED_ID" --repo "$GH_REPO" \
             --issue "$SELECTED_ID" --base-branch "$BASE_BRANCH" \
             --issue-title-sha256 "$(printf '%s' "$SELECTED_TITLE" | sha256_text)" \
@@ -3024,7 +3056,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             exit 1
         }
         if [ -n "$BATCH_STATE_FILE" ]; then
-            python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+            run_state_helper batch-update --file "$BATCH_STATE_FILE" \
                 --issue "$SELECTED_ID" --expected-status active --status active \
                 --child-run-state "$AGENT_LOOP_RUN_STATE_FILE" >/dev/null || {
                 recovery_message "Could not attach the child review checkpoint to batch state."
@@ -3075,7 +3107,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         exit 92
     fi
     if [ -n "$BATCH_STATE_FILE" ]; then
-        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+        run_state_helper batch-update --file "$BATCH_STATE_FILE" \
             --issue "$SELECTED_ID" --expected-status active \
             --status finalized >/dev/null || {
             recovery_message "Issue finalized but the batch cursor could not be checkpointed; the worktree was preserved."
@@ -3090,7 +3122,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 done
 
 if [ -n "$BATCH_STATE_FILE" ]; then
-    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+    batch_json="$(run_state_helper batch-show --file "$BATCH_STATE_FILE")" || exit 1
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
     batch_count="$(jq -r '.issues | length' <<<"$batch_json")"
     if [ "$batch_cursor" -lt "$batch_count" ]; then
