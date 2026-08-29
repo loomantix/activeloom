@@ -1363,19 +1363,12 @@ def test_resume_rejects_distinct_controller_worktree_config_drift(
     project, _, _, _ = consumer
     _run_git("config", "extensions.worktreeConfig", "true", cwd=project)
     _run_git("config", "--worktree", "core.fsmonitor", "false", cwd=project)
-    worker_hook = (
-        "printf 'done\\n' > result.txt; git add result.txt; "
-        "git commit -m 'fix: worker result'; "
-        "printf '%s\\n' '[core]' 'fsmonitor = false' "
-        '>> "$AGENT_LOOP_PROJECT_DIR/.git/config.worktree"'
-    )
     first = _run(
         consumer,
         ["--issues", "74"],
         issues=[_issue(74)],
         config=_config_v3(
             tmp_path,
-            worker_hook=worker_hook,
             codex_review_hook="exit 72",
         ),
         extra_env={"AGENT_LOOP_PROJECT_DIR": str(project)},
@@ -1383,6 +1376,8 @@ def test_resume_rejects_distinct_controller_worktree_config_drift(
     )
     assert first.returncode != 0
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    with (project / ".git/config.worktree").open("a", encoding="utf-8") as handle:
+        handle.write("[core]\nfsmonitor = false\n")
 
     resumed = _run(
         consumer,
@@ -1394,6 +1389,33 @@ def test_resume_rejects_distinct_controller_worktree_config_drift(
 
     assert resumed.returncode != 0
     assert "Git configuration differs from the trusted run-state boundary" in resumed.stderr
+
+
+def test_worker_cannot_change_distinct_controller_worktree_config(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    project, remote, _, _ = consumer
+    _run_git("config", "extensions.worktreeConfig", "true", cwd=project)
+    _run_git("config", "--worktree", "core.fsmonitor", "false", cwd=project)
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        "printf '%s\\n' '[core]' 'fsmonitor = false' "
+        '>> "$AGENT_LOOP_PROJECT_DIR/.git/config.worktree"'
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "75"],
+        issues=[_issue(75)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(project)},
+        timeout=120,
+    )
+
+    assert result.returncode != 0
+    assert "Controller Git configuration changed after trusted setup" in result.stderr
+    assert "issue-75" not in _agent_loop_branches(remote)
 
 
 def test_worker_cannot_replace_the_pinned_review_push_helper(
@@ -4952,6 +4974,8 @@ def test_batch_resume_rejects_a_child_checkpoint_for_another_issue(
 def test_batch_iteration_cap_pauses_cleanly_and_only_one_resume_process_owns_it(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
+    _run_git("config", "extensions.worktreeConfig", "true", cwd=consumer[0])
+    _run_git("config", "--worktree", "core.fsmonitor", "false", cwd=consumer[0])
     first = _run(
         consumer,
         ["--issues", "72,73", "--iterations", "1"],
@@ -5140,10 +5164,14 @@ def test_batch_advances_cursor_and_preserves_leaked_worktree_when_cleanup_fails(
     _write_executable(
         consumer[2] / "git",
         """#!/usr/bin/env bash
-if [ "$1" = worktree ] && [ "$2" = remove ] && [ ! -e "$AGENT_STATE_DIR/cleanup-failed" ]; then
-    touch "$AGENT_STATE_DIR/cleanup-failed"
-    exit 75
-fi
+previous=""
+for argument in "$@"; do
+    if [ "$previous" = worktree ] && [ "$argument" = remove ] && [ ! -e "$AGENT_STATE_DIR/cleanup-failed" ]; then
+        touch "$AGENT_STATE_DIR/cleanup-failed"
+        exit 75
+    fi
+    previous="$argument"
+done
 exec "$AGENT_TEST_REAL_GIT" "$@"
 """,
     )

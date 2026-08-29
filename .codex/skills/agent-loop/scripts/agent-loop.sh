@@ -617,6 +617,26 @@ require_trusted_git_config() {
 }
 capture_trusted_git_config "$PROJECT_DIR" || exit 1
 PROJECT_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
+
+require_trusted_project_git_config() {
+    local current
+    [ "$GIT_CONFIG_UNTRUSTED" = false ] || return 1
+    current="$(git_config_fingerprint "$PROJECT_DIR")" || {
+        GIT_CONFIG_UNTRUSTED=true
+        return 1
+    }
+    [ "$current" = "$PROJECT_GIT_CONFIG_SHA256" ] || {
+        GIT_CONFIG_UNTRUSTED=true
+        echo "Controller Git configuration changed after trusted setup" >&2
+        return 1
+    }
+}
+
+activate_trusted_project_git_config() {
+    TRUSTED_GIT_CONFIG_SHA256="$PROJECT_GIT_CONFIG_SHA256"
+    export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
+    require_trusted_git_config
+}
 HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
 HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"
 REVIEW_PUSH_HELPER_SHA256="$(file_sha256 "$REVIEW_PUSH_HELPER_SOURCE")"
@@ -1376,6 +1396,9 @@ run_bounded_hook() {
     ) >"$log_file" 2>&1 || status=$?
     if ! require_trusted_git_config; then
         echo "hook changed trusted Git configuration" >>"$log_file"
+        status=1
+    elif ! require_trusted_project_git_config; then
+        echo "hook changed trusted controller Git configuration" >>"$log_file"
         status=1
     elif ! require_origin_identity; then
         echo "hook changed origin fetch/push identity" >>"$log_file"
@@ -2686,6 +2709,10 @@ resume_review_run() {
             return 1
         }
         cd "$PROJECT_DIR"
+        activate_trusted_project_git_config || {
+            recovery_message "Controller Git configuration changed before finalized recovery cleanup."
+            return 1
+        }
         if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
             "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
                 worktree remove "$ACTIVE_WORKTREE"
@@ -2892,6 +2919,10 @@ resume_review_run() {
         finalize_pr
     fi
     cd "$PROJECT_DIR"
+    activate_trusted_project_git_config || {
+        recovery_message "Controller Git configuration changed before recovery cleanup."
+        return 1
+    }
     if [ -z "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
         "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
             worktree remove "$ACTIVE_WORKTREE"
@@ -3111,7 +3142,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would
     # otherwise target the integration branch and bypass local review.
-    git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "$BASE_REMOTE_REF"
+    require_trusted_project_git_config || {
+        recovery_message "Controller Git configuration changed before issue worktree creation."
+        exit 1
+    }
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+        worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "$BASE_REMOTE_REF"
     cd "$ACTIVE_WORKTREE"
     capture_trusted_git_config "$ACTIVE_WORKTREE" || {
         recovery_message "Could not establish the issue-worktree Git configuration boundary."
@@ -3247,6 +3283,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     finalize_pr
 
     cd "$PROJECT_DIR"
+    activate_trusted_project_git_config || {
+        recovery_message "Controller Git configuration changed before issue cleanup."
+        exit 1
+    }
     if [ "${AGENT_INTERRUPT_AFTER_CHILD_FINALIZED:-0}" = 1 ]; then
         recovery_message "Synthetic interruption after child finalization checkpoint."
         exit 92
