@@ -167,6 +167,33 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
         )
         if claude_effort and launcher_effort != claude_effort:
             raise DoctorError(f"review launcher must pin Claude effort {claude_effort}")
+        wrapper_paths = _version(
+            [str(review_launcher), "--wrapper-paths"], "wrapper review tools"
+        ).splitlines()
+        if not wrapper_paths or len(wrapper_paths) != len(set(wrapper_paths)):
+            raise DoctorError("wrapper required review tools are invalid")
+        for relative in wrapper_paths:
+            if not relative.startswith(".codex/skills/agent-loop/scripts/"):
+                raise DoctorError(f"wrapper required review path is invalid: {relative}")
+            local_path = root / relative
+            if not local_path.is_file() or local_path.is_symlink():
+                raise DoctorError(f"required review tool is missing: {relative}")
+            mode, oid = _require_base_blob(root, base_ref, relative)
+            if mode != "100755":
+                raise DoctorError(f"pinned review tool is not executable: {relative}")
+            local_oid = _version(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "hash-object",
+                    "--no-filters",
+                    str(local_path),
+                ],
+                f"review tool {relative}",
+            )
+            if local_oid != oid:
+                raise DoctorError(f"review tool differs from the pinned base blob: {relative}")
         for engine, prefix in (("codex", ".codex/"), ("claude", ".claude/")):
             required_paths = _version(
                 [str(review_launcher), "--required-paths", engine],

@@ -92,6 +92,14 @@ if [ "${1:-}" = --required-paths ]; then
     esac
     exit 0
 fi
+if [ "${1:-}" = --wrapper-paths ]; then
+    printf '%s\n' \
+        .codex/skills/agent-loop/scripts/run-codex-review.sh \
+        .codex/skills/agent-loop/scripts/hook-git-guard \
+        .codex/skills/agent-loop/scripts/hook-gh-guard \
+        .codex/skills/agent-loop/scripts/review-push.sh
+    exit 0
+fi
 if false; then
     claude \\
         --effort low \\
@@ -979,6 +987,31 @@ def test_worker_cannot_replace_the_base_pinned_review_launcher(
     )
     assert result.returncode != 0
     assert "launcher bytes differ from the pinned base" in result.stderr
+    assert not marker.exists()
+
+
+def test_worker_cannot_replace_the_pinned_review_push_helper(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "mutated-review-push-ran"
+    worker_hook = (
+        "helper=\"$AGENT_LOOP_PROJECT_DIR/.codex/skills/agent-loop/scripts/review-push.sh\"; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$helper\"; chmod 755 \"$helper\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "63"],
+        issues=[_issue(63)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+    )
+
+    assert result.returncode != 0
+    assert "review push helper changed after startup" in result.stderr
     assert not marker.exists()
 
 

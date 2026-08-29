@@ -150,7 +150,8 @@ INSTRUCTIONS_FILE="$PROJECT_DIR/agent-loop-instructions.md"
 ISSUES_READY="$PACKAGED_SKILL_BASE/issues/scripts/ready.py"
 REVIEW_LEDGER="$PACKAGED_SKILL_BASE/critique/scripts/review-ledger.js"
 RUN_STATE_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/agent-loop-state.py"
-REVIEW_PUSH_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/review-push.sh"
+REVIEW_PUSH_HELPER_SOURCE="$PACKAGED_SKILL_BASE/agent-loop/scripts/review-push.sh"
+REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER_SOURCE"
 CONFIG_DOCTOR_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/config-doctor.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
@@ -373,7 +374,7 @@ fi
 [ -x "$HOOK_GH_GUARD" ] || { echo "hook gh guard not found or not executable: $HOOK_GH_GUARD" >&2; exit 1; }
 [ -x "$ISSUES_READY" ] || { echo "issues ready.py not found or not executable: $ISSUES_READY" >&2; exit 1; }
 [ -x "$RUN_STATE_HELPER" ] || { echo "agent-loop run-state helper not found or not executable: $RUN_STATE_HELPER" >&2; exit 1; }
-[ -x "$REVIEW_PUSH_HELPER" ] || { echo "agent-loop review push helper not found or not executable: $REVIEW_PUSH_HELPER" >&2; exit 1; }
+[ -x "$REVIEW_PUSH_HELPER_SOURCE" ] || { echo "agent-loop review push helper not found or not executable: $REVIEW_PUSH_HELPER_SOURCE" >&2; exit 1; }
 [ -x "$CONFIG_DOCTOR_HELPER" ] || { echo "agent-loop config doctor not found or not executable: $CONFIG_DOCTOR_HELPER" >&2; exit 1; }
 [ -f "$CODEX_REVIEW_LAUNCHER" ] && [ -x "$CODEX_REVIEW_LAUNCHER" ] && [ ! -L "$CODEX_REVIEW_LAUNCHER" ] || {
     echo "Codex review launcher not found, executable, or is symlinked: $CODEX_REVIEW_LAUNCHER" >&2
@@ -460,6 +461,9 @@ if [ "$CONFIG_DOCTOR" = true ]; then
     fi
     "${doctor_command[@]}" || exit 1
 fi
+HOOK_GIT_GUARD_SHA256="$(sha256sum "$HOOK_GIT_GUARD" | awk '{print $1}')"
+HOOK_GH_GUARD_SHA256="$(sha256sum "$HOOK_GH_GUARD" | awk '{print $1}')"
+REVIEW_PUSH_HELPER_SHA256="$(sha256sum "$REVIEW_PUSH_HELPER_SOURCE" | awk '{print $1}')"
 
 # Resolve the current login once, up front. Doing it per-candidate inside an
 # unchecked command substitution meant a transient gh failure silently rendered a
@@ -1047,6 +1051,43 @@ require_issue_branch_head() {
     [ "$head_sha" = "$branch_sha" ]
 }
 
+require_pinned_executable() {
+    local path="$1" expected_sha="$2" label="$3" actual_sha
+    [ -f "$path" ] && [ ! -L "$path" ] && [ -x "$path" ] || {
+        echo "$label is not a regular executable file: $path" >&2
+        return 1
+    }
+    actual_sha="$(sha256sum "$path" | awk '{print $1}')" || return 1
+    [ "$actual_sha" = "$expected_sha" ] || {
+        echo "$label changed after startup" >&2
+        return 1
+    }
+}
+
+install_review_push_helper() {
+    local trusted_dir="$AGENT_LOOP_LOG_DIR/trusted-review-tools"
+    local destination="$trusted_dir/review-push.sh"
+    require_pinned_executable "$REVIEW_PUSH_HELPER_SOURCE" \
+        "$REVIEW_PUSH_HELPER_SHA256" "review push helper" || return 1
+    if [ -L "$trusted_dir" ] || { [ -e "$trusted_dir" ] && [ ! -d "$trusted_dir" ]; }; then
+        echo "trusted review tool path is not a real directory: $trusted_dir" >&2
+        return 1
+    fi
+    mkdir -p "$trusted_dir" || return 1
+    chmod 700 "$trusted_dir" || return 1
+    if [ -L "$destination" ] || { [ -e "$destination" ] && [ ! -f "$destination" ]; }; then
+        echo "trusted review push helper path is not a regular file: $destination" >&2
+        return 1
+    fi
+    rm -f -- "$destination" || return 1
+    cp "$REVIEW_PUSH_HELPER_SOURCE" "$destination" || return 1
+    chmod 700 "$destination" || return 1
+    require_pinned_executable "$destination" "$REVIEW_PUSH_HELPER_SHA256" \
+        "installed review push helper" || return 1
+    REVIEW_PUSH_HELPER="$destination"
+    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+}
+
 run_bounded_hook() {
     local phase="$1" hook_command="$2" timeout_seconds="$3" log_file="$4"
     local allow_review_mutations="${5:-false}"
@@ -1073,6 +1114,10 @@ run_bounded_hook() {
         echo "could not clear prior hook command guards" >&2
         return 1
     }
+    require_pinned_executable "$HOOK_GIT_GUARD" "$HOOK_GIT_GUARD_SHA256" \
+        "hook Git guard" || return 1
+    require_pinned_executable "$HOOK_GH_GUARD" "$HOOK_GH_GUARD_SHA256" \
+        "hook GitHub guard" || return 1
     cp "$HOOK_GIT_GUARD" "$guard_bin/git" || {
         echo "could not install hook Git guard" >&2
         return 1
@@ -1085,6 +1130,10 @@ run_bounded_hook() {
         echo "could not secure hook command guards" >&2
         return 1
     }
+    require_pinned_executable "$guard_bin/git" "$HOOK_GIT_GUARD_SHA256" \
+        "installed hook Git guard" || return 1
+    require_pinned_executable "$guard_bin/gh" "$HOOK_GH_GUARD_SHA256" \
+        "installed hook GitHub guard" || return 1
     for guard in "$guard_bin/git" "$guard_bin/gh"; do
         if [ ! -f "$guard" ] || [ -L "$guard" ] || [ ! -x "$guard" ]; then
             echo "installed hook command guard is not a real executable file: $guard" >&2
@@ -2372,7 +2421,10 @@ resume_review_run() {
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
-    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    install_review_push_helper || {
+        recovery_message "Could not install the pinned review push helper for recovery."
+        return 1
+    }
     AGENT_LOOP_PR_NUMBER="$(jq -r '.prNumber' <<<"$RESUME_STATE_JSON")" || return 1
     AGENT_LOOP_PR_URL="$(jq -r '.prUrl' <<<"$RESUME_STATE_JSON")" || return 1
     export AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL
@@ -2857,7 +2909,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
 
     run_worker "$start_sha" || exit 1
-    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    install_review_push_helper || {
+        recovery_message "Could not install the pinned review push helper."
+        exit 1
+    }
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
 

@@ -12,6 +12,12 @@ CODEX_REQUIRED_PATHS=(
     .codex/skills/refactorpass/SKILL.md
 )
 CLAUDE_REQUIRED_PATHS=(.claude/skills/deepcritique/SKILL.md)
+WRAPPER_REQUIRED_PATHS=(
+    .codex/skills/agent-loop/scripts/run-codex-review.sh
+    .codex/skills/agent-loop/scripts/hook-git-guard
+    .codex/skills/agent-loop/scripts/hook-gh-guard
+    .codex/skills/agent-loop/scripts/review-push.sh
+)
 
 # Test-runner coverage instrumentation is scoped to the wrapper's repository.
 # A Python-based reviewer started from the private empty root would otherwise
@@ -30,6 +36,11 @@ case "${1:-}" in
             claude) printf '%s\n' "${CLAUDE_REQUIRED_PATHS[@]}" ;;
             *) usage ;;
         esac
+        exit 0
+        ;;
+    --wrapper-paths)
+        [ "$#" -eq 1 ] || usage
+        printf '%s\n' "${WRAPPER_REQUIRED_PATHS[@]}"
         exit 0
         ;;
 esac

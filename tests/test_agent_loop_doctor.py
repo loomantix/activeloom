@@ -23,6 +23,8 @@ def _project(tmp_path: Path) -> Path:
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/agent-loop-state.py", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/review-push.sh", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/run-codex-review.sh", scripts)
+    shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/hook-git-guard", scripts)
+    shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/hook-gh-guard", scripts)
     shutil.copy2(ROOT / ".codex/skills/critique/scripts/review-ledger.js", ledger_dir)
     # See tests/test_agent_loop.py: sync ships the sibling ESM manifest, and a
     # CommonJS consumer root is the context that needs it.
@@ -154,6 +156,20 @@ def test_doctor_rejects_preexisting_launcher_drift(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "review launcher differs from the pinned base blob" in result.stderr
+
+
+def test_doctor_rejects_preexisting_review_tool_drift(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    helper = project / ".codex/skills/agent-loop/scripts/review-push.sh"
+    helper.write_text(
+        helper.read_text(encoding="utf-8") + "\n# pre-existing drift\n",
+        encoding="utf-8",
+    )
+
+    result = _run(project)
+
+    assert result.returncode != 0
+    assert "review tool differs from the pinned base blob" in result.stderr
 
 
 @pytest.mark.parametrize(
