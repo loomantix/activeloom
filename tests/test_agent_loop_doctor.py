@@ -23,6 +23,7 @@ def _project(tmp_path: Path) -> Path:
     ledger_dir.mkdir(parents=True)
     ready_dir.mkdir(parents=True)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/agent-loop-state.py", scripts)
+    shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/agent-loop.sh", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/review-push.sh", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/run-codex-review.sh", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/hook-git-guard", scripts)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -39,6 +40,12 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
     _git(repo, "add", "seed.txt")
     _git(repo, "commit", "-m", "fix: review")
     env = os.environ.copy()
+    config_bytes = subprocess.run(
+        ["git", "--no-replace-objects", "config", "--null", "--show-origin", "--show-scope", "--list"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
     env.update(
         {
             "AGENT_LOOP_WORKTREE": str(repo),
@@ -46,6 +53,7 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
             "AGENT_LOOP_PR_HEAD_SHA": start,
             "AGENT_LOOP_REVIEW_PUSH_STATE_FILE": str(tmp_path / "review-push-state"),
             "AGENT_LOOP_REAL_GIT": shutil.which("git") or "git",
+            "AGENT_LOOP_GIT_CONFIG_SHA256": hashlib.sha256(config_bytes).hexdigest(),
             "AGENT_LOOP_ORIGIN_FETCH_URLS": _git(
                 repo, "remote", "get-url", "--all", "origin"
             ),
@@ -284,7 +292,7 @@ def test_rejects_changed_origin_before_push(
     result = _run(repo, env)
 
     assert result.returncode != 0
-    assert "changed origin fetch/push identity" in result.stderr
+    assert "changed Git configuration" in result.stderr
     assert not _git(repo, "ls-remote", "--heads", str(redirected))
 
 

@@ -526,7 +526,11 @@ fi
 PINNED_RUN_STATE_OID=""
 PINNED_REVIEW_LEDGER_OID=""
 PINNED_ISSUES_READY_OID=""
+PINNED_AGENT_LOOP_OID=""
 if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    PINNED_AGENT_LOOP_OID="$(require_base_pinned_tool "$SCRIPT_DIR/agent-loop.sh" \
+        ".codex/skills/agent-loop/scripts/agent-loop.sh" 100755 \
+        "agent-loop entrypoint")" || exit 1
     PINNED_RUN_STATE_OID="$(require_base_pinned_tool "$RUN_STATE_HELPER" \
         ".codex/skills/agent-loop/scripts/agent-loop-state.py" 100755 \
         "agent-loop state helper")" || exit 1
@@ -566,6 +570,40 @@ run_review_ledger() {
     else
         node "$REVIEW_LEDGER" "$@"
     fi
+}
+
+require_pinned_agent_loop_entrypoint() {
+    local actual_oid
+    [ "$REVIEW_CONTRACT_VERSION" = 4 ] || return 0
+    [ -f "$SCRIPT_DIR/agent-loop.sh" ] && [ ! -L "$SCRIPT_DIR/agent-loop.sh" ] && \
+        [ -x "$SCRIPT_DIR/agent-loop.sh" ] || return 1
+    actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$SCRIPT_DIR/agent-loop.sh")" || return 1
+    [ "$actual_oid" = "$PINNED_AGENT_LOOP_OID" ]
+}
+
+TRUSTED_GIT_CONFIG_SHA256=""
+git_config_fingerprint() {
+    timeout 10 "$REAL_GIT_BIN" --no-replace-objects config \
+        --null --show-origin --show-scope --list | sha256sum | awk '{print $1}'
+}
+
+capture_trusted_git_config() {
+    TRUSTED_GIT_CONFIG_SHA256="$(git_config_fingerprint)" || {
+        echo "could not capture trusted Git configuration" >&2
+        return 1
+    }
+    export AGENT_LOOP_GIT_CONFIG_SHA256="$TRUSTED_GIT_CONFIG_SHA256"
+}
+
+require_trusted_git_config() {
+    local current
+    [ -n "$TRUSTED_GIT_CONFIG_SHA256" ] || return 0
+    current="$(git_config_fingerprint)" || return 1
+    [ "$current" = "$TRUSTED_GIT_CONFIG_SHA256" ] || {
+        echo "Git configuration changed after trusted setup" >&2
+        return 1
+    }
 }
 HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
 HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"
@@ -679,17 +717,30 @@ recovery_message() {
         echo "No worktree exists at $ACTIVE_WORKTREE (creation did not complete)." >&2
         echo "If issue #${SELECTED_ID:-?} was claimed, unassign it before it is re-selected." >&2
     fi
-    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
-        echo "Resume review with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
-    fi
-    if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
-        echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
+    if { [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; } || \
+       { [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; }; then
+        if require_pinned_agent_loop_entrypoint; then
+            if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+                echo "Resume review with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
+            fi
+            if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
+                echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
+            fi
+        else
+            echo "The agent-loop entrypoint changed after startup; restore it from the pinned base before resuming." >&2
+        fi
     fi
 }
 
 print_batch_bail_command() {
     local issue="$1" expected_status="$2"
-    echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$issue' --expected-status '$expected_status' --status bailed" >&2
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        printf 'Explicit bail command: %q --no-replace-objects -C %q cat-file blob %q | python3 -I - batch-update --file %q --issue %q --expected-status %q --status bailed\n' \
+            "$REAL_GIT_BIN" "$PROJECT_DIR" "$PINNED_RUN_STATE_OID" \
+            "$BATCH_STATE_FILE" "$issue" "$expected_status" >&2
+    else
+        echo "Explicit bail command: python3 -I '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$issue' --expected-status '$expected_status' --status bailed" >&2
+    fi
 }
 
 update_run_state() {
@@ -1285,6 +1336,10 @@ run_bounded_hook() {
     ) >"$log_file" 2>&1 || status=$?
     if ! require_origin_identity; then
         echo "hook changed origin fetch/push identity" >>"$log_file"
+        status=1
+    fi
+    if ! require_trusted_git_config; then
+        echo "hook changed trusted Git configuration" >>"$log_file"
         status=1
     fi
     if [ "$status" -ne 0 ]; then
@@ -2087,7 +2142,9 @@ push_review_head() {
     local phase="$1" expected_base="$2" sha
     require_issue_branch_head || return 1
     sha="$(git rev-parse HEAD)" || return 1
-    git push origin "$sha:refs/heads/$AGENT_LOOP_BRANCH" || return 1
+    require_trusted_git_config || return 1
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null push origin \
+        "$sha:refs/heads/$AGENT_LOOP_BRANCH" || return 1
     attest_remote_branch "$AGENT_LOOP_BRANCH" "$sha" "$phase" || return 1
     attest_pr_head "$sha" "$expected_base" "$phase"
 }
@@ -2342,10 +2399,11 @@ open_draft_pr() {
     }
     # Create-only lease: fail if the branch appeared after the absence check.
     # This never rewrites an existing remote ref.
-    git push --force-with-lease="refs/heads/$branch:" origin \
+    require_trusted_git_config || return 1
+    "$REAL_GIT_BIN" -c core.hooksPath=/dev/null \
+        push --force-with-lease="refs/heads/$branch:" origin \
         "$publication_sha:refs/heads/$branch"
     attest_remote_branch "$branch" "$publication_sha" "after draft publication push" || return 1
-    git branch --set-upstream-to="origin/$branch" "$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
     {
         echo "## Summary"
@@ -2819,7 +2877,7 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
         child_state="$(jq -r --argjson cursor "$batch_cursor" '.issues[$cursor].childRunState // empty' <<<"$batch_json")"
         [ -n "$child_state" ] || {
             recovery_message "Batch issue #$batch_issue is active without a child review checkpoint; inspect its worktree, remote branch, PR, and ledger before explicitly bailing it."
-            echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$batch_issue' --expected-status active --status bailed" >&2
+            print_batch_bail_command "$batch_issue" active
             exit 1
         }
         child_json="$(run_state_helper show --file "$child_state")" || exit 1
@@ -2830,6 +2888,10 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             exit 1
         }
         child_worktree="$(jq -r '.worktree' <<<"$child_json")"
+        require_pinned_agent_loop_entrypoint || {
+            recovery_message "The agent-loop entrypoint changed after startup; restore it from the pinned base before batch resume."
+            exit 1
+        }
         AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" \
             "$SCRIPT_DIR/agent-loop.sh" --resume-run "$child_state" || {
             recovery_message "Current batch issue #$batch_issue did not resume to a safely finalized state."
@@ -3016,6 +3078,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup."; exit 1; }
         [ "$setup_after_sha" = "$start_sha" ] || { recovery_message "Setup hook changed HEAD; setup hooks must not commit."; exit 1; }
     fi
+    capture_trusted_git_config || {
+        recovery_message "Could not establish the post-setup Git configuration boundary."
+        exit 1
+    }
 
     run_worker "$start_sha" || exit 1
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
@@ -3142,7 +3208,11 @@ if [ -n "$BATCH_STATE_FILE" ]; then
     if [ "$batch_cursor" -lt "$batch_count" ]; then
         if [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
             echo -e "${YELLOW}○${NC} Ordered batch paused cleanly at the $MAX_ITERATIONS-issue iteration cap."
-            echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+            if require_pinned_agent_loop_entrypoint; then
+                echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+            else
+                echo "The agent-loop entrypoint changed after startup; restore it from the pinned base before resuming." >&2
+            fi
             exit 0
         fi
         recovery_message "Ordered batch stopped before every issue reached a finalized or explicitly bailed state."

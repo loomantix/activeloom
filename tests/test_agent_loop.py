@@ -103,6 +103,7 @@ if [ "${1:-}" = --required-paths ]; then
 fi
 if [ "${1:-}" = --wrapper-paths ]; then
     printf '%s\n' \
+        .codex/skills/agent-loop/scripts/agent-loop.sh \
         .codex/skills/agent-loop/scripts/run-codex-review.sh \
         .codex/skills/agent-loop/scripts/hook-git-guard \
         .codex/skills/agent-loop/scripts/hook-gh-guard \
@@ -1173,6 +1174,62 @@ def test_worker_cannot_replace_runtime_helpers_or_shadow_python_imports(
     assert not ledger_marker.exists()
     assert not ready_marker.exists()
     assert not import_marker.exists()
+
+
+def test_worker_cannot_install_git_hooks_for_wrapper_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "worker-pre-push-ran"
+    hooks = tmp_path / "worker-hooks"
+    worker_hook = (
+        f"mkdir -p {hooks}; "
+        f"printf '%s\\n' '#!/usr/bin/env bash' 'touch {marker}' > {hooks}/pre-push; "
+        f"chmod 755 {hooks}/pre-push; git config core.hooksPath {hooks}; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "69"],
+        issues=[_issue(69)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+    )
+
+    assert result.returncode != 0
+    assert "hook changed trusted Git configuration" in result.stderr
+    assert not marker.exists()
+
+
+def test_recovery_does_not_print_a_mutated_entrypoint(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "mutated-entrypoint-ran"
+    worker_hook = (
+        'entrypoint="$AGENT_LOOP_PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop.sh"; '
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$entrypoint\"; chmod 755 \"$entrypoint\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "70"],
+        issues=[_issue(70)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=worker_hook,
+            codex_review_hook="exit 72",
+        ),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+        timeout=120,
+    )
+
+    assert result.returncode != 0
+    assert "entrypoint changed after startup" in result.stderr
+    assert "Resume review with:" not in result.stderr
+    assert not marker.exists()
 
 
 def test_worker_cannot_replace_the_pinned_review_push_helper(

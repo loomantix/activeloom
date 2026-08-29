@@ -20,6 +20,17 @@ fi
 : "${AGENT_LOOP_ORIGIN_PUSH_URLS:?AGENT_LOOP_ORIGIN_PUSH_URLS is required}"
 
 real_git="$AGENT_LOOP_REAL_GIT"
+expected_config_sha256="${AGENT_LOOP_GIT_CONFIG_SHA256:?AGENT_LOOP_GIT_CONFIG_SHA256 is required}"
+
+actual_config_sha256="$(timeout 10 "$real_git" --no-replace-objects config \
+    --null --show-origin --show-scope --list | sha256sum | awk '{print $1}')" || {
+    echo "review-push could not verify trusted Git configuration" >&2
+    exit 1
+}
+[ "$actual_config_sha256" = "$expected_config_sha256" ] || {
+    echo "review-push rejects changed Git configuration" >&2
+    exit 1
+}
 
 require_origin_identity() {
     local fetch_urls push_urls
@@ -100,7 +111,7 @@ remote_head="${remote_line%%[[:space:]]*}"
 }
 
 require_origin_identity
-"$real_git" push origin \
+"$real_git" -c core.hooksPath=/dev/null push origin \
     "--force-with-lease=refs/heads/$AGENT_LOOP_BRANCH:$expected_remote_head" \
     "$local_head:refs/heads/$AGENT_LOOP_BRANCH"
 require_origin_identity

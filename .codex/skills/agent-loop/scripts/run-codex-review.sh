@@ -13,6 +13,7 @@ CODEX_REQUIRED_PATHS=(
 )
 CLAUDE_REQUIRED_PATHS=(.claude/skills/deepcritique/SKILL.md)
 WRAPPER_REQUIRED_PATHS=(
+    .codex/skills/agent-loop/scripts/agent-loop.sh
     .codex/skills/agent-loop/scripts/run-codex-review.sh
     .codex/skills/agent-loop/scripts/hook-git-guard
     .codex/skills/agent-loop/scripts/hook-gh-guard
