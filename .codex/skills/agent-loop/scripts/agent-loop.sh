@@ -480,7 +480,8 @@ require_base_pinned_tool() {
         echo "$label must resolve inside the project checkout: $expected_path" >&2
         return 1
     }
-    entry="$(git -C "$PROJECT_DIR" ls-tree "$BASE_REMOTE_REF" -- "$relative")" || return 1
+    entry="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        ls-tree "$BASE_REMOTE_REF" -- "$relative")" || return 1
     case "$entry" in
         "$expected_mode blob "*$'\t'"$relative") ;;
         *)
@@ -494,7 +495,8 @@ require_base_pinned_tool() {
         echo "$label has an invalid pinned base object id" >&2
         return 1
     }
-    local_oid="$(git -C "$PROJECT_DIR" hash-object --no-filters "$path")" || return 1
+    local_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$path")" || return 1
     [ "$local_oid" = "$oid" ] || {
         echo "$label differs from the pinned base blob" >&2
         return 1
@@ -512,8 +514,9 @@ if [ "$CONFIG_DOCTOR" = true ]; then
             "agent-loop config doctor")" || exit 1
         # Execute the authenticated base blob instead of reopening the mutable
         # working-tree path after the hash check.
-        git -C "$PROJECT_DIR" cat-file blob "$pinned_doctor_oid" | \
-            python3 - "${doctor_command[@]}" || exit 1
+        "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+            cat-file blob "$pinned_doctor_oid" | \
+            GIT_NO_REPLACE_OBJECTS=1 python3 - "${doctor_command[@]}" || exit 1
     else
         python3 "$CONFIG_DOCTOR_HELPER" "${doctor_command[@]}" || exit 1
     fi

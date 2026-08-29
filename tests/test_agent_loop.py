@@ -1005,6 +1005,66 @@ def test_drifted_config_doctor_is_not_executed(
     assert "issue edit" not in gh_log
 
 
+def test_replacement_ref_cannot_redefine_the_pinned_config_doctor(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, _, _, state_dir = consumer
+    marker = tmp_path / "replacement-config-doctor-ran"
+    doctor = repo / ".codex/skills/agent-loop/scripts/config-doctor.py"
+    _write_executable(
+        doctor,
+        f"#!/usr/bin/env bash\ntouch {marker}\nexit 0\n",
+    )
+    base_sha = _run_git(
+        "rev-parse", "refs/remotes/origin/main", cwd=repo
+    ).stdout.strip()
+    replacement_index = tmp_path / "replacement.index"
+    replacement_env = os.environ.copy()
+    replacement_env["GIT_INDEX_FILE"] = str(replacement_index)
+    subprocess.run(
+        ["git", "read-tree", base_sha],
+        cwd=repo,
+        env=replacement_env,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "add", ".codex/skills/agent-loop/scripts/config-doctor.py"],
+        cwd=repo,
+        env=replacement_env,
+        check=True,
+    )
+    replacement_tree = subprocess.run(
+        ["git", "write-tree"],
+        cwd=repo,
+        env=replacement_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    replacement_commit = subprocess.run(
+        ["git", "commit-tree", replacement_tree, "-p", base_sha, "-m", "replacement"],
+        cwd=repo,
+        env=replacement_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _run_git("replace", base_sha, replacement_commit, cwd=repo)
+
+    result = _run(
+        consumer,
+        ["--issues", "66"],
+        issues=[_issue(66)],
+        config=_config_v3(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert "agent-loop config doctor differs from the pinned base blob" in result.stderr
+    assert not marker.exists()
+    gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit" not in gh_log
+
+
 def test_worker_cannot_replace_the_base_pinned_review_launcher(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
