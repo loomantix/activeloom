@@ -468,13 +468,55 @@ git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
     [ "$DRY_RUN" = true ] && echo "Dry-run does not fetch; fetch the base branch once and retry." >&2
     exit 1
 }
+require_base_pinned_tool() {
+    local path="$1" relative="$2" expected_mode="$3" label="$4"
+    local expected_path entry oid local_oid
+    expected_path="$PROJECT_DIR/$relative"
+    [ -f "$path" ] && [ ! -L "$path" ] || {
+        echo "$label is not a regular file: $path" >&2
+        return 1
+    }
+    [ "$(realpath -e -- "$path")" = "$(realpath -e -- "$expected_path")" ] || {
+        echo "$label must resolve inside the project checkout: $expected_path" >&2
+        return 1
+    }
+    entry="$(git -C "$PROJECT_DIR" ls-tree "$BASE_REMOTE_REF" -- "$relative")" || return 1
+    case "$entry" in
+        "$expected_mode blob "*$'\t'"$relative") ;;
+        *)
+            echo "$label is missing or has an unsafe mode in the pinned base: $relative" >&2
+            return 1
+            ;;
+    esac
+    oid="${entry#"$expected_mode blob "}"
+    oid="${oid%%$'\t'*}"
+    [[ "$oid" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "$label has an invalid pinned base object id" >&2
+        return 1
+    }
+    local_oid="$(git -C "$PROJECT_DIR" hash-object --no-filters "$path")" || return 1
+    [ "$local_oid" = "$oid" ] || {
+        echo "$label differs from the pinned base blob" >&2
+        return 1
+    }
+    printf '%s\n' "$oid"
+}
 if [ "$CONFIG_DOCTOR" = true ]; then
-    doctor_command=(python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR" \
-        --base-ref "$BASE_REMOTE_REF")
+    doctor_command=(--project-dir "$PROJECT_DIR" --base-ref "$BASE_REMOTE_REF")
     if [ -n "$CLAUDE_EFFORT_POLICY" ]; then
         doctor_command+=(--claude-effort "$CLAUDE_EFFORT_POLICY")
     fi
-    "${doctor_command[@]}" || exit 1
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        pinned_doctor_oid="$(require_base_pinned_tool "$CONFIG_DOCTOR_HELPER" \
+            ".codex/skills/agent-loop/scripts/config-doctor.py" 100755 \
+            "agent-loop config doctor")" || exit 1
+        # Execute the authenticated base blob instead of reopening the mutable
+        # working-tree path after the hash check.
+        git -C "$PROJECT_DIR" cat-file blob "$pinned_doctor_oid" | \
+            python3 - "${doctor_command[@]}" || exit 1
+    else
+        python3 "$CONFIG_DOCTOR_HELPER" "${doctor_command[@]}" || exit 1
+    fi
 fi
 HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
 HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"

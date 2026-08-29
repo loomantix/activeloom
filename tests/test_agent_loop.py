@@ -980,6 +980,31 @@ def test_worker_does_not_receive_the_pinned_review_launcher(
     assert result.returncode == 0, result.stderr + result.stdout
 
 
+def test_drifted_config_doctor_is_not_executed(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, _, _, state_dir = consumer
+    marker = tmp_path / "mutated-config-doctor-ran"
+    doctor = repo / ".codex/skills/agent-loop/scripts/config-doctor.py"
+    _write_executable(
+        doctor,
+        f"#!/usr/bin/env bash\ntouch {marker}\nexit 0\n",
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "65"],
+        issues=[_issue(65)],
+        config=_config_v3(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert "agent-loop config doctor differs from the pinned base blob" in result.stderr
+    assert not marker.exists()
+    gh_log = (state_dir / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit" not in gh_log
+
+
 def test_worker_cannot_replace_the_base_pinned_review_launcher(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
