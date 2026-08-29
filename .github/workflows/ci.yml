@@ -9,7 +9,9 @@ on:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Superseded PR heads are disposable; every main commit still needs its own
+  # verdict because main is the source for tagged consumer syncs.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

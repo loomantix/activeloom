@@ -198,7 +198,7 @@ the current templates manually before the synced wrapper can run:
    exact head, and owns the contract-v4 result path.
 3. Configure a non-mutating `validation_hook`, retain `config_doctor = true` and
    `claude_effort_policy = low`, and optionally override
-   `review_max_rounds = 4` with another positive cap. The launcher and reviewer
+   `review_max_rounds = 4` with another value from 1 through 4. The launcher and reviewer
    skill own the result, push, and blocked-result contracts. Before issue
    selection or claim, the doctor requires the fetched base to contain the full
    Codex- and Claude-native review surfaces as regular blobs.

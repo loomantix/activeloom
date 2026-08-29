@@ -33,7 +33,7 @@ def test_ci_uses_draft_preflight_and_ready_full_gate() -> None:
     assert workflow["on"]["push"]["branches"] == ["main"]
     assert workflow["concurrency"] == {
         "group": "ci-${{ github.event.pull_request.number || github.ref }}",
-        "cancel-in-progress": "true",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
     }
 
     jobs = workflow["jobs"]
@@ -73,7 +73,7 @@ def test_codeql_cancels_superseded_runs_and_skips_drafts() -> None:
     assert workflow["on"]["push"]["branches"] == ["main"]
     assert workflow["concurrency"] == {
         "group": "codeql-${{ github.event.pull_request.number || github.ref }}",
-        "cancel-in-progress": "true",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
     }
     detector = workflow["jobs"]["python-changes"]
     assert detector["if"] == (
