@@ -53,6 +53,9 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     state_dir = tmp_path / "state"
     bin_dir.mkdir()
     state_dir.mkdir()
+    reviewer_stub = "#!/usr/bin/env bash\nexit 0\n"
+    _write_executable(bin_dir / "codex", reviewer_stub)
+    _write_executable(bin_dir / "claude", reviewer_stub)
 
     _run_git("init", "--bare", str(remote))
     _run_git("init", "-b", "main", str(repo))
