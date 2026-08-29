@@ -1302,7 +1302,7 @@ run_bounded_hook() {
     local direct_review_engine="${6:-}"
     local disable_consumer_git_extensions="${7:-false}"
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0
-    local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
+    local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards" guard_entries
     echo -e "${BLUE}▸${NC} $phase"
     require_pinned_executable "$PROCESS_SUPERVISOR" "$PROCESS_SUPERVISOR_SHA256" \
         "hook process supervisor" || return 1
@@ -1317,12 +1317,22 @@ run_bounded_hook() {
         echo "hook command guard path is not a real directory: $guard_bin" >&2
         return 1
     fi
+    # Recreate the directory empty rather than removing only the two guards it is
+    # supposed to hold. It is prepended to PATH for every hook, including the
+    # unattended worker, which is handed the path in AGENT_LOOP_HOOK_GUARD_BIN. A
+    # leftover entry under any other name — python3, sha256sum, realpath, awk —
+    # would shadow the real command for the controller's own supervisor launch and
+    # for every pin the review path resolves through PATH.
+    rm -rf -- "$guard_bin" || {
+        echo "could not clear prior hook command guards" >&2
+        return 1
+    }
     mkdir -p "$guard_bin" || {
         echo "could not create hook command guard directory" >&2
         return 1
     }
-    rm -f -- "$guard_bin/git" "$guard_bin/gh" || {
-        echo "could not clear prior hook command guards" >&2
+    chmod 700 "$guard_bin" || {
+        echo "could not secure hook command guard directory" >&2
         return 1
     }
     require_pinned_executable "$HOOK_GIT_GUARD" "$HOOK_GIT_GUARD_SHA256" \
@@ -1345,6 +1355,14 @@ run_bounded_hook() {
         "installed hook Git guard" || return 1
     require_pinned_executable "$guard_bin/gh" "$HOOK_GH_GUARD_SHA256" \
         "installed hook GitHub guard" || return 1
+    guard_entries="$(find "$guard_bin" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)" || {
+        echo "could not inspect hook command guard directory" >&2
+        return 1
+    }
+    [ "$guard_entries" = "$(printf 'gh\ngit')" ] || {
+        echo "hook command guard directory holds unexpected entries" >&2
+        return 1
+    }
     (
         set +e
         if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then

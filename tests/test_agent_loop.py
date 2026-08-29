@@ -814,7 +814,9 @@ def test_dependency_parser_failure_blocks_the_run(
     _write_executable(
         consumer[2] / "python3",
         """#!/usr/bin/env bash
-if [ "$1" = -c ]; then exit 74; fi
+for arg in "$@"; do
+    if [ "$arg" = -c ]; then exit 74; fi
+done
 exec "$AGENT_TEST_REAL_PYTHON" "$@"
 """,
     )
@@ -1416,6 +1418,33 @@ def test_worker_cannot_change_distinct_controller_worktree_config(
     assert result.returncode != 0
     assert "Controller Git configuration changed after trusted setup" in result.stderr
     assert "issue-75" not in _agent_loop_branches(remote)
+
+
+def test_worker_cannot_plant_extra_hook_command_guards(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "planted-guard-ran"
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' 'exit 99' "
+        '> "$AGENT_LOOP_HOOK_GUARD_BIN/python3"; '
+        'chmod 700 "$AGENT_LOOP_HOOK_GUARD_BIN/python3"'
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "76"],
+        issues=[_issue(76)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+    )
+
+    # The guard directory is prepended to PATH, so a planted `python3` would
+    # otherwise shadow the controller's own supervisor launch in the next hook.
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not marker.exists()
+    assert "unexpected entries" not in result.stderr
 
 
 def test_worker_cannot_replace_the_pinned_review_push_helper(
