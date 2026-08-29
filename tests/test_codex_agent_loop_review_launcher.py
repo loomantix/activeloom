@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -95,6 +96,23 @@ def _fake_cli(path: Path) -> Path:
         "  'skill_content': skill_path.read_text(),\n"
         "  'nested_instructions': (snapshot_root / 'nested/AGENTS.md').read_text()\n"
         "}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
+def _delegating_git(path: Path) -> Path:
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "for argument in \"$@\"; do\n"
+        "  if [ \"$argument\" = \"${AGENT_TEST_GIT_FAILURE}\" ]; then\n"
+        "    if [ \"$argument\" = hash-object ]; then printf '%040d\\n' 0; exit 0; fi\n"
+        "    exit 86\n"
+        "  fi\n"
+        "done\n"
+        "exec \"$AGENT_TEST_REAL_GIT\" \"$@\"\n",
         encoding="utf-8",
     )
     path.chmod(0o755)
@@ -282,3 +300,51 @@ def test_launcher_rejects_a_reviewer_binary_that_changed_after_pinning(
     result = _run_launcher(issue, "codex", environment)
     assert result.returncode != 0
     assert "reviewer executable changed after startup" in result.stderr
+
+
+def test_launcher_rejects_failed_object_graph_verification(tmp_path: Path) -> None:
+    trusted_repo, trusted = _trusted_surface(tmp_path)
+    issue, base, head = _issue_worktree(tmp_path, trusted_repo)
+    cli = _fake_cli(tmp_path / "codex")
+    environment = _environment(
+        tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
+    )
+    real_git = shutil.which("git")
+    assert real_git is not None
+    environment.update(
+        {
+            "AGENT_LOOP_REAL_GIT": str(_delegating_git(tmp_path / "git")),
+            "AGENT_TEST_REAL_GIT": real_git,
+            "AGENT_TEST_GIT_FAILURE": "fsck",
+        }
+    )
+
+    result = _run_launcher(issue, "codex", environment)
+
+    assert result.returncode != 0
+    assert "pinned base object graph failed integrity verification" in result.stderr
+    assert not (tmp_path / "invocation.json").exists()
+
+
+def test_launcher_rejects_materialized_blob_oid_mismatch(tmp_path: Path) -> None:
+    trusted_repo, trusted = _trusted_surface(tmp_path)
+    issue, base, head = _issue_worktree(tmp_path, trusted_repo)
+    cli = _fake_cli(tmp_path / "codex")
+    environment = _environment(
+        tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
+    )
+    real_git = shutil.which("git")
+    assert real_git is not None
+    environment.update(
+        {
+            "AGENT_LOOP_REAL_GIT": str(_delegating_git(tmp_path / "git")),
+            "AGENT_TEST_REAL_GIT": real_git,
+            "AGENT_TEST_GIT_FAILURE": "hash-object",
+        }
+    )
+
+    result = _run_launcher(issue, "codex", environment)
+
+    assert result.returncode != 0
+    assert "trusted guidance blob failed integrity verification" in result.stderr
+    assert not (tmp_path / "invocation.json").exists()

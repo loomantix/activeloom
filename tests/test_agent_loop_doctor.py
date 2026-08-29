@@ -46,12 +46,18 @@ def _project(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     for relative in (
+        ".codex/REVIEW_WORKFLOW.md",
+        ".codex/references/local-review-ledger.md",
         ".codex/skills/deepcritique/SKILL.md",
+        ".codex/skills/critique/SKILL.md",
+        ".codex/skills/critique/scripts/review-ledger.js",
+        ".codex/skills/refactorpass/SKILL.md",
         ".claude/skills/deepcritique/SKILL.md",
     ):
         target = project / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("trusted native review skill\n", encoding="utf-8")
+        if not target.exists():
+            target.write_text("trusted native review file\n", encoding="utf-8")
     subprocess.run(["git", "init", "-b", "main"], cwd=project, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=project, check=True)
     subprocess.run(
@@ -108,10 +114,19 @@ def test_doctor_retains_contract_v3_hook_compatibility(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_doctor_rejects_missing_native_skill_in_pinned_base(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "relative",
+    [
+        ".claude/skills/deepcritique/SKILL.md",
+        ".codex/REVIEW_WORKFLOW.md",
+    ],
+)
+def test_doctor_rejects_missing_required_file_in_pinned_base(
+    tmp_path: Path, relative: str
+) -> None:
     project = _project(tmp_path)
     subprocess.run(
-        ["git", "rm", ".claude/skills/deepcritique/SKILL.md"],
+        ["git", "rm", relative],
         cwd=project,
         check=True,
     )
@@ -125,6 +140,20 @@ def test_doctor_rejects_missing_native_skill_in_pinned_base(tmp_path: Path) -> N
 
     assert result.returncode != 0
     assert "pinned base review surface is missing" in result.stderr
+
+
+def test_doctor_rejects_preexisting_launcher_drift(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    launcher = project / ".codex/skills/agent-loop/scripts/run-codex-review.sh"
+    launcher.write_text(
+        launcher.read_text(encoding="utf-8") + "\n# pre-existing drift\n",
+        encoding="utf-8",
+    )
+
+    result = _run(project)
+
+    assert result.returncode != 0
+    assert "review launcher differs from the pinned base blob" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -145,6 +174,12 @@ def test_doctor_rejects_incompatible_launcher_contract(
     launcher = project / ".codex/skills/agent-loop/scripts/run-codex-review.sh"
     launcher.write_text(
         launcher.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8"
+    )
+    subprocess.run(["git", "add", str(launcher)], cwd=project, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "change launcher contract"],
+        cwd=project,
+        check=True,
     )
     result = _run(project)
     assert result.returncode != 0

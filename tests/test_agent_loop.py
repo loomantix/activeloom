@@ -76,6 +76,22 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
 # execution-level test module.
 if [ "${1:-}" = --contract-version ]; then echo 4; exit 0; fi
 if [ "${1:-}" = --claude-effort-policy ]; then echo low; exit 0; fi
+if [ "${1:-}" = --required-paths ]; then
+    case "${2:-}" in
+        codex)
+            printf '%s\n' \
+                .codex/REVIEW_WORKFLOW.md \
+                .codex/references/local-review-ledger.md \
+                .codex/skills/deepcritique/SKILL.md \
+                .codex/skills/critique/SKILL.md \
+                .codex/skills/critique/scripts/review-ledger.js \
+                .codex/skills/refactorpass/SKILL.md
+            ;;
+        claude) printf '%s\n' .claude/skills/deepcritique/SKILL.md ;;
+        *) exit 2 ;;
+    esac
+    exit 0
+fi
 if false; then
     claude \\
         --effort low \\
@@ -110,6 +126,15 @@ PY
     claude_review_skill = repo / ".claude/skills/deepcritique/SKILL.md"
     claude_review_skill.parent.mkdir(parents=True, exist_ok=True)
     claude_review_skill.write_text("# Trusted Claude deep review fixture\n", encoding="utf-8")
+    for relative in (
+        ".codex/REVIEW_WORKFLOW.md",
+        ".codex/references/local-review-ledger.md",
+        ".codex/skills/critique/SKILL.md",
+        ".codex/skills/refactorpass/SKILL.md",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("trusted Codex review fixture\n", encoding="utf-8")
     # codex-platform has no root manifest, which is the most permissive module
     # resolution context there is — the bundle would load here even with no
     # sibling manifest at all. Give the fixture consumer a CommonJS root, the

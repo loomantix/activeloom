@@ -3,6 +3,15 @@
 set -euo pipefail
 
 CLAUDE_EFFORT_POLICY=low
+CODEX_REQUIRED_PATHS=(
+    .codex/REVIEW_WORKFLOW.md
+    .codex/references/local-review-ledger.md
+    .codex/skills/deepcritique/SKILL.md
+    .codex/skills/critique/SKILL.md
+    .codex/skills/critique/scripts/review-ledger.js
+    .codex/skills/refactorpass/SKILL.md
+)
+CLAUDE_REQUIRED_PATHS=(.claude/skills/deepcritique/SKILL.md)
 
 # Test-runner coverage instrumentation is scoped to the wrapper's repository.
 # A Python-based reviewer started from the private empty root would otherwise
@@ -14,6 +23,15 @@ usage() { echo "usage: $0 --engine codex|claude" >&2; exit 2; }
 case "${1:-}" in
     --contract-version) [ "$#" -eq 1 ] || usage; echo 4; exit 0 ;;
     --claude-effort-policy) [ "$#" -eq 1 ] || usage; echo "$CLAUDE_EFFORT_POLICY"; exit 0 ;;
+    --required-paths)
+        [ "$#" -eq 2 ] || usage
+        case "$2" in
+            codex) printf '%s\n' "${CODEX_REQUIRED_PATHS[@]}" ;;
+            claude) printf '%s\n' "${CLAUDE_REQUIRED_PATHS[@]}" ;;
+            *) usage ;;
+        esac
+        exit 0
+        ;;
 esac
 
 engine=""
@@ -126,18 +144,12 @@ done < "$instruction_manifest"
 
 trusted_root="$snapshot/$engine_surface"
 if [ "$engine" = codex ]; then
-    required=(
-        "$trusted_root/REVIEW_WORKFLOW.md"
-        "$trusted_root/references/local-review-ledger.md"
-        "$trusted_root/skills/deepcritique/SKILL.md"
-        "$trusted_root/skills/critique/SKILL.md"
-        "$trusted_root/skills/critique/scripts/review-ledger.js"
-        "$trusted_root/skills/refactorpass/SKILL.md"
-    )
+    required_paths=("${CODEX_REQUIRED_PATHS[@]}")
 else
-    required=("$trusted_root/skills/deepcritique/SKILL.md")
+    required_paths=("${CLAUDE_REQUIRED_PATHS[@]}")
 fi
-for path in "${required[@]}"; do
+for relative in "${required_paths[@]}"; do
+    path="$snapshot/$relative"
     [ -f "$path" ] && [ ! -L "$path" ] || {
         echo "pinned $engine review surface is incomplete: ${path#"$snapshot/"}" >&2
         exit 1

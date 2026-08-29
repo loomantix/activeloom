@@ -46,7 +46,7 @@ def _version(command: list[str], label: str) -> str:
     return result.stdout.strip()
 
 
-def _require_base_blob(project: Path, base_ref: str, relative: str) -> None:
+def _require_base_blob(project: Path, base_ref: str, relative: str) -> tuple[str, str]:
     result = subprocess.run(
         ["git", "-C", str(project), "ls-tree", "-z", base_ref, "--", relative],
         capture_output=True,
@@ -68,6 +68,7 @@ def _require_base_blob(project: Path, base_ref: str, relative: str) -> None:
         or fields[1] != b"blob"
     ):
         raise DoctorError(f"pinned base review surface is not a regular blob: {relative}")
+    return fields[0].decode(), fields[2].decode()
 
 
 def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> None:
@@ -128,11 +129,25 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
     if contract == "4":
         if not base_ref:
             raise DoctorError("contract v4 compatibility requires --base-ref")
-        for relative in (
-            ".codex/skills/deepcritique/SKILL.md",
-            ".claude/skills/deepcritique/SKILL.md",
-        ):
-            _require_base_blob(root, base_ref, relative)
+        launcher_relative = ".codex/skills/agent-loop/scripts/run-codex-review.sh"
+        launcher_mode, launcher_oid = _require_base_blob(
+            root, base_ref, launcher_relative
+        )
+        if launcher_mode != "100755":
+            raise DoctorError("pinned review launcher is not executable")
+        local_launcher_oid = _version(
+            [
+                "git",
+                "-C",
+                str(root),
+                "hash-object",
+                "--no-filters",
+                str(review_launcher),
+            ],
+            "review launcher",
+        )
+        if local_launcher_oid != launcher_oid:
+            raise DoctorError("review launcher differs from the pinned base blob")
         expected_hooks = {
             "codex": '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex',
             "claude": '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude',
@@ -152,6 +167,17 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
         )
         if claude_effort and launcher_effort != claude_effort:
             raise DoctorError(f"review launcher must pin Claude effort {claude_effort}")
+        for engine, prefix in (("codex", ".codex/"), ("claude", ".claude/")):
+            required_paths = _version(
+                [str(review_launcher), "--required-paths", engine],
+                f"{engine} review surface",
+            ).splitlines()
+            if not required_paths or len(required_paths) != len(set(required_paths)):
+                raise DoctorError(f"{engine} required review surface is invalid")
+            for relative in required_paths:
+                if not relative.startswith(prefix):
+                    raise DoctorError(f"{engine} required review path is invalid: {relative}")
+                _require_base_blob(root, base_ref, relative)
     else:
         for engine, hook in hooks.items():
             if (
