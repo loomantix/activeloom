@@ -122,7 +122,7 @@ def test_supervisor_kills_detached_session_on_timeout(tmp_path: Path) -> None:
             sys.executable,
             str(SUPERVISOR),
             "--timeout-seconds",
-            "0.2",
+            "1",
             "--kill-after-seconds",
             "0.2",
             "--",
