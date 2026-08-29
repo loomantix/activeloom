@@ -360,11 +360,32 @@ case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be tru
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
-for cmd in git gh jq node python3 timeout flock realpath sha256sum awk; do
+for cmd in git gh jq node python3 timeout flock realpath sha256sum awk file; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
 
 file_sha256() { sha256sum "$1" | awk '{print $1}'; }
+# Resolve the complete install surface an npm-packaged reviewer loads at
+# runtime. Both engines must use this: pinning only the entry file leaves every
+# sibling module it imports unattested, so `install_tree_sha256` would collapse
+# to a second digest of the binary already covered by its own hash.
+reviewer_install_root() {
+    local bin="$1" entry_dir candidate package_root file_type
+    entry_dir="$(dirname -- "$bin")"
+    for candidate in "$entry_dir" "$entry_dir/.."; do
+        package_root="$(realpath -e -- "$candidate" 2>/dev/null || true)"
+        [ -n "$package_root" ] || continue
+        [ -f "$package_root/package.json" ] && \
+            [ ! -L "$package_root/package.json" ] || continue
+        case "$bin" in "$package_root"/*) printf '%s\n' "$package_root"; return ;; esac
+    done
+    file_type="$(file --brief -- "$bin")" || return 1
+    case "$file_type" in
+        ELF\ *|Mach-O\ *) printf '%s\n' "$bin"; return ;;
+    esac
+    echo "reviewer install layout is not a pinned package or native executable: $bin" >&2
+    return 1
+}
 install_tree_sha256() {
     local root="$1"
     if [ -f "$root" ] && [ ! -L "$root" ]; then
@@ -429,17 +450,8 @@ if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     [ -n "$CLAUDE_REVIEW_BIN" ] || { echo "required command not found for Claude review: claude" >&2; exit 1; }
     CODEX_REVIEW_BIN_SHA256="$(file_sha256 "$CODEX_REVIEW_BIN")"
     CLAUDE_REVIEW_BIN_SHA256="$(file_sha256 "$CLAUDE_REVIEW_BIN")"
-    codex_package_root="$(realpath -e -- "$(dirname -- "$CODEX_REVIEW_BIN")/..")"
-    if [ "$(basename -- "$(dirname -- "$CODEX_REVIEW_BIN")")" = bin ] && \
-       [ -f "$codex_package_root/package.json" ] && \
-       [ ! -L "$codex_package_root/package.json" ]; then
-        CODEX_REVIEW_INSTALL_ROOT="$codex_package_root"
-    else
-        # Native or test launchers that do not have the npm package layout are
-        # self-contained, so their executable is the complete install surface.
-        CODEX_REVIEW_INSTALL_ROOT="$CODEX_REVIEW_BIN"
-    fi
-    CLAUDE_REVIEW_INSTALL_ROOT="$CLAUDE_REVIEW_BIN"
+    CODEX_REVIEW_INSTALL_ROOT="$(reviewer_install_root "$CODEX_REVIEW_BIN")"
+    CLAUDE_REVIEW_INSTALL_ROOT="$(reviewer_install_root "$CLAUDE_REVIEW_BIN")"
     CODEX_REVIEW_INSTALL_SHA256="$(install_tree_sha256 "$CODEX_REVIEW_INSTALL_ROOT")" || {
         echo "Codex reviewer install root is unsafe" >&2; exit 1;
     }

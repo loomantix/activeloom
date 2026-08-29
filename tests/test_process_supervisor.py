@@ -261,3 +261,68 @@ while True:
     pids = {int(value) for value in pid_file.read_text(encoding="utf-8").splitlines()}
     assert pids
     assert not [pid for pid in pids if Path(f"/proc/{pid}").exists()]
+
+
+def _run_main(module: Any, argv: list[str], monkeypatch: pytest.MonkeyPatch) -> int:
+    monkeypatch.setattr(sys, "argv", ["process-supervisor.py", *argv])
+    return int(module.main())
+
+
+def test_cleanup_failure_preserves_the_timeout_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A containment failure must not overwrite the 124 the wrapper retries on.
+
+    `agent-loop.sh` classifies a retryable timeout as exit 124 or 137. When a
+    raise from cleanup escaped `finally`, the supervisor exited 1 instead and
+    `retry_on_timeout` silently stopped firing.
+    """
+    module = _load_supervisor()
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("hook descendants survived forced cleanup")
+
+    monkeypatch.setattr(module, "_cleanup", _raise)
+    status = _run_main(
+        module,
+        ["--timeout-seconds", "0.2", "--kill-after-seconds", "0.2", "--", "sleep", "10"],
+        monkeypatch,
+    )
+    assert status == 124
+
+
+def test_cleanup_failure_does_not_fail_a_successful_hook_as_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The failure is reported on stderr and surfaced as a plain exit code."""
+    module = _load_supervisor()
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("hook descendants survived forced cleanup")
+
+    monkeypatch.setattr(module, "_cleanup", _raise)
+    status = _run_main(
+        module,
+        ["--timeout-seconds", "5", "--kill-after-seconds", "0.2", "--", "true"],
+        monkeypatch,
+    )
+    assert status == 1
+    assert "survived forced cleanup" in capsys.readouterr().err
+
+
+def test_cleanup_failure_preserves_a_real_hook_failure_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine non-zero hook status outranks the cleanup report."""
+    module = _load_supervisor()
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("hook descendants survived forced cleanup")
+
+    monkeypatch.setattr(module, "_cleanup", _raise)
+    status = _run_main(
+        module,
+        ["--timeout-seconds", "5", "--kill-after-seconds", "0.2", "--", "false"],
+        monkeypatch,
+    )
+    assert status == 1

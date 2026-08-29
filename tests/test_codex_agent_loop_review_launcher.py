@@ -221,6 +221,12 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     invocation = json.loads((tmp_path / "invocation.json").read_text(encoding="utf-8"))
     assert invocation["cwd"] not in {str(issue), str(trusted_repo)}
     assert not Path(invocation["cwd"]).exists()
+    # Claude has no `-C` equivalent, so it inherits the launcher's cwd. The
+    # subshell's `cd` must therefore fail closed: `errexit` is suppressed
+    # inside a subshell whose status is tested, so a silently skipped `cd`
+    # would leave the reviewer in the worker-writable issue worktree, reading
+    # untrusted CLAUDE.md and .claude settings from it.
+    assert Path(invocation["cwd"]).name.startswith("codex-agent-loop-review.")
     argv = invocation["argv"]
     assert argv[:2] == ["--effort", "low"]
     assert "--disable-slash-commands" in argv

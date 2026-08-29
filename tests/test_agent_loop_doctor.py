@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -315,3 +316,68 @@ def test_doctor_rejects_incompatible_review_push_protocol(tmp_path: Path) -> Non
     result = _run(project)
     assert result.returncode != 0
     assert "review-push protocol is incompatible" in result.stderr
+
+
+def _git_shim(tmp_path: Path, real_git: str) -> Path:
+    """A PATH `git` that lies about `hash-object` and delegates everything else.
+
+    The pinned-blob checks compare a base-tree OID read with the trusted binary
+    against the working file's OID. If that second read goes through PATH, a
+    shim like this one picks the value the comparison is made against.
+    """
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'for arg in "$@"; do\n'
+        '    if [ "$arg" = hash-object ]; then\n'
+        "        printf '%s\\n' "
+        "'0000000000000000000000000000000000000000'\n"
+        "        exit 0\n"
+        "    fi\n"
+        "done\n"
+        f'exec {real_git} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return shim_dir
+
+
+def test_doctor_pins_review_surface_with_the_trusted_git_not_path(
+    tmp_path: Path,
+) -> None:
+    """A shimmed PATH `git` must not be able to steer the pinned-blob checks.
+
+    `agent-loop.sh` exports AGENT_LOOP_REAL_GIT precisely so the doctor cannot
+    be steered by PATH. A hand-built `git` argv would take the shim's OID here
+    and either clear a tampered surface or block an untouched one.
+    """
+    real_git = shutil.which("git")
+    assert real_git is not None
+    project = _project(tmp_path)
+    shim_dir = _git_shim(tmp_path, real_git)
+
+    env = dict(os.environ)
+    env["PATH"] = f"{shim_dir}{os.pathsep}{env['PATH']}"
+    env["AGENT_LOOP_REAL_GIT"] = real_git
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(DOCTOR),
+            "--project-dir",
+            str(project),
+            "--claude-effort",
+            "low",
+            "--base-ref",
+            "HEAD",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "differs from the pinned base blob" not in result.stderr

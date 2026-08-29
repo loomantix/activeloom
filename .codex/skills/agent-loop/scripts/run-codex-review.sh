@@ -263,7 +263,20 @@ if [ "$engine" = codex ]; then
         --add-dir "$review_worktree" "$prompt" || review_status="$?"
 else
     (
-        cd "$launch_root"
+        # `errexit` is suppressed inside a subshell the shell tests the status
+        # of, so this `cd` must fail closed on its own. Without it a lost
+        # launch root would start the reviewer in the worker-writable issue
+        # worktree, where it would discover untrusted CLAUDE.md and .claude
+        # settings — the exact isolation the pinned root provides. The Codex
+        # branch gets this from `-C "$launch_root"`.
+        cd -- "$launch_root" || {
+            echo "$engine review launch root is unavailable" >&2
+            exit 1
+        }
+        [ "$PWD" = "$launch_root" ] || {
+            echo "$engine review launch root is not the trusted root" >&2
+            exit 1
+        }
         unset CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
         export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
         "$review_cli" --effort "$CLAUDE_EFFORT_POLICY" \

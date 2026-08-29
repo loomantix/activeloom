@@ -77,6 +77,20 @@ def _version(command: list[str], label: str) -> str:
     return result.stdout.strip()
 
 
+def _hash_object(project: Path, path: Path, label: str) -> str:
+    # Must go through `_git` like every other Git call here: the controller
+    # exports AGENT_LOOP_REAL_GIT so the pin cannot be steered by PATH, and a
+    # bare "git" would let a shim choose the OID this check compares against —
+    # while the expected side is read with the trusted binary.
+    result = _git(project, "hash-object", "--no-filters", str(path))
+    if result.returncode != 0:
+        detail = (
+            result.stderr.decode("utf-8", errors="replace").strip() or "<no stderr>"
+        )
+        raise DoctorError(f"{label} could not be hashed: {detail}")
+    return result.stdout.decode("utf-8", errors="replace").strip()
+
+
 def _require_base_blob(project: Path, base_ref: str, relative: str) -> tuple[str, str]:
     result = _git(project, "ls-tree", "-z", base_ref, "--", relative)
     if result.returncode != 0:
@@ -201,18 +215,7 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
         )
         if launcher_mode != "100755":
             raise DoctorError("pinned review launcher is not executable")
-        local_launcher_oid = _version(
-            [
-                "git",
-                "--no-replace-objects",
-                "-C",
-                str(root),
-                "hash-object",
-                "--no-filters",
-                str(review_launcher),
-            ],
-            "review launcher",
-        )
+        local_launcher_oid = _hash_object(root, review_launcher, "review launcher")
         if local_launcher_oid != launcher_oid:
             raise DoctorError("review launcher differs from the pinned base blob")
         expected_hooks = {
@@ -259,18 +262,7 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
             )
             if mode != expected_mode:
                 raise DoctorError(f"pinned review tool has an unsafe mode: {relative}")
-            local_oid = _version(
-                [
-                    "git",
-                    "--no-replace-objects",
-                    "-C",
-                    str(root),
-                    "hash-object",
-                    "--no-filters",
-                    str(local_path),
-                ],
-                f"review tool {relative}",
-            )
+            local_oid = _hash_object(root, local_path, f"review tool {relative}")
             if local_oid != oid:
                 raise DoctorError(
                     f"review tool differs from the pinned base blob: {relative}"

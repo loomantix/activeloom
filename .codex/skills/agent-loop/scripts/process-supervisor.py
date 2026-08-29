@@ -90,7 +90,13 @@ def _reap() -> None:
 
 
 def _cleanup(root_pid: int, grace_seconds: float) -> None:
-    for sig, budget in ((signal.SIGTERM, grace_seconds), (signal.SIGKILL, 1.0)):
+    # The SIGKILL budget tracks the caller's grace period rather than a fixed
+    # second: a descendant blocked in uninterruptible sleep routinely outlives
+    # 1s, and that is the case the raise below reports.
+    for sig, budget in (
+        (signal.SIGTERM, grace_seconds),
+        (signal.SIGKILL, max(grace_seconds, 1.0)),
+    ):
         deadline = time.monotonic() + budget
         while time.monotonic() < deadline:
             if not _signal_descendants(root_pid, sig):
@@ -127,6 +133,7 @@ def main() -> int:
 
     received_signal: int | None = None
     cleaning_up = False
+    cleanup_failed = False
 
     def request_termination(signum: int, _frame: object) -> None:
         nonlocal received_signal, cleaning_up
@@ -171,7 +178,15 @@ def main() -> int:
                 pass
     finally:
         cleaning_up = True
-        _cleanup(os.getpid(), args.kill_after_seconds)
+        # A containment failure must stay visible without destroying the status
+        # computed below. Raising out of `finally` replaced the real exit code
+        # with 1, which both reported a successful hook as failed and hid the
+        # 124 that `agent-loop.sh`'s timeout-retry classifier matches on.
+        try:
+            _cleanup(os.getpid(), args.kill_after_seconds)
+        except RuntimeError as error:
+            print(f"process-supervisor: {error}", file=sys.stderr)
+            cleanup_failed = True
         _reap()
         for sig, previous in previous_handlers.items():
             signal.signal(sig, previous)
@@ -182,6 +197,10 @@ def main() -> int:
         return 124
     if return_code < 0:
         return 128 - return_code
+    # Only surface the containment failure when nothing else already failed, so
+    # a real hook status is never overwritten by cleanup.
+    if cleanup_failed and return_code == 0:
+        return 1
     return return_code
 
 

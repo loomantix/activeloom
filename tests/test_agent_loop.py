@@ -1663,9 +1663,10 @@ with pathlib.Path(os.environ['REVIEW_INVOCATIONS']).open('a', encoding='utf-8') 
     stream.write(json.dumps({'engine': engine, 'base': os.environ['AGENT_LOOP_REVIEW_BASE_SHA'], 'head': os.environ['AGENT_LOOP_PR_HEAD_SHA'], 'argv': sys.argv[1:]}) + '\\n')
 head = os.environ['AGENT_LOOP_PR_HEAD_SHA']
 pathlib.Path(os.environ['AGENT_LOOP_REVIEW_RESULT_FILE']).write_text(json.dumps({'version': 3, 'status': 'clean', 'engine': engine, 'round': int(os.environ['AGENT_LOOP_REVIEW_ROUND']), 'baseSha': os.environ['AGENT_LOOP_REVIEW_BASE_SHA'], 'beforeSha': head, 'afterSha': head, 'classification': None, 'findingFingerprints': [], 'finalLaneComplete': True}), encoding='utf-8')
-"""
+    """
     _write_executable(bin_dir / "codex", reviewer)
     _write_executable(bin_dir / "claude", reviewer)
+    (bin_dir / "package.json").write_text("{}\n", encoding="utf-8")
     invocations = tmp_path / "review-invocations.jsonl"
     result = _run(
         consumer,
@@ -5536,3 +5537,74 @@ def test_persistent_logs_are_owner_only(
     assert stat.S_IMODE(log_dirs[0].stat().st_mode) == 0o700
     for log_file in log_dirs[0].iterdir():
         assert stat.S_IMODE(log_file.stat().st_mode) & 0o077 == 0
+
+
+def _reviewer_install_root(tmp_path: Path, binary: Path) -> str:
+    """Invoke `reviewer_install_root` from agent-loop.sh in isolation."""
+    source = AGENT_LOOP.read_text(encoding="utf-8")
+    start = source.index("reviewer_install_root() {")
+    end = source.index("\n}\n", start) + len("\n}\n")
+    snippet = tmp_path / "reviewer_install_root.sh"
+    snippet.write_text(source[start:end], encoding="utf-8")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'set -euo pipefail; source "{snippet}"; reviewer_install_root "{binary}"',
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def test_reviewer_install_root_covers_the_npm_package_for_either_engine(
+    tmp_path: Path,
+) -> None:
+    """An npm-layout reviewer must pin the package, not just its entry file.
+
+    Both engines resolve through this helper. Pinning the entry file alone
+    leaves every sibling module it imports at runtime unattested, and the
+    install digest collapses to a second hash of the binary that the reviewer
+    binary pin already covers.
+    """
+    package = tmp_path / "node_modules/@vendor/reviewer"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text("{}\n", encoding="utf-8")
+    entry = package / "bin/reviewer"
+    entry.write_text("#!/bin/sh\n", encoding="utf-8")
+    entry.chmod(0o755)
+    (package / "sdk.mjs").write_text("export const x = 1;\n", encoding="utf-8")
+
+    assert _reviewer_install_root(tmp_path, entry) == str(package.resolve())
+    root_entry = package / "cli.js"
+    root_entry.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    root_entry.chmod(0o755)
+    assert _reviewer_install_root(tmp_path, root_entry) == str(package.resolve())
+
+
+def test_reviewer_install_root_keeps_a_self_contained_binary(tmp_path: Path) -> None:
+    """A native launcher has no package layout, so it is its own surface."""
+    native_dir = tmp_path / "versions"
+    native_dir.mkdir()
+    native = native_dir / "reviewer"
+    shutil.copy2("/bin/true", native)
+
+    assert _reviewer_install_root(tmp_path, native) == str(native)
+
+
+def test_reviewer_install_root_ignores_a_symlinked_package_manifest(
+    tmp_path: Path,
+) -> None:
+    """A symlinked manifest must not widen the attested surface."""
+    package = tmp_path / "pkg"
+    (package / "bin").mkdir(parents=True)
+    (tmp_path / "outside.json").write_text("{}\n", encoding="utf-8")
+    (package / "package.json").symlink_to(tmp_path / "outside.json")
+    entry = package / "bin/reviewer"
+    entry.write_text("#!/bin/sh\n", encoding="utf-8")
+    entry.chmod(0o755)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _reviewer_install_root(tmp_path, entry)
