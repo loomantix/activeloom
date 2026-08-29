@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,11 +18,13 @@ class DoctorError(RuntimeError):
 
 def _git(project: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     configured = os.environ.get("AGENT_LOOP_REAL_GIT")
-    git_bin = configured or shutil.which("git")
-    if git_bin is None:
+    if not configured:
         raise DoctorError("trusted Git executable is unavailable")
-    resolved = Path(git_bin).resolve(strict=True)
-    if configured and (not resolved.is_absolute() or not os.access(resolved, os.X_OK)):
+    configured_path = Path(configured)
+    if not configured_path.is_absolute():
+        raise DoctorError("trusted Git executable is invalid")
+    resolved = configured_path.resolve(strict=True)
+    if not os.access(resolved, os.X_OK):
         raise DoctorError("trusted Git executable is invalid")
     return subprocess.run(
         [

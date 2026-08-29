@@ -268,15 +268,10 @@ def _run_main(module: Any, argv: list[str], monkeypatch: pytest.MonkeyPatch) -> 
     return int(module.main())
 
 
-def test_cleanup_failure_preserves_the_timeout_status(
+def test_cleanup_failure_makes_a_timeout_non_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A containment failure must not overwrite the 124 the wrapper retries on.
-
-    `agent-loop.sh` classifies a retryable timeout as exit 124 or 137. When a
-    raise from cleanup escaped `finally`, the supervisor exited 1 instead and
-    `retry_on_timeout` silently stopped firing.
-    """
+    """A containment failure must not return the retryable timeout status."""
     module = _load_supervisor()
 
     def _raise(*_args: object, **_kwargs: object) -> None:
@@ -288,7 +283,7 @@ def test_cleanup_failure_preserves_the_timeout_status(
         ["--timeout-seconds", "0.2", "--kill-after-seconds", "0.2", "--", "sleep", "10"],
         monkeypatch,
     )
-    assert status == 124
+    assert status == 125
 
 
 def test_cleanup_failure_does_not_fail_a_successful_hook_as_a_traceback(
@@ -306,14 +301,14 @@ def test_cleanup_failure_does_not_fail_a_successful_hook_as_a_traceback(
         ["--timeout-seconds", "5", "--kill-after-seconds", "0.2", "--", "true"],
         monkeypatch,
     )
-    assert status == 1
+    assert status == 125
     assert "survived forced cleanup" in capsys.readouterr().err
 
 
-def test_cleanup_failure_preserves_a_real_hook_failure_status(
+def test_cleanup_failure_overrides_a_hook_failure_with_containment_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A genuine non-zero hook status outranks the cleanup report."""
+    """Surviving descendants outrank the hook's own non-zero status."""
     module = _load_supervisor()
 
     def _raise(*_args: object, **_kwargs: object) -> None:
@@ -325,4 +320,4 @@ def test_cleanup_failure_preserves_a_real_hook_failure_status(
         ["--timeout-seconds", "5", "--kill-after-seconds", "0.2", "--", "false"],
         monkeypatch,
     )
-    assert status == 1
+    assert status == 125

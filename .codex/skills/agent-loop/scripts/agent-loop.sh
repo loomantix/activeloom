@@ -520,6 +520,13 @@ git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
     [ "$DRY_RUN" = true ] && echo "Dry-run does not fetch; fetch the base branch once and retry." >&2
     exit 1
 }
+"$REAL_GIT_BIN" --no-replace-objects -c core.fsmonitor= \
+    -c core.hooksPath=/dev/null -c core.excludesFile=/dev/null \
+    --no-optional-locks -C "$PROJECT_DIR" fsck --strict --no-dangling \
+    "$BASE_REMOTE_REF" >/dev/null || {
+    echo "configured base object graph failed integrity verification" >&2
+    exit 1
+}
 require_base_pinned_tool() {
     local path="$1" relative="$2" expected_mode="$3" label="$4"
     local expected_path entry oid local_oid
@@ -571,7 +578,8 @@ if [ "$CONFIG_DOCTOR" = true ]; then
             AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN" GIT_NO_REPLACE_OBJECTS=1 \
             python3 -I - "${doctor_command[@]}" || exit 1
     else
-        python3 -I "$CONFIG_DOCTOR_HELPER" "${doctor_command[@]}" || exit 1
+        AGENT_LOOP_REAL_GIT="$REAL_GIT_BIN" \
+            python3 -I "$CONFIG_DOCTOR_HELPER" "${doctor_command[@]}" || exit 1
     fi
 fi
 PINNED_RUN_STATE_OID=""
@@ -583,6 +591,10 @@ PINNED_REVIEW_PUSH_OID=""
 PINNED_PROCESS_SUPERVISOR_OID=""
 PINNED_HOOK_GIT_GUARD_OID=""
 PINNED_HOOK_GH_GUARD_OID=""
+PINNED_RUNTIME_ROOT=""
+PINNED_RUN_STATE_PATH=""
+PINNED_ISSUES_READY_PATH=""
+PINNED_REVIEW_LEDGER_PATH=""
 if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     PINNED_AGENT_LOOP_OID="$(require_base_pinned_tool "$SCRIPT_DIR/agent-loop.sh" \
         ".codex/skills/agent-loop/scripts/agent-loop.sh" 100755 \
@@ -613,11 +625,61 @@ if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
         "hook gh guard")" || exit 1
 fi
 
+cleanup_pinned_runtime() {
+    [ -n "$PINNED_RUNTIME_ROOT" ] || return 0
+    case "$PINNED_RUNTIME_ROOT" in /tmp/codex-agent-loop-runtime.*) ;; *) return 1 ;; esac
+    [ ! -L "$PINNED_RUNTIME_ROOT" ] || return 1
+    rm -rf -- "$PINNED_RUNTIME_ROOT"
+    PINNED_RUNTIME_ROOT=""
+}
+
+install_pinned_runtime_blob() {
+    local oid="$1" destination="$2" label="$3" actual_oid
+    "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        cat-file blob "$oid" > "$destination" || return 1
+    chmod 600 "$destination" || return 1
+    actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$destination")" || return 1
+    [ "$actual_oid" = "$oid" ] || {
+        echo "materialized $label differs from the pinned base blob" >&2
+        return 1
+    }
+}
+
+if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    PINNED_RUNTIME_ROOT="$(mktemp -d /tmp/codex-agent-loop-runtime.XXXXXXXX)" || exit 1
+    chmod 700 "$PINNED_RUNTIME_ROOT" || { cleanup_pinned_runtime; exit 1; }
+    trap cleanup_pinned_runtime EXIT
+    PINNED_RUN_STATE_PATH="$PINNED_RUNTIME_ROOT/agent-loop-state.py"
+    PINNED_ISSUES_READY_PATH="$PINNED_RUNTIME_ROOT/ready.py"
+    PINNED_REVIEW_LEDGER_PATH="$PINNED_RUNTIME_ROOT/review-ledger.mjs"
+    install_pinned_runtime_blob "$PINNED_RUN_STATE_OID" "$PINNED_RUN_STATE_PATH" \
+        "agent-loop state helper" || { cleanup_pinned_runtime; exit 1; }
+    install_pinned_runtime_blob "$PINNED_ISSUES_READY_OID" "$PINNED_ISSUES_READY_PATH" \
+        "issues readiness helper" || { cleanup_pinned_runtime; exit 1; }
+    install_pinned_runtime_blob "$PINNED_REVIEW_LEDGER_OID" "$PINNED_REVIEW_LEDGER_PATH" \
+        "review ledger" || { cleanup_pinned_runtime; exit 1; }
+fi
+
+require_pinned_runtime_blob() {
+    local path="$1" oid="$2" label="$3" actual_oid
+    [ -f "$path" ] && [ ! -L "$path" ] || {
+        echo "pinned $label is unavailable" >&2
+        return 1
+    }
+    actual_oid="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        hash-object --no-filters "$path")" || return 1
+    [ "$actual_oid" = "$oid" ] || {
+        echo "pinned $label changed after materialization" >&2
+        return 1
+    }
+}
+
 run_state_helper() {
     if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
-        "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
-            cat-file blob "$PINNED_RUN_STATE_OID" | \
-            GIT_NO_REPLACE_OBJECTS=1 python3 -I - "$@"
+        require_pinned_runtime_blob "$PINNED_RUN_STATE_PATH" "$PINNED_RUN_STATE_OID" \
+            "agent-loop state helper" || return 1
+        GIT_NO_REPLACE_OBJECTS=1 python3 -I "$PINNED_RUN_STATE_PATH" "$@"
     else
         python3 -I "$RUN_STATE_HELPER" "$@"
     fi
@@ -625,9 +687,9 @@ run_state_helper() {
 
 run_issues_ready() {
     if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
-        "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
-            cat-file blob "$PINNED_ISSUES_READY_OID" | \
-            GIT_NO_REPLACE_OBJECTS=1 python3 -I - "$@"
+        require_pinned_runtime_blob "$PINNED_ISSUES_READY_PATH" "$PINNED_ISSUES_READY_OID" \
+            "issues readiness helper" || return 1
+        GIT_NO_REPLACE_OBJECTS=1 python3 -I "$PINNED_ISSUES_READY_PATH" "$@"
     else
         python3 -I "$ISSUES_READY" "$@"
     fi
@@ -635,9 +697,9 @@ run_issues_ready() {
 
 run_review_ledger() {
     if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
-        "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
-            cat-file blob "$PINNED_REVIEW_LEDGER_OID" | \
-            GIT_NO_REPLACE_OBJECTS=1 node --input-type=module - "$@"
+        require_pinned_runtime_blob "$PINNED_REVIEW_LEDGER_PATH" "$PINNED_REVIEW_LEDGER_OID" \
+            "review ledger" || return 1
+        GIT_NO_REPLACE_OBJECTS=1 node "$PINNED_REVIEW_LEDGER_PATH" "$@"
     else
         node "$REVIEW_LEDGER" "$@"
     fi
@@ -908,6 +970,7 @@ on_exit() {
     if [ "$rc" -ne 0 ] && [ "$RECOVERY_EMITTED" = false ] && [ -n "$ACTIVE_WORKTREE" ]; then
         recovery_message "agent-loop aborted (exit $rc) with issue #${SELECTED_ID:-unknown} claimed."
     fi
+    cleanup_pinned_runtime || true
 }
 trap on_interrupt INT TERM
 trap on_exit EXIT

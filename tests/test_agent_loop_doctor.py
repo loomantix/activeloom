@@ -96,6 +96,10 @@ def _project(tmp_path: Path) -> Path:
 
 
 def _run(project: Path) -> subprocess.CompletedProcess[str]:
+    real_git = shutil.which("git")
+    assert real_git is not None
+    env = dict(os.environ)
+    env["AGENT_LOOP_REAL_GIT"] = real_git
     return subprocess.run(
         [
             "python3",
@@ -110,7 +114,34 @@ def _run(project: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
+
+
+def test_doctor_requires_the_controller_resolved_git(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    env = dict(os.environ)
+    env.pop("AGENT_LOOP_REAL_GIT", None)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(DOCTOR),
+            "--project-dir",
+            str(project),
+            "--claude-effort",
+            "low",
+            "--base-ref",
+            "HEAD",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "trusted Git executable is unavailable" in result.stderr
 
 
 def test_doctor_accepts_current_contract_without_mutation(tmp_path: Path) -> None:

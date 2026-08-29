@@ -191,16 +191,17 @@ def main() -> int:
         for sig, previous in previous_handlers.items():
             signal.signal(sig, previous)
 
+    # Surviving descendants make every ordinary status unsafe to act on. In
+    # particular, returning 124 would tell agent-loop to start a replacement
+    # worker in a worktree the timed-out process may still be mutating.
+    if cleanup_failed:
+        return 125
     if received_signal is not None:
         return 128 + received_signal
     if timed_out:
         return 124
     if return_code < 0:
         return 128 - return_code
-    # Only surface the containment failure when nothing else already failed, so
-    # a real hook status is never overwritten by cleanup.
-    if cleanup_failed and return_code == 0:
-        return 1
     return return_code
 
 
