@@ -1133,6 +1133,34 @@ def test_replacement_ref_cannot_redefine_the_pinned_review_launcher(
     assert not marker.exists()
 
 
+def test_fresh_base_launcher_change_fails_the_round_time_boundary(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, _, _ = consumer
+    clone = tmp_path / "advanced-launcher-base"
+    _clone_test_repo(remote, clone)
+    launcher = clone / ".codex/skills/agent-loop/scripts/run-codex-review.sh"
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        f"printf '%s\\n' '# incompatible launcher' >> {launcher}; "
+        f'"$AGENT_LOOP_REAL_GIT" -C {clone} add .codex/skills/agent-loop/scripts/run-codex-review.sh; '
+        f'"$AGENT_LOOP_REAL_GIT" -C {clone} commit -m "test: advance launcher"; '
+        f'"$AGENT_LOOP_REAL_GIT" -C {clone} push origin main'
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "78"],
+        issues=[_issue(78)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=120,
+    )
+
+    assert result.returncode != 0
+    assert "review launcher changed after the controller compatibility preflight" in result.stderr
+
+
 def test_worker_cannot_replace_runtime_helpers_or_shadow_python_imports(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

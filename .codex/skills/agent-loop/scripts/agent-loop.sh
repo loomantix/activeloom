@@ -1306,7 +1306,23 @@ install_review_push_helper() {
 install_pinned_review_launcher() {
     local trusted_dir="$AGENT_LOOP_LOG_DIR/trusted-review-tools"
     local destination="$trusted_dir/run-codex-review.sh" actual_oid
+    local round_base="$1" round_entry round_oid
     [ "$REVIEW_CONTRACT_VERSION" = 4 ] || return 0
+    round_entry="$("$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+        ls-tree "$round_base" -- ".codex/skills/agent-loop/scripts/run-codex-review.sh")" || return 1
+    case "$round_entry" in
+        "100755 blob "*$'\t'".codex/skills/agent-loop/scripts/run-codex-review.sh") ;;
+        *)
+            echo "review launcher is missing or has an unsafe mode in the exact round base" >&2
+            return 1
+            ;;
+    esac
+    round_oid="${round_entry#"100755 blob "}"
+    round_oid="${round_oid%%$'\t'*}"
+    [ "$round_oid" = "$PINNED_REVIEW_LAUNCHER_OID" ] || {
+        echo "review launcher changed after the controller compatibility preflight" >&2
+        return 1
+    }
     if [ -L "$trusted_dir" ] || { [ -e "$trusted_dir" ] && [ ! -d "$trusted_dir" ]; }; then
         echo "trusted review tool path is not a real directory: $trusted_dir" >&2
         return 1
@@ -1802,7 +1818,7 @@ run_review_pass() {
         export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
 
         if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
-            install_pinned_review_launcher || {
+            install_pinned_review_launcher "$AGENT_LOOP_REVIEW_BASE_SHA" || {
                 recovery_message "Could not install the pinned review launcher for $engine round $round."
                 return 1
             }
