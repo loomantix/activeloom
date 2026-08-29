@@ -18,8 +18,10 @@ def _project(tmp_path: Path) -> Path:
     skill = project / ".codex/skills/agent-loop"
     scripts = skill / "scripts"
     ledger_dir = project / ".codex/skills/critique/scripts"
+    ready_dir = project / ".codex/skills/issues/scripts"
     scripts.mkdir(parents=True)
     ledger_dir.mkdir(parents=True)
+    ready_dir.mkdir(parents=True)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/agent-loop-state.py", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/review-push.sh", scripts)
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/run-codex-review.sh", scripts)
@@ -30,6 +32,7 @@ def _project(tmp_path: Path) -> Path:
     )
     shutil.copy2(ROOT / ".codex/skills/agent-loop/scripts/config-doctor.py", scripts)
     shutil.copy2(ROOT / ".codex/skills/critique/scripts/review-ledger.js", ledger_dir)
+    shutil.copy2(ROOT / ".codex/skills/issues/scripts/ready.py", ready_dir)
     # See tests/test_agent_loop.py: sync ships the sibling ESM manifest, and a
     # CommonJS consumer root is the context that needs it.
     shutil.copy2(ROOT / ".codex/skills/critique/scripts/package.json", ledger_dir)

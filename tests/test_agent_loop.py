@@ -110,6 +110,7 @@ if [ "${1:-}" = --wrapper-paths ]; then
         .codex/skills/agent-loop/scripts/process-supervisor.py \
         .codex/skills/agent-loop/scripts/config-doctor.py \
         .codex/skills/agent-loop/scripts/agent-loop-state.py \
+        .codex/skills/issues/scripts/ready.py \
         .codex/skills/critique/scripts/review-ledger.js
     exit 0
 fi
@@ -1131,11 +1132,13 @@ def test_replacement_ref_cannot_redefine_the_pinned_review_launcher(
     assert not marker.exists()
 
 
-def test_worker_cannot_replace_state_or_ledger_helpers(
+def test_worker_cannot_replace_runtime_helpers_or_shadow_python_imports(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     state_marker = tmp_path / "mutated-state-helper-ran"
     ledger_marker = tmp_path / "mutated-ledger-ran"
+    ready_marker = tmp_path / "mutated-ready-helper-ran"
+    import_marker = tmp_path / "shadowed-python-import-ran"
     worker_hook = (
         'state="$AGENT_LOOP_PROJECT_DIR/.codex/skills/agent-loop/scripts/agent-loop-state.py"; '
         "printf '%s\\n' '#!/usr/bin/env python3' "
@@ -1145,6 +1148,13 @@ def test_worker_cannot_replace_state_or_ledger_helpers(
         "printf '%s\\n' "
         f"'import {{ writeFileSync }} from \"fs\"; writeFileSync(\"{ledger_marker}\", \"\")' "
         "'process.exit(0)' > \"$ledger\"; chmod 644 \"$ledger\"; "
+        'ready="$AGENT_LOOP_PROJECT_DIR/.codex/skills/issues/scripts/ready.py"; '
+        "printf '%s\\n' '#!/usr/bin/env python3' "
+        f"'from pathlib import Path; Path(\"{ready_marker}\").touch()' "
+        "'print(\"[]\")' > \"$ready\"; chmod 755 \"$ready\"; "
+        'shadow="$AGENT_LOOP_PROJECT_DIR/json.py"; '
+        f"printf '%s\\n' 'from pathlib import Path' 'Path(\"{import_marker}\").touch()' "
+        "> \"$shadow\"; "
         "printf 'done\\n' > result.txt; git add result.txt; "
         "git commit -m 'fix: worker result'"
     )
@@ -1161,6 +1171,8 @@ def test_worker_cannot_replace_state_or_ledger_helpers(
     assert result.returncode == 0, result.stderr + result.stdout
     assert not state_marker.exists()
     assert not ledger_marker.exists()
+    assert not ready_marker.exists()
+    assert not import_marker.exists()
 
 
 def test_worker_cannot_replace_the_pinned_review_push_helper(

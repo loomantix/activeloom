@@ -88,7 +88,7 @@ def _require_base_blob(project: Path, base_ref: str, relative: str) -> tuple[str
 def _verify_protocols(ledger: Path, state: Path, review_push: Path) -> None:
     if _version(["node", str(ledger), "--protocol-version"], "review ledger") != "3":
         raise DoctorError("review-ledger protocol is incompatible with contract v3")
-    if _version([sys.executable, str(state), "--state-version"], "run state") != "1":
+    if _version([sys.executable, "-I", str(state), "--state-version"], "run state") != "1":
         raise DoctorError("agent-loop state protocol is incompatible")
     if _version([str(review_push), "--protocol-version"], "review push") != "1":
         raise DoctorError("review-push protocol is incompatible")
@@ -192,6 +192,7 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
         for relative in wrapper_paths:
             if not (
                 relative.startswith(".codex/skills/agent-loop/scripts/")
+                or relative == ".codex/skills/issues/scripts/ready.py"
                 or relative == ".codex/skills/critique/scripts/review-ledger.js"
             ):
                 raise DoctorError(
@@ -226,7 +227,10 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
                 )
         _verify_protocols(ledger, state, review_push)
         supervisor = root / ".codex/skills/agent-loop/scripts/process-supervisor.py"
-        if _version([str(supervisor), "--self-test"], "hook process supervisor") != (
+        if _version(
+            [sys.executable, "-I", str(supervisor), "--self-test"],
+            "hook process supervisor",
+        ) != (
             "linux-subreaper-v1"
         ):
             raise DoctorError("hook process supervisor self-test failed")

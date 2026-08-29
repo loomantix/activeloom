@@ -518,13 +518,14 @@ if [ "$CONFIG_DOCTOR" = true ]; then
         # working-tree path after the hash check.
         "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
             cat-file blob "$pinned_doctor_oid" | \
-            GIT_NO_REPLACE_OBJECTS=1 python3 - "${doctor_command[@]}" || exit 1
+            GIT_NO_REPLACE_OBJECTS=1 python3 -I - "${doctor_command[@]}" || exit 1
     else
-        python3 "$CONFIG_DOCTOR_HELPER" "${doctor_command[@]}" || exit 1
+        python3 -I "$CONFIG_DOCTOR_HELPER" "${doctor_command[@]}" || exit 1
     fi
 fi
 PINNED_RUN_STATE_OID=""
 PINNED_REVIEW_LEDGER_OID=""
+PINNED_ISSUES_READY_OID=""
 if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     PINNED_RUN_STATE_OID="$(require_base_pinned_tool "$RUN_STATE_HELPER" \
         ".codex/skills/agent-loop/scripts/agent-loop-state.py" 100755 \
@@ -532,15 +533,28 @@ if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
     PINNED_REVIEW_LEDGER_OID="$(require_base_pinned_tool "$REVIEW_LEDGER" \
         ".codex/skills/critique/scripts/review-ledger.js" 100644 \
         "review ledger")" || exit 1
+    PINNED_ISSUES_READY_OID="$(require_base_pinned_tool "$ISSUES_READY" \
+        ".codex/skills/issues/scripts/ready.py" 100755 \
+        "issues readiness helper")" || exit 1
 fi
 
 run_state_helper() {
     if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
         "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
             cat-file blob "$PINNED_RUN_STATE_OID" | \
-            GIT_NO_REPLACE_OBJECTS=1 python3 - "$@"
+            GIT_NO_REPLACE_OBJECTS=1 python3 -I - "$@"
     else
-        python3 "$RUN_STATE_HELPER" "$@"
+        python3 -I "$RUN_STATE_HELPER" "$@"
+    fi
+}
+
+run_issues_ready() {
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        "$REAL_GIT_BIN" --no-replace-objects -C "$PROJECT_DIR" \
+            cat-file blob "$PINNED_ISSUES_READY_OID" | \
+            GIT_NO_REPLACE_OBJECTS=1 python3 -I - "$@"
+    else
+        python3 -I "$ISSUES_READY" "$@"
     fi
 }
 
@@ -617,7 +631,7 @@ if [ -n "$RESUME_RUN_FILE" ]; then
         echo "--resume-run requires review_contract_version = 3 or 4" >&2
         exit 1
     }
-    RESUME_RUN_FILE="$(python3 -c '
+    RESUME_RUN_FILE="$(python3 -I -c '
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
@@ -772,7 +786,7 @@ set_selected_issue_context() {
 }
 
 sha256_text() {
-    python3 -c '
+    python3 -I -c '
 from hashlib import sha256
 import sys
 sys.stdout.write(sha256(sys.stdin.buffer.read()).hexdigest())
@@ -820,7 +834,7 @@ select_next_issue() {
         # An allowlist is a scope ceiling, not an eligibility bypass. Resolve the
         # same hard excludes, open blockers, and addressed-PR checks as the normal
         # ready queue, while retaining assigned-but-ready rows for --resume.
-        allowlist_ready_json="$("$ISSUES_READY" --agent --limit 1000 --json)" || return 2
+        allowlist_ready_json="$(run_issues_ready --agent --limit 1000 --json)" || return 2
         ready_queue_numbers <<< "$allowlist_ready_json" >/dev/null || {
             echo "could not validate ready-queue data" >&2
             return 2
@@ -883,9 +897,9 @@ select_next_issue() {
 
     local ready_json ready_numbers
     if [ "$INCLUDE_ASSIGNED" = true ]; then
-        ready_json="$("$ISSUES_READY" --agent --limit 100 --json)" || return 2
+        ready_json="$(run_issues_ready --agent --limit 100 --json)" || return 2
     else
-        ready_json="$("$ISSUES_READY" --unassigned --agent --limit 100 --json)" || return 2
+        ready_json="$(run_issues_ready --unassigned --agent --limit 100 --json)" || return 2
     fi
     ready_numbers="$(ready_queue_numbers <<< "$ready_json")" || {
         echo "could not validate ready-queue data" >&2
@@ -944,7 +958,7 @@ issue_dependency_merged() {
 }
 
 dependency_refs() {
-    python3 -c 'import re,sys
+    python3 -I -c 'import re,sys
 body=sys.stdin.read()
 pattern=re.compile(r"(?im)^\s*[-*]?\s*(?:blocked\s+by|depends\s+on)[:\s]+(?:(pr)\s*)?#(\d+)\b")
 for kind, number in pattern.findall(body):
@@ -987,7 +1001,7 @@ check_dependencies() {
 
 ready_queue_contains_issue() {
     local number="$1" excluded_pr="${2:-}" ready_json status=0
-    local -a ready_command=("$ISSUES_READY" --agent --limit 1000 --json)
+    local -a ready_command=(run_issues_ready --agent --limit 1000 --json)
     if [ -n "$excluded_pr" ]; then
         ready_command+=(--exclude-addressed-by-pr "$excluded_pr")
     fi
@@ -1255,14 +1269,14 @@ run_bounded_hook() {
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
         export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"
         if [ -n "$direct_review_engine" ]; then
-            python3 "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
+            python3 -I "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
                 --kill-after-seconds 15 -- "$CODEX_REVIEW_LAUNCHER" \
                 --engine "$direct_review_engine" 2>&1 \
                 | tail -c "$max_bytes"
         else
             export AGENT_LOOP_HOOK_COMMAND="$hook_command"
             # shellcheck disable=SC2016 # expanded by the bounded login shell
-            python3 "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
+            python3 -I "$PROCESS_SUPERVISOR" --timeout-seconds "$timeout_seconds" \
                 --kill-after-seconds 15 -- bash -lc \
                 'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
                 | tail -c "$max_bytes"
@@ -1397,7 +1411,7 @@ classify_review_result() {
         recovery_message "$engine review outcome must be a readable regular file."
         return 1
     fi
-    classification="$(python3 -c '
+    classification="$(python3 -I -c '
 from pathlib import Path
 import sys
 
@@ -1416,7 +1430,7 @@ sys.stdout.write(values[data])
 
 review_outcome_signature() {
     local outcome_file="$1"
-    python3 -c '
+    python3 -I -c '
 from hashlib import sha256
 import os
 from pathlib import Path

@@ -20,6 +20,7 @@ WRAPPER_REQUIRED_PATHS=(
     .codex/skills/agent-loop/scripts/process-supervisor.py
     .codex/skills/agent-loop/scripts/config-doctor.py
     .codex/skills/agent-loop/scripts/agent-loop-state.py
+    .codex/skills/issues/scripts/ready.py
     .codex/skills/critique/scripts/review-ledger.js
 )
 
