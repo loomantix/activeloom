@@ -288,14 +288,17 @@ def test_rejects_changed_origin_before_push(
     assert not _git(repo, "ls-remote", "--heads", str(redirected))
 
 
-def test_v3_guard_rejects_self_authorized_direct_push(tmp_path: Path) -> None:
+@pytest.mark.parametrize("contract_version", ["3", "4"])
+def test_structured_guard_rejects_self_authorized_direct_push(
+    tmp_path: Path, contract_version: str
+) -> None:
     guard = ROOT / ".codex/skills/agent-loop/scripts/hook-git-guard"
     env = os.environ.copy()
     env.update(
         {
             "AGENT_LOOP_REAL_GIT": "/bin/echo",
             "AGENT_LOOP_ALLOW_REVIEW_MUTATIONS": "true",
-            "AGENT_LOOP_REVIEW_CONTRACT_VERSION": "3",
+            "AGENT_LOOP_REVIEW_CONTRACT_VERSION": contract_version,
             "AGENT_LOOP_SAFE_REVIEW_PUSH": "1",
             "AGENT_LOOP_BRANCH": "agent-loop/issue-7",
         }
@@ -310,7 +313,7 @@ def test_v3_guard_rejects_self_authorized_direct_push(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
-    assert "contract-v3 review hooks must publish" in result.stderr
+    assert "structured review hooks must publish" in result.stderr
 
 
 def test_v2_guard_preserves_explicit_staged_review_push(tmp_path: Path) -> None:

@@ -74,6 +74,8 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
 # integration suite to inject deterministic reviewer behavior through comments
 # in its generated config. The real launcher's trust boundary has a dedicated
 # execution-level test module.
+if [ "${1:-}" = --contract-version ]; then echo 4; exit 0; fi
+if [ "${1:-}" = --claude-effort-policy ]; then echo low; exit 0; fi
 if false; then
     claude \\
         --effort low \\
@@ -84,7 +86,7 @@ import argparse, base64, os, pathlib, subprocess
 parser = argparse.ArgumentParser()
 parser.add_argument('--engine', choices=('codex', 'claude'), required=True)
 engine = parser.parse_args().engine
-config = pathlib.Path(os.environ['AGENT_LOOP_TRUSTED_CODEX_ROOT']) / 'skills/agent-loop/agent-loop.config'
+config = pathlib.Path(os.environ['AGENT_LOOP_TRUSTED_REPO_ROOT']) / '.codex/skills/agent-loop/agent-loop.config'
 prefix = f'# agent_test_{engine}_review_command_b64 = '
 encoded = next(line.removeprefix(prefix) for line in config.read_text().splitlines() if line.startswith(prefix))
 command = base64.b64decode(encoded).decode()
@@ -574,7 +576,7 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
         '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
     )
     values: dict[str, str | int] = {
-        "review_contract_version": 3,
+        "review_contract_version": 4,
         "config_doctor": "true",
         "claude_effort_policy": "low",
         "codex_review_hook": result_command,
@@ -907,7 +909,10 @@ def test_worker_does_not_receive_the_pinned_review_launcher(
     worker_hook = (
         'test -z "${AGENT_LOOP_CODEX_REVIEW_LAUNCHER:-}"; '
         'test -z "${AGENT_LOOP_TRUSTED_CODEX_ROOT:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_REPO_ROOT:-}"; '
         'test -z "${AGENT_LOOP_TRUSTED_BASE_REF:-}"; '
+        'test -z "${AGENT_LOOP_REVIEW_BIN:-}"; '
+        'test -z "${AGENT_LOOP_REVIEW_BIN_SHA256:-}"; '
         'test -z "${CODEX_REVIEW_CLI:-}"; '
         'test -z "${CLAUDE_REVIEW_CLI:-}"; '
         "printf 'done\\n' > result.txt; git add result.txt; "
@@ -918,8 +923,106 @@ def test_worker_does_not_receive_the_pinned_review_launcher(
         ["--issues", "59"],
         issues=[_issue(59)],
         config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=120,
     )
     assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_worker_cannot_replace_the_base_pinned_review_launcher(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    marker = tmp_path / "mutated-launcher-ran"
+    worker_hook = (
+        "launcher=\"$AGENT_LOOP_PROJECT_DIR/.codex/skills/agent-loop/scripts/run-codex-review.sh\"; "
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$launcher\"; chmod 755 \"$launcher\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "62"],
+        issues=[_issue(62)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        extra_env={"AGENT_LOOP_PROJECT_DIR": str(consumer[0])},
+    )
+    assert result.returncode != 0
+    assert "launcher bytes differ from the pinned base" in result.stderr
+    assert not marker.exists()
+
+
+def test_later_worker_does_not_inherit_review_only_state(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker_hook = (
+        'test -z "${AGENT_LOOP_CODEX_REVIEW_LAUNCHER:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_REPO_ROOT:-}"; '
+        'test -z "${AGENT_LOOP_TRUSTED_BASE_REF:-}"; '
+        'test -z "${AGENT_LOOP_REVIEW_BIN:-}"; '
+        'test -z "${AGENT_LOOP_REVIEW_BIN_SHA256:-}"; '
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "59,60", "--iterations", "2"],
+        issues=[_issue(59), _issue(60)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_contract_v4_wrapper_uses_the_real_launcher_for_both_reviewers(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, _, bin_dir, _ = consumer
+    trusted_files = (
+        ".codex/REVIEW_WORKFLOW.md",
+        ".codex/references/local-review-ledger.md",
+        ".codex/skills/deepcritique/SKILL.md",
+        ".codex/skills/critique/SKILL.md",
+        ".codex/skills/critique/scripts/review-ledger.js",
+        ".codex/skills/refactorpass/SKILL.md",
+        ".codex/skills/agent-loop/scripts/run-codex-review.sh",
+    )
+    for relative in trusted_files:
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+    claude_skill = repo / ".claude/skills/deepcritique/SKILL.md"
+    claude_skill.parent.mkdir(parents=True, exist_ok=True)
+    claude_skill.write_text("# Trusted Claude deep critique fixture\n", encoding="utf-8")
+    _run_git("add", ".", cwd=repo)
+    _run_git("commit", "-m", "test: install trusted review surfaces", cwd=repo)
+    _run_git("push", "origin", "main", cwd=repo)
+
+    reviewer = """#!/usr/bin/env python3
+import json, os, pathlib, sys
+engine = os.environ['AGENT_LOOP_REVIEW_ENGINE']
+with pathlib.Path(os.environ['REVIEW_INVOCATIONS']).open('a', encoding='utf-8') as stream:
+    stream.write(json.dumps({'engine': engine, 'base': os.environ['AGENT_LOOP_REVIEW_BASE_SHA'], 'head': os.environ['AGENT_LOOP_PR_HEAD_SHA'], 'argv': sys.argv[1:]}) + '\\n')
+head = os.environ['AGENT_LOOP_PR_HEAD_SHA']
+pathlib.Path(os.environ['AGENT_LOOP_REVIEW_RESULT_FILE']).write_text(json.dumps({'version': 3, 'status': 'clean', 'engine': engine, 'round': int(os.environ['AGENT_LOOP_REVIEW_ROUND']), 'baseSha': os.environ['AGENT_LOOP_REVIEW_BASE_SHA'], 'beforeSha': head, 'afterSha': head, 'classification': None, 'findingFingerprints': [], 'finalLaneComplete': True}), encoding='utf-8')
+"""
+    _write_executable(bin_dir / "codex", reviewer)
+    _write_executable(bin_dir / "claude", reviewer)
+    invocations = tmp_path / "review-invocations.jsonl"
+    result = _run(
+        consumer,
+        ["--issues", "61"],
+        issues=[_issue(61)],
+        config=_config_v3(tmp_path),
+        extra_env={"REVIEW_INVOCATIONS": str(invocations)},
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    rows = [json.loads(line) for line in invocations.read_text(encoding="utf-8").splitlines()]
+    assert [row["engine"] for row in rows] == ["codex", "claude"]
+    assert rows[0]["base"] == rows[1]["base"]
+    assert rows[0]["head"] == rows[1]["head"]
+    assert rows[0]["argv"][:2] == ["exec", "--dangerously-bypass-approvals-and-sandbox"]
+    assert rows[1]["argv"][:2] == ["--effort", "low"]
 
 
 def test_ambient_gh_repo_is_replaced_with_checkout_repository(
@@ -2157,7 +2260,7 @@ def test_v3_auto_policy_is_required_before_claim(
         ),
     ],
 )
-def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
+def test_v4_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
     consumer: tuple[Path, Path, Path, Path],
     tmp_path: Path,
     hook_key: str,
@@ -2180,7 +2283,7 @@ def test_v3_hook_contract_is_preflighted_before_claim_when_doctor_disabled(
     )
 
     assert result.returncode != 0
-    assert f"{hook_key} must use the dedicated Codex review launcher" in result.stderr
+    assert f"{hook_key} must use the dedicated contract-v4 review launcher" in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
@@ -2348,7 +2451,7 @@ def test_v3_finalization_reuses_sealed_pseudo_v3_history(
     assert all("local-review-pass:v3" in row["body"] for row in comments)
 
 
-def test_v3_review_hook_cannot_self_authorize_direct_push(
+def test_structured_review_hook_cannot_self_authorize_direct_push(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     clean_result = (
@@ -2377,7 +2480,7 @@ def test_v3_review_hook_cannot_self_authorize_direct_push(
 
     assert result.returncode == 0, result.stderr + result.stdout
     rejection = (consumer[3] / "direct-v3-push.stderr").read_text(encoding="utf-8")
-    assert "contract-v3 review hooks must publish" in rejection
+    assert "structured review hooks must publish" in rejection
     branch = _agent_loop_branches(consumer[1]).strip()
     assert "issue-91" in branch
     assert (
@@ -4479,7 +4582,7 @@ def test_batch_resume_rejects_contract_v2_before_state_mutation(
     )
 
     assert result.returncode != 0
-    assert "--resume-batch requires review_contract_version = 3" in result.stderr
+    assert "--resume-batch requires review_contract_version = 3 or 4" in result.stderr
     assert batch_file.read_bytes() == before
 
 

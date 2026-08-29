@@ -40,7 +40,7 @@ def _project(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (skill / "agent-loop.config").write_text(
-        "review_contract_version = 3\n"
+        "review_contract_version = 4\n"
         'codex_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex\n'
         'claude_review_hook = "$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude\n',
         encoding="utf-8",
@@ -50,7 +50,14 @@ def _project(tmp_path: Path) -> Path:
 
 def _run(project: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python3", str(DOCTOR), "--project-dir", str(project), "--claude-effort", "low"],
+        [
+            "python3",
+            str(DOCTOR),
+            "--project-dir",
+            str(project),
+            "--claude-effort",
+            "low",
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -66,16 +73,61 @@ def test_doctor_accepts_current_contract_without_mutation(tmp_path: Path) -> Non
     assert sorted(path.relative_to(project) for path in project.rglob("*")) == before
 
 
+def test_doctor_retains_contract_v3_hook_compatibility(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    config = project / ".codex/skills/agent-loop/agent-loop.config"
+    config.write_text(
+        "review_contract_version = 3\n"
+        'codex_review_hook = deepcritique "$AGENT_LOOP_PR_NUMBER"; '
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; node review-ledger.js write-result '
+        '"$AGENT_LOOP_REVIEW_RESULT_FILE"\n'
+        "claude_review_hook = claude --effort low -p deepcritique; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; node review-ledger.js write-result '
+        '"$AGENT_LOOP_REVIEW_RESULT_FILE"\n',
+        encoding="utf-8",
+    )
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ("review_contract_version = 3", "review_contract_version = 2", "must be 3"),
-        ("--engine codex", "--engine claude", "dedicated Codex review launcher"),
-        ("--engine claude", "--engine codex", "dedicated Codex review launcher"),
+        ("echo 4; exit 0", "echo 5; exit 0", "incompatible with contract v4"),
+        (
+            "CLAUDE_EFFORT_POLICY=low",
+            "CLAUDE_EFFORT_POLICY=high",
+            "pin Claude effort low",
+        ),
+    ],
+)
+def test_doctor_rejects_incompatible_launcher_contract(
+    tmp_path: Path, old: str, new: str, message: str
+) -> None:
+    project = _project(tmp_path)
+    launcher = project / ".codex/skills/agent-loop/scripts/run-codex-review.sh"
+    launcher.write_text(
+        launcher.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8"
+    )
+    result = _run(project)
+    assert result.returncode != 0
+    assert message in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            "review_contract_version = 4",
+            "review_contract_version = 2",
+            "must be 3 or 4",
+        ),
+        ("--engine codex", "--engine claude", "contract-v4 review launcher"),
+        ("--engine claude", "--engine codex", "contract-v4 review launcher"),
         (
             "AGENT_LOOP_CODEX_REVIEW_LAUNCHER",
             "AGENT_LOOP_OTHER_REVIEW_LAUNCHER",
-            "dedicated Codex review launcher",
+            "contract-v4 review launcher",
         ),
     ],
 )
@@ -84,7 +136,9 @@ def test_doctor_failure_fixtures(
 ) -> None:
     project = _project(tmp_path)
     config = project / ".codex/skills/agent-loop/agent-loop.config"
-    config.write_text(config.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(old, new), encoding="utf-8"
+    )
     result = _run(project)
     assert result.returncode != 0
     assert message in result.stderr

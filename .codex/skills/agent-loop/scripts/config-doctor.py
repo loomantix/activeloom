@@ -66,10 +66,13 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         review_launcher,
     ):
         if not path.is_file() or path.is_symlink():
-            raise DoctorError(f"required agent-loop file is missing: {path.relative_to(root)}")
+            raise DoctorError(
+                f"required agent-loop file is missing: {path.relative_to(root)}"
+            )
     values = _config(config_path)
-    if values.get("review_contract_version") != "3":
-        raise DoctorError("review_contract_version must be 3")
+    contract = values.get("review_contract_version")
+    if contract not in {"3", "4"}:
+        raise DoctorError("review_contract_version must be 3 or 4")
     if _version(["node", str(ledger), "--protocol-version"], "review ledger") != "3":
         raise DoctorError("review-ledger protocol is incompatible with contract v3")
     if _version([sys.executable, str(state), "--state-version"], "run state") != "1":
@@ -86,30 +89,54 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         raise DoctorError("worker prompt or instructions require masked gh")
     if "local commit" not in prompt.lower() or "do not push" not in prompt.lower():
         raise DoctorError("worker prompt must require a local commit and forbid push")
-    if "AGENT_LOOP_ISSUE_TITLE" not in instructions or "AGENT_LOOP_ISSUE_BODY" not in instructions:
-        raise DoctorError("worker instructions must describe wrapper-provided issue context")
+    if (
+        "AGENT_LOOP_ISSUE_TITLE" not in instructions
+        or "AGENT_LOOP_ISSUE_BODY" not in instructions
+    ):
+        raise DoctorError(
+            "worker instructions must describe wrapper-provided issue context"
+        )
 
     hooks = {
         "codex": values.get("codex_review_hook", ""),
         "claude": values.get("claude_review_hook", ""),
     }
-    expected_hooks = {
-        "codex": '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex',
-        "claude": '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude',
-    }
-    for engine, expected in expected_hooks.items():
-        if hooks[engine] != expected:
-            raise DoctorError(
-                f"{engine}_review_hook must use the dedicated Codex review launcher"
-            )
-    launcher_text = review_launcher.read_text(encoding="utf-8")
-    launcher_efforts = re.findall(
-        r"^\s*--effort\s+([^\s\\]+)\s*\\?$", launcher_text, re.MULTILINE
-    )
-    if claude_effort and launcher_efforts != [claude_effort]:
-        raise DoctorError(
-            f"Codex review launcher must use literal Claude effort {claude_effort}"
+    if contract == "4":
+        expected_hooks = {
+            "codex": '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex',
+            "claude": '"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude',
+        }
+        for engine, expected in expected_hooks.items():
+            if hooks[engine] != expected:
+                raise DoctorError(
+                    f"{engine}_review_hook must use the dedicated contract-v4 review launcher"
+                )
+        if (
+            _version([str(review_launcher), "--contract-version"], "review launcher")
+            != "4"
+        ):
+            raise DoctorError("review launcher is incompatible with contract v4")
+        launcher_effort = _version(
+            [str(review_launcher), "--claude-effort-policy"], "review launcher"
         )
+        if claude_effort and launcher_effort != claude_effort:
+            raise DoctorError(f"review launcher must pin Claude effort {claude_effort}")
+    else:
+        for engine, hook in hooks.items():
+            if (
+                "AGENT_LOOP_REVIEW_RESULT_FILE" not in hook
+                or "write-result" not in hook
+                or "AGENT_LOOP_REVIEW_PUSH_HELPER" not in hook
+            ):
+                raise DoctorError(
+                    f"{engine}_review_hook must preserve the contract-v3 result and push helper contract"
+                )
+        if claude_effort:
+            efforts = re.findall(r"(?:^|\s)--effort(?:=|\s+)([^\s;]+)", hooks["claude"])
+            if efforts != [claude_effort]:
+                raise DoctorError(
+                    f"claude_review_hook must use exactly one literal --effort {claude_effort}"
+                )
 
 
 def main() -> int:

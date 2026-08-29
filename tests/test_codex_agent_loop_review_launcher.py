@@ -50,6 +50,8 @@ def _trusted_surface(tmp_path: Path) -> tuple[Path, Path]:
         ".codex/skills/critique/SKILL.md": "trusted critique\n",
         ".codex/skills/critique/scripts/review-ledger.js": "trusted helper\n",
         ".codex/skills/refactorpass/SKILL.md": "trusted refactor\n",
+        ".claude/skills/deepcritique/SKILL.md": "trusted Claude deep review\n",
+        "nested/AGENTS.md": "trusted nested instructions\n",
         "AGENTS.md": "trusted Codex instructions\n",
         "CLAUDE.md": "trusted Claude instructions\n",
     }
@@ -108,7 +110,7 @@ def _environment(
         "AGENT_LOOP_PR_HEAD_SHA": head,
         "AGENT_LOOP_REVIEW_RESULT_FILE": str(tmp_path / "result.json"),
         "AGENT_LOOP_REVIEW_PUSH_HELPER": str(tmp_path / "review-push.sh"),
-        "AGENT_LOOP_TRUSTED_CODEX_ROOT": str(trusted),
+        "AGENT_LOOP_TRUSTED_REPO_ROOT": str(trusted.parent),
         "AGENT_LOOP_TRUSTED_BASE_REF": "main",
         "REVIEW_INVOCATION": str(tmp_path / "invocation.json"),
         "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1",
@@ -154,7 +156,8 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     assert not Path(launch_root).exists()
     assert argv[argv.index("--add-dir") + 1] == str(issue)
     prompt = argv[-1]
-    assert str(trusted / "skills/deepcritique/SKILL.md") in prompt
+    assert "/trusted/.codex/skills/deepcritique/SKILL.md" in prompt
+    assert "round 2 (adversarial)" in prompt
     assert str(issue) in prompt
     assert "worker-authored" not in prompt
 
@@ -175,12 +178,12 @@ def test_launcher_runs_both_engines_from_an_empty_root_with_trusted_guidance(
     assert "--disable-slash-commands" in argv
     assert argv[argv.index("--setting-sources") + 1] == "user"
     assert argv[argv.index("--add-dir") + 1] == str(issue)
-    assert str(trusted / "skills/deepcritique/SKILL.md") in argv[-1]
+    assert "/trusted/.claude/skills/deepcritique/SKILL.md" in argv[-1]
     assert invocation["additional_instructions"] is None
     assert invocation["auto_memory"] == "1"
 
 
-def test_launcher_rejects_a_modified_trusted_surface_before_review(
+def test_launcher_uses_base_blobs_when_the_source_checkout_is_modified(
     tmp_path: Path,
 ) -> None:
     trusted_repo, trusted = _trusted_surface(tmp_path)
@@ -188,10 +191,7 @@ def test_launcher_rejects_a_modified_trusted_surface_before_review(
     (trusted / "skills/deepcritique/SKILL.md").write_text(
         "modified\n", encoding="utf-8"
     )
-    marker = tmp_path / "called"
-    cli = tmp_path / "codex"
-    cli.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n", encoding="utf-8")
-    cli.chmod(0o755)
+    cli = _fake_cli(tmp_path / "codex")
 
     result = _run_launcher(
         issue,
@@ -200,9 +200,10 @@ def test_launcher_rejects_a_modified_trusted_surface_before_review(
             tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
         ),
     )
-    assert result.returncode != 0
-    assert "differs from the fetched base" in result.stderr
-    assert not marker.exists()
+    assert result.returncode == 0, result.stderr
+    invocation = json.loads((tmp_path / "invocation.json").read_text(encoding="utf-8"))
+    assert str(trusted) not in invocation["argv"][-1]
+    assert "/trusted/.codex/skills/deepcritique/SKILL.md" in invocation["argv"][-1]
 
 
 def test_launcher_rejects_a_trusted_ref_that_moved_from_the_pinned_base(
@@ -222,7 +223,7 @@ def test_launcher_rejects_a_trusted_ref_that_moved_from_the_pinned_base(
     assert not (tmp_path / "invocation.json").exists()
 
 
-def test_launcher_rejects_a_symlinked_required_instruction(tmp_path: Path) -> None:
+def test_launcher_ignores_a_symlinked_working_tree_instruction(tmp_path: Path) -> None:
     trusted_repo, trusted = _trusted_surface(tmp_path)
     issue, base, head = _issue_worktree(tmp_path, trusted_repo)
     skill = trusted / "skills/deepcritique/SKILL.md"
@@ -237,29 +238,22 @@ def test_launcher_rejects_a_symlinked_required_instruction(tmp_path: Path) -> No
             tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
         ),
     )
-    assert result.returncode != 0
-    assert "contains a symlink" in result.stderr
-    assert not (tmp_path / "invocation.json").exists()
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "invocation.json").exists()
 
 
-def test_launcher_rejects_a_reviewer_mutation_of_the_trusted_surface(
+def test_launcher_rejects_a_reviewer_binary_that_changed_after_pinning(
     tmp_path: Path,
 ) -> None:
     trusted_repo, trusted = _trusted_surface(tmp_path)
     issue, base, head = _issue_worktree(tmp_path, trusted_repo)
-    cli = tmp_path / "codex"
-    cli.write_text(
-        "#!/usr/bin/env python3\n"
-        "import os, pathlib\n"
-        "pathlib.Path(os.environ['MUTATE_TRUSTED_PATH']).write_text('mutated\\n')\n",
-        encoding="utf-8",
-    )
-    cli.chmod(0o755)
+    cli = _fake_cli(tmp_path / "codex")
     environment = _environment(
         tmp_path, engine="codex", trusted=trusted, base=base, head=head, cli=cli
     )
-    environment["MUTATE_TRUSTED_PATH"] = str(trusted / "skills/deepcritique/SKILL.md")
+    environment["AGENT_LOOP_REVIEW_BIN"] = str(cli)
+    environment["AGENT_LOOP_REVIEW_BIN_SHA256"] = "0" * 64
 
     result = _run_launcher(issue, "codex", environment)
     assert result.returncode != 0
-    assert "reviewer modified the trusted Codex review surface" in result.stderr
+    assert "reviewer executable changed after startup" in result.stderr

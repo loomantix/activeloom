@@ -216,7 +216,7 @@ def test_canonical_sync_preserves_consumer_owned_files_and_is_idempotent(
     synced_ledger = consumer / ledger_relative
     assert synced_ledger.is_file()
     assert synced_ledger.read_bytes() == (REPO_ROOT / ledger_relative).read_bytes()
-    assert "review_contract_version = 3" in (
+    assert "review_contract_version = 4" in (
         consumer / ".codex/skills/agent-loop/agent-loop.config"
     ).read_text(encoding="utf-8")
     sentinel = "\nconsumer customization\n"
@@ -413,7 +413,8 @@ def test_local_review_documents_explicit_cross_engine_modes() -> None:
     assert "local-review-handoff.py" not in ledger
     assert ".codex/" not in ledger
     assert "local-review-handoff:v1" in workflow
-    assert "exactly one effort option with literal value `low`" in agent_loop
+    assert "pinned launcher owns that policy" in agent_loop
+    assert "review_contract_version = 4" in agent_loop_config
     assert "config_doctor = true" in agent_loop_config
     assert "claude_effort_policy = low" in agent_loop_config
     assert "Handoff mode must stop after" in agent_loop

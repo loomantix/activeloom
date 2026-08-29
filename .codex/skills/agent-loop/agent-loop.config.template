@@ -16,20 +16,19 @@ validation_hook =
 
 # Required acknowledgement of the current review-hook contract. Existing
 # consumer configs must migrate the hooks below before adding this marker.
-review_contract_version = 3
+review_contract_version = 4
 config_doctor = true
-# Required for contract-v3 auto mode. The doctor rejects any Claude hook whose
-# effort options are not exactly one literal `--effort low`.
+# Required for contract-v4 auto mode. The pinned launcher owns Claude's `low`
+# effort policy; the doctor verifies the launcher's contract query.
 claude_effort_policy = low
 
-# Both review hooks are pinned to the upstream-owned trusted launcher. The
+# Contract v4 pins both review hooks to the upstream-owned trusted launcher. The
 # wrapper runs Codex first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
 # Codex-then-Claude round with no material fixes. The launcher runs each engine
-# from an empty session root, resolves verified guidance by absolute path from
-# the clean source checkout, and exposes the issue worktree only as the review
-# target.
+# from an empty session root, materializes engine-native guidance from immutable
+# base-commit blobs, and exposes the issue worktree only as the review target.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
 # commit it, call `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply with the fix and validation, resolve the

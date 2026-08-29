@@ -30,7 +30,9 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
     AGENT_LOOP_REVIEW_PUSH_STATE_FILE AGENT_LOOP_CODEX_REVIEW_LAUNCHER \
-    AGENT_LOOP_TRUSTED_CODEX_ROOT AGENT_LOOP_TRUSTED_BASE_REF
+    AGENT_LOOP_TRUSTED_REPO_ROOT AGENT_LOOP_TRUSTED_BASE_REF \
+    AGENT_LOOP_REVIEW_BIN AGENT_LOOP_REVIEW_BIN_SHA256 \
+    CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -153,7 +155,6 @@ CONFIG_DOCTOR_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/config-doctor.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
 CODEX_REVIEW_LAUNCHER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-codex-review.sh"
-TRUSTED_CODEX_ROOT="$(cd "$PACKAGED_SKILL_BASE/.." && pwd)"
 
 BASE_BRANCH=""
 SETUP_HOOK=""
@@ -233,12 +234,13 @@ if [ -e "$CONFIG_FILE" ]; then
     done < "$CONFIG_FILE"
 fi
 
-if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; then
-    echo "agent-loop config must set review_contract_version = 2 or review_contract_version = 3" >&2
+if [ "$REVIEW_CONTRACT_VERSION" != 2 ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ] && \
+   [ "$REVIEW_CONTRACT_VERSION" != 4 ]; then
+    echo "agent-loop config must set review_contract_version = 2, 3, or 4" >&2
     exit 1
 fi
-if [ -n "$RESUME_BATCH_FILE" ] && [ "$REVIEW_CONTRACT_VERSION" != 3 ]; then
-    echo "--resume-batch requires review_contract_version = 3" >&2
+if [ -n "$RESUME_BATCH_FILE" ] && [ "$REVIEW_CONTRACT_VERSION" -lt 3 ]; then
+    echo "--resume-batch requires review_contract_version = 3 or 4" >&2
     exit 1
 fi
 # Catch retired reviewer names before any issue mutation. Both local engines
@@ -265,13 +267,13 @@ for hook_key in claude_review_hook codex_review_hook; do
     fi
 done
 
-if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
     if [ ! -f "$REVIEW_LEDGER" ] || [ ! -r "$REVIEW_LEDGER" ]; then
-        echo "review contract v3 helper is unavailable: $REVIEW_LEDGER" >&2
+        echo "review contract v$REVIEW_CONTRACT_VERSION helper is unavailable: $REVIEW_LEDGER" >&2
         exit 1
     fi
     command -v node >/dev/null 2>&1 || {
-        echo "review contract v3 requires Node.js to run $REVIEW_LEDGER" >&2
+        echo "review contract v$REVIEW_CONTRACT_VERSION requires Node.js to run $REVIEW_LEDGER" >&2
         exit 1
     }
     # Capture status separately: command substitution inside `[ ]` is exempt
@@ -283,28 +285,43 @@ if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         exit 1
     fi
     [ "$ledger_protocol" = 3 ] || {
-        echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v3 requires 3" >&2
+        echo "review-ledger.js reports protocol '$ledger_protocol'; review contract v$REVIEW_CONTRACT_VERSION requires 3" >&2
         exit 1
     }
-    expected_codex_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex'
-    expected_claude_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude'
-    for hook_key in claude_review_hook codex_review_hook; do
-        case "$hook_key" in
-            claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK"; expected_hook="$expected_claude_hook" ;;
-            codex_review_hook) hook_value="$CODEX_REVIEW_HOOK"; expected_hook="$expected_codex_hook" ;;
-            *) echo "unhandled hook key in contract-v3 preflight: $hook_key" >&2; exit 1 ;;
-        esac
-        [ "$hook_value" = "$expected_hook" ] || {
-            echo "$hook_key must use the dedicated Codex review launcher" >&2
-            exit 1
-        }
-    done
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        expected_codex_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine codex'
+        expected_claude_hook='"$AGENT_LOOP_CODEX_REVIEW_LAUNCHER" --engine claude'
+        for hook_key in claude_review_hook codex_review_hook; do
+            case "$hook_key" in
+                claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK"; expected_hook="$expected_claude_hook" ;;
+                codex_review_hook) hook_value="$CODEX_REVIEW_HOOK"; expected_hook="$expected_codex_hook" ;;
+                *) echo "unhandled hook key in contract-v4 preflight: $hook_key" >&2; exit 1 ;;
+            esac
+            [ "$hook_value" = "$expected_hook" ] || {
+                echo "$hook_key must use the dedicated contract-v4 review launcher" >&2
+                exit 1
+            }
+        done
+    else
+        for hook_key in claude_review_hook codex_review_hook; do
+            case "$hook_key" in
+                claude_review_hook) hook_value="$CLAUDE_REVIEW_HOOK" ;;
+                codex_review_hook) hook_value="$CODEX_REVIEW_HOOK" ;;
+            esac
+            [[ "$hook_value" == *AGENT_LOOP_REVIEW_PUSH_HELPER* ]] && \
+                [[ "$hook_value" == *AGENT_LOOP_REVIEW_RESULT_FILE* ]] && \
+                [[ "$hook_value" == *write-result* ]] || {
+                echo "$hook_key must preserve the contract-v3 result and push helper contract" >&2
+                exit 1
+            }
+        done
+    fi
     [ "$CONFIG_DOCTOR" = true ] || {
-        echo "review contract v3 auto mode requires config_doctor = true" >&2
+        echo "review contract v$REVIEW_CONTRACT_VERSION auto mode requires config_doctor = true" >&2
         exit 1
     }
     [ "$CLAUDE_EFFORT_POLICY" = low ] || {
-        echo "review contract v3 auto mode requires claude_effort_policy = low" >&2
+        echo "review contract v$REVIEW_CONTRACT_VERSION auto mode requires claude_effort_policy = low" >&2
         exit 1
     }
 fi
@@ -338,7 +355,7 @@ case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be tru
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
-for cmd in git gh jq node python3 timeout flock realpath; do
+for cmd in git gh jq node python3 timeout flock realpath sha256sum awk; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
 REAL_GIT_BIN="$(type -P git)"
@@ -367,11 +384,13 @@ fi
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CODEX_REVIEW_HOOK" ] || { echo "codex_review_hook must be configured before running agent-loop" >&2; exit 1; }
 
-if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
-    CODEX_REVIEW_BIN="$(type -P codex 2>/dev/null || true)"
-    CLAUDE_REVIEW_BIN="$(type -P claude 2>/dev/null || true)"
+if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+    CODEX_REVIEW_BIN="$(realpath -e -- "$(type -P codex 2>/dev/null || true)" 2>/dev/null || true)"
+    CLAUDE_REVIEW_BIN="$(realpath -e -- "$(type -P claude 2>/dev/null || true)" 2>/dev/null || true)"
     [ -n "$CODEX_REVIEW_BIN" ] || { echo "required command not found for Codex review: codex" >&2; exit 1; }
     [ -n "$CLAUDE_REVIEW_BIN" ] || { echo "required command not found for Claude review: claude" >&2; exit 1; }
+    CODEX_REVIEW_BIN_SHA256="$(sha256sum "$CODEX_REVIEW_BIN" | awk '{print $1}')"
+    CLAUDE_REVIEW_BIN_SHA256="$(sha256sum "$CLAUDE_REVIEW_BIN" | awk '{print $1}')"
 fi
 
 if [ "$CONFIG_DOCTOR" = true ]; then
@@ -497,8 +516,8 @@ acquire_batch_lock() {
 }
 
 if [ -n "$RESUME_RUN_FILE" ]; then
-    [ "$REVIEW_CONTRACT_VERSION" = 3 ] || {
-        echo "--resume-run requires review_contract_version = 3" >&2
+    [ "$REVIEW_CONTRACT_VERSION" -ge 3 ] || {
+        echo "--resume-run requires review_contract_version = 3 or 4" >&2
         exit 1
     }
     RESUME_RUN_FILE="$(python3 -c '
@@ -1031,6 +1050,7 @@ require_issue_branch_head() {
 run_bounded_hook() {
     local phase="$1" hook_command="$2" timeout_seconds="$3" log_file="$4"
     local allow_review_mutations="${5:-false}"
+    local direct_review_engine="${6:-}"
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0
     local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
     echo -e "${BLUE}▸${NC} $phase"
@@ -1094,13 +1114,20 @@ run_bounded_hook() {
             unset AGENT_LOOP_REVIEW_CONTRACT_VERSION AGENT_LOOP_ORIGIN_FETCH_URLS \
                 AGENT_LOOP_ORIGIN_PUSH_URLS
         fi
-        export AGENT_LOOP_HOOK_COMMAND="$hook_command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
-        # shellcheck disable=SC2016 # expanded by the bounded login shell
-        timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
-            'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
-            | tail -c "$max_bytes"
+        export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"
+        if [ -n "$direct_review_engine" ]; then
+            timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" \
+                "$CODEX_REVIEW_LAUNCHER" --engine "$direct_review_engine" 2>&1 \
+                | tail -c "$max_bytes"
+        else
+            export AGENT_LOOP_HOOK_COMMAND="$hook_command"
+            # shellcheck disable=SC2016 # expanded by the bounded login shell
+            timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
+                'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
+                | tail -c "$max_bytes"
+        fi
         exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?
     if ! require_origin_identity; then
@@ -1333,7 +1360,7 @@ verify_converged_review_outcomes() {
         "$CONVERGED_CODEX_OUTCOME_SIGNATURE" "before publication" || return 1
     require_review_outcome_signature Claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
         "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" "before publication" || return 1
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         verify_v3_result_attestation Codex codex "$CONVERGED_CODEX_OUTCOME_FILE" \
             "$CONVERGED_CODEX_OUTCOME_SIGNATURE" || return 1
         verify_v3_result_attestation Claude claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
@@ -1394,7 +1421,9 @@ run_review_pass() {
     local before_sha after_sha status classification outcome_signature outcome_file
     local result_file result_json result_status result_hash allowed_heads_file blocker
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
-    local historical_comment_ids_signature launcher_relative launcher_status
+    local historical_comment_ids_signature launcher_relative launcher_mode
+    local launcher_expected_oid launcher_actual_oid direct_review_engine
+    local review_hook_status
     local boundary_status
 
     export AGENT_LOOP_REVIEW_ENGINE="$slug"
@@ -1402,7 +1431,7 @@ run_review_pass() {
     result_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.result.json"
     rm -f -- "$outcome_file"
     rm -f -- "$result_file"
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         unset AGENT_LOOP_REVIEW_OUTCOME_FILE
         export AGENT_LOOP_REVIEW_RESULT_FILE="$result_file"
     else
@@ -1420,12 +1449,7 @@ run_review_pass() {
         recovery_message "PR head attestation failed before $engine review round $round."
         return 1
     fi
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
-        export AGENT_LOOP_CODEX_REVIEW_LAUNCHER="$CODEX_REVIEW_LAUNCHER"
-        export AGENT_LOOP_TRUSTED_CODEX_ROOT="$TRUSTED_CODEX_ROOT"
-        export AGENT_LOOP_TRUSTED_BASE_REF="$BASE_REMOTE_REF"
-        export CODEX_REVIEW_CLI="$CODEX_REVIEW_BIN"
-        export CLAUDE_REVIEW_CLI="$CLAUDE_REVIEW_BIN"
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         pre_pass_threads_file="$(fetch_local_review_threads)" || {
             recovery_message "Could not snapshot review history before $engine round $round."
             return 1
@@ -1456,32 +1480,51 @@ run_review_pass() {
         case "$CODEX_REVIEW_LAUNCHER" in
             "$PROJECT_DIR"/*) launcher_relative="${CODEX_REVIEW_LAUNCHER#"$PROJECT_DIR"/}" ;;
         esac
-        launcher_status="invalid launcher path"
-        if [ -n "$launcher_relative" ]; then
-            launcher_status="$(git -C "$PROJECT_DIR" status --porcelain \
-                --untracked-files=all -- "$launcher_relative")" || {
-                recovery_message "Could not inspect the trusted Codex review launcher before $engine review round $round."
+        if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+            launcher_mode=""
+            launcher_expected_oid=""
+            launcher_actual_oid=""
+            if [ -n "$launcher_relative" ]; then
+                launcher_mode="$(git -C "$PROJECT_DIR" ls-tree "$AGENT_LOOP_REVIEW_BASE_SHA" -- "$launcher_relative" | awk '{print $1}')"
+                launcher_expected_oid="$(git -C "$PROJECT_DIR" rev-parse "$AGENT_LOOP_REVIEW_BASE_SHA:$launcher_relative" 2>/dev/null || true)"
+                launcher_actual_oid="$(git -C "$PROJECT_DIR" hash-object --no-filters "$CODEX_REVIEW_LAUNCHER" 2>/dev/null || true)"
+            fi
+            if [ -z "$launcher_relative" ] || [ "$launcher_mode" != 100755 ] || \
+                [ ! -f "$CODEX_REVIEW_LAUNCHER" ] || [ -L "$CODEX_REVIEW_LAUNCHER" ] || \
+                [ ! -x "$CODEX_REVIEW_LAUNCHER" ] || \
+                [ "$launcher_actual_oid" != "$launcher_expected_oid" ]; then
+                recovery_message "Trusted review launcher bytes differ from the pinned base; refusing $engine review round $round."
                 return 1
-            }
-        fi
-        if [ -z "$launcher_relative" ] || [ ! -f "$CODEX_REVIEW_LAUNCHER" ] || \
-            [ -L "$CODEX_REVIEW_LAUNCHER" ] || [ ! -x "$CODEX_REVIEW_LAUNCHER" ] || \
-            ! git -C "$PROJECT_DIR" diff --quiet --no-ext-diff --no-textconv \
-                "$AGENT_LOOP_REVIEW_BASE_SHA" -- "$launcher_relative" || \
-            [ -n "$launcher_status" ]; then
-            recovery_message "Trusted Codex review launcher changed after startup; refusing $engine review round $round."
-            return 1
+            fi
+            export AGENT_LOOP_CODEX_REVIEW_LAUNCHER="$CODEX_REVIEW_LAUNCHER"
+            export AGENT_LOOP_TRUSTED_REPO_ROOT="$PROJECT_DIR"
+            export AGENT_LOOP_TRUSTED_BASE_REF="$BASE_REMOTE_REF"
+            if [ "$slug" = codex ]; then
+                export AGENT_LOOP_REVIEW_BIN="$CODEX_REVIEW_BIN"
+                export AGENT_LOOP_REVIEW_BIN_SHA256="$CODEX_REVIEW_BIN_SHA256"
+            else
+                export AGENT_LOOP_REVIEW_BIN="$CLAUDE_REVIEW_BIN"
+                export AGENT_LOOP_REVIEW_BIN_SHA256="$CLAUDE_REVIEW_BIN_SHA256"
+            fi
         fi
     else
         unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
+    direct_review_engine=""
+    [ "$REVIEW_CONTRACT_VERSION" = 4 ] && direct_review_engine="$slug"
+    review_hook_status=0
     run_bounded_hook "$hook_description (round $round)" "$hook" \
-        "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
+        "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true \
+        "$direct_review_engine" || review_hook_status=$?
+    unset AGENT_LOOP_CODEX_REVIEW_LAUNCHER AGENT_LOOP_TRUSTED_REPO_ROOT \
+        AGENT_LOOP_TRUSTED_BASE_REF AGENT_LOOP_REVIEW_BIN \
+        AGENT_LOOP_REVIEW_BIN_SHA256 CODEX_REVIEW_CLI CLAUDE_REVIEW_CLI
+    if [ "$review_hook_status" -ne 0 ]; then
         recovery_message "$hook_failure_description failed in review round $round."
         return 1
-    }
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    fi
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         require_review_outcome_signature "$engine pre-pass history" \
             "$historical_comment_ids_file" "$historical_comment_ids_signature" \
             "after review round $round" || return 1
@@ -1503,13 +1546,13 @@ run_review_pass() {
         recovery_message "$review_description rewrote or dropped previously reviewed commits in round $round."
         return 1
     }
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         [ "$(cat "$review_push_state_file")" = "$after_sha" ] || {
             recovery_message "$engine review push checkpoint did not match its final head in round $round."
             return 1
         }
     fi
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         result_json="$(node "$REVIEW_LEDGER" validate-result \
             --engine "$slug" --round "$round" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
             --before "$before_sha" --head "$after_sha" --result-file "$result_file")" || {
@@ -1534,7 +1577,7 @@ run_review_pass() {
         return 1
     fi
     export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' <<<"$result_json")"
         allowed_heads_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-heads.json"
         write_review_transition_heads "$before_sha" "$after_sha" \
@@ -1575,7 +1618,7 @@ run_review_pass() {
             }
         fi
     fi
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         outcome_signature="file:$result_hash"
         require_review_outcome_signature "$engine" "$outcome_file" \
             "$outcome_signature" "after attestation in round $round" || return 1
@@ -2059,7 +2102,7 @@ verify_local_review_threads() {
     local -a historical_args=()
     ledger_file="$(fetch_local_review_threads)" || return 1
     ledger_signature="$(review_outcome_signature "$ledger_file")" || return 1
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         if [ "${REVIEW_ROUNDS_USED:-0}" -gt 0 ]; then
             historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/codex-review-round-$REVIEW_ROUNDS_USED-historical-comment-ids.json"
         else
@@ -2648,7 +2691,7 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
     remaining_count="$(jq -r --argjson cursor "$batch_cursor" '.allowlist[$cursor:] | length' <<<"$batch_json")"
     [ "$MAX_ITERATIONS" -le "$remaining_count" ] || MAX_ITERATIONS="$remaining_count"
 elif [[ "$ISSUE_ALLOWLIST" == *,* ]] && [ "$DRY_RUN" = false ] && \
-     [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+     [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
     mkdir -p "$LOG_ROOT"
     chmod 700 "$LOG_ROOT"
     safe_repo="${REPO_NAME//[^A-Za-z0-9._-]/-}"
@@ -2848,7 +2891,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     initial_pr_sha="$(git rev-parse HEAD)"
     open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
 
-    if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+    if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"
         python3 "$RUN_STATE_HELPER" create --file "$AGENT_LOOP_RUN_STATE_FILE" \
             --run-id "$RUN_TAG-issue-$SELECTED_ID" --repo "$GH_REPO" \

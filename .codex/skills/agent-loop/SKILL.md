@@ -13,10 +13,10 @@ worker only implements, validates, refactors, and commits locally.
 ## Cross-engine mode
 
 Resolve `auto` or `handoff` from the user's request or repository instructions
-before a mutating run. Contract-v3 auto mode requires `config_doctor = true` and
-`claude_effort_policy = low`; the doctor requires the Claude hook to contain
-exactly one effort option with literal value `low`. Never substitute another
-effort or bypass the doctor. Handoff mode must stop after
+before a mutating run. Contract-v4 auto mode requires `config_doctor = true` and
+`claude_effort_policy = low`; the pinned launcher owns that policy and the
+doctor verifies its contract query. Never substitute another effort or bypass
+the doctor. Handoff mode must stop after
 the Codex leg, post `local-review-handoff:v1`, and return control so the user can
 start the Claude review in a new terminal. Do not silently change modes during
 a round. Until the wrapper implements that pause point, refuse an `agent-loop`
@@ -40,8 +40,8 @@ Options:
 | `--issues N,N,...`    | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
 | `--iterations N`      | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
 | `--include-assigned`  | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
-| `--resume-run FILE`   | Resume review/finalization from a private contract-v3 run-state file after re-attesting its issue, worktree, branch, PR, base, and head.                                      |
-| `--resume-batch FILE` | Resume an ordered contract-v3 allowlist from its private batch-state file. It cannot be combined with `--resume-run`, `--issues`, or `--dry-run`.                             |
+| `--resume-run FILE`   | Resume review/finalization from a private contract-v3/v4 run-state file after re-attesting its issue, worktree, branch, PR, base, and head.                                   |
+| `--resume-batch FILE` | Resume an ordered contract-v3/v4 allowlist from its private batch-state file. It cannot be combined with `--resume-run`, `--issues`, or `--dry-run`.                          |
 | `--dry-run`           | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
 
 Omitting `--issues` retains the ready-queue behavior for backward compatibility.
@@ -68,25 +68,25 @@ The config is parsed as literal `key = value` lines and is never sourced.
 Unknown or duplicate keys fail closed. Hook values are shell commands executed
 with the issue worktree as the current directory.
 
-| Key                                              | Purpose                                                                                                                             |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                      |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.        |
-| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                   |
-| `claude_review_hook`                             | Pinned trusted-launcher invocation for the fresh local Claude review. Consumer overrides are rejected.                              |
-| `codex_review_hook`                              | Pinned trusted-launcher invocation for the fresh local Codex review. Consumer overrides are rejected.                               |
-| `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility. |
-| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.             |
-| `claude_effort_policy`                           | Contract-v3 auto mode requires literal `low`; the doctor rejects missing, different, or conflicting Claude effort options.          |
-| `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.                |
-| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                          |
-| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                        |
-| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                         |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                       |
-| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                               |
-| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                               |
-| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                         |
-| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                    |
+| Key                                              | Purpose                                                                                                                      |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                               |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes. |
+| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                            |
+| `claude_review_hook`                             | Pinned trusted-launcher invocation for the fresh local Claude review. Consumer overrides are rejected.                       |
+| `codex_review_hook`                              | Pinned trusted-launcher invocation for the fresh local Codex review. Consumer overrides are rejected.                        |
+| `review_contract_version`                        | Required hook contract. New and migrated consumers use `4`; versions `2` and `3` remain accepted for staged migration.       |
+| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Contract-v3/v4 consumers set `true`.           |
+| `claude_effort_policy`                           | Auto mode requires `low`; v3 verifies the hook and v4 verifies the pinned launcher's contract.                               |
+| `review_max_rounds`                              | Positive cap on Codex-then-Claude rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.         |
+| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                   |
+| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                 |
+| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                  |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                |
+| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                        |
+| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                        |
+| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                  |
+| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                             |
 
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
 `AGENT_LOOP_ISSUE_BODY`, `AGENT_LOOP_BASE_BRANCH`, `AGENT_LOOP_BRANCH`,
@@ -101,22 +101,24 @@ hooks also receive `AGENT_LOOP_PR_NUMBER`, `AGENT_LOOP_PR_URL`,
 ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA` captured after the round's fresh
 fetch, `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_ENGINE`, and
 `AGENT_LOOP_REVIEW_RESULT_FILE` and `AGENT_LOOP_REVIEW_PUSH_HELPER` for
-contract v3. Both hooks must scope against the SHA so a
+contract v3 or v4. Both hooks must scope against the SHA so a
 mid-round remote update cannot give the engines different bases.
 
-The wrapper resolves both reviewers through the synced
+Contract v4 resolves both reviewers through the synced
 `.codex/skills/agent-loop/scripts/run-codex-review.sh` launcher in the source
-checkout. The launcher verifies that `.codex`, `AGENTS.md`, and `CLAUDE.md`
-match the fetched base and contain no local review-surface changes, then starts
-the reviewer from a fresh empty session root with the issue worktree exposed
-only as the edit target. It passes absolute paths to the verified guidance and
+checkout. Immediately before execution the wrapper byte-compares the launcher
+with its immutable base-commit blob and invokes it directly without a login
+shell or `eval`. The launcher materializes `.codex` for Codex, `.claude` for
+Claude, and applicable `AGENTS.md`/`CLAUDE.md` files from base-tree blobs into a
+fresh empty session root. It passes absolute paths to that engine-native guidance and
 disables Claude slash commands, project/local settings, added-directory
 instructions, and auto memory, so neither engine resolves review instructions
 from worker-authored files in the issue worktree. The wrapper pins both hook
 strings byte-for-byte; an existing consumer must migrate them before
-contract-v3 auto mode will run.
+contract-v4 auto mode will run. Contract v3 retains its configurable hook
+semantics for staged migration.
 
-Every successfully completed clean or changed v3 review hook calls
+Every successfully completed clean or changed contract-v3/v4 review hook calls
 `review-ledger.js write-result`; the helper derives the complete
 same-engine/same-round fingerprint set, including fixed, deferred, and
 dismissed dispositions, and atomically writes the structured result. A blocked
@@ -151,15 +153,15 @@ The wrapper is upstream-owned, but config, worker instructions, and the prompt
 are `create_if_missing` consumer files. Existing consumers must therefore merge
 the current templates manually before the synced wrapper can run:
 
-1. Set both hooks to the dedicated trusted launcher exactly as shown in the
+1. Set `review_contract_version = 4` and both hooks to the dedicated trusted launcher exactly as shown in the
    current config template. Do not wrap, extend, or replace those commands; the
    launcher selects the engine, scopes the review to the immutable base and
-   exact head, and owns the contract-v3 result path.
-2. Configure a non-mutating `validation_hook`, add
-   `review_contract_version = 3`, retain `config_doctor = true` and
+   exact head, and owns the contract-v4 result path.
+2. Configure a non-mutating `validation_hook`, retain `config_doctor = true` and
    `claude_effort_policy = low`, and optionally override
    `review_max_rounds = 4` with another positive cap. The launcher and reviewer
-   skill own the result, push, and blocked-result contracts.
+   skill own the result, push, and blocked-result contracts. The pinned base
+   must contain both Codex and Claude native `deepcritique` skills.
 3. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync
    will not overwrite those consumer-owned files.
@@ -195,7 +197,7 @@ and never copies issue bodies, model logs, or findings into GitHub.
     wrapper-captured PR from the open-PR addressed check, require every marked
     review thread to contain a reply and be resolved, then mark the PR ready.
 
-For an ordered contract-v3 allowlist, the wrapper also writes a private batch
+For an ordered contract-v3/v4 allowlist, the wrapper also writes a private batch
 checkpoint containing the allowlist, cursor, per-issue status, and child run
 state path. Resume with `agent-loop.sh --resume-batch <batch-state.json>`. It
 will not advance to the next issue until the current issue is safely finalized
