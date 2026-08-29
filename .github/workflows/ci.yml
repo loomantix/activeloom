@@ -10,17 +10,55 @@ permissions:
   contents: read
 
 jobs:
-  python:
-    name: Python lint + syntax
+  # ---------------------------------------------------------------------------
+  # Consolidated static checks.
+  #
+  # These eight checks used to be eight separate jobs. Each did seconds of real
+  # work, but GitHub bills a 1-minute minimum PER JOB and each one re-paid the
+  # same runner allocation, checkout, and toolchain install. Measured over
+  # August 2026: `CI` averaged 13.2 billed minutes per run across 161 runs
+  # (~2,120 min/month), of which 8 minutes per run was eight trivial jobs and
+  # only ~7 was the real `Python types + tests` work.
+  #
+  # One job pays setup once. Each check keeps its own step so the Actions UI
+  # still shows which one failed, and `if: '!cancelled()'` means a failure in
+  # an early check does not hide the results of the later ones — the property
+  # that separate jobs gave for free and the reason to be careful here.
+  #
+  # `Python types + tests` deliberately stays its own job: it is ~7 minutes of
+  # genuine work and running it in parallel with these keeps wall clock down.
+  # ---------------------------------------------------------------------------
+  static-checks:
+    name: Static checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - name: Install pyyaml + ruff
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.29.3
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+      - name: Install Python tooling
         run: python3 -m pip install 'pyyaml==6.0.2' 'ruff==0.9.10'
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      # --- was job `python` (Python lint + syntax) ---
       - name: Compile-check every Python source
+        if: '!cancelled()'
         run: |
           set -euo pipefail
           mapfile -t pyfiles < <(git ls-files '*.py')
@@ -30,38 +68,47 @@ jobs:
           fi
           python3 -m py_compile "${pyfiles[@]}"
       - name: Ruff lint
+        if: '!cancelled()'
         run: ruff check .
 
-  vendor-drift:
-    name: Vendored engine matches claude-platform pin
-    runs-on: ubuntu-latest
-    # Guards the parity contract that the original vendoring commit
-    # asserts: codex's sync engine + test suite must match
-    # `loomantix/claude-platform`'s at a deliberately-pinned SHA.
-    # Without this gate, a hardening fix landing on claude leaves codex
-    # silently behind — every dual-source consumer (activescribe,
-    # activetime, activedepo, platform) gets inconsistent enforcement
-    # depending on which mirror it pulled from on a given day.
-    #
-    # Updating `CLAUDE_PIN_SHA` MUST happen in the same PR as the file
-    # updates that match it. A bumped SHA without matching file content
-    # fails the gate intentionally so a reviewer notices the drift.
-    #
-    # The pin tracks `claude-platform`'s default branch. It used to track a
-    # preserved review-only line, because that line carried engine hardening
-    # — faithful CRLF handling on read/write, the ASCII-only blank-line
-    # rule, container-aware collapse linting — that had been reviewed onto a
-    # historical snapshot and never made it back onto `main`. That work now
-    # lives on `main` (claude-platform#123 and #125), so the fork carries
-    # nothing unique and re-vendoring from `main` no longer reverts anything.
-    # When bumping, land the change upstream on `main` first, then point this
-    # pin at the merged commit in the same PR as the vendored file content.
-    env:
-      CLAUDE_PIN_SHA: e8d9ba8e274940cb4e38fc21feff81ce7f58de11
-      CLAUDE_REPO: loomantix/claude-platform
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # --- was job `shell` (Shell syntax + shellcheck) ---
+      - name: bash -n every shell script
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          mapfile -t shfiles < <(git ls-files '*.sh')
+          for f in "${shfiles[@]}"; do
+            bash -n "$f"
+          done
+      - name: shellcheck (warnings allowed; errors fail)
+        if: '!cancelled()'
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          severity: error
+
+      # --- was job `yaml` (YAML syntax) ---
+      - name: Parse every YAML file
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          mapfile -t ymlfiles < <(git ls-files '*.yml' '*.yaml' '*.yml.template' '*.yaml.template')
+          for f in "${ymlfiles[@]}"; do
+            # `.template` files often contain literal `<placeholders>` that
+            # are still valid YAML — parse-only check is sufficient.
+            python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$f"
+          done
+
+      # --- was job `format` (Prettier check) ---
+      - name: Prettier --check
+        if: '!cancelled()'
+        run: pnpm format:check
+
+      # --- was job `vendor-drift` (Vendored engine matches claude-platform pin) ---
       - name: Diff vendored files against claude-platform pin
+        if: '!cancelled()'
+        env:
+          CLAUDE_PIN_SHA: e8d9ba8e274940cb4e38fc21feff81ce7f58de11
+          CLAUDE_REPO: loomantix/claude-platform
         run: |
           set -euo pipefail
           base="https://raw.githubusercontent.com/${CLAUDE_REPO}/${CLAUDE_PIN_SHA}"
@@ -119,20 +166,9 @@ jobs:
           fi
           echo "OK: ${#files[@]} vendored files match ${CLAUDE_REPO}@${CLAUDE_PIN_SHA}"
 
-  ledger-drift:
-    # The vendored ledger is a build artifact, not source: it is copied
-    # verbatim out of a published npm tarball and must never be edited or
-    # rebuilt in place. Re-fetch the pinned version and byte-compare, so an
-    # accidental edit (a prettier run, a "quick fix", a merge artifact) cannot
-    # reach consumers wearing a published version's identity.
-    name: Vendored review-ledger matches its published tarball
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '20'
+      # --- was job `ledger-drift` (Vendored review-ledger matches its published tarball) ---
       - name: Byte-compare against the pinned published version
+        if: '!cancelled()'
         run: |
           set -euo pipefail
           scripts_dir=.codex/skills/critique/scripts
@@ -190,6 +226,7 @@ jobs:
             exit 1
           fi
       - name: Vendored ledger speaks review contract v3
+        if: '!cancelled()'
         run: |
           set -euo pipefail
           if ! actual="$(node .codex/skills/critique/scripts/review-ledger.js --protocol-version 2>&1)"; then
@@ -200,8 +237,8 @@ jobs:
             echo "::error::vendored ledger reports protocol '$actual', contract v3 requires 3"
             exit 1
           }
-
       - name: Vendored ledger self-identifies as the pinned version
+        if: '!cancelled()'
         # The byte-compare above proves the file came from the tarball the pin
         # names. This proves the artifact agrees about which version that is:
         # `--version` is injected into the bundle at build time, so a build
@@ -221,6 +258,109 @@ jobs:
             exit 1
           }
 
+      # --- was job `render-check` (Rendered template fidelity) ---
+      - name: Render fidelity fixture and compare against golden
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          # Render from a throwaway upstream tree so the fixture template is
+          # never a real sync target and can never reach a consumer.
+          UPSTREAM=$(mktemp -d)
+          CONSUMER=$(mktemp -d)
+          mkdir -p "$UPSTREAM/scripts"
+          cp tests/fixtures/render-fidelity/sync-targets.yml "$UPSTREAM/scripts/"
+          cp tests/fixtures/render-fidelity/template.md "$UPSTREAM/"
+          cp tests/fixtures/render-fidelity/.platform-config.yml "$CONSUMER/"
+          python3 scripts/sync-engine.py \
+            --upstream-repo "$UPSTREAM" \
+            --consumer-dir "$CONSUMER"
+          diff -u tests/fixtures/render-fidelity/expected.md "$CONSUMER/rendered.md"
+          pnpm exec prettier --config .prettierrc --check \
+            "$CONSUMER/rendered.md"
+
+      # --- was job `sync-targets` (sync-targets.yml matches schema) ---
+      - name: Validate the canonical manifest parses + has expected shape
+        if: '!cancelled()'
+        run: |
+          python3 - <<'PY'
+          import yaml, sys
+          doc = yaml.safe_load(open('scripts/sync-targets.yml'))
+          targets = doc.get('targets')
+          assert isinstance(targets, list) and targets, "targets must be a non-empty list"
+          for t in targets:
+              assert isinstance(t, dict), f"non-mapping target: {t!r}"
+              if t.get('delete'):
+                  assert 'destination' in t, f"delete target missing destination: {t!r}"
+              else:
+                  assert 'source' in t and 'destination' in t, f"copy target missing keys: {t!r}"
+                  substitutions = t.get('substitutions', [])
+                  assert isinstance(substitutions, list) and all(
+                      isinstance(key, str) for key in substitutions
+                  ), f"substitutions must be a string list: {t!r}"
+                  collapse = t.get('collapse_empty_substitutions', [])
+                  assert isinstance(collapse, list) and all(
+                      isinstance(key, str) for key in collapse
+                  ), f"collapse_empty_substitutions must be a string list: {t!r}"
+                  assert set(collapse) <= set(substitutions), (
+                      f"collapse_empty_substitutions must be declared substitutions: {t!r}"
+                  )
+          copilot = next(
+              t for t in targets if t.get('destination') == '.github/copilot-instructions.md'
+          )
+          assert set(copilot.get('collapse_empty_substitutions', [])) == {
+              'PROJECT_OVERVIEW',
+              'STACK_TABLE',
+              'CODE_RULES',
+              'DOMAIN_RULES',
+              'REVIEW_FOCUS',
+              'WHAT_NOT_TO_SUGGEST_EXTRA',
+          }, "Copilot template collapse opt-ins changed without updating the render contract"
+          print(f"OK: {len(targets)} targets")
+          PY
+
+      - name: Validate canonical manifest through the sync engine
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          CONSUMER=$(mktemp -d)
+          python3 - "$CONSUMER" <<'PY'
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+          manifest = yaml.safe_load(Path('scripts/sync-targets.yml').read_text())
+          substitutions = {
+              key: '' if key in target.get('collapse_empty_substitutions', []) else 'fixture'
+              for target in manifest['targets']
+              for key in target.get('substitutions', [])
+          }
+          # Listed literally rather than derived from the manifest: the
+          # engine requires per-file consent to write a sensitive path, and
+          # deriving the opt-in would grant whatever the manifest happens to
+          # ask for — this job would then stay green through the exact change
+          # (a new workflow target) that most deserves a reviewer's attention.
+          # Same explicit-over-implicit trade as the vendor-drift file list.
+          config = {
+              'substitutions': substitutions,
+              'allowed_destinations': ['**'],
+              'allow_sensitive_writes': ['.github/workflows/dco.yml'],
+          }
+          (Path(sys.argv[1]) / '.platform-config.yml').write_text(yaml.safe_dump(config))
+          PY
+          python3 scripts/sync-engine.py \
+            --upstream-repo . \
+            --consumer-dir "$CONSUMER" \
+            --dry-run
+
+      # The engine deliberately owns no Markdown knowledge, so nothing at render
+      # time stops a key opted into structural collapsing from deleting a line of
+      # a fenced block, a raw <pre>, or an indented code block. Enforce the
+      # "prose-only, whole-line" rule here instead, where reading the template is
+      # cheap and a violation is an authoring mistake rather than consumer churn.
+      - name: Lint collapse opt-ins against their template sites
+        if: '!cancelled()'
+        run: python3 scripts/lint-collapse-sites.py
   python-types-and-tests:
     name: Python types + tests
     runs-on: ubuntu-latest
@@ -293,188 +433,3 @@ jobs:
           python3 -m coverage report \
             --include='.codex/skills/publish-npm-package/scripts/verify-published-package.py' \
             --fail-under=80
-
-  shell:
-    name: Shell syntax + shellcheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: bash -n every shell script
-        run: |
-          set -euo pipefail
-          mapfile -t shfiles < <(git ls-files '*.sh')
-          for f in "${shfiles[@]}"; do
-            bash -n "$f"
-          done
-      - name: shellcheck (warnings allowed; errors fail)
-        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
-        with:
-          severity: error
-
-  yaml:
-    name: YAML syntax
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - run: python3 -m pip install 'pyyaml==6.0.2'
-      - name: Parse every YAML file
-        run: |
-          set -euo pipefail
-          mapfile -t ymlfiles < <(git ls-files '*.yml' '*.yaml' '*.yml.template' '*.yaml.template')
-          for f in "${ymlfiles[@]}"; do
-            # `.template` files often contain literal `<placeholders>` that
-            # are still valid YAML — parse-only check is sufficient.
-            python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$f"
-          done
-
-  format:
-    name: Prettier check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '20'
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 10.29.3
-      - name: Get pnpm store path
-        id: pnpm-store
-        run: echo "path=$(pnpm store path)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-
-      - name: Install Node dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Prettier --check
-        run: pnpm format:check
-
-  render-check:
-    name: Rendered template fidelity
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '20'
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 10.29.3
-      - run: python3 -m pip install 'pyyaml==6.0.2'
-      - name: Install Node dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Render fidelity fixture and compare against golden
-        run: |
-          set -euo pipefail
-          # Render from a throwaway upstream tree so the fixture template is
-          # never a real sync target and can never reach a consumer.
-          UPSTREAM=$(mktemp -d)
-          CONSUMER=$(mktemp -d)
-          mkdir -p "$UPSTREAM/scripts"
-          cp tests/fixtures/render-fidelity/sync-targets.yml "$UPSTREAM/scripts/"
-          cp tests/fixtures/render-fidelity/template.md "$UPSTREAM/"
-          cp tests/fixtures/render-fidelity/.platform-config.yml "$CONSUMER/"
-          python3 scripts/sync-engine.py \
-            --upstream-repo "$UPSTREAM" \
-            --consumer-dir "$CONSUMER"
-          diff -u tests/fixtures/render-fidelity/expected.md "$CONSUMER/rendered.md"
-          pnpm exec prettier --config .prettierrc --check \
-            "$CONSUMER/rendered.md"
-
-  sync-targets:
-    name: sync-targets.yml matches schema
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - run: python3 -m pip install 'pyyaml==6.0.2'
-      - name: Validate the canonical manifest parses + has expected shape
-        run: |
-          python3 - <<'PY'
-          import yaml, sys
-          doc = yaml.safe_load(open('scripts/sync-targets.yml'))
-          targets = doc.get('targets')
-          assert isinstance(targets, list) and targets, "targets must be a non-empty list"
-          for t in targets:
-              assert isinstance(t, dict), f"non-mapping target: {t!r}"
-              if t.get('delete'):
-                  assert 'destination' in t, f"delete target missing destination: {t!r}"
-              else:
-                  assert 'source' in t and 'destination' in t, f"copy target missing keys: {t!r}"
-                  substitutions = t.get('substitutions', [])
-                  assert isinstance(substitutions, list) and all(
-                      isinstance(key, str) for key in substitutions
-                  ), f"substitutions must be a string list: {t!r}"
-                  collapse = t.get('collapse_empty_substitutions', [])
-                  assert isinstance(collapse, list) and all(
-                      isinstance(key, str) for key in collapse
-                  ), f"collapse_empty_substitutions must be a string list: {t!r}"
-                  assert set(collapse) <= set(substitutions), (
-                      f"collapse_empty_substitutions must be declared substitutions: {t!r}"
-                  )
-          copilot = next(
-              t for t in targets if t.get('destination') == '.github/copilot-instructions.md'
-          )
-          assert set(copilot.get('collapse_empty_substitutions', [])) == {
-              'PROJECT_OVERVIEW',
-              'STACK_TABLE',
-              'CODE_RULES',
-              'DOMAIN_RULES',
-              'REVIEW_FOCUS',
-              'WHAT_NOT_TO_SUGGEST_EXTRA',
-          }, "Copilot template collapse opt-ins changed without updating the render contract"
-          print(f"OK: {len(targets)} targets")
-          PY
-
-      - name: Validate canonical manifest through the sync engine
-        run: |
-          set -euo pipefail
-          CONSUMER=$(mktemp -d)
-          python3 - "$CONSUMER" <<'PY'
-          import sys
-          from pathlib import Path
-
-          import yaml
-
-          manifest = yaml.safe_load(Path('scripts/sync-targets.yml').read_text())
-          substitutions = {
-              key: '' if key in target.get('collapse_empty_substitutions', []) else 'fixture'
-              for target in manifest['targets']
-              for key in target.get('substitutions', [])
-          }
-          # Listed literally rather than derived from the manifest: the
-          # engine requires per-file consent to write a sensitive path, and
-          # deriving the opt-in would grant whatever the manifest happens to
-          # ask for — this job would then stay green through the exact change
-          # (a new workflow target) that most deserves a reviewer's attention.
-          # Same explicit-over-implicit trade as the vendor-drift file list.
-          config = {
-              'substitutions': substitutions,
-              'allowed_destinations': ['**'],
-              'allow_sensitive_writes': ['.github/workflows/dco.yml'],
-          }
-          (Path(sys.argv[1]) / '.platform-config.yml').write_text(yaml.safe_dump(config))
-          PY
-          python3 scripts/sync-engine.py \
-            --upstream-repo . \
-            --consumer-dir "$CONSUMER" \
-            --dry-run
-
-      # The engine deliberately owns no Markdown knowledge, so nothing at render
-      # time stops a key opted into structural collapsing from deleting a line of
-      # a fenced block, a raw <pre>, or an indented code block. Enforce the
-      # "prose-only, whole-line" rule here instead, where reading the template is
-      # cheap and a violation is an authoring mistake rather than consumer churn.
-      - name: Lint collapse opt-ins against their template sites
-        run: python3 scripts/lint-collapse-sites.py
