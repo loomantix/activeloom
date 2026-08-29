@@ -1201,6 +1201,68 @@ def test_worker_cannot_install_git_hooks_for_wrapper_publication(
     assert not marker.exists()
 
 
+def test_worker_git_config_fifo_fails_closed_without_hanging(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fifo = tmp_path / "blocking-git-config"
+    worker_hook = (
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        'common="$(git rev-parse --git-common-dir)"; '
+        f"mkfifo {fifo}; printf '%s\\n' '[include]' 'path = {fifo}' >> \"$common/config\""
+    )
+
+    started = time.monotonic()
+    result = _run(
+        consumer,
+        ["--issues", "71"],
+        issues=[_issue(71)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=worker_hook,
+            worker_retries=0,
+            hook_timeout_seconds=3,
+        ),
+        timeout=35,
+    )
+
+    assert time.monotonic() - started < 30
+    assert result.returncode != 0
+    assert "hook changed trusted Git configuration" in result.stderr
+    assert "Resume review with:" not in result.stderr
+
+
+def test_worker_cannot_install_post_merge_hook_for_fresh_base_merge(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _, remote, _, _ = consumer
+    marker = tmp_path / "worker-post-merge-ran"
+    clone = tmp_path / "advanced-base"
+    _clone_test_repo(remote, clone)
+    (clone / "fresh-base.txt").write_text("fresh\n", encoding="utf-8")
+    _run_git("add", "fresh-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: advance base", cwd=clone)
+    worker_hook = (
+        'hooks="$(git rev-parse --git-path hooks)"; mkdir -p "$hooks"; '
+        "printf '%s\\n' '#!/usr/bin/env bash' "
+        f"'touch {marker}' > \"$hooks/post-merge\"; chmod 755 \"$hooks/post-merge\"; "
+        "printf 'done\\n' > result.txt; git add result.txt; "
+        "git commit -m 'fix: worker result'; "
+        f'"$AGENT_LOOP_REAL_GIT" -C {clone} push origin main'
+    )
+
+    result = _run(
+        consumer,
+        ["--issues", "72"],
+        issues=[_issue(72)],
+        config=_config_v3(tmp_path, worker_hook=worker_hook),
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not marker.exists()
+
+
 def test_recovery_does_not_print_a_mutated_entrypoint(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1227,9 +1289,36 @@ def test_recovery_does_not_print_a_mutated_entrypoint(
     )
 
     assert result.returncode != 0
-    assert "entrypoint changed after startup" in result.stderr
+    assert "controller trust boundary changed after startup" in result.stderr
     assert "Resume review with:" not in result.stderr
     assert not marker.exists()
+
+
+def test_resume_rejects_git_config_drift_from_the_original_run(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    first = _run(
+        consumer,
+        ["--issues", "73"],
+        issues=[_issue(73)],
+        config=_config_v3(tmp_path, codex_review_hook="exit 72"),
+        timeout=120,
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    hooks = tmp_path / "resume-hooks"
+    hooks.mkdir()
+    _run_git("config", "core.hooksPath", str(hooks), cwd=consumer[0])
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(73, assigned=True)],
+        config=_config_v3(tmp_path),
+    )
+
+    assert resumed.returncode != 0
+    assert "Git configuration differs from the trusted run-state boundary" in resumed.stderr
 
 
 def test_worker_cannot_replace_the_pinned_review_push_helper(

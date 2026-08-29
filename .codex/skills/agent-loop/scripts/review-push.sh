@@ -23,7 +23,7 @@ real_git="$AGENT_LOOP_REAL_GIT"
 expected_config_sha256="${AGENT_LOOP_GIT_CONFIG_SHA256:?AGENT_LOOP_GIT_CONFIG_SHA256 is required}"
 
 actual_config_sha256="$(timeout 10 "$real_git" --no-replace-objects config \
-    --null --show-origin --show-scope --list | sha256sum | awk '{print $1}')" || {
+    --null --list | sha256sum | awk '{print $1}')" || {
     echo "review-push could not verify trusted Git configuration" >&2
     exit 1
 }

@@ -449,8 +449,8 @@ ORIGIN_PUSH_URLS="$(git remote get-url --push --all origin)" || {
 }
 require_origin_identity() {
     local fetch_urls push_urls
-    fetch_urls="$(git remote get-url --all origin)" || return 1
-    push_urls="$(git remote get-url --push --all origin)" || return 1
+    fetch_urls="$(timeout 10 "$REAL_GIT_BIN" remote get-url --all origin)" || return 1
+    push_urls="$(timeout 10 "$REAL_GIT_BIN" remote get-url --push --all origin)" || return 1
     if [ "$fetch_urls" != "$ORIGIN_FETCH_URLS" ] || [ "$push_urls" != "$ORIGIN_PUSH_URLS" ]; then
         echo "origin fetch/push identity changed during agent-loop" >&2
         return 1
@@ -462,7 +462,7 @@ fetch_base() {
     git fetch origin "$BASE_FETCH_REFSPEC" --quiet
 }
 
-if [ "$DRY_RUN" = false ]; then
+if [ "$DRY_RUN" = false ] && [ -z "$RESUME_RUN_FILE" ] && [ -z "$RESUME_BATCH_FILE" ]; then
     fetch_base
 fi
 git rev-parse --verify --quiet "$BASE_REMOTE_REF" >/dev/null || {
@@ -583,9 +583,10 @@ require_pinned_agent_loop_entrypoint() {
 }
 
 TRUSTED_GIT_CONFIG_SHA256=""
+GIT_CONFIG_UNTRUSTED=false
 git_config_fingerprint() {
     timeout 10 "$REAL_GIT_BIN" --no-replace-objects config \
-        --null --show-origin --show-scope --list | sha256sum | awk '{print $1}'
+        --null --list | sha256sum | awk '{print $1}'
 }
 
 capture_trusted_git_config() {
@@ -599,12 +600,18 @@ capture_trusted_git_config() {
 require_trusted_git_config() {
     local current
     [ -n "$TRUSTED_GIT_CONFIG_SHA256" ] || return 0
-    current="$(git_config_fingerprint)" || return 1
+    [ "$GIT_CONFIG_UNTRUSTED" = false ] || return 1
+    current="$(git_config_fingerprint)" || {
+        GIT_CONFIG_UNTRUSTED=true
+        return 1
+    }
     [ "$current" = "$TRUSTED_GIT_CONFIG_SHA256" ] || {
+        GIT_CONFIG_UNTRUSTED=true
         echo "Git configuration changed after trusted setup" >&2
         return 1
     }
 }
+capture_trusted_git_config || exit 1
 HOOK_GIT_GUARD_SHA256="$(file_sha256 "$HOOK_GIT_GUARD")"
 HOOK_GH_GUARD_SHA256="$(file_sha256 "$HOOK_GH_GUARD")"
 REVIEW_PUSH_HELPER_SHA256="$(file_sha256 "$REVIEW_PUSH_HELPER_SOURCE")"
@@ -682,6 +689,15 @@ print(path.resolve(strict=True))
     case "$resume_log_dir" in "$LOG_ROOT"/*) ;; *) echo "run state log directory is outside configured log_root" >&2; exit 1 ;; esac
     acquire_run_lock "$resume_log_dir" || exit 1
     RESUME_STATE_JSON="$(run_state_helper show --file "$RESUME_RUN_FILE")" || exit 1
+    expected_resume_config="$(jq -r '.gitConfigSha256 // empty' <<<"$RESUME_STATE_JSON")"
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        [ -n "$expected_resume_config" ] && \
+            [ "$TRUSTED_GIT_CONFIG_SHA256" = "$expected_resume_config" ] || {
+            echo "Git configuration differs from the trusted run-state boundary" >&2
+            exit 1
+        }
+    fi
+    fetch_base
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
         exit 1
@@ -719,7 +735,7 @@ recovery_message() {
     fi
     if { [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; } || \
        { [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; }; then
-        if require_pinned_agent_loop_entrypoint; then
+        if require_trusted_git_config && require_pinned_agent_loop_entrypoint; then
             if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
                 echo "Resume review with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
             fi
@@ -727,7 +743,7 @@ recovery_message() {
                 echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
             fi
         else
-            echo "The agent-loop entrypoint changed after startup; restore it from the pinned base before resuming." >&2
+            echo "The controller trust boundary changed after startup; restore the pinned entrypoint and trusted Git configuration before resuming." >&2
         fi
     fi
 }
@@ -1334,12 +1350,11 @@ run_bounded_hook() {
         fi
         exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?
-    if ! require_origin_identity; then
-        echo "hook changed origin fetch/push identity" >>"$log_file"
-        status=1
-    fi
     if ! require_trusted_git_config; then
         echo "hook changed trusted Git configuration" >>"$log_file"
+        status=1
+    elif ! require_origin_identity; then
+        echo "hook changed origin fetch/push identity" >>"$log_file"
         status=1
     fi
     if [ "$status" -ne 0 ]; then
@@ -1376,6 +1391,10 @@ run_worker() {
         status=0
         run_bounded_hook "worker attempt $attempt" "$command" "$WORKER_TIMEOUT_SECONDS" "$log" || status=$?
         [ "$status" -eq 0 ] && return 0
+        if [ "$GIT_CONFIG_UNTRUSTED" = true ]; then
+            recovery_message "Worker changed or obstructed trusted Git configuration."
+            return "$status"
+        fi
 
         if worktree_has_work "$start_sha"; then
             recovery_message "Worker exited $status after changing or committing work."
@@ -1895,7 +1914,8 @@ run_review_convergence() {
         AGENT_LOOP_REVIEW_BASE_SHA="$round_base_sha"
         if ! git merge-base --is-ancestor "$round_base_sha" HEAD; then
             echo -e "${BLUE}▸${NC} Integrating fresh base before review round $round"
-            if ! git merge --no-edit "$round_base_sha"; then
+            if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null \
+                merge --no-edit "$round_base_sha"; then
                 git merge --abort >/dev/null 2>&1 || true
                 recovery_message "Fresh-base merge conflicted before review round $round."
                 return 1
@@ -2867,6 +2887,15 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
     case "$BATCH_STATE_FILE" in "$LOG_ROOT"/*) ;; *) echo "batch state is outside configured log_root" >&2; exit 1 ;; esac
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     batch_json="$(run_state_helper batch-show --file "$BATCH_STATE_FILE")" || exit 1
+    expected_batch_config="$(jq -r '.gitConfigSha256 // empty' <<<"$batch_json")"
+    if [ "$REVIEW_CONTRACT_VERSION" = 4 ]; then
+        [ -n "$expected_batch_config" ] && \
+            [ "$TRUSTED_GIT_CONFIG_SHA256" = "$expected_batch_config" ] || {
+            echo "Git configuration differs from the trusted batch-state boundary" >&2
+            exit 1
+        }
+    fi
+    fetch_base
     [ "$(jq -r '.repo' <<<"$batch_json")" = "$GH_REPO" ] || { echo "batch state repository mismatch" >&2; exit 1; }
     [ "$(jq -r '.baseBranch' <<<"$batch_json")" = "$BASE_BRANCH" ] || { echo "batch state base branch mismatch" >&2; exit 1; }
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
@@ -2888,8 +2917,8 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             exit 1
         }
         child_worktree="$(jq -r '.worktree' <<<"$child_json")"
-        require_pinned_agent_loop_entrypoint || {
-            recovery_message "The agent-loop entrypoint changed after startup; restore it from the pinned base before batch resume."
+        require_trusted_git_config && require_pinned_agent_loop_entrypoint || {
+            recovery_message "The controller trust boundary changed after startup; restore the pinned entrypoint and trusted Git configuration before batch resume."
             exit 1
         }
         AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" \
@@ -2921,6 +2950,7 @@ elif [[ "$ISSUE_ALLOWLIST" == *,* ]] && [ "$DRY_RUN" = false ] && \
     BATCH_STATE_FILE="$LOG_ROOT/$safe_repo-batch-$RUN_TAG.json"
     run_state_helper batch-create --file "$BATCH_STATE_FILE" \
         --run-id "$RUN_TAG" --repo "$GH_REPO" --base-branch "$BASE_BRANCH" \
+        --project-dir "$PROJECT_DIR" --git-config-sha256 "$TRUSTED_GIT_CONFIG_SHA256" \
         --issues "$ISSUE_ALLOWLIST" >/dev/null || exit 1
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     echo "   Batch recovery state: $BATCH_STATE_FILE"
@@ -3078,11 +3108,6 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup."; exit 1; }
         [ "$setup_after_sha" = "$start_sha" ] || { recovery_message "Setup hook changed HEAD; setup hooks must not commit."; exit 1; }
     fi
-    capture_trusted_git_config || {
-        recovery_message "Could not establish the post-setup Git configuration boundary."
-        exit 1
-    }
-
     run_worker "$start_sha" || exit 1
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
@@ -3090,7 +3115,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     echo -e "${BLUE}▸${NC} Initial fresh-base integration"
     fetch_base
     initial_base_sha="$(git rev-parse "$BASE_REMOTE_REF")"
-    if ! git merge --no-edit "$initial_base_sha"; then
+    if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null \
+        merge --no-edit "$initial_base_sha"; then
         git merge --abort >/dev/null 2>&1 || true
         recovery_message "Initial fresh-base merge conflicted; original commits were preserved."
         exit 1
@@ -3124,6 +3150,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             --issue "$SELECTED_ID" --base-branch "$BASE_BRANCH" \
             --issue-title-sha256 "$(printf '%s' "$SELECTED_TITLE" | sha256_text)" \
             --issue-body-sha256 "$(printf '%s' "$SELECTED_BODY" | sha256_text)" \
+            --git-config-sha256 "$TRUSTED_GIT_CONFIG_SHA256" \
             --branch "$branch" --worktree "$ACTIVE_WORKTREE" \
             --log-dir "$AGENT_LOOP_LOG_DIR" --pr "$AGENT_LOOP_PR_NUMBER" \
             --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \
@@ -3208,10 +3235,10 @@ if [ -n "$BATCH_STATE_FILE" ]; then
     if [ "$batch_cursor" -lt "$batch_count" ]; then
         if [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
             echo -e "${YELLOW}○${NC} Ordered batch paused cleanly at the $MAX_ITERATIONS-issue iteration cap."
-            if require_pinned_agent_loop_entrypoint; then
+            if require_trusted_git_config && require_pinned_agent_loop_entrypoint; then
                 echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
             else
-                echo "The agent-loop entrypoint changed after startup; restore it from the pinned base before resuming." >&2
+                echo "The controller trust boundary changed after startup; restore the pinned entrypoint and trusted Git configuration before resuming." >&2
             fi
             exit 0
         fi

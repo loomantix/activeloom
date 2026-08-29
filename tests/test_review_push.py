@@ -41,7 +41,7 @@ def review_repo(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
     _git(repo, "commit", "-m", "fix: review")
     env = os.environ.copy()
     config_bytes = subprocess.run(
-        ["git", "--no-replace-objects", "config", "--null", "--show-origin", "--show-scope", "--list"],
+        ["git", "--no-replace-objects", "config", "--null", "--list"],
         cwd=repo,
         check=True,
         capture_output=True,
