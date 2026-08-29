@@ -1604,9 +1604,18 @@ def test_contract_v4_wrapper_uses_the_real_launcher_for_both_reviewers(
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / relative, target)
-    claude_skill = repo / ".claude/skills/deepcritique/SKILL.md"
-    claude_skill.parent.mkdir(parents=True, exist_ok=True)
-    claude_skill.write_text("# Trusted Claude deep critique fixture\n", encoding="utf-8")
+    for relative in (
+        ".claude/REVIEW_WORKFLOW.md",
+        ".claude/references/local-review-ledger.md",
+        ".claude/skills/deepcritique/SKILL.md",
+        ".claude/skills/critique/SKILL.md",
+        ".claude/skills/critique/scripts/review-ledger.js",
+        ".claude/skills/refactorpass/SKILL.md",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# Trusted Claude review fixture\n", encoding="utf-8")
+    (repo / "AGENTS.md").write_text("# Trusted repository instructions\n", encoding="utf-8")
     _run_git("add", ".", cwd=repo)
     _run_git("commit", "-m", "test: install trusted review surfaces", cwd=repo)
     _run_git("push", "origin", "main", cwd=repo)
