@@ -241,7 +241,7 @@ def test_exact_fully_qualified_review_push_succeeds(
     )
 
 
-def test_second_review_push_in_one_pass_is_rejected(
+def test_two_sequential_review_pushes_succeed(
     review_repo: tuple[Path, dict[str, str], str],
 ) -> None:
     repo, env, _ = review_repo
@@ -253,8 +253,18 @@ def test_second_review_push_in_one_pass_is_rejected(
     _git(repo, "commit", "-m", "fix: second review")
     second = _run(repo, env)
 
-    assert second.returncode != 0
-    assert "permits only one publication per reviewer pass" in second.stderr
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.strip() == _git(repo, "rev-parse", "HEAD")
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == second.stdout.strip()
+    )
 
 
 def test_rejects_failed_worktree_status_inspection(

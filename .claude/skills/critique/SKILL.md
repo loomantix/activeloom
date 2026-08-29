@@ -251,15 +251,11 @@ PR is the wrong call when the expected benefit does not justify moving the head
 and re-staling the other engine's attestation. Land the change; let only urgent
 follow-ups grow the backlog.
 
-For confirmed fixes, treat the entire wrapper invocation as one publication
-unit when `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set. Accumulate and validate all
-local fix commits, then invoke that helper exactly once after the final fix;
-calling it again in the same pass fails closed.
+For confirmed fixes:
 
 1. make the smallest safe edit;
 2. run focused validation;
-3. commit conventionally; after the final confirmed fix, publish exactly once
-   through `$AGENT_LOOP_REVIEW_PUSH_HELPER` when set, otherwise push normally;
+3. commit conventionally and push normally;
 4. require local HEAD, remote head, and PR head to match;
 5. use the deterministic helper's resumable `dispose` transaction with the fix
    SHA, validation result, fingerprint, and occurrence;

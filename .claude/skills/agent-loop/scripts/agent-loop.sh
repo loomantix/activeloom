@@ -30,7 +30,8 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
     AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-    AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+    AGENT_LOOP_REVIEW_PUSH_STATE_FILE \
+    LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -516,8 +517,11 @@ print(path.resolve(strict=True))
     fi
     REVIEW_DEADLINE_EPOCH="$(jq -r '.reviewDeadlineEpoch // empty' <<<"$RESUME_STATE_JSON")"
     if [ -z "$REVIEW_DEADLINE_EPOCH" ]; then
-        REVIEW_DEADLINE_EPOCH=$(( $(stat -c %Y "$RESUME_RUN_FILE") + REVIEW_TIMEOUT_SECONDS ))
-        echo "   Legacy run state uses its original checkpoint time for the review deadline"
+        # A run state written before the budget field carries no start time to
+        # recover: the file's mtime is its last checkpoint, not the run's
+        # origin. Grant a fresh budget and say so rather than infer a deadline.
+        REVIEW_DEADLINE_EPOCH=$(( $(date +%s) + REVIEW_TIMEOUT_SECONDS ))
+        echo "   Run state predates the review budget; restarting it at $REVIEW_TIMEOUT_SECONDS seconds"
     fi
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
@@ -1453,7 +1457,13 @@ run_review_pass() {
         unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
-    export AGENT_LOOP_REVIEW_DEADLINE_EPOCH="$REVIEW_DEADLINE_EPOCH"
+    # Standalone reviewer launchers read their own per-pass bound from this
+    # variable, clamped to the ceiling they enforce.
+    if [ "$REVIEW_PASS_TIMEOUT_SECONDS" -gt 3600 ]; then
+        export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS=3600
+    else
+        export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$REVIEW_PASS_TIMEOUT_SECONDS"
+    fi
     run_bounded_hook "$hook_description (round $round)" "$hook" \
         "$REVIEW_PASS_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
         recovery_message "$hook_failure_description failed in review round $round."

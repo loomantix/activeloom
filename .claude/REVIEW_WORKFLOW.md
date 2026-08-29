@@ -258,8 +258,9 @@ Auto mode is available for the `gemini` reviewer, launched through
 The launcher pins `gemini-3.7-flash-high`, literal `--effort high`, accept-edits
 mode, unattended permissions, and structured JSON output. A pass defaults to a
 30-minute bound through `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the
-hard 3600-second ceiling are rejected. A caller supplies only the repository,
-PR, base, head, and round. It
+hard 3600-second ceiling are rejected, and under agent-loop the wrapper sets
+that variable to whatever remains of the run's `review_timeout_seconds` budget.
+A caller supplies only the repository, PR, base, head, and round. It
 refuses to start unless the current repository, the PR's ownership and head
 repository, local HEAD, PR head, and remote head all match the requested exact
 head over a clean worktree, and unless the reviewer CLI resolves exactly one

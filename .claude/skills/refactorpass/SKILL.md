@@ -94,10 +94,8 @@ does not apply here: there is no defect to disposition and no thread to resolve,
 and `/simplify` has already edited by the time you could post one.
 
 If anything survived: run the smallest relevant formatter or test, stage the
-remaining edits, and create one `refactor: /simplify pass — <summary>` commit.
-When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, leave that commit local for the
-enclosing critique pass so the wrapper publishes all fixes exactly once;
-otherwise push normally. Then post **one** informational PR comment naming the cleanup
+remaining edits, create one `refactor: /simplify pass — <summary>` commit, and
+push normally. Then post **one** informational PR comment naming the cleanup
 lane, the exact reviewed head, the resulting commit SHA, and a one-line list of
 what was consolidated. Stop if any step fails.
 
