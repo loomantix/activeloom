@@ -107,7 +107,16 @@ if [ "${1:-}" = --required-paths ]; then
                 .codex/skills/critique/scripts/review-ledger.js \
                 .codex/skills/refactorpass/SKILL.md
             ;;
-        claude) printf '%s\n' .claude/skills/deepcritique/SKILL.md ;;
+        claude)
+            printf '%s\n' \
+                .claude/REVIEW_WORKFLOW.md \
+                .claude/references/local-review-ledger.md \
+                .claude/skills/deepcritique/SKILL.md \
+                .claude/skills/critique/SKILL.md \
+                .claude/skills/critique/scripts/package.json \
+                .claude/skills/critique/scripts/review-ledger.js \
+                .claude/skills/refactorpass/SKILL.md
+            ;;
         *) exit 2 ;;
     esac
     exit 0
@@ -160,6 +169,25 @@ PY
     claude_review_skill = repo / ".claude/skills/deepcritique/SKILL.md"
     claude_review_skill.parent.mkdir(parents=True, exist_ok=True)
     claude_review_skill.write_text("# Trusted Claude deep review fixture\n", encoding="utf-8")
+    for relative in (
+        ".claude/REVIEW_WORKFLOW.md",
+        ".claude/references/local-review-ledger.md",
+        ".claude/skills/critique/SKILL.md",
+        ".claude/skills/refactorpass/SKILL.md",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("trusted Claude review fixture\n", encoding="utf-8")
+    claude_ledger_dir = repo / ".claude/skills/critique/scripts"
+    claude_ledger_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        REPO_ROOT / ".codex/skills/critique/scripts/review-ledger.js",
+        claude_ledger_dir,
+    )
+    shutil.copy2(
+        REPO_ROOT / ".codex/skills/critique/scripts/package.json",
+        claude_ledger_dir,
+    )
     for relative in (
         ".codex/REVIEW_WORKFLOW.md",
         ".codex/references/local-review-ledger.md",
