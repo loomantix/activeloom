@@ -106,11 +106,11 @@ migrate template changes by hand.
 
 Three model-backed aspects, configured in two places:
 
-| Aspect | Where |
-| --- | --- |
-| Worker (writes the code) | `worker_model` / `worker_fallback_model` |
-| Codex reviewer | model + effort as flags inside `codex_review_hook` |
-| Claude reviewer | model + effort as flags inside `claude_review_hook` |
+| Aspect                   | Where                                               |
+| ------------------------ | --------------------------------------------------- |
+| Worker (writes the code) | `worker_model` / `worker_fallback_model`            |
+| Codex reviewer           | model + effort as flags inside `codex_review_hook`  |
+| Claude reviewer          | model + effort as flags inside `claude_review_hook` |
 
 Review hooks are literal shell commands, so a reviewer's model and effort are
 just flags on that command — there are no dedicated keys for them. Pin

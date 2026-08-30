@@ -126,11 +126,11 @@ The loop runs three model-backed aspects, and they are configured in two
 different places. This is the most common onboarding question, so it is spelled
 out here.
 
-| Aspect | Where the model is chosen | Effort control |
-| --- | --- | --- |
-| Worker | `worker_model` / `worker_fallback_model` | none — the worker invocation takes a model only |
-| Codex review | inside `codex_review_hook` | inside the same command |
-| Claude review | inside `claude_review_hook` | inside the same command, and validated against `claude_effort_policy` |
+| Aspect        | Where the model is chosen                | Effort control                                                        |
+| ------------- | ---------------------------------------- | --------------------------------------------------------------------- |
+| Worker        | `worker_model` / `worker_fallback_model` | none — the worker invocation takes a model only                       |
+| Codex review  | inside `codex_review_hook`               | inside the same command                                               |
+| Claude review | inside `claude_review_hook`              | inside the same command, and validated against `claude_effort_policy` |
 
 A review hook is a literal shell command, so reviewer model and effort are
 ordinary flags on that command rather than dedicated config keys:
@@ -151,8 +151,8 @@ Measured across real issues, wall clock splits roughly as:
 - worker: **10-17%**
 - validation: **9-12%**
 
-So reviewer choice dominates *cost*, while worker choice dominates *how many
-rounds are needed* — round one consistently produces the most findings, and a
+So reviewer choice dominates _cost_, while worker choice dominates _how many
+rounds are needed_ — round one consistently produces the most findings, and a
 cleaner first draft is what removes a round. A round costs far more than a
 worker pass, so the cheapest slot is usually the one worth upgrading.
 
@@ -192,7 +192,7 @@ wrong engine identity and corrupt the ledger's roster, so it is not a workaround
    the PR ready.
 
 Do not invoke `reviewit`, Copilot, or any GitHub-hosted AI reviewer, including
-hosted Gemini. This bans *hosted* review, not the local `gemini` engine identity
+hosted Gemini. This bans _hosted_ review, not the local `gemini` engine identity
 that the ledger and `run-agy-review.sh` already support; the wrapper simply has
 no roster slot to run it from today.
 
