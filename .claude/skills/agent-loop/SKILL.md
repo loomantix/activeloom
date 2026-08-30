@@ -106,6 +106,50 @@ Do not put secrets, credentials, PHI, customer identifiers, or user data in
 config values or hook output. The wrapper deliberately uses a generic PR body
 and never copies issue bodies, model logs, or findings into GitHub.
 
+## Review Budget
+
+`review_timeout_seconds` is a whole-run budget for **one issue's** review. It is
+reset the moment that issue's draft PR opens and persisted to run state as
+`reviewDeadlineEpoch`, so `--resume-run` and `--resume-batch` continue the
+original clock rather than restarting it.
+
+Every review pass **and the validation that follows it** draws from that budget.
+A round is therefore two hook invocations plus two validations, and fresh-base
+integration is budgeted too.
+
+Each pass is bounded at `min(remaining budget, hook_timeout_seconds)`. Two
+consequences are easy to miss:
+
+- **`review_max_rounds` is a ceiling, not an allowance.** The budget has to fund
+  every round. If a round costs more than `review_timeout_seconds / review_max_rounds`,
+  the later rounds are unreachable no matter what the cap says. When
+  `hook_timeout_seconds` equals `review_timeout_seconds`, a single pass may also
+  legally consume the entire budget. Size the budget against an observed round
+  cost, and keep `hook_timeout_seconds` well below it so one pass cannot spend
+  everything.
+- **Running out mid-pass does not look like running out.** The clean
+  "exhausted its configured whole-run time budget" stop only fires when the
+  budget is under `REVIEW_PASS_MIN_SECONDS` (120s) _at the start_ of a pass. A
+  pass that starts with more than that and then hits its bound is killed by
+  `timeout`, writes no result, and is reported as a hook failure. The wrapper
+  logs the remaining budget and the applied bound before each pass so the two
+  can be told apart.
+
+### Launcher headroom
+
+Hooks that shell out to a _launcher_ which enforces its own bound read that
+bound from `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`. It is set to
+`REVIEW_PASS_TIMEOUT_SECONDS - REVIEW_PASS_LAUNCHER_MARGIN_SECONDS` (60s of
+headroom) and then **clamped to 3600**, because the launchers that consume it
+reject anything higher. The margin exists so the launcher's own clock expires
+first and it can still write a structured result instead of being killed.
+
+That protection applies only to hooks that actually read the variable. A hook
+that invokes a CLI directly — the common case — ignores it, so its only bound is
+the wrapper's `timeout`, and hitting that bound kills it with no result file.
+Consumers wanting a structured result on timeout must have the hook honor
+`LOCAL_REVIEW_PASS_TIMEOUT_SECONDS` itself.
+
 ## Default Worker and the Invocation Lock
 
 When `worker_hook` is unset, the wrapper runs the Claude CLI in
