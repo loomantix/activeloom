@@ -37,9 +37,11 @@ review_contract_version = 3
 config_doctor = true
 claude_effort_policy =
 review_max_rounds = 4
-# Positive wall-clock budget for the complete review run. The deadline is
-# persisted so resume cannot reset it; each review pass receives only the
-# remaining time.
+# Positive wall-clock budget for one selected issue's review. The deadline is
+# persisted so resume cannot reset it; each review pass and its validation is
+# bounded by the smaller of the remaining budget and hook_timeout_seconds, and
+# a run whose remaining budget is too small to finish a pass stops rather than
+# starting one it cannot complete.
 review_timeout_seconds = 7200
 claude_review_hook =
 codex_review_hook =

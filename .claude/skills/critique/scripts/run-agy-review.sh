@@ -281,7 +281,7 @@ export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="gemini"
 
 agy_exit=0
-# Keep the outer bound above --print-timeout so Agy can emit structured output.
+# Keep the outer bound above the --print-timeout below, for the same reason as
 # the skill preflight: let the CLI time out and report rather than be killed.
 # claude-cli-invocations:start
 agy_outer_timeout_seconds=$((review_timeout_seconds + 30))

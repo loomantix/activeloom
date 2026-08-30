@@ -2301,9 +2301,12 @@ def test_review_budget_config_fails_before_issue_mutation(
     message: str,
 ) -> None:
     config = _config(tmp_path, **{config_key: config_value})
+    # Deliberately not --dry-run: that short-circuits before the claim on every
+    # path, so it would satisfy the gh-log assertion below whether or not config
+    # validation ran.
     result = _run(
         consumer,
-        ["--issues", "27", "--dry-run"],
+        ["--issues", "27"],
         issues=[_issue(27)],
         config=config,
     )

@@ -5,12 +5,27 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    # `edited` fires when a stacked PR is auto-retargeted to main as its parent
+    # merges. With the branches filter above and no `edited`, that PR would run
+    # zero CI and sit blocked until someone pushed to it.
+    types:
+      [
+        opened,
+        synchronize,
+        reopened,
+        edited,
+        ready_for_review,
+        converted_to_draft,
+      ]
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
   # Obsolete PR heads may be cancelled; preserve every main verdict because
-  # main is the source for tagged consumer syncs.
+  # main is the source for tagged consumer syncs. `cancel-in-progress: false`
+  # alone does not preserve them: it protects the in-progress run, but a newly
+  # queued run cancels any run already pending in the group, so back-to-back
+  # merges would drop the middle commit's verdict. Giving every non-PR run its
+  # own group means nothing ever queues behind anything.
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

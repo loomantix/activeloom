@@ -169,6 +169,11 @@ REVIEW_MAX_ROUNDS=4
 REVIEW_TIMEOUT_SECONDS=7200
 REVIEW_DEADLINE_EPOCH=0
 REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
+# Least remaining budget worth starting a pass with, and the headroom a launcher
+# gets below the wrapper's own bound so its CLI times out first and still writes
+# a structured result. The floor keeps that subtraction positive.
+REVIEW_PASS_MIN_SECONDS=120
+REVIEW_PASS_LAUNCHER_MARGIN_SECONDS=60
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
 DEPENDENCY_GATE=ready
@@ -1375,7 +1380,7 @@ recover_v3_review_pass() {
         "$outcome_signature" || return 1
     classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' \
         "$outcome_file")" || return 1
-    run_validation "$slug-review-round-$round" || {
+    run_validation "$slug-review-round-$round" true || {
         recovery_message "Validation after recovered $engine review failed in review round $round."
         return 1
     }
@@ -1401,6 +1406,7 @@ run_review_pass() {
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
     local historical_comment_ids_signature
     local boundary_status
+    local review_pass_launcher_seconds
 
     prepare_review_pass_budget || return 1
 
@@ -1458,12 +1464,15 @@ run_review_pass() {
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
     # Standalone reviewer launchers read their own per-pass bound from this
-    # variable, clamped to the ceiling they enforce.
-    if [ "$REVIEW_PASS_TIMEOUT_SECONDS" -gt 3600 ]; then
-        export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS=3600
-    else
-        export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$REVIEW_PASS_TIMEOUT_SECONDS"
+    # variable, clamped to the ceiling they enforce. Keep it strictly below the
+    # bound `run_bounded_hook` applies below: that clock starts first and also
+    # covers the launcher's own preflight, so an equal value guarantees the
+    # wrapper kills the CLI before the CLI can time out and write a result.
+    review_pass_launcher_seconds=$((REVIEW_PASS_TIMEOUT_SECONDS - REVIEW_PASS_LAUNCHER_MARGIN_SECONDS))
+    if [ "$review_pass_launcher_seconds" -gt 3600 ]; then
+        review_pass_launcher_seconds=3600
     fi
+    export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$review_pass_launcher_seconds"
     run_bounded_hook "$hook_description (round $round)" "$hook" \
         "$REVIEW_PASS_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
         recovery_message "$hook_failure_description failed in review round $round."
@@ -1611,8 +1620,12 @@ prepare_review_pass_budget() {
         REVIEW_DEADLINE_EPOCH=$((now + REVIEW_TIMEOUT_SECONDS))
     fi
     remaining=$((REVIEW_DEADLINE_EPOCH - now))
-    if [ "$remaining" -le 0 ]; then
-        recovery_message "Local review exceeded its configured whole-run time budget."
+    # Below the floor the budget is spent, not merely small. Clamping toward zero
+    # instead would hand a hook a bound it cannot finish in, and the resulting
+    # kill is reported as a hook or validation failure rather than as the clock
+    # expiry it is. Stopping here keeps the cause legible.
+    if [ "$remaining" -lt "$REVIEW_PASS_MIN_SECONDS" ]; then
+        recovery_message "Local review exhausted its configured whole-run time budget."
         return 1
     fi
     REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
@@ -1647,7 +1660,7 @@ run_review_convergence() {
                 recovery_message "Publication diff inspection failed before review round $round."
                 return 1
             }
-            run_validation "fresh-base-round-$round" || {
+            run_validation "fresh-base-round-$round" true || {
                 recovery_message "Fresh-base validation failed before review round $round."
                 return 1
             }
@@ -1757,7 +1770,7 @@ run_review_convergence() {
             unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
                 AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
                 AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-                AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+                AGENT_LOOP_REVIEW_PUSH_STATE_FILE LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
             echo -e "${GREEN}✓${NC} Configured Codex and Claude hooks reported no material fixes in a complete round after $round round(s)"
             return 0
         fi
@@ -1778,7 +1791,7 @@ run_review_convergence() {
     unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
         AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
         AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-        AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+        AGENT_LOOP_REVIEW_PUSH_STATE_FILE LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
     recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
     return 1
 }
