@@ -80,6 +80,29 @@ def test_exact_fully_qualified_review_push_succeeds(review_repo: tuple[Path, dic
     assert _git(repo, "ls-remote", "--heads", "origin", "refs/heads/agent-loop/issue-7").split()[0] == result.stdout.strip()
 
 
+def test_review_push_is_idempotent_on_retry(
+    review_repo: tuple[Path, dict[str, str], str]
+) -> None:
+    repo, env, _ = review_repo
+    first = _run(repo, env)
+    assert first.returncode == 0, first.stderr
+    head = first.stdout.strip()
+
+    retry = _run(repo, env)
+    assert retry.returncode == 0, retry.stderr
+    assert retry.stdout.strip() == head
+    assert (
+        _git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "origin",
+            "refs/heads/agent-loop/issue-7",
+        ).split()[0]
+        == head
+    )
+
+
 def test_second_review_push_in_one_pass_is_rejected(
     review_repo: tuple[Path, dict[str, str], str]
 ) -> None:

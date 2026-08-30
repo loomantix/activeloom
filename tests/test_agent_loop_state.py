@@ -10,6 +10,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent
 HELPER = ROOT / ".agents/skills/agent-loop/scripts/agent-loop-state.py"
@@ -110,6 +112,98 @@ def test_state_create_and_update_are_private_and_validated(tmp_path: Path) -> No
     shown_value = json.loads(shown.stdout)
     assert shown_value["round"] == 2
     assert shown_value["reviewEngine"] == "gemini"
+
+
+@pytest.mark.parametrize(
+    ("deadline", "rounds", "error_message"),
+    [
+        ("0", "4", "reviewDeadlineEpoch must be a positive integer"),
+        ("-1", "4", "reviewDeadlineEpoch must be a positive integer"),
+        ("2000000000", "0", "reviewMaxRounds must be between 1 and 4"),
+        ("2000000000", "5", "reviewMaxRounds must be between 1 and 4"),
+        ("2000000000", "-1", "reviewMaxRounds must be between 1 and 4"),
+    ],
+)
+def test_state_create_validates_review_budget_bounds(
+    tmp_path: Path, deadline: str, rounds: str, error_message: str
+) -> None:
+    state = tmp_path / "private" / "run-state.json"
+    result = _run(
+        "create",
+        "--file",
+        str(state),
+        "--run-id",
+        "run-1",
+        "--repo",
+        "example/repository",
+        "--issue",
+        "7",
+        "--base-branch",
+        "main",
+        "--issue-title-sha256",
+        "a" * 64,
+        "--issue-body-sha256",
+        "b" * 64,
+        "--branch",
+        "agent-loop/issue-7-run-1",
+        "--worktree",
+        str(tmp_path / "worktree"),
+        "--log-dir",
+        str(tmp_path / "logs"),
+        "--pr",
+        "9",
+        "--pr-url",
+        "https://example.invalid/pr/9",
+        "--base-sha",
+        BASE,
+        "--head-sha",
+        HEAD,
+        "--review-deadline-epoch",
+        deadline,
+        "--review-max-rounds",
+        rounds,
+    )
+    assert result.returncode != 0
+    assert error_message in result.stderr
+
+
+def test_state_create_requires_deadline_and_rounds_together(tmp_path: Path) -> None:
+    state = tmp_path / "private" / "run-state.json"
+    missing_rounds = _run(
+        "create",
+        "--file",
+        str(state),
+        "--run-id",
+        "run-1",
+        "--repo",
+        "example/repository",
+        "--issue",
+        "7",
+        "--base-branch",
+        "main",
+        "--issue-title-sha256",
+        "a" * 64,
+        "--issue-body-sha256",
+        "b" * 64,
+        "--branch",
+        "agent-loop/issue-7-run-1",
+        "--worktree",
+        str(tmp_path / "worktree"),
+        "--log-dir",
+        str(tmp_path / "logs"),
+        "--pr",
+        "9",
+        "--pr-url",
+        "https://example.invalid/pr/9",
+        "--base-sha",
+        BASE,
+        "--head-sha",
+        HEAD,
+        "--review-deadline-epoch",
+        "2000000000",
+    )
+    assert missing_rounds.returncode != 0
+    assert "together" in missing_rounds.stderr
 
 
 def test_batch_state_persists_order_cursor_statuses_and_child_paths(tmp_path: Path) -> None:

@@ -48,6 +48,9 @@ def test_ci_uses_draft_preflight_and_ready_full_gate() -> None:
 
 def test_codeql_cancels_superseded_runs_and_skips_drafts() -> None:
     workflow = _workflow("codeql.yml")
+    assert workflow["on"]["pull_request"]["types"] == [
+        "opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"
+    ]
     assert workflow["concurrency"] == {
         "group": "codeql-${{ github.event.pull_request.number || github.ref }}",
         "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
@@ -62,6 +65,9 @@ def test_codeql_cancels_superseded_runs_and_skips_drafts() -> None:
 
 def test_dco_cancels_superseded_heads_and_is_bounded() -> None:
     workflow = _workflow("dco.yml")
+    assert workflow["on"]["pull_request"]["types"] == [
+        "opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"
+    ]
     assert workflow["concurrency"] == {
         "group": "dco-${{ github.event.pull_request.number }}",
         "cancel-in-progress": "true",

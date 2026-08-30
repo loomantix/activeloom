@@ -143,6 +143,7 @@ def test_review_uses_truthful_engine_trusted_surface_and_fail_closed_json(
     assert result.returncode == 0, result.stderr
     argv = json.loads(argv_file.read_text(encoding="utf-8"))
     assert argv[argv.index("--model") + 1] == "gemini-3.7-flash-high"
+    assert argv[argv.index("--print-timeout") + 1] == "1800s"
     assert argv[argv.index("--add-dir") + 1] == str(surface)
     assert "--disable-slash-commands" in argv
     prompt = argv[argv.index("--print") + 1]
@@ -161,6 +162,7 @@ def test_review_uses_truthful_engine_trusted_surface_and_fail_closed_json(
     argv = json.loads(argv_file.read_text(encoding="utf-8"))
     assert argv[argv.index("--model") + 1] == "claude-sonnet-4-6"
     assert argv[argv.index("--effort") + 1] == "low"
+    assert argv[argv.index("--print-timeout") + 1] == "1800s"
     assert "engine claude" in argv[argv.index("--print") + 1]
 
     failing_agy, _ = _fake_agy(tmp_path, status="CANCELED")
@@ -174,6 +176,51 @@ def test_review_uses_truthful_engine_trusted_surface_and_fail_closed_json(
     )
     assert result.returncode != 0
     assert "status 'CANCELED'" in result.stderr
+
+
+def test_review_honors_and_validates_custom_timeout(tmp_path: Path) -> None:
+    _, surface = _trusted_surface(tmp_path)
+    issue = tmp_path / "issue"
+    issue.mkdir()
+    agy, argv_file = _fake_agy(tmp_path)
+    env = {
+        **_subprocess_env(),
+        "AGY_CLI": str(agy),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGENT_LOOP_REVIEW_ENGINE": "gemini",
+        "AGENT_LOOP_REVIEW_BASE_SHA": SHA,
+        "AGENT_LOOP_REVIEW_ROUND": "1",
+        "AGENT_LOOP_PR_NUMBER": "17",
+        "AGENT_LOOP_PR_HEAD_SHA": SHA,
+        "AGENT_LOOP_REVIEW_RESULT_FILE": str(tmp_path / "result.json"),
+        "AGENT_LOOP_REVIEW_PUSH_HELPER": str(tmp_path / "push.sh"),
+        "AGENT_LOOP_TRUSTED_AGENTS_ROOT": str(surface),
+        "AGENT_LOOP_TRUSTED_BASE_REF": "HEAD",
+        "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS": "900",
+    }
+    result = subprocess.run(
+        [str(REVIEW), "--engine", "gemini"],
+        cwd=issue,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(argv_file.read_text(encoding="utf-8"))
+    assert argv[argv.index("--print-timeout") + 1] == "900s"
+
+    for invalid in ("0", "3601", "-10", "abc"):
+        result = subprocess.run(
+            [str(REVIEW), "--engine", "gemini"],
+            cwd=issue,
+            env={**env, "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS": invalid},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+        assert "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" in result.stderr
 
 
 def test_review_rejects_modified_trusted_surface_before_agy(tmp_path: Path) -> None:

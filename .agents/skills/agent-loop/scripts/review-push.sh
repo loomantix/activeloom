@@ -94,6 +94,19 @@ remote_line="$("$real_git" ls-remote --heads origin "refs/heads/$AGENT_LOOP_BRAN
     exit 1
 }
 remote_head="${remote_line%%[[:space:]]*}"
+if [ "$remote_head" = "$local_head" ]; then
+    if [ -n "${AGENT_LOOP_REVIEW_PUSH_STATE_FILE:-}" ]; then
+        checkpoint_dir="$(dirname -- "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE")"
+        checkpoint_tmp="$(mktemp "$checkpoint_dir/.review-push-state.XXXXXX")"
+        trap 'rm -f -- "$checkpoint_tmp"' EXIT
+        chmod 600 "$checkpoint_tmp"
+        printf '%s\n' "$local_head" > "$checkpoint_tmp"
+        mv -f -- "$checkpoint_tmp" "$AGENT_LOOP_REVIEW_PUSH_STATE_FILE"
+        trap - EXIT
+    fi
+    printf '%s\n' "$local_head"
+    exit 0
+fi
 [ "$remote_head" = "$expected_remote_head" ] || {
     echo "review-push rejects a stale or uncertain remote head" >&2
     exit 1

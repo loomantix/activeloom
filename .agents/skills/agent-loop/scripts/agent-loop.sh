@@ -29,7 +29,8 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
     AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-    AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+    AGENT_LOOP_REVIEW_PUSH_STATE_FILE \
+    AGENT_LOOP_REVIEW_DEADLINE_EPOCH LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -556,9 +557,13 @@ print(path.resolve(strict=True))
         echo "   Review round cap restored from run state: $REVIEW_MAX_ROUNDS"
     fi
     REVIEW_DEADLINE_EPOCH="$(jq -r '.reviewDeadlineEpoch // empty' <<<"$RESUME_STATE_JSON")"
-    if [ -z "$REVIEW_DEADLINE_EPOCH" ]; then
-        REVIEW_DEADLINE_EPOCH=$(( $(stat -c %Y "$RESUME_RUN_FILE") + REVIEW_TIMEOUT_SECONDS ))
-        echo "   Legacy run state uses its original checkpoint time for the review deadline"
+    now="$(date +%s)"
+    if [ -n "$REVIEW_DEADLINE_EPOCH" ] && [ "$REVIEW_DEADLINE_EPOCH" -le "$now" ]; then
+        echo "   Resumed run state review deadline was in the past; allocated fresh review budget ($REVIEW_TIMEOUT_SECONDS s)"
+        REVIEW_DEADLINE_EPOCH=$(( now + REVIEW_TIMEOUT_SECONDS ))
+    elif [ -z "$REVIEW_DEADLINE_EPOCH" ]; then
+        REVIEW_DEADLINE_EPOCH=$(( now + REVIEW_TIMEOUT_SECONDS ))
+        echo "   Legacy run state allocated review deadline ($REVIEW_TIMEOUT_SECONDS s)"
     fi
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
@@ -1138,7 +1143,8 @@ run_bounded_hook() {
             export AGENT_LOOP_ORIGIN_PUSH_URLS="$ORIGIN_PUSH_URLS"
         else
             unset AGENT_LOOP_REVIEW_CONTRACT_VERSION AGENT_LOOP_ORIGIN_FETCH_URLS \
-                AGENT_LOOP_ORIGIN_PUSH_URLS
+                AGENT_LOOP_ORIGIN_PUSH_URLS AGENT_LOOP_REVIEW_DEADLINE_EPOCH \
+                LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
         fi
         export AGENT_LOOP_HOOK_COMMAND="$hook_command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
@@ -1501,6 +1507,7 @@ run_review_pass() {
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
     export AGENT_LOOP_REVIEW_DEADLINE_EPOCH="$REVIEW_DEADLINE_EPOCH"
+    export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$REVIEW_PASS_TIMEOUT_SECONDS"
     run_bounded_hook "$hook_description (round $round)" "$hook" \
         "$REVIEW_PASS_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
         recovery_message "$hook_failure_description failed in review round $round."
@@ -1816,7 +1823,8 @@ run_review_convergence() {
             unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
                 AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
                 AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-                AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+                AGENT_LOOP_REVIEW_PUSH_STATE_FILE \
+                AGENT_LOOP_REVIEW_DEADLINE_EPOCH LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
             echo -e "${GREEN}✓${NC} Configured Gemini and Claude hooks reported no material fixes in a complete round after $round round(s)"
             return 0
         fi
@@ -1837,7 +1845,8 @@ run_review_convergence() {
     unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
         AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
         AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-        AGENT_LOOP_REVIEW_PUSH_STATE_FILE
+        AGENT_LOOP_REVIEW_PUSH_STATE_FILE \
+        AGENT_LOOP_REVIEW_DEADLINE_EPOCH LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
     recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
     return 1
 }
@@ -2890,6 +2899,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     initial_pr_sha="$(git rev-parse HEAD)"
     open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
 
+    REVIEW_DEADLINE_EPOCH=0
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"
         REVIEW_DEADLINE_EPOCH=$(( $(date +%s) + REVIEW_TIMEOUT_SECONDS ))

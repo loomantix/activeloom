@@ -4588,8 +4588,10 @@ def test_persistent_logs_are_owner_only(
 @pytest.mark.parametrize(
     ("config_key", "config_value", "message"),
     [
+        ("review_max_rounds", 0, "review_max_rounds must be a positive integer"),
         ("review_max_rounds", 5, "review_max_rounds cannot exceed the Deep review cap of 4"),
         ("review_timeout_seconds", 0, "review_timeout_seconds must be a positive integer"),
+        ("review_timeout_seconds", -1, "numeric agent-loop config value required: -1"),
     ],
 )
 def test_review_budget_config_fails_before_issue_mutation(
