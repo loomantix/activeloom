@@ -284,6 +284,16 @@ agy_exit=0
 # Keep the outer bound above the --print-timeout below, for the same reason as
 # the skill preflight: let the CLI time out and report rather than be killed.
 # claude-cli-invocations:start
+# The ceiling is re-asserted here, inside the locked region, deliberately.
+# The fail-fast copy near the top of the script sits outside the hash, so an
+# edit widening or deleting it would leave this launch unbounded without
+# breaking the region hash. Re-checking here puts the bound itself under the
+# fence; the duplication is the point, not an oversight.
+[[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
+    [ "$review_timeout_seconds" -le 3600 ] || {
+    echo "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
+    exit 2
+}
 agy_outer_timeout_seconds=$((review_timeout_seconds + 30))
 run_agy_managed "$result_file" "${agy_outer_timeout_seconds}s" \
     --model gemini-3.7-flash-high \
