@@ -2300,11 +2300,7 @@ def test_review_budget_config_fails_before_issue_mutation(
     config_value: int,
     message: str,
 ) -> None:
-    config = (
-        _config(tmp_path, review_max_rounds=config_value)
-        if config_key == "review_max_rounds"
-        else _config(tmp_path, review_timeout_seconds=config_value)
-    )
+    config = _config(tmp_path, **{config_key: config_value})
     result = _run(
         consumer,
         ["--issues", "27", "--dry-run"],

@@ -70,7 +70,7 @@ def _validate(value: dict[str, Any]) -> None:
         "claudeResultSha256",
     }
     budget = {"reviewDeadlineEpoch", "reviewMaxRounds"}
-    if set(value) not in {frozenset(required), frozenset(required | budget)}:
+    if set(value) not in (required, required | budget):
         _fail("run state has missing or unknown fields")
     if type(value["version"]) is not int or value["version"] != STATE_VERSION:
         _fail("unsupported run state version")
