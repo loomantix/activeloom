@@ -65,7 +65,8 @@ with the issue worktree as the current directory.
 | `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                                                                         |
 | `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.                                                                                     |
 | `claude_effort_policy`                           | Optional literal Claude effort policy checked by the doctor, such as `low`.                                                                                                                                 |
-| `review_max_rounds`                              | Positive cap on review rounds. Default `4`; cap exhaustion preserves the worktree and blocks publication.                                                                                                   |
+| `review_max_rounds`                              | Review-round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the worktree and blocks publication.                                                                              |
+| `review_timeout_seconds`                         | Positive wall-clock budget for the complete review run, persisted across resume. Default `7200`; each pass is capped at the remaining budget.                                                               |
 | `worker_hook`                                    | Optional worker command override (e.g. `agy`, `gemini`, or custom CLI invocation).                                                                                                                          |
 | `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                                                                |
 | `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                 |
@@ -141,7 +142,7 @@ discard those runs under their original wrapper before migrating.
    change models during a capacity retry.
 3. Configure a non-mutating `validation_hook`, add
    `review_contract_version = 3`, enable `config_doctor = true`, and optionally
-   override `review_max_rounds = 4` with another positive cap.
+   override `review_max_rounds = 4` with another value from `1` through `4`.
 4. Merge the current local-only wording from the instruction and prompt
    templates, including the local bail-record/operator-handoff contract. Sync
    will not overwrite those consumer-owned files.
@@ -170,7 +171,8 @@ and never copies issue bodies, model logs, or findings into GitHub.
 8. If either reviewer commits a material fix, restart at Gemini. Minor-only fixes
    are validated and retained without restarting. Convergence requires one
    entire Gemini-then-Claude round with no material fixes. Exhausting
-   `review_max_rounds` blocks publication and preserves the worktree.
+   `review_max_rounds` or the persisted whole-run deadline blocks publication
+   and preserves the worktree.
 9. If the base advances, integrate and push it on the draft PR before restarting
    at Gemini. A non-fast-forward base move stops the loop.
 10. Re-attest unchanged issue requirements/readiness while excluding only the

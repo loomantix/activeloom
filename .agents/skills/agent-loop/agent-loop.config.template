@@ -46,6 +46,10 @@ claude_effort_policy = low
 gemini_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine gemini
 claude_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine claude
 review_max_rounds = 4
+# Positive wall-clock budget for the complete review run. The deadline is
+# persisted so resume cannot reset it; each review pass receives only the
+# remaining time.
+review_timeout_seconds = 7200
 
 # Optional worker override. When empty, the wrapper runs `agy` with the
 # prompt from prompt.txt. The default worker honors the model settings below.

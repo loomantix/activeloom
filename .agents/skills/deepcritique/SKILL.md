@@ -7,7 +7,7 @@ description: High-fidelity PR-first review chain that opens or reuses a draft PR
 
 ## Context Window Check
 
-Run this check before anything else. `deepcritique` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `critique deep` (six core independent review lanes, plus a conditional tenant-coupling lane). When subagents/delegation are available, the lanes run in parallel, each inheriting cache state from this session; when subagents are not available they run as serial local passes against the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.
+Run this check before anything else. `deepcritique` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `critique deep` (six core independent review lanes, plus a conditional tenant-coupling lane). When subagents/delegation are available, the lanes run in parallel, each inheriting cache state from this session; when subagents are not available they run as serial local passes against the same context. Either way, if the current Antigravity or Gemini session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.
 
 Assess honestly:
 
@@ -16,7 +16,7 @@ Assess honestly:
 
 If either is yes, stop and tell the user:
 
-> Your context is heavy from the implementation work. Start a new Codex session and run `deepcritique` there. `deepcritique` spawns up to seven review lanes and is the chain that benefits most from cache headroom. A fresh session makes the chain materially cheaper.
+> Your context is heavy from the implementation work. Start a new Antigravity or Gemini session and run `deepcritique` there. `deepcritique` spawns up to seven review lanes and is the chain that benefits most from cache headroom. A fresh session makes the chain materially cheaper.
 
 Do not proceed in the current session unless the user explicitly overrides.
 
@@ -87,7 +87,7 @@ choice. The ledger governs scoped diff reads, bounded output, and PR-ledger
 deduplication; do not paste the whole diff or the implementation conversation
 into lane prompts.
 
-Deep critique is not a single generalized review. If the active Codex runtime permits subagents/delegation, use independent reviewers for every applicable lane. If subagents are unavailable or not permitted, run a separate local pass for every applicable lane and disclose the downgrade in the final output.
+Deep critique is not a single generalized review. If the active Antigravity/Gemini runtime permits subagents/delegation, use independent reviewers for every applicable lane. If subagents are unavailable or not permitted, run a separate local pass for every applicable lane and disclose the downgrade in the final output.
 
 Invoking `deepcritique` is an explicit request to use independent subagents for the
 six core review lanes, plus the conditional tenant-coupling lane when signaled,
@@ -141,7 +141,7 @@ The outer wrapper validates the observed transition and posts the canonical
 attestation; this skill must not post a pass/completion marker itself.
 
 ```text
-Codex deepcritique pass complete.
+Deep critique pass complete.
 PR: #<pr-number>
 Reviewed head: <sha>
 Round: <n> (<adversarial | convergence>)
@@ -174,7 +174,7 @@ Review depth: <deep with independent subagents | deep local multi-pass fallback>
 Next:
   reviewit <pr-number> deep
 
-Run `reviewit <pr-number> deep` in a FRESH Codex session.
+Run `reviewit <pr-number> deep` in a FRESH Antigravity or Gemini session.
 The current session has absorbed refactorpass output, all deep-critique review
 lanes, and any fix commits — cache pressure is high. `reviewit deep` runs
 up to four review iterations and a final deepcritique against the PR; each

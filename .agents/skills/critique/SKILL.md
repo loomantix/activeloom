@@ -1,6 +1,6 @@
 ---
 name: critique
-description: PR-first adversarial code review for Codex. Use after implementation or refactorpass on an open draft PR, especially when the user asks to critique, review hard, find bugs, or run the platform review chain. Posts verified findings inline before fixing, then replies and resolves. Lean mode runs the two highest-signal lanes; the deep matrix runs only when the resolved review tier is Deep.
+description: PR-first adversarial code review for Antigravity or Gemini CLI. Use after implementation or refactorpass on an open draft PR, especially when the user asks to critique, review hard, find bugs, or run the platform review chain. Posts verified findings inline before fixing, then replies and resolves. Lean mode runs the two highest-signal lanes; the deep matrix runs only when the resolved review tier is Deep.
 ---
 
 # Critique
@@ -11,7 +11,7 @@ finding and disposition in the PR.
 
 ## Context Window Check
 
-Run this check before anything else. `critique` runs adversarial review lanes—two in lean mode, six core lanes in deep mode, plus a conditional tenant-coupling lane—each of which reads the diff, reads changed files, and produces structured findings. When subagents/delegation are available the lanes run in parallel, and each subagent inherits cache state from this session; when subagents are not available the lanes run as serial local passes that compete for the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and `critique` (especially `critique deep`) runs slower and more expensively.
+Run this check before anything else. `critique` runs adversarial review lanes—two in lean mode, six core lanes in deep mode, plus a conditional tenant-coupling lane—each of which reads the diff, reads changed files, and produces structured findings. When subagents/delegation are available the lanes run in parallel, and each subagent inherits cache state from this session; when subagents are not available the lanes run as serial local passes that compete for the same context. Either way, if the current Antigravity or Gemini session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and `critique` (especially `critique deep`) runs slower and more expensively.
 
 Assess honestly:
 
@@ -20,7 +20,7 @@ Assess honestly:
 
 If either is yes, stop and tell the user:
 
-> Your context is heavy from the implementation work. Start a new Codex session and run `critique` (or `deepcritique`) there. `critique deep`'s full matrix especially needs cache headroom and a fresh session makes the chain materially cheaper.
+> Your context is heavy from the implementation work. Start a new Antigravity or Gemini session and run `critique` (or `deepcritique`) there. `critique deep`'s full matrix especially needs cache headroom and a fresh session makes the chain materially cheaper.
 
 Do not proceed in the current session unless the user explicitly overrides.
 
@@ -187,7 +187,7 @@ Lean mode must cover two independent lanes:
 
 Run these lanes as independently as the active runtime permits:
 
-- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent reviewers for both lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from the other lane.
+- If subagents/delegation are available and permitted by the active instructions, spawn independent reviewers for both lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from the other lane.
 - If subagents are unavailable or not permitted, perform two separate local passes using the lane prompts above. Do not present that as equivalent to independent subagents.
 - If lean mode was requested but independent subagents could not be used, explicitly say so in the output under `review depth`.
 
@@ -209,7 +209,7 @@ Run these lanes as independently as the active runtime permits:
   every applicable lane whenever the active runtime exposes subagent/delegation tools.
   Do not require the user to separately say "use subagents" before spawning
   those lane reviewers.
-- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent reviewers using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the disjoint lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from other lanes.
+- If subagents/delegation are available and permitted by the active instructions, spawn independent reviewers using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the disjoint lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from other lanes.
 - If subagents are unavailable or not permitted, perform a separate local pass for every applicable lane using the prompts above. Do not present that as equivalent to independent subagents.
 - If deep mode was requested but independent subagents could not be used, explicitly say so in the output under `review depth`.
 - Run the tenant-coupling lane as a separate use of the code-reviewer role with the narrow prompt above; do not dilute it into the general correctness lane.
@@ -253,9 +253,11 @@ Run these lanes as independently as the active runtime permits:
 10. Apply the Disposition Bar. Fix only findings whose expected harm reduction
     justifies the churn. Defer the rest, and create an issue only for an urgent
     follow-up that should be scheduled within roughly two weeks.
-11. Run targeted validation and commit. Publish through
-    `$AGENT_LOOP_REVIEW_PUSH_HELPER` when it is set; otherwise push normally
-    with no force.
+11. Run targeted validation and commit. When
+    `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, accumulate every local fix commit
+    across the wrapper pass and invoke the helper exactly once after the final
+    fix; a second publication fails closed. Otherwise push normally with no
+    force.
 12. Use the ledger helper's resumable `dispose` transaction for every posted
     finding. Stop on any posting, push, disposition, or resolution failure; on
     an uncertain helper response, retry only the identical command.

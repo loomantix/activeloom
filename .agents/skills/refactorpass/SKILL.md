@@ -1,6 +1,6 @@
 ---
 name: refactorpass
-description: PR-first cleanup pass for Codex. Use when the user asks for refactoring, cleanup, simplification, or the platform review chain on an open draft PR. Posts verified cleanup suggestions inline before editing, skips docs/config-only changesets, runs a structured cleanup matrix, and pushes, replies, and resolves when appropriate. Runs at most once per PR for this engine.
+description: PR-first cleanup pass for Antigravity or Gemini CLI. Use when the user asks for refactoring, cleanup, simplification, or the platform review chain on an open draft PR. Posts verified cleanup suggestions inline before editing, skips docs/config-only changesets, runs a structured cleanup matrix, and pushes, replies, and resolves when appropriate. Runs at most once per PR for this engine.
 ---
 
 # Refactor Pass
@@ -13,7 +13,7 @@ when Codex is actually running the pass.
 
 ## Context Window Check
 
-Run this check before anything else. `refactorpass` (and the `critique` that typically follows) does diff-reading, multi-lane reviewing, and edit application — all cache-hungry. If the current Codex session has already been heavily used for feature implementation, the cache is largely spent on context the cleanup pass does not need, and the downstream `critique` (especially `critique deep`'s six independent lanes) will be measurably slower and more expensive.
+Run this check before anything else. `refactorpass` (and the `critique` that typically follows) does diff-reading, multi-lane reviewing, and edit application — all cache-hungry. If the current Antigravity or Gemini session has already been heavily used for feature implementation, the cache is largely spent on context the cleanup pass does not need, and the downstream `critique` (especially `critique deep`'s six independent lanes) will be measurably slower and more expensive.
 
 Assess honestly:
 
@@ -22,7 +22,7 @@ Assess honestly:
 
 If either is yes, stop and tell the user:
 
-> Your context is heavy from the implementation work. Start a new Codex session and run `refactorpass` (and `critique` / `deepcritique`) there. The downstream lanes need cache headroom and a fresh session makes the chain materially cheaper.
+> Your context is heavy from the implementation work. Start a new Antigravity or Gemini session and run `refactorpass` (and `critique` / `deepcritique`) there. The downstream lanes need cache headroom and a fresh session makes the chain materially cheaper.
 
 Do not proceed in the current session unless the user explicitly overrides.
 
@@ -40,7 +40,7 @@ Refactorpass must cover three lanes:
 
 Run these lanes as independently as the active runtime permits:
 
-- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent cleanup reviewers for the three lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the cleanup lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to suggest behavior-preserving cleanup and avoid broad rewrites.
+- If subagents/delegation are available and permitted by the active instructions, spawn independent cleanup reviewers for the three lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the cleanup lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to suggest behavior-preserving cleanup and avoid broad rewrites.
 - If subagents are unavailable or not permitted, perform three separate local passes using the lane prompts above. Do not present that as equivalent to independent subagents.
 - If refactorpass could not use independent subagents, explicitly say so in the output under `cleanup depth`.
 
@@ -78,9 +78,10 @@ Run these lanes as independently as the active runtime permits:
 9. Keep scope tight: touch only code changed by the current branch unless a tiny adjacent edit is required to finish the cleanup safely.
 10. Do not introduce feature behavior, broad rewrites, unrelated style churn, formatting-only commits, or speculative abstraction.
 11. Run the smallest relevant formatter/test command if the repo documents one.
-12. If changes were made, commit them as `refactor: codex cleanup pass - <summary>`.
-    Publish through `$AGENT_LOOP_REVIEW_PUSH_HELPER` when it is set; otherwise
-    push without force. Reply to each cleanup thread with the commit and
+12. If changes were made, commit them as `refactor: <active-engine> cleanup pass - <summary>` (e.g. `refactor: gemini cleanup pass - <summary>`).
+    When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, leave the commit local for the
+    enclosing critique pass so that wrapper invocation publishes exactly once;
+    otherwise push without force. Reply to each cleanup thread with the commit and
     validation, then resolve it.
 13. Whether or not the lanes produced changes, post one informational PR comment
     closing the latch for this engine, carrying the ledger's marker:
