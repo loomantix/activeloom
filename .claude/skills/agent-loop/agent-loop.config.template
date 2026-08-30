@@ -46,18 +46,22 @@ review_timeout_seconds = 7200
 #
 # MODEL SELECTION. A review hook is a literal shell command, so the engine's
 # model and effort are chosen here rather than through dedicated config keys —
-# whatever flags your CLI accepts. For example:
+# whatever flags your CLI accepts. These fragments show flag placement only; a
+# working hook must also carry AGENT_LOOP_REVIEW_PUSH_HELPER,
+# AGENT_LOOP_REVIEW_RESULT_FILE, and write-result, or preflight rejects it.
 #
-#   claude_review_hook = claude --print --effort low --model <model-id> "/deepcritique ..."
-#   codex_review_hook  = codex exec -c model_reasoning_effort=medium "...deepcritique..."
+#   claude_review_hook = claude --print --effort low --model <model-id> /deepcritique ...
+#   codex_review_hook  = codex exec -c model_reasoning_effort=medium ... /deepcritique ...
 #
-# Pick per aspect, not globally: measured on real issues, the two review passes
-# are 75-84% of a run's wall clock and the worker is 10-17%, so reviewer choice
-# dominates cost while worker choice dominates how many rounds are needed.
+# Pick per aspect, not globally: the two review passes dominate a run's wall
+# clock and the worker is a small fraction of it, so reviewer choice dominates
+# cost while worker choice dominates how many rounds are needed. See "Model
+# Selection" in SKILL.md for the measured shares.
 #
-# LIMITATION: both hooks are currently required and the engine roster is fixed
-# at exactly Codex then Claude. There is no key for a third engine and no way to
-# omit one, so today the loop cannot run without both CLIs available.
+# LIMITATION: both hooks are required and the engine roster is fixed at exactly
+# Codex then Claude. There is no key for a third engine and no way to omit one,
+# so a run without both CLIs fails at the first review pass — after the issue is
+# claimed and the draft PR is open, not at startup.
 claude_review_hook =
 codex_review_hook =
 
@@ -66,17 +70,21 @@ codex_review_hook =
 # with the prompt from prompt.txt, honoring the model settings below. Set this
 # to run a different implementation agent instead.
 worker_hook =
-# Model ids as your CLI accepts them. `worker_model` is the primary and
-# `worker_fallback_model` is used only after a clean capacity/timeout failure
-# that left the worktree unchanged, so set them together: pinning a strong
-# primary without a fallback makes capacity errors more expensive. Leaving both
-# empty is NOT neutral — the worker then runs on whatever your CLI currently
-# defaults to, which changes with CLI releases, so the one slot that determines
-# how much work the reviewers have to do is the one slot that is not pinned.
+# Both keys apply to the DEFAULT worker only, and are ignored entirely when
+# worker_hook is set above — a hook pins its own model, in the hook.
 #
-# The worker invocation supports a model and nothing else; there is no effort
-# control for the worker. Reviewer model and effort are chosen inside the review
-# hook commands below.
+# Model ids as your CLI accepts them. `worker_model` is the primary and
+# `worker_fallback_model` is used only after a clean capacity failure that left
+# the worktree unchanged; a timeout retries on the primary model. Set them
+# together anyway: pinning a strong primary without a fallback makes capacity
+# errors more expensive. Leaving both empty is NOT neutral — the worker then
+# runs on whatever your CLI currently defaults to, which changes with CLI
+# releases, so the one slot that determines how much work the reviewers have to
+# do is the one slot that is not pinned.
+#
+# The default worker invocation supports a model and nothing else; there is no
+# effort control for it. Reviewer model and effort are chosen inside the review
+# hook commands above.
 worker_model =
 worker_fallback_model =
 worker_retries = 1

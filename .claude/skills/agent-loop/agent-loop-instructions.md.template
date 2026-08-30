@@ -4,9 +4,10 @@ You're working autonomously on a single GitHub issue in this repository. Read
 this file fully, then read the exact issue from `AGENT_LOOP_ISSUE_TITLE` and
 `AGENT_LOOP_ISSUE_BODY`. Implement,
 validate, refactor, and **create a local commit. Stop after the commit.** Do
-not push, open a pull request, or invoke Gemini, Copilot, `reviewit`, or any
-GitHub-hosted AI reviewer — the wrapper owns fresh-base integration, draft PR
-creation, and bounded local Claude/Codex review through inline PR threads.
+not push, open a pull request, or invoke `reviewit`, Copilot, hosted Gemini, or
+any other GitHub-hosted AI reviewer — the wrapper owns fresh-base integration,
+draft PR creation, and bounded local Claude/Codex review through inline PR
+threads.
 
 > **Customize this file before running `/agent-loop`.** It was created from a
 > starter template on first sync from upstream. Sections marked `TODO:` need

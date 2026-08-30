@@ -106,20 +106,22 @@ migrate template changes by hand.
 
 Three model-backed aspects, configured in two places:
 
-| Aspect                   | Where                                               |
-| ------------------------ | --------------------------------------------------- |
-| Worker (writes the code) | `worker_model` / `worker_fallback_model`            |
-| Codex reviewer           | model + effort as flags inside `codex_review_hook`  |
-| Claude reviewer          | model + effort as flags inside `claude_review_hook` |
+| Aspect                           | Where                                               |
+| -------------------------------- | --------------------------------------------------- |
+| Default worker (writes the code) | `worker_model` / `worker_fallback_model`            |
+| Codex reviewer                   | model + effort as flags inside `codex_review_hook`  |
+| Claude reviewer                  | model + effort as flags inside `claude_review_hook` |
 
 Review hooks are literal shell commands, so a reviewer's model and effort are
 just flags on that command — there are no dedicated keys for them. Pin
-`worker_model` explicitly: left empty, the worker silently follows whatever your
-CLI defaults to that week.
+`worker_model` explicitly: left empty, the default worker silently follows
+whatever your CLI defaults to that week. Both worker keys apply to the default
+worker only and are ignored when `worker_hook` is set, which pins its own model.
 
-**You currently need both the Claude and Codex CLIs.** Both review hooks are
-required and the roster is fixed at Codex then Claude, so the loop will not start
-with only one of them. See "Model Selection" in
+**You need both the Claude and Codex CLIs.** Both review hooks are required and
+the roster is fixed at Codex then Claude. Preflight checks the hook strings, not
+the CLIs, so a run missing one gets as far as the draft PR before failing at that
+engine's leg. See "Model Selection" in
 [`.claude/skills/agent-loop/SKILL.md`](.claude/skills/agent-loop/SKILL.md) for
 the cost breakdown behind choosing each aspect, and for why substituting one
 engine's CLI inside another's hook corrupts the review ledger rather than working
