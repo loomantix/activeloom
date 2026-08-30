@@ -120,6 +120,58 @@ byte-level review of the region in the same PR — the diff is the audit trail.
 A consumer that sets `worker_hook` supplies its own runner and the Claude CLI
 is not required on `PATH`.
 
+## Model Selection
+
+The loop runs three model-backed aspects, and they are configured in two
+different places. This is the most common onboarding question, so it is spelled
+out here.
+
+| Aspect | Where the model is chosen | Effort control |
+| --- | --- | --- |
+| Worker | `worker_model` / `worker_fallback_model` | none — the worker invocation takes a model only |
+| Codex review | inside `codex_review_hook` | inside the same command |
+| Claude review | inside `claude_review_hook` | inside the same command, and validated against `claude_effort_policy` |
+
+A review hook is a literal shell command, so reviewer model and effort are
+ordinary flags on that command rather than dedicated config keys:
+
+```
+claude_review_hook = claude --print --effort low --model <model-id> "/deepcritique ..."
+codex_review_hook  = codex exec -c model_reasoning_effort=medium "...deepcritique..."
+```
+
+`claude_effort_policy` constrains only `claude_review_hook`. It does not apply
+to the worker, which has no effort control.
+
+### Choosing per aspect
+
+Measured across real issues, wall clock splits roughly as:
+
+- review passes: **75-84%** (of which the two engines split about 2:1)
+- worker: **10-17%**
+- validation: **9-12%**
+
+So reviewer choice dominates *cost*, while worker choice dominates *how many
+rounds are needed* — round one consistently produces the most findings, and a
+cleaner first draft is what removes a round. A round costs far more than a
+worker pass, so the cheapest slot is usually the one worth upgrading.
+
+Leaving `worker_model` empty is not a neutral default: the worker then runs on
+whatever the CLI currently defaults to, which moves with CLI releases. Pin it.
+
+### Current limitation: the engine roster is fixed
+
+Both `claude_review_hook` and `codex_review_hook` are **required**, and the
+roster and order are hardcoded as Codex then Claude. There is no key for a third
+engine and no supported way to omit one, so the loop cannot run unless both CLIs
+are available.
+
+This is a wrapper limitation rather than a contract one: `review-ledger.js`
+already treats `gemini` and `antigravity` as first-class engine identities, and
+`run-agy-review.sh` already accepts a wrapper-supplied per-pass bound. A hook
+that substitutes one engine's CLI for another's would record the pass under the
+wrong engine identity and corrupt the ledger's roster, so it is not a workaround.
+
 ## Deterministic Phase Order
 
 1. Select and dependency-gate an eligible issue.
@@ -139,7 +191,10 @@ is not required on `PATH`.
    clean round plus replies and resolutions on every marked thread, then mark
    the PR ready.
 
-Do not invoke Gemini, Copilot, `reviewit`, or any GitHub-hosted AI reviewer.
+Do not invoke `reviewit`, Copilot, or any GitHub-hosted AI reviewer, including
+hosted Gemini. This bans *hosted* review, not the local `gemini` engine identity
+that the ledger and `run-agy-review.sh` already support; the wrapper simply has
+no roster slot to run it from today.
 
 ## Dependency Gate
 

@@ -97,6 +97,34 @@ See [`docs/getting-started.md`](docs/getting-started.md) for the full walkthroug
 4. Set the App-token secrets on the downstream repo or organization.
 5. Run the workflow once via `gh workflow run "Sync from upstream"` — the first PR opens cleanly.
 
+### Configure `/agent-loop` models
+
+`.claude/skills/agent-loop/agent-loop.config` is bootstrapped from a template on
+first sync (`create_if_missing`) and is **consumer-owned** — later upstream syncs
+never overwrite it, so every downstream repo configures its own models and must
+migrate template changes by hand.
+
+Three model-backed aspects, configured in two places:
+
+| Aspect | Where |
+| --- | --- |
+| Worker (writes the code) | `worker_model` / `worker_fallback_model` |
+| Codex reviewer | model + effort as flags inside `codex_review_hook` |
+| Claude reviewer | model + effort as flags inside `claude_review_hook` |
+
+Review hooks are literal shell commands, so a reviewer's model and effort are
+just flags on that command — there are no dedicated keys for them. Pin
+`worker_model` explicitly: left empty, the worker silently follows whatever your
+CLI defaults to that week.
+
+**You currently need both the Claude and Codex CLIs.** Both review hooks are
+required and the roster is fixed at Codex then Claude, so the loop will not start
+with only one of them. See "Model Selection" in
+[`.claude/skills/agent-loop/SKILL.md`](.claude/skills/agent-loop/SKILL.md) for
+the cost breakdown behind choosing each aspect, and for why substituting one
+engine's CLI inside another's hook corrupts the review ledger rather than working
+around this.
+
 ### Feeding lessons back
 
 Review cycles teach things the generic prompts cannot know. [`docs/review-learning-loop.md`](docs/review-learning-loop.md) says where each lesson goes — a rule true of any codebase belongs in a role prompt or the `critique` skill here, and a rule that names one repo's flags, paths, or past incidents belongs in that repo's consumer-owned `.review/addendum.local.md`, which no sync can overwrite.
