@@ -69,7 +69,8 @@ def _validate(value: dict[str, Any]) -> None:
         "codexResultSha256",
         "claudeResultSha256",
     }
-    if set(value) != required:
+    budget = {"reviewDeadlineEpoch", "reviewMaxRounds"}
+    if set(value) not in (required, required | budget):
         _fail("run state has missing or unknown fields")
     if type(value["version"]) is not int or value["version"] != STATE_VERSION:
         _fail("unsupported run state version")
@@ -79,6 +80,11 @@ def _validate(value: dict[str, Any]) -> None:
     for key in ("issue", "prNumber", "round"):
         if type(value[key]) is not int or value[key] < 1:
             _fail(f"run state {key} must be a positive integer")
+    if "reviewDeadlineEpoch" in value:
+        if type(value["reviewDeadlineEpoch"]) is not int or value["reviewDeadlineEpoch"] < 1:
+            _fail("run state reviewDeadlineEpoch must be a positive integer")
+        if type(value["reviewMaxRounds"]) is not int or not 1 <= value["reviewMaxRounds"] <= 4:
+            _fail("run state reviewMaxRounds must be between 1 and 4")
     for key in ("baseSha", "headSha"):
         if not isinstance(value[key], str) or not SHA_RE.fullmatch(value[key]):
             _fail(f"run state {key} must be a full lowercase commit SHA")
@@ -169,6 +175,11 @@ def _create(args: argparse.Namespace) -> None:
         "codexResultSha256": None,
         "claudeResultSha256": None,
     }
+    if args.review_deadline_epoch is not None and args.review_max_rounds is not None:
+        value["reviewDeadlineEpoch"] = args.review_deadline_epoch
+        value["reviewMaxRounds"] = args.review_max_rounds
+    elif args.review_deadline_epoch is not None or args.review_max_rounds is not None:
+        _fail("review deadline and maximum rounds must be provided together")
     _atomic_write(path, value, replace=False)
     print(json.dumps(value, sort_keys=True))
 
@@ -412,6 +423,8 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--pr-url", required=True)
     create.add_argument("--base-sha", required=True)
     create.add_argument("--head-sha", required=True)
+    create.add_argument("--review-deadline-epoch", type=int)
+    create.add_argument("--review-max-rounds", type=int)
     create.set_defaults(handler=_create)
     update = commands.add_parser("update")
     update.add_argument("--file", required=True)

@@ -5,11 +5,52 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `edited` fires when a stacked PR is auto-retargeted to main as its parent
+    # merges. With the branches filter above and no `edited`, that PR would run
+    # zero CI and sit blocked until someone pushed to it.
+    types:
+      [
+        opened,
+        synchronize,
+        reopened,
+        edited,
+        ready_for_review,
+        converted_to_draft,
+      ]
+
+concurrency:
+  # Obsolete PR heads may be cancelled; preserve every main verdict because
+  # main is the source for tagged consumer syncs. `cancel-in-progress: false`
+  # alone does not preserve them: it protects the in-progress run, but a newly
+  # queued run cancels any run already pending in the group, so back-to-back
+  # merges would drop the middle commit's verdict. Giving every non-PR run its
+  # own group means nothing ever queues behind anything.
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  draft-preflight:
+    name: Draft preflight
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check changed and interpreted files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git diff --check "$BASE_SHA...$HEAD_SHA"
+          git ls-files -z '*.py' | xargs -0 -r python3 -m py_compile
+          git ls-files -z '*.sh' | xargs -0 -r -n1 bash -n
+
   # ---------------------------------------------------------------------------
   # Consolidated static checks.
   #
@@ -35,7 +76,9 @@ jobs:
   # ---------------------------------------------------------------------------
   static-checks:
     name: Static checks
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -320,7 +363,9 @@ jobs:
         run: python3 scripts/lint-collapse-sites.py
   python-types-and-tests:
     name: Python types + tests
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7

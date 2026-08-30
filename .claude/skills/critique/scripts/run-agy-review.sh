@@ -35,6 +35,13 @@ done
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$round" =~ ^[1-9][0-9]*$ ]] || usage
 
+review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
+[[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
+    [ "$review_timeout_seconds" -le 3600 ] || {
+    echo "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
+    exit 2
+}
+
 for tool in git gh python3 setsid timeout; do
     command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required" >&2; exit 1; }
 done
@@ -274,17 +281,18 @@ export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="gemini"
 
 agy_exit=0
-# 61m outer bound against the 60m --print-timeout below, for the same reason as
+# Keep the outer bound above the --print-timeout below, for the same reason as
 # the skill preflight: let the CLI time out and report rather than be killed.
 # claude-cli-invocations:start
-run_agy_managed "$result_file" 61m \
+agy_outer_timeout_seconds=$((review_timeout_seconds + 30))
+run_agy_managed "$result_file" "${agy_outer_timeout_seconds}s" \
     --model gemini-3.7-flash-high \
     --effort high \
     --mode accept-edits \
     --dangerously-skip-permissions \
     --add-dir "$agy_surface_root" \
     --output-format json \
-    --print-timeout 60m \
+    --print-timeout "${review_timeout_seconds}s" \
     --print "$prompt" || agy_exit="$?"
 # claude-cli-invocations:end
 
