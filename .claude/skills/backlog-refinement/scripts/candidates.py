@@ -13,7 +13,10 @@ something else — older triage, a bulk import, a parallel pass — and has neve
 verified-against-HEAD. `refine --all` walks only the un-refined bucket, so these
 pre-tagged issues are silently skipped and feed `/agent-loop` stale work. They are
 surfaced as a distinct "re-verify" bucket so the operator re-assesses them (same
-verify-against-HEAD + §1 pass as a fresh refine) before trusting the queue.
+verify-against-HEAD + §1 pass as a fresh refine) before trusting the queue. When
+such an issue ALSO carries a bail label the bail wins and it classifies as
+excluded, but it is still surfaced — under "Conflicted" — because `/agent-loop`
+selects on `dev: agent` alone and would otherwise queue it unseen.
 
 Mirrors the gh-invocation conventions of `../../issues/scripts/ready.py`.
 """
@@ -58,15 +61,25 @@ def load_auto_managed_labels() -> tuple[str, ...]:
             rubric_path = template_path
     try:
         with open(rubric_path, encoding="utf-8") as fh:
-            matches = _AUTO_MANAGED_MARKER.findall(fh.read())
+            text = fh.read()
     except OSError as exc:
         sys.stderr.write(f"Could not read required backlog rubric {rubric_path}: {exc}\n")
         sys.exit(1)
+    matches = _AUTO_MANAGED_MARKER.findall(text)
     if not matches:
         # Absent marker → the repo hasn't opted into auto-managed skipping.
         # Return no labels (the documented safe default) rather than failing;
         # pre-existing consumers whose RUBRIC.md predates this marker must keep
         # working. A present-but-empty marker yields the same empty result below.
+        if "auto-managed-labels:" in text:
+            # Present but off-shape (indented under a bullet, trailing text on
+            # the line). The safe default still applies, but say so — silently
+            # dropping a marker the repo believes is live delays the auto-close
+            # of every workflow-managed issue it names.
+            sys.stderr.write(
+                f"Found an auto-managed-labels marker in {rubric_path} that is not on a "
+                "line of its own; ignoring it. Put the marker alone on one line.\n"
+            )
         return ()
     if len(matches) > 1:
         sys.stderr.write(
@@ -223,6 +236,12 @@ def main() -> int:
 
     section("Re-verify — pre-tagged dev: agent, never assessed (do BEFORE trusting the queue)",
             buckets["reverify"])
+    # An excluded issue that still carries READY_LABEL is a conflicted state:
+    # agent-loop.sh selects purely on that label and does not exclude bail
+    # labels, so the loop still queues this issue while the bail says not to.
+    # Surface it by default — the `excluded` section below is --include-refined only.
+    section("Conflicted — excluded but still dev: agent (strip the stale label; /agent-loop still queues these)",
+            [i for i in buckets["excluded"] if READY_LABEL in label_names(i)])
     section("Un-refined — refinement queue", buckets["unrefined"])
     section("Epics / coordination (review manually, do not auto-queue)", buckets["epic"])
     if args.include_refined:

@@ -177,6 +177,9 @@ def main() -> int:
                 bucket_a_hits.append(issue["number"])
         print()
 
+    # One issue can carry several bail labels and so appear under several
+    # categories; count it once.
+    bucket_a_hits = sorted(set(bucket_a_hits))
     if bucket_a_hits:
         print(
             f"→ {len(bucket_a_hits)} Bucket-A bail(s) {bucket_a_hits}: ask which RUBRIC §2 "

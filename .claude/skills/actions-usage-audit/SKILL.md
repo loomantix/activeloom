@@ -30,7 +30,7 @@ The enhanced billing usage API is the source of truth. Omitting `year` or `month
 WORK=$(mktemp -d)
 for m in $(seq 1 12); do
   if ! gh api "/organizations/$ORG/settings/billing/usage?year=$YEAR&month=$m" \
-    --jq ".usageItems[] | select(((.product // \"\") | ascii_downcase)==\"actions\" and ((.unitType // \"\") | ascii_downcase)==\"minutes\") | [\"$m\", .sku, .repositoryName, .quantity, .grossAmount, .netAmount, .pricePerUnit] | @tsv"; then
+    --jq "(.usageItems // [])[] | select(((.product // \"\") | ascii_downcase)==\"actions\" and ((.unitType // \"\") | ascii_downcase)==\"minutes\") | [\"$m\", .sku, .repositoryName, .quantity, .grossAmount, .netAmount, .pricePerUnit] | @tsv"; then
     echo "GitHub billing query failed for year $YEAR, month $m; refusing a partial report" >&2
     rm -f "$WORK/actions.tsv"   # discard already-fetched months so Step 3 cannot read truncated data
     exit 1
@@ -86,10 +86,9 @@ sort -t$'\t' -k1,1nr "$COUNTS"
 Then sample billable time for the top workflows. Try `gh api /repos/$REPO_SLUG/actions/runs/<run_id>/timing` first — `billable.UBUNTU.total_ms` (plus `WINDOWS` / `MACOS`) is authoritative when populated. **Caveat: on private repos covered by an included-minutes plan, GitHub can report zero in those `billable` fields.** When they read 0, estimate from per-job wall-clock rounded up to the whole minute, summed across all jobs in the run:
 
 ```bash
-gh api --paginate --slurp \
-  "/repos/$REPO_SLUG/actions/runs/<run_id>/jobs?per_page=100" \
-  --jq '[.[].jobs[] | select(.started_at and .completed_at)
-         | (((.completed_at|fromdateiso8601) - (.started_at|fromdateiso8601))/60 | ceil)] | add // 0'
+gh api --paginate "/repos/$REPO_SLUG/actions/runs/<run_id>/jobs?per_page=100" \
+  | jq -s '[.[].jobs[] | select(.started_at and .completed_at)
+           | (((.completed_at|fromdateiso8601) - (.started_at|fromdateiso8601))/60 | ceil)] | add // 0'
 ```
 
 Take a median over ~8–12 recent completed runs and multiply by the run count for an estimate. High-variance workflows (matrix builds, cache-dependent jobs) carry real sampling uncertainty — state it as ±. Read each sampled run's `event` field to record the trigger (`push` / `pull_request` / `schedule` / `workflow_dispatch`) — the trigger drives the remedy.
