@@ -32,6 +32,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final, Required, TypedDict
@@ -290,7 +291,15 @@ def is_sensitive_delete_dest(dest_rel_canonical: str) -> bool:
     ) and not is_engine_surface(dest_rel_canonical)
 
 
-def load_yaml(path: Path) -> dict[str, Any]:
+def load_yaml(path: Path) -> object:
+    """Parse a YAML file, or exit when it is missing.
+
+    Returns `object`, not `dict[str, Any]`: `yaml.safe_load` parses a
+    top-level list or bare scalar just as happily as a mapping, and typing
+    the return as a dict would let that shape reach the first `.get()` as a
+    crash instead of a config error. Callers narrow with `isinstance` and
+    report the path in their own words.
+    """
     if not path.is_file():
         sys.stderr.write(f"missing required file: {path}\n")
         sys.exit(2)
@@ -305,9 +314,30 @@ def read_utf8(path: Path) -> str:
 
 
 def write_utf8(path: Path, content: str) -> None:
-    """Write UTF-8 text without platform newline translation."""
-    with path.open("w", encoding="utf-8", newline="") as file:
-        file.write(content)
+    """Atomically write UTF-8 text without platform newline translation.
+
+    Written to a sibling temp file and moved into place with `os.replace`,
+    so a crash mid-write (job kill, full disk) leaves either the old
+    destination or the new one — never a truncated half-file for the next
+    step to commit. The temp file lives in `path.parent` because
+    `os.replace` is only atomic within one filesystem.
+    """
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as file:
+            file.write(content)
+            temporary_path = Path(file.name)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def drop_empty_placeholder_lines(
@@ -498,9 +528,17 @@ def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
     """Write content to path only if it differs. Return True if a write happened."""
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = read_utf8(path) if path.is_file() else None
+    # `write_utf8` replaces the destination with a fresh temp file, so the
+    # destination's permission bits do not survive the write on their own the
+    # way an in-place rewrite would keep them. Capture them before writing and
+    # put them back after, or fall to 0o644 for a new file — a temp file is
+    # born 0o600, which would strip group/other read from every synced file.
+    preserved_mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o644
     changed = existing != content
     if changed:
         write_utf8(path, content)
+        if mode is None:
+            path.chmod(preserved_mode)
     if mode is not None:
         # `stat.S_IMODE` keeps the full 12-bit permission set (setuid +
         # setgid + sticky + rwx*3). `& 0o777` would mask off the upper
@@ -932,9 +970,26 @@ def main() -> int:
     targets_doc = load_yaml(targets_path)
     config_doc = load_yaml(config_path)
 
+    if not isinstance(targets_doc, dict):
+        sys.stderr.write(f"{targets_path}: top-level YAML document must be a mapping\n")
+        return 1
+    if not isinstance(config_doc, dict):
+        sys.stderr.write(f"{config_path}: top-level YAML document must be a mapping\n")
+        return 1
+
     targets = targets_doc.get("targets") or []
     values = config_doc.get("substitutions") or {}
-    skip = set(config_doc.get("skip_targets") or [])
+    skip_raw = config_doc.get("skip_targets")
+    if skip_raw is None:
+        skip: set[str] = set()
+    elif not isinstance(skip_raw, list) or not all(isinstance(p, str) for p in skip_raw):
+        # A bare-scalar `skip_targets:` would iterate character by character
+        # inside `set(...)`; silently skipping nothing (or something) is
+        # worse than a config error either way.
+        sys.stderr.write(f"{config_path}: `skip_targets` must be a list of strings\n")
+        return 1
+    else:
+        skip = set(skip_raw)
 
     if not isinstance(targets, list):
         sys.stderr.write(f"{targets_path}: `targets` must be a list\n")

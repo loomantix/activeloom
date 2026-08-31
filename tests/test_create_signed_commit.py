@@ -438,6 +438,11 @@ class _ApiRecorder:
         self._responses = list(responses)
         self.calls: list[tuple[str, str, object]] = []
 
+    @property
+    def remaining(self) -> int:
+        """Return the number of scripted responses not consumed."""
+        return len(self._responses)
+
     def __call__(self, method: str, path: str, token: str, body: object) -> object:
         self.calls.append((method, path, body))
         if not self._responses:
@@ -522,6 +527,8 @@ def test_main_full_flow_creates_new_branch_when_absent(
         ("POST", "/repos/loomantix/test/git/trees", {"sha": "new-tree-sha"}),
         # 6. commit
         ("POST", "/repos/loomantix/test/git/commits", {"sha": "new-commit-sha"}),
+        ("GET", "/repos/loomantix/test/git/commits/new-commit-sha",
+         {"sha": "new-commit-sha", "verification": {"verified": True, "reason": "valid"}}),
         # 7. check if new branch exists — 404 = absent
         ("GET", "/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16",
          _http_error("/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16", 404, "Not Found")),
@@ -548,6 +555,7 @@ def test_main_full_flow_creates_new_branch_when_absent(
     assert "renamed.txt" in paths_in_tree and paths_in_tree["renamed.txt"]["sha"] is not None
     assert "new.txt" in paths_in_tree and paths_in_tree["new.txt"]["sha"] is not None
     assert "seed.txt" in paths_in_tree and paths_in_tree["seed.txt"]["sha"] is None
+    assert recorder.remaining == 0
 
 
 def test_main_force_updates_branch_when_already_exists(
@@ -568,6 +576,8 @@ def test_main_force_updates_branch_when_already_exists(
         ("POST", "/repos/loomantix/test/git/blobs", {"sha": "blob-1"}),
         ("POST", "/repos/loomantix/test/git/trees", {"sha": "new-tree-sha"}),
         ("POST", "/repos/loomantix/test/git/commits", {"sha": "new-commit-sha"}),
+        ("GET", "/repos/loomantix/test/git/commits/new-commit-sha",
+         {"sha": "new-commit-sha", "verification": {"verified": True, "reason": "valid"}}),
         # Branch exists this time — GET returns an object.
         ("GET", "/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16",
          {"object": {"sha": "old-sha"}}),
@@ -615,3 +625,220 @@ def test_main_rejects_non_file_upsert_path(
     assert rc == 1
     err = capsys.readouterr().err
     assert "not a regular file" in err
+
+
+def test_main_full_flow_with_payload_dir_and_manifest(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload_dir = tmp_path / "payload_tree"
+    payload_dir.mkdir()
+    (payload_dir / "new.txt").write_text("hello from payload\n")
+
+    manifest_path = tmp_path / "manifest"
+    manifest_path.write_bytes(b"?? new.txt\0")
+
+    base_sha_file = tmp_path / "base-sha"
+    base_sha_file.write_text("base-sha\n")
+    config_path = tmp_path / ".platform-config.yml"
+    config_path.write_text("allowed_destinations:\n  - new.txt\n")
+
+    recorder = _ApiRecorder([
+        ("GET", "/repos/loomantix/test/git/ref/heads/main",
+         {"object": {"sha": "base-sha"}}),
+        ("GET", "/repos/loomantix/test/git/commits/base-sha",
+         {"tree": {"sha": "base-tree-sha"}}),
+        ("POST", "/repos/loomantix/test/git/blobs", {"sha": "blob-payload-new"}),
+        ("POST", "/repos/loomantix/test/git/trees", {"sha": "new-tree-sha"}),
+        ("POST", "/repos/loomantix/test/git/commits", {"sha": "new-commit-sha"}),
+        ("GET", "/repos/loomantix/test/git/commits/new-commit-sha",
+         {"sha": "new-commit-sha", "verification": {"verified": True, "reason": "valid"}}),
+        ("GET", "/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16",
+         _http_error("/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16", 404, "Not Found")),
+        ("POST", "/repos/loomantix/test/git/refs", {"ref": "refs/heads/x"}),
+    ])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/upstream-2026-05-16",
+            "--message", "feat: sync from upstream",
+            "--payload-dir", str(payload_dir),
+            "--manifest", str(manifest_path),
+            "--config", str(config_path),
+            "--base-sha-file", str(base_sha_file),
+            "--app-slug", "loomantix",
+        ],
+    )
+
+    rc = create_signed_commit.main()
+    assert rc == 0, capsys.readouterr().err
+
+
+def test_main_rejects_diverged_base_sha(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload_dir = tmp_path / "payload_tree"
+    payload_dir.mkdir()
+    (payload_dir / "new.txt").write_text("hello\n")
+
+    manifest_path = tmp_path / "manifest"
+    manifest_path.write_bytes(b"?? new.txt\0")
+
+    base_sha_file = tmp_path / "base-sha"
+    base_sha_file.write_text("old-base-sha\n")
+    config_path = tmp_path / ".platform-config.yml"
+    config_path.write_text("allowed_destinations:\n  - new.txt\n")
+
+    recorder = _ApiRecorder([
+        ("GET", "/repos/loomantix/test/git/ref/heads/main",
+         {"object": {"sha": "newer-base-sha-from-merge"}}),
+    ])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/upstream-2026-05-16",
+            "--message", "feat: sync from upstream",
+            "--payload-dir", str(payload_dir),
+            "--manifest", str(manifest_path),
+            "--config", str(config_path),
+            "--base-sha-file", str(base_sha_file),
+        ],
+    )
+
+    rc = create_signed_commit.main()
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "has diverged from expected base" in err
+
+
+def test_main_requires_payload_or_consumer_dir(
+    create_signed_commit: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/upstream-2026-05-16",
+            "--message", "feat: sync from upstream",
+        ],
+    )
+    rc = create_signed_commit.main()
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "choose exactly one mode" in err
+
+
+def test_main_rejects_mixed_payload_and_consumer_modes(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload_dir = tmp_path / "payload"
+    consumer_dir = tmp_path / "consumer"
+    payload_dir.mkdir()
+    consumer_dir.mkdir()
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/test",
+            "--message", "test",
+            "--payload-dir", str(payload_dir),
+            "--consumer-dir", str(consumer_dir),
+        ],
+    )
+
+    assert create_signed_commit.main() == 2
+    assert "choose exactly one mode" in capsys.readouterr().err
+
+
+def test_main_rejects_unverified_commit_before_publishing_ref(
+    create_signed_commit: ModuleType,
+    git_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (git_repo / "new.txt").write_text("new\n")
+    recorder = _ApiRecorder([
+        ("GET", "/repos/loomantix/test/git/ref/heads/main",
+         {"object": {"sha": "base-sha"}}),
+        ("GET", "/repos/loomantix/test/git/commits/base-sha",
+         {"tree": {"sha": "base-tree-sha"}}),
+        ("POST", "/repos/loomantix/test/git/blobs", {"sha": "blob-sha"}),
+        ("POST", "/repos/loomantix/test/git/trees", {"sha": "tree-sha"}),
+        ("POST", "/repos/loomantix/test/git/commits", {"sha": "commit-sha"}),
+        ("GET", "/repos/loomantix/test/git/commits/commit-sha",
+         {"sha": "commit-sha", "verification": {"verified": False, "reason": "unsigned"}}),
+    ])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr("sys.argv", _commit_main_argv(git_repo))
+
+    assert create_signed_commit.main() == 1
+    assert recorder.remaining == 0
+    assert not any("/git/refs" in path for _, path, _ in recorder.calls)
+    assert "did not verify commit" in capsys.readouterr().err
+
+
+def test_payload_mode_rejects_disallowed_manifest_path_before_api(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir()
+    (payload_dir / "CODEOWNERS").write_text("* @attacker\n")
+    manifest = tmp_path / "manifest"
+    manifest.write_bytes(b"?? CODEOWNERS\0")
+    config = tmp_path / ".platform-config.yml"
+    config.write_text("allowed_destinations:\n  - .agents/**\n")
+    recorder = _ApiRecorder([])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/test",
+            "--message", "test",
+            "--payload-dir", str(payload_dir),
+            "--manifest", str(manifest),
+            "--config", str(config),
+        ],
+    )
+
+    assert create_signed_commit.main() == 1
+    assert recorder.calls == []
+    assert "not allowed" in capsys.readouterr().err
