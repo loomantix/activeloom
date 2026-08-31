@@ -339,8 +339,12 @@ def write_utf8(path: Path, content: str, mode: int | None = None) -> None:
         ) as file:
             temporary_path = Path(file.name)
             file.write(content)
-            if mode is not None:
-                os.fchmod(file.fileno(), mode)
+        if mode is not None:
+            # Applied by path rather than fd: `os.chmod` exists on every
+            # platform, `os.fchmod` does not (absent on Windows). The bits
+            # still land before the swap, so content and mode replace the
+            # destination atomically.
+            os.chmod(temporary_path, mode)
         os.replace(temporary_path, path)
         temporary_path = None
     finally:
