@@ -45,7 +45,7 @@ Specialized role prompts loaded on-demand via progressive disclosure:
 
 ### Sync Engine (`scripts/`)
 
-- `sync-engine.py` reads upstream `scripts/sync-targets.yml` plus the consumer config passed via `--config` (defaulting to `.platform-config.yml`; the consumer workflow template selects `.gemini-platform-config.yml` when present), applies `<<KEY>>` substitutions, writes/deletes destination files, and supports `create_if_missing`.
+- `sync-engine.py` reads upstream `scripts/sync-targets.yml` plus the consumer config passed via `--config`, applies `<<KEY>>` substitutions, writes/deletes destination files, and supports `create_if_missing`. The engine itself falls back only to `.platform-config.yml`; both jobs of the consumer workflow template pass `--config` explicitly, each selecting `.gemini-platform-config.yml` when present and resolving it independently of the other.
 - `create-signed-commit.py` creates verified sync commits through the GitHub Git Database API with a GitHub App token, and refuses to publish a branch whose commit GitHub did not attest.
 - `templates/sync-from-gemini-platform.yml` is the consumer-side 2-job sandboxed workflow template.
 

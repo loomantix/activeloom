@@ -78,9 +78,23 @@ jobs:
       - name: Run sync engine
         run: |
           set -euo pipefail
+          # Select the consumer config explicitly. The engine's only fallback
+          # is `.platform-config.yml`, which in a repo synced by more than one
+          # upstream is a *different* upstream's config — syncing against it
+          # would either refuse every destination or apply the wrong allowlist.
+          #
+          # This selection is duplicated in the publish job on purpose. That
+          # job must not take the path from this one: this job runs
+          # upstream-cloned code, and the config is the consent store the
+          # publish gate checks the payload against.
+          CONFIG_PATH=.platform-config.yml
+          if [ -f .gemini-platform-config.yml ]; then
+            CONFIG_PATH=.gemini-platform-config.yml
+          fi
           python3 /tmp/upstream/scripts/sync-engine.py \
             --upstream-repo /tmp/upstream \
-            --consumer-dir .
+            --consumer-dir . \
+            --config "$CONFIG_PATH"
 
       - name: Detect changes + build payload
         id: diff
@@ -193,6 +207,9 @@ jobs:
 
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPO="${GITHUB_REPOSITORY#*/}"
+          # Resolved independently of the build job — see the note beside the
+          # matching block there. Both jobs must land on the same file, but
+          # this one must not learn it from the untrusted job.
           CONFIG_PATH=.platform-config.yml
           if [ -f .gemini-platform-config.yml ]; then
             CONFIG_PATH=.gemini-platform-config.yml
