@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -25,13 +26,21 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".claude" / "skills" / "critique" / "scripts" / "usage-snapshot.js"
 
+# Discovery falls back to ~/.claude/projects when no --projects-dir or env
+# override is given, and a checkout that has ever hosted a Claude Code session
+# has a live log there under this repo's cwd slug — which silently turns the
+# "no discoverable log" cases into `unscoped-session`. Point the env fallback
+# at an empty directory instead of popping it; tests that exercise discovery
+# pass --projects-dir explicitly, which takes precedence over the env var.
+_EMPTY_PROJECTS = tempfile.mkdtemp(prefix="usage-snapshot-no-projects-")
+
 
 def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
     environment = dict(os.environ)
     environment.pop("LOOM_REVIEW_TELEMETRY", None)
     environment.pop("LOOM_REVIEW_TELEMETRY_EXTRACT", None)
     environment.pop("CLAUDE_SESSION_LOG", None)
-    environment.pop("CLAUDE_PROJECTS_DIR", None)
+    environment["CLAUDE_PROJECTS_DIR"] = _EMPTY_PROJECTS
     environment.pop("CLAUDE_CODE_SESSION_ID", None)
     if enabled:
         environment["LOOM_REVIEW_TELEMETRY"] = "on"
