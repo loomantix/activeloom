@@ -15,7 +15,7 @@ This skill is one half of a closed loop with `/agent-loop`:
         └──────────  RCA sharpens the rubric  ◀── agent-bail:* on bail
 ```
 
-The criteria, taxonomy, and templates live in **[`RUBRIC.md`](./RUBRIC.md)** (the single source of truth, shared with `/agent-loop`). The accumulated root-cause analyses live in **[`LEARNINGS.md`](./LEARNINGS.md)**. Both are consumer-owned (bootstrapped once from `RUBRIC.md.template` / `LEARNINGS.md.template`, then customized per repo). **Read `RUBRIC.md` fully before acting** — it defines §1 readiness criteria, §2 make-ready transformations, §3 disqualifiers (including any repo-specific ones), and the label model.
+The criteria, taxonomy, and templates live in **[`RUBRIC.md`](./RUBRIC.md)** (or `RUBRIC.md.template` when running globally or before local bootstrap; the single source of truth, shared with `/agent-loop`). The accumulated root-cause analyses live in **[`LEARNINGS.md`](./LEARNINGS.md)** (or `LEARNINGS.md.template`). Both are consumer-owned (bootstrapped once from `RUBRIC.md.template` / `LEARNINGS.md.template`, then customized per repo). **Read `RUBRIC.md` (or `RUBRIC.md.template`) fully before acting** — it defines §1 readiness criteria, §2 make-ready transformations, §3 disqualifiers (including any repo-specific ones), and the label model.
 
 > **Integration branch.** This skill says "verify against the integration branch" throughout — that is whatever branch your repo's `agent-loop-instructions.md` opens PRs against (`origin/main` for most repos, `origin/staging` for repos with a staging→main promotion flow). Substitute your repo's value.
 
@@ -46,7 +46,7 @@ Prepare issues for the loop. Default refines the next un-assessed issue; `--limi
 
 1. **Read it fully** — `gh issue view <N>` including comments.
 2. **Early-exit excludes** — if the title/body matches a §3 Bucket-B disqualifier on its face (`Epic:`, obvious cross-repo/credential/synced-surface/repo-sensitive), apply `agent: refined` + the `agent-bail:` label, add a one-line comment citing the rubric clause, and move on. Don't over-invest in clearly-excluded issues.
-3. **Verify-against-HEAD** (RUBRIC §2). Fetch the integration branch; determine whether the described problem still reproduces:
+3. **Verify-against-HEAD** (RUBRIC §2, highest-value check). Fetch the integration branch; determine whether the described problem still reproduces:
    - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit/PR/file:line that shipped it) and recommend close. Do **not** tag `dev: agent`. Do **not** close it yourself (human triage gate).
    - **Partially shipped** → re-scope: rewrite the body to the residual only, then continue assessing the residual.
    - **Still open** → continue.

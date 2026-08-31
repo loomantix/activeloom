@@ -52,6 +52,10 @@ _AUTO_MANAGED_MARKER = re.compile(
 def load_auto_managed_labels() -> tuple[str, ...]:
     """Repo-specific skip labels, read from the sibling RUBRIC.md marker."""
     rubric_path = os.path.join(os.path.dirname(__file__), "..", "RUBRIC.md")
+    if not os.path.exists(rubric_path):
+        template_path = os.path.join(os.path.dirname(__file__), "..", "RUBRIC.md.template")
+        if os.path.exists(template_path):
+            rubric_path = template_path
     try:
         with open(rubric_path, encoding="utf-8") as fh:
             matches = _AUTO_MANAGED_MARKER.findall(fh.read())
