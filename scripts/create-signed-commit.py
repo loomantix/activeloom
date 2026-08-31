@@ -148,6 +148,10 @@ def validate_payload_paths(
     allowlist, and must not be one the consumer opted out of via
     `skip_targets`. Raises ValueError after writing the reason to stderr;
     the caller turns that into exit code 1 before any API call is made.
+
+    Validation only: `_canonical_manifest_path` rejects rather than
+    rewrites, so a path that survives is byte-identical to its input and
+    the caller's `StatusChanges` comes back unchanged.
     """
     try:
         import yaml
@@ -175,25 +179,18 @@ def validate_payload_paths(
         sys.stderr.write(f"{config_path}: `skip_targets` must be a list of strings\n")
         raise ValueError("invalid skip list")
     skipped_paths = set(skip)
-    canonical_upserts: list[str] = []
-    canonical_deletes: list[str] = []
-    for source, destination in (
-        (changes.upserts, canonical_upserts),
-        (changes.deletes, canonical_deletes),
-    ):
-        for path in source:
-            canonical = _canonical_manifest_path(path)
-            if canonical is None:
-                sys.stderr.write(f"unsafe manifest path: {path!r}\n")
-                raise ValueError("unsafe manifest path")
-            if not any(pattern.match(canonical) is not None for pattern in patterns):
-                sys.stderr.write(f"manifest path is not allowed by consumer config: {canonical}\n")
-                raise ValueError("disallowed manifest path")
-            if canonical in skipped_paths:
-                sys.stderr.write(f"manifest path is opted out by consumer config: {canonical}\n")
-                raise ValueError("skipped manifest path")
-            destination.append(canonical)
-    return StatusChanges(upserts=canonical_upserts, deletes=canonical_deletes)
+    for path in (*changes.upserts, *changes.deletes):
+        canonical = _canonical_manifest_path(path)
+        if canonical is None:
+            sys.stderr.write(f"unsafe manifest path: {path!r}\n")
+            raise ValueError("unsafe manifest path")
+        if not any(pattern.match(canonical) is not None for pattern in patterns):
+            sys.stderr.write(f"manifest path is not allowed by consumer config: {canonical}\n")
+            raise ValueError("disallowed manifest path")
+        if canonical in skipped_paths:
+            sys.stderr.write(f"manifest path is opted out by consumer config: {canonical}\n")
+            raise ValueError("skipped manifest path")
+    return changes
 
 
 def run(*args: str, cwd: Path | None = None) -> str:

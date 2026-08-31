@@ -842,3 +842,33 @@ def test_payload_mode_rejects_disallowed_manifest_path_before_api(
     assert create_signed_commit.main() == 1
     assert recorder.calls == []
     assert "not allowed" in capsys.readouterr().err
+
+
+def test_glob_to_regex_stays_in_lockstep_with_sync_engine_dialect(
+    create_signed_commit: ModuleType,
+    sync_engine: ModuleType,
+) -> None:
+    # `create-signed-commit.py` deliberately carries a copy of the sync
+    # engine's `glob_to_regex` so a consumer's `allowed_destinations`
+    # means the same thing to both gates. Nothing at runtime imports one
+    # from the other, so this parity check is the only thing that stops
+    # the two dialects drifting apart — a fix applied to one compiler
+    # must fail here until it is mirrored into the other.
+    patterns = [
+        ".agents/**",
+        "**/SKILL.md",
+        ".github/workflows/*.yml",
+        "docs/**/README.md",
+        "a/*/b?",
+        "a**b",
+        "**",
+        "*",
+        "?",
+        "a.b+c(d)[e]",
+        "skills/*/scripts/**",
+    ]
+    for pattern in patterns:
+        assert (
+            create_signed_commit.glob_to_regex(pattern).pattern
+            == sync_engine.glob_to_regex(pattern).pattern
+        ), pattern
