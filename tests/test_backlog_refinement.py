@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import shutil
 import subprocess
-import sys
 from datetime import timezone
 from pathlib import Path
 from types import ModuleType
@@ -14,21 +12,12 @@ from typing import Any
 
 import pytest
 
+from tests.conftest import _load_script
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CANDIDATES = REPO_ROOT / ".claude/skills/backlog-refinement/scripts/candidates.py"
 BAIL_REPORT = REPO_ROOT / ".claude/skills/backlog-refinement/scripts/bail-report.py"
-
-
-def _load(path: Path, name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load {path}")
-    module = ModuleType(name)
-    module.__file__ = str(path)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _load_candidates(tmp_path: Path, marker: str = "") -> ModuleType:
@@ -41,7 +30,7 @@ def _load_candidates(tmp_path: Path, marker: str = "") -> ModuleType:
         f"# Rubric\n\n<!-- auto-managed-labels: {marker} -->\n",
         encoding="utf-8",
     )
-    return _load(target, f"candidates_{tmp_path.name}")
+    return _load_script(f"candidates_{tmp_path.name}", target)
 
 
 def _issue(*labels: str, title: str = "Task") -> dict[str, Any]:
@@ -78,7 +67,7 @@ def test_candidates_absent_marker_disables_skipping(tmp_path: Path) -> None:
     target = scripts / "candidates.py"
     shutil.copy2(CANDIDATES, target)
     (skill / "RUBRIC.md").write_text("# no marker\n", encoding="utf-8")
-    mod = _load(target, "candidates_no_marker")
+    mod = _load_script("candidates_no_marker", target)
     assert mod.AUTO_MANAGED_LABELS == ()
     assert mod.classify(_issue("anything")) == "unrefined"
 
@@ -96,7 +85,7 @@ def test_candidates_falls_back_to_template_when_rubric_md_absent(
         "# Template Rubric\n\n<!-- auto-managed-labels: template-skip -->\n",
         encoding="utf-8",
     )
-    mod = _load(target, "candidates_template_fallback")
+    mod = _load_script("candidates_template_fallback", target)
     assert mod.AUTO_MANAGED_LABELS == ("template-skip",)
     assert mod.classify(_issue("template-skip")) == "skipped"
     assert mod.classify(_issue("other")) == "unrefined"
@@ -114,7 +103,7 @@ def test_candidates_rejects_duplicate_marker(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exc_info:
-        _load(target, "invalid_candidates_dup")
+        _load_script("invalid_candidates_dup", target)
     assert exc_info.value.code == 1
 
 
@@ -162,7 +151,7 @@ def test_candidates_limit_rejects_negative_values(tmp_path: Path) -> None:
 
 @pytest.fixture(scope="module")
 def bail_mod() -> ModuleType:
-    return _load(BAIL_REPORT, "bail_report_tests")
+    return _load_script("bail_report_tests", BAIL_REPORT)
 
 
 def test_bail_since_normalizes_offsets_to_utc(bail_mod: ModuleType) -> None:

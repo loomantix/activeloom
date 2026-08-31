@@ -1,31 +1,20 @@
 """Unit tests for `.claude/skills/issues/scripts/link.py`."""
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
+from tests.conftest import _load_script
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LINK_SCRIPT = REPO_ROOT / ".claude/skills/issues/scripts/link.py"
 
 
-def _load_link_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("link_script", LINK_SCRIPT)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load {LINK_SCRIPT}")
-    module = ModuleType("link_script")
-    module.__file__ = str(LINK_SCRIPT)
-    sys.modules["link_script"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture
 def link_mod() -> ModuleType:
-    return _load_link_module()
+    return _load_script("link_script", LINK_SCRIPT)
 
 
 def test_has_ref(link_mod: ModuleType) -> None:
