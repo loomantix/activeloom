@@ -15,8 +15,10 @@ pre-tagged issues are silently skipped and feed `/agent-loop` stale work. They a
 surfaced as a distinct "re-verify" bucket so the operator re-assesses them (same
 verify-against-HEAD + §1 pass as a fresh refine) before trusting the queue. When
 such an issue ALSO carries a bail label the bail wins and it classifies as
-excluded, but it is still surfaced — under "Conflicted" — because `/agent-loop`
-selects on `dev: agent` alone and would otherwise queue it unseen.
+excluded, but it is still surfaced — under "Conflicted" — because the leftover
+`dev: agent` label misrepresents the issue's real queue state to anything that
+reads labels directly. `/agent-loop` itself is not fooled: it selects through
+`ready.py`, which hard-excludes `agent-bail:*`.
 
 Mirrors the gh-invocation conventions of `../../issues/scripts/ready.py`.
 """
@@ -237,10 +239,13 @@ def main() -> int:
     section("Re-verify — pre-tagged dev: agent, never assessed (do BEFORE trusting the queue)",
             buckets["reverify"])
     # An excluded issue that still carries READY_LABEL is a conflicted state:
-    # agent-loop.sh selects purely on that label and does not exclude bail
-    # labels, so the loop still queues this issue while the bail says not to.
+    # the label says queue-me and the bail says do-not. /agent-loop resolves it
+    # correctly today — it selects through ready.py, which hard-excludes
+    # agent-bail:* — so this is label hygiene, not a live queue leak. It still
+    # matters: the stale label misreports queue state to a human scanning labels
+    # and to any consumer that does not filter through ready.py.
     # Surface it by default — the `excluded` section below is --include-refined only.
-    section("Conflicted — excluded but still dev: agent (strip the stale label; /agent-loop still queues these)",
+    section("Conflicted — excluded but still dev: agent (stale label; strip it so the labels match the bail)",
             [i for i in buckets["excluded"] if READY_LABEL in label_names(i)])
     section("Un-refined — refinement queue", buckets["unrefined"])
     section("Epics / coordination (review manually, do not auto-queue)", buckets["epic"])

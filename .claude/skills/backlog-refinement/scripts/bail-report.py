@@ -85,8 +85,24 @@ def fetch_bailed(since: datetime | None) -> list[dict[str, Any]]:
         bail_labels = [name for name in labels if name.startswith(BAIL_PREFIX)]
         if not bail_labels:
             continue
-        if since and _parse_iso_datetime(issue["updatedAt"]) < since:
-            continue
+        if since:
+            # Every other external-input path in this file fails with a
+            # diagnostic rather than a raw traceback; match that here. A bail
+            # we cannot date is kept rather than dropped, so the window filter
+            # can never silently hide an issue behind a bad timestamp.
+            raw_updated = issue.get("updatedAt")
+            try:
+                updated = _parse_iso_datetime(raw_updated) if raw_updated else None
+            except ValueError:
+                updated = None
+            if updated is None:
+                print(
+                    f"warning: issue #{issue.get('number', '?')} has no parseable "
+                    f"updatedAt ({raw_updated!r}); keeping it despite --since",
+                    file=sys.stderr,
+                )
+            elif updated < since:
+                continue
         issue["_bail_labels"] = bail_labels
         out.append(issue)
     return out

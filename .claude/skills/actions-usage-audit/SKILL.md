@@ -13,6 +13,8 @@ Read-only cost analysis of GitHub Actions minute usage for an organization. Prod
 
 - `gh` authenticated as an **org owner or billing manager**. The billing usage API requires it; a plain-member token returns 403.
 - `jq` and `awk` available.
+- GNU `date` (coreutils). Step 4 uses `date -d`, which BSD/macOS `date` does not accept.
+- **Run Steps 2 through 4 in one shell session.** `WORK`, `ORG`, and `YEAR` are set once and read by every later step; each block below assumes the previous ones ran in the same shell. If you run a step in a fresh shell, re-establish those three variables first — `WORK` in particular must point at the directory that already holds `actions.tsv`, not a new `mktemp -d`.
 
 ## Org context file (read first if present)
 
@@ -63,6 +65,10 @@ Run counts are not minutes — a job firing 1000×/month may be 10s each. For ea
 
 ```bash
 SINCE=$(date -u -d '30 days ago' +%Y-%m-%d)
+# An empty SINCE would make the `created=>` qualifier below malformed. GitHub
+# ignores a malformed qualifier and returns lifetime totals, so every run count
+# would silently become an all-time count rather than a 30-day one.
+[ -n "$SINCE" ] || { echo "could not compute SINCE; GNU date (coreutils) required" >&2; exit 1; }
 REPO_SLUG="$ORG/<repo-name-from-step-3>"
 REPO_KEY=${REPO_SLUG//\//-}
 WORKFLOWS="$WORK/$REPO_KEY-workflows.tsv"

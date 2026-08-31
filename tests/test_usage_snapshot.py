@@ -17,7 +17,6 @@ import json
 import os
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +31,15 @@ SCRIPT = REPO_ROOT / ".claude" / "skills" / "critique" / "scripts" / "usage-snap
 # "no discoverable log" cases into `unscoped-session`. Point the env fallback
 # at an empty directory instead of popping it; tests that exercise discovery
 # pass --projects-dir explicitly, which takes precedence over the env var.
-_EMPTY_PROJECTS = tempfile.mkdtemp(prefix="usage-snapshot-no-projects-")
+# Allocated through tmp_path_factory so pytest owns the cleanup — a bare
+# mkdtemp() here would leak one directory per test run, forever.
+_EMPTY_PROJECTS: str | None = None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _empty_projects_dir(tmp_path_factory: pytest.TempPathFactory) -> None:
+    global _EMPTY_PROJECTS
+    _EMPTY_PROJECTS = str(tmp_path_factory.mktemp("usage-snapshot-no-projects"))
 
 
 def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
@@ -40,6 +47,7 @@ def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
     environment.pop("LOOM_REVIEW_TELEMETRY", None)
     environment.pop("LOOM_REVIEW_TELEMETRY_EXTRACT", None)
     environment.pop("CLAUDE_SESSION_LOG", None)
+    assert _EMPTY_PROJECTS is not None, "_empty_projects_dir fixture did not run"
     environment["CLAUDE_PROJECTS_DIR"] = _EMPTY_PROJECTS
     environment.pop("CLAUDE_CODE_SESSION_ID", None)
     if enabled:
