@@ -31,8 +31,9 @@ REFINED_LABEL = "agent: refined"
 READY_LABEL = "dev: agent"
 BAIL_PREFIX = "agent-bail:"
 # Surfaced but never auto-queued — these read as coordination, not bounded work.
-EPIC_TITLE_MARKERS = ("epic:", "extractable as @")
+EPIC_TITLE_MARKERS = ("epic:",)
 LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "agent-bail:", "agent:", "status:", "priority:")
+GH_LIST_LIMIT = 1000
 
 # Workflow-auto-managed labels: issues a scheduled workflow both OPENS and
 # CLOSES (e.g. a nightly metrics/digest issue auto-closed after N days). They
@@ -43,20 +44,38 @@ LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "agent-bail:", "agent:", "status:", "
 #     <!-- auto-managed-labels: label-a, label-b -->
 # Absent or empty marker → no skipping (safe default; pre-existing repos are
 # unaffected until they opt in).
-_AUTO_MANAGED_MARKER = re.compile(r"<!--\s*auto-managed-labels:\s*(.*?)\s*-->")
+_AUTO_MANAGED_MARKER = re.compile(
+    r"(?m)^[ \t]*<!--\s*auto-managed-labels:\s*(.*?)\s*-->[ \t]*$"
+)
 
 
 def load_auto_managed_labels() -> tuple[str, ...]:
     """Repo-specific skip labels, read from the sibling RUBRIC.md marker."""
     rubric_path = os.path.join(os.path.dirname(__file__), "..", "RUBRIC.md")
+    if not os.path.exists(rubric_path):
+        template_path = os.path.join(os.path.dirname(__file__), "..", "RUBRIC.md.template")
+        if os.path.exists(template_path):
+            rubric_path = template_path
     try:
         with open(rubric_path, encoding="utf-8") as fh:
-            match = _AUTO_MANAGED_MARKER.search(fh.read())
-    except OSError:
+            matches = _AUTO_MANAGED_MARKER.findall(fh.read())
+    except OSError as exc:
+        sys.stderr.write(f"Could not read required backlog rubric {rubric_path}: {exc}\n")
+        sys.exit(1)
+    if not matches:
+        # Absent marker → the repo hasn't opted into auto-managed skipping.
+        # Return no labels (the documented safe default) rather than failing;
+        # pre-existing consumers whose RUBRIC.md predates this marker must keep
+        # working. A present-but-empty marker yields the same empty result below.
         return ()
-    if not match:
-        return ()
-    return tuple(label.strip() for label in match.group(1).split(",") if label.strip())
+    if len(matches) > 1:
+        sys.stderr.write(
+            f"Expected at most one auto-managed-labels marker in {rubric_path}; "
+            f"found {len(matches)}\n"
+        )
+        sys.exit(1)
+    match = matches[0]
+    return tuple(label.strip() for label in match.split(",") if label.strip())
 
 
 AUTO_MANAGED_LABELS = load_auto_managed_labels()
@@ -67,15 +86,36 @@ def fetch_open_issues() -> list[dict[str, Any]]:
     cmd = [
         "gh", "issue", "list",
         "--state", "open",
-        "--limit", "1000",
+        "--limit", str(GH_LIST_LIMIT),
         "--json", "number,title,labels,assignees,url",
     ]
-    # 60s timeout matches ready.py: a hung GitHub API shouldn't stall callers.
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    try:
+        # 60s timeout matches ready.py: a hung GitHub API shouldn't stall callers.
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            "Timed out after 60s while running `gh issue list`. "
+            "Check GitHub auth/network connectivity and retry.\n"
+        )
+        sys.exit(1)
+    except OSError as exc:
+        sys.stderr.write(f"Could not run `gh issue list`: {exc}\n")
+        sys.exit(1)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
         sys.exit(result.returncode)
-    return json.loads(result.stdout)
+    try:
+        issues = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(f"Invalid JSON from `gh issue list`: {exc}\n")
+        sys.exit(1)
+    if len(issues) >= GH_LIST_LIMIT:
+        sys.stderr.write(
+            f"Open-issue query reached the {GH_LIST_LIMIT}-item gh limit; "
+            "refusing a possibly truncated refinement queue.\n"
+        )
+        sys.exit(1)
+    return issues
 
 
 def label_names(issue: dict[str, Any]) -> list[str]:
@@ -85,15 +125,17 @@ def label_names(issue: dict[str, Any]) -> list[str]:
 def classify(issue: dict[str, Any]) -> str:
     """One of: skipped | ready | reverify | excluded | epic | unrefined."""
     labels = label_names(issue)
-    if AUTO_MANAGED_LABELS and any(name in AUTO_MANAGED_LABELS for name in labels):
+    if any(name in AUTO_MANAGED_LABELS for name in labels):
         # Opened AND closed by a scheduled workflow — never a refinement task.
         return "skipped"
-    if READY_LABEL in labels:
-        # dev:agent + refined = this skill tagged it (trusted ready).
-        # dev:agent WITHOUT refined = pre-tagged elsewhere, never verified — re-verify.
-        return "ready" if REFINED_LABEL in labels else "reverify"
     if any(name.startswith(BAIL_PREFIX) for name in labels):
+        # Bail labels are exclusion signals even if a stale dev: agent label
+        # remains after a partial/manual relabel.
         return "excluded"
+    if READY_LABEL in labels:
+        # dev: agent + refined = this skill tagged it (trusted ready).
+        # dev: agent WITHOUT refined = pre-tagged elsewhere, never verified — re-verify.
+        return "ready" if REFINED_LABEL in labels else "reverify"
     if REFINED_LABEL in labels:
         # Assessed but neither ready nor bailed — treat as excluded-without-reason.
         return "excluded"
@@ -114,10 +156,23 @@ def format_row(issue: dict[str, Any]) -> str:
     return f"#{issue['number']:<6} {label_str:<48} ({assignee:<15}) {title}"
 
 
+def non_negative_int(value: str) -> int:
+    """Argparse type for row limits, where zero intentionally prints no rows."""
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="output JSON instead of a table")
-    parser.add_argument("--limit", type=int, default=40, help="max rows to print (default 40)")
+    parser.add_argument(
+        "--limit",
+        type=non_negative_int,
+        default=40,
+        help="max rows to print (default 40)",
+    )
     parser.add_argument(
         "--include-refined", action="store_true",
         help="also list issues already assessed (ready / excluded)",
@@ -151,8 +206,8 @@ def main() -> int:
 
     c = {k: len(v) for k, v in buckets.items()}
     print(
-        f"Open: {len(issues)}  |  ready (dev:agent + refined): {c['ready']}  |  "
-        f"RE-VERIFY (dev:agent, NOT refined): {c['reverify']}  |  "
+        f"Open: {len(issues)}  |  ready (dev: agent + refined): {c['ready']}  |  "
+        f"RE-VERIFY (dev: agent, NOT refined): {c['reverify']}  |  "
         f"excluded (agent-bail:*): {c['excluded']}  |  epics: {c['epic']}  |  "
         # Only surface the auto-managed skip count when the repo actually uses it.
         + (f"skipped (auto-managed): {c['skipped']}  |  " if c["skipped"] else "")
@@ -166,7 +221,7 @@ def main() -> int:
         for issue in rows[: args.limit]:
             print(format_row(issue))
 
-    section("Re-verify — pre-tagged dev:agent, never assessed (do BEFORE trusting the queue)",
+    section("Re-verify — pre-tagged dev: agent, never assessed (do BEFORE trusting the queue)",
             buckets["reverify"])
     section("Un-refined — refinement queue", buckets["unrefined"])
     section("Epics / coordination (review manually, do not auto-queue)", buckets["epic"])

@@ -87,7 +87,7 @@ Each maps to an `agent-bail:` label. Refinement applies these at prep time; the 
 - **`agent-bail: open-decision`** — unresolved design/product/policy question; a human must decide direction.
 - **`agent-bail: credential-gate`** — requires a credential-gated build or action (mobile store submissions, a physical device, secret/ruleset/key mutation).
 - **`agent-bail: synced-surface`** — acceptance requires editing a file synced from upstream; the change belongs upstream.
-- **`agent-bail: epic`** — a tracking/coordination issue (`Epic:` title, `extractable as @`, cross-repo orchestration), not a bounded task.
+- **`agent-bail: epic`** — a tracking/coordination issue (`Epic:` title or cross-repo orchestration), not a bounded task.
 - **`TODO: agent-bail: <repo-sensitive>`** — define a disqualifier for your repo's sensitive paths that need human review even with green CI. _Examples: a regulated repo excludes non-trivial changes to PHI/PII/encryption/audit-logging paths; a payments repo excludes ledger/settlement code; an infra repo excludes anything touching production IAM. A one-line typo fix in such a path may be OK; anything that touches the core invariant is not._
 
 ### Workflow-auto-managed issues (skipped entirely — not even labelled)

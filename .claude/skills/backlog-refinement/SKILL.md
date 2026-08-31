@@ -1,6 +1,6 @@
 ---
 name: backlog-refinement
-description: Prepare the GitHub backlog for autonomous /agent-loop completion — assess each open issue against the agent-readiness rubric, auto-rewrite agent-shaped issues into agent-ready form (acceptance criteria, file pointers, out-of-scope guardrails) and tag dev:agent, exclude the rest with agent-bail:* reasons, and run the post-loop RCA aggregation that sharpens the rubric from every bail. Use before running /agent-loop, after triaging new issues, or to close the learning loop after a loop run.
+description: 'Prepare the GitHub backlog for autonomous /agent-loop completion — assess each open issue against the agent-readiness rubric, auto-rewrite agent-shaped issues into agent-ready form (acceptance criteria, file pointers, out-of-scope guardrails) and tag dev: agent, exclude the rest with agent-bail:* reasons, and run the post-loop RCA aggregation that sharpens the rubric from every bail. Use before running /agent-loop, after triaging new issues, or to close the learning loop after a loop run.'
 argument-hint: 'mode [args]: queue | refine [n|--all|--limit N] | assess <n> | rca [run-window] | help'
 disable-model-invocation: true
 ---
@@ -12,12 +12,12 @@ Maximize how much of the backlog `/agent-loop` can complete unattended, and **le
 This skill is one half of a closed loop with `/agent-loop`:
 
 ```
-/backlog-refinement (prep)  →  dev:agent queue  →  /agent-loop (consume)
+/backlog-refinement (prep)  →  dev: agent queue  →  /agent-loop (consume)
         ▲                                                   │
         └──────────  RCA sharpens the rubric  ◀── agent-bail:* on bail
 ```
 
-The criteria, taxonomy, and templates live in **[`RUBRIC.md`](./RUBRIC.md)** (the single source of truth, shared with `/agent-loop`). The accumulated root-cause analyses live in **[`LEARNINGS.md`](./LEARNINGS.md)**. Both are consumer-owned (bootstrapped once from `RUBRIC.md.template` / `LEARNINGS.md.template`, then customized per repo). **Read `RUBRIC.md` fully before acting** — it defines §1 readiness criteria, §2 make-ready transformations, §3 disqualifiers (including any repo-specific ones), and the label model.
+The criteria, taxonomy, and templates live in **[`RUBRIC.md`](./RUBRIC.md)** (or `RUBRIC.md.template` when running globally or before local bootstrap; the single source of truth, shared with `/agent-loop`). The accumulated root-cause analyses live in **[`LEARNINGS.md`](./LEARNINGS.md)** (or `LEARNINGS.md.template`). Both are consumer-owned (bootstrapped once from `RUBRIC.md.template` / `LEARNINGS.md.template`, then customized per repo). **Read `RUBRIC.md` (or `RUBRIC.md.template`) fully before acting** — it defines §1 readiness criteria, §2 make-ready transformations, §3 disqualifiers (including any repo-specific ones), and the label model.
 
 > **Integration branch.** This skill says "verify against the integration branch" throughout — that is whatever branch your repo's `agent-loop-instructions.md` opens PRs against (`origin/main` for most repos, `origin/staging` for repos with a staging→main promotion flow). Substitute your repo's value.
 
@@ -47,7 +47,7 @@ Prepare issues for the loop. Default refines the next un-assessed issue; `--limi
 > **Re-verify pre-tagged `dev: agent` FIRST.** `--all` processes only the un-refined bucket — it does **not** touch `dev: agent` issues that lack `agent: refined`. Those are pre-tagged and unverified, and they are exactly what `/agent-loop` consumes, so a plain `refine --all` leaves the loop's real queue stale. Before (or alongside) `refine --all`, run the same per-issue steps below over `gh issue list --label "dev: agent"` filtered to those without `agent: refined` (the `candidates.py` **re-verify** bucket): strip `dev: agent` + add the matching `agent-bail:` on failures, add `agent: refined` on passes. Sanity-check the auto-rewrite on a handful (`assess <n>` or `refine --limit 5`) before a large sweep, since it mutates issue bodies at scale.
 
 1. **Read it fully** — `gh issue view <N>` including comments.
-2. **Early-exit excludes** — if the title/body matches a §3 Bucket-B disqualifier on its face (`Epic:`, `extractable as @`, obvious cross-repo/credential/synced-surface/repo-sensitive), apply `agent: refined` + the `agent-bail:` label, add a one-line comment citing the rubric clause, and move on. Don't over-invest in clearly-excluded issues.
+2. **Early-exit excludes** — if the title/body matches a §3 Bucket-B disqualifier on its face (`Epic:`, obvious cross-repo/credential/synced-surface/repo-sensitive), apply `agent: refined` + the `agent-bail:` label, add a one-line comment citing the rubric clause, and move on. Don't over-invest in clearly-excluded issues.
 3. **Verify-against-HEAD** (RUBRIC §2, highest-value check). Fetch the integration branch; determine whether the described problem still reproduces:
    - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit/PR/file:line that shipped it) and recommend close. Do **not** tag `dev: agent`. Do **not** close it yourself (human triage gate).
    - **Partially shipped** → re-scope: rewrite the body to the residual only, then continue assessing the residual.

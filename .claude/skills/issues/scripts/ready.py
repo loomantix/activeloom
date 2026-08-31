@@ -369,11 +369,8 @@ def main() -> int:
     # Blocker resolution must consider *all* open issues, not just the filtered set,
     # otherwise a blocker outside the filter looks "closed" and its dependent appears ready.
     open_nums = fetch_all_open_numbers() if filters else {i["number"] for i in issues}
-    excluded_prs = set(getattr(args, "exclude_addressed_by_pr", []))
-    addressed = (
-        fetch_addressed_numbers(exclude_pr_numbers=excluded_prs)
-        if excluded_prs
-        else fetch_addressed_numbers()
+    addressed = fetch_addressed_numbers(
+        exclude_pr_numbers=set(args.exclude_addressed_by_pr)
     )
 
     ready: list[dict[str, Any]] = []
