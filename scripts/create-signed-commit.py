@@ -113,6 +113,65 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
     return re.compile(r"\A" + "".join(parts) + r"\Z")
 
 
+def _compile_case_insensitive(pattern: str) -> re.Pattern[str]:
+    """Recompile a destination glob with `re.IGNORECASE`.
+
+    Same rationale as the engine helper of the same name: a sensitive path
+    must stay blocked on a case-insensitive filesystem where `dockerfile`
+    resolves to the same file as `Dockerfile`.
+    """
+    return re.compile(glob_to_regex(pattern).pattern, re.IGNORECASE)
+
+
+# The engine's write/delete admission policy, carried verbatim so payload
+# mode gates an untrusted manifest with the same rules `sync-engine.py`
+# applies to a checkout. Kept as a copy (like `glob_to_regex`) because the
+# scripts ship as standalone hyphenated files; the parity test in
+# `tests/test_create_signed_commit.py` pins these tuples to the engine's.
+SENSITIVE_DELETE_PATTERNS: tuple[str, ...] = (
+    ".github/workflows/**",
+    ".github/actions/**",
+    "**/CODEOWNERS",
+    "**/package.json",
+    "**/pnpm-lock.yaml",
+    "**/prisma/schema.prisma",
+    "**/Dockerfile",
+    "**/Dockerfile.*",
+)
+SENSITIVE_WRITE_PATTERNS: tuple[str, ...] = SENSITIVE_DELETE_PATTERNS
+ENGINE_SURFACE_PATTERNS: tuple[str, ...] = (
+    ".claude/**",
+    ".codex/**",
+    ".agents/**",
+)
+_SENSITIVE_WRITE_REGEXES = tuple(_compile_case_insensitive(p) for p in SENSITIVE_WRITE_PATTERNS)
+_SENSITIVE_DELETE_REGEXES = tuple(_compile_case_insensitive(p) for p in SENSITIVE_DELETE_PATTERNS)
+_ENGINE_SURFACE_REGEXES = tuple(_compile_case_insensitive(p) for p in ENGINE_SURFACE_PATTERNS)
+
+
+def _matches_any(path: str, regexes: tuple[re.Pattern[str], ...]) -> bool:
+    return any(regex.match(path) is not None for regex in regexes)
+
+
+def is_engine_surface(dest_canonical: str) -> bool:
+    """Whether a canonical destination lives in an engine's prompt surface."""
+    return _matches_any(dest_canonical, _ENGINE_SURFACE_REGEXES)
+
+
+def is_sensitive_write_dest(dest_canonical: str) -> bool:
+    """Whether writing this destination needs an `allow_sensitive_writes` grant."""
+    return _matches_any(dest_canonical, _SENSITIVE_WRITE_REGEXES) and not is_engine_surface(
+        dest_canonical
+    )
+
+
+def is_sensitive_delete_dest(dest_canonical: str) -> bool:
+    """Whether deleting this destination is refused outright."""
+    return _matches_any(dest_canonical, _SENSITIVE_DELETE_REGEXES) and not is_engine_surface(
+        dest_canonical
+    )
+
+
 def _canonical_manifest_path(path: str) -> str | None:
     """Return a canonical repository-relative path, or None when unsafe.
 
@@ -142,12 +201,24 @@ def validate_payload_paths(
     """Fail closed unless every payload path is trusted by the consumer config.
 
     In payload mode the manifest is an input file, not the output of
-    `git status` against a checkout this process controls — so it is
-    validated the way the sync engine validates destinations: every path
-    must be canonical, must match the consumer's `allowed_destinations`
-    allowlist, and must not be one the consumer opted out of via
-    `skip_targets`. Raises ValueError after writing the reason to stderr;
-    the caller turns that into exit code 1 before any API call is made.
+    `git status` against a checkout this process controls — it is produced
+    by a lower-privilege build job that executed upstream-cloned code, so
+    this gate is the trust boundary before the App token signs anything. It
+    applies the same admission policy `sync-engine.py` applies to a
+    checkout: every path must be canonical, must match `allowed_destinations`
+    and not be opted out via `skip_targets`; a write to a sensitive path
+    (CI workflows, composite actions, CODEOWNERS, lockfiles, Dockerfiles,
+    schema) needs an explicit `allow_sensitive_writes` grant; a delete of
+    one is refused outright; and the consumer's own config — the consent
+    store — may not be written at all. `skip_targets` here matches on
+    destination only, which is complete because a manifest carries
+    destinations, not upstream source paths. Raises ValueError after writing
+    the reason to stderr; the caller turns that into exit code 1 before any
+    API call is made.
+
+    Validation only: `_canonical_manifest_path` rejects rather than
+    rewrites, so a path that survives is byte-identical to its input and
+    the caller's `StatusChanges` comes back unchanged.
     """
     try:
         import yaml
@@ -170,30 +241,90 @@ def validate_payload_paths(
         )
         raise ValueError("invalid consumer allowlist")
     patterns = [glob_to_regex(pattern) for pattern in allowed]
-    skip = document.get("skip_targets") or []
-    if not isinstance(skip, list) or not all(isinstance(path, str) for path in skip):
+    # Mirror the engine's explicit None-vs-type-error handling rather than
+    # `... or []`: a falsy scalar (`skip_targets: ""`, `0`, `false`) would
+    # otherwise coalesce to `[]` before the type check and silently drop the
+    # consumer's opt-outs, while a truthy scalar errors — a fail-open the
+    # engine side of this PR deliberately closed.
+    skip_raw = document.get("skip_targets")
+    if skip_raw is None:
+        skipped_paths: set[str] = set()
+    elif not isinstance(skip_raw, list) or not all(isinstance(path, str) for path in skip_raw):
         sys.stderr.write(f"{config_path}: `skip_targets` must be a list of strings\n")
         raise ValueError("invalid skip list")
-    skipped_paths = set(skip)
-    canonical_upserts: list[str] = []
-    canonical_deletes: list[str] = []
-    for source, destination in (
-        (changes.upserts, canonical_upserts),
-        (changes.deletes, canonical_deletes),
-    ):
-        for path in source:
-            canonical = _canonical_manifest_path(path)
-            if canonical is None:
-                sys.stderr.write(f"unsafe manifest path: {path!r}\n")
-                raise ValueError("unsafe manifest path")
-            if not any(pattern.match(canonical) is not None for pattern in patterns):
-                sys.stderr.write(f"manifest path is not allowed by consumer config: {canonical}\n")
-                raise ValueError("disallowed manifest path")
-            if canonical in skipped_paths:
-                sys.stderr.write(f"manifest path is opted out by consumer config: {canonical}\n")
-                raise ValueError("skipped manifest path")
-            destination.append(canonical)
-    return StatusChanges(upserts=canonical_upserts, deletes=canonical_deletes)
+    else:
+        skipped_paths = set(skip_raw)
+
+    # Per-file consent for sensitive writes. Absent means deny (no fail-open
+    # migration phase — an unconsented sensitive write is a hard refusal);
+    # present-but-null is a config error; entries must be literal canonical
+    # sensitive paths, never globs.
+    sensitive_grant: set[str] = set()
+    if "allow_sensitive_writes" in document:
+        grant_raw = document.get("allow_sensitive_writes")
+        if grant_raw is None:
+            sys.stderr.write(
+                f"{config_path}: `allow_sensitive_writes:` is present but null; use `[]` to grant none\n"
+            )
+            raise ValueError("invalid sensitive-write allowlist")
+        if not isinstance(grant_raw, list) or not all(isinstance(entry, str) for entry in grant_raw):
+            sys.stderr.write(
+                f"{config_path}: `allow_sensitive_writes` must be a list of strings\n"
+            )
+            raise ValueError("invalid sensitive-write allowlist")
+        for entry in grant_raw:
+            canonical_entry = (
+                None if ("*" in entry or "?" in entry) else _canonical_manifest_path(entry)
+            )
+            if canonical_entry is None or not is_sensitive_write_dest(canonical_entry):
+                sys.stderr.write(
+                    f"{config_path}: `allow_sensitive_writes` lists {entry!r}, which is not a "
+                    f"literal canonical sensitive path\n"
+                )
+                raise ValueError("invalid sensitive-write allowlist")
+            sensitive_grant.add(canonical_entry)
+
+    # The consumer's own config is the consent store — a manifest that could
+    # rewrite it could grant itself every permission checked here — so a
+    # write to the root-level config is refused outright.
+    config_store_name = config_path.name
+
+    def canonicalize_and_admit(path: str) -> str:
+        canonical = _canonical_manifest_path(path)
+        if canonical is None:
+            sys.stderr.write(f"unsafe manifest path: {path!r}\n")
+            raise ValueError("unsafe manifest path")
+        if not any(pattern.match(canonical) is not None for pattern in patterns):
+            sys.stderr.write(f"manifest path is not allowed by consumer config: {canonical}\n")
+            raise ValueError("disallowed manifest path")
+        if canonical in skipped_paths:
+            sys.stderr.write(f"manifest path is opted out by consumer config: {canonical}\n")
+            raise ValueError("skipped manifest path")
+        return canonical
+
+    upserted: set[str] = set()
+    for path in changes.upserts:
+        canonical = canonicalize_and_admit(path)
+        if canonical == config_store_name:
+            sys.stderr.write(f"refusing to write the consumer's own sync config: {canonical}\n")
+            raise ValueError("config self-write")
+        if is_sensitive_write_dest(canonical) and canonical not in sensitive_grant:
+            sys.stderr.write(
+                f"refusing to write sensitive path without an `allow_sensitive_writes` grant: {canonical}\n"
+            )
+            raise ValueError("unconsented sensitive write")
+        upserted.add(canonical)
+    for path in changes.deletes:
+        canonical = canonicalize_and_admit(path)
+        if is_sensitive_delete_dest(canonical):
+            sys.stderr.write(f"refusing to delete sensitive path (engine-level block): {canonical}\n")
+            raise ValueError("sensitive delete")
+        if canonical in upserted:
+            sys.stderr.write(
+                f"manifest lists the same path as both an upsert and a delete: {canonical}\n"
+            )
+            raise ValueError("duplicate manifest path")
+    return changes
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
@@ -462,9 +593,11 @@ def main() -> int:
         if not args.manifest.is_file():
             sys.stderr.write(f"manifest file not found: {args.manifest}\n")
             return 1
-        # `surrogateescape` round-trips non-UTF-8 bytes in filenames the
-        # same way `run(...)`'s text-mode pipe delivers them in consumer
-        # mode, so the two modes classify identical manifests identically.
+        # `surrogateescape` preserves non-UTF-8 bytes in filenames
+        # losslessly, so a hostile or corrupt byte survives the decode as a
+        # surrogate and is rejected explicitly by `_canonical_manifest_path`
+        # (surrogates are non-printable) instead of the decode itself
+        # throwing an unhandled `UnicodeDecodeError`.
         raw_manifest = args.manifest.read_text(encoding="utf-8", errors="surrogateescape")
         try:
             changes = validate_payload_paths(parse_status_bytes(raw_manifest), args.config)
@@ -484,13 +617,26 @@ def main() -> int:
     # tree is rooted at whatever HEAD is *now*, but its file contents were
     # rendered from *then*.
     expected_base_sha: str | None = None
-    if args.base_sha_file:
+    if args.base_sha_file is not None:
         if not args.base_sha_file.is_file():
             sys.stderr.write(f"base-sha file not found: {args.base_sha_file}\n")
             return 1
         expected_base_sha = args.base_sha_file.read_text(encoding="utf-8").strip()
-    elif args.expected_base_sha:
+    elif args.expected_base_sha is not None:
         expected_base_sha = args.expected_base_sha.strip()
+
+    # An empty or malformed pin must fail, not silently disarm the
+    # divergence guard below (`if expected_base_sha and ...` treats "" as
+    # "no pin"). A truncated artifact, a `> file` of a failed command, or —
+    # in payload mode, where this file rides in the untrusted artifact — a
+    # hostile build job all produce an empty file; each must be a config
+    # error, not a skipped check. Presence of the flag is opt-in; a bad
+    # value once opted in is fatal.
+    if expected_base_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", expected_base_sha):
+        sys.stderr.write(
+            f"expected base SHA is not a 40-character hex commit id: {expected_base_sha!r}\n"
+        )
+        return 1
 
     # 1. Resolve the base branch's HEAD commit + tree.
     base_ref = github_api("GET", f"/repos/{owner_repo}/git/ref/heads/{args.base_branch}", token)

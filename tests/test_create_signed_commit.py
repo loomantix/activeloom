@@ -641,14 +641,14 @@ def test_main_full_flow_with_payload_dir_and_manifest(
     manifest_path.write_bytes(b"?? new.txt\0")
 
     base_sha_file = tmp_path / "base-sha"
-    base_sha_file.write_text("base-sha\n")
+    base_sha_file.write_text("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\n")
     config_path = tmp_path / ".platform-config.yml"
     config_path.write_text("allowed_destinations:\n  - new.txt\n")
 
     recorder = _ApiRecorder([
         ("GET", "/repos/loomantix/test/git/ref/heads/main",
-         {"object": {"sha": "base-sha"}}),
-        ("GET", "/repos/loomantix/test/git/commits/base-sha",
+         {"object": {"sha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"}}),
+        ("GET", "/repos/loomantix/test/git/commits/a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
          {"tree": {"sha": "base-tree-sha"}}),
         ("POST", "/repos/loomantix/test/git/blobs", {"sha": "blob-payload-new"}),
         ("POST", "/repos/loomantix/test/git/trees", {"sha": "new-tree-sha"}),
@@ -696,13 +696,13 @@ def test_main_rejects_diverged_base_sha(
     manifest_path.write_bytes(b"?? new.txt\0")
 
     base_sha_file = tmp_path / "base-sha"
-    base_sha_file.write_text("old-base-sha\n")
+    base_sha_file.write_text("1111111111111111111111111111111111111111\n")
     config_path = tmp_path / ".platform-config.yml"
     config_path.write_text("allowed_destinations:\n  - new.txt\n")
 
     recorder = _ApiRecorder([
         ("GET", "/repos/loomantix/test/git/ref/heads/main",
-         {"object": {"sha": "newer-base-sha-from-merge"}}),
+         {"object": {"sha": "2222222222222222222222222222222222222222"}}),
     ])
     monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
     monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
@@ -842,3 +842,215 @@ def test_payload_mode_rejects_disallowed_manifest_path_before_api(
     assert create_signed_commit.main() == 1
     assert recorder.calls == []
     assert "not allowed" in capsys.readouterr().err
+
+
+def test_glob_to_regex_stays_in_lockstep_with_sync_engine_dialect(
+    create_signed_commit: ModuleType,
+    sync_engine: ModuleType,
+) -> None:
+    # `create-signed-commit.py` deliberately carries a copy of the sync
+    # engine's `glob_to_regex` so a consumer's `allowed_destinations`
+    # means the same thing to both gates. Nothing at runtime imports one
+    # from the other, so this parity check is the only thing that stops
+    # the two dialects drifting apart — a fix to one compiler should fail
+    # here until it is mirrored into the other. It compares compiled
+    # patterns over the sample below, not every possible construct, so
+    # extend the list when adding one the dialect must handle.
+    patterns = [
+        ".agents/**",
+        "**/SKILL.md",
+        ".github/workflows/*.yml",
+        "docs/**/README.md",
+        "a/*/b?",
+        "a**b",
+        "**",
+        "*",
+        "?",
+        "a.b+c(d)[e]",
+        "skills/*/scripts/**",
+    ]
+    for pattern in patterns:
+        assert (
+            create_signed_commit.glob_to_regex(pattern).pattern
+            == sync_engine.glob_to_regex(pattern).pattern
+        ), pattern
+
+
+def test_sensitive_pattern_sets_match_sync_engine(
+    create_signed_commit: ModuleType,
+    sync_engine: ModuleType,
+) -> None:
+    # The payload gate carries copies of the engine's write/delete admission
+    # policy. If the engine's tuples change and these do not, an untrusted
+    # manifest is gated by a stale policy — so pin them together.
+    assert (
+        create_signed_commit.SENSITIVE_WRITE_PATTERNS == sync_engine.SENSITIVE_WRITE_PATTERNS
+    )
+    assert (
+        create_signed_commit.SENSITIVE_DELETE_PATTERNS == sync_engine.SENSITIVE_DELETE_PATTERNS
+    )
+    assert (
+        create_signed_commit.ENGINE_SURFACE_PATTERNS == sync_engine.ENGINE_SURFACE_PATTERNS
+    )
+
+
+def _payload_config(tmp_path: Path, body: str) -> Path:
+    config = tmp_path / ".platform-config.yml"
+    config.write_text(body, encoding="utf-8")
+    return config
+
+
+def test_validate_payload_rejects_unconsented_sensitive_write(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _payload_config(tmp_path, "allowed_destinations:\n  - .github/**\n")
+    changes = create_signed_commit.StatusChanges(
+        upserts=[".github/workflows/ci.yml"], deletes=[]
+    )
+    with pytest.raises(ValueError):
+        create_signed_commit.validate_payload_paths(changes, config)
+    assert "sensitive path without an `allow_sensitive_writes` grant" in capsys.readouterr().err
+
+
+def test_validate_payload_allows_consented_sensitive_write(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+) -> None:
+    config = _payload_config(
+        tmp_path,
+        "allowed_destinations:\n  - .github/**\n"
+        "allow_sensitive_writes:\n  - .github/workflows/ci.yml\n",
+    )
+    changes = create_signed_commit.StatusChanges(
+        upserts=[".github/workflows/ci.yml"], deletes=[]
+    )
+    # Consented — returns unchanged rather than raising.
+    assert create_signed_commit.validate_payload_paths(changes, config) == changes
+
+
+def test_validate_payload_rejects_glob_sensitive_grant(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A glob grant would re-open the hole the per-file gate closes.
+    config = _payload_config(
+        tmp_path,
+        "allowed_destinations:\n  - .github/**\n"
+        "allow_sensitive_writes:\n  - .github/workflows/**\n",
+    )
+    changes = create_signed_commit.StatusChanges(
+        upserts=[".github/workflows/ci.yml"], deletes=[]
+    )
+    with pytest.raises(ValueError):
+        create_signed_commit.validate_payload_paths(changes, config)
+    assert "literal canonical sensitive path" in capsys.readouterr().err
+
+
+def test_validate_payload_rejects_sensitive_delete(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _payload_config(tmp_path, "allowed_destinations:\n  - .github/**\n")
+    changes = create_signed_commit.StatusChanges(
+        upserts=[], deletes=[".github/workflows/ci.yml"]
+    )
+    with pytest.raises(ValueError):
+        create_signed_commit.validate_payload_paths(changes, config)
+    assert "refusing to delete sensitive path" in capsys.readouterr().err
+
+
+def test_validate_payload_allows_engine_surface_write_without_grant(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+) -> None:
+    # Engine-surface paths are the normal sync target, not sensitive.
+    config = _payload_config(tmp_path, "allowed_destinations:\n  - .claude/**\n")
+    changes = create_signed_commit.StatusChanges(
+        upserts=[".claude/skills/x/SKILL.md"], deletes=[]
+    )
+    assert create_signed_commit.validate_payload_paths(changes, config) == changes
+
+
+def test_validate_payload_refuses_config_self_write(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _payload_config(tmp_path, "allowed_destinations:\n  - '**'\n")
+    changes = create_signed_commit.StatusChanges(
+        upserts=[".platform-config.yml"], deletes=[]
+    )
+    with pytest.raises(ValueError):
+        create_signed_commit.validate_payload_paths(changes, config)
+    assert "consumer's own sync config" in capsys.readouterr().err
+
+
+def test_validate_payload_rejects_duplicate_upsert_and_delete(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _payload_config(tmp_path, "allowed_destinations:\n  - '**'\n")
+    changes = create_signed_commit.StatusChanges(upserts=["x.txt"], deletes=["x.txt"])
+    with pytest.raises(ValueError):
+        create_signed_commit.validate_payload_paths(changes, config)
+    assert "both an upsert and a delete" in capsys.readouterr().err
+
+
+def test_validate_payload_rejects_falsy_scalar_skip_targets(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `skip_targets: ""` must error, not coalesce to "skip nothing".
+    config = _payload_config(
+        tmp_path, "allowed_destinations:\n  - new.txt\nskip_targets: \"\"\n"
+    )
+    changes = create_signed_commit.StatusChanges(upserts=["new.txt"], deletes=[])
+    with pytest.raises(ValueError):
+        create_signed_commit.validate_payload_paths(changes, config)
+    assert "`skip_targets` must be a list of strings" in capsys.readouterr().err
+
+
+def test_main_rejects_empty_base_sha_file(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload_dir = tmp_path / "payload_tree"
+    payload_dir.mkdir()
+    (payload_dir / "new.txt").write_text("hello\n")
+    manifest_path = tmp_path / "manifest"
+    manifest_path.write_bytes(b"?? new.txt\0")
+    base_sha_file = tmp_path / "base-sha"
+    base_sha_file.write_text("   \n")  # whitespace only
+    config_path = tmp_path / ".platform-config.yml"
+    config_path.write_text("allowed_destinations:\n  - new.txt\n")
+
+    recorder = _ApiRecorder([])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/x",
+            "--message", "m",
+            "--payload-dir", str(payload_dir),
+            "--manifest", str(manifest_path),
+            "--config", str(config_path),
+            "--base-sha-file", str(base_sha_file),
+        ],
+    )
+
+    assert create_signed_commit.main() == 1
+    assert recorder.calls == []
+    assert "not a 40-character hex commit id" in capsys.readouterr().err

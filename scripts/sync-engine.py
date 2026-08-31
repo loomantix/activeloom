@@ -313,7 +313,7 @@ def read_utf8(path: Path) -> str:
         return file.read()
 
 
-def write_utf8(path: Path, content: str) -> None:
+def write_utf8(path: Path, content: str, mode: int | None = None) -> None:
     """Atomically write UTF-8 text without platform newline translation.
 
     Written to a sibling temp file and moved into place with `os.replace`,
@@ -321,6 +321,11 @@ def write_utf8(path: Path, content: str) -> None:
     destination or the new one — never a truncated half-file for the next
     step to commit. The temp file lives in `path.parent` because
     `os.replace` is only atomic within one filesystem.
+
+    `mode` is applied to the temp file before the swap, so content and
+    permission bits land in one atomic step. When omitted, the destination
+    keeps the temp file's owner-only 0o600 — a caller syncing a readable
+    destination must pass the bits it wants.
     """
     temporary_path: Path | None = None
     try:
@@ -332,9 +337,16 @@ def write_utf8(path: Path, content: str) -> None:
             prefix=f".{path.name}.",
             delete=False,
         ) as file:
-            file.write(content)
             temporary_path = Path(file.name)
+            file.write(content)
+        if mode is not None:
+            # Applied by path rather than fd: `os.chmod` exists on every
+            # platform, `os.fchmod` does not (absent on Windows). The bits
+            # still land before the swap, so content and mode replace the
+            # destination atomically.
+            os.chmod(temporary_path, mode)
         os.replace(temporary_path, path)
+        temporary_path = None
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
@@ -528,17 +540,22 @@ def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
     """Write content to path only if it differs. Return True if a write happened."""
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = read_utf8(path) if path.is_file() else None
-    # `write_utf8` replaces the destination with a fresh temp file, so the
-    # destination's permission bits do not survive the write on their own the
-    # way an in-place rewrite would keep them. Capture them before writing and
-    # put them back after, or fall to 0o644 for a new file — a temp file is
-    # born 0o600, which would strip group/other read from every synced file.
-    preserved_mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o644
     changed = existing != content
     if changed:
-        write_utf8(path, content)
-        if mode is None:
-            path.chmod(preserved_mode)
+        # `write_utf8` replaces the destination with a fresh temp file, so
+        # the destination's permission bits do not survive the write on
+        # their own the way an in-place rewrite would keep them. Hand the
+        # write the bits to apply before the swap: the manifest's explicit
+        # `mode:`, an existing destination's current bits, or 0o644 for a
+        # new file — a temp file is born 0o600, which would strip
+        # group/other read from every synced file.
+        if mode is not None:
+            desired_mode = mode
+        elif existing is not None:
+            desired_mode = stat.S_IMODE(path.stat().st_mode)
+        else:
+            desired_mode = 0o644
+        write_utf8(path, content, desired_mode)
     if mode is not None:
         # `stat.S_IMODE` keeps the full 12-bit permission set (setuid +
         # setgid + sticky + rwx*3). `& 0o777` would mask off the upper
