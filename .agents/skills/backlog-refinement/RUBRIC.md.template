@@ -1,6 +1,6 @@
 # Agent-readiness rubric
 
-> **Versioned, reviewed criteria** for deciding whether a GitHub issue is _agent-intelligible_ — i.e. completable end-to-end by an autonomous `codex exec` session inside `/agent-loop` without a human in the loop. This file is the single source of truth that both **`/backlog-refinement`** (which prepares the backlog) and **`/agent-loop`** (which consumes it) read. Every entry in [`LEARNINGS.md`](./LEARNINGS.md) either sharpens a _make-ready transformation_ or adds/tightens a _disqualifier_ here.
+> **Versioned, reviewed criteria** for deciding whether a GitHub issue is _agent-intelligible_ — i.e. completable end-to-end by an autonomous Antigravity or Gemini CLI session inside `/agent-loop` without a human in the loop. This file is the single source of truth that both **`/backlog-refinement`** (which prepares the backlog) and **`/agent-loop`** (which consumes it) read. Every entry in [`LEARNINGS.md`](./LEARNINGS.md) either sharpens a _make-ready transformation_ or adds/tightens a _disqualifier_ here.
 >
 > **This file was bootstrapped from a starter template** and is consumer-owned (`create_if_missing: true` — later upstream edits don't overwrite it). **Customize the `TODO:` markers below for your repo**, especially §3's repo-specific sensitive-path disqualifier.
 >
@@ -53,7 +53,7 @@ An issue is `dev: agent`-ready only if **all** of these hold. `/backlog-refineme
 2. **Verifiable success** — acceptance is checkable by a deterministic signal the agent can run: a test, a typecheck, a doc/lint gate, a CI gate, or an observable behavior. "Looks better" is not verifiable.
 3. **Self-contained in this repo** — no dependency on an unpublished/private package, an unmerged upstream PR, or a change in a sibling repo. (See `cross-repo` disqualifier.)
 4. **No open decision** — the issue states _what_ to do, not "should we A or B?". Product/design/policy forks are human calls.
-5. **Current** — the described problem still reproduces against the integration branch HEAD; the fix is not already shipped. See `stale` and the verify-against-HEAD transformation.
+5. **Current** — the described problem still reproduces against the integration branch HEAD; the fix is not already shipped. **This is the most-violated criterion** — see `stale` and the verify-against-HEAD transformation.
 6. **File-anchored** — the body points at the concrete files/symbols/lines where the work happens (refinement adds these if missing).
 7. **Inside the safe envelope** — does not require editing synced-from-upstream files, a credential-gated build, secret/ruleset mutation, or a non-trivial change to a repo-specific sensitive path (see §3 — `TODO:` define yours).
 
@@ -63,7 +63,7 @@ When an issue is _shaped_ like agent work but fails §1, refinement transforms i
 
 | Transformation | Trigger | Action |
 | --- | --- | --- |
-| **Verify-against-HEAD** | Always, before tagging | Check the described bug/behavior against the integration branch. If already fixed → recommend close (`agent-bail: stale`), do **not** tag. If partially shipped → re-scope the body to the **residual** and re-assess that. |
+| **Verify-against-HEAD** _(highest-value in practice)_ | Always, before tagging | Check the described bug/behavior against the integration branch. If already fixed → recommend close (`agent-bail: stale`), do **not** tag. If partially shipped → re-scope the body to the **residual** and re-assess that. |
 | **Re-verify pre-tagged queue** | A `dev: agent` issue lacks `agent: refined` | It was tagged by something other than this skill (older triage, bulk import, parallel pass) and never verified-against-HEAD. `refine --all` skips it (it's not "un-refined"), yet it's exactly what `/agent-loop` consumes. Run the full per-issue refine over the `candidates.py` **re-verify** bucket _before_ trusting the queue: strip `dev: agent` + add `agent-bail:` on failures, add `agent: refined` on passes. |
 | **External-dep availability check** | Issue names a package/service dependency | Confirm the dep is published & consumable from this repo. If not → `status: blocked` + `agent-bail: cross-repo`, don't tag. |
 | **Add acceptance criteria** | §1.2 fails | Derive a concrete verifiable check (which test file, which command, which observable). |

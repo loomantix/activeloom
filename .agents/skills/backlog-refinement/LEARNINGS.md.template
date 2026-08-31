@@ -10,7 +10,7 @@
 
 _Promote a lesson here once it has recurred across multiple entries below. (Empty until your first RCA pass.)_
 
-_No meta-lessons yet. Promote a pattern here only after this repository's RCA entries demonstrate recurrence._
+> A common first finding across repos: **stale backlog is the top wasted-iteration cause** — issues whose described work already shipped. If you see this, the highest-ROI response is to make verify-against-HEAD (RUBRIC §2) a non-negotiable first step on every issue. Confirm it against your own run data before promoting it here.
 
 ---
 

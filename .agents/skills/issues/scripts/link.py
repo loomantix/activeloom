@@ -13,12 +13,13 @@ import re
 import subprocess
 import sys
 import tempfile
+from typing import NoReturn
 
 SECTION_HEADER = "## Dependencies"
 GH_TIMEOUT_SECONDS = 60
 
 
-def fail_gh_timeout(action: str) -> None:
+def fail_gh_timeout(action: str) -> NoReturn:
     sys.stderr.write(
         f"Timed out after {GH_TIMEOUT_SECONDS}s while running `gh {action}`. "
         "Check GitHub auth/network connectivity and retry.\n"
