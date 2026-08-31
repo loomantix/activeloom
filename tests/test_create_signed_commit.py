@@ -642,7 +642,7 @@ def test_main_full_flow_with_payload_dir_and_manifest(
 
     base_sha_file = tmp_path / "base-sha"
     base_sha_file.write_text("base-sha\n")
-    config_path = tmp_path / ".gemini-platform-config.yml"
+    config_path = tmp_path / ".platform-config.yml"
     config_path.write_text("allowed_destinations:\n  - new.txt\n")
 
     recorder = _ApiRecorder([
@@ -697,7 +697,7 @@ def test_main_rejects_diverged_base_sha(
 
     base_sha_file = tmp_path / "base-sha"
     base_sha_file.write_text("old-base-sha\n")
-    config_path = tmp_path / ".gemini-platform-config.yml"
+    config_path = tmp_path / ".platform-config.yml"
     config_path.write_text("allowed_destinations:\n  - new.txt\n")
 
     recorder = _ApiRecorder([
@@ -819,7 +819,7 @@ def test_payload_mode_rejects_disallowed_manifest_path_before_api(
     (payload_dir / "CODEOWNERS").write_text("* @attacker\n")
     manifest = tmp_path / "manifest"
     manifest.write_bytes(b"?? CODEOWNERS\0")
-    config = tmp_path / ".gemini-platform-config.yml"
+    config = tmp_path / ".platform-config.yml"
     config.write_text("allowed_destinations:\n  - .agents/**\n")
     recorder = _ApiRecorder([])
     monkeypatch.setattr(create_signed_commit, "_github_request", recorder)

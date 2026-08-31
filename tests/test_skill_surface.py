@@ -44,8 +44,15 @@ def _snapshot(root: Path) -> dict[str, tuple[str, int]]:
 
 def _canonical_sync_command(consumer: Path) -> list[str]:
     config = consumer / ".gemini-platform-config.yml"
+    # `.github/workflows/dco.yml` is skipped for the same reason the shipped
+    # starter config skips it — and a workflow write would otherwise need a
+    # per-file `allow_sensitive_writes` grant, which this skill-focused
+    # fixture has no reason to hold.
     config.write_text(
-        "substitutions: {}\nskip_targets:\n  - .github/copilot-instructions.md\n",
+        "substitutions: {}\n"
+        "skip_targets:\n"
+        "  - .github/copilot-instructions.md\n"
+        "  - .github/workflows/dco.yml\n",
         encoding="utf-8",
     )
     return [
