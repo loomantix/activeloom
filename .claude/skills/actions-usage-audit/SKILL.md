@@ -32,6 +32,7 @@ for m in $(seq 1 12); do
   if ! gh api "/organizations/$ORG/settings/billing/usage?year=$YEAR&month=$m" \
     --jq ".usageItems[] | select(((.product // \"\") | ascii_downcase)==\"actions\" and ((.unitType // \"\") | ascii_downcase)==\"minutes\") | [\"$m\", .sku, .repositoryName, .quantity, .grossAmount, .netAmount, .pricePerUnit] | @tsv"; then
     echo "GitHub billing query failed for year $YEAR, month $m; refusing a partial report" >&2
+    rm -f "$WORK/actions.tsv"   # discard already-fetched months so Step 3 cannot read truncated data
     exit 1
   fi
 done > "$WORK/actions.tsv"
@@ -58,10 +59,11 @@ awk -F'\t' '{t[$1]+=$4} END{for(i=1;i<=12;i++) if(t[i]) printf "M%d %d min\n",i,
 
 ## Step 4 — Per-workflow drilldown (top repos only)
 
-Run counts are not minutes — a job firing 1000×/month may be 10s each. For each high-consumption repo, attribute minutes to workflows:
+Run counts are not minutes — a job firing 1000×/month may be 10s each. For each high-consumption repo, set `REPO_SLUG` to its `owner/name` slug — `$ORG` plus the repo name from the Step 3 matrix — then attribute minutes to workflows:
 
 ```bash
 SINCE=$(date -u -d '30 days ago' +%Y-%m-%d)
+REPO_SLUG="$ORG/<repo-name-from-step-3>"
 REPO_KEY=${REPO_SLUG//\//-}
 WORKFLOWS="$WORK/$REPO_KEY-workflows.tsv"
 COUNTS="$WORK/$REPO_KEY-workflow-counts.tsv"

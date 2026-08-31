@@ -98,7 +98,7 @@ The label list is **repo-specific**, so declare it in the marker below (comma-se
 
 <!-- auto-managed-labels: -->
 
-<!-- ^ Fill in the marker above, e.g. `<!-- auto-managed-labels: nightly-digest, automated-report -->`. Keep it to a single marker line; the script reads the first match. -->
+<!-- ^ Fill in the marker above, e.g. `<!-- auto-managed-labels: nightly-digest, automated-report -->`. Keep exactly one marker line; the script rejects a file with more than one. -->
 
 ## §4 — Bail-time self-classification (loop side)
 
