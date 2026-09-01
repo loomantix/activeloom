@@ -39,8 +39,9 @@ GH_LIST_LIMIT = 1000
 # CLOSES (e.g. a nightly metrics/digest issue auto-closed after N days). They
 # are never refinement tasks, and a refinement comment on one resets its
 # `updatedAt` — which can DELAY that auto-close. The label list is repo-specific,
-# so it is declared in a marker in the consumer-owned RUBRIC.md rather than
-# hard-coded here (keeps repo config in the rubric, the skill's source of truth):
+# so it is declared in a marker in the consumer-owned RUBRIC.md (or, before
+# bootstrap, RUBRIC.md.template) rather than hard-coded here — this keeps repo
+# config in the rubric, the skill's source of truth:
 #     <!-- auto-managed-labels: label-a, label-b -->
 # Absent or empty marker → no skipping (safe default; pre-existing repos are
 # unaffected until they opt in).
@@ -50,12 +51,29 @@ _AUTO_MANAGED_MARKER = re.compile(
 
 
 def load_auto_managed_labels() -> tuple[str, ...]:
-    """Repo-specific skip labels, read from the sibling RUBRIC.md marker."""
+    """Repo-specific skip labels, from the sibling RUBRIC.md marker.
+
+    Falls back to RUBRIC.md.template when RUBRIC.md is absent (running in this
+    upstream repo, or before a consumer has bootstrapped). The template's marker
+    ships empty, so that fallback silently means "skip nothing" — announce it on
+    stderr rather than letting a degraded run look like a configured one.
+    """
     rubric_path = os.path.join(os.path.dirname(__file__), "..", "RUBRIC.md")
+    template_path = os.path.join(os.path.dirname(__file__), "..", "RUBRIC.md.template")
     if not os.path.exists(rubric_path):
-        template_path = os.path.join(os.path.dirname(__file__), "..", "RUBRIC.md.template")
         if os.path.exists(template_path):
+            sys.stderr.write(
+                f"NOTE: {rubric_path} not found; reading auto-managed-labels from "
+                f"{template_path} instead. Its marker ships empty, so repo-specific "
+                "skip labels are NOT applied — bootstrap RUBRIC.md to configure them.\n"
+            )
             rubric_path = template_path
+        else:
+            sys.stderr.write(
+                f"Could not read required backlog rubric: neither {rubric_path} nor "
+                f"{template_path} exists.\n"
+            )
+            sys.exit(1)
     try:
         with open(rubric_path, encoding="utf-8") as fh:
             matches = _AUTO_MANAGED_MARKER.findall(fh.read())

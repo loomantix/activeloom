@@ -41,6 +41,14 @@ def _load_candidates(tmp_path: Path, marker: str = "") -> ModuleType:
         f"# Rubric\n\n<!-- auto-managed-labels: {marker} -->\n",
         encoding="utf-8",
     )
+    # Both files present is the steady state of a bootstrapped consumer: the
+    # rendered RUBRIC.md sits beside the synced template. Write a template with
+    # a conflicting marker so every test using this fixture also pins that
+    # RUBRIC.md wins — inverting the guard would otherwise go unnoticed.
+    (skill / "RUBRIC.md.template").write_text(
+        "# Template Rubric\n\n<!-- auto-managed-labels: template-should-not-win -->\n",
+        encoding="utf-8",
+    )
     return _load(target, f"candidates_{tmp_path.name}")
 
 
@@ -100,6 +108,54 @@ def test_candidates_falls_back_to_template_when_rubric_md_absent(
     assert mod.AUTO_MANAGED_LABELS == ("template-skip",)
     assert mod.classify(_issue("template-skip")) == "skipped"
     assert mod.classify(_issue("other")) == "unrefined"
+
+
+def test_candidates_prefers_rubric_md_over_template_when_both_present(
+    tmp_path: Path,
+) -> None:
+    """The steady state of a bootstrapped consumer: RUBRIC.md must win.
+
+    Inverting the guard would silently replace the repo's configured skip list
+    with the template's, which ships empty — auto-managed issues would stop
+    being skipped and the script would still exit 0.
+    """
+    mod = _load_candidates(tmp_path, "repo-configured-skip")
+    assert mod.AUTO_MANAGED_LABELS == ("repo-configured-skip",)
+    assert mod.classify(_issue("repo-configured-skip")) == "skipped"
+    assert mod.classify(_issue("template-should-not-win")) == "unrefined"
+
+
+def test_candidates_exits_when_neither_rubric_nor_template_exists(
+    tmp_path: Path,
+) -> None:
+    """The fallback must stay fail-closed when there is nothing to fall back to."""
+    skill = tmp_path / "backlog-refinement"
+    scripts = skill / "scripts"
+    scripts.mkdir(parents=True)
+    target = scripts / "candidates.py"
+    shutil.copy2(CANDIDATES, target)
+    with pytest.raises(SystemExit) as excinfo:
+        _load(target, "candidates_no_rubric_at_all")
+    assert excinfo.value.code == 1
+
+
+def test_candidates_announces_template_fallback_on_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A degraded run must be distinguishable from a configured one."""
+    skill = tmp_path / "backlog-refinement"
+    scripts = skill / "scripts"
+    scripts.mkdir(parents=True)
+    target = scripts / "candidates.py"
+    shutil.copy2(CANDIDATES, target)
+    (skill / "RUBRIC.md.template").write_text(
+        "# Template Rubric\n\n<!-- auto-managed-labels: -->\n", encoding="utf-8"
+    )
+    mod = _load(target, "candidates_fallback_notice")
+    assert mod.AUTO_MANAGED_LABELS == ()
+    err = capsys.readouterr().err
+    assert "RUBRIC.md.template" in err
+    assert "NOT applied" in err
 
 
 def test_candidates_rejects_duplicate_marker(tmp_path: Path) -> None:

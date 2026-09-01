@@ -137,6 +137,176 @@ def test_link_issues_preserves_concurrent_edit_to_reciprocal_side(
     assert link_mod.has_ref(bodies[10], "Blocks", 20)
 
 
+def test_link_issues_preserves_concurrent_edit_to_blocked_side(
+    link_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blocked side is written first, from a body fetched after preflight.
+
+    The preflight read of the *blocking* issue is itself a remote call, so an
+    edit landing on the blocked issue during it must not be reverted by the
+    whole-body replacement that follows.
+    """
+    bodies = {
+        10: "Issue 10 description",
+        20: "Issue 20 description",
+    }
+    injected: list[bool] = []
+
+    def fake_fetch_body(num: int) -> str:
+        if num == 10 and not injected:
+            injected.append(True)
+            bodies[20] += "\n\nConcurrent user edit"
+        return bodies[num]
+
+    def fake_set_body(num: int, body: str) -> None:
+        bodies[num] = body
+
+    monkeypatch.setattr(link_mod, "fetch_body", fake_fetch_body)
+    monkeypatch.setattr(link_mod, "set_body", fake_set_body)
+
+    assert link_mod.link_issues(10, "blocks", 20) == 0
+    assert "Concurrent user edit" in bodies[20]
+    assert link_mod.has_ref(bodies[20], "Blocked by", 10)
+    assert link_mod.has_ref(bodies[10], "Blocks", 20)
+
+
+def test_link_issues_skips_reciprocal_when_peer_adds_it_during_first_write(
+    link_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A peer running this same script can add the reciprocal ref mid-run.
+
+    The refreshed body must be re-tested, not just re-fetched, or the ref is
+    appended a second time and the presence-only verification still passes.
+    """
+    bodies = {
+        10: "Issue 10 description",
+        20: "Issue 20 description",
+    }
+
+    def fake_fetch_body(num: int) -> str:
+        return bodies[num]
+
+    def fake_set_body(num: int, body: str) -> None:
+        bodies[num] = body
+        if num == 20:
+            # A concurrent actor lands the reciprocal reference itself.
+            bodies[10] = link_mod.add_ref(bodies[10], "- Blocks #20")
+
+    monkeypatch.setattr(link_mod, "fetch_body", fake_fetch_body)
+    monkeypatch.setattr(link_mod, "set_body", fake_set_body)
+
+    assert link_mod.link_issues(10, "blocks", 20) == 0
+    assert bodies[10].count("- Blocks #20") == 1
+    assert link_mod.has_ref(bodies[20], "Blocked by", 10)
+
+
+def test_link_issues_returns_1_when_write_does_not_persist(
+    link_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`gh` can report success on an edit that does not land; verification catches it."""
+    bodies = {
+        10: "Issue 10 description",
+        20: "Issue 20 description",
+    }
+
+    def fake_fetch_body(num: int) -> str:
+        return bodies[num]
+
+    def fake_set_body(num: int, body: str) -> None:
+        # The blocked side silently drops the write; the reciprocal side lands.
+        if num != 20:
+            bodies[num] = body
+
+    monkeypatch.setattr(link_mod, "fetch_body", fake_fetch_body)
+    monkeypatch.setattr(link_mod, "set_body", fake_set_body)
+
+    assert link_mod.link_issues(10, "blocks", 20) == 1
+    err = capsys.readouterr().err
+    assert "verification failed" in err
+    assert "To repair, run:" in err
+
+
+def test_link_issues_is_idempotent_when_only_blocked_side_exists(
+    link_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The state the script's own repair guidance tells an operator to re-enter."""
+    bodies = {
+        10: "Issue 10 description",
+        20: "Issue 20 description\n\n## Dependencies\n- Blocked by #10",
+    }
+    written: list[int] = []
+    fetched: list[int] = []
+
+    def fake_fetch_body(num: int) -> str:
+        fetched.append(num)
+        return bodies[num]
+
+    def fake_set_body(num: int, body: str) -> None:
+        written.append(num)
+        bodies[num] = body
+
+    monkeypatch.setattr(link_mod, "fetch_body", fake_fetch_body)
+    monkeypatch.setattr(link_mod, "set_body", fake_set_body)
+
+    assert link_mod.link_issues(10, "blocks", 20) == 0
+    assert written == [10]  # only the missing reciprocal side is written
+    # Preflight pair, one refresh for the side actually written, verification
+    # pair — the already-satisfied blocked side is never re-read for a write.
+    assert fetched == [20, 10, 10, 20, 10]
+    assert bodies[20].count("- Blocked by #10") == 1
+    assert bodies[10].count("- Blocks #20") == 1
+
+
+def test_link_issues_is_idempotent_when_only_blocking_side_exists(
+    link_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bodies = {
+        10: "Issue 10 description\n\n## Dependencies\n- Blocks #20",
+        20: "Issue 20 description",
+    }
+    written: list[int] = []
+
+    def fake_fetch_body(num: int) -> str:
+        return bodies[num]
+
+    def fake_set_body(num: int, body: str) -> None:
+        written.append(num)
+        bodies[num] = body
+
+    monkeypatch.setattr(link_mod, "fetch_body", fake_fetch_body)
+    monkeypatch.setattr(link_mod, "set_body", fake_set_body)
+
+    assert link_mod.link_issues(10, "blocks", 20) == 0
+    assert written == [20]  # only the missing blocked side is written
+    assert bodies[20].count("- Blocked by #10") == 1
+    assert bodies[10].count("- Blocks #20") == 1
+
+
+def test_link_issues_writes_nothing_when_both_refs_already_present(
+    link_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bodies = {
+        10: "Issue 10 description\n\n## Dependencies\n- Blocks #20",
+        20: "Issue 20 description\n\n## Dependencies\n- Blocked by #10",
+    }
+    fetched: list[int] = []
+
+    def fake_fetch_body(num: int) -> str:
+        fetched.append(num)
+        return bodies[num]
+
+    def fake_set_body(num: int, body: str) -> None:
+        raise AssertionError(f"unexpected write to #{num}")
+
+    monkeypatch.setattr(link_mod, "fetch_body", fake_fetch_body)
+    monkeypatch.setattr(link_mod, "set_body", fake_set_body)
+
+    assert link_mod.link_issues(10, "blocks", 20) == 0
+    # The early return short-circuits on the preflight pair: no refresh reads
+    # and no verification reads once both refs are already present.
+    assert fetched == [20, 10]
+
+
 def test_link_issues_emits_repair_guidance_on_reciprocal_failure(
     link_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
