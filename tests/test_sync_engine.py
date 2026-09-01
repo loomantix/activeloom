@@ -571,6 +571,21 @@ def test_write_utf8_leaves_no_temp_file_behind(
     assert [p.name for p in tmp_path.iterdir()] == ["out.txt"]
 
 
+def test_write_utf8_preserves_symlink_destination(
+    sync_engine: ModuleType, tmp_path: Path
+) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("old\n")
+    link = tmp_path / "out.txt"
+    link.symlink_to(target)
+
+    sync_engine.write_utf8(link, "new\n", 0o644)
+
+    assert link.is_symlink()
+    assert link.read_text() == "new\n"
+    assert target.read_text() == "new\n"
+
+
 def test_write_if_changed_applies_mode_when_diverged(
     sync_engine: ModuleType, tmp_path: Path
 ) -> None:
@@ -1047,6 +1062,37 @@ def test_main_rejects_list_consumer_config_document(
 ) -> None:
     _write_yaml(upstream_repo / "scripts" / "sync-targets.yml", {"targets": []})
     (consumer_dir / ".platform-config.yml").write_text("- not\n- a\n- mapping\n")
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "top-level YAML document must be a mapping" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("document", ["false\n", "0\n", "[]\n"])
+def test_main_rejects_falsy_non_mapping_manifest_document(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    document: str,
+) -> None:
+    (upstream_repo / "scripts" / "sync-targets.yml").write_text(document)
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "top-level YAML document must be a mapping" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("document", ["false\n", "0\n", "[]\n"])
+def test_main_rejects_falsy_non_mapping_consumer_config_document(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    document: str,
+) -> None:
+    _write_yaml(upstream_repo / "scripts" / "sync-targets.yml", {"targets": []})
+    (consumer_dir / ".platform-config.yml").write_text(document)
 
     assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
     assert "top-level YAML document must be a mapping" in capsys.readouterr().err

@@ -304,7 +304,8 @@ def load_yaml(path: Path) -> object:
         sys.stderr.write(f"missing required file: {path}\n")
         sys.exit(2)
     with path.open() as fp:
-        return yaml.safe_load(fp) or {}
+        loaded: object = yaml.safe_load(fp)
+    return {} if loaded is None else loaded
 
 
 def read_utf8(path: Path) -> str:
@@ -327,14 +328,20 @@ def write_utf8(path: Path, content: str, mode: int | None = None) -> None:
     keeps the temp file's owner-only 0o600 — a caller syncing a readable
     destination must pass the bits it wants.
     """
+    # Match the former `path.open("w")` behavior for legitimate leaf
+    # symlinks: update the target without replacing the link itself. The
+    # engine's documented threat model already treats consumer-side
+    # symlinks as trusted; resolving here preserves that contract while the
+    # target still receives one atomic same-filesystem replacement.
+    destination_path = path.resolve() if path.is_symlink() else path
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             "w",
             encoding="utf-8",
             newline="",
-            dir=path.parent,
-            prefix=f".{path.name}.",
+            dir=destination_path.parent,
+            prefix=f".{destination_path.name}.",
             delete=False,
         ) as file:
             temporary_path = Path(file.name)
@@ -345,7 +352,7 @@ def write_utf8(path: Path, content: str, mode: int | None = None) -> None:
             # still land before the swap, so content and mode replace the
             # destination atomically.
             os.chmod(temporary_path, mode)
-        os.replace(temporary_path, path)
+        os.replace(temporary_path, destination_path)
         temporary_path = None
     finally:
         if temporary_path is not None:

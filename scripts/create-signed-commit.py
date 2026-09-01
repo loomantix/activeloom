@@ -25,7 +25,8 @@ Two invocation modes, exactly one of which must be chosen:
 - `--consumer-dir <path>`: the classic single-job shape. The sync engine
   has already written its changes into a git checkout; `git status`
   discovers them.
-- `--payload-dir <tree> --manifest <status> --config <consumer-config>`:
+- `--payload-dir <tree> --manifest <status> --config <consumer-config>` plus
+  `--config-destination <repo-path>` and a base-SHA input:
   the two-job shape, where a build job hands a rendered tree plus a
   captured `git status --porcelain -z` manifest to a separate publish
   job that never executes upstream-cloned code. Because the manifest
@@ -48,9 +49,9 @@ Inputs:
   already on disk (the sync engine already wrote them).
 - The token-env var holds an App installation token (generated upstream
   via actions/create-github-app-token).
-- Optionally `--base-sha-file` / `--expected-base-sha`: the base-branch
-  HEAD the payload was built against; the commit is refused if the
-  branch has moved since.
+- Payload mode requires `--base-sha-file` or `--expected-base-sha`: the
+  base-branch HEAD the payload was built against; the commit is refused
+  if the branch has moved since. The pin stays optional in consumer mode.
 
 Outputs:
 - A new branch ref pointing at a signed commit. The workflow then opens
@@ -197,6 +198,7 @@ def _canonical_manifest_path(path: str) -> str | None:
 def validate_payload_paths(
     changes: StatusChanges,
     config_path: Path,
+    config_destination: str = ".platform-config.yml",
 ) -> StatusChanges:
     """Fail closed unless every payload path is trusted by the consumer config.
 
@@ -206,15 +208,16 @@ def validate_payload_paths(
     this gate is the trust boundary before the App token signs anything. It
     applies the same admission policy `sync-engine.py` applies to a
     checkout: every path must be canonical, must match `allowed_destinations`
-    and not be opted out via `skip_targets`; a write to a sensitive path
+    and not be opted out via destination-form `skip_targets`; a write to a
+    sensitive path
     (CI workflows, composite actions, CODEOWNERS, lockfiles, Dockerfiles,
     schema) needs an explicit `allow_sensitive_writes` grant; a delete of
     one is refused outright; and the consumer's own config — the consent
-    store — may not be written at all. `skip_targets` here matches on
-    destination only, which is complete because a manifest carries
-    destinations, not upstream source paths. Raises ValueError after writing
-    the reason to stderr; the caller turns that into exit code 1 before any
-    API call is made.
+    store — may not be written at all. A payload manifest carries only
+    destinations, so source-form `skip_targets` cannot be enforced here;
+    callers must use destination-form opt-outs for payload mode. Raises
+    ValueError after writing the reason to stderr; the caller turns that into
+    exit code 1 before any API call is made.
 
     Validation only: `_canonical_manifest_path` rejects rather than
     rewrites, so a path that survives is byte-identical to its input and
@@ -284,10 +287,14 @@ def validate_payload_paths(
                 raise ValueError("invalid sensitive-write allowlist")
             sensitive_grant.add(canonical_entry)
 
-    # The consumer's own config is the consent store — a manifest that could
-    # rewrite it could grant itself every permission checked here — so a
-    # write to the root-level config is refused outright.
-    config_store_name = config_path.name
+    # The trusted config may be copied to an arbitrary publish-job path, so
+    # its local basename cannot identify the repository path it represents.
+    # The caller supplies that destination explicitly and it is validated by
+    # the same canonical-path rules as manifest entries.
+    config_store_path = _canonical_manifest_path(config_destination)
+    if config_store_path is None:
+        sys.stderr.write(f"unsafe consumer config destination: {config_destination!r}\n")
+        raise ValueError("unsafe consumer config destination")
 
     def canonicalize_and_admit(path: str) -> str:
         canonical = _canonical_manifest_path(path)
@@ -305,7 +312,7 @@ def validate_payload_paths(
     upserted: set[str] = set()
     for path in changes.upserts:
         canonical = canonicalize_and_admit(path)
-        if canonical == config_store_name:
+        if canonical == config_store_path:
             sys.stderr.write(f"refusing to write the consumer's own sync config: {canonical}\n")
             raise ValueError("config self-write")
         if is_sensitive_write_dest(canonical) and canonical not in sensitive_grant:
@@ -428,6 +435,8 @@ def parse_status_bytes(raw: str) -> StatusChanges:
     """
     if not raw:
         return StatusChanges(upserts=[], deletes=[])
+    if not raw.endswith("\0"):
+        raise ValueError("status manifest is truncated (missing terminal NUL)")
 
     upserts: list[str] = []
     deletes: list[str] = []
@@ -449,6 +458,8 @@ def parse_status_bytes(raw: str) -> StatusChanges:
         if "R" in code or "C" in code:
             old_path = parts[i] if i < len(parts) else ""
             i += 1
+            if not old_path:
+                raise ValueError("status manifest is truncated (rename/copy source is missing)")
             upserts.append(path)
             if "R" in code and old_path:
                 # Pure rename: source path is removed from the new tree.
@@ -540,6 +551,14 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="trusted consumer config; required with --payload-dir/--manifest",
     )
+    p.add_argument(
+        "--config-destination",
+        default=None,
+        help=(
+            "canonical repository-relative path represented by --config; "
+            "required in payload mode so the consent store cannot rewrite itself"
+        ),
+    )
     p.add_argument("--token-env", default="GH_APP_TOKEN", help="env var holding the App installation token")
     p.add_argument(
         "--app-slug",
@@ -580,8 +599,23 @@ def main() -> int:
             "choose exactly one mode: --consumer-dir, or --payload-dir with --manifest and --config\n"
         )
         return 2
-    if payload_mode and (not args.payload_dir or not args.manifest or not args.config):
-        sys.stderr.write("payload mode requires --payload-dir, --manifest, and --config\n")
+    if payload_mode and (
+        not args.payload_dir
+        or not args.manifest
+        or not args.config
+        or not args.config_destination
+    ):
+        sys.stderr.write(
+            "payload mode requires --payload-dir, --manifest, --config, and --config-destination\n"
+        )
+        return 2
+    if args.base_sha_file is not None and args.expected_base_sha is not None:
+        sys.stderr.write("choose only one of --base-sha-file or --expected-base-sha\n")
+        return 2
+    if payload_mode and args.base_sha_file is None and args.expected_base_sha is None:
+        sys.stderr.write(
+            "payload mode requires --base-sha-file or --expected-base-sha to prevent stale publication\n"
+        )
         return 2
 
     tree_dir = args.payload_dir.resolve() if args.payload_dir else args.consumer_dir.resolve()
@@ -590,6 +624,7 @@ def main() -> int:
     if payload_mode:
         assert args.manifest is not None
         assert args.config is not None
+        assert args.config_destination is not None
         if not args.manifest.is_file():
             sys.stderr.write(f"manifest file not found: {args.manifest}\n")
             return 1
@@ -600,7 +635,11 @@ def main() -> int:
         # throwing an unhandled `UnicodeDecodeError`.
         raw_manifest = args.manifest.read_text(encoding="utf-8", errors="surrogateescape")
         try:
-            changes = validate_payload_paths(parse_status_bytes(raw_manifest), args.config)
+            changes = validate_payload_paths(
+                parse_status_bytes(raw_manifest),
+                args.config,
+                args.config_destination,
+            )
         except ValueError:
             return 1
     else:
