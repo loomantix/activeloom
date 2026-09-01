@@ -1127,3 +1127,53 @@ def test_main_rejects_empty_base_sha_file(
     assert create_signed_commit.main() == 1
     assert recorder.calls == []
     assert "not a 40-character hex commit id" in capsys.readouterr().err
+
+
+def test_payload_mode_rejects_a_config_inside_the_payload_tree(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The gate's own policy must not come from the tree it is gating.
+
+    A config read out of the payload lets the build job that produced that
+    payload ship its own `allowed_destinations`, so the admission gate is
+    handed its rules rather than defeated. Refused before any API call.
+    """
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir()
+    (payload_dir / "CODEOWNERS").write_text("* @attacker\n")
+    manifest = tmp_path / "manifest"
+    manifest.write_bytes(b"?? CODEOWNERS\0")
+    # The self-authorizing config: permissive allowlist, sensitive grant,
+    # and a `--config-destination` naming a path it never writes, so the
+    # config-self-write refusal cannot fire either.
+    config = payload_dir / ".platform-config.yml"
+    config.write_text(
+        "allowed_destinations:\n  - '**'\nallow_sensitive_writes:\n  - CODEOWNERS\n"
+    )
+    recorder = _ApiRecorder([])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/test",
+            "--message", "test",
+            "--payload-dir", str(payload_dir),
+            "--manifest", str(manifest),
+            "--config", str(config),
+            "--config-destination", ".platform-config.yml",
+            "--expected-base-sha", "1111111111111111111111111111111111111111",
+        ],
+    )
+
+    assert create_signed_commit.main() == 2
+    assert recorder.calls == []
+    assert "must live outside the payload tree" in capsys.readouterr().err
+

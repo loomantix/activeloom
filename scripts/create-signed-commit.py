@@ -625,6 +625,21 @@ def main() -> int:
         assert args.manifest is not None
         assert args.config is not None
         assert args.config_destination is not None
+        # The config is what gives this gate its authority: it supplies
+        # `allowed_destinations`, `skip_targets`, and
+        # `allow_sensitive_writes`. A config read out of the payload tree
+        # would let the lower-privilege build job that produced that tree
+        # ship its own admission policy, so the gate would be handed its
+        # own rules rather than defeated. Refuse structurally instead of
+        # trusting the caller to wire it correctly — pointing `--config`
+        # at the payload copy is the natural mistake, since that is where
+        # the config sits in a real checkout.
+        if args.config.resolve().is_relative_to(tree_dir):
+            sys.stderr.write(
+                f"--config must live outside the payload tree, but "
+                f"{args.config} resolves inside {tree_dir}\n"
+            )
+            return 2
         if not args.manifest.is_file():
             sys.stderr.write(f"manifest file not found: {args.manifest}\n")
             return 1
