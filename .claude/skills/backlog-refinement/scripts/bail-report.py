@@ -125,8 +125,10 @@ def parse_rca_stub(number: int) -> dict[str, str] | None:
 
 def is_bucket_a(issue: dict[str, Any], category: str) -> bool:
     """Use the consumer-recorded RCA bucket, falling back for legacy comments."""
-    bucket = str((issue.get("_rca") or {}).get("bucket", "")).upper()
-    if bucket in {"A", "B"}:
+    rca = issue.get("_rca") or {}
+    bucket = str(rca.get("bucket", "")).upper()
+    recorded_category = str(rca.get("category", "")).strip().casefold()
+    if bucket in {"A", "B"} and recorded_category == category.casefold():
         return bucket == "A"
     return category in DEFAULT_BUCKET_A
 

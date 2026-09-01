@@ -163,11 +163,25 @@ def test_bail_since_normalizes_offsets_to_utc(bail_mod: ModuleType) -> None:
 def test_bail_bucket_uses_consumer_rca_before_legacy_default(
     bail_mod: ModuleType,
 ) -> None:
-    assert bail_mod.is_bucket_a({"_rca": {"bucket": "A"}}, "agent-bail: custom")
+    assert bail_mod.is_bucket_a(
+        {"_rca": {"bucket": "A", "category": "agent-bail: custom"}},
+        "agent-bail: custom",
+    )
     assert not bail_mod.is_bucket_a(
-        {"_rca": {"bucket": "B"}}, "agent-bail: stale"
+        {"_rca": {"bucket": "B", "category": "agent-bail: stale"}},
+        "agent-bail: stale",
     )
     assert bail_mod.is_bucket_a({"_rca": None}, "agent-bail: stale")
+
+
+def test_bail_bucket_does_not_apply_stub_to_another_category(
+    bail_mod: ModuleType,
+) -> None:
+    issue = {
+        "_rca": {"bucket": "A", "category": "agent-bail: custom"},
+    }
+    assert bail_mod.is_bucket_a(issue, "agent-bail: custom")
+    assert not bail_mod.is_bucket_a(issue, "agent-bail: external")
 
 
 def test_bail_report_fails_closed_on_timeout(
