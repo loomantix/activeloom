@@ -856,7 +856,7 @@ def config_write_targets(
         if bool(target.get("delete")):
             continue
         dest_path = resolve_under(consumer_dir, dest_rel)
-        if dest_path is None or dest_path != config_path:
+        if dest_path is None or dest_path.resolve() != config_path:
             continue
         offenders.append(dest_path.relative_to(consumer_dir).as_posix())
     return offenders
@@ -1372,7 +1372,7 @@ def main() -> int:
         # be narrow enough that it only ever covers the path the consumer
         # actually wrote down.
         is_sensitive_write = is_sensitive_write_dest(dest_rel_canonical)
-        if dest_path == config_path:
+        if dest_path.resolve() == config_path:
             sys.stderr.write(
                 config_destination_refusal([dest_rel_canonical], config_path.name)
             )

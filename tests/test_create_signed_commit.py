@@ -1176,4 +1176,3 @@ def test_payload_mode_rejects_a_config_inside_the_payload_tree(
     assert create_signed_commit.main() == 2
     assert recorder.calls == []
     assert "must live outside the payload tree" in capsys.readouterr().err
-

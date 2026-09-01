@@ -3364,6 +3364,38 @@ def test_main_config_destination_refused_and_not_grantable(
     assert "which is not a sensitive path" in capsys.readouterr().err
 
 
+def test_main_symlinked_config_destination_is_refused(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    real_config = consumer_dir / "config-store.yml"
+    _write_yaml(real_config, {"allowed_destinations": ["**"]})
+    config_link = consumer_dir / ".platform-config.yml"
+    config_link.unlink()
+    config_link.symlink_to(real_config.name)
+    original = real_config.read_text()
+
+    (upstream_repo / "cfg.yml").write_text("allowed_destinations:\n  - '**'\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "cfg.yml", "destination": ".platform-config.yml"}]},
+    )
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "refusing to write the consumer's own sync config" in capsys.readouterr().err
+    assert config_link.is_symlink()
+    assert real_config.read_text() == original
+
+    monkeypatch.setattr(sync_engine, "config_write_targets", lambda *args: [])
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "refusing to write the consumer's own sync config" in capsys.readouterr().err
+    assert config_link.is_symlink()
+    assert real_config.read_text() == original
+
+
 def test_main_in_loop_sensitive_gate_refuses_when_the_pre_pass_misses(
     sync_engine: ModuleType,
     upstream_repo: Path,
