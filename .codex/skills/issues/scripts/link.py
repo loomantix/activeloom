@@ -124,6 +124,13 @@ def link_issues(source: int, relation: str, target: int) -> int:
     else:
         print(f"#{blocked_num} already has 'Blocked by #{blocking_num}' — skipping")
 
+    # Refresh the reciprocal side immediately before replacing its whole body.
+    # The blocked-side write above is a remote call during which another actor
+    # may edit the blocking issue; building from the preflight snapshot would
+    # silently overwrite that edit.
+    blocking_body = fetch_body(blocking_num)
+    blocking_has = has_ref(blocking_body, "Blocks", blocked_num)
+
     # Write the reciprocal blocking reference second.
     if not blocking_has:
         new_blocking_body = add_ref(blocking_body, f"- Blocks #{blocked_num}")

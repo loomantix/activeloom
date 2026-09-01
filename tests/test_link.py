@@ -112,6 +112,31 @@ def test_link_issues_blocked_by_writes_blocked_issue_first(
     assert link_mod.has_ref(bodies[10], "Blocks", 20)
 
 
+def test_link_issues_preserves_concurrent_edit_to_reciprocal_side(
+    link_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bodies = {
+        10: "Issue 10 description",
+        20: "Issue 20 description",
+    }
+
+    def fake_fetch_body(num: int) -> str:
+        return bodies.get(num, "")
+
+    def fake_set_body(num: int, body: str) -> None:
+        bodies[num] = body
+        if num == 20:
+            bodies[10] += "\n\nConcurrent user edit"
+
+    monkeypatch.setattr(link_mod, "fetch_body", fake_fetch_body)
+    monkeypatch.setattr(link_mod, "set_body", fake_set_body)
+
+    assert link_mod.link_issues(10, "blocks", 20) == 0
+    assert "Concurrent user edit" in bodies[10]
+    assert link_mod.has_ref(bodies[20], "Blocked by", 10)
+    assert link_mod.has_ref(bodies[10], "Blocks", 20)
+
+
 def test_link_issues_emits_repair_guidance_on_reciprocal_failure(
     link_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
