@@ -46,7 +46,7 @@ Prepare issues for the loop. Default refines the next un-assessed issue; `--limi
 
 1. **Read it fully** — `gh issue view <N>` including comments.
 2. **Early-exit excludes** — if the title/body matches a §3 Bucket-B disqualifier on its face (`Epic:`, obvious cross-repo/credential/synced-surface/repo-sensitive), apply `agent: refined` + the `agent-bail:` label, add a one-line comment citing the rubric clause, and move on. Don't over-invest in clearly-excluded issues.
-3. **Verify-against-HEAD** (RUBRIC §2). Fetch the integration branch; determine whether the described problem still reproduces:
+3. **Verify-against-HEAD** (RUBRIC §2, highest-value check). Fetch the integration branch; determine whether the described problem still reproduces:
    - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit/PR/file:line that shipped it) and recommend close. Do **not** tag `dev: agent`. Do **not** close it yourself (human triage gate).
    - **Partially shipped** → re-scope: rewrite the body to the residual only, then continue assessing the residual.
    - **Still open** → continue.
