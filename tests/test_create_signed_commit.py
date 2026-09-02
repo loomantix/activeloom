@@ -139,6 +139,20 @@ def test_parse_status_rename_emits_both_upsert_and_delete(
     assert "old.txt" in changes.deletes
 
 
+def test_parse_status_bytes_rejects_missing_terminal_nul(
+    create_signed_commit: ModuleType,
+) -> None:
+    with pytest.raises(ValueError, match="missing terminal NUL"):
+        create_signed_commit.parse_status_bytes("?? new.txt")
+
+
+def test_parse_status_bytes_rejects_truncated_rename(
+    create_signed_commit: ModuleType,
+) -> None:
+    with pytest.raises(ValueError, match="rename/copy source is missing"):
+        create_signed_commit.parse_status_bytes("R  new.txt\0")
+
+
 def test_parse_status_handles_paths_with_spaces(
     create_signed_commit: ModuleType, git_repo: Path
 ) -> None:
@@ -673,6 +687,7 @@ def test_main_full_flow_with_payload_dir_and_manifest(
             "--payload-dir", str(payload_dir),
             "--manifest", str(manifest_path),
             "--config", str(config_path),
+            "--config-destination", ".platform-config.yml",
             "--base-sha-file", str(base_sha_file),
             "--app-slug", "loomantix",
         ],
@@ -718,6 +733,7 @@ def test_main_rejects_diverged_base_sha(
             "--payload-dir", str(payload_dir),
             "--manifest", str(manifest_path),
             "--config", str(config_path),
+            "--config-destination", ".platform-config.yml",
             "--base-sha-file", str(base_sha_file),
         ],
     )
@@ -749,6 +765,42 @@ def test_main_requires_payload_or_consumer_dir(
     assert rc == 2
     err = capsys.readouterr().err
     assert "choose exactly one mode" in err
+
+
+def test_main_requires_base_sha_in_payload_mode(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir()
+    manifest = tmp_path / "manifest"
+    manifest.write_bytes(b"?? new.txt\0")
+    config = tmp_path / ".platform-config.yml"
+    config.write_text("allowed_destinations:\n  - new.txt\n")
+    recorder = _ApiRecorder([])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/test",
+            "--message", "test",
+            "--payload-dir", str(payload_dir),
+            "--manifest", str(manifest),
+            "--config", str(config),
+            "--config-destination", ".platform-config.yml",
+        ],
+    )
+
+    assert create_signed_commit.main() == 2
+    assert recorder.calls == []
+    assert "requires --base-sha-file or --expected-base-sha" in capsys.readouterr().err
 
 
 def test_main_rejects_mixed_payload_and_consumer_modes(
@@ -836,6 +888,8 @@ def test_payload_mode_rejects_disallowed_manifest_path_before_api(
             "--payload-dir", str(payload_dir),
             "--manifest", str(manifest),
             "--config", str(config),
+            "--config-destination", ".platform-config.yml",
+            "--expected-base-sha", "1111111111111111111111111111111111111111",
         ],
     )
 
@@ -989,6 +1043,24 @@ def test_validate_payload_refuses_config_self_write(
     assert "consumer's own sync config" in capsys.readouterr().err
 
 
+def test_validate_payload_refuses_nested_config_self_write(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _payload_config(tmp_path, "allowed_destinations:\n  - '**'\n")
+    changes = create_signed_commit.StatusChanges(
+        upserts=["config/sync.yml"], deletes=[]
+    )
+    with pytest.raises(ValueError):
+        create_signed_commit.validate_payload_paths(
+            changes,
+            config,
+            "config/sync.yml",
+        )
+    assert "consumer's own sync config" in capsys.readouterr().err
+
+
 def test_validate_payload_rejects_duplicate_upsert_and_delete(
     create_signed_commit: ModuleType,
     tmp_path: Path,
@@ -1047,6 +1119,7 @@ def test_main_rejects_empty_base_sha_file(
             "--payload-dir", str(payload_dir),
             "--manifest", str(manifest_path),
             "--config", str(config_path),
+            "--config-destination", ".platform-config.yml",
             "--base-sha-file", str(base_sha_file),
         ],
     )
@@ -1054,3 +1127,52 @@ def test_main_rejects_empty_base_sha_file(
     assert create_signed_commit.main() == 1
     assert recorder.calls == []
     assert "not a 40-character hex commit id" in capsys.readouterr().err
+
+
+def test_payload_mode_rejects_a_config_inside_the_payload_tree(
+    create_signed_commit: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The gate's own policy must not come from the tree it is gating.
+
+    A config read out of the payload lets the build job that produced that
+    payload ship its own `allowed_destinations`, so the admission gate is
+    handed its rules rather than defeated. Refused before any API call.
+    """
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir()
+    (payload_dir / "CODEOWNERS").write_text("* @attacker\n")
+    manifest = tmp_path / "manifest"
+    manifest.write_bytes(b"?? CODEOWNERS\0")
+    # The self-authorizing config: permissive allowlist, sensitive grant,
+    # and a `--config-destination` naming a path it never writes, so the
+    # config-self-write refusal cannot fire either.
+    config = payload_dir / ".platform-config.yml"
+    config.write_text(
+        "allowed_destinations:\n  - '**'\nallow_sensitive_writes:\n  - CODEOWNERS\n"
+    )
+    recorder = _ApiRecorder([])
+    monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
+    monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "create-signed-commit.py",
+            "--owner", "loomantix",
+            "--repo", "test",
+            "--base-branch", "main",
+            "--new-branch", "sync/test",
+            "--message", "test",
+            "--payload-dir", str(payload_dir),
+            "--manifest", str(manifest),
+            "--config", str(config),
+            "--config-destination", ".platform-config.yml",
+            "--expected-base-sha", "1111111111111111111111111111111111111111",
+        ],
+    )
+
+    assert create_signed_commit.main() == 2
+    assert recorder.calls == []
+    assert "must live outside the payload tree" in capsys.readouterr().err
