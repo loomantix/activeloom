@@ -13,6 +13,8 @@ Read-only cost analysis of GitHub Actions minute usage for an organization. Prod
 
 - `gh` authenticated as an **org owner or billing manager**. The billing usage API requires it; a plain-member token returns 403.
 - `jq` and `awk` available.
+- GNU `date` (coreutils). Step 4 uses `date -d`, which BSD/macOS `date` does not accept.
+- **Run Steps 2 through 4 in one shell session.** `WORK`, `ORG`, and `YEAR` are set once and read by every later step; each block below assumes the previous ones ran in the same shell. If you run a step in a fresh shell, re-establish those three variables first — `WORK` in particular must point at the directory that already holds `actions.tsv`, not a new `mktemp -d`.
 
 ## Org context file (read first if present)
 
@@ -20,34 +22,38 @@ Org-specific knowledge — expected baselines, which repos are public, known hea
 
 ## Step 1 — Resolve scope
 
-Set `ORG` to the first argument, else the current repo's owner (`gh repo view --json owner --jq .owner.login`). Set `YEAR` to the second argument, else the current year. Note an org may have a sibling org for internal packages — audit each separately.
+Set `ORG` to the first argument, else the current repo's owner (`gh repo view --json owner --jq .owner.login`). Set `YEAR` to the second argument, else the current year. Audit each organization the user places in scope separately.
 
 ## Step 2 — Pull monthly usage (the reliable path)
 
-The enhanced billing usage API is the source of truth. **Gotcha: the no-argument `/organizations/$ORG/settings/billing/usage` call returns a misleading partial aggregate — do not trust it.** Always pass explicit `year` + `month`; that form returns per-day line items for every repo:
+The enhanced billing usage API is the source of truth. Omitting `year` or `month` defaults to the current period; pass both explicitly so historical pulls are reproducible and comparable:
 
 ```bash
 WORK=$(mktemp -d)
 for m in $(seq 1 12); do
-  gh api "/organizations/$ORG/settings/billing/usage?year=$YEAR&month=$m" \
-    --jq ".usageItems[] | select(.product==\"actions\") | [\"$m\", .sku, .repositoryName, .quantity, .netAmount] | @tsv" 2>/dev/null
+  if ! gh api "/organizations/$ORG/settings/billing/usage?year=$YEAR&month=$m" \
+    --jq "(.usageItems // [])[] | select(((.product // \"\") | ascii_downcase)==\"actions\" and ((.unitType // \"\") | ascii_downcase)==\"minutes\") | [\"$m\", .sku, .repositoryName, .quantity, .grossAmount, .netAmount, .pricePerUnit] | @tsv"; then
+    echo "GitHub billing query failed for year $YEAR, month $m; refusing a partial report" >&2
+    rm -f "$WORK/actions.tsv"   # discard already-fetched months so Step 3 cannot read truncated data
+    exit 1
+  fi
 done > "$WORK/actions.tsv"
 ```
 
 Reading the data:
 
-- `quantity` for the `Actions Linux` / `Actions Windows` / `Actions macOS` SKUs is **raw minutes**. `Actions storage` is GigabyteHours, not minutes — exclude it from the compute total (track separately only if storage cost is in scope).
-- Cost multipliers: Linux ×1, Windows ×2, macOS ×10. Raw minutes rank consumption; apply the multiplier for dollar impact.
-- **Public repos never appear** — they bill unlimited free minutes. A repo missing from the data is public, not idle. Confirm the public set with `gh repo list $ORG --visibility public`.
-- `netAmount` is post-allowance dollars and resets each billing cycle, so it reads near-zero early in the month even for heavy repos. Rank by `quantity`, never by `netAmount`.
+- The query already filters to `unitType == "minutes"`, so `quantity` is raw compute minutes and storage units cannot enter the matrix.
+- Use each item's `pricePerUnit` and `grossAmount` for gross dollar impact; use `netAmount` for billed spend after discounts or included usage. Do not hardcode operating-system multipliers.
+- A repository missing from usage may be public or may simply have no metered usage. Resolve visibility separately with `gh repo list $ORG --json nameWithOwner,visibility` before drawing a conclusion.
+- Rank consumption by `quantity`, gross cost by `grossAmount`, and actual billed spend by `netAmount`; state which measure supports each conclusion.
 
 ## Step 3 — Month×repo matrix and spike attribution
 
 ```bash
 # compute minutes by month × repo
-awk -F'\t' '$2!="Actions storage"{m[$1"\t"$3]+=$4} END{for(k in m) printf "%s\t%d\n",k,m[k]+0.5}' "$WORK/actions.tsv" | sort -k1,1n -k2,2
+awk -F'\t' '{m[$1"\t"$3]+=$4} END{for(k in m) printf "%s\t%d\n",k,m[k]+0.5}' "$WORK/actions.tsv" | sort -k1,1n -k2,2
 # monthly totals
-awk -F'\t' '$2!="Actions storage"{t[$1]+=$4} END{for(i=1;i<=12;i++) if(t[i]) printf "M%d %d min\n",i,t[i]+0.5}' "$WORK/actions.tsv"
+awk -F'\t' '{t[$1]+=$4} END{for(i=1;i<=12;i++) if(t[i]) printf "M%d %d min\n",i,t[i]+0.5}' "$WORK/actions.tsv"
 ```
 
 - **Prorate the current (incomplete) month** before comparing it to full months: `actual / day_of_month * days_in_month`. Skipping this either understates the trend or triggers a false panic.
@@ -55,23 +61,40 @@ awk -F'\t' '$2!="Actions storage"{t[$1]+=$4} END{for(i=1;i<=12;i++) if(t[i]) pri
 
 ## Step 4 — Per-workflow drilldown (top repos only)
 
-Run counts are not minutes — a job firing 1000×/month may be 10s each. For each high-consumption repo, attribute minutes to workflows:
+Run counts are not minutes — a job firing 1000×/month may be 10s each. For each high-consumption repo, set `REPO_SLUG` to its `owner/name` slug — `$ORG` plus the repo name from the Step 3 matrix — then attribute minutes to workflows:
 
 ```bash
 SINCE=$(date -u -d '30 days ago' +%Y-%m-%d)
-gh api /repos/$ORG/$REPO/actions/workflows --jq '.workflows[] | "\(.id)\t\(.name)"' |
+# An empty SINCE would make the `created=>` qualifier below malformed. GitHub
+# ignores a malformed qualifier and returns lifetime totals, so every run count
+# would silently become an all-time count rather than a 30-day one.
+[ -n "$SINCE" ] || { echo "could not compute SINCE; GNU date (coreutils) required" >&2; exit 1; }
+REPO_SLUG="$ORG/<repo-name-from-step-3>"
+REPO_KEY=${REPO_SLUG//\//-}
+WORKFLOWS="$WORK/$REPO_KEY-workflows.tsv"
+COUNTS="$WORK/$REPO_KEY-workflow-counts.tsv"
+if ! gh api --paginate "/repos/$REPO_SLUG/actions/workflows?per_page=100" \
+  --jq '.workflows[] | "\(.id)\t\(.name)"' > "$WORKFLOWS"; then
+  echo "Could not list every workflow for $REPO_SLUG; refusing a partial drilldown" >&2
+  exit 1
+fi
+: > "$COUNTS"
 while IFS=$'\t' read -r id name; do
-  c=$(gh api "/repos/$ORG/$REPO/actions/workflows/$id/runs?created=>$SINCE&per_page=1" --jq '.total_count')
-  printf "%6s  %s\n" "$c" "$name"
-done | sort -rn
+  if ! c=$(gh api "/repos/$REPO_SLUG/actions/workflows/$id/runs?created=>$SINCE&per_page=1" --jq '.total_count'); then
+    echo "Could not count runs for workflow $id in $REPO_SLUG; refusing a partial drilldown" >&2
+    exit 1
+  fi
+  printf "%s\t%s\n" "$c" "$name" >> "$COUNTS"
+done < "$WORKFLOWS"
+sort -t$'\t' -k1,1nr "$COUNTS"
 ```
 
-Then sample billable time for the top workflows. Try `gh api /repos/$ORG/$REPO/actions/runs/<run_id>/timing` first — `billable.UBUNTU.total_ms` (plus `WINDOWS` / `MACOS`) is authoritative when populated. **Caveat: on private repos covered by an included-minutes plan, GitHub zeroes those `billable` fields.** When they read 0, fall back to how GitHub actually bills — per _job_ wall-clock rounded up to the whole minute, summed across all jobs in the run:
+Then sample billable time for the top workflows. Try `gh api /repos/$REPO_SLUG/actions/runs/<run_id>/timing` first — `billable.UBUNTU.total_ms` (plus `WINDOWS` / `MACOS`) is authoritative when populated. **Caveat: on private repos covered by an included-minutes plan, GitHub can report zero in those `billable` fields.** When they read 0, estimate from per-job wall-clock rounded up to the whole minute, summed across all jobs in the run:
 
 ```bash
-gh api /repos/$ORG/$REPO/actions/runs/<run_id>/jobs \
-  --jq '[.jobs[] | select(.started_at and .completed_at)
-         | (((.completed_at|fromdateiso8601) - (.started_at|fromdateiso8601))/60 | ceil)] | add'
+gh api --paginate "/repos/$REPO_SLUG/actions/runs/<run_id>/jobs?per_page=100" \
+  | jq -s '[.[].jobs[] | select(.started_at and .completed_at)
+           | (((.completed_at|fromdateiso8601) - (.started_at|fromdateiso8601))/60 | ceil)] | add // 0'
 ```
 
 Take a median over ~8–12 recent completed runs and multiply by the run count for an estimate. High-variance workflows (matrix builds, cache-dependent jobs) carry real sampling uncertainty — state it as ±. Read each sampled run's `event` field to record the trigger (`push` / `pull_request` / `schedule` / `workflow_dispatch`) — the trigger drives the remedy.

@@ -89,14 +89,85 @@ def set_body(num: int, body: str) -> None:
             pass
 
 
-def update(num: int, phrase: str, target: int) -> None:
-    body = fetch_body(num)
-    if has_ref(body, phrase, target):
-        print(f"#{num} already has '{phrase} #{target}' — skipping")
-        return
-    new_body = add_ref(body, f"- {phrase} #{target}")
-    set_body(num, new_body)
-    print(f"#{num}: added '{phrase} #{target}'")
+def link_issues(source: int, relation: str, target: int) -> int:
+    if source == target:
+        sys.stderr.write("Cannot link an issue to itself.\n")
+        return 1
+
+    if relation == "blocks":
+        blocking_num = source
+        blocked_num = target
+    else:
+        blocked_num = source
+        blocking_num = target
+
+    # Fetch both issue bodies before making any mutations.
+    blocked_body = fetch_body(blocked_num)
+    blocking_body = fetch_body(blocking_num)
+
+    blocked_has = has_ref(blocked_body, "Blocked by", blocking_num)
+    blocking_has = has_ref(blocking_body, "Blocks", blocked_num)
+
+    if blocked_has and blocking_has:
+        print(
+            f"#{blocked_num} already has 'Blocked by #{blocking_num}' and "
+            f"#{blocking_num} already has 'Blocks #{blocked_num}' — skipping"
+        )
+        return 0
+
+    # Write the blocked issue first so that ready.py immediately recognizes
+    # the dependency and prevents premature execution.
+    if not blocked_has:
+        current_blocked_body = fetch_body(blocked_num)
+        if has_ref(current_blocked_body, "Blocked by", blocking_num):
+            print(f"#{blocked_num} already has 'Blocked by #{blocking_num}' — skipping")
+        else:
+            new_blocked_body = add_ref(
+                current_blocked_body, f"- Blocked by #{blocking_num}"
+            )
+            set_body(blocked_num, new_blocked_body)
+            print(f"#{blocked_num}: added 'Blocked by #{blocking_num}'")
+    else:
+        print(f"#{blocked_num} already has 'Blocked by #{blocking_num}' — skipping")
+
+    # Write the reciprocal blocking reference second.
+    if not blocking_has:
+        current_blocking_body = fetch_body(blocking_num)
+        if has_ref(current_blocking_body, "Blocks", blocked_num):
+            print(f"#{blocking_num} already has 'Blocks #{blocked_num}' — skipping")
+        else:
+            new_blocking_body = add_ref(current_blocking_body, f"- Blocks #{blocked_num}")
+            try:
+                set_body(blocking_num, new_blocking_body)
+                print(f"#{blocking_num}: added 'Blocks #{blocked_num}'")
+            except SystemExit as exc:
+                if exc.code != 0:
+                    sys.stderr.write(
+                        f"\nERROR: #{blocked_num} was updated with 'Blocked by #{blocking_num}', "
+                        f"but updating #{blocking_num} with 'Blocks #{blocked_num}' failed.\n"
+                        f"To repair the reciprocal link manually, run:\n"
+                        f"  python3 {sys.argv[0]} {blocking_num} blocks {blocked_num}\n"
+                    )
+                raise
+    else:
+        print(f"#{blocking_num} already has 'Blocks #{blocked_num}' — skipping")
+
+    # Verify both final bodies to ensure the link state is consistent.
+    final_blocked = fetch_body(blocked_num)
+    final_blocking = fetch_body(blocking_num)
+    if not has_ref(final_blocked, "Blocked by", blocking_num) or not has_ref(
+        final_blocking, "Blocks", blocked_num
+    ):
+        sys.stderr.write(
+            f"ERROR: Dependency link verification failed after update. "
+            f"Expected #{blocked_num} to have 'Blocked by #{blocking_num}' and "
+            f"#{blocking_num} to have 'Blocks #{blocked_num}'.\n"
+            f"To repair, run:\n"
+            f"  python3 {sys.argv[0]} {blocking_num} blocks {blocked_num}\n"
+        )
+        return 1
+
+    return 0
 
 
 def main() -> int:
@@ -106,18 +177,7 @@ def main() -> int:
     parser.add_argument("target", type=int, help="other issue number")
     args = parser.parse_args()
 
-    if args.source == args.target:
-        sys.stderr.write("Cannot link an issue to itself.\n")
-        return 1
-
-    if args.relation == "blocks":
-        update(args.source, "Blocks", args.target)
-        update(args.target, "Blocked by", args.source)
-    else:
-        update(args.source, "Blocked by", args.target)
-        update(args.target, "Blocks", args.source)
-
-    return 0
+    return link_issues(args.source, args.relation, args.target)
 
 
 if __name__ == "__main__":

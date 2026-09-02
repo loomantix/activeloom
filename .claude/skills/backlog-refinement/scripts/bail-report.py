@@ -14,36 +14,96 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 BAIL_PREFIX = "agent-bail:"
-# Bucket-A categories are preventable-by-prep; a loop bail here is a refinement miss.
-BUCKET_A = {"agent-bail: stale", "agent-bail: spec-gap", "agent-bail: loop-mechanics"}
+# Backward-compatible defaults for bails whose older comments lack an RCA stub.
+DEFAULT_BUCKET_A = {"agent-bail: stale", "agent-bail: spec-gap", "agent-bail: loop-mechanics"}
 RCA_STUB_RE = re.compile(r"<!--\s*agent-loop-rca\s*(.*?)-->", re.DOTALL | re.IGNORECASE)
+GH_LIST_LIMIT = 1000
 
 
 def run_gh(args: list[str]) -> Any:
-    result = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+    action = " ".join(args[:2])
+    try:
+        result = subprocess.run(
+            ["gh", *args], capture_output=True, text=True, timeout=60
+        )
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            f"Timed out after 60s while running `gh {action}`. "
+            "Check GitHub auth/network connectivity and retry.\n"
+        )
+        sys.exit(1)
+    except OSError as exc:
+        sys.stderr.write(f"Could not run `gh {action}`: {exc}\n")
+        sys.exit(1)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
         sys.exit(result.returncode)
-    return json.loads(result.stdout) if result.stdout.strip() else None
+    if not result.stdout.strip():
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(f"Invalid JSON from `gh {action}`: {exc}\n")
+        sys.exit(1)
 
 
-def fetch_bailed(since: str | None) -> list[dict[str, Any]]:
+def _parse_iso_datetime(value: str) -> datetime:
+    normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def parse_since(value: str) -> datetime:
+    """Parse an ISO date/time argument and normalize it to UTC."""
+    try:
+        return _parse_iso_datetime(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid ISO date/time: {value}") from exc
+
+
+def fetch_bailed(since: datetime | None) -> list[dict[str, Any]]:
     """All issues (any state) with an agent-bail:* label, newest activity first."""
     issues = run_gh([
-        "issue", "list", "--state", "all", "--limit", "1000",
+        "issue", "list", "--state", "all", "--limit", str(GH_LIST_LIMIT),
         "--json", "number,title,labels,state,updatedAt,url",
     ]) or []
+    if len(issues) >= GH_LIST_LIMIT:
+        sys.stderr.write(
+            f"Issue query reached the {GH_LIST_LIMIT}-item gh limit; "
+            "refusing a possibly truncated RCA report.\n"
+        )
+        sys.exit(1)
     out = []
     for issue in issues:
         labels = [label["name"] for label in issue.get("labels", [])]
-        if not any(name.startswith(BAIL_PREFIX) for name in labels):
+        bail_labels = [name for name in labels if name.startswith(BAIL_PREFIX)]
+        if not bail_labels:
             continue
-        if since and issue.get("updatedAt", "") < since:
-            continue
-        issue["_bail_labels"] = [n for n in labels if n.startswith(BAIL_PREFIX)]
+        if since:
+            # Every other external-input path in this file fails with a
+            # diagnostic rather than a raw traceback; match that here. A bail
+            # we cannot date is kept rather than dropped, so the window filter
+            # can never silently hide an issue behind a bad timestamp.
+            raw_updated = issue.get("updatedAt")
+            try:
+                updated = _parse_iso_datetime(raw_updated) if raw_updated else None
+            except ValueError:
+                updated = None
+            if updated is None:
+                print(
+                    f"warning: issue #{issue.get('number', '?')} has no parseable "
+                    f"updatedAt ({raw_updated!r}); keeping it despite --since",
+                    file=sys.stderr,
+                )
+            elif updated < since:
+                continue
+        issue["_bail_labels"] = bail_labels
         out.append(issue)
     return out
 
@@ -63,9 +123,23 @@ def parse_rca_stub(number: int) -> dict[str, str] | None:
     return None
 
 
+def is_bucket_a(issue: dict[str, Any], category: str) -> bool:
+    """Use the consumer-recorded RCA bucket, falling back for legacy comments."""
+    rca = issue.get("_rca") or {}
+    bucket = str(rca.get("bucket", "")).upper()
+    recorded_category = str(rca.get("category", "")).strip().casefold()
+    if bucket in {"A", "B"} and recorded_category == category.casefold():
+        return bucket == "A"
+    return category in DEFAULT_BUCKET_A
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--since", help="ISO date/time; only issues updated on/after it")
+    parser.add_argument(
+        "--since",
+        type=parse_since,
+        help="ISO date/time; only issues updated on/after it",
+    )
     parser.add_argument("--json", action="store_true", help="output JSON instead of a report")
     parser.add_argument(
         "--no-stubs", action="store_true",
@@ -103,9 +177,13 @@ def main() -> int:
 
     print(f"agent-bail issues in window: {len(bailed)}\n")
     bucket_a_hits = []
-    for category in sorted(by_category, key=lambda c: (c not in BUCKET_A, c)):
+    for category in sorted(
+        by_category,
+        key=lambda c: (not any(is_bucket_a(i, c) for i in by_category[c]), c),
+    ):
         rows = by_category[category]
-        flag = "  ⚠ BUCKET A — refinement miss" if category in BUCKET_A else ""
+        category_has_bucket_a = any(is_bucket_a(issue, category) for issue in rows)
+        flag = "  ⚠ BUCKET A — refinement miss" if category_has_bucket_a else ""
         print(f"{category}  ({len(rows)}){flag}")
         for issue in rows:
             rca = issue.get("_rca") or {}
@@ -113,10 +191,13 @@ def main() -> int:
             print(f"   #{issue['number']:<6} [{issue['state']:<6}] {issue['title'][:60]}")
             if diff != "—":
                 print(f"            ↳ {diff}")
-            if category in BUCKET_A:
+            if is_bucket_a(issue, category):
                 bucket_a_hits.append(issue["number"])
         print()
 
+    # One issue can carry several bail labels and so appear under several
+    # categories; count it once.
+    bucket_a_hits = sorted(set(bucket_a_hits))
     if bucket_a_hits:
         print(
             f"→ {len(bucket_a_hits)} Bucket-A bail(s) {bucket_a_hits}: ask which RUBRIC §2 "

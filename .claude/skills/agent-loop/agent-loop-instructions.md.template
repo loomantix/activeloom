@@ -103,9 +103,9 @@ next sync.
 If you discover any of these mid-issue, **stop, record an operator handoff,
 classify the bail (see below), and exit without a commit**:
 
-- **Issue title starts with `Epic:`, contains `extractable as @`, or otherwise
-  reads as cross-repo coordination work.** Epics are tracking issues, not
-  bounded implementation tasks. Bail at the title.
+- **Issue title starts with `Epic:` or otherwise reads as cross-repo
+  coordination work.** Epics are tracking issues, not bounded implementation
+  tasks. Bail at the title.
 - The issue requires touching another repository (cross-repo coordination).
 - The deliverable is not code — "submit a form to a regulator," "procure a
   certificate," "rotate a production secret," a signed PDF, or an email to a
