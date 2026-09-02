@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -221,8 +222,10 @@ def test_engine_exits_2_on_missing_targets_file(tmp_path: Path) -> None:
 
 
 def test_two_job_sync_payload_preserves_untracked_new_files(tmp_path: Path) -> None:
-    """Validate that Job A's manifest + tree archive workflow carries newly created
-    untracked files and directories to Job B without truncation."""
+    """Validate that a two-job sync's manifest + tree archive carries newly
+    created untracked files and directories to the publish job without
+    truncation — the first-new-skill case, where the destination directory
+    does not yet exist on the consumer."""
     import tarfile
 
     upstream = tmp_path / "upstream"
@@ -252,14 +255,14 @@ def test_two_job_sync_payload_preserves_untracked_new_files(tmp_path: Path) -> N
         },
     )
     _write_yaml(
-        consumer / ".gemini-platform-config.yml",
+        consumer / ".platform-config.yml",
         {"substitutions": {}},
     )
 
     result = _run_engine(upstream, consumer)
     assert result.returncode == 0
 
-    # Simulate Job A packaging
+    # Simulate the build job packaging its output
     payload_dir = tmp_path / "sync-payload"
     payload_dir.mkdir()
     manifest_proc = subprocess.run(
@@ -277,7 +280,7 @@ def test_two_job_sync_payload_preserves_untracked_new_files(tmp_path: Path) -> N
             if item.name != ".git":
                 tar.add(item, arcname=item.name)
 
-    # Simulate Job B extraction
+    # Simulate the publish job's extraction
     extract_tree = payload_dir / "tree"
     extract_tree.mkdir()
     with tarfile.open(tar_path, "r:gz") as tf:
@@ -291,24 +294,25 @@ def test_two_job_sync_payload_preserves_untracked_new_files(tmp_path: Path) -> N
 
 
 def test_template_consumer_config_satisfies_canonical_manifest(tmp_path: Path) -> None:
-    consumer = tmp_path / "consumer"
-    consumer.mkdir()
-    template_config = (
-        REPO_ROOT / "templates/.gemini-platform-config.yml"
-    ).read_text(encoding="utf-8")
-    (consumer / ".gemini-platform-config.yml").write_text(
-        template_config, encoding="utf-8"
+    """The starter consumer config this repo ships (when it ships one) must
+    clear the engine's gates against the canonical manifest — otherwise every
+    new consumer onboards into a red first sync."""
+    template_configs = (
+        sorted((REPO_ROOT / "templates").glob(".*platform-config.yml"))
+        if (REPO_ROOT / "templates").is_dir()
+        else []
     )
+    if not template_configs:
+        pytest.skip("this repo ships no starter consumer config template")
 
-    cmd = [
-        sys.executable,
-        str(SYNC_ENGINE),
-        "--upstream-repo",
-        str(REPO_ROOT),
-        "--consumer-dir",
-        str(consumer),
-        "--dry-run",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    for template_config in template_configs:
+        consumer = tmp_path / f"consumer-{template_config.stem}"
+        consumer.mkdir()
+        (consumer / ".platform-config.yml").write_text(
+            template_config.read_text(encoding="utf-8"), encoding="utf-8"
+        )
 
+        result = _run_engine(REPO_ROOT, consumer, dry_run=True)
+        assert result.returncode == 0, (
+            f"{template_config.name}: stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
