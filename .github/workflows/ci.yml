@@ -135,7 +135,7 @@ jobs:
       - name: Diff vendored files against claude-platform pin
         if: '!cancelled()'
         env:
-          CLAUDE_PIN_SHA: e5c9614284a65fe1053009259c61d8707f933936
+          CLAUDE_PIN_SHA: 970b6f7c13f4edcff6c1c4f8a68fc5405fcf3e3a
           CLAUDE_REPO: loomantix/claude-platform
         run: |
           set -euo pipefail
