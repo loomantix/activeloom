@@ -529,6 +529,46 @@ def test_write_if_changed_rewrites_on_diverged_content(
     changed = sync_engine.write_if_changed(target, "world", None)
     assert changed is True
     assert target.read_text() == "world"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_write_if_changed_preserves_existing_mode_without_explicit_mode(
+    sync_engine: ModuleType, tmp_path: Path
+) -> None:
+    # The atomic write replaces the destination with a fresh temp file
+    # (born 0o600), so an existing file's permission bits only survive a
+    # rewrite because `write_if_changed` puts them back deliberately. An
+    # executable script synced without a manifest `mode:` must stay
+    # executable across content updates.
+    target = tmp_path / "run.sh"
+    target.write_text("#!/bin/sh\necho old\n")
+    target.chmod(0o755)
+    changed = sync_engine.write_if_changed(target, "#!/bin/sh\necho new\n", None)
+    assert changed is True
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+
+
+def test_write_if_changed_new_file_gets_default_mode(
+    sync_engine: ModuleType, tmp_path: Path
+) -> None:
+    # A brand-new destination must not inherit the temp file's 0o600 —
+    # that would strip group/other read from every freshly synced file.
+    target = tmp_path / "new.txt"
+    changed = sync_engine.write_if_changed(target, "content", None)
+    assert changed is True
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_write_utf8_leaves_no_temp_file_behind(
+    sync_engine: ModuleType, tmp_path: Path
+) -> None:
+    # The atomic-write plumbing must be invisible on success: exactly the
+    # destination, no `.name.XXXX` siblings for a consumer's `git status`
+    # (and the sync commit) to pick up.
+    target = tmp_path / "out.txt"
+    sync_engine.write_utf8(target, "content\n")
+    assert target.read_text() == "content\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["out.txt"]
 
 
 def test_write_if_changed_applies_mode_when_diverged(
@@ -981,6 +1021,76 @@ def test_main_rejects_bare_scalar_target(
     assert rc == 1
     err = capsys.readouterr().err
     assert "malformed target entry" in err
+
+
+def test_main_rejects_scalar_manifest_document(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `yaml.safe_load` parses a bare scalar happily; `.get()` on the result
+    # would crash. The engine must name the malformed file instead.
+    (upstream_repo / "scripts" / "sync-targets.yml").write_text("not-a-mapping\n")
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "top-level YAML document must be a mapping" in capsys.readouterr().err
+
+
+def test_main_rejects_list_consumer_config_document(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_yaml(upstream_repo / "scripts" / "sync-targets.yml", {"targets": []})
+    (consumer_dir / ".platform-config.yml").write_text("- not\n- a\n- mapping\n")
+
+    assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
+    assert "top-level YAML document must be a mapping" in capsys.readouterr().err
+
+
+def test_main_rejects_scalar_skip_targets(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A bare-scalar `skip_targets:` would iterate character by character
+    # inside `set(...)` — skipping nothing while looking configured.
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "src.md", "destination": "dest.md"}]},
+    )
+    (consumer_dir / ".platform-config.yml").write_text(
+        "skip_targets: .github/workflows/dco.yml\n"
+    )
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "`skip_targets` must be a list of strings" in capsys.readouterr().err
+
+
+def test_main_rejects_non_string_list_skip_targets(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "src.md", "destination": "dest.md"}]},
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"skip_targets": [123]},
+    )
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 1
+    assert "`skip_targets` must be a list of strings" in capsys.readouterr().err
 
 
 def test_main_rejects_dot_destination(
