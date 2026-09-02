@@ -61,6 +61,26 @@ def test_ci_uses_draft_preflight_and_ready_full_gate() -> None:
     assert jobs["python-types-and-tests"]["timeout-minutes"] == "20"
 
 
+def test_pytest_run_pins_coverage_and_names_the_branch_config() -> None:
+    """Subprocess coverage must read the same `branch = true` as the workers.
+
+    pytest-cov exports `COV_CORE_CONFIG` — the config every auto-started
+    subprocess reads — only when `--cov-config` names an existing file.
+    Its default is `.coveragerc`, which this repo does not ship, so
+    without the explicit flag subprocesses collect statement-only data
+    while the in-process workers collect branch data, and `coverage
+    combine` refuses the mix. `coverage` is pinned for the same reason
+    every other tool is: 7.16.0 is what turned that mismatch from a
+    silent merge into a hard `DataError`, and an unpinned floor means a
+    future release can move the failure again.
+    """
+    steps = _workflow("ci.yml")["jobs"]["python-types-and-tests"]["steps"]
+    install = next(s for s in steps if s.get("name") == "Install pinned tooling")
+    assert "'coverage==7.16.0'" in install["run"]
+    pytest_step = next(s for s in steps if s.get("run", "").startswith("python3 -m pytest"))
+    assert "--cov-config=pyproject.toml" in pytest_step["run"]
+
+
 def test_codeql_cancels_superseded_runs_and_skips_drafts() -> None:
     workflow = _workflow("codeql.yml")
     assert workflow["on"]["pull_request"]["types"] == [
