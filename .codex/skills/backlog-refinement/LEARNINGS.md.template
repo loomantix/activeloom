@@ -3,6 +3,8 @@
 > Append-only RCA log. Every `/agent-loop` bail or non-code PR failure produces an entry here via `/backlog-refinement rca`. Each entry sharpens a [`RUBRIC.md`](./RUBRIC.md) §2 transformation, a §3 disqualifier, or an `agent-loop-instructions.md` line. See the entry template in `SKILL.md`.
 >
 > **This file was bootstrapped from a starter template** and is consumer-owned (`create_if_missing: true`). It accumulates _your repo's_ institutional memory of which issue shapes waste loop iterations — **read it before a `refine --all` pass.** It starts empty; the first loop run fills it.
+>
+> **A common first finding across repos:** stale backlog is the top wasted-iteration cause — issues whose described work already shipped. If your own RCA entries show the same, the highest-ROI response is to treat verify-against-HEAD (RUBRIC §2) as non-negotiable **before tagging**. Confirm it against your own run data before promoting it to Meta-lessons below.
 
 ---
 
