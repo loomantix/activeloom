@@ -389,7 +389,8 @@ jobs:
             'pyyaml==6.0.2' \
             'types-PyYAML==6.0.12.20240917' \
             'pytest==8.3.4' \
-            'pytest-cov==6.0.0'
+            'pytest-cov==6.0.0' \
+            'coverage==7.16.0'
       - name: mypy --strict (config from pyproject.toml)
         run: python3 -m mypy
       - name: Configure git identity (parse_status tests use a fixture git repo)
@@ -397,8 +398,21 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "CI"
           git config --global init.defaultBranch main
+      # `--cov-config` is load-bearing, not decoration. pytest-cov only
+      # exports `COV_CORE_CONFIG` (the config path every auto-started
+      # subprocess reads) when `--cov-config` names a file that exists;
+      # its default is `.coveragerc`, which this repo does not ship, so
+      # the variable degrades to `:` and subprocess coverage runs with no
+      # config at all — statement-only, because `branch = true` lives in
+      # pyproject.toml. The in-process run still sees the branch flag via
+      # coverage's own default-file search, so the two halves disagree and
+      # `coverage combine` fails with "Can't combine statement coverage
+      # data with branch data" as soon as any subprocess records a line.
+      # coverage <7.16.0 merged the mismatch silently.
       - name: Run pytest + write coverage data
-        run: python3 -m pytest tests/ --cov --cov-report=term-missing -ra
+        run: >-
+          python3 -m pytest tests/ --cov --cov-config=pyproject.toml
+          --cov-report=term-missing -ra
       # Per-file gate matches the security contract: a future refactor
       # that spikes one file's coverage can't paper over a regression
       # in the other. The `test -f` precondition is load-bearing —
