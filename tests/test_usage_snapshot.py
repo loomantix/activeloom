@@ -727,7 +727,17 @@ def test_an_unavailable_record_reports_no_measured_fields(
     tmp_path: Path, session: Path
 ) -> None:
     """A record that declared its inputs unusable must not report values from them."""
-    payload = delta(tmp_path)
+    # Pin the projects root and cwd, as `test_no_session_log_reports_unavailable`
+    # does. `run()` only *removes* CLAUDE_PROJECTS_DIR, which leaves the helper
+    # falling back to `~/.claude/projects/<slug of cwd>` — a directory that
+    # exists whenever an agent session is running in this checkout, so the
+    # helper found a real session log and reported `unscoped-session`. The
+    # assertion below then depended on the developer's home directory, and the
+    # `unavailable` branch it names went unexercised on exactly the machines
+    # that run this suite during a local review.
+    empty = tmp_path / "empty-projects"
+    empty.mkdir()
+    payload = delta(tmp_path, projects_dir=str(empty), cwd=str(tmp_path))
     assert payload["tokenSource"] == "unavailable"
     assert payload["engineVersion"] is None
     assert payload["durationSeconds"] is None

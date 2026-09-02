@@ -32,6 +32,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final, Required, TypedDict
@@ -290,12 +291,21 @@ def is_sensitive_delete_dest(dest_rel_canonical: str) -> bool:
     ) and not is_engine_surface(dest_rel_canonical)
 
 
-def load_yaml(path: Path) -> dict[str, Any]:
+def load_yaml(path: Path) -> object:
+    """Parse a YAML file, or exit when it is missing.
+
+    Returns `object`, not `dict[str, Any]`: `yaml.safe_load` parses a
+    top-level list or bare scalar just as happily as a mapping, and typing
+    the return as a dict would let that shape reach the first `.get()` as a
+    crash instead of a config error. Callers narrow with `isinstance` and
+    report the path in their own words.
+    """
     if not path.is_file():
         sys.stderr.write(f"missing required file: {path}\n")
         sys.exit(2)
     with path.open() as fp:
-        return yaml.safe_load(fp) or {}
+        loaded: object = yaml.safe_load(fp)
+    return {} if loaded is None else loaded
 
 
 def read_utf8(path: Path) -> str:
@@ -304,10 +314,49 @@ def read_utf8(path: Path) -> str:
         return file.read()
 
 
-def write_utf8(path: Path, content: str) -> None:
-    """Write UTF-8 text without platform newline translation."""
-    with path.open("w", encoding="utf-8", newline="") as file:
-        file.write(content)
+def write_utf8(path: Path, content: str, mode: int | None = None) -> None:
+    """Atomically write UTF-8 text without platform newline translation.
+
+    Written to a sibling temp file and moved into place with `os.replace`,
+    so a crash mid-write (job kill, full disk) leaves either the old
+    destination or the new one — never a truncated half-file for the next
+    step to commit. The temp file lives in `path.parent` because
+    `os.replace` is only atomic within one filesystem.
+
+    `mode` is applied to the temp file before the swap, so content and
+    permission bits land in one atomic step. When omitted, the destination
+    keeps the temp file's owner-only 0o600 — a caller syncing a readable
+    destination must pass the bits it wants.
+    """
+    # Match the former `path.open("w")` behavior for legitimate leaf
+    # symlinks: update the target without replacing the link itself. The
+    # engine's documented threat model already treats consumer-side
+    # symlinks as trusted; resolving here preserves that contract while the
+    # target still receives one atomic same-filesystem replacement.
+    destination_path = path.resolve() if path.is_symlink() else path
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="",
+            dir=destination_path.parent,
+            prefix=f".{destination_path.name}.",
+            delete=False,
+        ) as file:
+            temporary_path = Path(file.name)
+            file.write(content)
+        if mode is not None:
+            # Applied by path rather than fd: `os.chmod` exists on every
+            # platform, `os.fchmod` does not (absent on Windows). The bits
+            # still land before the swap, so content and mode replace the
+            # destination atomically.
+            os.chmod(temporary_path, mode)
+        os.replace(temporary_path, destination_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def drop_empty_placeholder_lines(
@@ -500,7 +549,20 @@ def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
     existing = read_utf8(path) if path.is_file() else None
     changed = existing != content
     if changed:
-        write_utf8(path, content)
+        # `write_utf8` replaces the destination with a fresh temp file, so
+        # the destination's permission bits do not survive the write on
+        # their own the way an in-place rewrite would keep them. Hand the
+        # write the bits to apply before the swap: the manifest's explicit
+        # `mode:`, an existing destination's current bits, or 0o644 for a
+        # new file — a temp file is born 0o600, which would strip
+        # group/other read from every synced file.
+        if mode is not None:
+            desired_mode = mode
+        elif existing is not None:
+            desired_mode = stat.S_IMODE(path.stat().st_mode)
+        else:
+            desired_mode = 0o644
+        write_utf8(path, content, desired_mode)
     if mode is not None:
         # `stat.S_IMODE` keeps the full 12-bit permission set (setuid +
         # setgid + sticky + rwx*3). `& 0o777` would mask off the upper
@@ -794,7 +856,7 @@ def config_write_targets(
         if bool(target.get("delete")):
             continue
         dest_path = resolve_under(consumer_dir, dest_rel)
-        if dest_path is None or dest_path != config_path:
+        if dest_path is None or dest_path.resolve() != config_path:
             continue
         offenders.append(dest_path.relative_to(consumer_dir).as_posix())
     return offenders
@@ -932,9 +994,26 @@ def main() -> int:
     targets_doc = load_yaml(targets_path)
     config_doc = load_yaml(config_path)
 
+    if not isinstance(targets_doc, dict):
+        sys.stderr.write(f"{targets_path}: top-level YAML document must be a mapping\n")
+        return 1
+    if not isinstance(config_doc, dict):
+        sys.stderr.write(f"{config_path}: top-level YAML document must be a mapping\n")
+        return 1
+
     targets = targets_doc.get("targets") or []
     values = config_doc.get("substitutions") or {}
-    skip = set(config_doc.get("skip_targets") or [])
+    skip_raw = config_doc.get("skip_targets")
+    if skip_raw is None:
+        skip: set[str] = set()
+    elif not isinstance(skip_raw, list) or not all(isinstance(p, str) for p in skip_raw):
+        # A bare-scalar `skip_targets:` would iterate character by character
+        # inside `set(...)`; silently skipping nothing (or something) is
+        # worse than a config error either way.
+        sys.stderr.write(f"{config_path}: `skip_targets` must be a list of strings\n")
+        return 1
+    else:
+        skip = set(skip_raw)
 
     if not isinstance(targets, list):
         sys.stderr.write(f"{targets_path}: `targets` must be a list\n")
@@ -1293,7 +1372,7 @@ def main() -> int:
         # be narrow enough that it only ever covers the path the consumer
         # actually wrote down.
         is_sensitive_write = is_sensitive_write_dest(dest_rel_canonical)
-        if dest_path == config_path:
+        if dest_path.resolve() == config_path:
             sys.stderr.write(
                 config_destination_refusal([dest_rel_canonical], config_path.name)
             )

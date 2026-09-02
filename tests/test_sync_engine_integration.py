@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -218,3 +219,100 @@ def test_engine_exits_2_on_missing_targets_file(tmp_path: Path) -> None:
     result = _run_engine(upstream, consumer)
     assert result.returncode == 2
     assert "missing required file" in result.stderr
+
+
+def test_two_job_sync_payload_preserves_untracked_new_files(tmp_path: Path) -> None:
+    """Validate that a two-job sync's manifest + tree archive carries newly
+    created untracked files and directories to the publish job without
+    truncation — the first-new-skill case, where the destination directory
+    does not yet exist on the consumer."""
+    import tarfile
+
+    upstream = tmp_path / "upstream"
+    consumer = tmp_path / "consumer"
+    (upstream / "scripts").mkdir(parents=True)
+    consumer.mkdir()
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(consumer)], check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=consumer, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=consumer, check=True)
+
+    (consumer / "existing.txt").write_text("initial\n")
+    subprocess.run(["git", "add", "."], cwd=consumer, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=consumer, check=True)
+
+    (upstream / "skills" / "new-skill").mkdir(parents=True)
+    (upstream / "skills" / "new-skill" / "SKILL.md").write_text("New skill content\n")
+    _write_yaml(
+        upstream / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {
+                    "source": "skills/new-skill/SKILL.md",
+                    "destination": ".agents/skills/new-skill/SKILL.md",
+                }
+            ]
+        },
+    )
+    _write_yaml(
+        consumer / ".platform-config.yml",
+        {"substitutions": {}},
+    )
+
+    result = _run_engine(upstream, consumer)
+    assert result.returncode == 0
+
+    # Simulate the build job packaging its output
+    payload_dir = tmp_path / "sync-payload"
+    payload_dir.mkdir()
+    manifest_proc = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "-uall"],
+        cwd=consumer,
+        capture_output=True,
+        check=True,
+    )
+    (payload_dir / "manifest").write_bytes(manifest_proc.stdout)
+    assert (payload_dir / "manifest").stat().st_size > 0
+
+    tar_path = payload_dir / "tree.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        for item in consumer.iterdir():
+            if item.name != ".git":
+                tar.add(item, arcname=item.name)
+
+    # Simulate the publish job's extraction
+    extract_tree = payload_dir / "tree"
+    extract_tree.mkdir()
+    with tarfile.open(tar_path, "r:gz") as tf:
+        tf.extractall(extract_tree, filter="data")
+
+    assert (extract_tree / ".agents/skills/new-skill/SKILL.md").is_file()
+    assert (
+        (extract_tree / ".agents/skills/new-skill/SKILL.md").read_text()
+        == "New skill content\n"
+    )
+
+
+def test_template_consumer_config_satisfies_canonical_manifest(tmp_path: Path) -> None:
+    """The starter consumer config this repo ships (when it ships one) must
+    clear the engine's gates against the canonical manifest — otherwise every
+    new consumer onboards into a red first sync."""
+    template_configs = (
+        sorted((REPO_ROOT / "templates").glob(".*platform-config.yml"))
+        if (REPO_ROOT / "templates").is_dir()
+        else []
+    )
+    if not template_configs:
+        pytest.skip("this repo ships no starter consumer config template")
+
+    for template_config in template_configs:
+        consumer = tmp_path / f"consumer-{template_config.stem}"
+        consumer.mkdir()
+        (consumer / ".platform-config.yml").write_text(
+            template_config.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
+        result = _run_engine(REPO_ROOT, consumer, dry_run=True)
+        assert result.returncode == 0, (
+            f"{template_config.name}: stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
