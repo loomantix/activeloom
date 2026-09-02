@@ -87,12 +87,44 @@ jobs:
           # which requires advanced security features on private repositories.
           upload: 'never'
           output: '${{ runner.temp }}/codeql-results'
+      # No GHAS upload path on a private repo, so the SARIF is graded here
+      # rather than in the Security tab. The gate stays "zero findings" with
+      # one escape hatch: a checked-in list of accepted findings, keyed on
+      # rule id + path so a refactor that moves the line doesn't churn it.
+      # An accepted entry that matches nothing fails too — an exception that
+      # outlives the code it excuses is how a gate goes quietly blind.
       - name: Gate on CodeQL findings
+        env:
+          ACCEPTED: .github/codeql-accepted-findings.json
         run: |
           set -euo pipefail
           mapfile -t reports < <(find "$RUNNER_TEMP/codeql-results" -type f -name '*.sarif')
           [ "${#reports[@]}" -gt 0 ] || { echo "No CodeQL SARIF report was produced" >&2; exit 1; }
-          jq -s -e '[.[].runs[].results[]?] | length == 0' "${reports[@]}"
+          verdict="$(jq -s --slurpfile accepted "$ACCEPTED" '
+            [ .[].runs[].results[]?
+              | { rule: .ruleId,
+                  path: .locations[0].physicalLocation.artifactLocation.uri,
+                  line: .locations[0].physicalLocation.region.startLine,
+                  message: .message.text } ] as $found
+            | [ $accepted[0][] | { rule, path } ] as $ok
+            | { unexpected: [ $found[]
+                  | select(({ rule, path }) as $k | ($ok | index($k)) == null) ],
+                stale: [ $ok[]
+                  | select(. as $k
+                      | ([ $found[] | { rule, path } ] | index($k)) == null) ] }
+          ' "${reports[@]}")"
+          if [ "$(jq '.unexpected | length' <<<"$verdict")" -ne 0 ]; then
+            echo "::error::CodeQL reported findings that are not accepted in $ACCEPTED" >&2
+            jq -r '.unexpected[] | "  \(.rule)  \(.path):\(.line)  \(.message)"' \
+              <<<"$verdict" >&2
+            exit 1
+          fi
+          if [ "$(jq '.stale | length' <<<"$verdict")" -ne 0 ]; then
+            echo "::error::$ACCEPTED accepts findings CodeQL no longer reports — delete them" >&2
+            jq -r '.stale[] | "  \(.rule)  \(.path)"' <<<"$verdict" >&2
+            exit 1
+          fi
+          echo "CodeQL clean ($(jq 'length' "$ACCEPTED") accepted finding(s) matched)."
       - name: Retain CodeQL SARIF
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
