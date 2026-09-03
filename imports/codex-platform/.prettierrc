@@ -1,0 +1,22 @@
+# @format
+
+{
+  'plugins': ['prettier-plugin-toml'],
+  'singleQuote': true,
+  'semi': true,
+  'useTabs': false,
+  'quoteProps': 'as-needed',
+  'jsxSingleQuote': false,
+  'bracketSameLine': false,
+  'tabWidth': 2,
+  'trailingComma': 'all',
+  'printWidth': 80,
+  'arrowParens': 'always',
+  'endOfLine': 'lf',
+  'proseWrap': 'preserve',
+  'embeddedLanguageFormatting': 'auto',
+  'htmlWhitespaceSensitivity': 'ignore',
+  'bracketSpacing': true,
+  'objectWrap': 'collapse',
+  'singleAttributePerLine': true,
+}

@@ -1,0 +1,70 @@
+# Agent-loop instructions
+
+Work autonomously on one assigned GitHub issue. Read this file and the exact
+issue title/body from `AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY`,
+then implement, validate, refactor, and commit locally. Stop after the local
+commit. Do not push, open a pull request, or invoke Gemini, Copilot, `reviewit`,
+or any GitHub-hosted AI reviewer. Do not call `gh`; the wrapper owns GitHub
+access, review, and publication.
+
+> Customize every `TODO` before using the loop. This consumer-owned file is
+> bootstrapped once and is not overwritten by later syncs.
+
+## Repository overview
+
+TODO: Describe the repository, stack, and consumers without private topology or
+sensitive identifiers.
+
+## Build and test
+
+TODO: List an isolated dependency install and the smallest useful checks.
+
+```bash
+<install command with frozen lockfile>
+<format/lint command>
+<typecheck command>
+<targeted test command>
+```
+
+Avoid full-suite/full-diff output unless the issue requires it. For Vitest 4,
+target a frontend test as `pnpm --filter frontend test:run TestName`. Do not add
+`--` before `TestName`; that can run the full suite.
+
+## Local-only commit contract
+
+- Use the repository's commit convention and targeted staging.
+- Leave a clean worktree with at least one local commit.
+- Never push or create a PR. The wrapper will alternate fresh local Codex
+  `deepcritique` and Claude `deepcritique` review passes on a draft PR until a
+  complete round produces no material fixes. Each reviewer posts findings
+  before fixes, publishes through the wrapper-owned safe review-push helper,
+  replies, and resolves in that PR. Minor-only fixes are kept without restarting.
+  The wrapper creates and owns the draft PR after the worker exits.
+- Never bypass hooks with `--no-verify`.
+
+## Security and privacy
+
+- Never put PHI, PII, credentials, authorization headers, customer identifiers,
+  internal hostnames, or user data in logs, issue comments, commits, or PR text.
+- Do not copy issue bodies or reviewer output into publication metadata.
+- Preserve repository-specific auth, encryption, audit, and least-privilege
+  requirements here: TODO.
+
+## Synced files and out-of-scope work
+
+TODO: List upstream-owned surfaces. If the issue requires an upstream-owned or
+cross-repository change, follow the repository's bail protocol rather than edit
+the consumer copy.
+
+## Bail protocol
+
+TODO: Define a local-only bail record in the preserved worktree containing the
+classification and a public-safe rationale. The worker cannot call `gh`; after
+it exits nonzero, the operator must translate that record into any required
+GitHub labels/comments. Never include private identifiers or user data.
+
+## Recovery
+
+On command failure, do not reset, clean, stash, reuse, or delete the worktree.
+Inspect it and exit non-zero. The wrapper preserves dirty and committed work and
+prints recovery instructions.

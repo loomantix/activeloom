@@ -1,0 +1,416 @@
+# Canonical sync manifest for codex-platform.
+#
+# `sync-engine.py` reads this file from the upstream checkout (this repo, or
+# a fork of it) to learn which files to copy into a consumer repo, and which
+# `<<KEY>>` placeholders to substitute from the consumer's
+# `.platform-config.yml`.
+#
+# `substitutions: []` means verbatim copy. `delete: true` causes the engine
+# to remove the destination from the consumer (and prune empty parent
+# directories) — use this to retire a previously-synced file across all
+# consumers. `mode` (e.g. `"0755"`) sets the destination permissions.
+#
+# Adding a new file to the sync surface = add an entry here. Consumers that
+# don't want a particular file can opt out via `skip_targets` in their own
+# `.platform-config.yml`; forks that want to drop or add files entirely can
+# edit this manifest in the fork.
+
+targets:
+  # Codex skills — checked into consumer repo so teammates without the
+  # global install can still invoke them. Devs who installed via
+  # `scripts/install-skills.sh` will resolve from `~/.codex/skills/` first;
+  # the in-repo copy is the fallback for everyone else and for CI contexts.
+  - source: .codex/skills/issues/SKILL.md
+    destination: .codex/skills/issues/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/issues/scripts/ready.py
+    destination: .codex/skills/issues/scripts/ready.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/issues/scripts/link.py
+    destination: .codex/skills/issues/scripts/link.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/refactorpass/SKILL.md
+    destination: .codex/skills/refactorpass/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/critique/SKILL.md
+    destination: .codex/skills/critique/SKILL.md
+    substitutions: []
+
+  # The ledger is a build artifact of `@loomantix/review-ledger`, vendored
+  # verbatim from the published tarball and run as `node review-ledger.js`.
+  # Mode is 0644 deliberately: npm normalises non-`bin` files to 0644 in the
+  # tarball, so the committed file is not executable and nothing may invoke it
+  # as `./review-ledger.js`. The sibling `package.json` declaring
+  # `"type": "module"` must sync with it — the bundle is ESM under a `.js`
+  # name, so without it Node resolves the module type from the CONSUMER's root
+  # manifest and a `"type": "commonjs"` repository fails with a SyntaxError.
+  # `review-ledger.version` and `review-ledger.integrity` record which
+  # published tarball these bytes came from; `codex-platform` CI pins them.
+  - source: .codex/skills/critique/scripts/review-ledger.js
+    destination: .codex/skills/critique/scripts/review-ledger.js
+    substitutions: []
+    mode: '0644'
+
+  # The pass-scoped usage extractor. Unlike the ledger bundle beside it, this
+  # is maintained here rather than vendored: it parses this engine's session
+  # log, which breaks on a CLI release, and the ledger package must never grow
+  # a dependency on transcripts it has no business reading. Also ESM, and also
+  # covered by the directory's `package.json` below.
+  - source: .codex/skills/critique/scripts/usage-snapshot.js
+    destination: .codex/skills/critique/scripts/usage-snapshot.js
+    substitutions: []
+    mode: '0644'
+
+  # The prompt-stack hasher, which gives a telemetry record its prompt
+  # identity. Separate from the usage extractor beside it because it reads only
+  # files already checked into the consumer's repository — none of the
+  # transcript-trust argument that keeps extraction out of the ledger applies
+  # to it. Also ESM, and also covered by the directory's `package.json` below.
+  - source: .codex/skills/critique/scripts/prompt-stack-hash.js
+    destination: .codex/skills/critique/scripts/prompt-stack-hash.js
+    substitutions: []
+    mode: '0644'
+
+  - source: .codex/skills/critique/scripts/package.json
+    destination: .codex/skills/critique/scripts/package.json
+    substitutions: []
+    mode: '0644'
+
+  - source: .codex/skills/critique/scripts/review-ledger.version
+    destination: .codex/skills/critique/scripts/review-ledger.version
+    substitutions: []
+    mode: '0644'
+
+  - source: .codex/skills/critique/scripts/review-ledger.integrity
+    destination: .codex/skills/critique/scripts/review-ledger.integrity
+    substitutions: []
+    mode: '0644'
+
+  - source: .codex/skills/critique/scripts/run-claude-review.sh
+    destination: .codex/skills/critique/scripts/run-claude-review.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/critique/scripts/run-agy-review.sh
+    destination: .codex/skills/critique/scripts/run-agy-review.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/critique/scripts/local-review-handoff.py
+    destination: .codex/skills/critique/scripts/local-review-handoff.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/deepcritique/SKILL.md
+    destination: .codex/skills/deepcritique/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/pr-critique/SKILL.md
+    destination: .codex/skills/pr-critique/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/reviewit/SKILL.md
+    destination: .codex/skills/reviewit/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/copilot-review/SKILL.md
+    destination: .codex/skills/copilot-review/SKILL.md
+    substitutions: []
+
+  # Read-only GitHub Actions usage audit. Org-specific baselines live in a
+  # consumer-owned, non-synced `.codex/actions-usage-audit.local.md`.
+  - source: .codex/skills/actions-usage-audit/SKILL.md
+    destination: .codex/skills/actions-usage-audit/SKILL.md
+    substitutions: []
+
+  # Secure npm package release and first-publication bootstrap workflow.
+  - source: .codex/skills/publish-npm-package/SKILL.md
+    destination: .codex/skills/publish-npm-package/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/publish-npm-package/agents/openai.yaml
+    destination: .codex/skills/publish-npm-package/agents/openai.yaml
+    substitutions: []
+
+  - source: .codex/skills/publish-npm-package/references/upstream-docs.md
+    destination: .codex/skills/publish-npm-package/references/upstream-docs.md
+    substitutions: []
+
+  - source: .codex/skills/publish-npm-package/scripts/release-preflight.py
+    destination: .codex/skills/publish-npm-package/scripts/release-preflight.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/publish-npm-package/scripts/verify-published-package.py
+    destination: .codex/skills/publish-npm-package/scripts/verify-published-package.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/ship-staging/SKILL.md
+    destination: .codex/skills/ship-staging/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/phone-install/SKILL.md
+    destination: .codex/skills/phone-install/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/feature-dev/SKILL.md
+    destination: .codex/skills/feature-dev/SKILL.md
+    substitutions: []
+
+  # diagnosing-bugs — debugging discipline gated on a tight, deterministic
+  # feedback loop that goes red on the user's exact symptom before any
+  # hypothesis is entertained.
+  - source: .codex/skills/diagnosing-bugs/SKILL.md
+    destination: .codex/skills/diagnosing-bugs/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/task-packet/SKILL.md
+    destination: .codex/skills/task-packet/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/agent-loop/SKILL.md
+    destination: .codex/skills/agent-loop/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/agent-loop/scripts/agent-loop.sh
+    destination: .codex/skills/agent-loop/scripts/agent-loop.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/agent-loop/scripts/agent-loop-state.py
+    destination: .codex/skills/agent-loop/scripts/agent-loop-state.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/agent-loop/scripts/review-push.sh
+    destination: .codex/skills/agent-loop/scripts/review-push.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/agent-loop/scripts/config-doctor.py
+    destination: .codex/skills/agent-loop/scripts/config-doctor.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/agent-loop/scripts/process-supervisor.py
+    destination: .codex/skills/agent-loop/scripts/process-supervisor.py
+    substitutions: []
+    mode: '0755'
+
+  # Both automatic reviewers enter through this trusted-source launcher; the
+  # consumer config is pinned to its wrapper-owned absolute path at runtime.
+  - source: .codex/skills/agent-loop/scripts/run-codex-review.sh
+    destination: .codex/skills/agent-loop/scripts/run-codex-review.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/agent-loop/scripts/hook-git-guard
+    destination: .codex/skills/agent-loop/scripts/hook-git-guard
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/agent-loop/scripts/hook-gh-guard
+    destination: .codex/skills/agent-loop/scripts/hook-gh-guard
+    substitutions: []
+    mode: '0755'
+
+  # Consumer-owned base-branch override for promotion-flow repositories.
+  - source: .codex/skills/agent-loop/agent-loop.config.template
+    destination: .codex/skills/agent-loop/agent-loop.config
+    substitutions: []
+    create_if_missing: true
+
+  # /agent-loop expects `agent-loop-instructions.md` at the consumer's repo
+  # root. `create_if_missing: true` bootstraps the file from this template
+  # on first sync, then leaves it alone — consumer customizations made
+  # after the initial sync survive every subsequent run.
+  - source: .codex/skills/agent-loop/agent-loop-instructions.md.template
+    destination: agent-loop-instructions.md
+    substitutions: []
+    create_if_missing: true
+
+  # Consumer-owned Codex prompt. `create_if_missing: true` bootstraps it
+  # once; later upstream edits to `prompt.txt.template` no longer reach
+  # already-onboarded consumers.
+  - source: .codex/skills/agent-loop/prompt.txt.template
+    destination: .codex/skills/agent-loop/prompt.txt
+    substitutions: []
+    create_if_missing: true
+
+  # /backlog-refinement curates the dev: agent queue consumed by /agent-loop.
+  # RUBRIC.md and LEARNINGS.md are consumer-owned so each repo can evolve its
+  # own safety envelope and retain lessons from autonomous-run bails.
+  - source: .codex/skills/backlog-refinement/SKILL.md
+    destination: .codex/skills/backlog-refinement/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/backlog-refinement/scripts/candidates.py
+    destination: .codex/skills/backlog-refinement/scripts/candidates.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/backlog-refinement/scripts/bail-report.py
+    destination: .codex/skills/backlog-refinement/scripts/bail-report.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/backlog-refinement/RUBRIC.md.template
+    destination: .codex/skills/backlog-refinement/RUBRIC.md
+    substitutions: []
+    create_if_missing: true
+
+  - source: .codex/skills/backlog-refinement/LEARNINGS.md.template
+    destination: .codex/skills/backlog-refinement/LEARNINGS.md
+    substitutions: []
+    create_if_missing: true
+
+  # Long role prompts are references, not always-loaded agent definitions.
+  # Skills load them only when they need a specialized stance.
+  - source: .codex/references/roles/code-explorer.md
+    destination: .codex/references/roles/code-explorer.md
+    substitutions: []
+
+  - source: .codex/references/roles/code-architect.md
+    destination: .codex/references/roles/code-architect.md
+    substitutions: []
+
+  - source: .codex/references/roles/code-reviewer.md
+    destination: .codex/references/roles/code-reviewer.md
+    substitutions: []
+
+  - source: .codex/references/roles/silent-failure-hunter.md
+    destination: .codex/references/roles/silent-failure-hunter.md
+    substitutions: []
+
+  - source: .codex/references/roles/type-design-analyzer.md
+    destination: .codex/references/roles/type-design-analyzer.md
+    substitutions: []
+
+  - source: .codex/references/roles/comment-analyzer.md
+    destination: .codex/references/roles/comment-analyzer.md
+    substitutions: []
+
+  - source: .codex/references/roles/pr-test-analyzer.md
+    destination: .codex/references/roles/pr-test-analyzer.md
+    substitutions: []
+
+  - source: .codex/references/roles/security-reviewer.md
+    destination: .codex/references/roles/security-reviewer.md
+    substitutions: []
+
+  - source: .codex/references/local-review-ledger.md
+    destination: .codex/references/local-review-ledger.md
+    substitutions: []
+
+  # Canonical workflow doc — referenced from each consumer's AGENTS.md as
+  # the source of truth for the AI review flow.
+  - source: .codex/REVIEW_WORKFLOW.md
+    destination: .codex/REVIEW_WORKFLOW.md
+    substitutions: []
+
+  # Retired-stub deletes — keep entries here when removing a previously
+  # synced file so consumers prune it on their next sync run.
+  - destination: .codex/skills/pushit/SKILL.md
+    delete: true
+  - destination: .codex/skills/review-cycle/SKILL.md
+    delete: true
+  - destination: .codex/hooks/check-simplify-state.sh
+    delete: true
+  # The review chain moved from `grill` terminology to `critique`. Keep these
+  # deletes until every consumer has synced this manifest, so a fleet sync does
+  # not leave duplicate model-invocable review skills behind.
+  #
+  # This is ordered best-effort removal, not an atomic swap. The engine applies
+  # targets in one non-transactional pass, so a run that fails partway leaves
+  # the new skills written and these deletes unapplied. A retired destination is
+  # also left in place when a consumer explicitly lists it in `skip_targets`.
+  #
+  # Consumers with a non-empty `allowed_destinations` must add
+  # `.codex/skills/critique/**`, `.codex/skills/deepcritique/**`, and
+  # `.codex/skills/pr-critique/**` to that allowlist before taking the sync tag
+  # carrying this rename. Otherwise the new copy targets above fail the
+  # allowlist gate and the run aborts before reaching these deletes. Retired
+  # paths survive, along with any earlier new copy targets already written.
+  #
+  # Add the new patterns, but do not drop the retired ones yet. The allowlist
+  # gate applies to delete targets as well as copies, so a consumer that swaps
+  # `grill`/`deepgrill`/`pr-grill` out of the allowlist aborts on the deletes
+  # below and ends up with both naming families installed. Keep the three
+  # retired patterns allowlisted until these delete entries leave the manifest.
+  - destination: .codex/skills/grill/SKILL.md
+    delete: true
+  - destination: .codex/skills/grill/scripts/review-ledger.py
+    delete: true
+  - destination: .codex/skills/deepgrill/SKILL.md
+    delete: true
+  - destination: .codex/skills/pr-grill/SKILL.md
+    delete: true
+
+  # The Python ledger was replaced by the vendored `review-ledger.js` bundle.
+  # Not order-dependent — the destination differs from the copy above by
+  # extension, so the two entries cannot collide. Keep it here until every
+  # consumer has run a sync that includes it, or repos keep a stale second
+  # ledger implementation that `agent-loop.sh` no longer calls.
+  - destination: .codex/skills/critique/scripts/review-ledger.py
+    delete: true
+
+  # ORDER-DEPENDENT — this entry must stay BELOW the `.codex/skills/grill/`
+  # deletes above. The engine applies targets in list order with no dedup by
+  # destination, so a copy placed before that delete is written and then
+  # unlinked in the same run, and the consumer never receives the skill.
+  #
+  # `grill` is the one destination in this manifest that is both retired and
+  # reissued: the old review skill is deleted, then this new pre-code
+  # interview skill is written to the same path. The caveats on the retirement
+  # block above apply here too — the pass is not transactional, so a run that
+  # aborts partway can leave the old skill in place with the new one unwritten.
+  # `tests/test_skill_surface.py` asserts the ordering so a future reshuffle of
+  # this file cannot silently reintroduce the collision.
+  #
+  # Front end of the arc feature-dev and task-packet finish; the adversarial
+  # review skills are critique / deepcritique / pr-critique.
+  - source: .codex/skills/grill/SKILL.md
+    destination: .codex/skills/grill/SKILL.md
+    substitutions: []
+
+  # Copilot instructions — generated from the template using the consumer's
+  # placeholder values. Result lands at `.github/copilot-instructions.md`.
+  - source: .github/copilot-instructions.md.template
+    destination: .github/copilot-instructions.md
+    substitutions:
+      - PROJECT_NAME
+      - PROJECT_OVERVIEW
+      - CANONICAL_DOCS
+      - STACK_TABLE
+      - CODE_RULES
+      - DOMAIN_RULES
+      - REVIEW_FOCUS
+      - WHAT_NOT_TO_SUGGEST_EXTRA
+    # Every key here sits alone on its template line between blank separators.
+    # When the value is empty, remove its vacated line plus one separator so
+    # the render stays prettier-clean. Never opt in keys used inside literal
+    # content — the `sync-targets` CI job enforces both halves of that rule.
+    # `PROJECT_NAME` and `CANONICAL_DOCS` are inline and so cannot qualify.
+    collapse_empty_substitutions:
+      - PROJECT_OVERVIEW
+      - STACK_TABLE
+      - CODE_RULES
+      - DOMAIN_RULES
+      - REVIEW_FOCUS
+      - WHAT_NOT_TO_SUGGEST_EXTRA
+
+  # DCO sign-off check — only relevant for OSS consumers (Apache 2 + DCO is
+  # the standard contract). The canonical version uses `git rev-list
+  # --no-merges` so "Update branch" merge commits, which lack a
+  # Signed-off-by trailer, don't fail the check. Private consumers that
+  # don't need DCO opt out via `skip_targets` in their `.platform-config.yml`.
+  - source: .github/workflows/dco.yml
+    destination: .github/workflows/dco.yml
+    substitutions: []
