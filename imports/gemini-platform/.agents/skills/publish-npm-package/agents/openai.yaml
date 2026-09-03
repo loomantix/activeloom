@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Publish npm Package'
+  short_description: 'Release npm packages with verified provenance'
+  default_prompt: 'Use $publish-npm-package to prepare and verify a secure npm package release.'

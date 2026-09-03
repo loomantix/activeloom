@@ -1,0 +1,27 @@
+# Build artifacts and dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+
+# Lockfiles managed by their tools
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Legal text — preserve canonical wrapping
+LICENSE
+NOTICE
+
+# Local-only Codex overrides (already gitignored, defense in depth)
+.codex/settings.local.json
+
+# Vendored build artifact of @loomantix/review-ledger — its bytes must match
+# the published tarball exactly, so Prettier must never touch it.
+.agents/skills/critique/scripts/review-ledger.js

@@ -1,0 +1,74 @@
+# Consumer-owned agent-loop settings. Literal `key = value` lines; this file is
+# parsed, never sourced. Do not embed credentials, identifiers, PHI, or user data.
+
+# Integration branch. Leave empty to use origin/HEAD, then main.
+base_branch =
+
+# Run once inside each new issue worktree. Use an isolated frozen install; never
+# symlink mutable node_modules or equivalent dependency directories. It must not
+# commit, switch branches, or leave Git-visible worktree changes.
+setup_hook =
+
+# Required. Run after the worker, after every local review pass, and after the
+# fresh-base merge. It must not commit, switch branches, or leave worktree
+# changes. Prefer targeted checks and avoid unbounded full-suite output.
+validation_hook =
+
+# Required acknowledgement of the current review-hook contract. Existing
+# consumer configs must migrate the hooks below before adding this marker.
+review_contract_version = 3
+config_doctor = true
+# Optional literal policy enforced by the doctor, for example `low`.
+claude_effort_policy = low
+
+# Both review hooks are required. The wrapper runs Gemini first, then Claude, and
+# repeats only when either hook commits a material fix. Minor-only fixes are
+# validated and retained without restarting; convergence requires a complete
+# Gemini-then-Claude round with no material fixes. The Gemini hook must run
+# `deepcritique`; the Claude hook must run `deepcritique`.
+# Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
+# review threads, post every confirmed finding inline before editing, fix and
+# commit it, call `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply with the fix and validation, resolve the
+# thread, and fail if any valid finding or local-review thread remains. Hooks
+# may use `gh` only for that draft PR review contract; direct `git push` is rejected. They must
+# not mutate the base branch, other issues/PRs, or invoke hosted reviewers.
+# Scope both hooks against `$AGENT_LOOP_REVIEW_BASE_SHA`; it is immutable for the
+# round, while `$AGENT_LOOP_REVIEW_BASE` is the fully qualified fetched remote
+# ref. The wrapper validates exit status and Git state but cannot prove which
+# engine an arbitrary command launches; these commands own that guarantee.
+# Hooks also receive `$AGENT_LOOP_PR_NUMBER`, `$AGENT_LOOP_PR_URL`, and
+# `$AGENT_LOOP_PR_HEAD_SHA`. The last value is the exact head at pass start.
+# Every successfully completed clean or changed hook must call `review-ledger.js
+# write-result` to create the canonical `$AGENT_LOOP_REVIEW_RESULT_FILE`; reviewers
+# never copy fingerprint arrays. A blocked hook must use the deterministic
+# `review-ledger.js write-blocked-result` command documented by deepcritique and
+# return without claiming a clean or changed pass.
+gemini_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine gemini
+claude_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine claude
+review_max_rounds = 4
+# Positive wall-clock budget for the complete review run. The deadline is
+# persisted so resume cannot reset it; each review pass receives only the
+# remaining time.
+review_timeout_seconds = 7200
+
+# Optional worker override. When empty, the wrapper runs `agy` with the
+# prompt from prompt.txt. The default worker honors the model settings below.
+worker_hook =
+worker_model = gemini-3.7-flash-high
+worker_fallback_model = gemini-3.1-pro-high
+worker_retries = 1
+# Both timeout values must be positive; GNU `timeout 0` would disable the bound.
+worker_timeout_seconds = 3600
+hook_timeout_seconds = 3600
+retry_on_timeout = true
+retry_delay_seconds = 15
+
+# `ready` preserves legacy open/closed dependency behavior. `merged-to-base`
+# requires dependency PR merge commits to be present in origin/<base>.
+dependency_gate = ready
+
+branch_prefix = agent-loop
+worktree_root = /tmp/agent-loop-worktrees
+log_root = /tmp/agent-loop-logs
+log_max_kb = 1024
+output_max_lines = 40

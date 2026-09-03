@@ -1,0 +1,260 @@
+# Sync canonical files from loomantix/gemini-platform — produces verified commits.
+#
+# Trust model: Job A clones gemini-platform and runs upstream `sync-engine.py` under
+# `permissions: { contents: read }` with no App token, then hands a tarball
+# + git-status manifest to Job B. Job B holds the App token but only runs
+# the consumer-vendored `.github/scripts/create-signed-commit.py` against
+# Job A's payload. A compromise of upstream cannot reach the bot token.
+#
+# Uses `.gemini-platform-config.yml` (falling back to `.platform-config.yml`).
+#
+# Kill switch: `SKIP_GEMINI_PLATFORM_SYNC` repo variable.
+
+name: Sync from gemini-platform
+
+on:
+  schedule:
+    - cron: '40 9 * * *' # daily at 09:40 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-from-gemini-platform
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: loomantix/gemini-platform
+  UPSTREAM_REF: sync-v1
+  SYNC_BRANCH_PREFIX: sync/gemini-platform
+  PR_BASE_BRANCH: main
+
+jobs:
+  sync-build:
+    # Untrusted job — runs upstream-cloned sync-engine.py. No App token,
+    # contents: read only. Output is a tarball + manifest of changes.
+    if: vars.SKIP_GEMINI_PLATFORM_SYNC == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    env:
+      PAYLOAD_DIR: /tmp/sync-payload
+    steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.PR_BASE_BRANCH }}
+          persist-credentials: false # upstream code runs next; leave no auth on disk
+
+      - name: Clone upstream
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/upstream # warm-runner / rerun safety
+          mkdir -p /tmp/upstream
+          cd /tmp/upstream
+          git init -q
+          git remote add origin "https://github.com/${UPSTREAM_REPO}.git"
+          if git ls-remote --tags --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
+            git fetch --depth=1 origin "refs/tags/${UPSTREAM_REF}:refs/tags/${UPSTREAM_REF}"
+          elif git ls-remote --heads --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
+            git fetch --depth=1 origin "${UPSTREAM_REF}"
+          else
+            echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' is neither a tag nor a branch on ${UPSTREAM_REPO}." >&2
+            exit 1
+          fi
+          git checkout -q FETCH_HEAD
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python3 -m pip install 'pyyaml==6.0.2'
+
+      - name: Run sync engine
+        run: |
+          set -euo pipefail
+          # Select the consumer config explicitly. The engine's only fallback
+          # is `.platform-config.yml`, which in a repo synced by more than one
+          # upstream is a *different* upstream's config — syncing against it
+          # would either refuse every destination or apply the wrong allowlist.
+          #
+          # This selection is duplicated in the publish job on purpose. That
+          # job must not take the path from this one: this job runs
+          # upstream-cloned code, and the config is the consent store the
+          # publish gate checks the payload against.
+          CONFIG_PATH=.platform-config.yml
+          if [ -f .gemini-platform-config.yml ]; then
+            CONFIG_PATH=.gemini-platform-config.yml
+          fi
+          python3 /tmp/upstream/scripts/sync-engine.py \
+            --upstream-repo /tmp/upstream \
+            --consumer-dir . \
+            --config "$CONFIG_PATH"
+
+      - name: Detect changes + build payload
+        id: diff
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Already in sync with upstream"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          git status --short
+
+          # Payload layout for Job B:
+          #   base-sha      Job A base commit SHA
+          #   manifest      raw `git status --porcelain=v1 -z -uall` bytes
+          #   tree.tar.gz   post-sync working tree (.git excluded)
+          # -uall is required: untracked directories otherwise collapse to a
+          # single `?? dir/` entry, which the script cannot expand.
+          rm -rf "$PAYLOAD_DIR"
+          mkdir -p "$PAYLOAD_DIR"
+          git rev-parse HEAD > "$PAYLOAD_DIR/base-sha"
+          git status --porcelain=v1 -z -uall > "$PAYLOAD_DIR/manifest"
+          [ -s "$PAYLOAD_DIR/manifest" ] || { echo "::error::empty manifest written"; exit 1; }
+          tar --exclude='./.git' -czf "$PAYLOAD_DIR/tree.tar.gz" .
+          [ -s "$PAYLOAD_DIR/tree.tar.gz" ] || { echo "::error::empty tarball written"; exit 1; }
+          tar -tzf "$PAYLOAD_DIR/tree.tar.gz" >/dev/null
+
+      - name: Upload payload artifact
+        if: steps.diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sync-payload
+          path: ${{ env.PAYLOAD_DIR }}
+          retention-days: 1
+          if-no-files-found: error
+
+  sync-commit:
+    # Trusted job — holds the App installation token. Only runs the
+    # consumer-vendored .github/scripts/create-signed-commit.py against
+    # Job A's payload. Never executes upstream-cloned code.
+    needs: sync-build
+    if: needs.sync-build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read # for actions/checkout fallback; gh + API use App token via env
+    env:
+      PAYLOAD_DIR: /tmp/sync-payload
+    steps:
+      - name: Generate App installation token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          # Placeholder names. Point these at whichever GitHub App
+          # credentials the consumer already installs for its other syncs —
+          # the App needs `contents: write` and `pull_requests: write` on
+          # the consumer repo. Note that an organization secret with
+          # `private` visibility is unreadable from a public repository, so
+          # public and private consumers may need different secret names.
+          app-id: ${{ secrets.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Checkout consumer repo (for vendored scripts only)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.PR_BASE_BRANCH }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install trusted helper dependency
+        run: python3 -m pip install 'pyyaml==6.0.2'
+
+      - name: Download payload artifact
+        if: needs.sync-build.outputs.changed == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sync-payload
+          path: ${{ env.PAYLOAD_DIR }}
+
+      - name: Extract payload tree
+        run: |
+          set -euo pipefail
+          rm -rf "$PAYLOAD_DIR/tree"
+          mkdir -p "$PAYLOAD_DIR/tree"
+          python3 - "$PAYLOAD_DIR/tree.tar.gz" "$PAYLOAD_DIR/tree" <<'PYEOF'
+          import sys, tarfile
+          src, dst = sys.argv[1], sys.argv[2]
+          with tarfile.open(src, "r:gz") as tf:
+              tf.extractall(dst, filter="data")
+          PYEOF
+          if find "$PAYLOAD_DIR/tree" -type l -print -quit | grep -q .; then
+            echo "::error::payload tarball contains symlinks; aborting"
+            find "$PAYLOAD_DIR/tree" -type l
+            exit 1
+          fi
+
+      - name: Create signed commit + open / refresh sync PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          BRANCH="${SYNC_BRANCH_PREFIX}-${GITHUB_RUN_ID}"
+
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          # Resolved independently of the build job — see the note beside the
+          # matching block there. Both jobs must land on the same file, but
+          # this one must not learn it from the untrusted job.
+          CONFIG_PATH=.platform-config.yml
+          if [ -f .gemini-platform-config.yml ]; then
+            CONFIG_PATH=.gemini-platform-config.yml
+          fi
+          python3 .github/scripts/create-signed-commit.py \
+            --owner "$OWNER" \
+            --repo "$REPO" \
+            --base-branch "${PR_BASE_BRANCH}" \
+            --new-branch "$BRANCH" \
+            --message "chore: sync from ${UPSTREAM_REPO}@${UPSTREAM_REF}" \
+            --app-slug "${{ steps.app-token.outputs.app-slug }}" \
+            --payload-dir "$PAYLOAD_DIR/tree" \
+            --manifest "$PAYLOAD_DIR/manifest" \
+            --config "$CONFIG_PATH" \
+            --base-sha-file "$PAYLOAD_DIR/base-sha"
+
+          PR_TITLE="Sync from ${UPSTREAM_REPO}"
+          PR_BODY="Automated sync from \`${UPSTREAM_REPO}@${UPSTREAM_REF}\`. Review the diff carefully before merging."
+          CURRENT_PR=$(gh pr list \
+            --state open \
+            --head "$BRANCH" \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')
+          if [ -n "$CURRENT_PR" ]; then
+            echo "Open PR #$CURRENT_PR for $BRANCH exists — refreshing"
+            gh pr edit "$CURRENT_PR" --title "$PR_TITLE" --body "$PR_BODY"
+          else
+            PR_URL=$(gh pr create \
+              --base "${PR_BASE_BRANCH}" \
+              --head "$BRANCH" \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY" \
+              2> >(sed -E 's/(ghs_|ghp_|gho_|ghu_|github_pat_)[A-Za-z0-9_]+/<token-redacted>/g' >&2))
+            CURRENT_PR=$(gh pr view "$PR_URL" --json number --jq .number)
+          fi
+
+          PRIORS=$(gh pr list \
+            --state open \
+            --limit 100 \
+            --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) | select(.number != ${CURRENT_PR}) | .number")
+          while read -r prior; do
+            [ -z "$prior" ] && continue
+            echo "Closing prior sync PR #$prior"
+            gh pr close "$prior" --delete-branch \
+              --comment "Superseded by sync PR #$CURRENT_PR."
+          done <<< "$PRIORS"

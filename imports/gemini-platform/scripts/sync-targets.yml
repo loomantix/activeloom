@@ -1,0 +1,313 @@
+# Canonical sync manifest for gemini-platform.
+#
+# `sync-engine.py` reads this file from the upstream checkout (this repo, or
+# a fork of it) to learn which files to copy into a consumer repo, and which
+# `<<KEY>>` placeholders to substitute from the consumer's
+# `.gemini-platform-config.yml`.
+#
+# `substitutions: []` means verbatim copy. `delete: true` causes the engine
+# to remove the destination from the consumer (and prune empty parent
+# directories) — use this to retire a previously-synced file across all
+# consumers. `mode` (e.g. `"0755"`) sets the destination permissions.
+
+targets:
+  # Antigravity / Gemini skills
+  - source: .agents/skills/issues/SKILL.md
+    destination: .agents/skills/issues/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/issues/scripts/ready.py
+    destination: .agents/skills/issues/scripts/ready.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/issues/scripts/link.py
+    destination: .agents/skills/issues/scripts/link.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/refactorpass/SKILL.md
+    destination: .agents/skills/refactorpass/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/critique/SKILL.md
+    destination: .agents/skills/critique/SKILL.md
+    substitutions: []
+
+  # The ledger is a build artifact of `@loomantix/review-ledger`, vendored
+  # verbatim from the published tarball and run as `node review-ledger.js`.
+  # Mode is 0644 deliberately: npm normalises non-`bin` files to 0644 in the
+  # tarball, so the committed file is not executable and nothing may invoke it
+  # as `./review-ledger.js`. The sibling `package.json` declaring
+  # `"type": "module"` must sync with it — the bundle is ESM under a `.js`
+  # name, so without it Node resolves the module type from the CONSUMER's root
+  # manifest and a `"type": "commonjs"` repository fails with a SyntaxError.
+  # `review-ledger.version` and `review-ledger.integrity` record which
+  # published tarball these bytes came from; `gemini-platform` CI pins them.
+  - source: .agents/skills/critique/scripts/review-ledger.js
+    destination: .agents/skills/critique/scripts/review-ledger.js
+    substitutions: []
+    mode: '0644'
+
+  - source: .agents/skills/critique/scripts/package.json
+    destination: .agents/skills/critique/scripts/package.json
+    substitutions: []
+    mode: '0644'
+
+  - source: .agents/skills/critique/scripts/review-ledger.version
+    destination: .agents/skills/critique/scripts/review-ledger.version
+    substitutions: []
+    mode: '0644'
+
+  - source: .agents/skills/critique/scripts/review-ledger.integrity
+    destination: .agents/skills/critique/scripts/review-ledger.integrity
+    substitutions: []
+    mode: '0644'
+
+  - source: .agents/skills/deepcritique/SKILL.md
+    destination: .agents/skills/deepcritique/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/pr-critique/SKILL.md
+    destination: .agents/skills/pr-critique/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/reviewit/SKILL.md
+    destination: .agents/skills/reviewit/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/copilot-review/SKILL.md
+    destination: .agents/skills/copilot-review/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/actions-usage-audit/SKILL.md
+    destination: .agents/skills/actions-usage-audit/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/publish-npm-package/SKILL.md
+    destination: .agents/skills/publish-npm-package/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/publish-npm-package/agents/openai.yaml
+    destination: .agents/skills/publish-npm-package/agents/openai.yaml
+    substitutions: []
+
+  - source: .agents/skills/publish-npm-package/references/upstream-docs.md
+    destination: .agents/skills/publish-npm-package/references/upstream-docs.md
+    substitutions: []
+
+  - source: .agents/skills/publish-npm-package/scripts/release-preflight.py
+    destination: .agents/skills/publish-npm-package/scripts/release-preflight.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/publish-npm-package/scripts/verify-published-package.py
+    destination: .agents/skills/publish-npm-package/scripts/verify-published-package.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/ship-staging/SKILL.md
+    destination: .agents/skills/ship-staging/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/phone-install/SKILL.md
+    destination: .agents/skills/phone-install/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/feature-dev/SKILL.md
+    destination: .agents/skills/feature-dev/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/diagnosing-bugs/SKILL.md
+    destination: .agents/skills/diagnosing-bugs/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/task-packet/SKILL.md
+    destination: .agents/skills/task-packet/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/agent-loop/SKILL.md
+    destination: .agents/skills/agent-loop/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/agent-loop/scripts/agent-loop.sh
+    destination: .agents/skills/agent-loop/scripts/agent-loop.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/agent-loop/scripts/agent-loop-state.py
+    destination: .agents/skills/agent-loop/scripts/agent-loop-state.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/agent-loop/scripts/review-push.sh
+    destination: .agents/skills/agent-loop/scripts/review-push.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/agent-loop/scripts/config-doctor.py
+    destination: .agents/skills/agent-loop/scripts/config-doctor.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/agent-loop/scripts/run-agy-launch.sh
+    destination: .agents/skills/agent-loop/scripts/run-agy-launch.sh
+    substitutions: []
+    mode: '0644'
+
+  - source: .agents/skills/agent-loop/scripts/run-agy-worker.sh
+    destination: .agents/skills/agent-loop/scripts/run-agy-worker.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/agent-loop/scripts/run-agy-review.sh
+    destination: .agents/skills/agent-loop/scripts/run-agy-review.sh
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/agent-loop/scripts/hook-git-guard
+    destination: .agents/skills/agent-loop/scripts/hook-git-guard
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/agent-loop/scripts/hook-gh-guard
+    destination: .agents/skills/agent-loop/scripts/hook-gh-guard
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/agent-loop/agent-loop.config.template
+    destination: .agents/skills/agent-loop/agent-loop.config
+    substitutions: []
+    create_if_missing: true
+
+  - source: .agents/skills/agent-loop/agent-loop-instructions.md.template
+    destination: agent-loop-instructions.md
+    substitutions: []
+    create_if_missing: true
+
+  - source: .agents/skills/agent-loop/prompt.txt.template
+    destination: .agents/skills/agent-loop/prompt.txt
+    substitutions: []
+    create_if_missing: true
+
+  - source: .agents/skills/backlog-refinement/SKILL.md
+    destination: .agents/skills/backlog-refinement/SKILL.md
+    substitutions: []
+
+  - source: .agents/skills/backlog-refinement/scripts/candidates.py
+    destination: .agents/skills/backlog-refinement/scripts/candidates.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/backlog-refinement/scripts/bail-report.py
+    destination: .agents/skills/backlog-refinement/scripts/bail-report.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .agents/skills/backlog-refinement/RUBRIC.md.template
+    destination: .agents/skills/backlog-refinement/RUBRIC.md
+    substitutions: []
+    create_if_missing: true
+
+  - source: .agents/skills/backlog-refinement/LEARNINGS.md.template
+    destination: .agents/skills/backlog-refinement/LEARNINGS.md
+    substitutions: []
+    create_if_missing: true
+
+  - source: .agents/references/roles/code-explorer.md
+    destination: .agents/references/roles/code-explorer.md
+    substitutions: []
+
+  - source: .agents/references/roles/code-architect.md
+    destination: .agents/references/roles/code-architect.md
+    substitutions: []
+
+  - source: .agents/references/roles/code-reviewer.md
+    destination: .agents/references/roles/code-reviewer.md
+    substitutions: []
+
+  - source: .agents/references/roles/silent-failure-hunter.md
+    destination: .agents/references/roles/silent-failure-hunter.md
+    substitutions: []
+
+  - source: .agents/references/roles/type-design-analyzer.md
+    destination: .agents/references/roles/type-design-analyzer.md
+    substitutions: []
+
+  - source: .agents/references/roles/comment-analyzer.md
+    destination: .agents/references/roles/comment-analyzer.md
+    substitutions: []
+
+  - source: .agents/references/roles/pr-test-analyzer.md
+    destination: .agents/references/roles/pr-test-analyzer.md
+    substitutions: []
+
+  - source: .agents/references/roles/security-reviewer.md
+    destination: .agents/references/roles/security-reviewer.md
+    substitutions: []
+
+  - source: .agents/references/local-review-ledger.md
+    destination: .agents/references/local-review-ledger.md
+    substitutions: []
+
+  - source: .agents/REVIEW_WORKFLOW.md
+    destination: .agents/REVIEW_WORKFLOW.md
+    substitutions: []
+
+  - destination: .agents/skills/pushit/SKILL.md
+    delete: true
+  - destination: .agents/skills/review-cycle/SKILL.md
+    delete: true
+  - destination: .agents/skills/grill/SKILL.md
+    delete: true
+  - destination: .agents/skills/grill/scripts/review-ledger.py
+    delete: true
+  - destination: .agents/skills/deepgrill/SKILL.md
+    delete: true
+  - destination: .agents/skills/pr-grill/SKILL.md
+    delete: true
+
+  # The Python ledger was replaced by the vendored `review-ledger.js` bundle.
+  # Not order-dependent — the destination differs from the copy above by
+  # extension, so the two entries cannot collide. Keep it here until every
+  # consumer has run a sync that includes it, or repos keep a stale second
+  # ledger implementation that `agent-loop.sh` no longer calls.
+  - destination: .agents/skills/critique/scripts/review-ledger.py
+    delete: true
+
+  - source: .agents/skills/grill/SKILL.md
+    destination: .agents/skills/grill/SKILL.md
+    substitutions: []
+
+  - source: .github/copilot-instructions.md.template
+    destination: .github/copilot-instructions.md
+    substitutions:
+      - PROJECT_NAME
+      - PROJECT_OVERVIEW
+      - CANONICAL_DOCS
+      - STACK_TABLE
+      - CODE_RULES
+      - DOMAIN_RULES
+      - REVIEW_FOCUS
+      - WHAT_NOT_TO_SUGGEST_EXTRA
+    collapse_empty_substitutions:
+      - PROJECT_OVERVIEW
+      - STACK_TABLE
+      - CODE_RULES
+      - DOMAIN_RULES
+      - REVIEW_FOCUS
+      - WHAT_NOT_TO_SUGGEST_EXTRA
+
+  - source: .github/workflows/dco.yml
+    destination: .github/workflows/dco.yml
+    substitutions: []
+
+  # `.github/scripts/create-signed-commit.py` is deliberately NOT a sync
+  # target. It is the only thing the trusted job runs while holding the App
+  # installation token, and the workflow's trust model rests on it being
+  # consumer-vendored: Job A executes upstream code with no token, Job B
+  # holds the token and executes only consumer-owned code. Syncing the
+  # helper would hand upstream a write channel into the trusted job and
+  # void that separation. Consumers vendor it by hand at onboarding and
+  # update it by reviewed PR, the same way `claude-platform` and
+  # `codex-platform` consumers do.
