@@ -128,7 +128,7 @@ class Profile:
         if root.startswith("~") or root_path.is_absolute() or ".." in root_path.parts:
             raise ValueError(f"{path}: `root` must be a relative path inside the repo: {root!r}")
         normalized_root = root_path.as_posix()
-        if normalized_root in ("", "."):
+        if normalized_root == ".":
             raise ValueError(f"{path}: `root` must name a prompt root below the repo: {root!r}")
 
         # `is None` rather than a falsy test: an omitted key is fine and means
@@ -410,11 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _report_drift(
-    staging: Path, written: list[Path], previously_owned: list[Path] | None = None
-) -> int:
-    if previously_owned is None:
-        previously_owned = _load_manifest()
+def _report_drift(staging: Path, written: list[Path], previously_owned: list[Path]) -> int:
     missing: list[Path] = []
     differing: list[Path] = []
     stale = sorted(set(previously_owned) - set(written))

@@ -2,7 +2,8 @@
 r"""Lint unattended agent-CLI invocations inside synced shell scripts.
 
 Scope (the scan set is the union of):
-  - every `.sh` file tracked under `.claude/skills/` (SCOPE_DIRS), AND
+  - every `.sh` file tracked under `.claude/skills/` or `prompts/skills/`
+    (SCOPE_DIRS), AND
   - every `.sh` `source:` entry in `scripts/sync-targets.yml`.
 
 Every `claude` or `agy` invocation (or use of `--permission-mode`,

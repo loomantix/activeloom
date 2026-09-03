@@ -295,7 +295,7 @@ jobs:
             "$CONSUMER/rendered.md"
 
       # --- rendered prompt roots are current ---
-      # The six skills in `prompts/skills/` are single-sourced and rendered into
+      # The skills in `prompts/skills/` are single-sourced and rendered into
       # `.claude/`, `.codex/`, and `.agents/`. Those rendered files are what
       # consumers sync, so they are committed — which means they can go stale
       # against their source, or be hand-edited in the root instead of the

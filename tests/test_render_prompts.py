@@ -29,14 +29,8 @@ def _write_profile(directory: Path, name: str, body: str) -> Path:
 # --------------------------------------------------------------------------
 
 
-def test_profile_reads_root_values_and_skills(
-    render_prompts: ModuleType, tmp_path: Path
-) -> None:
-    path = _write_profile(
-        tmp_path,
-        "claude",
-        "root: .claude\nvalues:\n  INVOKE: '/'\nskills:\n  issues:\n    FM_EXTRAS: 'x: 1'\n",
-    )
+def test_profile_reads_root_and_values(render_prompts: ModuleType, tmp_path: Path) -> None:
+    path = _write_profile(tmp_path, "claude", "root: .claude\nvalues:\n  INVOKE: '/'\n")
     profile = render_prompts.Profile(path)
     assert profile.root == ".claude"
     assert profile.name == "claude"
@@ -102,22 +96,20 @@ def test_profile_rejects_a_root_that_escapes_the_repo(
         render_prompts.Profile(path)
 
 
+@pytest.mark.parametrize("duplicate_root", [".claude", "./.claude/"])
 def test_load_profiles_rejects_two_profiles_sharing_a_root(
-    render_prompts: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    render_prompts: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    duplicate_root: str,
 ) -> None:
-    """Two profiles with one root means the second silently overwrites the first."""
-    _write_profile(tmp_path, "claude", "root: .claude\nvalues: {}\n")
-    _write_profile(tmp_path, "clone", "root: .claude\nvalues: {}\n")
-    monkeypatch.setattr(render_prompts, "PROFILES_DIR", tmp_path)
-    with pytest.raises(ValueError, match="share a root"):
-        render_prompts.load_profiles()
+    """Two profiles with one root means the second silently overwrites the first.
 
-
-def test_load_profiles_normalizes_roots_before_checking_duplicates(
-    render_prompts: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    The second spelling is the same root written differently: roots are
+    normalized before the duplicate check, so it must be rejected too.
+    """
     _write_profile(tmp_path, "claude", "root: .claude\nvalues: {}\n")
-    _write_profile(tmp_path, "clone", "root: ./.claude/\nvalues: {}\n")
+    _write_profile(tmp_path, "clone", f"root: {duplicate_root}\nvalues: {{}}\n")
     monkeypatch.setattr(render_prompts, "PROFILES_DIR", tmp_path)
     with pytest.raises(ValueError, match="share a root"):
         render_prompts.load_profiles()
@@ -218,7 +210,8 @@ class Harness:
 
     def report_drift(self, staging: Path, written: list[Path]) -> int:
         """`--check`'s comparison, against this harness's fake repo root."""
-        return int(self._rp._report_drift(staging, written))
+        # `int(...)`: `_rp` is a ModuleType, so the call is `Any` under --strict.
+        return int(self._rp._report_drift(staging, written, self._rp._load_manifest()))
 
     def publish(self, staging: Path, written: list[Path], mode: int | None = None) -> None:
         """Copy a render into the fake repo root, as a commit would."""

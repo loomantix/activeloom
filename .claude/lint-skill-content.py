@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-r"""Lint files in `.claude/skills/` and `.claude/agents/` for weaponization patterns.
+r"""Lint prompt trees and their executable payloads for weaponization patterns.
 
-Scope (the union of):
-  - `.md` files under `.claude/skills/` and `.claude/agents/` (SKILL.md, agents),
-  - `.template` files under the same trees (consumer-facing prompt templates),
-  - `.js` files under the same trees (skill payloads a SKILL.md tells Claude to
-    execute — e.g. a script injected into a live page via a browser tool).
+Scope is the cross product of DIFF_DIRS and SCOPE_SUFFIXES below; keep this
+prose in step with those two constants:
+  - trees (DIFF_DIRS): `.claude/skills/`, `.claude/agents/`, `prompts/skills/`
+    (the rendered roster's single source), and the `.codex/skills/` and
+    `.agents/skills/` roots that arrived with the subtree imports,
+  - suffixes (SCOPE_SUFFIXES): `.md` (SKILL.md, agent prose), `.template`
+    (consumer-facing prompt templates), and `.js`, `.py`, `.sh`, `.bash`
+    (payloads a SKILL.md tells an agent to execute rather than read — e.g. a
+    script injected into a live page via a browser tool, or a rendered skill
+    script).
 
 These files are prompts that drive Claude in dev sessions and consumer CI. A
 subtly malicious PR can add a few innocuous-looking lines to any skill — e.g.
@@ -24,6 +29,11 @@ Usage:
     python3 .claude/lint-skill-content.py --base <ref>     # diff vs <ref> (uses A...HEAD)
     python3 .claude/lint-skill-content.py --self-test      # run unit fixtures only
     python3 .claude/lint-skill-content.py --all            # scan tracked files (not just changes)
+
+`--all` is an ad-hoc audit, not a gate. CI runs `--self-test` and the diff
+scan; `--all` reads every tracked file in scope, including lines committed
+before a tree entered that scope, so it can report a standing backlog and exit
+nonzero on a tree whose gated checks are green. Read its output as a worklist.
 
 Exit codes: 0 clean, 1 findings, 2 usage/internal error.
 """
@@ -650,7 +660,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Scan every tracked prompt or executable payload in scope, not just the diff.",
+        help=(
+            "Audit every tracked prompt or executable payload in scope, not just "
+            "the diff. Not a gate: may report a standing backlog and exit nonzero."
+        ),
     )
     args = parser.parse_args(argv)
 
