@@ -25,3 +25,11 @@ NOTICE
 
 # Local-only Claude overrides (already gitignored, defense in depth)
 .claude/settings.local.json
+
+# Subtree-imported sibling trees (imports/codex-platform, imports/gemini-platform).
+# These are staging residue from the activeloom consolidation: each carries its
+# own .prettierrc (including a prettier-plugin-toml dependency this repo does
+# not install) and its own vendored review-ledger.js build artifact. They are
+# reconciled into the native tree and deleted by the P3 renderer/parity work,
+# so formatting them here would be churn against files that are about to move.
+imports/
