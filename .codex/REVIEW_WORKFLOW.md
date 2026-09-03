@@ -59,7 +59,7 @@ or override Claude's model, effort, permission, persistence, or output options;
 the launcher owns those settings and pins literal `--effort low`. Do not set
 `CLAUDE_REVIEW_CLI` outside launcher tests. A missing, incompatible, or failed
 launcher is a blocker, not permission to fall back to the raw CLI.
-The launcher also owns a 30-minute pass timeout. Operators may lower it with
+The launcher also owns a 45-minute pass timeout. Operators may lower it with
 `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the hard 3600-second ceiling
 are rejected.
 
