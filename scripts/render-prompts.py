@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import cast
@@ -67,6 +68,15 @@ FORMATTED_SUFFIXES = (".md",)
 # string. Kept explicit rather than inferred so a new whole-line placeholder is
 # a deliberate addition.
 COLLAPSE_KEYS = ("FM_EXTRAS",)
+
+# Build artifacts that appear *inside* the source tree and must never be
+# rendered into a harness root. `prompts/skills/issues/scripts/*.py` are real
+# Python, so CI's `Compile-check every Python source` step (and any local
+# `py_compile` or import) drops `__pycache__/*.pyc` next to them. Those are
+# gitignored, so they are invisible in review, but `rglob("*")` sees them and
+# would copy stale bytecode into all three roots.
+IGNORED_DIR_NAMES = frozenset({"__pycache__"})
+IGNORED_SUFFIXES = (".pyc", ".pyo")
 
 # Deliberately looser than the engine's `<<KEY>>` pattern, because its whole
 # purpose is to catch tokens that pattern would *miss* — a key mangled into
@@ -185,7 +195,7 @@ def render_tree(engine: ModuleType, profiles: list[Profile], destination: Path) 
     written: list[Path] = []
     for skill in rendered_roster():
         source_dir = SKILLS_SRC / skill
-        for source in sorted(p for p in source_dir.rglob("*") if p.is_file()):
+        for source in sorted(_source_files(source_dir)):
             relative = source.relative_to(source_dir)
             raw = source.read_bytes()
             for profile in profiles:
@@ -197,6 +207,24 @@ def render_tree(engine: ModuleType, profiles: list[Profile], destination: Path) 
                 shutil.copymode(source, target)
                 written.append(target.relative_to(destination))
     return written
+
+
+def _source_files(source_dir: Path) -> Iterator[Path]:
+    """Every renderable file under a skill source directory.
+
+    Skips build artifacts — see `IGNORED_DIR_NAMES` / `IGNORED_SUFFIXES`. They
+    are gitignored, so a reviewer never sees them, which is exactly why the
+    renderer has to exclude them rather than rely on the tree being clean.
+    """
+    for path in source_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source_dir)
+        if IGNORED_DIR_NAMES.intersection(relative.parts):
+            continue
+        if path.suffix in IGNORED_SUFFIXES:
+            continue
+        yield path
 
 
 def _render_file(

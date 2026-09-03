@@ -528,3 +528,19 @@ def test_main_fails_when_there_are_no_sources(
     monkeypatch.setattr(cli._rp, "SKILLS_SRC", cli.root / "absent")
     assert cli._rp.main([]) == 1
     assert "no skill sources found" in capsys.readouterr().err
+
+
+def test_render_skips_bytecode_left_in_the_source_tree(one_skill: Harness) -> None:
+    """`prompts/skills/**/scripts/*.py` are real Python, so anything that
+    imports or compiles them drops `__pycache__` alongside. Those artifacts are
+    gitignored — invisible in review — and `rglob` would otherwise copy stale
+    bytecode into all three harness roots. CI caught exactly this.
+    """
+    one_skill.write_source("demo/scripts/run.py", "X = 1\n")
+    one_skill.write_source("demo/scripts/__pycache__/run.cpython-312.pyc", b"\x00stale")
+    one_skill.write_source("demo/scripts/loose.pyc", b"\x00also stale")
+    out, written = one_skill.render()
+    assert Path(".claude/skills/demo/scripts/run.py") in written
+    assert not any("__pycache__" in str(p) for p in written)
+    assert not any(p.suffix == ".pyc" for p in written)
+    assert not (out / ".claude/skills/demo/scripts/loose.pyc").exists()
