@@ -52,6 +52,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 PROMPTS_DIR = REPO_ROOT / "prompts"
 SKILLS_SRC = PROMPTS_DIR / "skills"
 PROFILES_DIR = PROMPTS_DIR / "profiles"
+MANIFEST_PATH = PROMPTS_DIR / "rendered-files.txt"
 
 # Same pin as the `Prettier --check` step in `.github/workflows/ci.yml`. If one
 # moves and the other does not, CI fails on the renderer's own output — which is
@@ -123,8 +124,12 @@ class Profile:
         # A profile root is joined to the repo root and must stay inside it.
         # Profiles are checked-in config, not user input, but a rendering step
         # that can be pointed at `/` by a typo is worth one cheap assertion.
-        if root.startswith(("/", "~")) or ".." in Path(root).parts:
+        root_path = Path(root)
+        if root.startswith("~") or root_path.is_absolute() or ".." in root_path.parts:
             raise ValueError(f"{path}: `root` must be a relative path inside the repo: {root!r}")
+        normalized_root = root_path.as_posix()
+        if normalized_root in ("", "."):
+            raise ValueError(f"{path}: `root` must name a prompt root below the repo: {root!r}")
 
         # `is None` rather than a falsy test: an omitted key is fine and means
         # "empty", but `values: []` is a malformed profile and must not be
@@ -146,7 +151,7 @@ class Profile:
 
         self.path = path
         self.name = path.stem
-        self.root = root
+        self.root = normalized_root
         self.values = cast(dict[str, object], values)
         self.skills = cast(dict[str, dict[str, object] | None], skills)
 
@@ -184,7 +189,13 @@ def rendered_roster() -> list[str]:
     """
     if not SKILLS_SRC.is_dir():
         return []
-    return sorted(d.name for d in SKILLS_SRC.iterdir() if d.is_dir())
+    roster: list[str] = []
+    for entry in SKILLS_SRC.iterdir():
+        if entry.is_symlink() and entry.is_dir():
+            raise ValueError(f"skill source directories must not be symlinks: {entry}")
+        if entry.is_dir():
+            roster.append(entry.name)
+    return sorted(roster)
 
 
 def render_tree(engine: ModuleType, profiles: list[Profile], destination: Path) -> list[Path]:
@@ -217,6 +228,8 @@ def _source_files(source_dir: Path) -> Iterator[Path]:
     renderer has to exclude them rather than rely on the tree being clean.
     """
     for path in source_dir.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(f"skill source entries must not be symlinks: {path}")
         if not path.is_file():
             continue
         relative = path.relative_to(source_dir)
@@ -225,6 +238,49 @@ def _source_files(source_dir: Path) -> Iterator[Path]:
         if path.suffix in IGNORED_SUFFIXES:
             continue
         yield path
+
+
+def _manifest_text(written: list[Path]) -> str:
+    """Canonical generated-path ownership record."""
+    return "".join(f"{path.as_posix()}\n" for path in sorted(set(written)))
+
+
+def _load_manifest() -> list[Path]:
+    """Read and validate the previously generated path set."""
+    if MANIFEST_PATH.is_symlink():
+        raise ValueError(f"generated-path manifest must not be a symlink: {MANIFEST_PATH}")
+    if not MANIFEST_PATH.exists():
+        return []
+    paths: list[Path] = []
+    for raw in MANIFEST_PATH.read_text(encoding="utf-8").splitlines():
+        path = Path(raw)
+        if (
+            not raw
+            or path.is_absolute()
+            or ".." in path.parts
+            or len(path.parts) < 4
+            or path.parts[1] != "skills"
+        ):
+            raise ValueError(f"{MANIFEST_PATH}: invalid generated path: {raw!r}")
+        paths.append(path)
+    if len(paths) != len(set(paths)):
+        raise ValueError(f"{MANIFEST_PATH}: duplicate generated paths")
+    return paths
+
+
+def _publish_outputs(staging: Path, written: list[Path], previously_owned: list[Path]) -> None:
+    """Replace the generated path set and remove outputs retired from source."""
+    current = set(written)
+    for relative in sorted(set(previously_owned) - current):
+        target = REPO_ROOT / relative
+        if target.is_file() or target.is_symlink():
+            target.unlink()
+    for relative in written:
+        target = REPO_ROOT / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(staging / relative, target)
+    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MANIFEST_PATH.write_text(_manifest_text(written), encoding="utf-8")
 
 
 def _render_file(
@@ -340,14 +396,12 @@ def main(argv: list[str] | None = None) -> int:
         staging = Path(tmp)
         written = render_tree(engine, profiles, staging)
         format_markdown(staging, written)
+        previously_owned = _load_manifest()
 
         if args.check:
-            return _report_drift(staging, written)
+            return _report_drift(staging, written, previously_owned)
 
-        for relative in written:
-            target = REPO_ROOT / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(staging / relative, target)
+        _publish_outputs(staging, written, previously_owned)
 
     print(
         f"rendered {len(roster)} skill(s) into {len(profiles)} harness root(s): "
@@ -356,9 +410,14 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _report_drift(staging: Path, written: list[Path]) -> int:
+def _report_drift(
+    staging: Path, written: list[Path], previously_owned: list[Path] | None = None
+) -> int:
+    if previously_owned is None:
+        previously_owned = _load_manifest()
     missing: list[Path] = []
     differing: list[Path] = []
+    stale = sorted(set(previously_owned) - set(written))
     for relative in written:
         committed = REPO_ROOT / relative
         if not committed.exists():
@@ -368,7 +427,12 @@ def _report_drift(staging: Path, written: list[Path]) -> int:
         elif (staging / relative).stat().st_mode & 0o111 != committed.stat().st_mode & 0o111:
             differing.append(relative)
 
-    if not missing and not differing:
+    manifest_drift = (
+        not MANIFEST_PATH.exists()
+        or MANIFEST_PATH.read_text(encoding="utf-8") != _manifest_text(written)
+    )
+
+    if not missing and not differing and not stale and not manifest_drift:
         print(f"rendered output matches all {len(written)} committed file(s)")
         return 0
 
@@ -377,6 +441,10 @@ def _report_drift(staging: Path, written: list[Path]) -> int:
         sys.stderr.write(f"  missing:   {relative}\n")
     for relative in differing:
         sys.stderr.write(f"  differs:   {relative}\n")
+    for relative in stale:
+        sys.stderr.write(f"  stale:     {relative}\n")
+    if manifest_drift:
+        sys.stderr.write(f"  differs:   {MANIFEST_PATH.relative_to(REPO_ROOT)}\n")
     sys.stderr.write(
         "\nThe harness roots are generated from `prompts/`. Edit the source in "
         "`prompts/skills/` (or the value in `prompts/profiles/`), then run:\n"

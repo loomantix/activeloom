@@ -65,14 +65,15 @@ DIFF_DIRS = [
 # `agent-loop/agent-loop-instructions.md.template` (the consumer-owned
 # instructions bootstrap). Both are weaponization-eligible surfaces.
 #
-# `.js` covers skill payloads that a SKILL.md instructs Claude to execute
-# rather than read — today `review-accessibility/assets/axe-scan.js`, which
+# `.js`, `.py`, and shell suffixes cover skill payloads that a SKILL.md instructs
+# an agent to execute rather than read — today that includes
+# `review-accessibility/assets/axe-scan.js` and rendered skill scripts, which
 # is eval'd inside a live (often authenticated) browser session. Prose and
 # payload are the same threat surface: an off-allowlist URL or a
 # fetch-and-execute is no less dangerous for sitting in a `.js` file, and
 # without this the gate could be sidestepped by moving a line out of the
 # SKILL.md and into an asset it sources.
-SCOPE_SUFFIXES = (".md", ".template", ".js")
+SCOPE_SUFFIXES = (".md", ".template", ".js", ".py", ".sh", ".bash")
 
 
 @dataclass(frozen=True)
@@ -520,7 +521,7 @@ def run_self_test() -> int:
             True,
             "skills instructions template",
         ),
-        (".claude/skills/agent-loop/scripts/agent-loop.sh", False, "skills .sh out of scope"),
+        (".claude/skills/agent-loop/scripts/agent-loop.sh", True, "skills .sh payload"),
         ("docs/foo.md", False, ".md outside DIFF_DIRS"),
         (".claude/skills/agent-loop/notes.txt", False, ".txt outside SCOPE_SUFFIXES"),
         # `.js` skill payloads are eval'd by the browser tool at Claude's
@@ -536,6 +537,13 @@ def run_self_test() -> int:
         # source is what a weaponizing PR would edit to reach all three roots at
         # once, so a refactor that drops it must fail here.
         ("prompts/skills/issues/SKILL.md", True, "rendered-skill source SKILL.md"),
+        (
+            "prompts/skills/issues/scripts/link.py",
+            True,
+            "rendered-skill source Python payload",
+        ),
+        (".codex/skills/issues/scripts/link.py", True, "codex Python payload"),
+        (".agents/skills/issues/scripts/link.py", True, "gemini Python payload"),
         (".codex/skills/critique/SKILL.md", True, "codex root SKILL.md"),
         (".agents/skills/critique/SKILL.md", True, "gemini root SKILL.md"),
         ("prompts/profiles/claude.yml", False, "profile .yml outside SCOPE_SUFFIXES"),
@@ -622,8 +630,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Scan every tracked file in scope (.md and .template) under "
-        ".claude/skills/ and .claude/agents/, not just the diff.",
+        help="Scan every tracked prompt or executable payload in scope, not just the diff.",
     )
     args = parser.parse_args(argv)
 

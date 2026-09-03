@@ -35,8 +35,10 @@ a hand-edit to a generated file fails the build.
 ## Adding a rendered skill
 
 Create `prompts/skills/<name>/SKILL.md` and add whatever per-skill values it
-needs to the three profiles. The roster is the directory listing — there is no
-manifest to keep in step, and so nothing to forget.
+needs to the three profiles. The roster is the directory listing, so there is
+no hand-maintained skill manifest to keep in step. The renderer owns
+`prompts/rendered-files.txt`, a generated path inventory used only to remove and
+reject retired outputs.
 
 ## Adding a variable
 
@@ -86,7 +88,7 @@ The review chain — `critique`, `deepcritique`, `refactorpass`, `reviewit`,
 [`docs/decisions/0006`](decisions/0006-review-chains-never-converge.md) is the
 standing record: those prompts are calibration for a specific model family, and
 two engines running the same text are one reviewer with two billing accounts.
-Measured divergence across the chain is 70–92%, so there is no shared source to
+The implementations deliberately diverge, so there is no shared source to
 recover even if it were wanted.
 
 Held back for now, pending zero parity-lint residuals: `copilot-review`,

@@ -9,6 +9,7 @@ network. That check is the `Rendered prompt roots are current` step in
 """
 from __future__ import annotations
 
+import shutil
 import stat
 from pathlib import Path
 from types import ModuleType
@@ -112,6 +113,16 @@ def test_load_profiles_rejects_two_profiles_sharing_a_root(
         render_prompts.load_profiles()
 
 
+def test_load_profiles_normalizes_roots_before_checking_duplicates(
+    render_prompts: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_profile(tmp_path, "claude", "root: .claude\nvalues: {}\n")
+    _write_profile(tmp_path, "clone", "root: ./.claude/\nvalues: {}\n")
+    monkeypatch.setattr(render_prompts, "PROFILES_DIR", tmp_path)
+    with pytest.raises(ValueError, match="share a root"):
+        render_prompts.load_profiles()
+
+
 def test_load_profiles_rejects_an_empty_profiles_directory(
     render_prompts: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -182,6 +193,9 @@ class Harness:
         monkeypatch.setattr(render_prompts, "SKILLS_SRC", self.src)
         monkeypatch.setattr(render_prompts, "PROFILES_DIR", self.profiles_dir)
         monkeypatch.setattr(render_prompts, "REPO_ROOT", root)
+        monkeypatch.setattr(
+            render_prompts, "MANIFEST_PATH", root / "prompts/rendered-files.txt"
+        )
 
     def write_source(self, relative: str, text: str | bytes) -> Path:
         path = self.src / relative
@@ -215,6 +229,10 @@ class Harness:
             target.chmod(
                 mode if mode is not None else (staging / relative).stat().st_mode & 0o777
             )
+        self._rp.MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self._rp.MANIFEST_PATH.write_text(
+            self._rp._manifest_text(written), encoding="utf-8"
+        )
 
 
 @pytest.fixture
@@ -326,6 +344,17 @@ def test_render_walks_nested_source_directories(one_skill: Harness) -> None:
     assert (out / ".claude/skills/demo/scripts/nested/deep.md").read_text() == "`/x`\n"
 
 
+def test_render_rejects_a_symlinked_source_file(
+    one_skill: Harness, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private host content", encoding="utf-8")
+    link = one_skill.src / "demo" / "linked.txt"
+    link.symlink_to(outside)
+    with pytest.raises(ValueError, match="must not be symlinks"):
+        one_skill.render()
+
+
 # --------------------------------------------------------------------------
 # Drift reporting
 # --------------------------------------------------------------------------
@@ -364,6 +393,19 @@ def test_check_reports_content_drift(
     captured = capsys.readouterr()
     assert "differs:" in captured.err
     assert "render-prompts.py" in captured.err
+
+
+def test_check_reports_an_output_whose_source_was_deleted(
+    one_skill: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = one_skill.write_source("demo/scripts/retired.py", "x = 1\n")
+    out, written = one_skill.render()
+    one_skill.publish(out, written)
+    source.unlink()
+
+    refreshed, refreshed_written = one_skill.render()
+    assert one_skill.report_drift(refreshed, refreshed_written) == 1
+    assert "stale:" in capsys.readouterr().err
 
 
 def test_check_reports_a_mode_only_change(one_skill: Harness) -> None:
@@ -501,6 +543,36 @@ def test_main_writes_the_harness_roots(cli: Harness) -> None:
     assert cli._rp.main([]) == 0
     assert (cli.root / ".claude/skills/demo/SKILL.md").exists()
     assert (cli.root / ".codex/skills/demo/SKILL.md").exists()
+    assert cli._rp.MANIFEST_PATH.exists()
+
+
+def test_main_removes_outputs_for_a_deleted_source_file(cli: Harness) -> None:
+    source = cli.write_source("demo/scripts/retired.py", "x = 1\n")
+    assert cli._rp.main([]) == 0
+    target = cli.root / ".claude/skills/demo/scripts/retired.py"
+    assert target.exists()
+    source.unlink()
+    assert cli._rp.main([]) == 0
+    assert not target.exists()
+
+
+def test_main_removes_outputs_for_a_deleted_skill(cli: Harness) -> None:
+    cli.write_source("keep/SKILL.md", "---\nname: keep\n---\n")
+    assert cli._rp.main([]) == 0
+    target = cli.root / ".claude/skills/demo/SKILL.md"
+    assert target.exists()
+    shutil.rmtree(cli.src / "demo")
+    assert cli._rp.main([]) == 0
+    assert not target.exists()
+
+
+def test_main_removes_outputs_for_a_deleted_profile(cli: Harness) -> None:
+    assert cli._rp.main([]) == 0
+    target = cli.root / ".codex/skills/demo/SKILL.md"
+    assert target.exists()
+    (cli.profiles_dir / "codex.yml").unlink()
+    assert cli._rp.main([]) == 0
+    assert not target.exists()
 
 
 def test_main_check_fails_before_anything_is_written(cli: Harness) -> None:

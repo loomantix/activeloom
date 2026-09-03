@@ -170,4 +170,4 @@ To mark a dependency, prefer `<<INVOKE>>issues link` over manual edits — it ke
 
 ## Source of truth
 
-This skill lives upstream at `<<SKILLS_ROOT>>/issues/`. Synced to consumer repos via the sync mechanism. Edits in a consumer will be overwritten on next sync — make changes upstream.
+This skill is generated upstream from `prompts/skills/issues/` into `<<SKILLS_ROOT>>/issues/`, then synced to consumer repos. Edit the upstream source; consumer and generated copies are overwritten.
