@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 r"""Lint prompt trees and their executable payloads for weaponization patterns.
 
-Scope is the cross product of DIFF_DIRS and SCOPE_SUFFIXES below; keep this
-prose in step with those two constants:
+Scope is the prompt trees below and every known prompt/payload suffix or
+executable regular file within them:
   - trees (DIFF_DIRS): `.claude/skills/`, `.claude/agents/`, `prompts/skills/`
     (the rendered roster's single source), and the `.codex/skills/` and
     `.agents/skills/` roots that arrived with the subtree imports,
@@ -10,7 +10,7 @@ prose in step with those two constants:
     (consumer-facing prompt templates), and `.js`, `.py`, `.sh`, `.bash`
     (payloads a SKILL.md tells an agent to execute rather than read — e.g. a
     script injected into a live page via a browser tool, or a rendered skill
-    script).
+    script), plus extensionless executable payloads.
 
 These files are prompts that drive Claude in dev sessions and consumer CI. A
 subtly malicious PR can add a few innocuous-looking lines to any skill — e.g.
@@ -41,7 +41,9 @@ Exit codes: 0 clean, 1 findings, 2 usage/internal error.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import stat
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -187,13 +189,21 @@ RULES: list[Rule] = [
         "shell dereference of credential env var — exfil-eligible secret",
     ),
     Rule("env-exfil", ENV_EXFIL, "environment piped to network"),
-    Rule("base64-decode-exec", BASE64_DECODE_EXEC, "base64-decoded content piped to interpreter"),
+    Rule(
+        "base64-decode-exec",
+        BASE64_DECODE_EXEC,
+        "base64-decoded content piped to interpreter",
+    ),
     Rule(
         "raw-network-tool",
         RAW_NETWORK_TOOL,
         "raw curl/wget/nc/socat — use `gh` CLI; justify any genuine exception in review",
     ),
-    Rule("defanged-url", DEFANGED_URL, "defanged URL — Claude may follow the implied link"),
+    Rule(
+        "defanged-url",
+        DEFANGED_URL,
+        "defanged URL — Claude may follow the implied link",
+    ),
 ]
 
 # Hosts that are safe to mention in a shell context.
@@ -262,9 +272,13 @@ def check_line(line: str) -> list[tuple[str, str]]:
     for match in URL_RE.finditer(line):
         host = _extract_host(match.group(0))
         if host is None:
-            findings.append(("off-allowlist-url", f"unparseable URL: {match.group(0)!r}"))
+            findings.append(
+                ("off-allowlist-url", f"unparseable URL: {match.group(0)!r}")
+            )
         elif not _host_is_allowed(host):
-            findings.append(("off-allowlist-url", f"URL host {host!r} not on allowlist"))
+            findings.append(
+                ("off-allowlist-url", f"URL host {host!r} not on allowlist")
+            )
     return findings
 
 
@@ -320,8 +334,21 @@ def iter_added_lines(diff_text: str) -> Iterator[tuple[str, int, str]]:
             new_lineno += 1
 
 
-def _path_in_scope(path: str) -> bool:
-    return any(path.startswith(d + "/") for d in DIFF_DIRS) and path.endswith(SCOPE_SUFFIXES)
+def _is_executable_regular_file(path: str) -> bool:
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return False
+    return stat.S_ISREG(mode) and bool(mode & 0o111)
+
+
+def _path_in_scope(path: str, *, executable: bool | None = None) -> bool:
+    in_prompt_tree = any(path.startswith(d + "/") for d in DIFF_DIRS)
+    if not in_prompt_tree:
+        return False
+    if executable is None:
+        executable = _is_executable_regular_file(path)
+    return path.endswith(SCOPE_SUFFIXES) or executable
 
 
 def _git_diff(base_ref: str) -> str:
@@ -333,7 +360,7 @@ def _git_diff(base_ref: str) -> str:
 def _git_tracked_files() -> list[str]:
     cmd = ["git", "ls-files", "--", *DIFF_DIRS]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    return [p for p in result.stdout.splitlines() if p.endswith(SCOPE_SUFFIXES)]
+    return [p for p in result.stdout.splitlines() if _path_in_scope(p)]
 
 
 # ---------- self test ----------
@@ -536,9 +563,7 @@ def run_self_test() -> int:
     for diff_text, expected in DIFF_PARSER_FIXTURES:
         actual = list(iter_added_lines(diff_text))
         if actual != expected:
-            failures.append(
-                f"DIFF PARSER: expected {expected!r}, got {actual!r}"
-            )
+            failures.append(f"DIFF PARSER: expected {expected!r}, got {actual!r}")
     for diff_text in DIFF_PARSER_MUST_RAISE:
         try:
             list(iter_added_lines(diff_text))
@@ -555,7 +580,11 @@ def run_self_test() -> int:
         # (path, expected_in_scope, label)
         (".claude/skills/agent-loop/SKILL.md", True, "skills SKILL.md"),
         (".claude/agents/code-reviewer.md", True, "agents .md"),
-        (".claude/skills/agent-loop/prompt.txt.template", True, "skills prompt template"),
+        (
+            ".claude/skills/agent-loop/prompt.txt.template",
+            True,
+            "skills prompt template",
+        ),
         # `.template` suffix also catches the agent-loop-instructions
         # bootstrap template — also a weaponization-eligible prompt.
         (
@@ -588,10 +617,16 @@ def run_self_test() -> int:
         (".agents/skills/issues/scripts/link.py", True, "gemini Python payload"),
         (".codex/skills/critique/SKILL.md", True, "codex root SKILL.md"),
         (".agents/skills/critique/SKILL.md", True, "gemini root SKILL.md"),
+        (
+            "prompts/skills/issues/scripts/run",
+            True,
+            "extensionless executable payload",
+        ),
         ("prompts/profiles/claude.yml", False, "profile .yml outside SCOPE_SUFFIXES"),
     ]
     for path, expected_in_scope, label in path_in_scope_cases:
-        if _path_in_scope(path) != expected_in_scope:
+        executable = label == "extensionless executable payload"
+        if _path_in_scope(path, executable=executable) != expected_in_scope:
             failures.append(
                 f"_path_in_scope({label}, {path!r}): "
                 f"expected {expected_in_scope}, got {not expected_in_scope}"
@@ -642,7 +677,7 @@ def lint_all() -> int:
                         findings_count += 1
                         print(f"{path}:{lineno}: [{rule}] {msg}")
                         print(f"    > {line.rstrip()}")
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             # Unreadable files are a hard fail for a security lint: an
             # attacker who can affect file permissions could otherwise hide
             # a weaponized SKILL.md from scanning.

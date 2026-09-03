@@ -19,10 +19,10 @@ prompts/
 ```
 
 Rendering writes `<root>/skills/<skill>/…` for every profile. Those outputs are
-**committed**, because they are what consumers sync and what a reader of a
-harness root expects to find — a template in `.claude/skills/` would ship
-verbatim to every consumer, since the sync manifest copies those paths with no
-substitution of its own.
+**committed**, because they are the harness-specific distribution artifacts and
+what a reader of a harness root expects to find. A consumer receives only the
+paths selected by its own sync configuration; rendering does not imply that
+every consumer syncs all three roots.
 
 ```bash
 python3 scripts/render-prompts.py            # write the harness roots
@@ -40,6 +40,12 @@ no hand-maintained skill manifest to keep in step. The renderer owns
 `prompts/rendered-files.txt`, a generated path inventory used only to remove and
 reject retired outputs.
 
+Removing a whole skill is deliberately two-step: delete its source and add its
+name temporarily to `RETIRED_SKILLS` in `scripts/render-prompts.py`, render once
+to retire the generated files, then remove the name after the committed
+inventory is clean. This prevents the inventory from authorizing deletion of
+an unrelated hand-authored skill.
+
 ## Adding a variable
 
 Add it to all three profiles and use `<<KEY>>` in the source. A placeholder with
@@ -52,7 +58,7 @@ a placeholder that survives substitution for any reason.
 none will be added. A skill whose _structure_ must differ between harnesses — a
 phase only one engine runs, a different number of steps — is per-harness by
 definition. It stays out of `prompts/` and is reconciled by the parity lint
-against a `docs/decisions/` record. The moment a renderer grows an `{% if %}`,
+against a `docs/decisions/` record through a manual parity audit. The moment a renderer grows an `{% if %}`,
 the single source stops being readable as the thing that ships, which is the
 only property that makes rendering safer than copies.
 
@@ -91,5 +97,5 @@ two engines running the same text are one reviewer with two billing accounts.
 The implementations deliberately diverge, so there is no shared source to
 recover even if it were wanted.
 
-Held back for now, pending zero parity-lint residuals: `copilot-review`,
+Held back for now, pending a zero-residual parity audit: `copilot-review`,
 `actions-usage-audit`, `backlog-refinement`.

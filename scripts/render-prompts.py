@@ -5,12 +5,12 @@ One source file per skill, one profile per harness, `<<KEY>>` substitution and
 nothing else. The rendered outputs (`.claude/skills/<skill>/…`,
 `.codex/skills/…`, `.agents/skills/…`) are committed, so a reader of any
 harness root sees the real prompt rather than a template, and consumers keep
-syncing from the paths they already sync from.
+receiving the harness-specific distribution artifacts they select.
 
 **Zero conditionals.** The substitution engine has no branching construct and
 none is planned: a skill whose text must differ structurally between harnesses
-is per-harness by definition and stays unrendered, reconciled instead by the
-parity lint against a `docs/decisions/` record. See `docs/prompt-rendering.md`.
+is per-harness by definition and stays unrendered, tracked instead by a
+`docs/decisions/` record. See `docs/prompt-rendering.md`.
 
 Markdown is normalized with Prettier after substitution. This is not cosmetic:
 substituting a value of a different width into a Markdown table changes the
@@ -70,6 +70,18 @@ FORMATTED_SUFFIXES = (".md",)
 # a deliberate addition.
 COLLAPSE_KEYS = ("FM_EXTRAS",)
 
+# Rendering and deletion are intentionally confined to the harness roots this
+# repository ships. Adding a harness is a code-reviewed authority change, not a
+# side effect of adding an arbitrary profile file. A removed profile remains in
+# this set so its previously rendered outputs can be retired safely.
+SUPPORTED_PROFILE_ROOTS = frozenset({".agents", ".claude", ".codex"})
+
+# A removed source skill must be named here for the one render that retires its
+# old outputs, then may be removed after the generated-path manifest is clean.
+# This keeps retirement possible without letting the deletion manifest promote
+# an unrelated hand-authored skill into the renderer's ownership domain.
+RETIRED_SKILLS: frozenset[str] = frozenset()
+
 # Build artifacts that appear *inside* the source tree and must never be
 # rendered into a harness root. `prompts/skills/issues/scripts/*.py` are real
 # Python, so CI's `Compile-check every Python source` step (and any local
@@ -126,10 +138,19 @@ class Profile:
         # that can be pointed at `/` by a typo is worth one cheap assertion.
         root_path = Path(root)
         if root.startswith("~") or root_path.is_absolute() or ".." in root_path.parts:
-            raise ValueError(f"{path}: `root` must be a relative path inside the repo: {root!r}")
+            raise ValueError(
+                f"{path}: `root` must be a relative path inside the repo: {root!r}"
+            )
         normalized_root = root_path.as_posix()
         if normalized_root == ".":
-            raise ValueError(f"{path}: `root` must name a prompt root below the repo: {root!r}")
+            raise ValueError(
+                f"{path}: `root` must name a prompt root below the repo: {root!r}"
+            )
+        if normalized_root not in SUPPORTED_PROFILE_ROOTS:
+            raise ValueError(
+                f"{path}: `root` must be one of the supported harness roots: "
+                f"{sorted(SUPPORTED_PROFILE_ROOTS)}; got {root!r}"
+            )
 
         # `is None` rather than a falsy test: an omitted key is fine and means
         # "empty", but `values: []` is a malformed profile and must not be
@@ -139,6 +160,7 @@ class Profile:
             values = {}
         if not isinstance(values, dict):
             raise ValueError(f"{path}: `values` must be a mapping")
+        values = _validated_values(values, path, "values")
 
         skills = doc.get("skills")
         if skills is None:
@@ -146,13 +168,17 @@ class Profile:
         if not isinstance(skills, dict):
             raise ValueError(f"{path}: `skills` must be a mapping")
         for skill, overrides in skills.items():
+            if not isinstance(skill, str):
+                raise ValueError(f"{path}: skill names must be strings")
             if overrides is not None and not isinstance(overrides, dict):
                 raise ValueError(f"{path}: `skills.{skill}` must be a mapping")
+            if overrides is not None:
+                skills[skill] = _validated_values(overrides, path, f"skills.{skill}")
 
         self.path = path
         self.name = path.stem
         self.root = normalized_root
-        self.values = cast(dict[str, object], values)
+        self.values = values
         self.skills = cast(dict[str, dict[str, object] | None], skills)
 
     def values_for(self, skill: str) -> dict[str, object]:
@@ -167,6 +193,23 @@ class Profile:
         return merged
 
 
+def _validated_values(
+    values: dict[object, object], path: Path, label: str
+) -> dict[str, object]:
+    """Require substitution vocabulary to be strings, except collapse-key nulls."""
+    validated: dict[str, object] = {}
+    for key, value in values.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{path}: `{label}` keys must be strings")
+        if value is None:
+            if key not in COLLAPSE_KEYS:
+                raise ValueError(f"{path}: `{label}.{key}` must be a string")
+        elif not isinstance(value, str):
+            raise ValueError(f"{path}: `{label}.{key}` must be a string")
+        validated[key] = value
+    return validated
+
+
 def load_profiles() -> list[Profile]:
     paths = sorted(PROFILES_DIR.glob("*.yml"))
     if not paths:
@@ -176,25 +219,12 @@ def load_profiles() -> list[Profile]:
     roots = [p.root for p in profiles]
     duplicates = {r for r in roots if roots.count(r) > 1}
     if duplicates:
-        raise ValueError(f"profiles share a root, so one would overwrite the other: {sorted(duplicates)}")
+        raise ValueError(
+            f"profiles share a root, so one would overwrite the other: {sorted(duplicates)}"
+        )
 
-    # A root must be a *harness* root. Two ways it can fail to be one, both of
-    # which render successfully and destroy something:
-    #
-    #   - `root: prompts` maps `<root>/skills/<skill>/<rel>` exactly onto the
-    #     source tree, so the render overwrites its own templates with their
-    #     rendered output — every placeholder in every source, gone in one run.
-    #   - a root nested inside another (`.claude` and `.claude/nested`) is not
-    #     caught by the duplicate check above, and the inner root's outputs land
-    #     inside the outer root's owned tree.
-    reserved = {PROMPTS_DIR.name, SCRIPT_DIR.name}
-    for profile in profiles:
-        head = Path(profile.root).parts[0]
-        if head in reserved:
-            raise ValueError(
-                f"{profile.path}: `root` must not be or contain the renderer's own "
-                f"source tree: {profile.root!r}"
-            )
+    # Keep the containment assertion even though the current supported roots
+    # are siblings. It protects the invariant if that explicit set is extended.
     for outer in profiles:
         for inner in profiles:
             if outer is inner:
@@ -234,7 +264,9 @@ def rendered_roster() -> list[str]:
     return sorted(roster)
 
 
-def render_tree(engine: ModuleType, profiles: list[Profile], destination: Path) -> list[Path]:
+def render_tree(
+    engine: ModuleType, profiles: list[Profile], destination: Path
+) -> list[Path]:
     """Render every skill for every profile under `destination`.
 
     Returns the written paths, relative to `destination`.
@@ -276,38 +308,33 @@ def _source_files(source_dir: Path) -> Iterator[Path]:
         yield path
 
 
-# Directories the renderer must never treat as a harness root, whether it
-# reaches them through a profile or through a manifest line. `prompts` and
-# `scripts` are its own inputs; the rest are repo trees that would otherwise
-# satisfy the `<x>/skills/<y>/<z>` shape.
-RESERVED_ROOTS = frozenset({"prompts", "scripts", "docs", "tests", ".git", ".github"})
+def _validate_generated_path(path: Path) -> None:
+    """Prove a generated path belongs to an explicit root and rendered skill."""
+    owned_skills = set(rendered_roster()) | set(RETIRED_SKILLS)
+    if (
+        path.is_absolute()
+        or ".." in path.parts
+        or len(path.parts) < 4
+        or path.parts[0] not in SUPPORTED_PROFILE_ROOTS
+        or path.parts[1] != "skills"
+        or path.parts[2] not in owned_skills
+    ):
+        raise ValueError(
+            f"path is outside the renderer ownership domain: {path.as_posix()!r}"
+        )
 
 
-def _deletable_roots(profiles: list[Profile]) -> set[str]:
-    """Top-level directories a manifest entry may name.
-
-    Every currently declared profile root, plus any *dotted* root already
-    recorded in the manifest. The second half is what keeps profile retirement
-    working: deleting `codex.yml` must still let the next run remove the
-    `.codex/` tree it used to own, and a strict current-roots-only rule would
-    reject those entries as invalid and leave the tree unreachable forever.
-
-    Reserved trees are excluded from both halves, which is the check that
-    matters: `prompts/skills/<skill>/SKILL.md` satisfies every structural test,
-    so without it a hand-edited or badly-merged manifest line deletes a rendered
-    skill's single source on the next write-mode run and reports success.
-
-    The residual is a dotted, non-reserved root that was never a profile root.
-    Reaching it takes an edit to a committed file, which `--check` reports as
-    drift on the PR that makes it.
-    """
-    roots = {Path(p.root).parts[0] for p in profiles}
-    if MANIFEST_PATH.exists() and not MANIFEST_PATH.is_symlink():
-        for raw in MANIFEST_PATH.read_text(encoding="utf-8").splitlines():
-            head = Path(raw).parts[0] if raw else ""
-            if head.startswith("."):
-                roots.add(head)
-    return {r for r in roots if r not in RESERVED_ROOTS}
+def _destination_path(relative: Path) -> Path:
+    """Return a repository destination after rejecting every symlink component."""
+    _validate_generated_path(relative)
+    current = REPO_ROOT
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(
+                f"generated destinations must not contain symlinks: {current}"
+            )
+    return current
 
 
 def _manifest_text(written: list[Path]) -> str:
@@ -328,21 +355,19 @@ def _load_manifest(profiles: list[Profile]) -> list[Path]:
     skill's single source on the next write-mode run and reports success.
     """
     if MANIFEST_PATH.is_symlink():
-        raise ValueError(f"generated-path manifest must not be a symlink: {MANIFEST_PATH}")
+        raise ValueError(
+            f"generated-path manifest must not be a symlink: {MANIFEST_PATH}"
+        )
     if not MANIFEST_PATH.exists():
         return []
-    owned_roots = _deletable_roots(profiles)
     paths: list[Path] = []
     for raw in MANIFEST_PATH.read_text(encoding="utf-8").splitlines():
         path = Path(raw)
-        if (
-            not raw
-            or path.is_absolute()
-            or ".." in path.parts
-            or len(path.parts) < 4
-            or path.parts[1] != "skills"
-            or path.parts[0] not in owned_roots
-        ):
+        try:
+            if not raw:
+                raise ValueError
+            _validate_generated_path(path)
+        except ValueError:
             raise ValueError(f"{MANIFEST_PATH}: invalid generated path: {raw!r}")
         paths.append(path)
     if len(paths) != len(set(paths)):
@@ -351,21 +376,21 @@ def _load_manifest(profiles: list[Profile]) -> list[Path]:
 
 
 def _publish_outputs(
-    staging: Path, written: list[Path], previously_owned: list[Path], profiles: list[Profile]
+    staging: Path,
+    written: list[Path],
+    previously_owned: list[Path],
+    profiles: list[Profile],
 ) -> None:
     """Replace the generated path set and remove outputs retired from source."""
     current = set(written)
-    owned_roots = _deletable_roots(profiles)
     for relative in sorted(set(previously_owned) - current):
-        # Belt and braces with `_load_manifest`'s check: this is the line that
-        # deletes, so it does not take the caller's word for what is owned.
-        if relative.parts[0] not in owned_roots or relative.is_absolute():
-            raise ValueError(f"refusing to remove a path outside a profile root: {relative}")
-        target = REPO_ROOT / relative
+        # Belt and braces with `_load_manifest`: the deleting line revalidates
+        # both ownership and every existing path component.
+        target = _destination_path(relative)
         if target.is_file() or target.is_symlink():
             target.unlink()
     for relative in written:
-        target = REPO_ROOT / relative
+        target = _destination_path(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(staging / relative, target)
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -520,23 +545,26 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _report_drift(staging: Path, written: list[Path], previously_owned: list[Path]) -> int:
+def _report_drift(
+    staging: Path, written: list[Path], previously_owned: list[Path]
+) -> int:
     missing: list[Path] = []
     differing: list[Path] = []
     stale = sorted(set(previously_owned) - set(written))
     for relative in written:
-        committed = REPO_ROOT / relative
+        committed = _destination_path(relative)
         if not committed.exists():
             missing.append(relative)
         elif not filecmp.cmp(staging / relative, committed, shallow=False):
             differing.append(relative)
-        elif (staging / relative).stat().st_mode & 0o111 != committed.stat().st_mode & 0o111:
+        elif (
+            staging / relative
+        ).stat().st_mode & 0o111 != committed.stat().st_mode & 0o111:
             differing.append(relative)
 
-    manifest_drift = (
-        not MANIFEST_PATH.exists()
-        or MANIFEST_PATH.read_text(encoding="utf-8") != _manifest_text(written)
-    )
+    manifest_drift = not MANIFEST_PATH.exists() or MANIFEST_PATH.read_text(
+        encoding="utf-8"
+    ) != _manifest_text(written)
 
     if not missing and not differing and not stale and not manifest_drift:
         print(f"rendered output matches all {len(written)} committed file(s)")

@@ -29,18 +29,19 @@ import argparse
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
 
-# `prompts/skills` is the rendered roster's source tree: a `.sh` added there is
+# `prompts/skills` is the rendered roster's source tree: a shell payload added there is
 # rendered into every harness root, so it belongs in scope alongside the output.
 # The `.codex/skills` and `.agents/skills` roots are deliberately NOT here yet —
 # they ship their own launcher scripts whose paths are absent from ALLOWLIST
 # below, so adding them is a separate change that has to extend the allowlist in
 # the same commit.
 SCOPE_DIRS = [".claude/skills", "prompts/skills"]
-SCOPE_SUFFIX = ".sh"
+SCOPE_SUFFIXES = (".sh", ".bash")
 ALLOWLIST_PATH = ".claude/claude-cli-invocations.allowlist"
 SYNC_TARGETS_PATH = "scripts/sync-targets.yml"
 
@@ -147,15 +148,13 @@ def extract_regions(path: str, text: str) -> tuple[list[Region], list[str]]:
             if start_line is None:
                 errors.append(f"{path}:{idx}: {END_MARKER!r} without matching start")
                 continue
-            content = "".join(lines[start_line:idx - 1])
+            content = "".join(lines[start_line : idx - 1])
             regions.append(
                 Region(path=path, start_line=start_line, end_line=idx, content=content)
             )
             start_line = None
     if start_line is not None:
-        errors.append(
-            f"{path}:{start_line}: {START_MARKER!r} without matching end"
-        )
+        errors.append(f"{path}:{start_line}: {START_MARKER!r} without matching end")
     return regions, errors
 
 
@@ -178,8 +177,8 @@ def _join_continuations(text: str) -> list[tuple[int, str]]:
     buffer_start: int | None = None
     for idx, raw in enumerate(text.splitlines(), start=1):
         stripped_right = raw.rstrip()
-        is_continuation = (
-            stripped_right.endswith("\\") and not stripped_right.endswith("\\\\")
+        is_continuation = stripped_right.endswith("\\") and not stripped_right.endswith(
+            "\\\\"
         )
         if buffer_start is None:
             buffer_start = idx
@@ -250,14 +249,26 @@ def hash_region(region: Region) -> str:
     return hashlib.sha256(region.content.encode("utf-8")).hexdigest()
 
 
+def _is_executable_regular_file(path: str) -> bool:
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return False
+    return stat.S_ISREG(mode) and bool(mode & 0o111)
+
+
+def _is_shell_payload(path: str) -> bool:
+    return path.endswith(SCOPE_SUFFIXES) or _is_executable_regular_file(path)
+
+
 def _git_tracked_files() -> list[str]:
     cmd = ["git", "ls-files", "--", *SCOPE_DIRS]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    return [p for p in result.stdout.splitlines() if p.endswith(SCOPE_SUFFIX)]
+    return [p for p in result.stdout.splitlines() if _is_shell_payload(p)]
 
 
 def _synced_shell_sources() -> tuple[list[str], list[str]]:
-    """Read sync-targets.yml and return all .sh `source` paths + any errors.
+    """Read sync-targets.yml and return shell/executable sources + any errors.
 
     The lint's primary mission is "no malicious bytes propagated to consumer
     repos." sync-targets.yml is the authoritative list of files that get
@@ -295,7 +306,13 @@ def _synced_shell_sources() -> tuple[list[str], list[str]]:
         if not isinstance(target, dict):
             continue
         source = target.get("source", "")
-        if isinstance(source, str) and source.endswith(SCOPE_SUFFIX):
+        mode = target.get("mode")
+        declared_executable = str(mode) in {"493", "755", "0755", "0o755"}
+        if isinstance(source, str) and (
+            source.endswith(SCOPE_SUFFIXES)
+            or declared_executable
+            or _is_executable_regular_file(source)
+        ):
             # Normalize so `./foo`, `foo/`, `foo//bar`, etc., all map to the
             # same canonical form as `git ls-files`'s output — keeps the
             # union-with-tracked-files dedup honest.
@@ -362,7 +379,9 @@ def scan(paths: list[str], allowlist_entries: list[AllowlistEntry]) -> int:
                 print(
                     f"{path}:{region.start_line}: locked region hash not in allowlist for this path."
                 )
-                print(f"    expected entry: {digest}  {path}  <description of the change>")
+                print(
+                    f"    expected entry: {digest}  {path}  <description of the change>"
+                )
                 print(
                     f"    add the entry to {ALLOWLIST_PATH} in this PR — the diff is the audit trail."
                 )
@@ -384,9 +403,7 @@ def scan(paths: list[str], allowlist_entries: list[AllowlistEntry]) -> int:
     # in one PR and adding the matching region in a follow-up PR without
     # touching the allowlist (which would defeat the audit-trail invariant).
     for sha, entry_path in sorted(allowed - observed):
-        print(
-            f"{ALLOWLIST_PATH}: unused allowlist entry {sha[:12]}… for {entry_path}"
-        )
+        print(f"{ALLOWLIST_PATH}: unused allowlist entry {sha[:12]}… for {entry_path}")
         print(
             "    no locked region in scope hashes to this entry. "
             "Remove the entry or add the matching region in this PR."
@@ -496,7 +513,7 @@ claude --print "$PROMPT"
 # content from the LF version.
 _FIXTURE_CRLF_MARKERS = (
     "# claude-cli-invocations:start\r\n"
-    "claude --print \"x\"\r\n"
+    'claude --print "x"\r\n'
     "# claude-cli-invocations:end\r\n"
 )
 
@@ -641,7 +658,9 @@ def run_self_test() -> int:
 
     # --- region extraction ---
     regions, errors = extract_regions("x.sh", _FIXTURE_OK)
-    check("OK fixture", len(regions) == 1 and not errors, f"got {len(regions)} {errors!r}")
+    check(
+        "OK fixture", len(regions) == 1 and not errors, f"got {len(regions)} {errors!r}"
+    )
     regions, errors = extract_regions("x.sh", _FIXTURE_UNCLOSED_REGION)
     check(
         "UNCLOSED",
@@ -709,7 +728,7 @@ def run_self_test() -> int:
     for label, fixture in [
         ("AGY BARE", _FIXTURE_AGY_BARE_INVOCATION),
         ("AGY SKIP-PERMISSIONS FLAG", _FIXTURE_AGY_SKIP_PERMISSIONS_OUTSIDE),
-        ("AGY POSITIONAL \"$VAR\"", _FIXTURE_AGY_POSITIONAL_VAR),
+        ('AGY POSITIONAL "$VAR"', _FIXTURE_AGY_POSITIONAL_VAR),
     ]:
         inv = find_sensitive_token_lines("x.sh", fixture)
         check(f"REGEX/{label}", len(inv) == 1, f"got {inv!r}")
@@ -726,7 +745,7 @@ def run_self_test() -> int:
         ("SHORT OPTION (claude -p)", _FIXTURE_SHORT_OPTION),
         ("STDIN REDIRECT (claude <)", _FIXTURE_STDIN_REDIRECT),
         ("HERE STRING (claude <<<)", _FIXTURE_HERE_STRING),
-        ("POSITIONAL \"$VAR\"", _FIXTURE_POSITIONAL_VAR),
+        ('POSITIONAL "$VAR"', _FIXTURE_POSITIONAL_VAR),
         ("POSITIONAL $VAR", _FIXTURE_POSITIONAL_BARE_VAR),
         ("PATH-QUALIFIED", _FIXTURE_PATH_QUALIFIED),
     ]:
@@ -762,7 +781,11 @@ def run_self_test() -> int:
         ("triple join", "a \\\nb \\\nc\n", [(1, "a b c")]),
         # Escaped trailing backslash (`\\` at EOL) is NOT a continuation —
         # it's a literal pair. The line stands alone.
-        ("escaped backslash not a continuation", "a \\\\\nb\n", [(1, "a \\\\"), (2, "b")]),
+        (
+            "escaped backslash not a continuation",
+            "a \\\\\nb\n",
+            [(1, "a \\\\"), (2, "b")],
+        ),
         # Unclosed trailing continuation at EOF — emit what we have.
         ("unclosed trailing continuation", "a \\\n", [(1, "a")]),
         # Empty input.
@@ -964,18 +987,19 @@ def run_self_test() -> int:
         if lf_disk_regions and crlf_disk_regions:
             check(
                 "ON-DISK CRLF hash differs from LF after file-read",
-                hash_region(lf_disk_regions[0])
-                != hash_region(crlf_disk_regions[0]),
+                hash_region(lf_disk_regions[0]) != hash_region(crlf_disk_regions[0]),
                 "universal-newline translation must not normalize CRLF→LF",
             )
 
     # --- allowlist parser ---
     allowlist_fixture = (
         "# header comment\n"
-        + ("0" * 64) + "  path/to/file.sh  description here\n"
+        + ("0" * 64)
+        + "  path/to/file.sh  description here\n"
         + "\n"
         + "abc-not-sha256  path/to/other.sh  bad\n"
-        + ("1" * 64) + "  too-few-cols-was-here-but-actually-this-is-a-path\n"
+        + ("1" * 64)
+        + "  too-few-cols-was-here-but-actually-this-is-a-path\n"
     )
     entries, errors = parse_allowlist(allowlist_fixture)
     check("ALLOWLIST entry count", len(entries) == 2, f"got {entries!r}")
@@ -986,10 +1010,7 @@ def run_self_test() -> int:
     )
 
     # Same hash, different path → both kept (path-binding is the dedup key).
-    dual_fixture = (
-        ("0" * 64) + "  a.sh  first\n"
-        + ("0" * 64) + "  b.sh  second\n"
-    )
+    dual_fixture = ("0" * 64) + "  a.sh  first\n" + ("0" * 64) + "  b.sh  second\n"
     entries, errors = parse_allowlist(dual_fixture)
     check(
         "ALLOWLIST same-hash-different-path keeps both",
@@ -998,10 +1019,7 @@ def run_self_test() -> int:
     )
 
     # Same (hash, path) → duplicate, second rejected.
-    dup_fixture = (
-        ("0" * 64) + "  a.sh  first\n"
-        + ("0" * 64) + "  a.sh  second\n"
-    )
+    dup_fixture = ("0" * 64) + "  a.sh  first\n" + ("0" * 64) + "  a.sh  second\n"
     entries, errors = parse_allowlist(dup_fixture)
     check(
         "ALLOWLIST duplicate (hash, path) detected",
@@ -1019,8 +1037,8 @@ def run_self_test() -> int:
     )
 
     # --- _synced_shell_sources via temporary manifest files ---
-    # Cover the manifest parser end-to-end: a synced .sh outside SCOPE_DIRS
-    # surfaces, non-.sh sources are filtered out, malformed YAML and
+    # Cover the manifest parser end-to-end: synced shell/executable payloads
+    # outside SCOPE_DIRS surface, non-executable prose is filtered out, malformed YAML and
     # missing manifests produce clear errors. Runs in a tempdir-as-cwd so
     # the test never touches the real `scripts/sync-targets.yml`.
     test_cases: list[tuple[str, str, list[str], bool]] = [
@@ -1036,7 +1054,24 @@ def run_self_test() -> int:
             False,
         ),
         (
-            "non-.sh sources filtered out",
+            "synced .bash outside SCOPE_DIRS surfaces",
+            "targets:\n"
+            "  - source: .claude/hooks/foo.bash\n"
+            "    destination: .claude/hooks/foo.bash\n",
+            [".claude/hooks/foo.bash"],
+            False,
+        ),
+        (
+            "declared executable extensionless source surfaces",
+            "targets:\n"
+            "  - source: .claude/hooks/run\n"
+            "    destination: .claude/hooks/run\n"
+            "    mode: '0755'\n",
+            [".claude/hooks/run"],
+            False,
+        ),
+        (
+            "non-executable prose sources filtered out",
             "targets:\n"
             "  - source: .claude/agents/code-reviewer.md\n"
             "    destination: .claude/agents/code-reviewer.md\n",
@@ -1161,9 +1196,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"git ls-files failed: {exc.stderr}", file=sys.stderr)
         return 2
 
-    # Belt-and-braces scope: union of (a) tracked .sh files under SCOPE_DIRS
+    # Belt-and-braces scope: union of (a) tracked shell or executable files under SCOPE_DIRS
     # — covers upstream-only files that a developer might still execute —
-    # and (b) all .sh `source` paths in sync-targets.yml — covers files
+    # and (b) all shell or executable `source` paths in sync-targets.yml — covers files
     # outside SCOPE_DIRS that get propagated to consumers. (b) is the
     # primary mission per the threat model; (a) catches the on-disk
     # variant. If sync-targets.yml is unreadable / unparseable, fail loud

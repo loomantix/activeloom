@@ -7,6 +7,7 @@ deliberately *not* here: it needs Prettier, and shelling out to
 network. That check is the `Rendered prompt roots are current` step in
 `.github/workflows/ci.yml`, where Node is already pinned and installed.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -29,7 +30,9 @@ def _write_profile(directory: Path, name: str, body: str) -> Path:
 # --------------------------------------------------------------------------
 
 
-def test_profile_reads_root_and_values(render_prompts: ModuleType, tmp_path: Path) -> None:
+def test_profile_reads_root_and_values(
+    render_prompts: ModuleType, tmp_path: Path
+) -> None:
     path = _write_profile(tmp_path, "claude", "root: .claude\nvalues:\n  INVOKE: '/'\n")
     profile = render_prompts.Profile(path)
     assert profile.root == ".claude"
@@ -70,7 +73,10 @@ def test_profile_with_no_skills_block_still_resolves_values(
         ("root: ''\nvalues: {}\n", "`root` must be a non-empty string"),
         ("root: .claude\nvalues: []\n", "`values` must be a mapping"),
         ("root: .claude\nvalues: {}\nskills: []\n", "`skills` must be a mapping"),
-        ("root: .claude\nvalues: {}\nskills:\n  issues: 3\n", "`skills.issues` must be a mapping"),
+        (
+            "root: .claude\nvalues: {}\nskills:\n  issues: 3\n",
+            "`skills.issues` must be a mapping",
+        ),
     ],
 )
 def test_profile_rejects_malformed_documents(
@@ -155,7 +161,9 @@ def test_roster_is_empty_when_the_source_tree_is_absent(
 # --------------------------------------------------------------------------
 
 
-ONE_SKILL = {"demo/SKILL.md": "---\nname: demo\n<<FM_EXTRAS>>\n---\n\nSee `<<INVOKE>>other`.\n"}
+ONE_SKILL = {
+    "demo/SKILL.md": "---\nname: demo\n<<FM_EXTRAS>>\n---\n\nSee `<<INVOKE>>other`.\n"
+}
 TWO_PROFILES = {
     "claude": "root: .claude\nvalues:\n  INVOKE: '/'\nskills:\n  demo:\n    FM_EXTRAS: 'argument-hint: x'\n",
     "codex": "root: .codex\nvalues:\n  INVOKE: ''\nskills:\n  demo:\n    FM_EXTRAS: ''\n",
@@ -214,14 +222,18 @@ class Harness:
         manifest = self._rp._load_manifest(self._rp.load_profiles())
         return int(self._rp._report_drift(staging, written, manifest))
 
-    def publish(self, staging: Path, written: list[Path], mode: int | None = None) -> None:
+    def publish(
+        self, staging: Path, written: list[Path], mode: int | None = None
+    ) -> None:
         """Copy a render into the fake repo root, as a commit would."""
         for relative in written:
             target = self.root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((staging / relative).read_bytes())
             target.chmod(
-                mode if mode is not None else (staging / relative).stat().st_mode & 0o777
+                mode
+                if mode is not None
+                else (staging / relative).stat().st_mode & 0o777
             )
         self._rp.MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._rp.MANIFEST_PATH.write_text(
@@ -268,11 +280,15 @@ def test_render_collapses_the_frontmatter_slot_when_a_harness_has_no_extras(
     refuses to load.
     """
     out, _ = one_skill.render()
-    assert (out / ".claude/skills/demo/SKILL.md").read_text().startswith(
-        "---\nname: demo\nargument-hint: x\n---\n"
+    assert (
+        (out / ".claude/skills/demo/SKILL.md")
+        .read_text()
+        .startswith("---\nname: demo\nargument-hint: x\n---\n")
     )
-    assert (out / ".codex/skills/demo/SKILL.md").read_text().startswith(
-        "---\nname: demo\n---\n"
+    assert (
+        (out / ".codex/skills/demo/SKILL.md")
+        .read_text()
+        .startswith("---\nname: demo\n---\n")
     )
 
 
@@ -479,7 +495,9 @@ def test_format_markdown_is_a_noop_with_no_markdown_to_format(
 ) -> None:
     """No Markdown written means no `npx` call — a scripts-only skill is cheap."""
     calls: list[object] = []
-    monkeypatch.setattr(render_prompts.subprocess, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(
+        render_prompts.subprocess, "run", lambda *a, **k: calls.append(a)
+    )
     render_prompts.format_markdown(tmp_path, [Path("a/b/run.py")])
     assert calls == []
 
@@ -550,12 +568,15 @@ def test_main_removes_outputs_for_a_deleted_source_file(cli: Harness) -> None:
     assert not target.exists()
 
 
-def test_main_removes_outputs_for_a_deleted_skill(cli: Harness) -> None:
+def test_main_removes_outputs_for_a_deleted_skill(
+    cli: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cli.write_source("keep/SKILL.md", "---\nname: keep\n---\n")
     assert cli._rp.main([]) == 0
     target = cli.root / ".claude/skills/demo/SKILL.md"
     assert target.exists()
     shutil.rmtree(cli.src / "demo")
+    monkeypatch.setattr(cli._rp, "RETIRED_SKILLS", frozenset({"demo"}))
     assert cli._rp.main([]) == 0
     assert not target.exists()
 
@@ -623,6 +644,8 @@ def test_render_skips_bytecode_left_in_the_source_tree(one_skill: Harness) -> No
         "prompts/skills/demo/SKILL.md",  # the renderer's own source tree
         "docs/skills/decisions/0006-x.md",  # an unrelated repo directory
         ".git/skills/a/b",
+        ".vscode/skills/demo/config.json",  # arbitrary dotted root
+        ".claude/skills/critique/SKILL.md",  # hand-authored skill in a valid root
         "vendor/skills/a/b",  # undotted, never a profile root
     ],
 )
@@ -638,7 +661,8 @@ def test_load_manifest_rejects_a_path_outside_every_profile_root(
     """
     assert cli._rp.main([]) == 0
     cli._rp.MANIFEST_PATH.write_text(
-        cli._rp.MANIFEST_PATH.read_text(encoding="utf-8") + f"{line}\n", encoding="utf-8"
+        cli._rp.MANIFEST_PATH.read_text(encoding="utf-8") + f"{line}\n",
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="invalid generated path"):
         cli._rp._load_manifest(cli._rp.load_profiles())
@@ -650,7 +674,8 @@ def test_a_manifest_line_cannot_delete_a_render_source(cli: Harness) -> None:
     source = cli.src / "demo/SKILL.md"
     assert source.exists()
     cli._rp.MANIFEST_PATH.write_text(
-        cli._rp.MANIFEST_PATH.read_text(encoding="utf-8") + "prompts/skills/demo/SKILL.md\n",
+        cli._rp.MANIFEST_PATH.read_text(encoding="utf-8")
+        + "prompts/skills/demo/SKILL.md\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="invalid generated path"):
@@ -661,19 +686,25 @@ def test_a_manifest_line_cannot_delete_a_render_source(cli: Harness) -> None:
 def test_publish_outputs_refuses_an_unowned_path(cli: Harness) -> None:
     """Belt and braces: the deleting line does not trust its caller."""
     assert cli._rp.main([]) == 0
-    with pytest.raises(ValueError, match="outside a profile root"):
+    with pytest.raises(ValueError, match="outside the renderer ownership domain"):
         cli._rp._publish_outputs(
             cli.root, [], [Path("docs/skills/a/b.md")], cli._rp.load_profiles()
         )
 
 
-def test_load_profiles_rejects_a_root_containing_the_source_tree(
-    render_prompts: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "root", ["prompts", "scripts", "docs", "tests", ".git", ".github", ".config/claude"]
+)
+def test_load_profiles_rejects_an_unsupported_root(
+    render_prompts: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    root: str,
 ) -> None:
-    """`root: prompts` renders each source over itself, destroying every template."""
-    _write_profile(tmp_path, "bad", "root: prompts\nvalues: {}\n")
+    """Profiles cannot grant the renderer authority over arbitrary repo trees."""
+    _write_profile(tmp_path, "bad", f"root: {root}\nvalues: {{}}\n")
     monkeypatch.setattr(render_prompts, "PROFILES_DIR", tmp_path)
-    with pytest.raises(ValueError, match="renderer's own source tree"):
+    with pytest.raises(ValueError, match="supported harness roots"):
         render_prompts.load_profiles()
 
 
@@ -684,6 +715,11 @@ def test_load_profiles_rejects_a_root_nested_in_another_root(
     _write_profile(tmp_path, "outer", "root: .claude\nvalues: {}\n")
     _write_profile(tmp_path, "inner", "root: .claude/nested\nvalues: {}\n")
     monkeypatch.setattr(render_prompts, "PROFILES_DIR", tmp_path)
+    monkeypatch.setattr(
+        render_prompts,
+        "SUPPORTED_PROFILE_ROOTS",
+        frozenset({".claude", ".claude/nested"}),
+    )
     with pytest.raises(ValueError, match="must not nest"):
         render_prompts.load_profiles()
 
@@ -700,22 +736,57 @@ def test_a_null_profile_value_fails_closed(one_skill: Harness) -> None:
     silently removed.
     """
     one_skill.write_profiles(
-        {"claude": "root: .claude\nvalues:\n  INVOKE:\nskills:\n  demo:\n    FM_EXTRAS: ''\n"}
+        {
+            "claude": "root: .claude\nvalues:\n  INVOKE:\nskills:\n  demo:\n    FM_EXTRAS: ''\n"
+        }
     )
-    with pytest.raises(ValueError, match="placeholders with no value"):
+    with pytest.raises(ValueError, match="must be a string"):
         one_skill.render()
 
 
 def test_a_null_collapse_key_is_still_allowed(one_skill: Harness) -> None:
     """`FM_EXTRAS` is a collapse key: empty is its normal state, not a defect."""
     one_skill.write_profiles(
-        {"claude": "root: .claude\nvalues:\n  INVOKE: '/'\nskills:\n  demo:\n    FM_EXTRAS:\n"}
+        {
+            "claude": "root: .claude\nvalues:\n  INVOKE: '/'\nskills:\n  demo:\n    FM_EXTRAS:\n"
+        }
     )
     out, _ = one_skill.render()
     assert "FM_EXTRAS" not in (out / ".claude/skills/demo/SKILL.md").read_text()
 
 
-def test_an_undecodable_source_carrying_placeholders_is_an_error(one_skill: Harness) -> None:
+@pytest.mark.parametrize("value", ["[]", "{}", "true", "42"])
+def test_a_nonscalar_profile_value_fails_closed(one_skill: Harness, value: str) -> None:
+    one_skill.write_profiles(
+        {
+            "claude": (
+                "root: .claude\nvalues:\n"
+                f"  INVOKE: {value}\n"
+                "skills:\n  demo:\n    FM_EXTRAS: ''\n"
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="must be a string"):
+        one_skill.render()
+
+
+def test_publish_refuses_a_symlinked_destination(cli: Harness, tmp_path: Path) -> None:
+    """A generated leaf symlink must not turn a render into an external write."""
+    staging, written = cli.render()
+    target = cli.root / ".claude/skills/demo/SKILL.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("do not overwrite\n", encoding="utf-8")
+    target.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="must not contain symlinks"):
+        cli._rp._publish_outputs(staging, written, [], cli._rp.load_profiles())
+    assert outside.read_text(encoding="utf-8") == "do not overwrite\n"
+
+
+def test_an_undecodable_source_carrying_placeholders_is_an_error(
+    one_skill: Harness,
+) -> None:
     """Byte-passthrough skips substitution and every guard after it.
 
     A text file that merely fails to decode would otherwise ship with its
@@ -731,4 +802,6 @@ def test_an_undecodable_binary_asset_still_passes_through(one_skill: Harness) ->
     """Passthrough is for genuine binary assets and must keep working."""
     one_skill.write_source("demo/logo.bin", b"\x89PNG\r\n\x1a\n\xff\xfe")
     out, _ = one_skill.render()
-    assert (out / ".claude/skills/demo/logo.bin").read_bytes() == b"\x89PNG\r\n\x1a\n\xff\xfe"
+    assert (
+        out / ".claude/skills/demo/logo.bin"
+    ).read_bytes() == b"\x89PNG\r\n\x1a\n\xff\xfe"

@@ -296,8 +296,8 @@ jobs:
 
       # --- rendered prompt roots are current ---
       # The skills in `prompts/skills/` are single-sourced and rendered into
-      # `.claude/`, `.codex/`, and `.agents/`. Those rendered files are what
-      # consumers sync, so they are committed — which means they can go stale
+      # `.claude/`, `.codex/`, and `.agents/`. Those committed files are the
+      # harness-specific distribution artifacts, which means they can go stale
       # against their source, or be hand-edited in the root instead of the
       # source. This is the gate that makes either one fail: it re-renders from
       # `prompts/` and byte-compares against what is committed, and prints a
