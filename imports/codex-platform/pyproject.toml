@@ -1,0 +1,63 @@
+# This file configures local tooling only (pytest, mypy, coverage,
+# ruff) — the repo is not pip-installable, so there's no `[project]`
+# table. PEP 518 lets `[tool.*]` sections stand alone.
+#
+# Provenance: the engine + tests this config drives are vendored from
+# the sibling `loomantix/claude-platform` repo. The mypy / pytest /
+# coverage shape matches claude's so the same `tests/` directory runs
+# unmodified here. Byte-identity against `loomantix/claude-platform`'s
+# pinned SHA is enforced by the `vendor-drift` CI job in
+# `.github/workflows/ci.yml` — update the pin atomically with any file
+# resync.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+filterwarnings = [
+  # Treat warnings raised inside our own code as errors so a future
+  # DeprecationWarning surfaces loudly. The scripts are loaded by
+  # `tests/conftest.py` via `spec_from_file_location` under the bare
+  # module names below (the hyphenated source filenames aren't valid
+  # Python identifiers, so `scripts.*` would never match). Stdlib /
+  # third-party warnings stay informational so a transient external
+  # deprecation can't break CI on a green PR.
+  "error:::sync_engine",
+  "error:::lint_collapse_sites",
+  "error:::create_signed_commit",
+  "error:::ready",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["scripts", ".codex/skills/publish-npm-package/scripts"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+precision = 1
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# Tests import the scripts via `importlib.util.spec_from_file_location`
+# in conftest.py — mypy needs the same view of the source tree to
+# type-check the script bodies in place.
+mypy_path = ["scripts"]
+# Skill-bundled release helpers are security-sensitive and must be gated too;
+# they are loaded by tests via importlib, which mypy does not follow.
+files = ["scripts", "tests", ".codex/skills/publish-npm-package/scripts"]
+# Scripts use hyphens in filenames (sync-engine.py, create-signed-commit.py)
+# which aren't valid Python module names. Tests import them via importlib;
+# mypy follows the imports without needing module-name resolution.
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = "yaml"
+ignore_missing_imports = false

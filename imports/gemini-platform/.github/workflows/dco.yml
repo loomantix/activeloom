@@ -1,0 +1,50 @@
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dco-check:
+    name: DCO sign-off check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify all commits are signed off
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          commits=$(git rev-list --no-merges "$base..$head")
+          missing=()
+          if [ -n "$commits" ]; then
+            while IFS= read -r sha; do
+              [ -z "$sha" ] && continue
+              if ! git show -s --format='%B' "$sha" | grep -qE '^Signed-off-by: .+ <.+@.+>$'; then
+                missing+=("$sha")
+              fi
+            done <<< "$commits"
+          fi
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::The following commits are missing a DCO sign-off (Signed-off-by trailer):"
+            for sha in "${missing[@]}"; do
+              echo "  - $sha"
+              git show -s --format='    %s' "$sha"
+            done
+            echo ""
+            echo "Run 'git commit --amend -s' (last commit) or 'git rebase -i <base> --signoff' (multiple)"
+            echo "to add sign-off, then force-push the branch."
+            exit 1
+          fi
+          echo "All commits are signed off."

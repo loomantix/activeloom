@@ -1,0 +1,89 @@
+name: CodeQL
+
+# Sync engine + create-signed-commit run with cross-org org-scoped App
+# tokens in the consumer fleet. CodeQL's default Python query suite
+# catches taint flows that ruff and mypy don't. Run it only when the
+# Python surface or this workflow changes.
+
+on:
+  push:
+    # Push-event scan on main establishes the baseline that GitHub Code
+    # Scanning needs to auto-dismiss fixed alerts. Without it, resolved
+    # findings linger as stale entries in the Security tab.
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  # Preserve every main baseline scan while cancelling obsolete PR heads.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  python-changes:
+    name: Detect Python changes
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: changes
+        name: Check changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+
+          if [[ "$base" =~ ^0+$ ]]; then
+            changed_files="$(git ls-tree -r --name-only "$head")"
+          else
+            changed_files="$(git diff --name-only "$base" "$head")"
+          fi
+
+          changed=false
+          while IFS= read -r file; do
+            case "$file" in
+              *.py|pyproject.toml|.github/workflows/codeql.yml)
+                changed=true
+                break
+                ;;
+            esac
+          done <<< "$changed_files"
+
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+  analyze:
+    name: Analyze (Python)
+    needs: python-changes
+    if: needs.python-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: python
+          queries: +security-extended
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          category: '/language:python'

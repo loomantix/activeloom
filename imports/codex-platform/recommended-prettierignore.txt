@@ -1,0 +1,78 @@
+# Recommended .prettierignore snippet for consumer repos.
+#
+# When to use: if your consumer repo runs Prettier with a config that
+# differs from this repo's canonical .prettierrc, your prettier run will
+# reformat synced files and produce working-tree drift on every sync.
+#
+# Two ways to avoid that:
+#   1. Adopt this repo's .prettierrc verbatim (the cleanest fix).
+#   2. Paste the marker block below into your repo's .prettierignore so
+#      prettier leaves the synced paths alone.
+#
+# Defense-in-depth: even if you adopt the canonical config, leaving this
+# block in place costs nothing and survives a future prettier version
+# bump that changes default behavior.
+#
+# Mechanical replacement: keep the `>>> ... <<<` markers intact so this
+# block can be regenerated in place. Anything outside the markers is
+# yours and won't be touched.
+#
+# Regenerate when scripts/sync-targets.yml changes — the entries below
+# mirror its `destination:` paths (excluding `delete: true` entries and
+# entries that are rendered from a template).
+
+# >>> platform-synced paths <<<
+.codex/REVIEW_WORKFLOW.md
+.codex/references/local-review-ledger.md
+.codex/references/roles/code-architect.md
+.codex/references/roles/code-explorer.md
+.codex/references/roles/code-reviewer.md
+.codex/references/roles/comment-analyzer.md
+.codex/references/roles/pr-test-analyzer.md
+.codex/references/roles/security-reviewer.md
+.codex/references/roles/silent-failure-hunter.md
+.codex/references/roles/type-design-analyzer.md
+.codex/skills/actions-usage-audit/SKILL.md
+.codex/skills/agent-loop/SKILL.md
+.codex/skills/agent-loop/scripts/agent-loop.sh
+.codex/skills/agent-loop/scripts/agent-loop-state.py
+.codex/skills/agent-loop/scripts/config-doctor.py
+.codex/skills/agent-loop/scripts/hook-gh-guard
+.codex/skills/agent-loop/scripts/hook-git-guard
+.codex/skills/agent-loop/scripts/process-supervisor.py
+.codex/skills/agent-loop/scripts/review-push.sh
+.codex/skills/agent-loop/scripts/run-codex-review.sh
+.codex/skills/backlog-refinement/SKILL.md
+.codex/skills/backlog-refinement/scripts/bail-report.py
+.codex/skills/backlog-refinement/scripts/candidates.py
+.codex/skills/copilot-review/SKILL.md
+.codex/skills/critique/SKILL.md
+.codex/skills/critique/scripts/package.json
+.codex/skills/critique/scripts/review-ledger.integrity
+.codex/skills/critique/scripts/review-ledger.js
+.codex/skills/critique/scripts/review-ledger.version
+.codex/skills/critique/scripts/usage-snapshot.js
+.codex/skills/critique/scripts/prompt-stack-hash.js
+.codex/skills/critique/scripts/local-review-handoff.py
+.codex/skills/critique/scripts/run-claude-review.sh
+.codex/skills/critique/scripts/run-agy-review.sh
+.codex/skills/deepcritique/SKILL.md
+.codex/skills/diagnosing-bugs/SKILL.md
+.codex/skills/feature-dev/SKILL.md
+.codex/skills/grill/SKILL.md
+.codex/skills/issues/SKILL.md
+.codex/skills/issues/scripts/link.py
+.codex/skills/issues/scripts/ready.py
+.codex/skills/phone-install/SKILL.md
+.codex/skills/pr-critique/SKILL.md
+.codex/skills/publish-npm-package/SKILL.md
+.codex/skills/publish-npm-package/agents/openai.yaml
+.codex/skills/publish-npm-package/references/upstream-docs.md
+.codex/skills/publish-npm-package/scripts/release-preflight.py
+.codex/skills/publish-npm-package/scripts/verify-published-package.py
+.codex/skills/refactorpass/SKILL.md
+.codex/skills/reviewit/SKILL.md
+.codex/skills/ship-staging/SKILL.md
+.codex/skills/task-packet/SKILL.md
+.github/workflows/dco.yml
+# <<< platform-synced paths >>>

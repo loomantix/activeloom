@@ -1,0 +1,359 @@
+# Sync canonical files from an upstream repo — produces verified commits.
+#
+# This is the canonical TEMPLATE for the consumer-side sync workflow. Drop
+# it into a consumer repo at `.github/workflows/sync-from-upstream.yml`
+# (drop the `.template` suffix). Then fill in `UPSTREAM_REPO` to point at
+# your upstream, and adjust `PR_BASE_BRANCH` if your release flow targets
+# something other than `main`.
+#
+# How this works:
+#
+#   1. Authenticates as a GitHub App via `actions/create-github-app-token@v1`.
+#      Required secrets on the consumer repo (or as org-level secrets):
+#        - SYNC_APP_ID         (App id)
+#        - SYNC_APP_PRIVATE_KEY (PEM-encoded private key)
+#      The App must be installed on the consumer repo with `contents: write`
+#      and `pull_requests: write`. If your conventions name the secrets
+#      differently, just update the references below.
+#
+#   2. Replaces `git commit + git push` with `scripts/create-signed-commit.py`
+#      from the cloned upstream repo. That script uses the GitHub Contents
+#      API (git/blobs → git/trees → git/commits → git/refs) to create the
+#      sync commit. Commits created via that path are auto-signed by GitHub
+#      with `committer: GitHub`, `verified: true` — useful when SOC 2 or
+#      similar controls require attested-actor sign-off on every change.
+#
+#   3. Uses the App's installation token (not the default GITHUB_TOKEN /
+#      github-actions[bot]) for both the commit creation and the
+#      `gh pr create` call. The PR is attributed to the App, decoupling
+#      the committer identity from any human reviewer — reviewers can
+#      approve without violating segregation-of-duties controls.
+#
+# Trust model: UPSTREAM_REF defaults to a tag (`sync-v1`), not `main`, so
+# pushes to the upstream's main don't auto-propagate. Bumping the tag is
+# the deliberate gate. Kill switch via `SKIP_UPSTREAM_SYNC` repo variable.
+#
+# UPSTREAM_READ_TOKEN is required only if your upstream repo is private.
+# For public upstream repos, remove the validation step + the auth header
+# in the clone step (anonymous clone works).
+
+name: Sync from upstream
+
+on:
+  schedule:
+    - cron: '0 9 * * *'   # daily at 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: sync-from-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: <owner>/<repo>     # e.g. loomantix/codex-platform
+  UPSTREAM_REF: sync-v1
+  UPSTREAM_DIR: /tmp/upstream
+  SYNC_BRANCH_PREFIX: sync/upstream
+  PR_BASE_BRANCH: main              # override if your release flow uses staging etc.
+
+jobs:
+  sync:
+    if: vars.SKIP_UPSTREAM_SYNC == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Generate App installation token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        with:
+          app-id: ${{ secrets.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+
+      - name: Checkout consumer repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ env.PR_BASE_BRANCH }}
+          token: ${{ steps.app-token.outputs.token }}
+          # The App installation token carries `contents: write` +
+          # `pull_requests: write` on this repo. Left persisted, checkout
+          # writes it into `.git/config` of this working tree — which is
+          # exactly the cwd that upstream-authored Python (`sync-engine.py`)
+          # runs in a few steps later, and that code is unverified whenever
+          # SYNC_TAG_ALLOWED_SIGNERS is unset. Nothing in this job needs
+          # git-level auth: the commit goes through the GitHub Contents API,
+          # and both `create-signed-commit.py` and `gh` receive the token
+          # explicitly via env on the one step that needs it.
+          persist-credentials: false
+
+      - name: Validate UPSTREAM_READ_TOKEN is configured
+        # Remove this entire step if your upstream is public.
+        env:
+          UPSTREAM_READ_TOKEN: ${{ secrets.UPSTREAM_READ_TOKEN }}
+        run: |
+          if [ -z "$UPSTREAM_READ_TOKEN" ]; then
+            echo "::error::UPSTREAM_READ_TOKEN secret is not configured. Set it on the consumer (fine-grained PAT or GitHub App token with 'Contents: Read' on $UPSTREAM_REPO). Remove this step entirely if the upstream is public." >&2
+            exit 1
+          fi
+
+      - name: Clone upstream
+        id: clone
+        env:
+          UPSTREAM_READ_TOKEN: ${{ secrets.UPSTREAM_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Wipe any prior clone — on warm runners or rerun-failed jobs,
+          # `git remote add origin` fails if the dir already exists with
+          # state, and the workflow would silently end up working against
+          # stale content.
+          rm -rf "$UPSTREAM_DIR"
+          mkdir -p "$UPSTREAM_DIR"
+          cd "$UPSTREAM_DIR"
+          git init -q
+          # Ensure the auth header is unset on EXIT — success or failure.
+          # Without the trap, a `git fetch` error left the token in
+          # $UPSTREAM_DIR/.git/config, so subsequent steps that printed
+          # `git remote -v` or surfaced an error message could leak it.
+          trap 'git config --unset-all http.extraheader 2>/dev/null || true' EXIT
+          if [ -n "${UPSTREAM_READ_TOKEN:-}" ]; then
+            AUTH_HEADER="Authorization: Basic $(printf 'x-access-token:%s' "$UPSTREAM_READ_TOKEN" | base64 -w0)"
+            git config http.extraheader "$AUTH_HEADER"
+          fi
+          git remote add origin "https://github.com/${UPSTREAM_REPO}.git"
+          # Disambiguate via ls-remote so that auth/network failures fail
+          # loud at the probe step rather than falling through into a
+          # branch fetch (which would silently ship branch content as a
+          # "verified sync from <tag>" — exactly what the trust model
+          # promises won't happen).
+          if git ls-remote --tags --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
+            git fetch --depth=1 origin "refs/tags/${UPSTREAM_REF}:refs/tags/${UPSTREAM_REF}"
+            # Record which kind of ref won so the signature gate below knows
+            # whether there is a tag object to verify. A branch ref carries no
+            # signature, so the gate cannot apply to it.
+            echo "ref_kind=tag" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --heads --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
+            git fetch --depth=1 origin "${UPSTREAM_REF}"
+            echo "ref_kind=branch" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' is neither a tag nor a branch on ${UPSTREAM_REPO}." >&2
+            exit 1
+          fi
+          git checkout -q FETCH_HEAD
+
+      # Verify the upstream tag's signature BEFORE any upstream code runs.
+      #
+      # Why this step exists: consumers track a tag, and a tag is mutable.
+      # Advancing `sync-v1` is a force-push, not a pull request, so it does not
+      # pass through upstream's CODEOWNERS review. Without this gate, anyone who
+      # can push to the upstream can point the tag at a commit no code owner
+      # approved and every consumer picks it up on the next cron. Verifying the
+      # signature moves the trust anchor from "who can push a tag" to "who holds
+      # a signing key listed below".
+      #
+      # This is defense in depth. The primary control is a tag protection
+      # ruleset on the upstream (see docs/sync.md); this step is what protects
+      # a consumer when that ruleset is missing or is changed.
+      #
+      # `SYNC_TAG_ALLOWED_SIGNERS` is a repo *variable*, not a secret — it holds
+      # public keys. Format is git's allowed-signers file, one principal per line:
+      #   maintainer@example.com ssh-ed25519 AAAAC3Nza...
+      # Unset means "not yet migrated": the step warns, marks the run unverified
+      # and continues, so adding this workflow does not break a consumer that has
+      # not been handed keys yet. An unverified run is not silent — it annotates
+      # the job, the run summary, and the body of every PR it produces. Set the
+      # variable as soon as upstream publishes its signing keys; `sync-v2` makes
+      # the unset case fail closed.
+      - name: Verify upstream tag signature
+        id: verify
+        env:
+          ALLOWED_SIGNERS: ${{ vars.SYNC_TAG_ALLOWED_SIGNERS }}
+          REF_KIND: ${{ steps.clone.outputs.ref_kind }}
+        run: |
+          set -euo pipefail
+          # Defaulted so this block is runnable outside Actions (see
+          # tests/test_sync_workflow_template.py).
+          step_output="${GITHUB_OUTPUT:-/dev/null}"
+          step_summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          state_file="${GITHUB_WORKSPACE:-$PWD}/.github/sync-upstream-state"
+
+          # An unverified run is not a failed run — it is a run whose warning
+          # has to survive into somewhere a human actually looks. A `::warning::`
+          # alone lands in a green job nobody opens, so also write the run
+          # summary here and the PR body downstream.
+          unverified() {
+            echo "::warning::$1"
+            printf '### :warning: Upstream sync was NOT signature-verified\n\n%s\n' "$1" >> "$step_summary"
+            echo "verified=false" >> "$step_output"
+          }
+
+          if [ "$REF_KIND" != tag ]; then
+            if [ -n "${ALLOWED_SIGNERS:-}" ]; then
+              echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' resolved to a branch, not a tag. Signature enforcement is configured, so refusing to run unsigned upstream code." >&2
+              exit 1
+            fi
+            unverified "UPSTREAM_REF '${UPSTREAM_REF}' resolved to a branch. Branches cannot carry the tag signature this workflow verifies, and SYNC_TAG_ALLOWED_SIGNERS is not set, so this run is unverified."
+            exit 0
+          fi
+          if [ -z "${ALLOWED_SIGNERS:-}" ]; then
+            unverified "SYNC_TAG_ALLOWED_SIGNERS is not set — the upstream tag is being trusted without verifying its signature. Anyone who can push a tag to ${UPSTREAM_REPO} can ship code to this repo. Set the variable to upstream's published signing keys to close this."
+            exit 0
+          fi
+          # 0600: the file is not secret, but a narrow mode keeps a shared or
+          # self-hosted runner from having it rewritten between write and read.
+          signers="${UPSTREAM_DIR}-allowed-signers"
+          verify_error="${UPSTREAM_DIR}-verify-tag.err"
+          install -m 600 /dev/null "$signers"
+          printf '%s\n' "$ALLOWED_SIGNERS" > "$signers"
+          cd "$UPSTREAM_DIR"
+          git config gpg.ssh.allowedSignersFile "$signers"
+          if ! git verify-tag "${UPSTREAM_REF}" 2>"$verify_error"; then
+            echo "::error::Upstream tag '${UPSTREAM_REF}' is unsigned or its signature does not match SYNC_TAG_ALLOWED_SIGNERS. Refusing to sync. This is what a moved or forged tag looks like — do not bypass it without confirming with an upstream maintainer out of band."
+            cat "$verify_error" >&2
+            exit 1
+          fi
+
+          # Replay / rollback guard.
+          #
+          # `git verify-tag` proves a release key signed THIS tag object. It does
+          # not prove the object is the CURRENT release. Retagging mints a brand
+          # new tag object and every previous one stays validly signed forever —
+          # so someone with push access and NO signing key can force the ref back
+          # onto an older object and roll the whole fleet onto pre-fix code, and
+          # the signature still verifies. The upstream ruleset's `update` rule is
+          # the real fix; this is the consumer-side backstop for when it is
+          # missing or changed.
+          #
+          # The tagger date is inside the signed payload, so it cannot be moved
+          # without invalidating the signature. Refusing anything older than the
+          # newest tag already accepted blocks replay of a stale object while
+          # still allowing a deliberate re-release — that mints a fresh tag
+          # object dated now, even when it points back at an older commit.
+          tag_timestamp=$(git for-each-ref --format='%(taggerdate:unix)' "refs/tags/${UPSTREAM_REF}")
+          if ! printf '%s' "$tag_timestamp" | grep -Eq '^[0-9]+$'; then
+            echo "::error::Could not read a tagger date from '${UPSTREAM_REF}'. A signed annotated tag always carries one, so refusing to sync." >&2
+            exit 1
+          fi
+          previous_timestamp=""
+          if [ -f "$state_file" ]; then
+            previous_timestamp=$(sed -n 's/^last_verified_tag_timestamp=//p' "$state_file" | tail -n 1)
+          fi
+          if printf '%s' "$previous_timestamp" | grep -Eq '^[0-9]+$' && [ "$tag_timestamp" -lt "$previous_timestamp" ]; then
+            echo "::error::Upstream tag '${UPSTREAM_REF}' is OLDER than the last tag this repo accepted (${tag_timestamp} < ${previous_timestamp}). A validly signed but stale tag object is what a rollback looks like — it re-ships code from before a fix. Refusing to sync. A genuine revert must be published as a NEW signed tag, not by moving the ref back to an old one." >&2
+            exit 1
+          fi
+
+          # Record the high-water mark. `create-signed-commit.py` commits the
+          # whole dirty tree, so this lands in the sync PR where it is reviewable.
+          # Written only when it actually changes, so an unmoved tag never
+          # manufactures an otherwise-empty PR.
+          desired=$(printf '# Managed by the sync workflow — do not edit by hand.\n# Newest upstream tag accepted by the signature gate; replay guard.\nlast_verified_tag_timestamp=%s\nlast_verified_tag_object=%s' \
+            "$tag_timestamp" "$(git rev-parse "refs/tags/${UPSTREAM_REF}")")
+          if [ "$(cat "$state_file" 2>/dev/null || true)" != "$desired" ]; then
+            mkdir -p "$(dirname "$state_file")"
+            printf '%s\n' "$desired" > "$state_file"
+          fi
+
+          echo "verified=true" >> "$step_output"
+          echo "✅ Verified signature on ${UPSTREAM_REF} (tagger timestamp ${tag_timestamp})"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python3 -m pip install 'pyyaml==6.0.2'
+
+      - name: Run sync engine
+        run: |
+          set -euo pipefail
+          python3 "$UPSTREAM_DIR/scripts/sync-engine.py" \
+            --upstream-repo "$UPSTREAM_DIR" \
+            --consumer-dir .
+
+      - name: Detect changes
+        id: diff
+        run: |
+          set -euo pipefail
+          # `git status --porcelain` covers staged + unstaged + untracked in
+          # one call. The earlier `git diff --quiet` + ls-files combo missed
+          # staged changes, which would silently report "in sync" while the
+          # engine had actually written files.
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Already in sync with upstream"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git status --short
+          fi
+
+      - name: Create signed commit + open / refresh sync PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG_VERIFIED: ${{ steps.verify.outputs.verified }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y%m%d)
+          BRANCH="${SYNC_BRANCH_PREFIX}-${DATE}"
+
+          # Close any prior open sync PRs to keep history clean. `--limit 100`
+          # is deterministic; the default 30 would let stale PRs accumulate
+          # in busy repos.
+          gh pr list \
+            --state open \
+            --limit 100 \
+            --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) | .number" \
+          | while read -r prior; do
+              [ -z "$prior" ] && continue
+              echo "Closing prior sync PR #$prior"
+              gh pr close "$prior" --delete-branch \
+                --comment "Superseded by today's sync run."
+            done
+
+          # Create the verified commit via the GitHub Contents API. Using
+          # the API (not `git commit`+`git push`) is what makes the commit
+          # signed-by-GitHub. The App token is the actor; commits show
+          # `committer: GitHub`, `verified: true`.
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          # `--app-slug` makes the script append a Signed-off-by trailer
+          # to the commit message, so consumer DCO checks accept it
+          # without per-repo bot exemptions. The slug comes from
+          # actions/create-github-app-token's output.
+          python3 "$UPSTREAM_DIR/scripts/create-signed-commit.py" \
+            --owner "$OWNER" \
+            --repo "$REPO" \
+            --base-branch "${PR_BASE_BRANCH}" \
+            --new-branch "$BRANCH" \
+            --message "chore: sync from ${UPSTREAM_REPO}@${UPSTREAM_REF}" \
+            --app-slug "${{ steps.app-token.outputs.app-slug }}" \
+            --consumer-dir .
+
+          # Open the PR (or refresh title/body if it already exists for the
+          # date-stamped branch). `gh pr create` errors if a PR already
+          # exists for $BRANCH; fall through to gh pr edit on that path.
+          PR_TITLE="Sync from ${UPSTREAM_REPO}"
+          PR_BODY="Automated sync from \`${UPSTREAM_REPO}@${UPSTREAM_REF}\`. Review the diff carefully before merging — substituted content reflects current \`.platform-config.yml\`."
+          # The signature gate's warning is worthless if it only ever lands in a
+          # green job log. Put it in front of whoever reviews the PR instead.
+          if [ "${TAG_VERIFIED:-}" != "true" ]; then
+            PR_BODY="$(printf '> [!WARNING]\n> **This sync was not signature-verified.** `SYNC_TAG_ALLOWED_SIGNERS` is unset on this repo, so the upstream tag signature was not checked and the replay guard did not run. These changes are only as trustworthy as push access to `%s`. Set the variable to upstream published signing keys — see docs/sync.md.\n\n%s' "$UPSTREAM_REPO" "$PR_BODY")"
+          fi
+          if ! gh pr create \
+                --base "${PR_BASE_BRANCH}" \
+                --head "$BRANCH" \
+                --title "$PR_TITLE" \
+                --body "$PR_BODY" 2>/tmp/pr-create-err; then
+            if grep -q "already exists" /tmp/pr-create-err; then
+              echo "PR for $BRANCH already exists — refreshing"
+              gh pr edit "$BRANCH" --title "$PR_TITLE" --body "$PR_BODY"
+            else
+              cat /tmp/pr-create-err >&2
+              exit 1
+            fi
+          fi

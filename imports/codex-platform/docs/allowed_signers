@@ -1,0 +1,17 @@
+# Release signing keys for loomantix/codex-platform.
+#
+# Public halves only. This file is the canonical source for the
+# SYNC_TAG_ALLOWED_SIGNERS repo variable that every consumer's
+# sync workflow verifies `sync-v1` against:
+#
+#   gh variable set SYNC_TAG_ALLOWED_SIGNERS \
+#     --repo <owner>/<consumer> \
+#     --body "$(curl -fsSL https://raw.githubusercontent.com/loomantix/codex-platform/main/docs/allowed_signers)"
+#
+# Format is git's allowed-signers file: one principal per line, the
+# principal being the tagger email on the signed tag. Comment lines are
+# ignored by git, so they are safe to carry into the variable.
+#
+# Rotating or adding a signer means updating this file AND the variable
+# in every consumer, so keep the list to people who actually cut releases.
+13874718+BaxterDevs@users.noreply.github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJn15jtbvCwp682js5UcA21BRjWYZCA6kAyHHAI1+P/n

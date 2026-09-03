@@ -1,0 +1,125 @@
+# codex-platform
+
+Reusable Codex skills, workflow prompts, and a sync engine for propagating agent tooling into consumer repos. Apache 2.0 + DCO.
+
+> **Status:** v0.1. The Codex surface is young, but the repository is structured for public use: Apache 2.0, DCO, public-safe docs, and review-gated sync tooling.
+
+## What's in here
+
+### Codex skills (`.codex/skills/`)
+
+Operational skills you can install globally or sync into any repo:
+
+| Skill                 | What it does                                                                                                                                                                                                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `refactorpass`        | PR-first cleanup pass; posts verified cleanup suggestions inline before applying, pushing, replying, and resolving.                                                                                                                                                            |
+| `critique`            | PR-first adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass.                                                                                                                |
+| `deepcritique`        | Opens or reuses a draft PR and orchestrates `critique deep` with an inline finding ledger, preceded by refactorpass on this engine's first pass only. Runs only on a resolved Deep review tier and hands a Lean changeset back to `critique`.                                  |
+| `pr-critique <pr>`    | Cross-engine deep review of an existing PR using the same inline finding, fix-reply, and resolution ledger.                                                                                                                                                                    |
+| `reviewit <pr>`       | Optional hosted-reviewer lane, runnable alongside the local relay or on its own. Orchestrates post-push Gemini Flash + Copilot review; its iteration cap follows the resolved review tier.                                                                                     |
+| `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                                                                                                                                         |
+| `grill`               | Pre-code interview. Maps the problem as a design tree and asks the whole dependency-ordered frontier each round, with a recommended answer per question. Writes no code. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE). |
+| `diagnosing-bugs`     | Debugging discipline for bugs that survived the first read — no hypothesis until a tight, deterministic loop goes red on the user's exact symptom. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).                       |
+| `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                                                                                                                                                                               |
+| `issues`              | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.                                                                                                                                                 |
+| `backlog-refinement`  | Curate and harden the autonomous queue: verify issues against the integration branch, rewrite agent-ready work, classify exclusions, and learn from loop bails.                                                                                                                |
+| `agent-loop`          | Experimental Codex relay that opens a draft PR before bounded Codex/Claude convergence and records every finding, reply, and resolution there.                                                                                                                                 |
+| `actions-usage-audit` | Read-only GitHub Actions billing and workflow-usage analysis with month-over-month attribution.                                                                                                                                                                                |
+| `publish-npm-package` | Prepare, bootstrap, publish, and verify npm releases with Trusted Publishing, immutable tags, artifact checks, and provenance.                                                                                                                                                 |
+| `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                                                                                                                                                                     |
+| `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                                                                                                                                      |
+| `ship-staging <pr>`   | Merge a ready staging PR, mark linked issues on-staging, refresh the local staging reference, and notify Google Chat.                                                                                                                                                          |
+
+The synced review workflow is a relay defined over roles rather than engine
+names: one author engine and the reviewer engines declared on the pull
+request's roster. The `reviewit` hosted Gemini/Copilot lane runs alongside it
+whenever it is useful, and is the primary path for a repository with no local
+CLI. A review fix invalidates only the attestations naming the superseded head,
+so an engine that already read the current commit does not re-run; validated
+minor-only polish does not keep the cycle running. Every local finding is
+recorded before its fix, then replied to with the fix SHA and validation before
+resolution. The relay runs in `auto` mode, where the default tested launcher
+pins Agy to Gemini 3.7 Flash with high thinking (with the existing low-effort
+Claude launcher retained as an explicit fallback), or in `handoff` mode, where
+each pass posts a resumable PR comment and stops for a new user-started terminal
+session.
+
+### Codex references (`.codex/references/`)
+
+Longer role prompts live as references instead of always-loaded instructions:
+
+- `roles/code-explorer.md`
+- `roles/code-architect.md`
+- `roles/code-reviewer.md`
+- `roles/silent-failure-hunter.md`
+- `roles/type-design-analyzer.md`
+- `roles/comment-analyzer.md`
+- `roles/pr-test-analyzer.md`
+- `roles/security-reviewer.md`
+
+Skills can load these when they need a specialized review, exploration, or architecture stance.
+
+### Sync engine (`scripts/`)
+
+The sync engine is intentionally agent-agnostic:
+
+- `sync-engine.py` reads upstream `scripts/sync-targets.yml` plus consumer `.platform-config.yml`, applies `<<KEY>>` substitutions, writes or deletes destination files, and supports `create_if_missing`.
+- `create-signed-commit.py` creates sync commits through the GitHub Contents API so GitHub can mark them verified when run with a GitHub App token.
+- `.github/workflows/sync-from-upstream.yml.template` is the consumer-side workflow template.
+
+## Install
+
+Install the skills once per developer machine before expecting slash-skill commands such as `deepcritique`, `reviewit`, or `agent-loop` to resolve:
+
+```bash
+git clone https://github.com/loomantix/codex-platform.git
+cd codex-platform
+./scripts/install-skills.sh --dry-run # report what would happen
+./scripts/install-skills.sh           # symlink missing skills into ~/.codex/skills/
+./scripts/install-skills.sh --force   # replace existing entries after backup
+```
+
+Auto mode with a declared `gemini` reviewer requires the `agy` CLI and the
+pinned companion `deepcritique` bundle in Agy's `/skills` output. The launcher
+resolves the real bundle, requires a clean `loomantix/gemini-platform` checkout
+at its pinned commit, validates the required regular files and ledger module
+shape, and adds that surface to Agy's workspace. Auto mode follows an existing
+PR roster; `gemini` through Agy is the default only when declaring a new relay.
+A repository or user may instead declare `claude`. Agy currently persists
+one-shot conversations, so use Claude where local conversation persistence is
+prohibited.
+
+Existing symlinks pick up in-place edits after `git pull`. After pulling a
+version that adds, renames, or retires skills, rerun
+`./scripts/install-skills.sh --dry-run`, then the normal installer so new links
+are created and retired owned links are pruned. Restart Codex after changing the
+installed skill set so discovery reloads.
+
+If a skill command is not found in a Codex session, run the dry-run check from
+this checkout. Use the normal installer for missing links; use `--force` only
+when the dry-run reports stale symlinks or regular files that should be
+replaced.
+
+Consumer-owned `create_if_missing` targets are intentionally not upgraded by a
+sync. Existing `agent-loop` consumers must manually merge the current config,
+instruction, and prompt contracts—including `review_contract_version = 3`—
+before using the synced convergence wrapper; see the skill's **Existing
+Consumer Migration** section.
+
+## Wire Up A Consumer Repo
+
+1. Add `.platform-config.yml` at the consumer root with template substitutions.
+2. Copy `.github/workflows/sync-from-upstream.yml.template` to `.github/workflows/sync-from-upstream.yml`.
+3. Fill in `UPSTREAM_REPO`, branch, and secret names.
+4. Set the GitHub App secrets on the consumer.
+5. Run `gh workflow run "Sync from upstream" --repo <owner>/<consumer>`.
+6. Reference `.codex/REVIEW_WORKFLOW.md` from the consumer `AGENTS.md` and declare
+   which reviewer engines that consumer declares on a review roster.
+
+## Design Notes
+
+This repo keeps the durable parts of the old platform model: GitHub issue queue helpers, review automation, Copilot/Gemini plumbing, and tag-gated sync PRs. The agent-facing layer is Codex-specific: `AGENTS.md`, `.codex/skills`, `codex exec`, and concise skill bodies with optional references.
+
+## License
+
+Apache 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

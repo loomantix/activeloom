@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "py/overly-permissive-file",
+    "path": "scripts/sync-engine.py",
+    "why": "The engine writes files into a consumer's git worktree, where world-readable 0o644 is the correct default and the mode a manifest `mode:` entry usually asks for. The query flags the property, not a defect: `write_if_changed` picks 0o644 only for a file it is creating, and otherwise preserves the destination's existing bits. Narrowing the mode here would make synced files less readable than the ones a developer commits by hand."
+  }
+]

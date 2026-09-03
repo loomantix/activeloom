@@ -1,0 +1,491 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # Obsolete PR heads may be cancelled; preserve every main verdict because
+  # main is the source for tagged consumer syncs.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  draft-preflight:
+    name: Draft preflight
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check changed and interpreted files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git diff --check "$BASE_SHA...$HEAD_SHA"
+          git ls-files -z '*.py' | xargs -0 -r python3 -m py_compile
+          git ls-files -z '*.sh' | xargs -0 -r -n1 bash -n
+
+  # ---------------------------------------------------------------------------
+  # Consolidated static checks.
+  #
+  # These seven checks used to be seven separate jobs. Each did seconds of real
+  # work, but GitHub bills a 1-minute minimum PER JOB and each one re-paid the
+  # same runner allocation, checkout, and toolchain install. Measured over
+  # August 2026: `CI` averaged 13.9 billed minutes per run across 44 runs
+  # (~612 min/month), of which ~7 min was the real `Python types + tests` work
+  # and the rest was seven trivial jobs.
+  #
+  # One job pays setup once. Each check keeps its own step so the Actions UI
+  # still shows which one failed, and `if: '!cancelled()'` means a failure in
+  # an early check does not hide the later ones — the property that separate
+  # jobs gave for free and the reason to be careful here.
+  #
+  # `Python types + tests` deliberately stays its own job: it is ~7 minutes of
+  # genuine work and running it in parallel keeps wall clock down.
+  # ---------------------------------------------------------------------------
+  static-checks:
+    name: Static checks
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.29.3
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+      - name: Install Python tooling
+        run: python3 -m pip install 'pyyaml==6.0.2' 'ruff==0.9.10'
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      # --- was job `python` (Python lint + syntax) ---
+      - name: Compile-check every Python source
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          mapfile -t pyfiles < <(git ls-files '*.py')
+          if [ "${#pyfiles[@]}" -eq 0 ]; then
+            echo "(no Python files found)"
+            exit 0
+          fi
+          python3 -m py_compile "${pyfiles[@]}"
+      - name: Ruff lint
+        if: '!cancelled()'
+        run: ruff check .
+
+      # --- was job `shell` (Shell syntax + shellcheck) ---
+      - name: bash -n every shell script
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          mapfile -t shfiles < <(git ls-files '*.sh')
+          for f in "${shfiles[@]}"; do
+            bash -n "$f"
+          done
+      - name: shellcheck (warnings allowed; errors fail)
+        if: '!cancelled()'
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          severity: error
+
+      # --- was job `yaml` (YAML + Actions schema) ---
+      - name: Parse every YAML file
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          mapfile -t ymlfiles < <(git ls-files '*.yml' '*.yaml')
+          for f in "${ymlfiles[@]}"; do
+            # `.template` files often contain literal `<placeholders>` that
+            # are still valid YAML — parse-only check is sufficient.
+            python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$f"
+          done
+      - name: Install pinned actionlint
+        if: '!cancelled()'
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
+      - name: Validate workflows and consumer template
+        if: '!cancelled()'
+        run: >-
+          "$(go env GOPATH)/bin/actionlint" -shellcheck shellcheck
+          .github/workflows/*.yml
+          templates/sync-from-gemini-platform.yml
+
+      # --- was job `format` (Prettier check) ---
+      - name: Prettier --check
+        if: '!cancelled()'
+        run: pnpm format:check
+
+      # --- vendor-drift (Vendored engine matches claude-platform pin) ---
+      # This repo vendors the sync engine from claude-platform. Without this
+      # gate the copy drifts silently: gemini-platform#23 vendored the engine
+      # mid-review from claude-platform#149 and then missed that PR's last two
+      # rounds, including its symlink and payload-tree hardening. Nothing
+      # noticed for as long as no gate existed.
+      - name: Diff vendored files against claude-platform pin
+        if: '!cancelled()'
+        env:
+          CLAUDE_PIN_SHA: 970b6f7c13f4edcff6c1c4f8a68fc5405fcf3e3a
+          CLAUDE_REPO: loomantix/claude-platform
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/${CLAUDE_REPO}/${CLAUDE_PIN_SHA}"
+          # Keep this list in sync with the vendoring commit. A new
+          # file vendored from claude-platform that doesn't appear
+          # below is invisible to the gate — that's a deliberate
+          # "explicit > implicit" choice, but it does mean adding a
+          # new test file requires updating this list too.
+          files=(
+            scripts/lint-collapse-sites.py
+            scripts/sync-engine.py
+            scripts/create-signed-commit.py
+            tests/__init__.py
+            tests/conftest.py
+            tests/fixtures/render-fidelity/.platform-config.yml
+            tests/fixtures/render-fidelity/expected.md
+            tests/fixtures/render-fidelity/sync-targets.yml
+            tests/fixtures/render-fidelity/template.md
+            tests/test_sync_engine.py
+            tests/test_sync_engine_integration.py
+            tests/test_create_signed_commit.py
+            tests/test_lint_collapse_sites.py
+          )
+          mkdir -p /tmp/upstream
+          for f in "${files[@]}"; do
+            curl -fsSL "${base}/${f}" -o "/tmp/upstream/$(echo "$f" | tr '/' '_')"
+          done
+          drift=0
+          for f in "${files[@]}"; do
+            up="/tmp/upstream/$(echo "$f" | tr '/' '_')"
+            # The shared test loader is byte-identical except for its
+            # agent-specific skill root. Keep the file in the parity surface,
+            # but compare against the explicit `.claude/` -> `.agents/`
+            # adaptation that makes its ready fixture usable in this repo.
+            if [ "$f" = "tests/conftest.py" ]; then
+              if [ "$(grep -o '"\.claude"' "$up" | wc -l)" -ne 1 ] || \
+                [ "$(grep -o '\.claude/' "$up" | wc -l)" -ne 1 ]; then
+                echo "::error file=$f::unexpected agent-root adaptation surface"
+                drift=1
+                continue
+              fi
+              sed -e 's#"\.claude"#".agents"#g' -e 's#\.claude/#.agents/#g' \
+                "$up" > "${up}.adapted"
+              up="${up}.adapted"
+            fi
+            if ! diff -q "$f" "$up" > /dev/null; then
+              echo "::error file=$f::diverges from ${CLAUDE_REPO}@${CLAUDE_PIN_SHA}"
+              diff -u "$up" "$f" | head -60 || true
+              drift=1
+            fi
+          done
+          if [ "$drift" -ne 0 ]; then
+            echo "Update CLAUDE_PIN_SHA in this workflow (atomically with the file content) to ack the drift." >&2
+            exit 1
+          fi
+          echo "OK: ${#files[@]} vendored files match ${CLAUDE_REPO}@${CLAUDE_PIN_SHA}"
+
+      # --- was job `ledger-drift` (Vendored review-ledger matches its published tarball) ---
+      - name: Byte-compare against the pinned published version
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          scripts_dir=.agents/skills/critique/scripts
+          version="$(tr -d '[:space:]' < "$scripts_dir/review-ledger.version")"
+          [ -n "$version" ] || { echo "::error::review-ledger.version is empty"; exit 1; }
+          expected_integrity="$(tr -d '[:space:]' < "$scripts_dir/review-ledger.integrity")"
+          [ -n "$expected_integrity" ] || { echo "::error::review-ledger.integrity is empty"; exit 1; }
+          workdir="$(mktemp -d)"
+          # Run from a temp dir and pin the registry explicitly: a repo-root
+          # `.npmrc` must not be able to redirect `@loomantix` to another host.
+          # `--silent` still prints the tarball name npm chose, so use that
+          # rather than re-deriving npm's scope-to-dash naming by hand.
+          tarball="$(cd "$workdir" && npm pack "@loomantix/review-ledger@$version" \
+            --registry https://registry.npmjs.org/ --ignore-scripts --silent)"
+          # A bare version is a mutable name. Bind the bytes we fetched to the
+          # sha512 recorded at vendoring time, so an unpublish/republish or a
+          # tampered registry response fails closed instead of redefining what
+          # "matches its published tarball" means.
+          actual_integrity="sha512-$(openssl dgst -sha512 -binary "$workdir/$tarball" | base64 -w0)"
+          if [ "$actual_integrity" != "$expected_integrity" ]; then
+            echo "::error::@loomantix/review-ledger@$version tarball integrity mismatch"
+            echo "  expected: $expected_integrity"
+            echo "  actual:   $actual_integrity"
+            exit 1
+          fi
+          # The package is published by the upstream OIDC pipeline with SLSA
+          # provenance. `npm audit signatures` needs an installed tree, so
+          # verify in a separate dir; together with the hash compare above this
+          # binds the bytes we vendored to a registry record that is both
+          # signed and attested, rather than to a mutable version string.
+          auditdir="$(mktemp -d)"
+          (
+            cd "$auditdir"
+            npm init -y >/dev/null 2>&1
+            npm install "@loomantix/review-ledger@$version" \
+              --registry https://registry.npmjs.org/ \
+              --ignore-scripts --no-audit --no-fund --silent
+            npm audit signatures
+          ) || {
+            echo "::error::signature/provenance verification failed for @loomantix/review-ledger@$version"
+            exit 1
+          }
+          tar xzf "$workdir/$tarball" -C "$workdir"
+          published="$workdir/package/dist/review-ledger.bundle.js"
+          test -f "$published" || {
+            echo "::error::published tarball has no dist/review-ledger.bundle.js — package layout changed"
+            exit 1
+          }
+          if ! cmp -s "$published" "$scripts_dir/review-ledger.js"; then
+            echo "::error::$scripts_dir/review-ledger.js does not match @loomantix/review-ledger@$version"
+            echo "Re-vendor it verbatim; never edit or locally rebuild the bundle:"
+            echo "  npm pack @loomantix/review-ledger@$version"
+            echo "  tar xzf loomantix-review-ledger-$version.tgz"
+            echo "  cp package/dist/review-ledger.bundle.js $scripts_dir/review-ledger.js"
+            exit 1
+          fi
+      - name: Vendored ledger speaks review contract v3
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          if ! actual="$(node .agents/skills/critique/scripts/review-ledger.js --protocol-version 2>&1)"; then
+            echo "::error::node could not execute the vendored ledger: $actual"
+            exit 1
+          fi
+          [ "$actual" = 3 ] || {
+            echo "::error::vendored ledger reports protocol '$actual', contract v3 requires 3"
+            exit 1
+          }
+
+      - name: Vendored ledger self-identifies as the pinned version
+        if: '!cancelled()'
+        # The byte-compare above proves the file came from the tarball the pin
+        # names. This proves the artifact agrees about which version that is:
+        # `--version` is injected into the bundle at build time, so a build
+        # whose injection silently degraded (`0.0.0-dev`) would otherwise sit
+        # here indistinguishable from a good one, and every downstream consumer
+        # would trust a pin file the artifact itself cannot corroborate.
+        run: |
+          set -euo pipefail
+          scripts_dir=.agents/skills/critique/scripts
+          pinned="$(tr -d '[:space:]' < "$scripts_dir/review-ledger.version")"
+          if ! reported="$(node "$scripts_dir/review-ledger.js" --version 2>&1)"; then
+            echo "::error::node could not execute the vendored ledger: $reported"
+            exit 1
+          fi
+          [ "$reported" = "$pinned" ] || {
+            echo "::error::vendored ledger reports version '$reported', but review-ledger.version pins '$pinned'"
+            exit 1
+          }
+
+      # --- was job `render-check` (Rendered template fidelity) ---
+      - name: Render fidelity fixture and compare against golden
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          # Render from a throwaway upstream tree so the fixture template is
+          # never a real sync target and can never reach a consumer.
+          UPSTREAM=$(mktemp -d)
+          CONSUMER=$(mktemp -d)
+          mkdir -p "$UPSTREAM/scripts"
+          cp tests/fixtures/render-fidelity/sync-targets.yml "$UPSTREAM/scripts/"
+          cp tests/fixtures/render-fidelity/template.md "$UPSTREAM/"
+          cp tests/fixtures/render-fidelity/.platform-config.yml "$CONSUMER/"
+          python3 scripts/sync-engine.py \
+            --upstream-repo "$UPSTREAM" \
+            --consumer-dir "$CONSUMER"
+          diff -u tests/fixtures/render-fidelity/expected.md "$CONSUMER/rendered.md"
+          pnpm exec prettier --config .prettierrc --check \
+            "$CONSUMER/rendered.md"
+
+      # --- was job `sync-targets` (sync-targets.yml matches schema) ---
+      - name: Validate the canonical manifest parses + has expected shape
+        if: '!cancelled()'
+        run: |
+          python3 - <<'PY'
+          import yaml, sys
+          doc = yaml.safe_load(open('scripts/sync-targets.yml'))
+          targets = doc.get('targets')
+          assert isinstance(targets, list) and targets, "targets must be a non-empty list"
+          for t in targets:
+              assert isinstance(t, dict), f"non-mapping target: {t!r}"
+              if t.get('delete'):
+                  assert 'destination' in t, f"delete target missing destination: {t!r}"
+              else:
+                  assert 'source' in t and 'destination' in t, f"copy target missing keys: {t!r}"
+                  substitutions = t.get('substitutions', [])
+                  assert isinstance(substitutions, list) and all(
+                      isinstance(key, str) for key in substitutions
+                  ), f"substitutions must be a string list: {t!r}"
+                  collapse = t.get('collapse_empty_substitutions', [])
+                  assert isinstance(collapse, list) and all(
+                      isinstance(key, str) for key in collapse
+                  ), f"collapse_empty_substitutions must be a string list: {t!r}"
+                  assert set(collapse) <= set(substitutions), (
+                      f"collapse_empty_substitutions must be declared substitutions: {t!r}"
+                  )
+          copilot = next(
+              t for t in targets if t.get('destination') == '.github/copilot-instructions.md'
+          )
+          assert set(copilot.get('collapse_empty_substitutions', [])) == {
+              'PROJECT_OVERVIEW',
+              'STACK_TABLE',
+              'CODE_RULES',
+              'DOMAIN_RULES',
+              'REVIEW_FOCUS',
+              'WHAT_NOT_TO_SUGGEST_EXTRA',
+          }, "Copilot template collapse opt-ins changed without updating the render contract"
+          print(f"OK: {len(targets)} targets")
+          PY
+
+      - name: Validate canonical manifest through the sync engine
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          CONSUMER=$(mktemp -d)
+          python3 - "$CONSUMER" <<'PY'
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+          manifest = yaml.safe_load(Path('scripts/sync-targets.yml').read_text())
+          substitutions = {
+              key: '' if key in target.get('collapse_empty_substitutions', []) else 'fixture'
+              for target in manifest['targets']
+              for key in target.get('substitutions', [])
+          }
+          # The consent grant is spelled out per file rather than derived from
+          # the manifest: deriving the opt-in would grant whatever the manifest
+          # happens to ask for — this job would then stay green through the
+          # exact change (a new workflow target) that most deserves a
+          # reviewer's attention.
+          config = {
+              'substitutions': substitutions,
+              'allowed_destinations': ['**'],
+              'allow_sensitive_writes': ['.github/workflows/dco.yml'],
+          }
+          (Path(sys.argv[1]) / '.platform-config.yml').write_text(yaml.safe_dump(config))
+          PY
+          python3 scripts/sync-engine.py \
+            --upstream-repo . \
+            --consumer-dir "$CONSUMER" \
+            --dry-run
+
+      # The engine deliberately owns no Markdown knowledge, so nothing at render
+      # time stops a key opted into structural collapsing from deleting a line of
+      # a fenced block, a raw <pre>, or an indented code block. Enforce the
+      # "prose-only, whole-line" rule here instead, where reading the template is
+      # cheap and a violation is an authoring mistake rather than consumer churn.
+      - name: Lint collapse opt-ins against their template sites
+        if: '!cancelled()'
+        run: python3 scripts/lint-collapse-sites.py
+  python-types-and-tests:
+    name: Python types + tests
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The suite shells out to the vendored ledger bundle a few hundred
+      # times per run; every other node-touching job pins its runtime.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          # Cache the resolved wheel cohort against the pinned-tool list
+          # below — the pins never drift within a PR, so the cache hits
+          # on every iter-fix push (~15s saved per re-run).
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install pinned tooling
+        run: |
+          python3 -m pip install \
+            'mypy==1.13.0' \
+            'pyyaml==6.0.2' \
+            'types-PyYAML==6.0.12.20240917' \
+            'pytest==8.3.4' \
+            'pytest-cov==6.0.0' \
+            'pytest-xdist==3.8.0' \
+            'coverage==7.16.0'
+      - name: mypy --strict (config from pyproject.toml)
+        run: python3 -m mypy
+      - name: Configure git identity (parse_status tests use a fixture git repo)
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+      # Two workers roughly halve the subprocess-heavy agent-loop suite without
+      # starving its intentional one-second timeout probes. Four workers made
+      # those tests flaky under local load, so keep this explicit rather than
+      # deriving the worker count from runner CPU capacity.
+      # `--cov-config` is load-bearing, not decoration. pytest-cov only
+      # exports `COV_CORE_CONFIG` (the config path every auto-started
+      # subprocess reads) when `--cov-config` names a file that exists;
+      # its default is `.coveragerc`, which this repo does not ship, so
+      # the variable degrades to `:` and subprocess coverage runs with no
+      # config at all — statement-only, because `branch = true` lives in
+      # pyproject.toml. The in-process workers still see the branch flag
+      # via coverage's own default-file search, so the two halves disagree
+      # and `coverage combine` fails with "Can't combine statement
+      # coverage data with branch data" as soon as any subprocess records
+      # a line. coverage <7.16.0 merged the mismatch silently.
+      - name: Run pytest with two workers + write coverage data
+        run: >-
+          python3 -m pytest tests/ --cov --cov-config=pyproject.toml
+          --cov-report=term-missing -ra --durations=30 -n 2 --dist worksteal
+      # Per-file gate matches the security contract: a future refactor
+      # that spikes one file's coverage can't paper over a regression
+      # in the other. `coverage report --include=<pattern>` already exits
+      # non-zero when the pattern matches no measured file, so a rename
+      # fails the gate on its own; the `test -f` precondition just names
+      # the missing file instead of reporting "No data to report."
+      - name: Coverage gate — sync-engine.py >=80%
+        run: |
+          test -f scripts/sync-engine.py
+          python3 -m coverage report --include='scripts/sync-engine.py' --fail-under=80
+      - name: Coverage gate — create-signed-commit.py >=80%
+        run: |
+          test -f scripts/create-signed-commit.py
+          python3 -m coverage report --include='scripts/create-signed-commit.py' --fail-under=80
+      - name: Coverage gate — lint-collapse-sites.py >=80%
+        run: |
+          test -f scripts/lint-collapse-sites.py
+          python3 -m coverage report --include='scripts/lint-collapse-sites.py' --fail-under=80
+      - name: Coverage gate — release-preflight.py >=80%
+        run: |
+          test -f .agents/skills/publish-npm-package/scripts/release-preflight.py
+          python3 -m coverage report \
+            --include='.agents/skills/publish-npm-package/scripts/release-preflight.py' \
+            --fail-under=80
+      - name: Coverage gate — verify-published-package.py >=80%
+        run: |
+          test -f .agents/skills/publish-npm-package/scripts/verify-published-package.py
+          python3 -m coverage report \
+            --include='.agents/skills/publish-npm-package/scripts/verify-published-package.py' \
+            --fail-under=80

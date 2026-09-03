@@ -1,0 +1,46 @@
+# Consumer configuration for the gemini-platform sync engine.
+#
+# See https://github.com/loomantix/gemini-platform for details.
+
+substitutions:
+  PROJECT_NAME: MyProject
+  PROJECT_OVERVIEW: ''
+  CANONICAL_DOCS: ''
+  STACK_TABLE: ''
+  CODE_RULES: ''
+  DOMAIN_RULES: ''
+  REVIEW_FOCUS: ''
+  WHAT_NOT_TO_SUGGEST_EXTRA: ''
+
+# Targets to skip in this consumer repository.
+#
+# The three entries below are destinations that `gemini-platform`,
+# `claude-platform`, and `codex-platform` all name in their manifests. Two
+# syncs writing one destination is churn, so ownership is settled here in
+# config rather than in prose:
+#
+#   - `.github/workflows/dco.yml` — consumer opt-out; the DCO check is
+#     shared and does not need a third writer.
+#   - `.github/copilot-instructions.md` — owned by `claude-platform`. The
+#     two generated files differ only in which root guide they cite, so a
+#     second writer buys nothing and costs a rewrite every run.
+#   - `agent-loop-instructions.md` — owned by `claude-platform`. All three
+#     manifests mark it `create_if_missing`, so it is bootstrap-once and an
+#     existing file is preserved; skipping makes the owner explicit instead
+#     of leaving it to whichever sync reaches a fresh repo first.
+#
+# The engine applies `skip_targets` before the `allowed_destinations`
+# allowlist, so a skipped destination is never written regardless of the
+# allowlist below.
+skip_targets:
+  - .github/workflows/dco.yml
+  - .github/copilot-instructions.md
+  - agent-loop-instructions.md
+
+# Destinations the upstream sync engine is authorized to manage.
+# Matches gitignore-style patterns.
+allowed_destinations:
+  - .agents/**
+  - agent-loop-instructions.md
+  - .github/copilot-instructions.md
+  - .github/workflows/dco.yml
