@@ -211,7 +211,8 @@ class Harness:
     def report_drift(self, staging: Path, written: list[Path]) -> int:
         """`--check`'s comparison, against this harness's fake repo root."""
         # `int(...)`: `_rp` is a ModuleType, so the call is `Any` under --strict.
-        return int(self._rp._report_drift(staging, written, self._rp._load_manifest()))
+        manifest = self._rp._load_manifest(self._rp.load_profiles())
+        return int(self._rp._report_drift(staging, written, manifest))
 
     def publish(self, staging: Path, written: list[Path], mode: int | None = None) -> None:
         """Copy a render into the fake repo root, as a commit would."""
@@ -609,3 +610,125 @@ def test_render_skips_bytecode_left_in_the_source_tree(one_skill: Harness) -> No
     assert not any("__pycache__" in str(p) for p in written)
     assert not any(p.suffix == ".pyc" for p in written)
     assert not (out / ".claude/skills/demo/scripts/loose.pyc").exists()
+
+
+# --------------------------------------------------------------------------
+# Ownership domain: what the manifest may authorize, and what a root may be
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "prompts/skills/demo/SKILL.md",  # the renderer's own source tree
+        "docs/skills/decisions/0006-x.md",  # an unrelated repo directory
+        ".git/skills/a/b",
+        "vendor/skills/a/b",  # undotted, never a profile root
+    ],
+)
+def test_load_manifest_rejects_a_path_outside_every_profile_root(
+    cli: Harness, line: str
+) -> None:
+    """The manifest is the only input that authorizes deletion.
+
+    Each of these satisfies the structural checks (relative, no `..`, four
+    parts, `parts[1] == "skills"`), so before the root check a hand-edited or
+    badly-merged line deleted the named file on the next write-mode run and
+    reported success.
+    """
+    assert cli._rp.main([]) == 0
+    cli._rp.MANIFEST_PATH.write_text(
+        cli._rp.MANIFEST_PATH.read_text(encoding="utf-8") + f"{line}\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="invalid generated path"):
+        cli._rp._load_manifest(cli._rp.load_profiles())
+
+
+def test_a_manifest_line_cannot_delete_a_render_source(cli: Harness) -> None:
+    """The end-to-end version of the above: the source must survive a render."""
+    assert cli._rp.main([]) == 0
+    source = cli.src / "demo/SKILL.md"
+    assert source.exists()
+    cli._rp.MANIFEST_PATH.write_text(
+        cli._rp.MANIFEST_PATH.read_text(encoding="utf-8") + "prompts/skills/demo/SKILL.md\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="invalid generated path"):
+        cli._rp.main([])
+    assert source.exists()
+
+
+def test_publish_outputs_refuses_an_unowned_path(cli: Harness) -> None:
+    """Belt and braces: the deleting line does not trust its caller."""
+    assert cli._rp.main([]) == 0
+    with pytest.raises(ValueError, match="outside a profile root"):
+        cli._rp._publish_outputs(
+            cli.root, [], [Path("docs/skills/a/b.md")], cli._rp.load_profiles()
+        )
+
+
+def test_load_profiles_rejects_a_root_containing_the_source_tree(
+    render_prompts: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`root: prompts` renders each source over itself, destroying every template."""
+    _write_profile(tmp_path, "bad", "root: prompts\nvalues: {}\n")
+    monkeypatch.setattr(render_prompts, "PROFILES_DIR", tmp_path)
+    with pytest.raises(ValueError, match="renderer's own source tree"):
+        render_prompts.load_profiles()
+
+
+def test_load_profiles_rejects_a_root_nested_in_another_root(
+    render_prompts: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The duplicate check compares roots for equality, so nesting slips past it."""
+    _write_profile(tmp_path, "outer", "root: .claude\nvalues: {}\n")
+    _write_profile(tmp_path, "inner", "root: .claude/nested\nvalues: {}\n")
+    monkeypatch.setattr(render_prompts, "PROFILES_DIR", tmp_path)
+    with pytest.raises(ValueError, match="must not nest"):
+        render_prompts.load_profiles()
+
+
+# --------------------------------------------------------------------------
+# Fail-closed: null values and undecodable sources
+# --------------------------------------------------------------------------
+
+
+def test_a_null_profile_value_fails_closed(one_skill: Harness) -> None:
+    """A bare `INVOKE:` parses as None, which the engine would coerce to "".
+
+    Without this the render exits 0 and ships the key's line with the value
+    silently removed.
+    """
+    one_skill.write_profiles(
+        {"claude": "root: .claude\nvalues:\n  INVOKE:\nskills:\n  demo:\n    FM_EXTRAS: ''\n"}
+    )
+    with pytest.raises(ValueError, match="placeholders with no value"):
+        one_skill.render()
+
+
+def test_a_null_collapse_key_is_still_allowed(one_skill: Harness) -> None:
+    """`FM_EXTRAS` is a collapse key: empty is its normal state, not a defect."""
+    one_skill.write_profiles(
+        {"claude": "root: .claude\nvalues:\n  INVOKE: '/'\nskills:\n  demo:\n    FM_EXTRAS:\n"}
+    )
+    out, _ = one_skill.render()
+    assert "FM_EXTRAS" not in (out / ".claude/skills/demo/SKILL.md").read_text()
+
+
+def test_an_undecodable_source_carrying_placeholders_is_an_error(one_skill: Harness) -> None:
+    """Byte-passthrough skips substitution and every guard after it.
+
+    A text file that merely fails to decode would otherwise ship with its
+    `<<KEY>>` intact into every harness root, exit 0, and then match itself on
+    `--check`.
+    """
+    one_skill.write_source("demo/broken.md", "<<INVOKE>> caf\xe9\n".encode("latin-1"))
+    with pytest.raises(ValueError, match="not valid UTF-8 but contains placeholder"):
+        one_skill.render()
+
+
+def test_an_undecodable_binary_asset_still_passes_through(one_skill: Harness) -> None:
+    """Passthrough is for genuine binary assets and must keep working."""
+    one_skill.write_source("demo/logo.bin", b"\x89PNG\r\n\x1a\n\xff\xfe")
+    out, _ = one_skill.render()
+    assert (out / ".claude/skills/demo/logo.bin").read_bytes() == b"\x89PNG\r\n\x1a\n\xff\xfe"

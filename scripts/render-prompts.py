@@ -177,7 +177,43 @@ def load_profiles() -> list[Profile]:
     duplicates = {r for r in roots if roots.count(r) > 1}
     if duplicates:
         raise ValueError(f"profiles share a root, so one would overwrite the other: {sorted(duplicates)}")
+
+    # A root must be a *harness* root. Two ways it can fail to be one, both of
+    # which render successfully and destroy something:
+    #
+    #   - `root: prompts` maps `<root>/skills/<skill>/<rel>` exactly onto the
+    #     source tree, so the render overwrites its own templates with their
+    #     rendered output — every placeholder in every source, gone in one run.
+    #   - a root nested inside another (`.claude` and `.claude/nested`) is not
+    #     caught by the duplicate check above, and the inner root's outputs land
+    #     inside the outer root's owned tree.
+    reserved = {PROMPTS_DIR.name, SCRIPT_DIR.name}
+    for profile in profiles:
+        head = Path(profile.root).parts[0]
+        if head in reserved:
+            raise ValueError(
+                f"{profile.path}: `root` must not be or contain the renderer's own "
+                f"source tree: {profile.root!r}"
+            )
+    for outer in profiles:
+        for inner in profiles:
+            if outer is inner:
+                continue
+            if _is_within(Path(inner.root), Path(outer.root)):
+                raise ValueError(
+                    f"profile roots must not nest, so one would render inside the "
+                    f"other: {outer.root!r} contains {inner.root!r}"
+                )
     return profiles
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """True when `child` is `parent` or sits beneath it, comparing path parts.
+
+    Lexical on purpose: these are relative repo paths that need not exist yet,
+    so `resolve()` would be both unnecessary and filesystem-dependent.
+    """
+    return child.parts[: len(parent.parts)] == parent.parts
 
 
 def rendered_roster() -> list[str]:
@@ -240,17 +276,62 @@ def _source_files(source_dir: Path) -> Iterator[Path]:
         yield path
 
 
+# Directories the renderer must never treat as a harness root, whether it
+# reaches them through a profile or through a manifest line. `prompts` and
+# `scripts` are its own inputs; the rest are repo trees that would otherwise
+# satisfy the `<x>/skills/<y>/<z>` shape.
+RESERVED_ROOTS = frozenset({"prompts", "scripts", "docs", "tests", ".git", ".github"})
+
+
+def _deletable_roots(profiles: list[Profile]) -> set[str]:
+    """Top-level directories a manifest entry may name.
+
+    Every currently declared profile root, plus any *dotted* root already
+    recorded in the manifest. The second half is what keeps profile retirement
+    working: deleting `codex.yml` must still let the next run remove the
+    `.codex/` tree it used to own, and a strict current-roots-only rule would
+    reject those entries as invalid and leave the tree unreachable forever.
+
+    Reserved trees are excluded from both halves, which is the check that
+    matters: `prompts/skills/<skill>/SKILL.md` satisfies every structural test,
+    so without it a hand-edited or badly-merged manifest line deletes a rendered
+    skill's single source on the next write-mode run and reports success.
+
+    The residual is a dotted, non-reserved root that was never a profile root.
+    Reaching it takes an edit to a committed file, which `--check` reports as
+    drift on the PR that makes it.
+    """
+    roots = {Path(p.root).parts[0] for p in profiles}
+    if MANIFEST_PATH.exists() and not MANIFEST_PATH.is_symlink():
+        for raw in MANIFEST_PATH.read_text(encoding="utf-8").splitlines():
+            head = Path(raw).parts[0] if raw else ""
+            if head.startswith("."):
+                roots.add(head)
+    return {r for r in roots if r not in RESERVED_ROOTS}
+
+
 def _manifest_text(written: list[Path]) -> str:
     """Canonical generated-path ownership record."""
     return "".join(f"{path.as_posix()}\n" for path in sorted(set(written)))
 
 
-def _load_manifest() -> list[Path]:
-    """Read and validate the previously generated path set."""
+def _load_manifest(profiles: list[Profile]) -> list[Path]:
+    """Read and validate the previously generated path set.
+
+    Every entry is a path `_publish_outputs` may delete, which makes this the
+    one input in the renderer that authorizes destruction. It is therefore
+    constrained to the domain the renderer actually owns — `<declared profile
+    root>/skills/...` — and not merely to "some directory named `skills`".
+
+    Without the root check, `prompts/skills/<skill>/SKILL.md` satisfies every
+    other condition, so a hand-edited or badly-merged line deletes a rendered
+    skill's single source on the next write-mode run and reports success.
+    """
     if MANIFEST_PATH.is_symlink():
         raise ValueError(f"generated-path manifest must not be a symlink: {MANIFEST_PATH}")
     if not MANIFEST_PATH.exists():
         return []
+    owned_roots = _deletable_roots(profiles)
     paths: list[Path] = []
     for raw in MANIFEST_PATH.read_text(encoding="utf-8").splitlines():
         path = Path(raw)
@@ -260,6 +341,7 @@ def _load_manifest() -> list[Path]:
             or ".." in path.parts
             or len(path.parts) < 4
             or path.parts[1] != "skills"
+            or path.parts[0] not in owned_roots
         ):
             raise ValueError(f"{MANIFEST_PATH}: invalid generated path: {raw!r}")
         paths.append(path)
@@ -268,10 +350,17 @@ def _load_manifest() -> list[Path]:
     return paths
 
 
-def _publish_outputs(staging: Path, written: list[Path], previously_owned: list[Path]) -> None:
+def _publish_outputs(
+    staging: Path, written: list[Path], previously_owned: list[Path], profiles: list[Profile]
+) -> None:
     """Replace the generated path set and remove outputs retired from source."""
     current = set(written)
+    owned_roots = _deletable_roots(profiles)
     for relative in sorted(set(previously_owned) - current):
+        # Belt and braces with `_load_manifest`'s check: this is the line that
+        # deletes, so it does not take the caller's word for what is owned.
+        if relative.parts[0] not in owned_roots or relative.is_absolute():
+            raise ValueError(f"refusing to remove a path outside a profile root: {relative}")
         target = REPO_ROOT / relative
         if target.is_file() or target.is_symlink():
             target.unlink()
@@ -296,13 +385,34 @@ def _render_file(
     except UnicodeDecodeError:
         # Not text, so not substitutable — copy it through untouched rather
         # than corrupting it or refusing to render the whole roster.
+        #
+        # But byte-passthrough skips substitution *and* every guard below it,
+        # so a text file that merely fails to decode (one latin-1 smart quote
+        # is enough) would ship with its `<<KEY>>` placeholders intact into all
+        # three harness roots, exit 0, and then match itself on `--check`.
+        # Passthrough is for genuinely binary assets; a source carrying
+        # placeholder delimiters is text with an encoding defect.
+        if _delimiter_residue(raw.decode("utf-8", "replace")):
+            raise ValueError(
+                f"{source} is not valid UTF-8 but contains placeholder delimiters. "
+                "Re-save it as UTF-8; byte-passthrough is for binary assets only."
+            )
         target.write_bytes(raw)
         return
 
     values = profile.values_for(skill)
     found = sorted(set(engine.PLACEHOLDER_RE.findall(text)))
 
-    undefined = [key for key in found if key not in values]
+    # `key not in values` catches an omitted key. A key written bare
+    # (`SKILLS_ROOT:`) parses as `None`, which the engine coerces to `""` — so
+    # without the second test a one-character edit renders `.//issues/...`
+    # into a harness root and exits 0. `COLLAPSE_KEYS` are exempt: an empty
+    # value is their normal state and the whole line is dropped.
+    undefined = [
+        key
+        for key in found
+        if key not in values or (values[key] is None and key not in COLLAPSE_KEYS)
+    ]
     if undefined:
         raise ValueError(
             f"{source} uses placeholders with no value in {profile.path.name}: "
@@ -396,12 +506,12 @@ def main(argv: list[str] | None = None) -> int:
         staging = Path(tmp)
         written = render_tree(engine, profiles, staging)
         format_markdown(staging, written)
-        previously_owned = _load_manifest()
+        previously_owned = _load_manifest(profiles)
 
         if args.check:
             return _report_drift(staging, written, previously_owned)
 
-        _publish_outputs(staging, written, previously_owned)
+        _publish_outputs(staging, written, previously_owned, profiles)
 
     print(
         f"rendered {len(roster)} skill(s) into {len(profiles)} harness root(s): "
