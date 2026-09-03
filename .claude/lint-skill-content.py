@@ -40,7 +40,23 @@ from urllib.parse import urlsplit
 
 # `git diff` doesn't expand globs the way the shell does, so for the diff
 # path filter we pass the directories and post-filter the file list.
-DIFF_DIRS = [".claude/skills", ".claude/agents"]
+DIFF_DIRS = [
+    ".claude/skills",
+    ".claude/agents",
+    # `prompts/skills` is the single source for the rendered skill roster, and
+    # so the highest-value target in the repo: one added line there is rendered
+    # into all three harness roots and reaches every consumer of all three on
+    # the next sync. It has to be in scope before the renderer is, or the gate
+    # is trivially sidestepped by editing the source instead of the output.
+    "prompts/skills",
+    # The Codex and Gemini prompt roots. These arrived with the subtree imports
+    # and were outside the gate until now — their SKILL.md files drive sessions
+    # and consumer CI exactly like the Claude ones. The lint reads added lines
+    # only, so turning them on grandfathers everything already committed and
+    # scans only what a PR adds.
+    ".codex/skills",
+    ".agents/skills",
+]
 
 # Extensions in scope within DIFF_DIRS. `.md` covers SKILL.md and agent
 # prose. `.template` covers every synced template under those trees that
@@ -515,6 +531,14 @@ def run_self_test() -> int:
             "skills .js payload",
         ),
         ("docs/example.js", False, ".js outside DIFF_DIRS"),
+        # The rendered roster's source tree and the two imported harness roots.
+        # These lock in the scope widening that accompanied the renderer: the
+        # source is what a weaponizing PR would edit to reach all three roots at
+        # once, so a refactor that drops it must fail here.
+        ("prompts/skills/issues/SKILL.md", True, "rendered-skill source SKILL.md"),
+        (".codex/skills/critique/SKILL.md", True, "codex root SKILL.md"),
+        (".agents/skills/critique/SKILL.md", True, "gemini root SKILL.md"),
+        ("prompts/profiles/claude.yml", False, "profile .yml outside SCOPE_SUFFIXES"),
     ]
     for path, expected_in_scope, label in path_in_scope_cases:
         if _path_in_scope(path) != expected_in_scope:

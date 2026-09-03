@@ -32,7 +32,13 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-SCOPE_DIRS = [".claude/skills"]
+# `prompts/skills` is the rendered roster's source tree: a `.sh` added there is
+# rendered into every harness root, so it belongs in scope alongside the output.
+# The `.codex/skills` and `.agents/skills` roots are deliberately NOT here yet —
+# they ship their own launcher scripts whose paths are absent from ALLOWLIST
+# below, so adding them is a separate change that has to extend the allowlist in
+# the same commit.
+SCOPE_DIRS = [".claude/skills", "prompts/skills"]
 SCOPE_SUFFIX = ".sh"
 ALLOWLIST_PATH = ".claude/claude-cli-invocations.allowlist"
 SYNC_TARGETS_PATH = "scripts/sync-targets.yml"

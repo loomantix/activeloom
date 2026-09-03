@@ -1,14 +1,14 @@
 """Shared fixtures + an `importlib` loader that lets the test modules
 import the hyphenated script files (`sync-engine.py`,
-`lint-collapse-sites.py`, `create-signed-commit.py`) as Python modules
-without renaming them on disk.
+`lint-collapse-sites.py`, `create-signed-commit.py`, `render-prompts.py`)
+as Python modules without renaming them on disk.
 
 The scripts are designed to be run from CI as `python3 scripts/foo.py`,
 so they don't need to be importable from the source tree. The tests use
 `importlib.util.spec_from_file_location` via `_load_script` below to
 load them as pseudo-modules under the bare names `sync_engine`,
-`lint_collapse_sites`, and `create_signed_commit` — cleaner than spawning
-subprocesses for every function-level unit test.
+`lint_collapse_sites`, `create_signed_commit`, and `render_prompts` —
+cleaner than spawning subprocesses for every function-level unit test.
 """
 from __future__ import annotations
 
@@ -39,6 +39,12 @@ def _load_script(name: str, path: Path) -> ModuleType:
 @pytest.fixture(scope="session")
 def sync_engine() -> ModuleType:
     return _load_script("sync_engine", SCRIPTS_DIR / "sync-engine.py")
+
+
+@pytest.fixture(scope="session")
+def render_prompts() -> ModuleType:
+    """The prompt renderer (scripts/render-prompts.py)."""
+    return _load_script("render_prompts", SCRIPTS_DIR / "render-prompts.py")
 
 
 @pytest.fixture(scope="session")

@@ -1,15 +1,14 @@
 ---
 name: grill
-description: A relentless pre-code interview that stress-tests a plan or design until nothing is silently assumed.
-disable-model-invocation: true
-argument-hint: (optional) the idea, plan, or decision to stress-test
+description: A relentless pre-code interview that stress-tests a plan or design until nothing is silently assumed.<<DESC_TRIGGER>>
+<<FM_EXTRAS>>
 ---
 
-# /grill — interview until nothing is assumed
+# <<INVOKE>>grill — interview until nothing is assumed
 
 Interview the user until you reach a shared understanding of what is being built and why. **This skill does not write code and does not implement anything.** It ends when the questions run out, and the user decides what happens next.
 
-To grill is to interview a person, not to review a diff. The adversarial code review that once held this name is now `/critique` and `/deepcritique`; this skill is the opposite end of the work — sharpening an idea _before_ there is a diff.
+To grill is to interview a person, not to review a diff. <<REVIEW_CHAIN_POINTER>>; this skill is the opposite end of the work — sharpening an idea _before_ there is a diff.
 
 ## The design tree
 
@@ -20,9 +19,9 @@ Work the tree in **rounds**. The **frontier** is every decision whose prerequisi
 Ask the whole frontier in one round. Number each question and give your recommended answer:
 
 ```
-❓ **Q1** — **<short question title>**: <the question, including any options worth choosing between>
+<<Q_BULLET>>**Q1** — **<short question title>**: <the question, including any options worth choosing between>
 
-➡️ <your recommended answer, and why>
+<<REC_BULLET>><your recommended answer, and why>
 ```
 
 Then wait. Each round of answers reshapes the tree — settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round.
@@ -37,7 +36,7 @@ Never ask the user for something you could look up. If a frontier question needs
 
 Do not block the round on a lookup. A running exploration is just an unsettled prerequisite: questions downstream of it wait, the rest of the frontier goes out now.
 
-Delegate a lookup only when it is genuinely independent and too large for a handful of tool calls — a sweep across many files or repos. If one agent can do it, use one; state a word ceiling on what it returns. Most lookups here are two greps and a read, and should stay inline.
+<<SUBAGENT_GUIDANCE>>
 
 The _decisions_ are always the user's. Put each one to them and wait.
 
@@ -55,7 +54,7 @@ The session is done when **the frontier is empty** — every branch of the tree 
 
 Then summarize: the decisions made, the alternatives rejected and why, and anything the user explicitly ruled out of scope. Keep it under 400 words — it is a record of decisions, not a spec.
 
-**Do not act on it until the user confirms the understanding is shared.** When they do, the natural next steps are `/task-packet` for a single bounded change, `/issues` to file it, or `/backlog-refinement` if it needs breaking into an agent-ready queue.
+**Do not act on it until the user confirms the understanding is shared.** When they do, the natural next steps are `<<INVOKE>>task-packet` for a single bounded change, `<<INVOKE>>issues` to file it, or `<<INVOKE>>backlog-refinement` if it needs breaking into an agent-ready queue.
 
 ## Scope
 
