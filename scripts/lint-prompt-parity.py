@@ -91,10 +91,20 @@ ALLOWLIST_PATH = DECISIONS_DIR / "parity-allowlist.yml"
 
 # Prompt roots in comparison order. Adjacent pairs are what get diffed
 # (`.claude`↔`.codex`, `.codex`↔`.agents`), which is enough to prove a
-# three-way match without reporting the same divergence twice. Pinned here
-# rather than taken from the profiles so that adding a harness is a reviewed
-# change to this file — the same authority argument `render-prompts.py` makes
-# for `SUPPORTED_PROFILE_ROOTS`.
+# three-way match without reporting the same divergence twice.
+#
+# Pinned here rather than derived from the profiles, and the distinction
+# matters: a comparator that takes its subject list from the same declaration
+# it is checking cannot detect an error *in that declaration*. This is the
+# authority argument `render-prompts.py` makes for `SUPPORTED_PROFILE_ROOTS`,
+# and a scope-derivation module is the wrong shape to borrow here — its job is
+# that scope can never silently shrink, this one's job is that a difference can
+# never silently go unexamined.
+#
+# `check_root_coverage` is the other half of that trade: pinned as the
+# authority, then asserted against what the profiles actually declare, so a
+# root added to the profiles and not to this tuple fails loudly instead of
+# quietly going uncompared.
 ROOT_ORDER = (".claude", ".codex", ".agents")
 
 # Build artifacts that live inside a skill directory and are not part of it.
@@ -167,6 +177,32 @@ def _load_render_prompts() -> ModuleType:
     sys.modules["render_prompts"] = module
     spec.loader.exec_module(module)
     return module
+
+
+def check_root_coverage(profiles: Iterable[ProfileLike]) -> None:
+    """Require the pinned comparison order and the declared roots to agree.
+
+    Both directions are errors, for different reasons. A declared root missing
+    from `ROOT_ORDER` is a whole harness nobody is comparing — the renderer
+    would happily write a skill roster into it while this lint reported that
+    every copy agreed. A pinned root that no profile declares has no vocabulary
+    to normalize with, so the comparison would either crash or, worse, diff two
+    roots in different dialects and call the difference divergence.
+    """
+    declared = {profile.root for profile in profiles}
+    pinned = set(ROOT_ORDER)
+    if undeclared := sorted(declared - pinned):
+        raise ParityError(
+            f"prompt root(s) declared by a profile but absent from ROOT_ORDER: "
+            f"{undeclared}. Nothing is comparing them; add them to "
+            f"scripts/lint-prompt-parity.py in the order they should be diffed."
+        )
+    if unprofiled := sorted(pinned - declared):
+        raise ParityError(
+            f"prompt root(s) in ROOT_ORDER that no profile declares: "
+            f"{unprofiled}. There is no vocabulary to normalize them with, so "
+            f"they cannot be compared."
+        )
 
 
 def _value_pattern(value: str) -> re.Pattern[str]:
@@ -708,6 +744,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         renderer = _load_render_prompts()
         profiles = renderer.load_profiles()
+        check_root_coverage(profiles)
         rules = build_rules(profiles, set(_skill_universe()))
         results = measure(rules)
         entries = load_allowlist()

@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 import yaml
@@ -68,14 +69,14 @@ def _profiles() -> list[StubProfile]:
 
 
 @pytest.fixture
-def rules(lint_prompt_parity: ModuleType) -> dict[str, list[object]]:
-    built: dict[str, list[object]] = lint_prompt_parity.build_rules(
+def rules(lint_prompt_parity: ModuleType) -> dict[str, list[Any]]:
+    built: dict[str, list[Any]] = lint_prompt_parity.build_rules(
         _profiles(), {"critique", "deepcritique", "agent-loop"}
     )
     return built
 
 
-def _norm(lint: ModuleType, rules: dict[str, list[object]], root: str, text: str) -> str:
+def _norm(lint: ModuleType, rules: dict[str, list[Any]], root: str, text: str) -> str:
     normalized: str = lint.normalize(text, rules[root])
     return normalized
 
@@ -86,7 +87,7 @@ def _norm(lint: ModuleType, rules: dict[str, list[object]], root: str, text: str
 
 
 def test_two_dialects_of_one_sentence_normalize_alike(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]]
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
     claude = "Track it with TodoWrite, then run /critique."
     codex = "Track it with update_plan, then run critique."
@@ -96,7 +97,7 @@ def test_two_dialects_of_one_sentence_normalize_alike(
 
 
 def test_engine_id_and_cli_collapse_to_one_token(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]]
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
     # `ENGINE_ID` and `ENGINE_CLI` are the same word on the Claude profile and
     # different words on the Gemini one. Without the alias, `claude` would be
@@ -110,7 +111,7 @@ def test_engine_id_and_cli_collapse_to_one_token(
 
 
 def test_engine_name_normalizes_regardless_of_case(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]]
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
     assert _norm(lint_prompt_parity, rules, ".claude", "Claude reviews it.") == _norm(
         lint_prompt_parity, rules, ".codex", "Codex reviews it."
@@ -118,7 +119,7 @@ def test_engine_name_normalizes_regardless_of_case(
 
 
 def test_longer_values_win_so_a_path_is_not_eaten_by_the_engine_name(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]]
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
     # `.claude/skills` must be consumed as `SKILLS_ROOT` before the bare
     # `claude` rule gets a look at it.
@@ -129,7 +130,7 @@ def test_longer_values_win_so_a_path_is_not_eaten_by_the_engine_name(
 
 
 def test_the_prompt_root_normalizes_even_though_no_profile_declares_it(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]]
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
     assert _norm(lint_prompt_parity, rules, ".claude", "see `.claude/NOTES.md`") == _norm(
         lint_prompt_parity, rules, ".codex", "see `.codex/NOTES.md`"
@@ -137,7 +138,7 @@ def test_the_prompt_root_normalizes_even_though_no_profile_declares_it(
 
 
 def test_a_key_empty_on_one_profile_is_deleted_not_tagged(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]]
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
     # `Q_BULLET` is decoration on one harness and absent on another. Tagging
     # the side that has it would report the *slot* as a difference.
@@ -147,7 +148,7 @@ def test_a_key_empty_on_one_profile_is_deleted_not_tagged(
 
 
 def test_a_value_rewrapped_across_a_line_break_still_matches(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]]
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
     # Prettier re-wraps rendered Markdown, so a multi-word value can straddle a
     # newline in one root and not in another.
@@ -156,7 +157,7 @@ def test_a_value_rewrapped_across_a_line_break_still_matches(
 
 
 def test_the_invoke_slash_is_stripped_only_from_a_skill_reference(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]]
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
     text = "run /critique, not /usr/bin/critique or scripts/critique"
     assert (
@@ -166,12 +167,60 @@ def test_the_invoke_slash_is_stripped_only_from_a_skill_reference(
 
 
 def test_an_unknown_slash_word_is_left_alone(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]]
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
     assert (
         _norm(lint_prompt_parity, rules, ".claude", "run /not-a-skill")
         == "run /not-a-skill"
     )
+
+
+# --------------------------------------------------------------------------
+# scope
+# --------------------------------------------------------------------------
+
+
+def test_a_declared_root_nobody_compares_is_an_error(
+    lint_prompt_parity: ModuleType,
+) -> None:
+    # The pinned order is the authority, but a harness added to the profiles
+    # and not to it would render a whole skill roster into a root this lint
+    # never looks at — and report that every copy agreed.
+    profiles = [*_profiles(), StubProfile(".cursor", {})]
+    with pytest.raises(lint_prompt_parity.ParityError, match=r"absent from ROOT_ORDER"):
+        lint_prompt_parity.check_root_coverage(profiles)
+
+
+def test_a_pinned_root_with_no_profile_is_an_error(
+    lint_prompt_parity: ModuleType,
+) -> None:
+    # Without a profile there is no vocabulary to normalize that root with, so
+    # comparing it would diff two roots in different dialects and call the
+    # dialect divergence.
+    with pytest.raises(lint_prompt_parity.ParityError, match=r"no profile declares"):
+        lint_prompt_parity.check_root_coverage(_profiles()[:2])
+
+
+def test_the_shipped_profiles_cover_every_compared_root(
+    lint_prompt_parity: ModuleType,
+) -> None:
+    renderer = lint_prompt_parity._load_render_prompts()
+    lint_prompt_parity.check_root_coverage(renderer.load_profiles())
+
+
+def test_an_unknown_profile_key_does_not_disturb_the_vocabulary(
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
+) -> None:
+    # The profile schema is shared with the renderer and grows keys this lint
+    # has no opinion about (a prompt-stack declaration, say). Reading a slice
+    # of someone else's schema means tolerating the rest of it.
+    extended = _profiles()
+    extended[0].values["PROMPT_STACK"] = {"files": ["a.md"]}
+    extended[0].values["FUTURE_LIST"] = ["x"]
+    widened: dict[str, list[Any]] = lint_prompt_parity.build_rules(extended, {"critique"})
+    keys = {rule.key for rule in widened[".claude"]}
+    assert "PROMPT_STACK" not in keys and "FUTURE_LIST" not in keys
+    assert keys == {rule.key for rule in rules[".claude"]}
 
 
 # --------------------------------------------------------------------------
@@ -192,7 +241,7 @@ def tree(tmp_path: Path) -> Path:
 
 
 def test_dialect_only_differences_measure_zero(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]], tree: Path
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]], tree: Path
 ) -> None:
     _write(tree / ".claude/skills/demo/SKILL.md", "Track it with TodoWrite.\n")
     _write(tree / ".codex/skills/demo/SKILL.md", "Track it with update_plan.\n")
@@ -201,7 +250,7 @@ def test_dialect_only_differences_measure_zero(
 
 
 def test_a_real_difference_is_counted(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]], tree: Path
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]], tree: Path
 ) -> None:
     _write(tree / ".claude/skills/demo/SKILL.md", "Guard the empty case.\n")
     _write(tree / ".codex/skills/demo/SKILL.md", "\n")
@@ -210,7 +259,7 @@ def test_a_real_difference_is_counted(
 
 
 def test_a_file_only_one_root_has_counts_every_line(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]], tree: Path
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]], tree: Path
 ) -> None:
     # A whole document one harness has and the other does not is the largest
     # divergence there is; it must not hide behind a small number.
@@ -223,7 +272,7 @@ def test_a_file_only_one_root_has_counts_every_line(
 
 
 def test_build_artifacts_inside_a_skill_are_not_compared(
-    lint_prompt_parity: ModuleType, rules: dict[str, list[object]], tree: Path
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]], tree: Path
 ) -> None:
     _write(tree / ".claude/skills/demo/SKILL.md", "same\n")
     _write(tree / ".codex/skills/demo/SKILL.md", "same\n")
