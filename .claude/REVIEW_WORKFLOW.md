@@ -547,6 +547,18 @@ file list comes from, the order, the normalisation, or the framing **is** a
 redefinition and bumps it. Changing the _contents_ of the declared list is not:
 that is a prompt-stack change, which is what the digest exists to report.
 
+**Reading the series across the version 1 → 2 boundary.** By construction, an
+unchanged prompt stack has a different digest either side of a redefinition, so
+a consumer comparing digests over time sees one discontinuity that is not a
+prompt change. The record carries no field naming which definition produced a
+digest, so for this boundary use the one already in the data:
+`promptStackVersion` is null in every record emitted before version 2 — nothing
+computed it — and a `MAJOR.MINOR.PATCH` string in every record after. A null
+version therefore means a version 1 digest, and the two are never comparable.
+This discriminator is specific to this boundary and is not a general mechanism:
+a third definition would need the ledger to carry the hash-input version
+itself.
+
 `hashInputVersion` is not `promptStackVersion`. The first versions _how the
 digest was taken_; the second versions _the prompts_, is set upstream in
 `PROMPT_STACK_VERSION`, and travels in the manifest. Both are needed and neither
