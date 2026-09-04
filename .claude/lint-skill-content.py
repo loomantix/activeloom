@@ -1069,15 +1069,19 @@ def lint_all(
         )
         return 2
 
-    # Stale suppressions are a failure, not a tidiness issue, and the check
-    # only makes sense here: the diff scan sees a handful of lines, so almost
-    # every entry would look unused. An entry stops matching when the line it
-    # excuses was edited or deleted, and either way the exception is no longer
-    # the one that was reviewed. It is also what stops an entry being
+    # An entry that matches nothing is a failure, not a tidiness issue, and the
+    # check only makes sense here: the diff scan sees a handful of lines, so
+    # almost every entry would look unmatched. An entry stops matching when the
+    # line it excuses was edited or deleted, and either way the exception is no
+    # longer the one that was reviewed. It is also what stops an entry being
     # pre-seeded in one PR and the line it excuses arriving in the next.
+    #
+    # Worded to match `unused allowlist entry` in the sibling gate, which names
+    # the identical condition — a hash that no in-scope content matches. The
+    # two gates are read by the same people; one idiom, learned once.
     for digest, path, rule in sorted(suppressed - used):
         print(
-            f"{SUPPRESSIONS_PATH}: stale entry {digest[:12]}… "
+            f"{SUPPRESSIONS_PATH}: unused suppression entry {digest[:12]}… "
             f"for {path} [{rule}]"
         )
         print(

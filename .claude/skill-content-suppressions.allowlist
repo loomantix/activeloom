@@ -5,9 +5,11 @@
 # One entry excuses ONE rule on ONE line of ONE file. The hash is sha256 of
 # that line with its terminator stripped and every other byte intact, so
 # re-indenting or editing the line rotates the hash and re-opens the finding.
-# An entry that matches nothing in scope FAILS the whole-tree scan: an
-# exception nobody can point at is either stale or was pre-seeded for a line
-# that has not landed yet, and both need a look.
+# An entry that matches nothing in scope FAILS the whole-tree scan as an
+# `unused suppression entry` — the same condition, and the same word, as the
+# sibling gate's `unused allowlist entry`. An exception nobody can point at
+# is either out of date or was pre-seeded for a line that has not landed yet,
+# and both need a look.
 #
 # The path is the SOURCE path. Rendered outputs are resolved back to their
 # `prompts/` source before matching, so one entry covers the source and every
