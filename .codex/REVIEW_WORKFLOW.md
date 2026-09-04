@@ -624,9 +624,16 @@ node <hash-helper> --repo-root "<repository root>"
 It reads only files already checked into the repository — no session log, no
 path under a home directory — so it is ungated and safe to run anywhere. It
 always exits 0 and always prints one JSON object carrying `promptStackSha256`,
-`repoInstructionsSha256`, and `hashInputVersion`. Pass the two digests through
-verbatim and omit the corresponding flag when one is null. Nothing else it
-prints is an `emit-telemetry` argument.
+`promptStackVersion`, `repoInstructionsSha256`, and `hashInputVersion`. Pass the
+two digests and the version through verbatim — `--prompt-stack-sha256`,
+`--repo-instructions-sha256`, `--prompt-stack-version` — and omit the
+corresponding flag when one is null. Nothing else it prints is an
+`emit-telemetry` argument.
+
+A null `promptStackVersion` alongside a null `promptStackSha256` is the helper
+saying it could not read the stack declaration, and `error` says why. Do not
+substitute a version from anywhere else: the point of the field is that it came
+from the prompts the pass actually loaded.
 
 **The two digests are never collapsed into one.** The synced stack is
 fleet-wide and moves when upstream moves; repo-local instructions are per
@@ -634,25 +641,26 @@ repository. A combined digest would make every repository look like a different
 prompt generation forever, which destroys the cross-repository correlation the
 hash exists to enable.
 
-#### Hash input, version 1
+#### Hash input, version 2
 
 The digest input is a definition, not an implementation detail. Two engines
 that hashed the same stack in different orders would mint two identities for
 one prompt generation, which reads downstream as a real difference and is worse
-than having no hash. Version 1 is:
+than having no hash. Version 2 is:
 
-- **Prompt stack** — an enumerated list of synced review prompt files, not a
-  glob: `REVIEW_WORKFLOW.md`, `references/local-review-ledger.md`, the six
-  review lens roles under `references/roles/`, and the `critique`,
-  `deepcritique`, `pr-critique`, `refactorpass`, and `reviewit` skill bodies.
-  `code-architect` and `code-explorer` are excluded because no review pass loads
-  them. Scripts are excluded too: the ledger bundle and the usage extractor are
-  not prompts, and folding them in would move the digest on every ledger
-  release. This engine's lens prompts sit inside its synced surface and the
-  sibling engine's do not, which is a difference in what each engine can read in
-  a consumer checkout rather than a difference in method — the two stack digests
-  were never comparable to each other, since each names one engine's own prompt
-  generation.
+- **Prompt stack** — the files named by `.codex/prompt-stack.json`, the manifest
+  synced in beside this harness's prompts. It is a build output of the
+  repository that owns them, which knows exactly what it shipped; a declaration
+  naming a file that repository does not have fails its render rather than
+  reading here as an absent file. This is still an enumerated declaration and
+  still not a glob — what changed in version 2 is who writes it down. Version 1
+  carried the list in the helper, so two engine copies of one script had to keep
+  agreeing on its membership and its byte order forever, enforced by nothing.
+  Which files a harness declares, and why scripts and unloaded roles are
+  excluded, is documented with the declaration upstream. The manifest is read
+  only when it declares this harness's own root and a schema this helper
+  recognises; anything else abstains, because a digest computed over a misread
+  declaration is a different stack's digest wearing this one's name.
 - **Repo instructions** — root `AGENTS.md` and root `CLAUDE.md`, both declared
   for both engines so the same repository state yields the same digest whichever
   engine emitted the record. Nested instruction files are out of scope: their
@@ -677,12 +685,24 @@ than having no hash. Version 1 is:
 
 The version is mixed into the digest rather than reported beside it, so a later
 redefinition cannot silently rewrite the meaning of records already emitted —
-version 2 produces different digests by construction. Changing the file list,
-the order, the normalisation, or the framing **is** a redefinition and bumps it.
+version 3 would produce different digests by construction. Changing where the
+file list comes from, the order, the normalisation, or the framing **is** a
+redefinition and bumps it. Changing the _contents_ of the declared list is not:
+that is a prompt-stack change, which is what the digest exists to report.
 
-`hashInputVersion` is not `promptStackVersion`. The latter is the prompt stack's
-semantic version, which nothing computes yet; it stays null and is not this
-helper's to fill.
+`hashInputVersion` is not `promptStackVersion`. The first versions _how the
+digest was taken_; the second versions _the prompts_, is set upstream in
+`PROMPT_STACK_VERSION`, and travels in the manifest. Both are needed and neither
+substitutes for the other: a digest identifies a prompt generation exactly but
+does not order two of them, so "did findings-per-token improve after that prompt
+change" needs the version to say which generation came first. The version is
+reported beside the digest and never mixed into it — a version bump that changed
+no prompt must not move the digest, and a prompt edit must move it whether or not
+anyone remembered to bump the version.
+
+The sync protocol pin (`sync-v1`) is not this version either. That tag is
+force-moved whenever content changes, so two consumers "on sync-v1" at different
+times are running different prompts and the tag carries no content identity.
 
 ### Count the findings
 
@@ -726,6 +746,7 @@ node <ledger-helper> emit-telemetry \
   --duration-seconds <from delta> \
   --tokens-file <from delta> \
   --prompt-stack-sha256 <from hash helper> \
+  --prompt-stack-version <from hash helper> \
   --repo-instructions-sha256 <from hash helper> \
   --findings-file <path>
 ```
@@ -742,8 +763,8 @@ through like any other value rather than repairing the gap by hand.
 
 Omit `--engine-version`, `--duration-seconds`, and `--tokens-file` whenever
 `delta` reported the corresponding value as null, and
-`--prompt-stack-sha256` / `--repo-instructions-sha256` whenever the hash helper
-did.
+`--prompt-stack-sha256` / `--prompt-stack-version` /
+`--repo-instructions-sha256` whenever the hash helper did.
 Omit `--changeset-file` and the classifier runs over `<base>..<head>` itself.
 Add `--truncated` when a lane silently truncated the diff it was given: a lane
 that reviewed less than it was asked to produces cheap, bad findings, which is

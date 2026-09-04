@@ -10,6 +10,7 @@ network. That check is the `Rendered prompt roots are current` step in
 
 from __future__ import annotations
 
+import json
 import shutil
 import stat
 from pathlib import Path
@@ -196,6 +197,9 @@ class Harness:
         monkeypatch.setattr(
             render_prompts, "MANIFEST_PATH", root / "prompts/rendered-files.txt"
         )
+        self.version_path = root / "PROMPT_STACK_VERSION"
+        self.version_path.write_text("1.2.3\n", encoding="utf-8")
+        monkeypatch.setattr(render_prompts, "VERSION_PATH", self.version_path)
 
     def write_source(self, relative: str, text: str | bytes) -> Path:
         path = self.src / relative
@@ -213,14 +217,18 @@ class Harness:
     def render(self) -> tuple[Path, list[Path]]:
         self._renders += 1
         out = self.root / f"out-{self._renders}"
-        written = self._rp.render_tree(self._se, self._rp.load_profiles(), out)
+        written = self._rp.render_tree(
+            self._se, self._rp.load_profiles(), out, self._rp.load_prompt_stack_version()
+        )
         return out, written
 
     def report_drift(self, staging: Path, written: list[Path]) -> int:
         """`--check`'s comparison, against this harness's fake repo root."""
         # `int(...)`: `_rp` is a ModuleType, so the call is `Any` under --strict.
-        manifest = self._rp._load_manifest(self._rp.load_profiles())
-        return int(self._rp._report_drift(staging, written, manifest))
+        profiles = self._rp.load_profiles()
+        manifest = self._rp._load_manifest(profiles)
+        unowned = self._rp.unowned_files(profiles, written)
+        return int(self._rp._report_drift(staging, written, manifest, unowned))
 
     def publish(
         self, staging: Path, written: list[Path], mode: int | None = None
@@ -688,7 +696,7 @@ def test_publish_outputs_refuses_an_unowned_path(cli: Harness) -> None:
     assert cli._rp.main([]) == 0
     with pytest.raises(ValueError, match="outside the renderer ownership domain"):
         cli._rp._publish_outputs(
-            cli.root, [], [Path("docs/skills/a/b.md")], cli._rp.load_profiles()
+            cli.root, [], [Path("docs/skills/a/b.md")], cli._rp.load_profiles(), []
         )
 
 
@@ -780,7 +788,7 @@ def test_publish_refuses_a_symlinked_destination(cli: Harness, tmp_path: Path) -
     target.symlink_to(outside)
 
     with pytest.raises(ValueError, match="must not contain symlinks"):
-        cli._rp._publish_outputs(staging, written, [], cli._rp.load_profiles())
+        cli._rp._publish_outputs(staging, written, [], cli._rp.load_profiles(), [])
     assert outside.read_text(encoding="utf-8") == "do not overwrite\n"
 
 
@@ -805,3 +813,312 @@ def test_an_undecodable_binary_asset_still_passes_through(one_skill: Harness) ->
     assert (
         out / ".claude/skills/demo/logo.bin"
     ).read_bytes() == b"\x89PNG\r\n\x1a\n\xff\xfe"
+
+
+# --------------------------------------------------------------------------
+# Prompt-stack manifest and version
+# --------------------------------------------------------------------------
+
+
+STACK_PROFILES = {
+    "claude": (
+        "root: .claude\n"
+        "values:\n  INVOKE: '/'\n  ENGINE_ID: claude\n"
+        "skills:\n  demo:\n    FM_EXTRAS: 'argument-hint: x'\n"
+        "prompt_stack:\n  - .claude/REVIEW_WORKFLOW.md\n"
+    ),
+    "codex": (
+        "root: .codex\n"
+        "values:\n  INVOKE: ''\n  ENGINE_ID: codex\n"
+        "skills:\n  demo:\n    FM_EXTRAS: ''\n"
+    ),
+}
+
+
+@pytest.fixture
+def stacked(harness: Harness) -> Harness:
+    """One skill, one profile declaring a prompt stack and one declaring none."""
+    for relative, text in ONE_SKILL.items():
+        harness.write_source(relative, text)
+    harness.write_profiles(STACK_PROFILES)
+    workflow = harness.root / ".claude/REVIEW_WORKFLOW.md"
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    workflow.write_text("# workflow\n", encoding="utf-8")
+    return harness
+
+
+def test_declared_stack_is_emitted_as_a_manifest(stacked: Harness) -> None:
+    out, written = stacked.render()
+    manifest = out / ".claude/prompt-stack.json"
+    assert Path(".claude/prompt-stack.json") in written
+    assert json.loads(manifest.read_text(encoding="utf-8")) == {
+        "manifestVersion": 1,
+        "promptStackVersion": "1.2.3",
+        "engine": "claude",
+        "root": ".claude",
+        "files": [".claude/REVIEW_WORKFLOW.md"],
+    }
+    # Two-space JSON with a trailing newline, which is what the repo's pinned
+    # Prettier produces for a file inside a harness root it checks.
+    assert manifest.read_text(encoding="utf-8").endswith("}\n")
+
+
+def test_a_profile_without_a_declared_stack_gets_no_manifest(
+    stacked: Harness,
+) -> None:
+    """Absent and empty are different. A harness with no hasher ships nothing."""
+    out, written = stacked.render()
+    assert not (out / ".codex/prompt-stack.json").exists()
+    assert Path(".codex/prompt-stack.json") not in written
+
+
+def test_manifest_files_are_sorted_not_declaration_ordered(harness: Harness) -> None:
+    """The emitted artifact is the ordered one; declaration order is not the input."""
+    for relative, text in ONE_SKILL.items():
+        harness.write_source(relative, text)
+    harness.write_profiles(
+        {
+            "claude": (
+                "root: .claude\n"
+                "values:\n  INVOKE: '/'\n  ENGINE_ID: claude\n"
+                "skills:\n  demo:\n    FM_EXTRAS: ''\n"
+                "prompt_stack:\n  - .claude/z.md\n  - .claude/a.md\n"
+            )
+        }
+    )
+    for name in ("z.md", "a.md"):
+        path = harness.root / ".claude" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n", encoding="utf-8")
+    out, _ = harness.render()
+    payload = json.loads((out / ".claude/prompt-stack.json").read_text(encoding="utf-8"))
+    assert payload["files"] == [".claude/a.md", ".claude/z.md"]
+
+
+def test_a_declared_stack_file_that_does_not_exist_fails_the_render(
+    stacked: Harness,
+) -> None:
+    """The whole point of moving the list here: a rename fails loudly.
+
+    Left undetected it reads downstream as an absent file, which moves every
+    digest at once and says nothing about why.
+    """
+    (stacked.root / ".claude/REVIEW_WORKFLOW.md").unlink()
+    out, written = stacked.render()
+    with pytest.raises(ValueError, match="names a file that does not exist"):
+        stacked._rp.verify_stack_declarations(stacked._rp.load_profiles(), written)
+
+
+def test_a_declared_stack_file_may_be_a_rendered_output(harness: Harness) -> None:
+    """A stack entry the render itself produces is present, not missing."""
+    for relative, text in ONE_SKILL.items():
+        harness.write_source(relative, text)
+    harness.write_profiles(
+        {
+            "claude": (
+                "root: .claude\n"
+                "values:\n  INVOKE: '/'\n  ENGINE_ID: claude\n"
+                "skills:\n  demo:\n    FM_EXTRAS: ''\n"
+                "prompt_stack:\n  - .claude/skills/demo/SKILL.md\n"
+            )
+        }
+    )
+    _, written = harness.render()
+    harness._rp.verify_stack_declarations(harness._rp.load_profiles(), written)
+
+
+def test_a_profile_declaring_a_stack_must_name_its_engine(harness: Harness) -> None:
+    for relative, text in ONE_SKILL.items():
+        harness.write_source(relative, text)
+    harness.write_profiles(
+        {
+            "claude": (
+                "root: .claude\n"
+                "values:\n  INVOKE: '/'\n"
+                "skills:\n  demo:\n    FM_EXTRAS: ''\n"
+                "prompt_stack:\n  - .claude/REVIEW_WORKFLOW.md\n"
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="must define `ENGINE_ID`"):
+        harness.render()
+
+
+@pytest.mark.parametrize(
+    ("stack", "expected"),
+    [
+        ("prompt_stack: []\n", "non-empty list"),
+        ("prompt_stack: 'x'\n", "non-empty list"),
+        ("prompt_stack:\n  - ''\n", "non-empty strings"),
+        ("prompt_stack:\n  - 3\n", "non-empty strings"),
+        ("prompt_stack:\n  - /etc/passwd\n", "plain relative paths"),
+        ("prompt_stack:\n  - ~/x.md\n", "plain relative paths"),
+        ("prompt_stack:\n  - .claude/../x.md\n", "plain relative paths"),
+        ("prompt_stack:\n  - .codex/SKILL.md\n", "must sit inside"),
+        ("prompt_stack:\n  - x.md\n", "must sit inside"),
+        (
+            "prompt_stack:\n  - .claude/a.md\n  - .claude/a.md\n",
+            "duplicate paths",
+        ),
+    ],
+)
+def test_profile_rejects_a_malformed_prompt_stack(
+    render_prompts: ModuleType, tmp_path: Path, stack: str, expected: str
+) -> None:
+    """A stack entry names a file the hasher will read; the grammar is closed."""
+    path = _write_profile(
+        tmp_path, "claude", f"root: .claude\nvalues:\n  ENGINE_ID: claude\n{stack}"
+    )
+    with pytest.raises(ValueError, match=expected):
+        render_prompts.Profile(path)
+
+
+def test_a_profile_may_omit_the_prompt_stack(
+    render_prompts: ModuleType, tmp_path: Path
+) -> None:
+    path = _write_profile(tmp_path, "agents", "root: .agents\nvalues: {}\n")
+    assert render_prompts.Profile(path).prompt_stack is None
+
+
+@pytest.mark.parametrize("raw", ["1.0\n", "v1.0.0\n", "1.0.0-rc1\n", "\n", "next\n"])
+def test_a_malformed_version_fails_the_render(harness: Harness, raw: str) -> None:
+    """A typo here is a prompt generation nobody can order."""
+    harness.version_path.write_text(raw, encoding="utf-8")
+    with pytest.raises(ValueError, match="MAJOR.MINOR.PATCH"):
+        harness._rp.load_prompt_stack_version()
+
+
+def test_a_missing_version_file_fails_the_render(harness: Harness) -> None:
+    harness.version_path.unlink()
+    with pytest.raises(ValueError, match="no semantic version to stamp"):
+        harness._rp.load_prompt_stack_version()
+
+
+def test_the_version_file_tolerates_surrounding_whitespace(harness: Harness) -> None:
+    harness.version_path.write_text("  2.10.4  \n\n", encoding="utf-8")
+    assert harness._rp.load_prompt_stack_version() == "2.10.4"
+
+
+def test_the_manifest_is_inside_the_ownership_domain(render_prompts: ModuleType) -> None:
+    """It is the one generated file that is not inside a skill directory."""
+    render_prompts._validate_generated_path(Path(".claude/prompt-stack.json"))
+    for rejected in (
+        Path(".claude/other.json"),
+        Path("docs/prompt-stack.json"),
+        Path(".claude/skills/prompt-stack.json"),
+    ):
+        with pytest.raises(ValueError, match="outside the renderer ownership domain"):
+            render_prompts._validate_generated_path(rejected)
+
+
+# --------------------------------------------------------------------------
+# Unowned files inside a rendered skill directory
+# --------------------------------------------------------------------------
+
+
+def test_check_reports_a_file_the_render_never_emitted(cli: Harness) -> None:
+    """The gap this closes: an addition in neither the inventory nor the render.
+
+    Before, `--check` compared the render against the inventory and nothing
+    enumerated the directory, so a hand-added file was in neither set and was
+    reported by nothing.
+    """
+    assert cli._rp.main([]) == 0
+    intruder = cli.root / ".claude/skills/demo/EXTRA.md"
+    intruder.write_text("hand added\n", encoding="utf-8")
+
+    assert cli._rp.main(["--check"]) == 1
+    assert intruder.exists(), "--check must not write"
+
+
+def test_check_reports_an_unowned_file_in_a_nested_directory(cli: Harness) -> None:
+    """The realistic shape: a script a rendered SKILL.md could then source."""
+    assert cli._rp.main([]) == 0
+    intruder = cli.root / ".claude/skills/demo/scripts/exfil.py"
+    intruder.parent.mkdir(parents=True, exist_ok=True)
+    intruder.write_text("print('hi')\n", encoding="utf-8")
+    assert cli._rp.main(["--check"]) == 1
+
+
+def test_a_write_render_removes_an_unowned_file(cli: Harness) -> None:
+    assert cli._rp.main([]) == 0
+    intruder = cli.root / ".claude/skills/demo/EXTRA.md"
+    intruder.write_text("hand added\n", encoding="utf-8")
+
+    assert cli._rp.main([]) == 0
+    assert not intruder.exists()
+    assert cli._rp.main(["--check"]) == 0
+
+
+def test_the_sweep_ignores_the_build_artifacts_the_render_excludes(
+    cli: Harness,
+) -> None:
+    """CI's own compile step drops these next to the rendered issue scripts.
+
+    Failing on them would turn the gate red for something no change did, which
+    is how a gate ends up switched off.
+    """
+    assert cli._rp.main([]) == 0
+    cache = cli.root / ".claude/skills/demo/__pycache__"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "x.cpython-312.pyc").write_bytes(b"\x00")
+    (cli.root / ".claude/skills/demo/stale.pyc").write_bytes(b"\x00")
+
+    assert cli._rp.main(["--check"]) == 0
+
+
+def test_the_sweep_leaves_unrendered_skills_alone(cli: Harness) -> None:
+    """Ownership is per rendered skill, not per harness root.
+
+    A harness root also holds hand-authored skills the renderer knows nothing
+    about, and sweeping those would delete the majority of the tree.
+    """
+    assert cli._rp.main([]) == 0
+    hand_authored = cli.root / ".claude/skills/critique/SKILL.md"
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_text("hand authored\n", encoding="utf-8")
+
+    assert cli._rp.main([]) == 0
+    assert hand_authored.exists()
+
+
+def test_the_sweep_reports_a_symlink_without_following_it(
+    cli: Harness, tmp_path: Path
+) -> None:
+    """A link to a directory must not turn a drift check into a wider walk."""
+    assert cli._rp.main([]) == 0
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("do not delete\n", encoding="utf-8")
+    link = cli.root / ".claude/skills/demo/linked"
+    link.symlink_to(outside, target_is_directory=True)
+
+    assert cli._rp.main(["--check"]) == 1
+    assert cli._rp.main([]) == 0
+    assert not link.exists()
+    assert (outside / "secret.md").read_text(encoding="utf-8") == "do not delete\n"
+
+
+def test_a_stale_output_is_reported_once_not_twice(
+    cli: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A retired output is stale, and stale already names the problem."""
+    assert cli._rp.main([]) == 0
+    (cli._rp.SKILLS_SRC / "demo/extra.md").write_text("gone next time\n", encoding="utf-8")
+    assert cli._rp.main([]) == 0
+    (cli._rp.SKILLS_SRC / "demo/extra.md").unlink()
+
+    assert cli._rp.main(["--check"]) == 1
+    err = capsys.readouterr().err
+    assert "stale:     .claude/skills/demo/extra.md" in err
+    assert "unowned:   .claude/skills/demo/extra.md" not in err
+
+
+def test_remove_unowned_refuses_a_path_outside_a_skill_directory(
+    cli: Harness,
+) -> None:
+    """The deleting line does not trust its caller — the manifest is not sweepable."""
+    with pytest.raises(ValueError, match="outside a rendered skill directory"):
+        cli._rp._remove_unowned(Path(".claude/prompt-stack.json"))
+    with pytest.raises(ValueError, match="outside the renderer ownership domain"):
+        cli._rp._remove_unowned(Path("docs/whatever.md"))

@@ -6,6 +6,7 @@
 .agents/skills/issues/scripts/ready.py
 .agents/skills/phone-install/SKILL.md
 .agents/skills/task-packet/SKILL.md
+.claude/prompt-stack.json
 .claude/skills/diagnosing-bugs/SKILL.md
 .claude/skills/feature-dev/SKILL.md
 .claude/skills/grill/SKILL.md
@@ -14,6 +15,7 @@
 .claude/skills/issues/scripts/ready.py
 .claude/skills/phone-install/SKILL.md
 .claude/skills/task-packet/SKILL.md
+.codex/prompt-stack.json
 .codex/skills/diagnosing-bugs/SKILL.md
 .codex/skills/feature-dev/SKILL.md
 .codex/skills/grill/SKILL.md

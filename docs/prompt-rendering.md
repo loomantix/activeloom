@@ -32,6 +32,18 @@ python3 scripts/render-prompts.py --check    # what CI runs; prints a diff per d
 CI's `Rendered prompt roots are current` step runs `--check`, so a stale root or
 a hand-edit to a generated file fails the build.
 
+A rendered skill's directory in a harness root is **wholly owned** by the
+renderer. `--check` walks those directories and reports anything the render did
+not emit as `unowned`; a write-mode render deletes it. This is stricter than
+comparing the render against the generated-path inventory, and deliberately so:
+a file in neither the inventory nor the render — a hand-added `EXTRA.md`, a
+`scripts/` addition that a `SKILL.md` then sources — was previously in no set
+the gate compared and so was reported by nothing at all. The only exceptions are
+the build artifacts the render already excludes at the source (`__pycache__`,
+`.pyc`), because CI's own compile step drops those next to the rendered issue
+scripts. Anything else that belongs in a rendered skill belongs in
+`prompts/skills/<skill>/`.
+
 ## Adding a rendered skill
 
 Create `prompts/skills/<name>/SKILL.md` and add whatever per-skill values it
@@ -45,6 +57,61 @@ name temporarily to `RETIRED_SKILLS` in `scripts/render-prompts.py`, render once
 to retire the generated files, then remove the name after the committed
 inventory is clean. This prevents the inventory from authorizing deletion of
 an unrelated hand-authored skill.
+
+## The prompt stack manifest
+
+A profile may declare a `prompt_stack`: the review prompt files whose contents
+identify that harness's _prompt generation_ for telemetry. Rendering emits it as
+`<root>/prompt-stack.json`, and that harness's
+`skills/critique/scripts/prompt-stack-hash.js` hashes exactly the files it
+names.
+
+The declaration lives here because the renderer is the thing that knows what a
+harness root contains. Before, the list lived in the hasher — in two engine
+copies of one script that had to keep agreeing on both membership and byte order
+forever, enforced by nothing, with two identities minted for one prompt
+generation as the failure mode. A declaration naming a file this repository does
+not have now fails the render, where previously a rename read as an absent file
+and quietly moved every digest at once.
+
+Each engine's digest covers its own root only, and the two are not comparable:
+`.claude` and `.codex` hold deliberately different review prompts (see
+[`decisions/0006-review-chains-never-converge.md`](decisions/0006-review-chains-never-converge.md)),
+so one digest across both harnesses could only be had by converging prompts that
+are supposed to differ. What is shared across harnesses is the version below.
+
+`.agents` declares no stack: that harness has no hasher yet, and shipping a
+manifest nothing reads would imply a telemetry identity it does not emit.
+
+## The prompt stack version
+
+`PROMPT_STACK_VERSION` at the repo root holds one `MAJOR.MINOR.PATCH` line. The
+renderer stamps it into every emitted manifest, the hasher reports it, and it
+reaches a telemetry record as `promptStackVersion`.
+
+It answers what a digest cannot. A digest identifies a generation exactly but
+does not **order** two of them, so "did findings-per-token improve after that
+prompt change" needs a version to say which came first. The two are reported
+side by side and never mixed: a version bump that changed no prompt must not
+move the digest, and a prompt edit must move the digest whether or not anyone
+remembered to bump the version.
+
+The unit is the **whole prompt stack**, not the individual skill. A review pass
+loads several of these files together and the thing being compared is the pass,
+so a per-skill version would have to be reassembled into a stack version by
+every consumer of the telemetry.
+
+- **MAJOR** — a change to the review protocol itself: the ledger contract, the
+  severity ladder, what an engine must post before it edits.
+- **MINOR** — a behaviour-changing prompt edit. New or removed instructions,
+  a changed gate, a lens added to or dropped from a chain. If a reviewer would
+  plausibly act differently, it is at least minor.
+- **PATCH** — editorial only: wording, formatting, a fixed typo, a clarified
+  sentence that changes no instruction.
+
+The sync protocol pin (`sync-v1`) is not this version and cannot become it: that
+tag is force-moved whenever content changes, so two consumers "on sync-v1" at
+different times are running different prompts.
 
 ## Adding a variable
 

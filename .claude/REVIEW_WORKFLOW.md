@@ -481,9 +481,16 @@ node <hash-helper> --repo-root "<repository root>"
 It reads only files already checked into the repository — no session log, no
 path under a home directory — so it is ungated and safe to run anywhere. It
 always exits 0 and always prints one JSON object carrying `promptStackSha256`,
-`repoInstructionsSha256`, and `hashInputVersion`. Pass the two digests through
-verbatim and omit the corresponding flag when one is null. Nothing else it
-prints is an `emit-telemetry` argument.
+`promptStackVersion`, `repoInstructionsSha256`, and `hashInputVersion`. Pass the
+two digests and the version through verbatim — `--prompt-stack-sha256`,
+`--repo-instructions-sha256`, `--prompt-stack-version` — and omit the
+corresponding flag when one is null. Nothing else it prints is an
+`emit-telemetry` argument.
+
+A null `promptStackVersion` alongside a null `promptStackSha256` is the helper
+saying it could not read the stack declaration, and `error` says why. Do not
+substitute a version from anywhere else: the point of the field is that it came
+from the prompts the pass actually loaded.
 
 **The two digests are never collapsed into one.** The synced stack is
 fleet-wide and moves when upstream moves; repo-local instructions are per
@@ -491,21 +498,26 @@ repository. A combined digest would make every repository look like a different
 prompt generation forever, which destroys the cross-repository correlation the
 hash exists to enable.
 
-#### Hash input, version 1
+#### Hash input, version 2
 
 The digest input is a definition, not an implementation detail. Two engines
 that hashed the same stack in different orders would mint two identities for
 one prompt generation, which reads downstream as a real difference and is worse
-than having no hash. Version 1 is:
+than having no hash. Version 2 is:
 
-- **Prompt stack** — an enumerated list of synced review prompt files, not a
-  glob: `MODEL_NOTES.md`, `REVIEW_WORKFLOW.md`,
-  `references/local-review-ledger.md`, and the `critique`, `deepcritique`,
-  `refactorpass`, and `reviewit` skill bodies. Scripts are excluded: the ledger
-  bundle and the usage extractor are not prompts, and folding them in would
-  move the digest on every ledger release. Finder lenses that live outside the
-  synced surface are not covered — a file the helper cannot read in a consumer
-  checkout cannot be part of a digest that has to be reproducible there.
+- **Prompt stack** — the files named by `.claude/prompt-stack.json`, the manifest
+  synced in beside this harness's prompts. It is a build output of the
+  repository that owns them, which knows exactly what it shipped; a declaration
+  naming a file that repository does not have fails its render rather than
+  reading here as an absent file. This is still an enumerated declaration and
+  still not a glob — what changed in version 2 is who writes it down. Version 1
+  carried the list in the helper, so two engine copies of one script had to keep
+  agreeing on its membership and its byte order forever, enforced by nothing.
+  Which files a harness declares, and why scripts and unloaded roles are
+  excluded, is documented with the declaration upstream. The manifest is read
+  only when it declares this harness's own root and a schema this helper
+  recognises; anything else abstains, because a digest computed over a misread
+  declaration is a different stack's digest wearing this one's name.
 - **Repo instructions** — root `AGENTS.md` and root `CLAUDE.md`, both declared
   for both engines so the same repository state yields the same digest whichever
   engine emitted the record. Nested instruction files are out of scope: their
@@ -530,12 +542,24 @@ than having no hash. Version 1 is:
 
 The version is mixed into the digest rather than reported beside it, so a later
 redefinition cannot silently rewrite the meaning of records already emitted —
-version 2 produces different digests by construction. Changing the file list,
-the order, the normalisation, or the framing **is** a redefinition and bumps it.
+version 3 would produce different digests by construction. Changing where the
+file list comes from, the order, the normalisation, or the framing **is** a
+redefinition and bumps it. Changing the _contents_ of the declared list is not:
+that is a prompt-stack change, which is what the digest exists to report.
 
-`hashInputVersion` is not `promptStackVersion`. The latter is the prompt stack's
-semantic version, which nothing computes yet; it stays null and is not this
-helper's to fill.
+`hashInputVersion` is not `promptStackVersion`. The first versions _how the
+digest was taken_; the second versions _the prompts_, is set upstream in
+`PROMPT_STACK_VERSION`, and travels in the manifest. Both are needed and neither
+substitutes for the other: a digest identifies a prompt generation exactly but
+does not order two of them, so "did findings-per-token improve after that prompt
+change" needs the version to say which generation came first. The version is
+reported beside the digest and never mixed into it — a version bump that changed
+no prompt must not move the digest, and a prompt edit must move it whether or not
+anyone remembered to bump the version.
+
+The sync protocol pin (`sync-v1`) is not this version either. That tag is
+force-moved whenever content changes, so two consumers "on sync-v1" at different
+times are running different prompts and the tag carries no content identity.
 
 ### Count the findings
 
@@ -579,13 +603,14 @@ node <ledger-helper> emit-telemetry \
   --duration-seconds <from delta> \
   --tokens-file <from delta> --lanes-file <from delta> \
   --prompt-stack-sha256 <from hash helper> \
+  --prompt-stack-version <from hash helper> \
   --repo-instructions-sha256 <from hash helper> \
   --findings-file <path>
 ```
 
 Omit `--review-tier`, `--engine-version`, `--duration-seconds`, `--tokens-file`,
-`--lanes-file`, `--prompt-stack-sha256`, and `--repo-instructions-sha256`
-whenever the corresponding value is null. A docs/config-only
+`--lanes-file`, `--prompt-stack-sha256`, `--prompt-stack-version`, and
+`--repo-instructions-sha256` whenever the corresponding value is null. A docs/config-only
 skip can legitimately have no resolved review tier, and unavailable usage can
 legitimately have no engine version or duration; the omitted options serialize
 as null without inventing a value or failing the emission.
@@ -682,6 +707,9 @@ telemetry defect must not fail a review that found real defects.
 - `skills/critique/scripts/prompt-stack-hash.js` — the prompt-generation
   identity for a telemetry record. Reads only checked-in repository files; see
   "Identify the prompt stack" above.
+- `prompt-stack.json` — the stack declaration that helper reads: which prompt
+  files this harness's identity covers, and the prompt stack's semantic version.
+  Generated upstream; a hand-edit here changes what the digest claims to cover.
 - [`skills/critique/scripts/run-agy-review.sh`](skills/critique/scripts/run-agy-review.sh)
   — the auto-mode launcher for the `gemini` reviewer.
 - [`skills/refactorpass/SKILL.md`](skills/refactorpass/SKILL.md) ·

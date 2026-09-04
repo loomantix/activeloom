@@ -265,6 +265,7 @@ jobs:
           set -euo pipefail
           for path in \
             .claude/REVIEW_WORKFLOW.md \
+            .claude/prompt-stack.json \
             .claude/skills/critique/SKILL.md \
             .claude/skills/critique/scripts/usage-snapshot.js \
             .claude/skills/critique/scripts/prompt-stack-hash.js \

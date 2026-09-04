@@ -25,13 +25,15 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * The version of the *hash input definition* — which files, in what order,
  * with what normalisation. It is not the semantic version of the prompt stack
- * (`promptStackVersion`), which this helper does not compute and must not be
- * confused with.
+ * (`promptStackVersion`), which this helper reports from the manifest without
+ * computing, and which must not be confused with it: one identifies how the
+ * digest was taken, the other orders the prompts themselves.
  *
  * It is mixed into the digest rather than reported beside it. A redefinition
  * that kept producing the same digests for the same files would silently
@@ -39,48 +41,59 @@ import { join, resolve } from 'node:path';
  * makes v2 of the definition produce different digests by construction, so old
  * records keep meaning what they meant.
  */
-const HASH_INPUT_VERSION = 1;
+const HASH_INPUT_VERSION = 2;
 
 /**
- * The synced prompt files a review pass runs on, enumerated rather than
- * globbed.
+ * The manifest emitted beside this harness root by the upstream renderer, and
+ * synced into the consumer alongside the prompts it names.
  *
- * A glob makes the hash input depend on what happens to be on disk, so a file
- * arriving from an unrelated sync would read as a prompt-generation change.
- * The explicit list is the definition, and changing it is a redefinition that
- * bumps `HASH_INPUT_VERSION`.
+ * Version 1 of the hash input carried the file list in this script, which meant
+ * two engine copies of one helper had to keep agreeing on both the membership
+ * and the byte order of that list forever — a convention, enforced by nothing,
+ * whose failure mode is two identities minted for one prompt generation. The
+ * list is now a build output of the repository that owns the prompts: it knows
+ * what it shipped, a declaration naming a file it does not have fails the
+ * render, and this helper reads what it was given.
  *
- * Scripts are excluded: the ledger bundle and the usage extractor are not
- * prompts, and folding them in would move the digest on every ledger release
- * while nothing about the review's instructions changed. The engine version
- * already travels in the record.
+ * Reading a manifest is still not a glob. The hash input remains an enumerated
+ * declaration; what changed is who writes it down.
  *
- * This engine's finder lenses are role files inside the synced surface, so they
- * are covered. The sibling engine's lenses are plugin agents outside its synced
- * surface and are not, which is a difference in what each engine can read in a
- * consumer checkout rather than a difference in method. The two digests were
- * never comparable to each other in the first place: each names one engine's
- * own prompt generation.
- *
- * `code-architect.md` and `code-explorer.md` are excluded. They are roles this
- * repository ships, but no review pass loads them, so an edit to either would
- * report a prompt-generation change that no review actually saw.
+ * Scripts stay excluded, and the exclusions the declaration encodes are
+ * documented with it upstream. Only prompt files this helper can read in a
+ * consumer checkout can be part of a digest that has to be reproducible there.
  */
-const PROMPT_STACK_FILES = [
-  '.codex/REVIEW_WORKFLOW.md',
-  '.codex/references/local-review-ledger.md',
-  '.codex/references/roles/code-reviewer.md',
-  '.codex/references/roles/comment-analyzer.md',
-  '.codex/references/roles/pr-test-analyzer.md',
-  '.codex/references/roles/security-reviewer.md',
-  '.codex/references/roles/silent-failure-hunter.md',
-  '.codex/references/roles/type-design-analyzer.md',
-  '.codex/skills/critique/SKILL.md',
-  '.codex/skills/deepcritique/SKILL.md',
-  '.codex/skills/pr-critique/SKILL.md',
-  '.codex/skills/refactorpass/SKILL.md',
-  '.codex/skills/reviewit/SKILL.md',
-];
+const MANIFEST_NAME = 'prompt-stack.json';
+
+/**
+ * The manifest schema this helper understands.
+ *
+ * A consumer can hold a manifest newer than its copy of this script — sync
+ * ships files, not transactions. An unrecognised schema abstains rather than
+ * guessing at a shape it was not written for: a digest computed over a
+ * misread declaration is a different stack's digest wearing this one's name.
+ */
+const SUPPORTED_MANIFEST_VERSION = 1;
+
+/** `MAJOR.MINOR.PATCH`, the only shape the upstream version file may hold. */
+const VERSION_RE = /^\d+\.\d+\.\d+$/;
+
+/**
+ * The harness root this copy of the helper belongs to, derived from its own
+ * location rather than hard-coded.
+ *
+ * The script is synced to `<root>/skills/critique/scripts/`, so the fourth
+ * parent names its root. Deriving it is what lets the two engine copies of this
+ * file be byte-identical: a hard-coded root was the last remaining reason for
+ * them to differ, and every line that differs between two copies of one helper
+ * is a line that can drift.
+ *
+ * It is cross-checked against the `root` the manifest declares, so a copy that
+ * ended up somewhere unexpected abstains instead of hashing a stack that is not
+ * its own.
+ */
+const HARNESS_ROOT = basename(
+  dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))),
+);
 
 /**
  * Repo-local agent instructions, at the repository root.
@@ -95,6 +108,92 @@ const PROMPT_STACK_FILES = [
  * which directories a pass happened to touch, which is not reproducible.
  */
 const REPO_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md'];
+
+/**
+ * Read and validate the shipped stack declaration.
+ *
+ * Every rejection below abstains rather than falling back to some other list.
+ * A fallback would make an unreadable or malformed manifest produce a digest
+ * anyway — the one outcome worse than no digest, because it looks measured. The
+ * caller reports the reason so a consumer whose sync did not deliver the
+ * manifest can be told apart from one whose manifest is corrupt.
+ */
+function readManifest(root) {
+  let raw;
+  try {
+    raw = readFileSync(join(root, HARNESS_ROOT, MANIFEST_NAME), 'utf8');
+  } catch (error) {
+    const code = error?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return { error: `no ${MANIFEST_NAME} under ${HARNESS_ROOT}` };
+    }
+    return { error: `${MANIFEST_NAME} could not be read` };
+  }
+
+  let doc;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return { error: `${MANIFEST_NAME} is not valid JSON` };
+  }
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
+    return { error: `${MANIFEST_NAME} is not an object` };
+  }
+  if (doc.manifestVersion !== SUPPORTED_MANIFEST_VERSION) {
+    return {
+      error: `${MANIFEST_NAME} declares unsupported manifestVersion ${JSON.stringify(
+        doc.manifestVersion,
+      )}`,
+    };
+  }
+  if (doc.root !== HARNESS_ROOT) {
+    // Not pedantry: a manifest for another harness names another engine's
+    // prompt generation, and hashing it here would file this engine's pass
+    // under that engine's identity.
+    return {
+      error: `${MANIFEST_NAME} declares root ${JSON.stringify(
+        doc.root,
+      )}, not ${HARNESS_ROOT}`,
+    };
+  }
+  if (
+    typeof doc.promptStackVersion !== 'string' ||
+    !VERSION_RE.test(doc.promptStackVersion)
+  ) {
+    return { error: `${MANIFEST_NAME} declares no MAJOR.MINOR.PATCH version` };
+  }
+  if (!Array.isArray(doc.files) || doc.files.length === 0) {
+    return { error: `${MANIFEST_NAME} declares no prompt files` };
+  }
+
+  const prefix = `${HARNESS_ROOT}/`;
+  const files = [];
+  for (const entry of doc.files) {
+    // Each entry is a path this helper is about to read. Constraining it to a
+    // plain relative path inside the declared root is what keeps a manifest —
+    // an ordinary file, editable in any consumer checkout — from directing a
+    // read outside the prompt root it describes.
+    if (
+      typeof entry !== 'string' ||
+      entry.length === 0 ||
+      !entry.startsWith(prefix) ||
+      entry.includes('\\') ||
+      entry
+        .split('/')
+        .some((part) => part === '' || part === '.' || part === '..')
+    ) {
+      return {
+        error: `${MANIFEST_NAME} declares an unusable path ${JSON.stringify(entry)}`,
+      };
+    }
+    files.push(entry);
+  }
+  if (new Set(files).size !== files.length) {
+    return { error: `${MANIFEST_NAME} declares a duplicate path` };
+  }
+
+  return { version: doc.promptStackVersion, files };
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -227,6 +326,22 @@ function digestOver(name, root, files) {
   };
 }
 
+/** The shape emitted when nothing could be computed at all. */
+function abstained(message) {
+  return {
+    mode: 'hash',
+    hashInputVersion: HASH_INPUT_VERSION,
+    manifestVersion: SUPPORTED_MANIFEST_VERSION,
+    harnessRoot: HARNESS_ROOT,
+    promptStackSha256: null,
+    promptStackVersion: null,
+    repoInstructionsSha256: null,
+    promptStack: null,
+    repoInstructions: null,
+    error: message,
+  };
+}
+
 function emit(payload) {
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   return 0;
@@ -237,20 +352,20 @@ function main(argv) {
   try {
     args = parseArgs(argv);
   } catch (error) {
-    return emit({
-      mode: 'hash',
-      hashInputVersion: HASH_INPUT_VERSION,
-      promptStackSha256: null,
-      repoInstructionsSha256: null,
-      promptStack: null,
-      repoInstructions: null,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    return emit(
+      abstained(error instanceof Error ? error.message : String(error)),
+    );
   }
 
   try {
     const root = resolve(args.repoRoot ?? process.cwd());
-    const stack = digestOver('prompt-stack', root, PROMPT_STACK_FILES);
+    // The two digests are independent, so a manifest problem must not cost the
+    // record its repo-instructions digest as well. Only the prompt-stack half
+    // abstains.
+    const manifest = readManifest(root);
+    const stack = manifest.error
+      ? { sha256: null, declared: 0, present: 0, failed: false }
+      : digestOver('prompt-stack', root, manifest.files);
     const instructions = digestOver(
       'repo-instructions',
       root,
@@ -259,29 +374,31 @@ function main(argv) {
     return emit({
       mode: 'hash',
       hashInputVersion: HASH_INPUT_VERSION,
+      manifestVersion: SUPPORTED_MANIFEST_VERSION,
+      harnessRoot: HARNESS_ROOT,
       promptStackSha256: stack.sha256,
+      // Reported beside the digest, never mixed into it. A version bump that
+      // changed no prompt must not move the digest, and a prompt edit must move
+      // it whether or not anyone remembered to bump the version.
+      promptStackVersion: manifest.error ? null : manifest.version,
       repoInstructionsSha256: instructions.sha256,
       promptStack: { declared: stack.declared, present: stack.present },
       repoInstructions: {
         declared: instructions.declared,
         present: instructions.present,
       },
-      error: stack.failed
-        ? 'the prompt stack could not be read'
-        : instructions.failed
-          ? 'the repo instructions could not be read'
-          : null,
+      error:
+        manifest.error ??
+        (stack.failed
+          ? 'the prompt stack could not be read'
+          : instructions.failed
+            ? 'the repo instructions could not be read'
+            : null),
     });
   } catch (error) {
-    return emit({
-      mode: 'hash',
-      hashInputVersion: HASH_INPUT_VERSION,
-      promptStackSha256: null,
-      repoInstructionsSha256: null,
-      promptStack: null,
-      repoInstructions: null,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    return emit(
+      abstained(error instanceof Error ? error.message : String(error)),
+    );
   }
 }
 

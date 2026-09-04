@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "promptStackVersion": "1.0.0",
+  "engine": "claude",
+  "root": ".claude",
+  "files": [
+    ".claude/MODEL_NOTES.md",
+    ".claude/REVIEW_WORKFLOW.md",
+    ".claude/references/local-review-ledger.md",
+    ".claude/skills/critique/SKILL.md",
+    ".claude/skills/deepcritique/SKILL.md",
+    ".claude/skills/refactorpass/SKILL.md",
+    ".claude/skills/reviewit/SKILL.md"
+  ]
+}
