@@ -312,6 +312,15 @@ jobs:
         if: '!cancelled()'
         run: python3 scripts/render-prompts.py --check
 
+      # The other half of the same contract: the renderer proves the generated
+      # roots match their source, this proves every shared skill the renderer
+      # does *not* own still has a written reason to differ. Promotion
+      # candidates are reported into the job summary rather than failing —
+      # see `docs/prompt-rendering.md`.
+      - name: Unrendered shared skills are accounted for
+        if: '!cancelled()'
+        run: python3 scripts/lint-prompt-parity.py
+
       # --- was job `skill-content` (Skill content policy) ---
       - name: Self-test the lint patterns
         if: '!cancelled()'
@@ -453,3 +462,10 @@ jobs:
         run: |
           test -f scripts/render-prompts.py
           python3 -m coverage report --include='scripts/render-prompts.py' --fail-under=80
+      # The parity lint is the renderer's counterpart: it decides whether an
+      # unrendered divergence is accounted for. Same floor, same `test -f`
+      # precondition, for the same reason.
+      - name: Coverage gate — lint-prompt-parity.py >=80%
+        run: |
+          test -f scripts/lint-prompt-parity.py
+          python3 -m coverage report --include='scripts/lint-prompt-parity.py' --fail-under=80
