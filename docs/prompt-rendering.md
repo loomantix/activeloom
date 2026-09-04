@@ -113,6 +113,36 @@ The sync protocol pin (`sync-v1`) is not this version and cannot become it: that
 tag is force-moved whenever content changes, so two consumers "on sync-v1" at
 different times are running different prompts.
 
+## What other tools may read, and what they may assume
+
+Two renderer outputs are now read by tooling outside the renderer, so their
+shape is a contract rather than an implementation detail. Change either
+deliberately, and tell the readers.
+
+**`prompts/skills/<skill>/` — the rendered roster.** The directory listing _is_
+the roster; there is no hand-maintained skill manifest. A tool that needs to
+know which skills are generated (to exclude them from a comparison against
+hand-authored ones, say) should read this listing rather than duplicate the
+names.
+
+**`prompts/rendered-files.txt` — the generated-path inventory.** One
+repo-relative POSIX path per line, byte-sorted, LF-terminated, with a trailing
+newline and no comments or blank lines. The renderer is its only writer, and
+`--check` compares it against a fresh render, so it cannot silently go stale.
+
+Every entry is inside the renderer's ownership domain, which is what makes the
+file safe to act on. Two shapes appear in it:
+
+| Shape                          | Source                                                           |
+| ------------------------------ | ---------------------------------------------------------------- |
+| `<root>/skills/<skill>/<path>` | `prompts/skills/<skill>/<path>`                                  |
+| `<root>/prompt-stack.json`     | `prompts/profiles/<profile>.yml` and root `PROMPT_STACK_VERSION` |
+
+The second shape is the one to check a reader against: it is a generated path
+with **no** corresponding file under `prompts/skills/`, so a tool that resolves
+an inventory entry back to a source by string surgery on the skill segment will
+not find one. It is also the only entry that is not inside a skill directory.
+
 ## Adding a variable
 
 Add it to all three profiles and use `<<KEY>>` in the source. A placeholder with
