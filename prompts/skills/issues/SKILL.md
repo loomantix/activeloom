@@ -1,11 +1,12 @@
 ---
 name: issues
 description: GitHub issue workflow — ready queue with dependency resolution, claim, start, close, link
+<<FM_EXTRAS>>
 ---
 
-# issues
+# <<INVOKE>>issues
 
-Thin workflow over `gh issue` with a smart **ready** query that parses `Blocked by #N` / `Depends on #N` from issue bodies to compute dependency-free work. (`Blocks #N` is written as the reciprocal side by `issues link`, but isn't parsed as a blocker itself — the authoritative direction is `Blocked by`.)
+Thin workflow over `gh issue` with a smart **ready** query that parses `Blocked by #N` / `Depends on #N` from issue bodies to compute dependency-free work. (`Blocks #N` is written as the reciprocal side by `<<INVOKE>>issues link`, but isn't parsed as a blocker itself — the authoritative direction is `Blocked by`.)
 
 **Arguments**: `$ARGUMENTS`
 
@@ -34,7 +35,7 @@ Apply to: `gh issue create`, `gh issue edit`, `gh issue comment`.
 Show open issues with no open blockers, sorted by priority.
 
 ```bash
-./.codex/skills/issues/scripts/ready.py
+./<<SKILLS_ROOT>>/issues/scripts/ready.py
 ```
 
 Flags (all optional):
@@ -124,8 +125,8 @@ gh issue close <n>
 Adds dependency refs to **both** issues so `ready` sees them regardless of which side you query.
 
 ```bash
-./.codex/skills/issues/scripts/link.py <n> blocks <m>
-./.codex/skills/issues/scripts/link.py <n> blocked-by <m>
+./<<SKILLS_ROOT>>/issues/scripts/link.py <n> blocks <m>
+./<<SKILLS_ROOT>>/issues/scripts/link.py <n> blocked-by <m>
 ```
 
 - `link A blocks B` → writes `Blocks #B` to A, `Blocked by #A` to B
@@ -154,7 +155,7 @@ Useful query fragments: `label:"dev: agent"`, `is:open no:assignee`, `in:title p
 - `Blocked by #N`
 - `Depends on #N`
 
-To mark a dependency, prefer `issues link` over manual edits — it keeps both issues consistent and under a parseable `## Dependencies` section. The label `status: blocked` is also honored (excludes from `ready` regardless of body content).
+To mark a dependency, prefer `<<INVOKE>>issues link` over manual edits — it keeps both issues consistent and under a parseable `## Dependencies` section. The label `status: blocked` is also honored (excludes from `ready` regardless of body content).
 
 ---
 
@@ -169,4 +170,4 @@ To mark a dependency, prefer `issues link` over manual edits — it keeps both i
 
 ## Source of truth
 
-This skill is generated upstream from `prompts/skills/issues/` into `.codex/skills/issues/`, then synced to consumer repos. Edit the upstream source; consumer and generated copies are overwritten.
+This skill is generated upstream from `prompts/skills/issues/` into `<<SKILLS_ROOT>>/issues/`, then synced to consumer repos. Edit the upstream source; consumer and generated copies are overwritten.

@@ -69,8 +69,7 @@ Before creating a branch or preparing the environment, create an isolated worktr
 
 1. **Determine Worktree Name**
    - Derive `<worktree-slug>` from the Task Packet name.
-   - Recommended format: `task-<slug>`
-     Example: `task-calendar-seed-fix`
+   - Recommended format: `task-<slug>` (example: `task-calendar-seed-fix`)
 
 2. **Create or Reuse Worktree**
    - If the worktree directory does not exist:

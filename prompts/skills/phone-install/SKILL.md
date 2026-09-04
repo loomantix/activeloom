@@ -1,9 +1,10 @@
 ---
 name: phone-install
 description: Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB. Use for phone sideload smoke tests, including consumer-specific build env overrides documented in the consumer repo. Accepts an ADB port and optional staging, development, production, APK-path, no-launch, or no-pull choices from the user's request.
+<<FM_EXTRAS>>
 ---
 
-# phone-install — release-build + wireless-install on Android
+# <<INVOKE>>phone-install — release-build + wireless-install on Android
 
 You are building a release-signed Android APK from the **current consumer repo** and installing it on the developer's phone over wireless ADB. The flow is generic: any product whose mobile app exposes `just mobile-build-apk` (or accepts a `--apk` override) can use this skill.
 
@@ -26,12 +27,12 @@ Flags (any order, after the port):
 
 The skill reads these once at start; surface anything missing as an actionable error rather than silently defaulting:
 
-| Variable         | Purpose                                                                                                         | Default                                    |
-| ---------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `PHONE_IP`       | LAN IP of the device. Set once per developer machine (e.g. in `~/.bashrc`).                                     | _required_ — fail fast if unset            |
-| `ANDROID_HOME`   | Path to Android SDK. The consumer's `just mobile-build-apk` recipe normally exports this; respect it if set.    | recipe-dependent                           |
-| `APK_OUTPUT_DIR` | Where to drop the built APK. The consumer's recipe should honor this; if not, the recipe's hardcoded path wins. | recipe-dependent (e.g. `~/builds`)         |
-| Build config     | Whatever the consumer's `just mobile-build-apk` requires (e.g. app env, public client keys, API URL overrides). | consumer-specific — see consumer AGENTS.md |
+| Variable         | Purpose                                                                                                         | Default                                                 |
+| ---------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `PHONE_IP`       | LAN IP of the device. Set once per developer machine (e.g. in `~/.bashrc`).                                     | _required_ — fail fast if unset                         |
+| `ANDROID_HOME`   | Path to Android SDK. The consumer's `just mobile-build-apk` recipe normally exports this; respect it if set.    | recipe-dependent                                        |
+| `APK_OUTPUT_DIR` | Where to drop the built APK. The consumer's recipe should honor this; if not, the recipe's hardcoded path wins. | recipe-dependent (e.g. `~/builds`)                      |
+| Build config     | Whatever the consumer's `just mobile-build-apk` requires (e.g. app env, public client keys, API URL overrides). | consumer-specific — see consumer <<AGENT_DOC>> |
 
 If `PHONE_IP` is unset, ask the developer for it and suggest adding `export PHONE_IP=…` to their shell rc so they don't have to repeat themselves.
 
@@ -98,7 +99,7 @@ The consumer repo owns the build recipe. Default invocation:
 just mobile-build-apk
 ```
 
-For `--dev`, `--staging`, and `--prod`: the consumer's recipe must accept the selected variant via env vars or documented build profiles. Reference the consumer's `AGENTS.md`, mobile README, or `justfile` for the exact set. If a requested variant is not documented, ask the developer before guessing.
+For `--dev`, `--staging`, and `--prod`: the consumer's recipe must accept the selected variant via env vars or documented build profiles. Reference the consumer's <<AGENT_DOC_CODE>>, mobile README, or `justfile` for the exact set. If a requested variant is not documented, ask the developer before guessing.
 
 **Run the build in background** (`run_in_background: true`) and tell the developer the time estimate up front: ~8–12 min cold, ~4–6 min with the Gradle cache warm.
 
@@ -174,6 +175,6 @@ This skill is synced from the upstream repo. Consumer repos using it should ensu
 1. `just mobile-build-apk` exists and emits the APK path on stdout.
 2. `apps/mobile/app.config.ts` exposes `version`, `name`, and `android.package`.
 3. Developer sets `PHONE_IP` in their shell rc.
-4. Build env vars required by the recipe are documented in the consumer's AGENTS.md, mobile README, or `justfile` (so this skill's "ask the developer" fallback has somewhere to point).
+4. Build env vars required by the recipe are documented in the consumer's <<AGENT_DOC>>, mobile README, or `justfile` (so this skill's "ask the developer" fallback has somewhere to point).
 
 If your consumer repo deviates from these conventions, prefer fixing the recipe over forking this skill — the whole point of upstream sync is that one improvement to the flow lands in every consumer on the next sync run.

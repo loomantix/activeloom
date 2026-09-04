@@ -1,0 +1,61 @@
+# Gemini harness profile (the `.agents` prompt root). See `claude.yml` for what each block means and
+# `docs/prompt-rendering.md` for the rendering contract.
+
+root: .agents
+
+values:
+  SKILLS_ROOT: .agents/skills
+  REFS_ROOT: .agents/references
+  WORKFLOW_DOC: .agents/REVIEW_WORKFLOW.md
+
+  # The Gemini harness names a skill bare, with no slash prefix.
+  INVOKE: ''
+  ENGINE_ID: gemini
+  ENGINE_CLI: agy
+
+  TODO_TOOL: update_plan
+
+  # A Gemini consumer reads `AGENTS.md`; it has no reason to look in a
+  # Claude-specific file.
+  AGENT_DOC: AGENTS.md
+
+  # Marked-up form of the same name; see `claude.yml`.
+  AGENT_DOC_CODE: '`AGENTS.md`'
+
+  Q_BULLET: ''
+  REC_BULLET: 'Recommend: '
+
+  # Inline-first, because this harness does not always have a subagent to
+  # delegate to — the capability is stated as conditional rather than assumed.
+  SUBAGENT_GUIDANCE: >-
+    Most lookups here are two greps and a read, and belong inline. Reach for
+    delegation only where this session supports it and the lookup is both
+    genuinely independent and too large for a handful of tool calls — a sweep
+    across many files or repos. State a word ceiling on what it returns.
+
+  REVIEW_CHAIN_POINTER: >-
+    Adversarial code review lives in `critique`, `deepcritique`, and
+    `pr-critique`
+
+skills:
+  issues:
+    FM_EXTRAS: ''
+
+  feature-dev:
+    FM_EXTRAS: ''
+
+  diagnosing-bugs:
+    FM_EXTRAS: ''
+
+  task-packet:
+    FM_EXTRAS: ''
+
+  grill:
+    # No `disable-model-invocation` on this harness, so the description has to
+    # carry its own trigger prose or the skill never fires. The leading space is
+    # load-bearing: the value is appended directly to the sentence before it.
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user asks to grill an idea, pressure-test a design, or work out what to build before any code exists.'
+
+  phone-install:
+    FM_EXTRAS: ''

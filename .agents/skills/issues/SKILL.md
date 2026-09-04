@@ -3,9 +3,9 @@ name: issues
 description: GitHub issue workflow — ready queue with dependency resolution, claim, start, close, link
 ---
 
-# /issues
+# issues
 
-Thin workflow over `gh issue` with a smart **ready** query that parses `Blocked by #N` / `Depends on #N` from issue bodies to compute dependency-free work. (`Blocks #N` is written as the reciprocal side by `/issues link`, but isn't parsed as a blocker itself — the authoritative direction is `Blocked by`.)
+Thin workflow over `gh issue` with a smart **ready** query that parses `Blocked by #N` / `Depends on #N` from issue bodies to compute dependency-free work. (`Blocks #N` is written as the reciprocal side by `issues link`, but isn't parsed as a blocker itself — the authoritative direction is `Blocked by`.)
 
 **Arguments**: `$ARGUMENTS`
 
@@ -154,7 +154,7 @@ Useful query fragments: `label:"dev: agent"`, `is:open no:assignee`, `in:title p
 - `Blocked by #N`
 - `Depends on #N`
 
-To mark a dependency, prefer `/issues link` over manual edits — it keeps both issues consistent and under a parseable `## Dependencies` section. The label `status: blocked` is also honored (excludes from `ready` regardless of body content).
+To mark a dependency, prefer `issues link` over manual edits — it keeps both issues consistent and under a parseable `## Dependencies` section. The label `status: blocked` is also honored (excludes from `ready` regardless of body content).
 
 ---
 
@@ -169,4 +169,4 @@ To mark a dependency, prefer `/issues link` over manual edits — it keeps both 
 
 ## Source of truth
 
-This skill lives upstream at `.agents/skills/issues/`. Synced to consumer repos via the sync mechanism. Edits in a consumer will be overwritten on next sync — make changes upstream.
+This skill is generated upstream from `prompts/skills/issues/` into `.agents/skills/issues/`, then synced to consumer repos. Edit the upstream source; consumer and generated copies are overwritten.

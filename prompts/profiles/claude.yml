@@ -1,0 +1,100 @@
+# Claude Code harness profile.
+#
+# `root` is the prompt root this profile renders into. `values` are the
+# harness vocabulary shared by every rendered skill; `skills` carries the
+# per-skill values (frontmatter that only one harness understands, and the
+# auto-invocation trigger prose that depends on it).
+#
+# There are no conditionals here and the renderer supports none. A skill that
+# would need one is per-harness by definition and stays unrendered — see
+# `docs/prompt-rendering.md`.
+
+root: .claude
+
+values:
+  # --- paths -----------------------------------------------------------------
+  SKILLS_ROOT: .claude/skills
+  REFS_ROOT: .claude/references
+  WORKFLOW_DOC: .claude/REVIEW_WORKFLOW.md
+
+  # --- invocation ------------------------------------------------------------
+  # Claude Code addresses a skill as a slash command; the Codex and Gemini
+  # harnesses name it bare. Every in-prose skill reference is written
+  # `<<INVOKE>>name` so the prefix is set in exactly one place per harness.
+  INVOKE: '/'
+  ENGINE_ID: claude
+  ENGINE_CLI: claude
+
+  # --- harness tool names ----------------------------------------------------
+  TODO_TOOL: TodoWrite
+
+  # --- consumer-facing doc name ----------------------------------------------
+  # A Claude consumer repo carries both files and either may hold the build
+  # config a skill is pointing the reader at.
+  AGENT_DOC: AGENTS.md or CLAUDE.md
+
+  # The same names as an inline code span. `AGENT_DOC` is the plain-text
+  # form; this is the marked-up form, kept separate so each harness's value
+  # stays valid Markdown instead of collapsing two code spans into one.
+  AGENT_DOC_CODE: '`AGENTS.md` or `CLAUDE.md`'
+
+  # --- presentation ----------------------------------------------------------
+  # Decoration on the question/recommendation template `grill` tells the model
+  # to emit. Claude Code renders emoji in the terminal and uses them as scan
+  # anchors; the Codex and Gemini surfaces render them inconsistently and use
+  # a word label instead.
+  Q_BULLET: '❓ '
+  REC_BULLET: '➡️ '
+
+  # --- prose-valued vocabulary -----------------------------------------------
+  # These two are whole sentences rather than a word, because the difference
+  # between harnesses is a difference in *calibration*, not in naming. Record
+  # `docs/decisions/0006` is the standing reason prompt prose is not shared
+  # across model families; these values are the bounded, declared version of
+  # that for skills which are otherwise identical.
+  #
+  # Claude needs the *stronger* discouragement: `.claude/MODEL_NOTES.md`
+  # records that the current default model reaches for subagents readily, so
+  # the ceiling is stated first and the inline default second.
+  SUBAGENT_GUIDANCE: >-
+    Delegate a lookup only when it is genuinely independent and too large for a
+    handful of tool calls — a sweep across many files or repos. If one agent can
+    do it, use one; state a word ceiling on what it returns. Most lookups here
+    are two greps and a read, and should stay inline.
+
+  # Each harness ships a different adversarial-review roster: Claude has
+  # `critique`/`deepcritique`, the Codex and Gemini trees add `pr-critique`
+  # for the cross-engine pass. Naming a skill a harness does not have is worse
+  # than saying less.
+  REVIEW_CHAIN_POINTER: >-
+    The adversarial code review that once held this name is now `/critique` and
+    `/deepcritique`
+
+skills:
+  issues:
+    FM_EXTRAS: "argument-hint: 'verb [args]: ready | show <n> | claim <n> | start <n> | close <n> [msg] | link <n> blocks|blocked-by <m> | search <q>'"
+
+  feature-dev:
+    FM_EXTRAS: 'argument-hint: Optional feature description'
+
+  diagnosing-bugs:
+    # No extra frontmatter on any harness today. The slot stays in the source
+    # so the frontmatter shape is uniform across the rendered roster and a
+    # harness that later needs a key here does not have to edit the source.
+    FM_EXTRAS: ''
+
+  task-packet:
+    FM_EXTRAS: 'argument-hint: Paste a full Task Packet markdown document'
+
+  grill:
+    # `disable-model-invocation` is what makes trigger prose in the description
+    # dead weight for Claude, so DESC_TRIGGER is empty here and non-empty on
+    # the harnesses that can auto-invoke. The two values move together;
+    # changing one without the other is the bug to watch for.
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: (optional) the idea, plan, or decision to stress-test
+    DESC_TRIGGER: ''
+
+  phone-install:
+    FM_EXTRAS: 'disable-model-invocation: true'

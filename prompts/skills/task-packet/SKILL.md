@@ -1,7 +1,7 @@
 ---
 name: task-packet
 description: Execute an implementation Task Packet end-to-end (code, tests, GitHub issue, PR, and closure)
-argument-hint: Paste a full Task Packet markdown document
+<<FM_EXTRAS>>
 ---
 
 # Task Packet Executor
@@ -105,7 +105,7 @@ Before creating a branch or preparing the environment, create an isolated worktr
    - Run baseline tests specified in the packet to confirm the repo starts in a green state.
 
 6. **Todo tracking**
-   - Use TodoWrite (if available) to track each top-level checklist item as you complete it.
+   - Use <<TODO_TOOL>> (if available) to track each top-level checklist item as you complete it.
 
 ---
 
@@ -217,7 +217,7 @@ Before creating a branch or preparing the environment, create an isolated worktr
 
 4. **After Confirmation**
    - Ensure the GitHub issue is closed (via PR merge or manual action).
-   - Update any remaining TodoWrite items as complete.
+   - Update any remaining <<TODO_TOOL>> items as complete.
    - Suggest concrete follow-up issues if the packet uncovered new tech debt.
 
 ---

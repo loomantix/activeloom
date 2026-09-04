@@ -23,6 +23,20 @@ pnpm-lock.yaml
 .codex/skills/critique/scripts/review-ledger.js
 .agents/skills/critique/scripts/review-ledger.js
 
+# Substitution sources for the rendered skill roster. Prettier's Markdown
+# parser is not placeholder-aware and actively corrupts them: in
+# `prompts/skills/grill/SKILL.md` it paired the underscores inside
+# `<<REVIEW_CHAIN_POINTER>>` with a nearby `_before_` emphasis span and rewrote
+# the placeholder to `<<REVIEW*CHAIN_POINTER>>`, which no longer matches the
+# engine's `<<KEY>>` pattern — so it substituted nothing and shipped a literal
+# `<<REVIEW*CHAIN_POINTER>>` into all three harness roots.
+#
+# The *rendered* output is still fully Prettier-checked, both by the repo-wide
+# `Prettier --check` and by the renderer itself, which formats every Markdown
+# file it emits. Consumers only ever receive rendered output, so nothing that
+# ships is unformatted.
+prompts/skills/
+
 # Legal text — preserve canonical wrapping
 LICENSE
 NOTICE

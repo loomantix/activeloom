@@ -3,7 +3,7 @@ name: grill
 description: A relentless pre-code interview that stress-tests a plan or design until nothing is silently assumed. Use when the user asks to grill an idea, pressure-test a design, or work out what to build before any code exists.
 ---
 
-# Grill
+# grill — interview until nothing is assumed
 
 Interview the user until you reach a shared understanding of what is being built and why. **This skill does not write code and does not implement anything.** It ends when the questions run out, and the user decides what happens next.
 
@@ -18,7 +18,7 @@ Work the tree in **rounds**. The **frontier** is every decision whose prerequisi
 Ask the whole frontier in one round. Number each question and give your recommended answer:
 
 ```
-Q1 — <short question title>: <the question, including any options worth choosing between>
+**Q1** — **<short question title>**: <the question, including any options worth choosing between>
 
 Recommend: <your recommended answer, and why>
 ```

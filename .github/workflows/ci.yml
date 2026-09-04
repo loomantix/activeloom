@@ -294,6 +294,24 @@ jobs:
           npx --yes prettier@3.8.3 --config .prettierrc --check \
             "$CONSUMER/rendered.md"
 
+      # --- rendered prompt roots are current ---
+      # The skills in `prompts/skills/` are single-sourced and rendered into
+      # `.claude/`, `.codex/`, and `.agents/`. Those committed files are the
+      # harness-specific distribution artifacts, which means they can go stale
+      # against their source, or be hand-edited in the root instead of the
+      # source. This is the gate that makes either one fail: it re-renders from
+      # `prompts/` and byte-compares against what is committed, and prints a
+      # diff per drifted file. Same shape as the `ledger-drift` check above,
+      # which byte-compares vendored bytes against their published tarball.
+      #
+      # It needs the pinned Node from this job's `setup-node`: the renderer
+      # normalizes its Markdown with the same pinned Prettier as
+      # `Prettier --check`, because substituting values of different widths into
+      # a Markdown table changes the alignment Prettier enforces.
+      - name: Rendered prompt roots are current
+        if: '!cancelled()'
+        run: python3 scripts/render-prompts.py --check
+
       # --- was job `skill-content` (Skill content policy) ---
       - name: Self-test the lint patterns
         if: '!cancelled()'
@@ -426,3 +444,12 @@ jobs:
         run: |
           test -f scripts/create-signed-commit.py
           python3 -m coverage report --include='scripts/create-signed-commit.py' --fail-under=80
+      # The renderer decides what lands in three harness roots and, through
+      # them, in every consumer. Same 80% floor and the same `test -f`
+      # precondition as the two above: `coverage report --include=<missing>`
+      # exits 0 with "No data to report", so a rename would otherwise pass this
+      # gate silently.
+      - name: Coverage gate — render-prompts.py >=80%
+        run: |
+          test -f scripts/render-prompts.py
+          python3 -m coverage report --include='scripts/render-prompts.py' --fail-under=80
