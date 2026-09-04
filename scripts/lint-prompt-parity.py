@@ -748,6 +748,13 @@ def main(argv: list[str] | None = None) -> int:
         rules = build_rules(profiles, set(_skill_universe()))
         results = measure(rules)
         entries = load_allowlist()
+    # `ValueError` is in this list because importing the renderer's loader
+    # means inheriting its failure modes, deliberately. This lint is a
+    # *consumer* of that reader rather than a second one, so a profile the
+    # renderer rejects must fail here too — and as a config error (exit 2),
+    # not as a parity violation (exit 1) or a traceback. Any validation the
+    # renderer grows arrives here automatically, which is the point: one
+    # reader of the profile schema, one verdict on what a valid profile is.
     except (ParityError, ValueError, OSError, yaml.YAMLError) as error:
         sys.stderr.write(f"prompt-parity: {error}\n")
         return 2
