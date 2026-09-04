@@ -245,7 +245,7 @@ jobs:
         run: |
           set -euo pipefail
           CONSUMER=$(mktemp -d)
-          cp tests/fixtures/render-check/.platform-config.yml "$CONSUMER/"
+          cp tests/fixtures/render-check/.activeloom-config.yml "$CONSUMER/"
           python3 scripts/sync-engine.py \
             --upstream-repo . \
             --consumer-dir "$CONSUMER"
@@ -286,7 +286,7 @@ jobs:
           mkdir -p "$UPSTREAM/scripts"
           cp tests/fixtures/render-fidelity/sync-targets.yml "$UPSTREAM/scripts/"
           cp tests/fixtures/render-fidelity/template.md "$UPSTREAM/"
-          cp tests/fixtures/render-fidelity/.platform-config.yml "$CONSUMER/"
+          cp tests/fixtures/render-fidelity/.activeloom-config.yml "$CONSUMER/"
           python3 scripts/sync-engine.py \
             --upstream-repo "$UPSTREAM" \
             --consumer-dir "$CONSUMER"
@@ -349,8 +349,38 @@ jobs:
           python3 - <<'PY'
           import yaml, sys
           doc = yaml.safe_load(open('scripts/sync-targets.yml'))
-          targets = doc.get('targets')
-          assert isinstance(targets, list) and targets, "targets must be a non-empty list"
+          assert 'targets' not in doc, "top-level `targets:` is the pre-sync-v2 shape"
+          harnesses = doc.get('harnesses')
+          assert isinstance(harnesses, dict) and harnesses, "harnesses must be a non-empty mapping"
+          targets = []
+          seen = {}
+          for name, harness in harnesses.items():
+              assert isinstance(harness, dict), f"harness {name} must be a mapping"
+              for field in ('root', 'legacy_config'):
+                  assert isinstance(harness.get(field), str) and harness[field], (
+                      f"harness {name} needs a non-empty `{field}`"
+                  )
+              legacy = harness['legacy_config']
+              assert legacy not in seen, (
+                  f"harnesses {seen[legacy]} and {name} share `legacy_config: {legacy}`"
+              )
+              seen[legacy] = name
+              own = harness.get('targets')
+              assert isinstance(own, list) and own, f"harness {name} needs a non-empty target list"
+              targets.extend(own)
+          shared = (doc.get('shared') or {}).get('targets') or []
+          assert isinstance(shared, list), "shared.targets must be a list"
+          targets.extend(shared)
+          # A destination shipped by two harnesses is a write both of them own.
+          # `create_if_missing` is the one shape where that is fine: the first
+          # harness bootstraps it and the rest preserve it.
+          owners = {}
+          for t in targets:
+              destination = t.get('destination') if isinstance(t, dict) else None
+              if not destination or t.get('create_if_missing') or t.get('delete'):
+                  continue
+              assert destination not in owners, f"two target sets write {destination!r}"
+              owners[destination] = True
           for t in targets:
               assert isinstance(t, dict), f"non-mapping target: {t!r}"
               if t.get('delete'):

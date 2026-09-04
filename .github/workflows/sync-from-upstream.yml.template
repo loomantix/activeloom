@@ -3,8 +3,19 @@
 # This is the canonical TEMPLATE for the consumer-side sync workflow. Drop
 # it into a consumer repo at `.github/workflows/sync-from-upstream.yml`
 # (drop the `.template` suffix). Then fill in `UPSTREAM_REPO` to point at
-# your upstream, and adjust `PR_BASE_BRANCH` if your release flow targets
-# something other than `main`.
+# your upstream and `PR_BASE_BRANCH` to name the branch sync PRs land on.
+#
+# ONE workflow per consumer, whatever mix of harnesses it runs. Which
+# harnesses it receives is declared in `.activeloom-config.yml` under
+# `harnesses:`, not here — before sync-v2 this file was copied once per
+# upstream and each copy carried its own `--config`.
+#
+# `PR_BASE_BRANCH` has no default on purpose. It is not always the default
+# branch: a repository that promotes staging -> main lands sync PRs on
+# `staging` while this workflow *definition* is still read from the default
+# branch, so a change to this file only takes effect after the next
+# promotion. Naming the branch explicitly is the only way to be right for
+# both shapes, and a wrong guess opens PRs against the wrong branch.
 #
 # How this works:
 #
@@ -29,7 +40,7 @@
 #      the committer identity from any human reviewer — reviewers can
 #      approve without violating segregation-of-duties controls.
 #
-# Trust model: UPSTREAM_REF defaults to a tag (`sync-v1`), not `main`, so
+# Trust model: UPSTREAM_REF defaults to a tag (`sync-v2`), not `main`, so
 # pushes to the upstream's main don't auto-propagate. Bumping the tag is
 # the deliberate gate. Kill switch via `SKIP_UPSTREAM_SYNC` repo variable.
 #
@@ -53,10 +64,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  UPSTREAM_REPO: <owner>/<repo>     # e.g. loomantix/claude-platform
-  UPSTREAM_REF: sync-v1
+  UPSTREAM_REPO: <owner>/<repo>     # e.g. loomantix/activeloom
+  UPSTREAM_REF: sync-v2
   SYNC_BRANCH_PREFIX: sync/upstream
-  PR_BASE_BRANCH: main              # override if your release flow uses staging etc.
+  PR_BASE_BRANCH: ''                # REQUIRED: the branch sync PRs land on
 
 jobs:
   sync:
@@ -64,6 +75,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Validate PR_BASE_BRANCH is set
+        run: |
+          if [ -z "${PR_BASE_BRANCH}" ]; then
+            echo "::error::PR_BASE_BRANCH is empty. Set it to the branch sync PRs should land on — that is your integration branch, which is not necessarily this repository's default branch." >&2
+            exit 1
+          fi
+
       - name: Generate App installation token
         id: app-token
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
@@ -204,7 +222,7 @@ jobs:
           # date-stamped branch). `gh pr create` errors if a PR already
           # exists for $BRANCH; fall through to gh pr edit on that path.
           PR_TITLE="Sync from ${UPSTREAM_REPO}"
-          PR_BODY="Automated sync from \`${UPSTREAM_REPO}@${UPSTREAM_REF}\`. Review the diff carefully before merging — substituted content reflects current \`.platform-config.yml\`."
+          PR_BODY="Automated sync from \`${UPSTREAM_REPO}@${UPSTREAM_REF}\`. Review the diff carefully before merging — substituted content reflects current \`.activeloom-config.yml\`."
           if ! gh pr create \
                 --base "${PR_BASE_BRANCH}" \
                 --head "$BRANCH" \

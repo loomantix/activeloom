@@ -3,7 +3,16 @@
 
 Reads `scripts/sync-targets.yml` from the upstream checkout to learn which
 files belong to which destinations and which placeholders need substitution.
-Reads `.platform-config.yml` from the consumer to resolve those placeholders.
+The manifest emits one target set per harness plus a harness-independent
+`shared:` set; a consumer receives the shared set plus the sets of the
+harnesses it declares.
+
+Reads `.activeloom-config.yml` from the consumer to learn which harnesses it
+runs, to resolve placeholders, and to read the gates (`skip_targets`,
+`allowed_destinations`, `allow_sensitive_writes`) that bound what may be
+written. A consumer still carrying the pre-sync-v2 per-harness config files
+(`.platform-config.yml` and friends) is handled by a compatibility shim that
+composes them into one in-memory config — see `compose_legacy_config`.
 Writes substituted files into the consumer working directory.
 
 A target with `delete: true` instead causes the engine to *unlink* the
@@ -34,6 +43,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Required, TypedDict
 
@@ -74,13 +84,93 @@ class Target(TypedDict, total=False):
     create_if_missing: bool
 
 
-class ConsumerConfig(TypedDict, total=False):
-    """Top-level shape of a consumer's `.platform-config.yml`."""
+class HarnessConfig(TypedDict, total=False):
+    """One entry under a consumer config's `harnesses:` mapping.
+
+    Every key is optional. An empty (or null) harness entry means "sync this
+    harness under the config's top-level gates", which is the shape the
+    onboarding wizard writes for a fresh consumer.
+    """
 
     substitutions: dict[str, object]
     skip_targets: list[str]
     allowed_destinations: list[str]
     allow_sensitive_writes: list[str]
+
+
+class ConsumerConfig(TypedDict, total=False):
+    """Top-level shape of a consumer's `.activeloom-config.yml`.
+
+    `harnesses` accepts either form:
+
+        harnesses: [claude, codex]          # no per-harness overrides
+        harnesses:                          # per-harness gates
+          claude:
+            allowed_destinations: [.claude/**]
+          codex: {}
+
+    The remaining keys are the harness-independent defaults. `substitutions`,
+    `skip_targets`, and `allow_sensitive_writes` compose *with* a harness's
+    own values; `allowed_destinations` is *overridden* by a harness that
+    declares one. See `resolve_scopes` for why those differ.
+    """
+
+    harnesses: list[str] | dict[str, object]
+    substitutions: dict[str, object]
+    skip_targets: list[str]
+    allowed_destinations: list[str]
+    allow_sensitive_writes: list[str]
+    telemetry: dict[str, object]
+
+
+# The consumer config filename this engine writes about in every error, and
+# the one a sync-v2 consumer is expected to carry. The pre-sync-v2 per-harness
+# filenames are not listed here: each harness declares its own in the manifest
+# (`legacy_config`), so the mapping from filename to harness stays data.
+CANONICAL_CONFIG_NAME: Final[str] = ".activeloom-config.yml"
+
+# Substitution keys the engine computes and injects itself. A consumer that
+# also declares one under `substitutions:` is rejected rather than silently
+# overridden: the whole point of a reserved key is that its value is derived
+# from elsewhere in the config, so two sources for it is a config bug.
+RESERVED_SUBSTITUTION_KEYS: Final[frozenset[str]] = frozenset({"REVIEW_TELEMETRY_ENV"})
+
+# The two review-telemetry gates, as `telemetry:` key -> environment variable.
+# Extraction and emission are separate decisions with separate gates; the
+# review workflow doc is the authority on what each governs. They live in the
+# consumer config so one file declares them for the repository, and reach the
+# harness through the rendered `.claude/settings.json` env block.
+TELEMETRY_GATES: Final[dict[str, str]] = {
+    "emit": "LOOM_REVIEW_TELEMETRY",
+    "extract": "LOOM_REVIEW_TELEMETRY_EXTRACT",
+}
+
+# Each gate accepts exactly these values, matching the usage helper that reads
+# the rendered environment variables.
+TELEMETRY_VALUES: Final[frozenset[str]] = frozenset({"on", "off"})
+
+KNOWN_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(ConsumerConfig.__annotations__)
+KNOWN_HARNESS_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(HarnessConfig.__annotations__)
+
+
+@dataclass(frozen=True)
+class Scope:
+    """The gates and values that govern one slice of the sync plan.
+
+    One scope per declared harness, plus one for the manifest's `shared:`
+    set. Holding them per slice rather than per run is what lets a consumer
+    grant `.codex/**` to the Codex harness without also granting it to the
+    Claude one — the property the three separate config files used to provide
+    by being three separate sync runs.
+    """
+
+    label: str
+    values: dict[str, object]
+    skip: set[str]
+    # None = no `allowed_destinations` anywhere that governs this scope, so
+    # the migration-era fail-open applies. See `resolve_scopes`.
+    allowed_patterns: list[re.Pattern[str]] | None
+    sensitive_write_allowlist: frozenset[str]
 
 
 PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
@@ -514,7 +604,7 @@ def substitute(
     missing_in_config = declared - set(values.keys())
     if missing_in_config:
         sys.stderr.write(
-            f"  ❌ {source} requires placeholders missing from .platform-config.yml: "
+            f"  ❌ {source} requires placeholders missing from the consumer config: "
             f"{', '.join(sorted(missing_in_config))}\n"
         )
         sys.exit(1)
@@ -772,7 +862,7 @@ def sensitive_write_refusal(
 
     The grant block is emitted at column zero, set off by a blank line, while
     the rest of the message stays indented with the engine's other output.
-    The inconsistency is deliberate: a `.platform-config.yml` keeps its
+    The inconsistency is deliberate: a consumer config keeps its
     top-level keys at column zero, so an indented mapping pasted into one
     does not survive. Depending on what precedes it that is either a
     `yaml.parser.ParserError` or — worse, because it is silent — a mapping
@@ -822,7 +912,7 @@ def config_destination_refusal(destinations: Sequence[str], config_name: str) ->
 
 
 def config_write_targets(
-    targets: list[Any], consumer_dir: Path, config_path: Path
+    targets: list[Any], consumer_dir: Path, config_paths: Sequence[Path]
 ) -> list[str]:
     """Canonical destinations that would overwrite the consumer's own config.
 
@@ -836,9 +926,11 @@ def config_write_targets(
     down. It is refused outright instead.
 
     Matched by resolved path rather than by filename, so an explicit
-    `--config` elsewhere is covered while a `.platform-config.yml` vendored
-    in the consumer tree as an example or a test fixture stays an ordinary
-    destination.
+    `--config` elsewhere is covered while a config file vendored in the
+    consumer tree as an example or a test fixture stays an ordinary
+    destination. Takes every path the config was read from: a compose of the
+    pre-sync-v2 files leaves several consent stores on disk and each one can
+    grant what the others gate.
 
     Deletion is deliberately not covered: with the file gone
     `allow_sensitive_writes` is absent, and absent denies every sensitive
@@ -856,7 +948,7 @@ def config_write_targets(
         if bool(target.get("delete")):
             continue
         dest_path = resolve_under(consumer_dir, dest_rel)
-        if dest_path is None or dest_path.resolve() != config_path:
+        if dest_path is None or dest_path.resolve() not in set(config_paths):
             continue
         offenders.append(dest_path.relative_to(consumer_dir).as_posix())
     return offenders
@@ -969,6 +1061,569 @@ def unconsented_sensitive_writes(
     return denied
 
 
+def render_telemetry_env(raw: object, config_path: Path) -> str | None:
+    """Render the `telemetry:` block as a one-line JSON object literal.
+
+    The value is substituted into `.claude/settings.json`, whose `env` block
+    is how a repository-level gate reaches the harness. Only gates the
+    consumer actually declared are rendered: an env block that named every
+    gate would have to pick a value for the ones the consumer left alone, and
+    settings-declared environment beats the ambient shell — so a defaulted
+    `off` would quietly override a developer who had exported `on`.
+
+    Single-line on purpose. A multi-line substitution value renders LF into a
+    CRLF template (#124), and this value is written into a consumer's
+    repository rather than read by a person.
+    """
+    if raw is None:
+        return "{}"
+    if not isinstance(raw, dict):
+        sys.stderr.write(f"{config_path}: `telemetry` must be a mapping\n")
+        return None
+
+    unknown = sorted(str(key) for key in raw if key not in TELEMETRY_GATES)
+    if unknown:
+        sys.stderr.write(
+            f"{config_path}: unknown `telemetry` key(s): {', '.join(unknown)} "
+            f"(known: {', '.join(sorted(TELEMETRY_GATES))})\n"
+        )
+        return None
+
+    rendered: list[str] = []
+    # Declaration order follows TELEMETRY_GATES, not the consumer's file, so
+    # the rendered bytes — and therefore the sync diff — do not churn when a
+    # consumer reorders two lines in their config.
+    for key, variable in TELEMETRY_GATES.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        # `on`/`off` are YAML 1.1 booleans, so `emit: on` parses as True long
+        # before the engine sees a string. Accept the bools rather than
+        # demanding the consumer quote them, and reject everything else: the
+        # helper that reads these treats an unrecognized value as neither
+        # gate state, which reads as a misconfiguration rather than as an
+        # opt-out, and it should never have to.
+        if isinstance(value, bool):
+            text = "on" if value else "off"
+        elif isinstance(value, str) and value.strip().lower() in TELEMETRY_VALUES:
+            text = value.strip().lower()
+        else:
+            sys.stderr.write(
+                f"{config_path}: `telemetry.{key}` must be `on` or `off`, "
+                f"got {value!r}\n"
+            )
+            return None
+        rendered.append(f'"{variable}": "{text}"')
+
+    if not rendered:
+        return "{}"
+    return "{ " + ", ".join(rendered) + " }"
+
+
+def parse_manifest(
+    targets_doc: dict[str, Any], targets_path: Path
+) -> tuple[dict[str, dict[str, Any]], list[Any]] | None:
+    """Split the manifest into ordered harness specs and the shared target set.
+
+    Returns None after writing the error when the manifest is malformed.
+
+    A pre-sync-v2 manifest — one flat top-level `targets:` list — is rejected
+    by name rather than read as an empty harness set. The engine and the
+    manifest ship from the same upstream checkout, so the only way to see one
+    is to point `--upstream-repo` at a checkout of the frozen `sync-v1` tag,
+    and a consumer that does that deserves the reason rather than a silent
+    zero-target run reporting success.
+    """
+    if "targets" in targets_doc:
+        sys.stderr.write(
+            f"{targets_path}: found a top-level `targets:` list. That is the "
+            f"pre-sync-v2 manifest format; this engine reads `harnesses:` and "
+            f"`shared:`. Check out the upstream at the `sync-v2` tag or later.\n"
+        )
+        return None
+
+    unknown = sorted(str(key) for key in targets_doc if key not in {"harnesses", "shared"})
+    if unknown:
+        sys.stderr.write(
+            f"{targets_path}: unknown top-level key(s): {', '.join(unknown)} "
+            f"(known: harnesses, shared)\n"
+        )
+        return None
+
+    harnesses_raw = targets_doc.get("harnesses")
+    if not isinstance(harnesses_raw, dict) or not harnesses_raw:
+        sys.stderr.write(f"{targets_path}: `harnesses` must be a non-empty mapping\n")
+        return None
+
+    specs: dict[str, dict[str, Any]] = {}
+    for name, spec in harnesses_raw.items():
+        if not isinstance(name, str) or not name:
+            sys.stderr.write(f"{targets_path}: harness names must be strings, got {name!r}\n")
+            return None
+        if not isinstance(spec, dict):
+            sys.stderr.write(f"{targets_path}: harness `{name}` must be a mapping\n")
+            return None
+        for field in ("root", "legacy_config"):
+            value = spec.get(field)
+            if not isinstance(value, str) or not value:
+                sys.stderr.write(
+                    f"{targets_path}: harness `{name}` needs a non-empty string `{field}`\n"
+                )
+                return None
+        if not isinstance(spec.get("targets"), list):
+            sys.stderr.write(f"{targets_path}: harness `{name}` needs a `targets` list\n")
+            return None
+        specs[name] = spec
+
+    # Two harnesses claiming one legacy filename would make the compatibility
+    # shim's filename-to-harness mapping ambiguous, and it resolves that
+    # mapping before it has read anything it could disambiguate with.
+    seen: dict[str, str] = {}
+    for name, spec in specs.items():
+        legacy = str(spec["legacy_config"])
+        if legacy in seen:
+            sys.stderr.write(
+                f"{targets_path}: harnesses `{seen[legacy]}` and `{name}` both "
+                f"declare `legacy_config: {legacy}`\n"
+            )
+            return None
+        seen[legacy] = name
+
+    shared_raw = targets_doc.get("shared") or {}
+    if not isinstance(shared_raw, dict):
+        sys.stderr.write(f"{targets_path}: `shared` must be a mapping\n")
+        return None
+    shared_targets = shared_raw.get("targets") or []
+    if not isinstance(shared_targets, list):
+        sys.stderr.write(f"{targets_path}: `shared.targets` must be a list\n")
+        return None
+
+    return specs, shared_targets
+
+
+def parse_allowed_destinations(
+    doc: dict[str, Any], config_path: Path, where: str
+) -> tuple[bool, list[str]] | None:
+    """Read one `allowed_destinations` list. Returns (declared, patterns)."""
+    if "allowed_destinations" not in doc:
+        return False, []
+    raw = doc["allowed_destinations"]
+    if raw is None:
+        sys.stderr.write(
+            f"{config_path}: `allowed_destinations:` is present but null "
+            f"({where}). Use `[]` to deny everything, or remove the key to opt "
+            f"into phase-1 fail-open behavior.\n"
+        )
+        return None
+    if not isinstance(raw, list) or not all(isinstance(p, str) for p in raw):
+        sys.stderr.write(
+            f"{config_path}: `allowed_destinations` must be a list of strings ({where})\n"
+        )
+        return None
+    return True, raw
+
+
+def present_legacy_configs(
+    consumer_dir: Path, specs: dict[str, dict[str, Any]], only: Path | None = None
+) -> dict[str, Path]:
+    """Which pre-sync-v2 config files this consumer actually carries.
+
+    Keyed by harness, in manifest order. `only` narrows the answer to the one
+    legacy file an explicit `--config` named, which is still looked up through
+    the manifest so an unrecognized filename comes back empty rather than
+    being read as some harness's config.
+    """
+    found: dict[str, Path] = {}
+    for harness, spec in specs.items():
+        filename = str(spec["legacy_config"])
+        if only is not None:
+            if only.name == filename:
+                found[harness] = only
+            continue
+        path = consumer_dir / filename
+        if path.is_file():
+            found[harness] = path
+    return found
+
+
+def compose_legacy_config(
+    consumer_dir: Path, specs: dict[str, dict[str, Any]], only: Path | None = None
+) -> tuple[dict[str, Any], list[Path]] | None:
+    """Compose surviving pre-sync-v2 config files into one sync-v2 config.
+
+    The three legacy filenames are not three names for one file: each one *is*
+    the config for its own harness, which is the fragmentation sync-v2 exists
+    to remove. So this composes rather than selects, and a missing legacy file
+    means that harness is absent — never that it should be defaulted on. A
+    repository that never ran the Gemini harness must not acquire it by
+    upgrading its engine.
+
+    Returns the composed document and the config files it was built from, or
+    None after writing the error. `only` restricts the composition to a single
+    legacy file, for `--config <legacy file>` during the cutover.
+
+    Composition rules, and why each is what it is:
+
+    * **Per-harness keys are carried verbatim.** Whatever a legacy file said
+      about its own harness is exactly what that harness gets.
+    * **`substitutions` merge**, because they feed the shared templated
+      targets and were only ever filled in on one stream. Two files
+      disagreeing on one key is a genuine collision and fails closed.
+    * **Top-level `skip_targets` is the *intersection*.** A shared target
+      skipped in two files and synced by the third was being routed to a
+      single owner, not switched off; a union would silently retire it.
+    * **Top-level `allowed_destinations` and `allow_sensitive_writes` are
+      unions**, since the shared scope must keep whichever grant covered the
+      shared targets before.
+    """
+    present: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for harness, path in present_legacy_configs(consumer_dir, specs, only=only).items():
+        doc = load_yaml(path)
+        if not isinstance(doc, dict):
+            sys.stderr.write(f"{path}: top-level YAML document must be a mapping\n")
+            return None
+        present[harness] = (path.resolve(), doc)
+
+    harnesses: dict[str, Any] = {}
+    substitutions: dict[str, object] = {}
+    skip_sets: list[set[str]] = []
+    allowed: list[str] = []
+    allowed_declared = False
+    sensitive: list[str] = []
+
+    for harness, (path, doc) in present.items():
+        harnesses[harness] = {
+            key: doc[key]
+            for key in KNOWN_HARNESS_CONFIG_FIELDS
+            if key in doc
+        }
+
+        subs = doc.get("substitutions") or {}
+        if not isinstance(subs, dict):
+            sys.stderr.write(f"{path}: `substitutions` must be a mapping\n")
+            return None
+        for key, value in subs.items():
+            if key in substitutions and substitutions[key] != value:
+                sys.stderr.write(
+                    f"{path}: legacy config files disagree on `substitutions.{key}`. "
+                    f"Resolve it by hand: write one {CANONICAL_CONFIG_NAME} with the "
+                    f"value you want and delete the legacy files.\n"
+                )
+                return None
+            substitutions[key] = value
+
+        skip_raw = doc.get("skip_targets") or []
+        if not isinstance(skip_raw, list) or not all(isinstance(p, str) for p in skip_raw):
+            sys.stderr.write(f"{path}: `skip_targets` must be a list of strings\n")
+            return None
+        skip_sets.append(set(skip_raw))
+
+        parsed_allowed = parse_allowed_destinations(doc, path, "this file")
+        if parsed_allowed is None:
+            return None
+        declared_here, allowed_raw = parsed_allowed
+        if declared_here:
+            allowed_declared = True
+            allowed.extend(allowed_raw)
+
+        sensitive_raw = doc.get("allow_sensitive_writes") or []
+        if not isinstance(sensitive_raw, list) or not all(
+            isinstance(p, str) for p in sensitive_raw
+        ):
+            sys.stderr.write(
+                f"{path}: `allow_sensitive_writes` must be a list of strings\n"
+            )
+            return None
+        sensitive.extend(sensitive_raw)
+
+    composed: dict[str, Any] = {
+        "harnesses": harnesses,
+        "substitutions": substitutions,
+        "skip_targets": sorted(set.intersection(*skip_sets)) if skip_sets else [],
+        "allow_sensitive_writes": sorted(set(sensitive)),
+    }
+    if allowed_declared:
+        composed["allowed_destinations"] = sorted(set(allowed))
+
+    return composed, [path for path, _ in present.values()]
+
+
+def resolve_config(
+    explicit: Path | None, consumer_dir: Path, specs: dict[str, dict[str, Any]]
+) -> tuple[dict[str, Any], Path, list[Path]] | None:
+    """Load the consumer config, composing legacy files when that is all there is.
+
+    Returns the config document, the path to name in errors, and every file
+    the config was read from — the last of which the config-write refusal
+    needs, since after a compose there is more than one consent store to
+    protect.
+    """
+    legacy_names = {str(spec["legacy_config"]) for spec in specs.values()}
+
+    if explicit is not None:
+        path = explicit.resolve()
+        if path.name in legacy_names:
+            composed = compose_legacy_config(consumer_dir, specs, only=path)
+            if composed is None:
+                return None
+            doc, sources = composed
+            sys.stderr.write(
+                f"::warning file={path}::`--config {path.name}` names a "
+                f"pre-sync-v2 per-harness config. It was read as the config for "
+                f"that harness alone. Move to a single {CANONICAL_CONFIG_NAME} "
+                f"with a `harnesses:` list.\n"
+            )
+            return doc, path, sources
+        loaded = load_yaml(path)
+        if not isinstance(loaded, dict):
+            sys.stderr.write(f"{path}: top-level YAML document must be a mapping\n")
+            return None
+        return loaded, path, [path]
+
+    canonical = (consumer_dir / CANONICAL_CONFIG_NAME).resolve()
+    if canonical.is_file():
+        loaded = load_yaml(canonical)
+        if not isinstance(loaded, dict):
+            sys.stderr.write(f"{canonical}: top-level YAML document must be a mapping\n")
+            return None
+        return loaded, canonical, [canonical]
+
+    if not present_legacy_configs(consumer_dir, specs):
+        # Exit 2, not 1, and by the same route `load_yaml` takes for any other
+        # required file: with no config on disk this is an invocation error,
+        # not something wrong with a config that exists.
+        sys.stderr.write(
+            f"missing required file: {canonical} — and no pre-sync-v2 config "
+            f"file ({', '.join(sorted(legacy_names))}) is present either. A "
+            f"consumer needs one config declaring which harnesses it runs.\n"
+        )
+        sys.exit(2)
+    composed = compose_legacy_config(consumer_dir, specs)
+    if composed is None:
+        return None
+    doc, sources = composed
+    print(
+        "Composed a sync-v2 config from "
+        + ", ".join(path.name for path in sources)
+        + f" — write a single {CANONICAL_CONFIG_NAME} to retire the shim."
+    )
+    # Errors name a file the consumer can open. With one legacy file that is
+    # the file itself; with several there is no single place to add a key, and
+    # the honest instruction is the canonical name they are being asked to
+    # write.
+    return doc, sources[0] if len(sources) == 1 else canonical, sources
+
+
+def _harness_blocks(
+    config_doc: dict[str, Any], config_path: Path, specs: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]] | None:
+    """Normalize `harnesses:` (list or mapping form) into per-harness blocks.
+
+    Order follows the manifest, not the consumer's file: the manifest is what
+    documents that the first declared harness owns a shared
+    `create_if_missing` destination, so consumers must not be able to reorder
+    that by editing their own config.
+    """
+    raw = config_doc.get("harnesses")
+    if raw is None:
+        sys.stderr.write(
+            f"{config_path}: `harnesses` is required — list the harnesses this "
+            f"repository runs, e.g. `harnesses: [{', '.join(list(specs)[:2])}]`\n"
+        )
+        return None
+
+    if isinstance(raw, list):
+        if not all(isinstance(name, str) for name in raw):
+            sys.stderr.write(f"{config_path}: `harnesses` list entries must be strings\n")
+            return None
+        declared: dict[str, dict[str, Any]] = {name: {} for name in raw}
+    elif isinstance(raw, dict):
+        declared = {}
+        for name, block in raw.items():
+            if not isinstance(name, str):
+                sys.stderr.write(f"{config_path}: harness names must be strings, got {name!r}\n")
+                return None
+            if block is None:
+                block = {}
+            if not isinstance(block, dict):
+                sys.stderr.write(
+                    f"{config_path}: `harnesses.{name}` must be a mapping or empty\n"
+                )
+                return None
+            unknown = sorted(str(key) for key in block if key not in KNOWN_HARNESS_CONFIG_FIELDS)
+            if unknown:
+                sys.stderr.write(
+                    f"{config_path}: unknown key(s) under `harnesses.{name}`: "
+                    f"{', '.join(unknown)} "
+                    f"(known: {', '.join(sorted(KNOWN_HARNESS_CONFIG_FIELDS))})\n"
+                )
+                return None
+            declared[name] = block
+    else:
+        sys.stderr.write(
+            f"{config_path}: `harnesses` must be a list of names or a mapping of them\n"
+        )
+        return None
+
+    if not declared:
+        sys.stderr.write(
+            f"{config_path}: `harnesses` is empty. A consumer that wants no "
+            f"harness surface should remove its sync workflow rather than run "
+            f"the engine with nothing to deliver.\n"
+        )
+        return None
+
+    unknown_harnesses = sorted(set(declared) - set(specs))
+    if unknown_harnesses:
+        sys.stderr.write(
+            f"{config_path}: `harnesses` names {', '.join(unknown_harnesses)}, "
+            f"which the upstream manifest does not define "
+            f"(known: {', '.join(sorted(specs))})\n"
+        )
+        return None
+
+    return {name: declared[name] for name in specs if name in declared}
+
+
+def resolve_scopes(
+    config_doc: dict[str, Any],
+    config_path: Path,
+    consumer_dir: Path,
+    specs: dict[str, dict[str, Any]],
+) -> tuple[list[Scope], dict[str, Scope]] | None:
+    """Build the shared scope and one scope per declared harness.
+
+    Returns `([shared_scope], {harness: scope})`-shaped data as a pair, or
+    None after writing the error.
+
+    Three composition rules, and they are not the same rule:
+
+    * `substitutions` — top-level values, then the harness's own on top. A
+      harness override is the narrower statement, so it wins.
+    * `skip_targets` and `allow_sensitive_writes` — union. Both are opt-outs
+      and opt-ins the consumer wrote down; taking both is the conservative
+      reading of "I meant this".
+    * `allowed_destinations` — the harness's list *replaces* the top-level
+      one when it declares one. This is the gate that bounds the write
+      surface, and unioning it would hand every harness every other
+      harness's surface, which is precisely the separation the per-harness
+      config files provided before sync-v2.
+    """
+    unknown = sorted(str(key) for key in config_doc if key not in KNOWN_CONFIG_FIELDS)
+    if unknown:
+        sys.stderr.write(
+            f"{config_path}: unknown key(s): {', '.join(unknown)} "
+            f"(known: {', '.join(sorted(KNOWN_CONFIG_FIELDS))})\n"
+        )
+        return None
+
+    blocks = _harness_blocks(config_doc, config_path, specs)
+    if blocks is None:
+        return None
+
+    telemetry_env = render_telemetry_env(config_doc.get("telemetry"), config_path)
+    if telemetry_env is None:
+        return None
+
+    base_values = config_doc.get("substitutions") or {}
+    if not isinstance(base_values, dict):
+        sys.stderr.write(f"{config_path}: `substitutions` must be a mapping\n")
+        return None
+
+    base_skip_raw = config_doc.get("skip_targets") or []
+    if not isinstance(base_skip_raw, list) or not all(
+        isinstance(p, str) for p in base_skip_raw
+    ):
+        # A bare-scalar `skip_targets:` would iterate character by character
+        # inside `set(...)`; silently skipping nothing (or something) is
+        # worse than a config error either way.
+        sys.stderr.write(f"{config_path}: `skip_targets` must be a list of strings\n")
+        return None
+
+    base_allowed = parse_allowed_destinations(config_doc, config_path, "the top level")
+    if base_allowed is None:
+        return None
+    base_allowed_declared, base_allowed_patterns = base_allowed
+
+    base_sensitive = parse_sensitive_write_allowlist(config_doc, config_path, consumer_dir)
+    if base_sensitive is None:
+        return None
+
+    def build(label: str, block: dict[str, Any], where: str) -> Scope | None:
+        values = dict(base_values)
+        own_values = block.get("substitutions") or {}
+        if not isinstance(own_values, dict):
+            sys.stderr.write(f"{config_path}: `substitutions` must be a mapping ({where})\n")
+            return None
+        values.update(own_values)
+
+        reserved = sorted(RESERVED_SUBSTITUTION_KEYS & set(values))
+        if reserved:
+            sys.stderr.write(
+                f"{config_path}: `substitutions` may not declare "
+                f"{', '.join(reserved)} — the engine computes "
+                f"{'that key' if len(reserved) == 1 else 'those keys'} from "
+                f"elsewhere in this file.\n"
+            )
+            return None
+        values["REVIEW_TELEMETRY_ENV"] = telemetry_env
+
+        own_skip = block.get("skip_targets") or []
+        if not isinstance(own_skip, list) or not all(isinstance(p, str) for p in own_skip):
+            sys.stderr.write(
+                f"{config_path}: `skip_targets` must be a list of strings ({where})\n"
+            )
+            return None
+
+        own_allowed = parse_allowed_destinations(block, config_path, where)
+        if own_allowed is None:
+            return None
+        own_allowed_declared, own_allowed_patterns = own_allowed
+
+        if own_allowed_declared:
+            patterns: list[re.Pattern[str]] | None = [
+                glob_to_regex(p) for p in own_allowed_patterns
+            ]
+        elif base_allowed_declared:
+            patterns = [glob_to_regex(p) for p in base_allowed_patterns]
+        else:
+            # GitHub Actions annotation surfaces this in the PR UI instead of
+            # being buried in a green-checkmark build's stderr.
+            sys.stderr.write(
+                f"::warning file={config_path}::`allowed_destinations` not set "
+                f"for {where}. Upstream sync-targets are currently trusted to "
+                f"write anywhere in the consumer tree. Add an "
+                f"`allowed_destinations:` list to enforce the gate before the "
+                f"engine flips fail-closed.\n"
+            )
+            patterns = None
+
+        own_sensitive = parse_sensitive_write_allowlist(block, config_path, consumer_dir)
+        if own_sensitive is None:
+            return None
+
+        return Scope(
+            label=label,
+            values=values,
+            skip=set(base_skip_raw) | set(own_skip),
+            allowed_patterns=patterns,
+            sensitive_write_allowlist=base_sensitive | own_sensitive,
+        )
+
+    shared_scope = build("shared", {}, "the shared target set")
+    if shared_scope is None:
+        return None
+
+    harness_scopes: dict[str, Scope] = {}
+    for name, block in blocks.items():
+        scope = build(f"harness {name}", block, f"`harnesses.{name}`")
+        if scope is None:
+            return None
+        harness_scopes[name] = scope
+
+    return [shared_scope], harness_scopes
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--upstream-repo", required=True, type=Path, help="path to a checkout of the upstream repo")
@@ -977,7 +1632,11 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help="path to .platform-config.yml (default: <consumer-dir>/.platform-config.yml)",
+        help=(
+            f"path to the consumer config (default: <consumer-dir>/"
+            f"{CANONICAL_CONFIG_NAME}, falling back to a compose of any "
+            f"pre-sync-v2 per-harness config files still present)"
+        ),
     )
     parser.add_argument("--dry-run", action="store_true", help="don't write files; report what would change")
     return parser.parse_args()
@@ -988,94 +1647,52 @@ def main() -> int:
 
     upstream_repo = args.upstream_repo.resolve()
     consumer_dir = args.consumer_dir.resolve()
-    config_path = (args.config or consumer_dir / ".platform-config.yml").resolve()
 
     targets_path = upstream_repo / "scripts" / "sync-targets.yml"
     targets_doc = load_yaml(targets_path)
-    config_doc = load_yaml(config_path)
-
     if not isinstance(targets_doc, dict):
         sys.stderr.write(f"{targets_path}: top-level YAML document must be a mapping\n")
         return 1
-    if not isinstance(config_doc, dict):
-        sys.stderr.write(f"{config_path}: top-level YAML document must be a mapping\n")
-        return 1
 
-    targets = targets_doc.get("targets") or []
-    values = config_doc.get("substitutions") or {}
-    skip_raw = config_doc.get("skip_targets")
-    if skip_raw is None:
-        skip: set[str] = set()
-    elif not isinstance(skip_raw, list) or not all(isinstance(p, str) for p in skip_raw):
-        # A bare-scalar `skip_targets:` would iterate character by character
-        # inside `set(...)`; silently skipping nothing (or something) is
-        # worse than a config error either way.
-        sys.stderr.write(f"{config_path}: `skip_targets` must be a list of strings\n")
+    manifest = parse_manifest(targets_doc, targets_path)
+    if manifest is None:
         return 1
-    else:
-        skip = set(skip_raw)
+    specs, shared_targets = manifest
 
-    if not isinstance(targets, list):
-        sys.stderr.write(f"{targets_path}: `targets` must be a list\n")
+    resolved = resolve_config(args.config, consumer_dir, specs)
+    if resolved is None:
         return 1
-    if not isinstance(values, dict):
-        sys.stderr.write(f"{config_path}: `substitutions` must be a mapping\n")
+    config_doc, config_path, config_sources = resolved
+
+    resolved_scopes = resolve_scopes(config_doc, config_path, consumer_dir, specs)
+    if resolved_scopes is None:
         return 1
+    (shared_scope,), harness_scopes = resolved_scopes
 
-    # Consumer-side allowlist: shifts the trust boundary from "upstream
-    # maintainer didn't get fooled" to "consumer explicitly opted in to
-    # each destination path." Tri-state:
-    #   absent key       → fail-open warn (migration mode; will flip to
-    #                      fail-closed once all consumers ship allowlists)
-    #   `allowed_destinations:` with no value → config error (almost certainly
-    #                      a mid-edit accident; an empty list is the explicit
-    #                      "deny everything" knob, written `[]`)
-    #   non-empty list   → every write/delete must match at least one pattern
-    #   `[]`             → deny everything (the "lock this consumer" knob)
-    allowed_patterns: list[re.Pattern[str]] | None  # None = migration fail-open
-    if "allowed_destinations" not in config_doc:
-        # GitHub Actions annotation surfaces this in the PR UI instead of
-        # being buried in a green-checkmark build's stderr.
-        sys.stderr.write(
-            f"::warning file={config_path}::`allowed_destinations` not set. "
-            f"Upstream sync-targets are currently trusted to write anywhere "
-            f"in the consumer tree. Add an `allowed_destinations:` list to "
-            f"enforce the gate before the engine flips fail-closed.\n"
-        )
-        allowed_patterns = None
-    else:
-        allowed_raw = config_doc["allowed_destinations"]
-        if allowed_raw is None:
-            sys.stderr.write(
-                f"{config_path}: `allowed_destinations:` is present but null. "
-                f"Use `[]` to deny everything, or remove the key to opt into "
-                f"phase-1 fail-open behavior.\n"
-            )
-            return 1
-        if not isinstance(allowed_raw, list) or not all(
-            isinstance(p, str) for p in allowed_raw
-        ):
-            sys.stderr.write(
-                f"{config_path}: `allowed_destinations` must be a list of strings\n"
-            )
-            return 1
-        allowed_patterns = [glob_to_regex(p) for p in allowed_raw]
+    # The plan pairs every target with the scope that governs it. Harnesses go
+    # first, in manifest order, so the first declared harness bootstraps a
+    # `create_if_missing` destination that more than one of them ships; the
+    # shared set follows, matching the order each separate upstream used to
+    # deliver in.
+    plan: list[tuple[Scope, Any]] = []
+    for name, scope in harness_scopes.items():
+        plan.extend((scope, target) for target in specs[name]["targets"])
+    plan.extend((shared_scope, target) for target in shared_targets)
 
-    # Per-file consent for the destinations where content — not absence —
-    # is the dangerous half. Independent of `allowed_destinations`: a
-    # destination must clear both, since one bounds the surface and the
-    # other bounds what may be done to the sensitive files inside it.
-    sensitive_write_allowlist = parse_sensitive_write_allowlist(
-        config_doc, config_path, consumer_dir
+    print(
+        "Harnesses: "
+        + ", ".join(f"{name} ({specs[name]['root']})" for name in harness_scopes)
     )
-    if sensitive_write_allowlist is None:
-        return 1
 
     # Checked ahead of the consent gate: a manifest that can rewrite the
     # config can grant itself consent, so this refusal has to be the one the
     # consumer sees rather than a sensitive-write refusal they could "fix"
-    # by granting the config path.
-    config_writes = config_write_targets(targets, consumer_dir, config_path)
+    # by granting the config path. Every file the config was read from is
+    # protected, not just the canonical one — after a legacy compose there is
+    # more than one consent store on disk.
+    config_writes = config_write_targets(
+        [target for _, target in plan], consumer_dir, config_sources
+    )
     if config_writes:
         sys.stderr.write(config_destination_refusal(config_writes, config_path.name))
         return 1
@@ -1084,17 +1701,25 @@ def main() -> int:
     # when the gate trips" is true by construction rather than by luck of
     # manifest ordering. Reports every offending destination, not just the
     # first — a consumer adopting this gate should get one complete list to
-    # paste into their config, not one path per red run.
-    denied_sensitive = unconsented_sensitive_writes(
-        targets, skip, consumer_dir, sensitive_write_allowlist, allowed_patterns
-    )
-    if denied_sensitive:
-        sys.stderr.write(
-            sensitive_write_refusal(
-                denied_sensitive, config_path.name, sensitive_write_allowlist
-            )
+    # paste into their config, not one path per red run. Run per scope,
+    # because consent is per scope: a grant the consumer wrote for one
+    # harness must not admit the same destination under another.
+    for scope in [*harness_scopes.values(), shared_scope]:
+        scope_targets = [target for other, target in plan if other is scope]
+        denied_sensitive = unconsented_sensitive_writes(
+            scope_targets,
+            scope.skip,
+            consumer_dir,
+            scope.sensitive_write_allowlist,
+            scope.allowed_patterns,
         )
-        return 1
+        if denied_sensitive:
+            sys.stderr.write(
+                sensitive_write_refusal(
+                    denied_sensitive, config_path.name, scope.sensitive_write_allowlist
+                )
+            )
+            return 1
 
     print(f"Syncing from {upstream_repo} → {consumer_dir}")
     if args.dry_run:
@@ -1106,7 +1731,7 @@ def main() -> int:
     unchanged = 0
     sensitive = 0
 
-    for target in targets:
+    for scope, target in plan:
         # Each `targets:` entry must be a mapping. A bare scalar (string,
         # int) would raise AttributeError on `.get(...)` below; surface as
         # a clean malformed-entry error instead.
@@ -1235,9 +1860,9 @@ def main() -> int:
                 sys.stderr.write(f"  ❌ invalid `mode` ({e}): {target!r}\n")
                 return 1
 
-        if (source_rel and source_rel in skip) or dest_rel in skip:
+        if (source_rel and source_rel in scope.skip) or dest_rel in scope.skip:
             label = source_rel or dest_rel
-            print(f"  ⏭️  skip {label} (opted out via .platform-config.yml)")
+            print(f"  ⏭️  skip {label} (opted out via {config_path.name})")
             skipped += 1
             continue
 
@@ -1272,12 +1897,12 @@ def main() -> int:
         # delete, and create_if_missing targets — the threat model is
         # "upstream manifest can write/delete consumer files" and all three
         # actions touch the destination.
-        if allowed_patterns is not None and not path_matches_any(
-            dest_rel_canonical, allowed_patterns
+        if scope.allowed_patterns is not None and not path_matches_any(
+            dest_rel_canonical, scope.allowed_patterns
         ):
             sys.stderr.write(
-                f"  ❌ destination not in consumer's `allowed_destinations`: "
-                f"{dest_rel_canonical}\n"
+                f"  ❌ destination not in consumer's `allowed_destinations` "
+                f"({scope.label}): {dest_rel_canonical}\n"
             )
             return 1
 
@@ -1372,16 +1997,18 @@ def main() -> int:
         # be narrow enough that it only ever covers the path the consumer
         # actually wrote down.
         is_sensitive_write = is_sensitive_write_dest(dest_rel_canonical)
-        if dest_path.resolve() == config_path:
+        if dest_path.resolve() in config_sources:
             sys.stderr.write(
                 config_destination_refusal([dest_rel_canonical], config_path.name)
             )
             return 1
 
-        if is_sensitive_write and dest_rel_canonical not in sensitive_write_allowlist:
+        if is_sensitive_write and dest_rel_canonical not in scope.sensitive_write_allowlist:
             sys.stderr.write(
                 sensitive_write_refusal(
-                    [dest_rel_canonical], config_path.name, sensitive_write_allowlist
+                    [dest_rel_canonical],
+                    config_path.name,
+                    scope.sensitive_write_allowlist,
                 )
             )
             return 1
@@ -1417,7 +2044,9 @@ def main() -> int:
         # selected prose-only keys into structural blank collapsing; see
         # `drop_empty_placeholder_lines`. A verbatim copy (subs == []) substitutes
         # nothing and stays byte-identical to the upstream source.
-        substituted = substitute(text, values, subs, source_rel, collapse_empty_substitutions)
+        substituted = substitute(
+            text, scope.values, subs, source_rel, collapse_empty_substitutions
+        )
 
         # Both branches below report a sensitive write only where one
         # actually happens. The daily cron is almost always at steady state,

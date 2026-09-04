@@ -14,7 +14,7 @@
 # bump that changes default behavior.
 #
 # `.github/copilot-instructions.md` IS listed even though it is rendered
-# per-consumer from `.platform-config.yml` values: it is generated content
+# per-consumer from `.activeloom-config.yml` values: it is generated content
 # like the rest of the surface, and formatting it locally only fights the
 # next sync render. Cleanliness of the render is enforced upstream (the
 # sync engine normalizes blank-line structure of rendered markdown, and the

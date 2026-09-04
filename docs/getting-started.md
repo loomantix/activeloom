@@ -1,6 +1,8 @@
 # Getting started — wire up a consumer repo
 
-This walkthrough assumes you have a consumer repo (any GitHub repo on which you want the skills, agents, and review workflow available), and you want it to consume from `loomantix/claude-platform` (or your own fork).
+This walkthrough assumes you have a consumer repo (any GitHub repo on which you want the skills, agents, and review workflow available), and you want it to consume from `loomantix/activeloom` (or your own fork).
+
+One workflow and one config file per consumer, whatever mix of harnesses you run. Which harnesses you receive is a list in the config.
 
 If you only want the skills installed in your local Claude Code (not synced into a repo), you can skip everything below and run `scripts/install-skills.sh` from a clone — see [`README.md`](../README.md#install-developer-side).
 
@@ -12,12 +14,17 @@ If you only want the skills installed in your local Claude Code (not synced into
   - If you don't want to set up an App, you can fall back to `git commit + git push` with the default `GITHUB_TOKEN` — but commits won't be GitHub-signed, which matters for SOC 2 / ISO 27001 audit posture.
 - If your upstream repo is private (e.g. a fork of this repo kept private inside an org), you also need a fine-grained PAT or App token with `Contents: Read` on the upstream — stored on the consumer as `UPSTREAM_READ_TOKEN`.
 
-## 1. Add `.platform-config.yml` to the consumer
+## 1. Add `.activeloom-config.yml` to the consumer
 
-This file lives at the consumer's repo root and provides substitution values for templated targets (currently just the Copilot reviewer instructions).
+This file lives at the consumer's repo root. It declares which harnesses the repo runs and provides substitution values for templated targets (currently just the Copilot reviewer instructions).
 
 ```yaml
-# .platform-config.yml
+# .activeloom-config.yml
+
+# Which harnesses this repo runs. Names come from the upstream manifest's
+# `harnesses:` block; you receive these target sets plus the shared one.
+harnesses: [claude, codex]
+
 substitutions:
   PROJECT_NAME: My Project
   PROJECT_OVERVIEW: |
@@ -46,7 +53,16 @@ substitutions:
 # Optional: opt out of specific upstream files.
 # Use either the source or destination path.
 skip_targets: []
+
+# Optional: review telemetry gates, declared once for the repo. Each is
+# `on` or `off`; omit either to leave it to the ambient environment.
+telemetry:
+  extract: on
 ```
+
+`skip_targets`, `allowed_destinations`, `allow_sensitive_writes`, and `substitutions` may also be set per harness under a `harnesses:` mapping — see [`docs/sync.md`](sync.md#how-the-two-levels-compose) for how the two levels compose, which is not the same rule for every key.
+
+**Already have `.platform-config.yml` / `.codex-platform-config.yml` / `.gemini-platform-config.yml`?** They keep working: the engine composes the ones present into this shape, one harness per file, and a file you never had means a harness you never ran. See [Migrating from the pre-sync-v2 config files](sync.md#migrating-from-the-pre-sync-v2-config-files).
 
 Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-line values use YAML block scalars (the `|` form). All keys must be `[A-Z][A-Z0-9_]*`.
 
@@ -56,8 +72,8 @@ Copy [`.github/workflows/sync-from-upstream.yml.template`](../.github/workflows/
 
 Edit:
 
-- `UPSTREAM_REPO: <owner>/<repo>` → e.g. `loomantix/claude-platform`
-- `PR_BASE_BRANCH: main` → adjust if your release flow uses `staging` or another branch.
+- `UPSTREAM_REPO: <owner>/<repo>` → e.g. `loomantix/activeloom`
+- `PR_BASE_BRANCH: ''` → **required**, the branch sync PRs land on. It is not always your default branch: a repo that promotes staging → main lands sync PRs on `staging` while the workflow _definition_ is still read from the default branch, so a change to this file only takes effect after the next promotion.
 - The `Validate UPSTREAM_READ_TOKEN is configured` step — remove entirely if your upstream is public.
 - The `Clone upstream` step — if your upstream is public, the auth-header logic still works (it's a no-op when `UPSTREAM_READ_TOKEN` is empty), but you can simplify if you want.
 
@@ -65,9 +81,9 @@ Edit:
 
 The sync engine reads [`scripts/sync-targets.yml`](../scripts/sync-targets.yml) from the **upstream** checkout (the cloned-into-`/tmp` copy of the upstream repo). The manifest is upstream-owned, not consumer-owned — you don't author one in your consumer.
 
-If you're using `loomantix/claude-platform` directly, the manifest already exists there and ships the full skill set. To opt out of specific files for one consumer, list them in `skip_targets` inside that consumer's `.platform-config.yml` (see step 1).
+If you're using `loomantix/activeloom` directly, the manifest already exists there and ships the full skill set. To opt out of specific files for one consumer, list them in `skip_targets` inside that consumer's `.activeloom-config.yml` (see step 1).
 
-If you forked `loomantix/claude-platform` and want to customize what gets synced for **all** of your consumers (drop a skill that isn't relevant fleet-wide, add one of your own), edit `scripts/sync-targets.yml` in your fork.
+If you forked `loomantix/activeloom` and want to customize what gets synced for **all** of your consumers (drop a skill that isn't relevant fleet-wide, add one of your own), edit `scripts/sync-targets.yml` in your fork.
 
 ## 4. Set the App-token secrets on the consumer
 
@@ -144,7 +160,7 @@ Then either bump `UPSTREAM_REF: sync-v2` in each consumer's workflow, or re-tag 
 
 ## Troubleshooting
 
-- **First sync PR has weird `<<KEY>>` left intact** — your `.platform-config.yml` is missing a required substitution. The workflow log will list which keys.
+- **First sync PR has weird `<<KEY>>` left intact** — your `.activeloom-config.yml` is missing a required substitution. The workflow log will list which keys.
 - **Sync workflow fails with "could not read Username for github.com"** — the upstream is private and the `UPSTREAM_READ_TOKEN` secret is missing or mis-set. Re-set with `--body "$TOKEN"` (arg form, not stdin).
 - **Sync PR is empty** — already in sync. The workflow's `Detect changes` step prints `✅ Already in sync with upstream` and skips PR creation.
 - **Sync PR keeps re-opening with the same content after merge** — your consumer is edits-loop-ing against an upstream-managed file. Either fix-forward in upstream, or add the file to `skip_targets` until upstream catches up.

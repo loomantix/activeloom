@@ -73,8 +73,8 @@ never created one loses nothing.
    repo-owned and never synced, then add sections named for the lenses that
    read them (`code-reviewer`, `silent-failure-hunter`, `pr-test-analyzer`, the
    `critique` orchestrator, plus an "all lenses" section).
-2. Leave `.review/**` out of every `*-platform-config.yml`
-   `allowed_destinations`. Add a comment there saying the omission is
+2. Leave `.review/**` out of the consumer config's `allowed_destinations`
+   (every `allowed_destinations` in it, if the repo scopes them per harness). Add a comment there saying the omission is
    deliberate, so a later reader does not read it as an oversight.
 3. Optionally add a pointer paragraph in the repo-owned instruction files
    (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`). The synced prompts already point at
