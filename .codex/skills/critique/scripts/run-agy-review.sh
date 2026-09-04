@@ -262,6 +262,7 @@ export AGENT_LOOP_REVIEW_ENGINE="gemini"
 agy_exit=0
 # Give Agy 30 seconds to serialize its own timeout response before the outer
 # process-group guard terminates the pass and every descendant.
+# claude-cli-invocations:start
 agy_outer_timeout_seconds=$((review_timeout_seconds + 30))
 run_agy_managed "$result_file" "${agy_outer_timeout_seconds}s" \
     --model gemini-3.7-flash-high \
@@ -272,6 +273,7 @@ run_agy_managed "$result_file" "${agy_outer_timeout_seconds}s" \
     --output-format json \
     --print-timeout "${review_timeout_seconds}s" \
     --print "$prompt" || agy_exit="$?"
+# claude-cli-invocations:end
 
 python3 - "$result_file" "$agy_exit" <<'PY'
 import json

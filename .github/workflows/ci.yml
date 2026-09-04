@@ -331,6 +331,16 @@ jobs:
             base="HEAD~1"
           fi
           python3 .claude/lint-skill-content.py --base "$base"
+      # Whole-tree scan, alongside the diff scan above — neither subsumes the
+      # other. The diff scan reads what a PR adds, with line-precise
+      # attribution. This one covers the class the diff scan structurally
+      # cannot: lines that entered the tree before the tree was in scope,
+      # which is what a subtree import or a scope widening produces. Standing
+      # exceptions live in `.claude/skill-content-suppressions.allowlist`,
+      # and a stale entry there fails this step.
+      - name: Lint every skill/agent/reference prompt in scope
+        if: '!cancelled()'
+        run: python3 .claude/lint-skill-content.py --all
 
       # --- was job `claude-cli-invocations` (claude CLI invocation policy) ---
       - name: Self-test the lint patterns (claude-cli-invocations)

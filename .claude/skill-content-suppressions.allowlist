@@ -1,0 +1,50 @@
+# Suppressions for .claude/lint-skill-content.py.
+#
+# Format (whitespace-separated): <sha256>  <source path>  <rule>  <reason>
+#
+# One entry excuses ONE rule on ONE line of ONE file. The hash is sha256 of
+# that line with its terminator stripped and every other byte intact, so
+# re-indenting or editing the line rotates the hash and re-opens the finding.
+# An entry that matches nothing in scope FAILS the whole-tree scan: an
+# exception nobody can point at is either stale or was pre-seeded for a line
+# that has not landed yet, and both need a look.
+#
+# The path is the SOURCE path. Rendered outputs are resolved back to their
+# `prompts/` source before matching, so one entry covers the source and every
+# harness root the renderer writes it into. Hand-maintained files are their own
+# source path.
+#
+# Adding an entry is a change to a CODEOWNERS-gated gate file, which is the
+# audit trail — the same bargain as `claude-cli-invocations.allowlist`.
+#
+# What a reason has to say depends on why the finding is not a defect:
+#   - a category error (the rule read something that is not what it thinks):
+#     say what the value actually is.
+#   - a tool limitation (the rule is right about its input and wrong about the
+#     world): say so plainly, so a later reader fixes the extractor instead of
+#     treating a parser bug as a reviewed decision.
+#   - a genuine exception (the thing really does what the rule forbids): say
+#     what it does. For a network call that means what it fetches and from
+#     where. "Reviewed and accepted" satisfies the mechanism and defeats it.
+
+# --- category errors: identifier constants the URL extractor reads as hosts ---
+# These are compared as strings against a provenance attestation. Nothing in
+# either script fetches them, and host-allowlisting them would be the wrong
+# fix: that permits *reaching* the host from every scanned prompt in every
+# root, to buy nothing here.
+805ea454bbb6fdb74638d9665c12a7ff450b8edb4f11729cb8f8bf14e203b47a  .agents/skills/publish-npm-package/scripts/verify-published-package.py  off-allowlist-url  SLSA predicate-type URI. A version identifier matched against the `predicateType` field of a published package's provenance attestation; never dereferenced.
+805ea454bbb6fdb74638d9665c12a7ff450b8edb4f11729cb8f8bf14e203b47a  .codex/skills/publish-npm-package/scripts/verify-published-package.py  off-allowlist-url  SLSA predicate-type URI. Byte-identical to the .agents copy; listed separately because a suppression is bound to a path.
+aaeaf3ba081d352d0cdac34e8da9371f2277df76ea30564b694989dfb8308d3a  .agents/skills/publish-npm-package/scripts/verify-published-package.py  off-allowlist-url  GitHub Actions OIDC issuer identifier. Compared against the issuer extension of the provenance signing certificate; never dereferenced.
+aaeaf3ba081d352d0cdac34e8da9371f2277df76ea30564b694989dfb8308d3a  .codex/skills/publish-npm-package/scripts/verify-published-package.py  off-allowlist-url  GitHub Actions OIDC issuer identifier. Byte-identical to the .agents copy.
+
+# --- tool limitation: the URL extractor cannot tell a regex from a URL ---
+# NOT a policy exception. `URL_RE` matches inside the regex literal
+# `r"https://[^\s]+"` and hands `urlsplit` a fragment that is not a URL. The
+# right fix is in the extractor; until it lands these two entries hold the
+# gate green. Whoever fixes it should delete these, not re-hash them.
+569e8bb05177a61163d36b8ef83a58e5226ef515c14305b0cab0ddcb52b7dff2  .agents/skills/publish-npm-package/scripts/verify-published-package.py  off-allowlist-url  Regex literal, not a URL: `re.search(r"https://[^\s]+", ...)` extracts the issuer from certificate text. Tool limitation in URL_RE, not a reviewed exception.
+569e8bb05177a61163d36b8ef83a58e5226ef515c14305b0cab0ddcb52b7dff2  .codex/skills/publish-npm-package/scripts/verify-published-package.py  off-allowlist-url  Regex literal, not a URL. Byte-identical to the .agents copy. Tool limitation in URL_RE, not a reviewed exception.
+
+# --- genuine exception: a real outbound network call ---
+393f6080a8cc70f68526a012612470927dee55b1da301afc51dd1ac5a0181807  .agents/skills/ship-staging/SKILL.md  raw-network-tool  Outbound only, and nothing it returns is executed. POSTs the deploy-notification payload the skill built at /tmp/ship-staging-<pr>-payload.json to the team's Google Chat space via the incoming webhook in $GCHAT_WEBHOOK_URL. The response is read for an HTTP status and a `spaces/<id>/messages/<id>` message id. `gh` cannot reach a Google Chat webhook, which is why the rule's normal answer does not apply.
+393f6080a8cc70f68526a012612470927dee55b1da301afc51dd1ac5a0181807  .codex/skills/ship-staging/SKILL.md  raw-network-tool  Google Chat webhook POST. Byte-identical to the .agents copy; listed separately because a suppression is bound to a path.
