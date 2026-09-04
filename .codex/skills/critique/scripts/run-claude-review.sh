@@ -28,7 +28,7 @@ done
 [[ "$base" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$round" =~ ^[1-9][0-9]*$ ]] || usage
-review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
+review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-2700}"
 [[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
     [ "$review_timeout_seconds" -le 3600 ] || {
     echo "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
