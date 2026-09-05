@@ -57,10 +57,10 @@ a placeholder that survives substitution for any reason.
 **Zero conditionals.** The substitution engine has no branching construct and
 none will be added. A skill whose _structure_ must differ between harnesses — a
 phase only one engine runs, a different number of steps — is per-harness by
-definition. It stays out of `prompts/` and is reconciled by the parity lint
-against a `docs/decisions/` record through a manual parity audit. The moment a renderer grows an `{% if %}`,
-the single source stops being readable as the thing that ships, which is the
-only property that makes rendering safer than copies.
+definition. It stays out of `prompts/` and is held to account by the parity
+lint instead (below). The moment a renderer grows an `{% if %}`, the single
+source stops being readable as the thing that ships, which is the only property
+that makes rendering safer than copies.
 
 **Prettier never touches the sources.** `prompts/skills/` is in
 `.prettierignore` and must stay there. Prettier's Markdown parser is not
@@ -87,7 +87,7 @@ reaches every consumer of all three on the next sync, so leaving the source out
 while gating the output would make the gate sidesteppable by editing the more
 powerful file.
 
-## What is _not_ rendered
+## What is _not_ rendered, and the lint that watches it
 
 The review chain — `critique`, `deepcritique`, `refactorpass`, `reviewit`,
 `copilot-review`, and their siblings — is deliberately never single-sourced.
@@ -95,7 +95,34 @@ The review chain — `critique`, `deepcritique`, `refactorpass`, `reviewit`,
 standing record: those prompts are calibration for a specific model family, and
 two engines running the same text are one reviewer with two billing accounts.
 The implementations deliberately diverge, so there is no shared source to
-recover even if it were wanted.
+recover even if it were wanted. `agent-loop` is unrendered for a different
+reason — [`0007`](decisions/0007-agent-loop-per-harness-launch.md) — three
+launch models and three supervision models around one protocol.
 
-Held back for now, pending a zero-residual parity audit: `copilot-review`,
-`actions-usage-audit`, `backlog-refinement`.
+"Deliberately different" and "nobody noticed" look identical in a diff, so an
+unrendered shared skill is not left to its own devices:
+
+```bash
+python3 scripts/lint-prompt-parity.py            # what CI runs
+python3 scripts/lint-prompt-parity.py --report   # the residual table
+python3 scripts/lint-prompt-parity.py --diff <skill>   # the normalized diff
+```
+
+Every skill that lives in more than one prompt root and is not rendered gets
+diffed with the harness vocabulary normalized away — read from these same
+profiles, so the lint and the renderer cannot disagree about what counts as the
+same word in two dialects. Whatever survives that needs a disposition in
+[`docs/decisions/parity-allowlist.yml`](decisions/parity-allowlist.yml):
+`recorded` against a decision record, or `held` against a tracking issue and a
+residual ceiling that may shrink but never grow. Anything else fails.
+
+A skill at **zero** residuals is reported as a promotion candidate rather than
+a failure, and an allowlist entry naming one fails as stale — that is how a
+held debt retires. Promotion is a separate change, and not automatically a free
+one: it turns one hand-maintained path per root into one source plus three
+generated outputs, so anything else keyed to those paths — a lint suppression,
+a pin, a manifest — has to resolve to the source before the skill moves.
+
+Held today, with the drift written down rather than waved through:
+`actions-usage-audit`, `backlog-refinement`, `pr-critique`,
+`publish-npm-package`.

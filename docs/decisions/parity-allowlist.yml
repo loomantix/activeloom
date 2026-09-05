@@ -1,0 +1,112 @@
+# Prompt-parity allowlist — the dispositions `scripts/lint-prompt-parity.py` enforces.
+#
+# Every skill that exists in more than one prompt root and is not rendered from
+# `prompts/skills/` gets diffed with the harness vocabulary normalized away. A
+# skill with anything left over needs an entry here, and there are exactly two
+# kinds:
+#
+#   recorded — deliberate per-harness divergence. Cites one or more records in
+#              this directory. Permanent; the residual may move freely.
+#
+#   held     — accidental drift nobody has reconciled yet. Cites a tracking
+#              issue and a residual `ceiling`. The ceiling is a ratchet: the
+#              lint fails if the number grows, and fails if the number shrinks
+#              without the ceiling being lowered to match. Held drift is a debt
+#              with a number on it, not a permission.
+#
+# A skill at zero residuals must NOT be listed here — it is single-sourceable
+# and belongs in `prompts/skills/`, so a live entry naming it fails. That is
+# how a held entry retires: the drift reaches zero and the skill is promoted.
+#
+# `ceiling` values are produced by `python3 scripts/lint-prompt-parity.py --report`.
+# Do not hand-edit them to make a build pass.
+
+recorded:
+  - skill: critique
+    record:
+      - 0002-reviewer-precision-postures.md
+      - 0006-review-chains-never-converge.md
+    reason: >-
+      Where the precision filter runs is per-model calibration — Claude finders
+      report everything scored and the orchestrator cuts; the Codex and Gemini
+      finders hold the bar themselves. The launcher scripts under
+      `scripts/` differ with them, because each root drives a different CLI.
+
+  - skill: deepcritique
+    record:
+      - 0001-session-gate-postures.md
+      - 0006-review-chains-never-converge.md
+    reason: >-
+      The pre-review session gate is a hard stop in Claude and Gemini and
+      advisory in Codex, deliberately: Codex runs inside relay protocols where
+      an unconditional stop abandons an authorized task mid-chain.
+
+  - skill: refactorpass
+    record:
+      - 0003-refactorpass-architecture.md
+      - 0006-review-chains-never-converge.md
+    reason: >-
+      Claude delegates the pass to a single `simplify` invocation; the Codex
+      and Gemini copies carry an inline Cleanup Matrix because those harnesses
+      have no equivalent skill to delegate to.
+
+  - skill: reviewit
+    record:
+      - 0004-reviewit-two-documents.md
+      - 0006-review-chains-never-converge.md
+    reason: >-
+      Same two hosted reviewers and the same caps, structured for different
+      session realities — a tier-authority and budget-interaction document on
+      Claude, a resumable thin orchestrator on the other two.
+
+  - skill: copilot-review
+    record:
+      - 0005-copilot-review-fix-bias.md
+      - 0006-review-chains-never-converge.md
+    reason: >-
+      The Codex and Gemini copies carry an explicit Fix Bias principle; the
+      Claude copy carries the opposite pressure. Each instruction pushes
+      against its own engine's measured default failure mode.
+
+  - skill: agent-loop
+    record: 0007-agent-loop-per-harness-launch.md
+    reason: >-
+      Three different launch models, three different supervision models, and
+      five scripts that exist in one root only. The line that spawns a worker
+      with its permission model disabled must be readable, in its own root, as
+      exactly what will run.
+
+held:
+  - skill: backlog-refinement
+    issue: 171
+    ceiling: 123
+    reason: >-
+      Version drift, `.claude` newest. The older copies mis-handle an
+      undateable `updatedAt`, key the RCA bucket without matching the
+      category, double-count Bucket-A hits across labels, and drop both the
+      rubric-fallback warning and the Conflicted bucket.
+
+  - skill: pr-critique
+    issue: 172
+    ceiling: 40
+    reason: >-
+      The `.agents` copy is an older port missing whole contract blocks — the
+      telemetry snapshot and emission, the read-the-prior-pass rule, and the
+      Phase 4 hand-back with its non-recursion bound. Contract, not
+      calibration.
+
+  - skill: actions-usage-audit
+    issue: 170
+    ceiling: 21
+    reason: >-
+      Version drift, `.claude` newest. The `.codex` and `.agents` copies use
+      `REPO_SLUG` without ever assigning it, and lack the empty-`SINCE` guard
+      that stops GitHub from silently returning lifetime run counts.
+
+  - skill: publish-npm-package
+    issue: 173
+    ceiling: 2
+    reason: >-
+      The `.agents` copy's frontmatter description tells the Gemini harness to
+      invoke the skill when *Codex* needs an npm release. One word, but it is
+      the auto-invocation trigger text.
