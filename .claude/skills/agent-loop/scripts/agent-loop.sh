@@ -1631,6 +1631,16 @@ prepare_review_pass_budget() {
     REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
     if [ "$remaining" -lt "$REVIEW_PASS_TIMEOUT_SECONDS" ]; then
         REVIEW_PASS_TIMEOUT_SECONDS="$remaining"
+        # The budget, not hook_timeout_seconds, is now the binding constraint.
+        # Say so: from here a pass can be killed mid-flight for running out of
+        # whole-run time, which surfaces as a hook failure rather than as the
+        # clock expiry it is, and is otherwise indistinguishable from a genuine
+        # review failure in the logs.
+        echo -e "${YELLOW}⏱${NC}  Review budget: ${remaining}s of ${REVIEW_TIMEOUT_SECONDS}s left" \
+            "— pass bounded by REMAINING BUDGET, not hook_timeout_seconds (${HOOK_TIMEOUT_SECONDS}s)"
+    else
+        echo -e "${CYAN}⏱${NC}  Review budget: ${remaining}s of ${REVIEW_TIMEOUT_SECONDS}s left;" \
+            "pass bounded at ${REVIEW_PASS_TIMEOUT_SECONDS}s"
     fi
 }
 
