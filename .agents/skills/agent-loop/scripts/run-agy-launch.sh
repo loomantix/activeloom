@@ -12,8 +12,10 @@ run_agy_and_parse() {
     trap 'rm -f -- "${AGY_LAUNCH_RESULT_FILE:-}"' EXIT
     chmod 600 "$AGY_LAUNCH_RESULT_FILE"
 
+    # claude-cli-invocations:start
     local agy_exit=0
     "$agy_cli" "$@" >"$AGY_LAUNCH_RESULT_FILE" || agy_exit="$?"
+    # claude-cli-invocations:end
 
     AGY_LAUNCH_LABEL="$label" python3 - "$AGY_LAUNCH_RESULT_FILE" "$agy_exit" <<'PY'
 import json

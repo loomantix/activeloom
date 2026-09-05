@@ -61,9 +61,11 @@ remote_head="${remote_row%%[[:space:]]*}"
 [ -z "$(git status --porcelain)" ] || { echo "review worktree must be clean" >&2; exit 1; }
 
 script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# claude-cli-invocations:start
 python3 -I "$script_dir/local-review-handoff.py" authorize-pass \
     --repo "$repo" --pr "$pr" --base "$base" --head "$head" \
     --engine claude --round "$round" >/dev/null
+# claude-cli-invocations:end
 
 claude_review_cli="${CLAUDE_REVIEW_CLI:-claude}"
 prompt="/deepcritique ${pr}
@@ -84,6 +86,7 @@ export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="claude"
 
+# claude-cli-invocations:start
 exec timeout --signal=TERM --kill-after=30s "${review_timeout_seconds}s" \
     "$claude_review_cli" \
     --effort low \
@@ -91,3 +94,4 @@ exec timeout --signal=TERM --kill-after=30s "${review_timeout_seconds}s" \
     --no-session-persistence \
     --print \
     "$prompt"
+# claude-cli-invocations:end

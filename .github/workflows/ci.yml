@@ -265,6 +265,7 @@ jobs:
           set -euo pipefail
           for path in \
             .claude/REVIEW_WORKFLOW.md \
+            .claude/prompt-stack.json \
             .claude/skills/critique/SKILL.md \
             .claude/skills/critique/scripts/usage-snapshot.js \
             .claude/skills/critique/scripts/prompt-stack-hash.js \
@@ -310,7 +311,29 @@ jobs:
       # a Markdown table changes the alignment Prettier enforces.
       - name: Rendered prompt roots are current
         if: '!cancelled()'
-        run: python3 scripts/render-prompts.py --check
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -z "${GITHUB_BASE_REF:-}" ]; then
+              echo "GITHUB_BASE_REF empty for pull_request event — aborting." >&2
+              exit 1
+            fi
+            git fetch --no-tags origin "${GITHUB_BASE_REF}"
+            base="origin/${GITHUB_BASE_REF}"
+          else
+            base="HEAD~1"
+          fi
+          python3 scripts/render-prompts.py --check \
+            --check-version-against "$base"
+
+      # The other half of the same contract: the renderer proves the generated
+      # roots match their source, this proves every shared skill the renderer
+      # does *not* own still has a written reason to differ. Promotion
+      # candidates are reported into the job summary rather than failing —
+      # see `docs/prompt-rendering.md`.
+      - name: Unrendered shared skills are accounted for
+        if: '!cancelled()'
+        run: python3 scripts/lint-prompt-parity.py
 
       # --- was job `skill-content` (Skill content policy) ---
       - name: Self-test the lint patterns
@@ -331,6 +354,16 @@ jobs:
             base="HEAD~1"
           fi
           python3 .claude/lint-skill-content.py --base "$base"
+      # Whole-tree scan, alongside the diff scan above — neither subsumes the
+      # other. The diff scan reads what a PR adds, with line-precise
+      # attribution. This one covers the class the diff scan structurally
+      # cannot: lines that entered the tree before the tree was in scope,
+      # which is what a subtree import or a scope widening produces. Standing
+      # exceptions live in `.claude/skill-content-suppressions.allowlist`,
+      # and a stale entry there fails this step.
+      - name: Lint every skill/agent/reference prompt in scope
+        if: '!cancelled()'
+        run: python3 .claude/lint-skill-content.py --all
 
       # --- was job `claude-cli-invocations` (claude CLI invocation policy) ---
       - name: Self-test the lint patterns (claude-cli-invocations)
@@ -533,3 +566,10 @@ jobs:
         run: |
           test -f scripts/render-prompts.py
           python3 -m coverage report --include='scripts/render-prompts.py' --fail-under=80
+      # The parity lint is the renderer's counterpart: it decides whether an
+      # unrendered divergence is accounted for. Same floor, same `test -f`
+      # precondition, for the same reason.
+      - name: Coverage gate — lint-prompt-parity.py >=80%
+        run: |
+          test -f scripts/lint-prompt-parity.py
+          python3 -m coverage report --include='scripts/lint-prompt-parity.py' --fail-under=80

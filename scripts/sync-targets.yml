@@ -119,6 +119,13 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      # Ship the generated stack declaration with the hasher so consumers can
+      # compute this harness's prompt identity.
+      - source: .claude/prompt-stack.json
+        destination: .claude/prompt-stack.json
+        substitutions: []
+        mode: '0644'
+
       # The bundle is ESM. Node resolves module type from the NEAREST package.json
       # walking up from the file, which in a consumer is that repo's root — so
       # without this the ledger's module type depends on the consumer's manifest:
@@ -506,6 +513,13 @@ harnesses:
       # to it. Also ESM, and also covered by the directory's `package.json` below.
       - source: .codex/skills/critique/scripts/prompt-stack-hash.js
         destination: .codex/skills/critique/scripts/prompt-stack-hash.js
+        substitutions: []
+        mode: '0644'
+
+      # The unified manifest delivers Codex's generated declaration too; the
+      # frozen pre-cutover Codex manifest intentionally remains unchanged.
+      - source: .codex/prompt-stack.json
+        destination: .codex/prompt-stack.json
         substitutions: []
         mode: '0644'
 
