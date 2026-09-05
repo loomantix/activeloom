@@ -112,6 +112,7 @@ harnesses:
 allowed_destinations:
   - .claude/**
   - .codex/**
+  - .github/copilot-instructions.md
   - .github/workflows/dco.yml
   - agent-loop-instructions.md
 

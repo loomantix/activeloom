@@ -402,9 +402,9 @@ jobs:
                   ).add(set_name)
           for destination, deleting in deleters.items():
               writing = writers.get(destination, set())
-              assert not (writing - deleting), (
+              assert not any(writer != deleter for writer in writing for deleter in deleting), (
                   f"{destination!r} is deleted by {sorted(deleting)} and written by "
-                  f"{sorted(writing - deleting)}; the outcome depends on plan order"
+                  f"{sorted(writing)}; the outcome depends on plan order"
               )
           for t in targets:
               assert isinstance(t, dict), f"non-mapping target: {t!r}"
