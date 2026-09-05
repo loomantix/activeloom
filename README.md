@@ -159,7 +159,7 @@ The sync engine is intentionally minimal:
 
 - One upstream, one downstream repo, one manifest.
 - `<<KEY>>` find-and-replace, no template engine.
-- Daily PR open / merge cycle, with a tag-based gate (`sync-v1`) so unintended pushes to upstream main don't auto-propagate.
+- Daily PR open / merge cycle, with a tag-based gate (`sync-v2`) so unintended pushes to upstream main don't auto-propagate. `sync-v1` stays frozen for consumers that have not cut over.
 - `delete: true` to retire a previously-synced file across all downstream repos.
 
 It's not Renovate. It's not Dependabot. It's a deliberately small primitive for "one upstream, many downstream repos, propagate-by-PR."

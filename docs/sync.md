@@ -105,6 +105,16 @@ harnesses:
       - agent-loop-instructions.md
   codex: {}
 
+# A harness `allowed_destinations` REPLACES this list for that harness — it
+# does not extend it. Declare the top-level list too: it is what governs the
+# shared target set and any harness that declares none. Leaving it out is the
+# migration fail-open, under which those scopes may be written anywhere.
+allowed_destinations:
+  - .claude/**
+  - .codex/**
+  - .github/workflows/dco.yml
+  - agent-loop-instructions.md
+
 # Review telemetry, declared once for the repository. Each gate is `on` or
 # `off`; omit either to leave it to the ambient environment. These render
 # into the synced `.claude/settings.json` env block — see below.
@@ -127,10 +137,12 @@ skip_targets: []
 
 # Required before the sync may write a sensitive path. Absent or empty
 # means no sensitive path may be written, and the sync fails closed with
-# the exact line to add rather than warning in a green job. The canonical
-# manifest writes no such path today, so most consumers need no entry at
-# all; the refusal names any that appear, in a block you can paste as-is.
-allow_sensitive_writes: []
+# the exact line to add rather than warning in a green job. The shared
+# target set ships `.github/workflows/dco.yml`, which every consumer
+# receives and which is a sensitive path, so this entry is required; the
+# refusal names any others that appear, in a block you can paste as-is.
+allow_sensitive_writes:
+  - .github/workflows/dco.yml
 ```
 
 ### How the two levels compose

@@ -1290,6 +1290,20 @@ def compose_legacy_config(
     sensitive: list[str] = []
 
     for harness, (path, doc) in present.items():
+        # Validate before projecting. The composed document is assembled from
+        # known keys only, so `resolve_scopes`' unknown-key check can never
+        # fire for a legacy file — without this, a typo like
+        # `allowed_destination:` is dropped in silence and the gate it was
+        # meant to set reverts to the fail-open migration path. The canonical
+        # config hard-errors on the same input; the shim must not be the more
+        # permissive of the two.
+        unknown = sorted(str(key) for key in doc if key not in KNOWN_HARNESS_CONFIG_FIELDS)
+        if unknown:
+            sys.stderr.write(
+                f"{path}: unknown key(s): {', '.join(unknown)} "
+                f"(known: {', '.join(sorted(KNOWN_HARNESS_CONFIG_FIELDS))})\n"
+            )
+            return None
         harnesses[harness] = {
             key: doc[key]
             for key in KNOWN_HARNESS_CONFIG_FIELDS
@@ -1382,7 +1396,9 @@ def resolve_config(
             if composed is None:
                 return None
             doc, sources = composed
-            sys.stderr.write(
+            # stdout, for the same reason as the fail-open notice below:
+            # GitHub parses workflow commands from a step's stdout only.
+            sys.stdout.write(
                 f"::warning file={path}::`--config {path.name}` names a "
                 f"pre-sync-v2 per-harness config. It was read as the config for "
                 f"that harness alone. Move to a single {CANONICAL_CONFIG_NAME} "
@@ -1612,8 +1628,11 @@ def resolve_scopes(
             patterns = base_allowed_patterns
         else:
             # GitHub Actions annotation surfaces this in the PR UI instead of
-            # being buried in a green-checkmark build's stderr.
-            sys.stderr.write(
+            # being buried in a green-checkmark build's stderr. It goes to
+            # stdout deliberately: workflow commands are parsed from a step's
+            # stdout, so the same text on stderr is plain log output and this
+            # fail-open run stays invisible.
+            sys.stdout.write(
                 f"::warning file={config_path}::`allowed_destinations` not set "
                 f"for {where}. Upstream sync-targets are currently trusted to "
                 f"write anywhere in the consumer tree. Add an "

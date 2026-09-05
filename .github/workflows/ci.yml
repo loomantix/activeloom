@@ -353,6 +353,7 @@ jobs:
           harnesses = doc.get('harnesses')
           assert isinstance(harnesses, dict) and harnesses, "harnesses must be a non-empty mapping"
           targets = []
+          target_sets = []
           seen = {}
           for name, harness in harnesses.items():
               assert isinstance(harness, dict), f"harness {name} must be a mapping"
@@ -367,9 +368,11 @@ jobs:
               seen[legacy] = name
               own = harness.get('targets')
               assert isinstance(own, list) and own, f"harness {name} needs a non-empty target list"
+              target_sets.append((name, own))
               targets.extend(own)
           shared = (doc.get('shared') or {}).get('targets') or []
           assert isinstance(shared, list), "shared.targets must be a list"
+          target_sets.append(('shared', shared))
           targets.extend(shared)
           # A destination shipped by two harnesses is a write both of them own.
           # `create_if_missing` is the one shape where that is fine: the first
@@ -381,6 +384,28 @@ jobs:
                   continue
               assert destination not in owners, f"two target sets write {destination!r}"
               owners[destination] = True
+          # A destination deleted by one set and written by another is decided
+          # by plan order (harnesses first, shared last), not by anything the
+          # manifest declares. Within one set the delete-then-reissue pair is
+          # deliberate and order-dependent, so only cross-set pairs are
+          # refused. Without this, the exemption above lets exactly the
+          # collision the owners check exists to catch through.
+          writers = {}
+          deleters = {}
+          for set_name, entries in target_sets:
+              for t in entries:
+                  destination = t.get('destination') if isinstance(t, dict) else None
+                  if not destination:
+                      continue
+                  (deleters if t.get('delete') else writers).setdefault(
+                      destination, set()
+                  ).add(set_name)
+          for destination, deleting in deleters.items():
+              writing = writers.get(destination, set())
+              assert not (writing - deleting), (
+                  f"{destination!r} is deleted by {sorted(deleting)} and written by "
+                  f"{sorted(writing - deleting)}; the outcome depends on plan order"
+              )
           for t in targets:
               assert isinstance(t, dict), f"non-mapping target: {t!r}"
               if t.get('delete'):

@@ -1648,9 +1648,9 @@ def test_main_allowlist_absent_warns_and_proceeds_migration(
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
     assert (consumer_dir / ".claude" / "skills" / "foo.md").read_text() == "content\n"
-    err = capsys.readouterr().err
-    assert "`allowed_destinations` not set" in err
-    assert "fail-closed" in err  # migration pointer
+    out = capsys.readouterr().out
+    assert "`allowed_destinations` not set" in out
+    assert "fail-closed" in out  # migration pointer
 
 
 def test_main_empty_allowlist_refuses_everything(
@@ -2189,7 +2189,9 @@ def test_main_fail_open_warning_uses_github_annotation(
 ) -> None:
     # Fail-open warning must surface in the GitHub PR UI via the
     # `::warning::` annotation prefix — otherwise a green-checkmark
-    # build buries the migration prompt in stderr where nobody looks.
+    # build buries the migration prompt where nobody looks. It must go to
+    # stdout: GitHub parses workflow commands from a step's stdout, so the
+    # same text on stderr is plain log output and renders no annotation.
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml", {"targets": []}
     )
@@ -2197,9 +2199,9 @@ def test_main_fail_open_warning_uses_github_annotation(
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
-    err = capsys.readouterr().err
-    assert "::warning" in err
-    assert "allowed_destinations" in err
+    out = capsys.readouterr().out
+    assert "::warning" in out
+    assert "allowed_destinations" in out
 
 
 # ---------------------------------------------------------------------------

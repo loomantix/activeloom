@@ -305,7 +305,34 @@ def test_top_level_allowed_destinations_govern_a_harness_that_declares_none(
     upstream: Path,
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # The list must actually *bound* the harness, not merely permit it. A
+    # top-level list that admits the target proves nothing: an inheriting
+    # harness and a harness inheriting no gate at all both fail open to
+    # "write anywhere", so both would pass an existence assertion. Declare a
+    # list that EXCLUDES the harness's target and require the refusal.
+    _manifest(upstream)
+    _write(
+        consumer / CANONICAL,
+        {"harnesses": {"claude": {}}, "allowed_destinations": [".github/**"]},
+    )
+
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "not in consumer's `allowed_destinations` (harness claude)" in err
+    assert ".claude/skills/a/SKILL.md" in err
+    assert not (consumer / ".claude/skills/a/SKILL.md").exists()
+
+
+def test_top_level_allowed_destinations_admit_an_inheriting_harness(
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The other half of the pair above: the same harness, with the target
+    # inside the top-level list, is delivered.
     _manifest(upstream)
     _write(
         consumer / CANONICAL,
@@ -360,6 +387,36 @@ def test_harness_substitutions_override_the_top_level(
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
     assert (consumer / ".claude/skills/a/SKILL.md").read_text() == "value: narrow\n"
+
+
+def test_top_level_substitutions_reach_a_harness_that_does_not_redeclare_them(
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The override case above passes even if the harness inherits nothing,
+    # because the harness redeclares the only key in play. This pins the
+    # merge itself: a key set only at the top level must still render for a
+    # harness that declares its own, unrelated, override.
+    _manifest(upstream)
+    (upstream / "claude-src.md").write_text("own: <<NAME>>\nshared: <<SHARED>>\n")
+    doc = yaml.safe_load((upstream / "scripts" / "sync-targets.yml").read_text())
+    doc["harnesses"]["claude"]["targets"][0]["substitutions"] = ["NAME", "SHARED"]
+    _write(upstream / "scripts" / "sync-targets.yml", doc)
+    _write(
+        consumer / CANONICAL,
+        {
+            "harnesses": {"claude": {"substitutions": {"NAME": "narrow"}}},
+            "substitutions": {"NAME": "broad", "SHARED": "inherited"},
+            "allowed_destinations": ["**"],
+        },
+    )
+
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
+    assert (consumer / ".claude/skills/a/SKILL.md").read_text() == (
+        "own: narrow\nshared: inherited\n"
+    )
 
 
 def test_reserved_substitution_key_is_rejected(
@@ -536,6 +593,31 @@ def test_shared_skip_is_the_intersection_of_the_legacy_files(
     assert (consumer / ".github/shared.md").is_file()
 
 
+def test_legacy_config_rejects_an_unknown_top_level_key(
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The composed document is assembled from known keys only, so the
+    # canonical path's unknown-key check can never fire for a legacy file.
+    # Without a check here, `allowed_destination:` (singular) is dropped in
+    # silence and the gate reverts to the fail-open migration path — on the
+    # one run nobody is re-reading the file. Fail closed instead, exactly as
+    # the canonical config does for the same typo.
+    _manifest(upstream)
+    _write(
+        consumer / ".platform-config.yml",
+        {"allowed_destination": [".claude/**"], "skip_targets": []},
+    )
+
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "unknown key(s): allowed_destination" in err
+    assert not (consumer / ".claude").exists()
+
+
 def test_shared_skip_survives_when_every_legacy_file_skips_it(
     sync_engine: ModuleType,
     upstream: Path,
@@ -605,7 +687,9 @@ def test_explicit_legacy_config_selects_one_harness(
     assert rc == 0
     assert (consumer / ".codex/skills/a/SKILL.md").is_file()
     assert not (consumer / ".claude").exists()
-    assert "names a pre-sync-v2 per-harness config" in capsys.readouterr().err
+    # stdout, not stderr: GitHub parses `::warning` workflow commands
+    # from a step's stdout only.
+    assert "names a pre-sync-v2 per-harness config" in capsys.readouterr().out
 
 
 def test_no_config_at_all_is_an_error(
