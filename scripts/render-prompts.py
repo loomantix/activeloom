@@ -566,7 +566,7 @@ def unowned_files(profiles: list[Profile], written: list[Path]) -> list[Path]:
     from `prompts/skills/<skill>/`, so anything else is drift regardless of who
     put it there — which is the only rule that does not require the gate to
     guess at intent. The single exception is the build artifacts the render step
-    already excludes at the source (`__pycache__`, `.pyc`), because CI's own
+    already excludes at the source (`__pycache__`, `.pyc`, `.pyo`), because CI's own
     compile step drops those next to the rendered issue scripts and failing on
     them would turn the gate red for something no PR did.
 

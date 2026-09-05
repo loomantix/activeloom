@@ -426,3 +426,49 @@ def test_the_shipped_declaration_is_well_formed(tmp_path: Path) -> None:
     )
     declared = json.loads((REPO_ROOT / MANIFEST_PATH).read_text(encoding="utf-8"))
     assert payload["promptStack"]["present"] == len(declared["files"])
+
+
+def test_both_abstention_reasons_are_reported(tmp_path: Path) -> None:
+    """A manifest problem must not hide a repo-instructions read failure.
+
+    The two digests are documented as independent, and they are. The reason
+    channel is one scalar, so a short-circuit that reports only the first cause
+    leaves a null `repoInstructionsSha256` with a stated reason that belongs to
+    the other half — a null that looks diagnosed. The counters cannot close the
+    gap either: `present: 0` is what a wholly absent set and a set that bailed
+    on a read error both report.
+    """
+    populate(tmp_path)
+    (tmp_path / MANIFEST_PATH).unlink()
+    # A directory where a declared file is expected reads as EISDIR, which is a
+    # failure rather than an absence, and needs no non-root user to arrange.
+    (tmp_path / "CLAUDE.md").unlink()
+    (tmp_path / "CLAUDE.md").mkdir()
+
+    payload = run("--repo-root", str(tmp_path))
+    assert payload["promptStackSha256"] is None
+    assert payload["repoInstructionsSha256"] is None
+    assert "no prompt-stack.json under .claude" in payload["error"]
+    assert "the repo instructions could not be read" in payload["error"]
+
+
+def test_a_single_abstention_reason_reads_unchanged(tmp_path: Path) -> None:
+    """Reporting both causes must not reword the one-cause case."""
+    populate(tmp_path)
+    (tmp_path / MANIFEST_PATH).unlink()
+    payload = run("--repo-root", str(tmp_path))
+    assert payload["error"] == "no prompt-stack.json under .claude"
+
+
+def test_the_two_engine_copies_of_this_helper_are_identical() -> None:
+    """One implementation, two install locations — enforced, not conventional.
+
+    Every case in this file runs the `.claude` copy. That proves nothing about
+    the `.codex` copy unless the two are the same bytes: `HARNESS_ROOT` is
+    derived from the script's own location, so the sibling resolves a different
+    manifest, a different root cross-check, and a different path prefix. Two
+    copies that drift mint two identities for one prompt generation, which is
+    the failure this whole mechanism exists to prevent.
+    """
+    sibling = REPO_ROOT / ".codex/skills/critique/scripts" / "prompt-stack-hash.js"
+    assert sibling.read_bytes() == SCRIPT.read_bytes()

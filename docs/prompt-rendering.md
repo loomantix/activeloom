@@ -40,7 +40,7 @@ a file in neither the inventory nor the render — a hand-added `EXTRA.md`, a
 `scripts/` addition that a `SKILL.md` then sources — was previously in no set
 the gate compared and so was reported by nothing at all. The only exceptions are
 the build artifacts the render already excludes at the source (`__pycache__`,
-`.pyc`), because CI's own compile step drops those next to the rendered issue
+`.pyc`, `.pyo`), because CI's own compile step drops those next to the rendered issue
 scripts. Anything else that belongs in a rendered skill belongs in
 `prompts/skills/<skill>/`.
 

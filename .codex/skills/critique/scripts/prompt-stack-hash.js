@@ -326,6 +326,19 @@ function digestOver(name, root, files) {
   };
 }
 
+/**
+ * Join the independent abstention reasons into the single `error` field.
+ *
+ * The two digests fail independently, so a reason channel that reports only the
+ * first non-null cause can state a manifest problem while silently dropping a
+ * concurrent repo-instructions read failure. When exactly one reason is present
+ * the field reads exactly as it did before.
+ */
+function joinReasons(reasons) {
+  const stated = reasons.filter((reason) => reason != null);
+  return stated.length === 0 ? null : stated.join('; ');
+}
+
 /** The shape emitted when nothing could be computed at all. */
 function abstained(message) {
   return {
@@ -387,13 +400,16 @@ function main(argv) {
         declared: instructions.declared,
         present: instructions.present,
       },
-      error:
+      // Both halves report. `??` short-circuits, so a single scalar built from
+      // the first non-null reason hides a repo-instructions read failure behind
+      // a manifest problem — and a null digest whose stated reason is the wrong
+      // one looks diagnosed, which is the same failure as a digest that looks
+      // measured, one level down.
+      error: joinReasons([
         manifest.error ??
-        (stack.failed
-          ? 'the prompt stack could not be read'
-          : instructions.failed
-            ? 'the repo instructions could not be read'
-            : null),
+          (stack.failed ? 'the prompt stack could not be read' : null),
+        instructions.failed ? 'the repo instructions could not be read' : null,
+      ]),
     });
   } catch (error) {
     return emit(
