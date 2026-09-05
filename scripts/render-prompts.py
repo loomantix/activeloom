@@ -69,7 +69,7 @@ VERSION_PATH = REPO_ROOT / "PROMPT_STACK_VERSION"
 # ledger's `--prompt-stack-version`, which accepts a protocol token — a looser
 # grammar than this. Anything that is not three dotted integers is a typo here,
 # and a typo that ships is a prompt generation nobody can order.
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 # Emitted into each harness root that declares a `prompt_stack`. Read by that
 # root's `skills/critique/scripts/prompt-stack-hash.js`.
@@ -206,7 +206,9 @@ class Profile:
         self.root = normalized_root
         self.values = values
         self.skills = cast(dict[str, dict[str, object] | None], skills)
-        self.prompt_stack = _validated_prompt_stack(doc.get("prompt_stack"), path, normalized_root)
+        self.prompt_stack = _validated_prompt_stack(
+            doc.get("prompt_stack"), path, normalized_root
+        )
 
     def values_for(self, skill: str) -> dict[str, object]:
         """Profile-wide values, with this skill's per-skill values layered on.
@@ -260,7 +262,9 @@ def _validated_prompt_stack(
     stack: list[str] = []
     for entry in declared:
         if not isinstance(entry, str) or not entry:
-            raise ValueError(f"{path}: `prompt_stack` entries must be non-empty strings")
+            raise ValueError(
+                f"{path}: `prompt_stack` entries must be non-empty strings"
+            )
         entry_path = Path(entry)
         if (
             entry.startswith("~")
@@ -275,6 +279,11 @@ def _validated_prompt_stack(
             raise ValueError(
                 f"{path}: `prompt_stack` entries must sit inside {root!r}: {entry!r}"
             )
+        if entry == f"{root}/{STACK_MANIFEST_NAME}":
+            raise ValueError(
+                f"{path}: `prompt_stack` must not include its own generated "
+                f"{STACK_MANIFEST_NAME!r}"
+            )
         stack.append(entry)
     if len(stack) != len(set(stack)):
         raise ValueError(f"{path}: `prompt_stack` contains duplicate paths")
@@ -284,7 +293,9 @@ def _validated_prompt_stack(
 def load_prompt_stack_version() -> str:
     """Read and validate the single-sourced prompt-stack version."""
     if VERSION_PATH.is_symlink():
-        raise ValueError(f"prompt-stack version file must not be a symlink: {VERSION_PATH}")
+        raise ValueError(
+            f"prompt-stack version file must not be a symlink: {VERSION_PATH}"
+        )
     try:
         raw = VERSION_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -297,6 +308,104 @@ def load_prompt_stack_version() -> str:
             f"{VERSION_PATH}: version must be MAJOR.MINOR.PATCH; got {raw.strip()!r}"
         )
     return version
+
+
+def _version_tuple(version: str, label: str) -> tuple[int, int, int]:
+    """Parse the canonical stack version for an ordering comparison."""
+    if not VERSION_RE.fullmatch(version):
+        raise ValueError(f"{label}: version must be MAJOR.MINOR.PATCH; got {version!r}")
+    return cast(tuple[int, int, int], tuple(int(part) for part in version.split(".")))
+
+
+def _git_file_at(revision: str, relative: str) -> str | None:
+    """Read one UTF-8 file from an already-verified Git revision."""
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{relative}"],
+        check=False,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout
+    if result.returncode == 128:
+        return None
+    raise RuntimeError(
+        f"could not read {relative!r} at {revision}: {result.stderr.strip()}"
+    )
+
+
+def _manifest_files_at(revision: str, root: str) -> set[str]:
+    """Read the declared stack from one generated manifest at a Git revision."""
+    relative = f"{root}/{STACK_MANIFEST_NAME}"
+    raw = _git_file_at(revision, relative)
+    if raw is None:
+        return set()
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{revision}:{relative} is not valid JSON") from exc
+    files = doc.get("files") if isinstance(doc, dict) else None
+    if not isinstance(files, list) or any(not isinstance(item, str) for item in files):
+        raise ValueError(f"{revision}:{relative} declares an invalid file list")
+    return set(files)
+
+
+def verify_prompt_stack_version(
+    base_revision: str, profiles: list[Profile], current_version: str
+) -> None:
+    """Require the stack version to advance whenever a declared input changes."""
+    verified = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{base_revision}^{{commit}}"],
+        check=False,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if verified.returncode != 0:
+        raise ValueError(
+            f"could not resolve prompt-stack comparison base {base_revision!r}"
+        )
+    base = verified.stdout.strip()
+    base_version_raw = _git_file_at(base, VERSION_PATH.name)
+    # The first commit that introduces the version has no earlier ordering value.
+    if base_version_raw is None:
+        return
+    base_version = base_version_raw.strip()
+    base_order = _version_tuple(base_version, f"{base}:{VERSION_PATH.name}")
+    current_order = _version_tuple(current_version, str(VERSION_PATH))
+
+    current_files = {
+        entry for profile in profiles for entry in (profile.prompt_stack or [])
+    }
+    base_files: set[str] = set()
+    manifest_paths: set[str] = set()
+    for root in sorted(SUPPORTED_PROFILE_ROOTS):
+        relative = f"{root}/{STACK_MANIFEST_NAME}"
+        old_files = _manifest_files_at(base, root)
+        base_files.update(old_files)
+        if old_files or any(
+            profile.root == root and profile.prompt_stack for profile in profiles
+        ):
+            manifest_paths.add(relative)
+
+    tracked = sorted(base_files | current_files | manifest_paths)
+    changed = subprocess.run(
+        ["git", "diff", "--quiet", f"{base}...HEAD", "--", *tracked],
+        check=False,
+        cwd=REPO_ROOT,
+    )
+    if changed.returncode not in (0, 1):
+        raise RuntimeError("could not compare prompt-stack inputs against the base")
+    if current_order < base_order:
+        raise ValueError(
+            f"{VERSION_PATH.name} regressed from {base_version} to {current_version}"
+        )
+    if changed.returncode == 1 and current_order <= base_order:
+        raise ValueError(
+            "declared prompt-stack inputs changed without advancing "
+            f"{VERSION_PATH.name} beyond {base_version}"
+        )
 
 
 def load_profiles() -> list[Profile]:
@@ -443,7 +552,16 @@ def verify_stack_declarations(profiles: list[Profile], written: list[Path]) -> N
     generated = {path.as_posix() for path in written}
     for profile in profiles:
         for entry in profile.prompt_stack or []:
-            if entry in generated or (REPO_ROOT / entry).is_file():
+            relative = Path(entry)
+            try:
+                _validate_generated_path(relative)
+            except ValueError:
+                renderer_owned = False
+            else:
+                renderer_owned = True
+            if renderer_owned and entry in generated:
+                continue
+            if not renderer_owned and _regular_file_without_symlinks(relative):
                 continue
             raise ValueError(
                 f"{profile.path}: `prompt_stack` names a file that does not exist: "
@@ -451,6 +569,16 @@ def verify_stack_declarations(profiles: list[Profile], written: list[Path]) -> N
                 "or retired — a stack entry that silently reads as absent moves "
                 "every digest at once."
             )
+
+
+def _regular_file_without_symlinks(relative: Path) -> bool:
+    """Return true only for an in-repo regular file with no symlink component."""
+    current = REPO_ROOT
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            return False
+    return current.is_file()
 
 
 def _source_files(source_dir: Path) -> Iterator[Path]:
@@ -772,11 +900,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="verify the committed harness roots match a fresh render; write nothing",
     )
+    parser.add_argument(
+        "--check-version-against",
+        metavar="REVISION",
+        help="require the stack version to advance when declared inputs changed",
+    )
     args = parser.parse_args(argv)
+
+    if args.check_version_against and not args.check:
+        parser.error("--check-version-against requires --check")
 
     engine = _load_sync_engine()
     profiles = load_profiles()
     version = load_prompt_stack_version()
+    if args.check_version_against:
+        verify_prompt_stack_version(args.check_version_against, profiles, version)
     roster = rendered_roster()
     if not roster:
         sys.stderr.write(f"no skill sources found under {SKILLS_SRC}\n")

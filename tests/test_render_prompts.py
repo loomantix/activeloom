@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 from types import ModuleType
 
@@ -218,7 +219,10 @@ class Harness:
         self._renders += 1
         out = self.root / f"out-{self._renders}"
         written = self._rp.render_tree(
-            self._se, self._rp.load_profiles(), out, self._rp.load_prompt_stack_version()
+            self._se,
+            self._rp.load_profiles(),
+            out,
+            self._rp.load_prompt_stack_version(),
         )
         return out, written
 
@@ -891,7 +895,9 @@ def test_manifest_files_are_sorted_not_declaration_ordered(harness: Harness) -> 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("x\n", encoding="utf-8")
     out, _ = harness.render()
-    payload = json.loads((out / ".claude/prompt-stack.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (out / ".claude/prompt-stack.json").read_text(encoding="utf-8")
+    )
     assert payload["files"] == [".claude/a.md", ".claude/z.md"]
 
 
@@ -907,6 +913,42 @@ def test_a_declared_stack_file_that_does_not_exist_fails_the_render(
     out, written = stacked.render()
     with pytest.raises(ValueError, match="names a file that does not exist"):
         stacked._rp.verify_stack_declarations(stacked._rp.load_profiles(), written)
+
+
+def test_a_declared_stack_file_must_not_be_a_symlink(stacked: Harness) -> None:
+    workflow = stacked.root / ".claude/REVIEW_WORKFLOW.md"
+    outside = stacked.root / "outside.md"
+    outside.write_text("# outside\n", encoding="utf-8")
+    workflow.unlink()
+    workflow.symlink_to(outside)
+    _, written = stacked.render()
+    with pytest.raises(ValueError, match="names a file that does not exist"):
+        stacked._rp.verify_stack_declarations(stacked._rp.load_profiles(), written)
+
+
+def test_a_stale_renderer_owned_file_does_not_satisfy_a_declaration(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for relative, text in ONE_SKILL.items():
+        harness.write_source(relative, text)
+    harness.write_profiles(
+        {
+            "claude": (
+                "root: .claude\n"
+                "values:\n  INVOKE: '/'\n  ENGINE_ID: claude\n"
+                "skills:\n  demo:\n    FM_EXTRAS: ''\n"
+                "prompt_stack:\n  - .claude/skills/retired/SKILL.md\n"
+            )
+        }
+    )
+    stale = harness.root / ".claude/skills/retired/SKILL.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("# stale\n", encoding="utf-8")
+    monkeypatch.setattr(harness._rp, "RETIRED_SKILLS", frozenset({"retired"}))
+
+    _, written = harness.render()
+    with pytest.raises(ValueError, match="names a file that does not exist"):
+        harness._rp.verify_stack_declarations(harness._rp.load_profiles(), written)
 
 
 def test_a_declared_stack_file_may_be_a_rendered_output(harness: Harness) -> None:
@@ -957,6 +999,10 @@ def test_a_profile_declaring_a_stack_must_name_its_engine(harness: Harness) -> N
         ("prompt_stack:\n  - .codex/SKILL.md\n", "must sit inside"),
         ("prompt_stack:\n  - x.md\n", "must sit inside"),
         (
+            "prompt_stack:\n  - .claude/prompt-stack.json\n",
+            "must not include its own generated",
+        ),
+        (
             "prompt_stack:\n  - .claude/a.md\n  - .claude/a.md\n",
             "duplicate paths",
         ),
@@ -980,7 +1026,9 @@ def test_a_profile_may_omit_the_prompt_stack(
     assert render_prompts.Profile(path).prompt_stack is None
 
 
-@pytest.mark.parametrize("raw", ["1.0\n", "v1.0.0\n", "1.0.0-rc1\n", "\n", "next\n"])
+@pytest.mark.parametrize(
+    "raw", ["1.0\n", "v1.0.0\n", "1.0.0-rc1\n", "١.٢.٣\n", "\n", "next\n"]
+)
 def test_a_malformed_version_fails_the_render(harness: Harness, raw: str) -> None:
     """A typo here is a prompt generation nobody can order."""
     harness.version_path.write_text(raw, encoding="utf-8")
@@ -999,7 +1047,63 @@ def test_the_version_file_tolerates_surrounding_whitespace(harness: Harness) -> 
     assert harness._rp.load_prompt_stack_version() == "2.10.4"
 
 
-def test_the_manifest_is_inside_the_ownership_domain(render_prompts: ModuleType) -> None:
+def test_changed_stack_inputs_require_a_version_advance(
+    stacked: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stacked._rp, "format_markdown", lambda *a, **k: None)
+    assert stacked._rp.main([]) == 0
+    subprocess.run(["git", "init", "-q"], cwd=stacked.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=stacked.root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=stacked.root,
+        check=True,
+    )
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=stacked.root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    workflow = stacked.root / ".claude/REVIEW_WORKFLOW.md"
+    workflow.write_text("# changed workflow\n", encoding="utf-8")
+    subprocess.run(["git", "add", str(workflow)], cwd=stacked.root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "prompt change",
+        ],
+        cwd=stacked.root,
+        check=True,
+    )
+    profiles = stacked._rp.load_profiles()
+    with pytest.raises(ValueError, match="without advancing PROMPT_STACK_VERSION"):
+        stacked._rp.verify_prompt_stack_version(base, profiles, "1.2.3")
+
+    stacked.version_path.write_text("1.3.0\n", encoding="utf-8")
+    stacked._rp.verify_prompt_stack_version(base, profiles, "1.3.0")
+
+
+def test_the_manifest_is_inside_the_ownership_domain(
+    render_prompts: ModuleType,
+) -> None:
     """It is the one generated file that is not inside a skill directory."""
     render_prompts._validate_generated_path(Path(".claude/prompt-stack.json"))
     for rejected in (
@@ -1104,7 +1208,9 @@ def test_a_stale_output_is_reported_once_not_twice(
 ) -> None:
     """A retired output is stale, and stale already names the problem."""
     assert cli._rp.main([]) == 0
-    (cli._rp.SKILLS_SRC / "demo/extra.md").write_text("gone next time\n", encoding="utf-8")
+    (cli._rp.SKILLS_SRC / "demo/extra.md").write_text(
+        "gone next time\n", encoding="utf-8"
+    )
     assert cli._rp.main([]) == 0
     (cli._rp.SKILLS_SRC / "demo/extra.md").unlink()
 

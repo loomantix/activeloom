@@ -311,7 +311,20 @@ jobs:
       # a Markdown table changes the alignment Prettier enforces.
       - name: Rendered prompt roots are current
         if: '!cancelled()'
-        run: python3 scripts/render-prompts.py --check
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -z "${GITHUB_BASE_REF:-}" ]; then
+              echo "GITHUB_BASE_REF empty for pull_request event — aborting." >&2
+              exit 1
+            fi
+            git fetch --no-tags origin "${GITHUB_BASE_REF}"
+            base="origin/${GITHUB_BASE_REF}"
+          else
+            base="HEAD~1"
+          fi
+          python3 scripts/render-prompts.py --check \
+            --check-version-against "$base"
 
       # The other half of the same contract: the renderer proves the generated
       # roots match their source, this proves every shared skill the renderer

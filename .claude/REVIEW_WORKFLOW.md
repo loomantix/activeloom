@@ -553,8 +553,11 @@ a consumer comparing digests over time sees one discontinuity that is not a
 prompt change. The record carries no field naming which definition produced a
 digest, so for this boundary use the one already in the data:
 `promptStackVersion` is null in every record emitted before version 2 — nothing
-computed it — and a `MAJOR.MINOR.PATCH` string in every record after. A null
-version therefore means a version 1 digest, and the two are never comparable.
+computed it — and a `MAJOR.MINOR.PATCH` string accompanies every successfully
+computed digest after. For a record carrying `promptStackSha256`, a null version
+therefore means a version 1 digest; null version plus null digest is an
+abstention whose `error` states the reason. Version 1 and version 2 digests are
+never comparable.
 This discriminator is specific to this boundary and is not a general mechanism:
 a third definition would need the ledger to carry the hash-input version
 itself.

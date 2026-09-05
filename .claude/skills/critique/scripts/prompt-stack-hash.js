@@ -24,8 +24,24 @@
 // never fail a review that found real defects.
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+} from 'node:fs';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -77,6 +93,9 @@ const SUPPORTED_MANIFEST_VERSION = 1;
 /** `MAJOR.MINOR.PATCH`, the only shape the upstream version file may hold. */
 const VERSION_RE = /^\d+\.\d+\.\d+$/;
 
+/** No prompt or instruction file should approach this size. */
+const MAX_INPUT_BYTES = 1024 * 1024;
+
 /**
  * The harness root this copy of the helper belongs to, derived from its own
  * location rather than hard-coded.
@@ -118,17 +137,78 @@ const REPO_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md'];
  * caller reports the reason so a consumer whose sync did not deliver the
  * manifest can be told apart from one whose manifest is corrupt.
  */
-function readManifest(root) {
-  let raw;
+function readBoundedRegular(root, relativePath) {
+  let realRoot;
   try {
-    raw = readFileSync(join(root, HARNESS_ROOT, MANIFEST_NAME), 'utf8');
+    realRoot = realpathSync(root);
   } catch (error) {
     const code = error?.code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      return { error: `no ${MANIFEST_NAME} under ${HARNESS_ROOT}` };
+    return { state: code === 'ENOENT' ? 'absent' : 'error' };
+  }
+
+  const candidate = resolve(realRoot, relativePath);
+  const fromRoot = relative(realRoot, candidate);
+  if (
+    fromRoot === '' ||
+    fromRoot === '..' ||
+    fromRoot.startsWith(`..${sep}`) ||
+    isAbsolute(fromRoot)
+  ) {
+    return { state: 'error' };
+  }
+
+  let current = realRoot;
+  try {
+    for (const part of fromRoot.split(sep)) {
+      current = join(current, part);
+      if (lstatSync(current).isSymbolicLink()) {
+        return { state: 'error' };
+      }
     }
+  } catch (error) {
+    const code = error?.code;
+    return {
+      state: code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'error',
+    };
+  }
+
+  let descriptor;
+  try {
+    descriptor = openSync(
+      candidate,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > MAX_INPUT_BYTES) {
+      return { state: 'error' };
+    }
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return { state: 'present', bytes: bytes.subarray(0, offset) };
+  } catch (error) {
+    const code = error?.code;
+    return {
+      state: code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'error',
+    };
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function readManifest(root) {
+  const found = readBoundedRegular(root, join(HARNESS_ROOT, MANIFEST_NAME));
+  if (found.state === 'absent') {
+    return { error: `no ${MANIFEST_NAME} under ${HARNESS_ROOT}` };
+  }
+  if (found.state !== 'present') {
     return { error: `${MANIFEST_NAME} could not be read` };
   }
+  const raw = found.bytes.toString('utf8');
 
   let doc;
   try {
@@ -257,20 +337,12 @@ function normalise(bytes) {
  * computed over the rest of the stack would be a different stack's digest
  * wearing this one's name.
  */
-function readDeclared(path) {
-  let bytes;
-  try {
-    bytes = readFileSync(path);
-  } catch (error) {
-    const code = error?.code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      return { state: 'absent' };
-    }
-    return { state: 'error' };
-  }
+function readDeclared(root, relativePath) {
+  const found = readBoundedRegular(root, relativePath);
+  if (found.state !== 'present') return found;
   return {
     state: 'present',
-    digest: createHash('sha256').update(normalise(bytes)).digest('hex'),
+    digest: createHash('sha256').update(normalise(found.bytes)).digest('hex'),
   };
 }
 
@@ -297,7 +369,7 @@ function digestOver(name, root, files) {
   hash.update(`loom-review-prompt-hash/v${HASH_INPUT_VERSION}/${name}\n`);
   let present = 0;
   for (const relative of ordered) {
-    const found = readDeclared(join(root, relative));
+    const found = readDeclared(root, relative);
     if (found.state === 'error') {
       // Never a partial digest. A hash that covered some of the stack would be
       // indistinguishable from one that covered all of it.

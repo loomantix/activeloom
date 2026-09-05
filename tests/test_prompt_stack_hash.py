@@ -243,7 +243,7 @@ def test_an_absent_file_is_recorded_not_skipped(tmp_path: Path) -> None:
 
 
 def test_a_stack_with_nothing_present_yields_null(tmp_path: Path) -> None:
-    """"Everything absent" is not a prompt generation to compare against."""
+    """ "Everything absent" is not a prompt generation to compare against."""
     write_manifest(tmp_path)
     payload = run("--repo-root", str(tmp_path))
     assert payload["promptStackSha256"] is None
@@ -358,21 +358,48 @@ def test_a_changed_declaration_changes_the_identity(tmp_path: Path) -> None:
         pytest.param(None, "{ not json", "not valid JSON", id="malformed-json"),
         pytest.param(None, "[]\n", "not an object", id="array"),
         pytest.param(None, "null\n", "not an object", id="null"),
-        pytest.param({"manifestVersion": 2}, None, "unsupported manifestVersion", id="newer-schema"),
-        pytest.param({"manifestVersion": None}, None, "unsupported manifestVersion", id="absent-schema"),
+        pytest.param(
+            {"manifestVersion": 2},
+            None,
+            "unsupported manifestVersion",
+            id="newer-schema",
+        ),
+        pytest.param(
+            {"manifestVersion": None},
+            None,
+            "unsupported manifestVersion",
+            id="absent-schema",
+        ),
         pytest.param({"root": ".codex"}, None, "declares root", id="another-harness"),
-        pytest.param({"promptStackVersion": "1.0"}, None, "MAJOR.MINOR.PATCH", id="short-version"),
-        pytest.param({"promptStackVersion": None}, None, "MAJOR.MINOR.PATCH", id="absent-version"),
+        pytest.param(
+            {"promptStackVersion": "1.0"}, None, "MAJOR.MINOR.PATCH", id="short-version"
+        ),
+        pytest.param(
+            {"promptStackVersion": None}, None, "MAJOR.MINOR.PATCH", id="absent-version"
+        ),
         pytest.param({"files": []}, None, "declares no prompt files", id="empty-set"),
-        pytest.param({"files": "x"}, None, "declares no prompt files", id="files-not-a-list"),
-        pytest.param({"files": ["../outside.md"]}, None, "unusable path", id="escaping"),
+        pytest.param(
+            {"files": "x"}, None, "declares no prompt files", id="files-not-a-list"
+        ),
+        pytest.param(
+            {"files": ["../outside.md"]}, None, "unusable path", id="escaping"
+        ),
         pytest.param({"files": ["/etc/passwd"]}, None, "unusable path", id="absolute"),
-        pytest.param({"files": [".claude/../../x.md"]}, None, "unusable path", id="traversal"),
-        pytest.param({"files": [".codex/SKILL.md"]}, None, "unusable path", id="other-root"),
-        pytest.param({"files": [".claude\\x.md"]}, None, "unusable path", id="backslash"),
+        pytest.param(
+            {"files": [".claude/../../x.md"]}, None, "unusable path", id="traversal"
+        ),
+        pytest.param(
+            {"files": [".codex/SKILL.md"]}, None, "unusable path", id="other-root"
+        ),
+        pytest.param(
+            {"files": [".claude\\x.md"]}, None, "unusable path", id="backslash"
+        ),
         pytest.param({"files": [3]}, None, "unusable path", id="not-a-string"),
         pytest.param(
-            {"files": [".claude/a.md", ".claude/a.md"]}, None, "duplicate path", id="duplicate"
+            {"files": [".claude/a.md", ".claude/a.md"]},
+            None,
+            "duplicate path",
+            id="duplicate",
         ),
     ],
 )
@@ -414,6 +441,44 @@ def test_an_absent_declaration_is_told_apart_from_a_corrupt_one(
     corrupt = run("--repo-root", str(tmp_path))
     assert absent["error"] == "no prompt-stack.json under .claude"
     assert corrupt["error"] != absent["error"]
+
+
+def test_a_symlinked_manifest_abstains(tmp_path: Path) -> None:
+    populate(tmp_path)
+    manifest = tmp_path / MANIFEST_PATH
+    external = tmp_path / "external-manifest.json"
+    external.write_bytes(manifest.read_bytes())
+    manifest.unlink()
+    manifest.symlink_to(external)
+
+    payload = run("--repo-root", str(tmp_path))
+    assert payload["promptStackSha256"] is None
+    assert payload["promptStackVersion"] is None
+    assert payload["error"] == "prompt-stack.json could not be read"
+
+
+def test_a_symlinked_declared_prompt_abstains(tmp_path: Path) -> None:
+    populate(tmp_path)
+    prompt = tmp_path / PROMPT_STACK_FILES[0]
+    external = tmp_path / "external-prompt.md"
+    external.write_text("# machine-local\n", encoding="utf-8")
+    prompt.unlink()
+    prompt.symlink_to(external)
+
+    payload = run("--repo-root", str(tmp_path))
+    assert payload["promptStackSha256"] is None
+    assert payload["promptStackVersion"] == STACK_VERSION
+    assert payload["error"] == "the prompt stack could not be read"
+
+
+def test_an_oversized_declared_prompt_abstains(tmp_path: Path) -> None:
+    populate(tmp_path)
+    write(tmp_path, PROMPT_STACK_FILES[0], b"x" * (1024 * 1024 + 1))
+
+    payload = run("--repo-root", str(tmp_path))
+    assert payload["promptStackSha256"] is None
+    assert payload["promptStackVersion"] == STACK_VERSION
+    assert payload["error"] == "the prompt stack could not be read"
 
 
 def test_the_shipped_declaration_is_well_formed(tmp_path: Path) -> None:
