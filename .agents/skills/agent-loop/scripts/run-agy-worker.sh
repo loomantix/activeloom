@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=run-agy-launch.sh
 source "$SCRIPT_DIR/run-agy-launch.sh"
 
+# claude-cli-invocations:start
 run_agy_and_parse "agy worker" \
     --model "$model" \
     --effort high \
@@ -31,3 +32,4 @@ run_agy_and_parse "agy worker" \
     --output-format json \
     --print-timeout 60m \
     --print "$AGENT_LOOP_PROMPT"
+# claude-cli-invocations:end

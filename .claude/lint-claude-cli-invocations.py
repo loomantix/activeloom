@@ -2,9 +2,15 @@
 r"""Lint unattended agent-CLI invocations inside synced shell scripts.
 
 Scope (the scan set is the union of):
-  - every `.sh` file tracked under `.claude/skills/` or `prompts/skills/`
-    (SCOPE_DIRS), AND
+  - every `.sh`/`.bash`/executable file tracked under `<root>/skills/` for every
+    harness prompt root declared in `prompts/profiles/*.yml`, plus
+    `prompts/skills/` (see `scope_dirs`), AND
   - every `.sh` `source:` entry in `scripts/sync-targets.yml`.
+
+The root half of that scope is derived, not hand-listed: a profile that
+declares a new root puts that root's launchers in scope on the same commit.
+See `.claude/prompt_roots.py` for why, and for the floor that stops a deleted
+profile from silently shrinking the scan.
 
 Every `claude` or `agy` invocation (or use of `--permission-mode`,
 `bypassPermissions`, or `--dangerously-skip-permissions`)
@@ -34,23 +40,43 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+# Running `python3 .claude/lint-claude-cli-invocations.py` already puts
+# `.claude/` on sys.path[0], but an importlib/`-c` caller does not get that.
+# Pin it explicitly so the shared scope module resolves either way.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import prompt_roots  # noqa: E402  (needs the sys.path line above)
+
 # `prompts/skills` is the rendered roster's source tree: a shell payload added there is
 # rendered into every harness root, so it belongs in scope alongside the output.
-# The `.codex/skills` and `.agents/skills` roots are deliberately NOT here yet —
-# they ship their own launcher scripts whose paths are absent from ALLOWLIST
-# below, so adding them is a separate change that has to extend the allowlist in
-# the same commit.
-SCOPE_DIRS = [".claude/skills", "prompts/skills"]
+# It is named literally because it is not under any harness root.
+SOURCE_SCOPE_DIR = "prompts/skills"
+
+# The subtree of each harness prompt root that carries executable payloads.
+# Deliberately not the whole root: `.claude/` also holds this linter and its
+# sibling, which quote every sensitive token they exist to detect, and putting
+# a gate's own fixtures inside its scan set is how a gate ends up disabled.
+ROOT_SCOPE_SUBDIR = "skills"
 SCOPE_SUFFIXES = (".sh", ".bash")
 ALLOWLIST_PATH = ".claude/claude-cli-invocations.allowlist"
 SYNC_TARGETS_PATH = "scripts/sync-targets.yml"
 
 # Files that MUST be present in the scan set. Pins the gate's scope so an
 # attacker can't escape by removing agent-loop.sh from sync-targets.yml or
-# moving it outside SCOPE_DIRS while keeping it synced from a fresh entry.
+# moving it outside the scanned dirs while keeping it synced from a fresh entry.
+# One entry per harness root, so removing a root's launchers from the scan set
+# is a hard error rather than a quieter scan.
 REQUIRED_FILES = [
     ".claude/skills/agent-loop/scripts/agent-loop.sh",
     ".claude/skills/critique/scripts/run-agy-review.sh",
+    ".codex/skills/agent-loop/scripts/agent-loop.sh",
+    ".codex/skills/agent-loop/scripts/run-codex-review.sh",
+    ".codex/skills/critique/scripts/run-claude-review.sh",
+    ".codex/skills/critique/scripts/run-agy-review.sh",
+    ".agents/skills/agent-loop/scripts/agent-loop.sh",
+    ".agents/skills/agent-loop/scripts/run-agy-review.sh",
+    ".agents/skills/agent-loop/scripts/run-agy-worker.sh",
+    ".agents/skills/agent-loop/scripts/run-agy-launch.sh",
 ]
 
 START_MARKER = "# claude-cli-invocations:start"
@@ -70,6 +96,13 @@ END_MARKER = "# claude-cli-invocations:end"
 # synced script launches unattended, and its permission-skip flag grants the
 # same tool authority.
 #
+# `--dangerously-bypass-approvals-and-sandbox` and its alias `--yolo` are the
+# Codex equivalents of `--dangerously-skip-permissions`: they remove the
+# sandbox entirely (full write, network, and command execution) with no
+# approval prompt. The imported Codex launchers use them, and until they were
+# added here an unattended full-access Codex launch was the one escalation
+# spelling this gate did not read.
+#
 # Out-of-model (explicitly NOT caught — relies on CODEOWNERS + reviewer
 # attention as the structural defense):
 #  - Bare-word positional invocations: `claude help`, `claude prompt.txt`,
@@ -84,6 +117,8 @@ SENSITIVE_TOKEN_RE = re.compile(
     r"|--permission-mode"
     r"|bypassPermissions"
     r"|--dangerously-skip-permissions"
+    r"|--dangerously-bypass-approvals-and-sandbox"
+    r"|--yolo\b"
 )
 
 COMMENT_LINE_RE = re.compile(r"^\s*#")
@@ -261,8 +296,18 @@ def _is_shell_payload(path: str) -> bool:
     return path.endswith(SCOPE_SUFFIXES) or _is_executable_regular_file(path)
 
 
-def _git_tracked_files() -> list[str]:
-    cmd = ["git", "ls-files", "--", *SCOPE_DIRS]
+def scope_dirs(roots: list[str]) -> list[str]:
+    """Directories scanned for executable payloads, derived from the profiles.
+
+    One `<root>/skills` per declared harness prompt root, plus the rendered
+    roster's source tree. Returned sorted so the scan order — and therefore
+    the finding order — does not depend on profile filenames.
+    """
+    return sorted({f"{root}/{ROOT_SCOPE_SUBDIR}" for root in roots} | {SOURCE_SCOPE_DIR})
+
+
+def _git_tracked_files(dirs: list[str]) -> list[str]:
+    cmd = ["git", "ls-files", "--", *dirs]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return [p for p in result.stdout.splitlines() if _is_shell_payload(p)]
 
@@ -390,7 +435,8 @@ def scan(paths: list[str], allowlist_entries: list[AllowlistEntry]) -> int:
             if not any(r.start_line < inv_line < r.end_line for r in regions):
                 print(
                     f"{path}:{inv_line}: sensitive token (`claude` / `agy` / `--permission-mode` / "
-                    f"`bypassPermissions` / `--dangerously-skip-permissions`) "
+                    f"`bypassPermissions` / `--dangerously-skip-permissions` / "
+                    f"`--dangerously-bypass-approvals-and-sandbox` / `--yolo`) "
                     f"outside any {START_MARKER!r}/{END_MARKER!r} pair."
                 )
                 print(f"    > {inv_text.rstrip()}")
@@ -706,6 +752,91 @@ def run_self_test() -> int:
             hash_region(regions_lf[0]) != hash_region(regions_crlf[0]),
             "line-ending flip should rotate the hash",
         )
+
+    # --- Codex full-access spellings ---
+    # `--dangerously-bypass-approvals-and-sandbox` (and its `--yolo` alias)
+    # remove the sandbox AND the approval prompt. They are the Codex peers of
+    # `--dangerously-skip-permissions`; the imported Codex launchers use them,
+    # and before they were added here a full-access unattended Codex launch was
+    # the one escalation spelling the gate could not read.
+    for label, line in [
+        ("codex bypass long form", 'codex exec --dangerously-bypass-approvals-and-sandbox -C "$W"'),
+        ("codex bypass alias", '"$review_cli" exec --yolo --ephemeral "$prompt"'),
+    ]:
+        check(
+            f"CODEX-BYPASS/{label}",
+            bool(SENSITIVE_TOKEN_RE.search(line)),
+            f"not flagged: {line!r}",
+        )
+    # `--yolo` is bounded by \b so it does not swallow longer flags that merely
+    # start with it — a lint that flags `--yolo-mode-disabled` teaches people to
+    # ignore it.
+    check(
+        "CODEX-BYPASS/--yolo is not a prefix match",
+        not SENSITIVE_TOKEN_RE.search("--yolonger --flag"),
+        "`--yolo` must not match inside a longer flag name",
+    )
+
+    # --- scope derivation ---
+    # Scope is one `<root>/skills` per declared profile root plus the rendered
+    # roster's source tree. The properties that matter: a root the profiles
+    # declare is always covered, the source tree is always covered, and the
+    # order does not depend on which profile file was read first.
+    derived = scope_dirs([".codex", ".claude", ".agents"])
+    check(
+        "SCOPE/derives one skills dir per root, plus the source tree",
+        derived
+        == [
+            ".agents/skills",
+            ".claude/skills",
+            ".codex/skills",
+            "prompts/skills",
+        ],
+        f"got {derived!r}",
+    )
+    check(
+        "SCOPE/a future root is covered without editing this file",
+        ".cursor/skills" in scope_dirs([".claude", ".cursor"]),
+        f"got {scope_dirs(['.claude', '.cursor'])!r}",
+    )
+    check(
+        "SCOPE/source tree survives an empty root set",
+        scope_dirs([]) == [SOURCE_SCOPE_DIR],
+        f"got {scope_dirs([])!r}",
+    )
+    # Not scoping a whole root is deliberate: `.claude/` holds this linter,
+    # which quotes every token it detects. A gate whose own fixtures are inside
+    # its scan set gets switched off.
+    check(
+        "SCOPE/root itself is never the scan dir",
+        all(d != ".claude" for d in scope_dirs([".claude"])),
+        f"got {scope_dirs(['.claude'])!r}",
+    )
+
+    # --- shared profile-root derivation (fail-closed contract) ---
+    # Errors from `prompt_roots` are exit-2 for both gates, so the contract
+    # tested here is "malformed input yields an error", never "yields fewer
+    # roots".
+    for label, root_value in [
+        ("absolute", "/etc"),
+        ("parent escape", "../outside"),
+        ("home-relative", "~/elsewhere"),
+        ("unnormalized", "./claude"),
+        ("empty", ""),
+        ("non-string", 7),
+    ]:
+        normalized, error = prompt_roots._validate_root(root_value, "p.yml")
+        check(
+            f"PROMPT-ROOTS/{label} root rejected",
+            normalized is None and error is not None,
+            f"got {normalized!r} / {error!r}",
+        )
+    normalized, error = prompt_roots._validate_root(".cursor", "p.yml")
+    check(
+        "PROMPT-ROOTS/a plain root is accepted",
+        normalized == ".cursor" and error is None,
+        f"got {normalized!r} / {error!r}",
+    )
 
     # --- sensitive-token discovery ---
     inv = find_sensitive_token_lines("x.sh", _FIXTURE_BARE_INVOCATION)
@@ -1038,13 +1169,13 @@ def run_self_test() -> int:
 
     # --- _synced_shell_sources via temporary manifest files ---
     # Cover the manifest parser end-to-end: synced shell/executable payloads
-    # outside SCOPE_DIRS surface, non-executable prose is filtered out, malformed YAML and
+    # outside the scanned dirs surface, non-executable prose is filtered out, malformed YAML and
     # missing manifests produce clear errors. Runs in a tempdir-as-cwd so
     # the test never touches the real `scripts/sync-targets.yml`.
     test_cases: list[tuple[str, str, list[str], bool]] = [
         # (label, manifest_yaml, expected_sources, expect_errors)
         (
-            "synced .sh outside SCOPE_DIRS surfaces",
+            "synced .sh outside the scanned dirs surfaces",
             "targets:\n"
             "  - source: .claude/hooks/foo.sh\n"
             "    destination: .claude/hooks/foo.sh\n"
@@ -1054,7 +1185,7 @@ def run_self_test() -> int:
             False,
         ),
         (
-            "synced .bash outside SCOPE_DIRS surfaces",
+            "synced .bash outside the scanned dirs surfaces",
             "targets:\n"
             "  - source: .claude/hooks/foo.bash\n"
             "    destination: .claude/hooks/foo.bash\n",
@@ -1190,16 +1321,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.compute_hash:
         return compute_hashes(args.compute_hash)
 
+    # Scope comes from the declared profile roots. A profile set that cannot be
+    # read is exit-2, never a smaller scan: the whole point of deriving scope is
+    # that a root can never be in the tree and outside the gate at the same time.
+    roots, root_errors = prompt_roots.declared_prompt_roots()
+    if root_errors:
+        for err in root_errors:
+            print(err, file=sys.stderr)
+        return 2
+    dirs = scope_dirs(roots)
+
     try:
-        tracked = _git_tracked_files()
+        tracked = _git_tracked_files(dirs)
     except subprocess.CalledProcessError as exc:
         print(f"git ls-files failed: {exc.stderr}", file=sys.stderr)
         return 2
 
-    # Belt-and-braces scope: union of (a) tracked shell or executable files under SCOPE_DIRS
+    # Belt-and-braces scope: union of (a) tracked shell or executable files under `dirs`
     # — covers upstream-only files that a developer might still execute —
     # and (b) all shell or executable `source` paths in sync-targets.yml — covers files
-    # outside SCOPE_DIRS that get propagated to consumers. (b) is the
+    # outside those dirs that get propagated to consumers. (b) is the
     # primary mission per the threat model; (a) catches the on-disk
     # variant. If sync-targets.yml is unreadable / unparseable, fail loud
     # rather than silently degrading to (a) only.
@@ -1211,9 +1352,9 @@ def main(argv: list[str] | None = None) -> int:
     paths = sorted(set(tracked) | set(synced))
 
     # Scope-pin: REQUIRED_FILES must be in the scan set. Defends against
-    # an attacker moving the locked script out of SCOPE_DIRS *and* removing
-    # it from sync-targets.yml in the same PR (lint would otherwise scan
-    # an empty file list and exit clean).
+    # an attacker moving the locked script out of the scanned dirs *and*
+    # removing it from sync-targets.yml in the same PR (lint would otherwise
+    # scan an empty file list and exit clean).
     missing = [f for f in REQUIRED_FILES if f not in paths]
     if missing:
         print(

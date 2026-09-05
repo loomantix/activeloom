@@ -1390,8 +1390,10 @@ verify_converged_review_outcomes() {
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         verify_v3_result_attestation Gemini gemini "$CONVERGED_GEMINI_OUTCOME_FILE" \
             "$CONVERGED_GEMINI_OUTCOME_SIGNATURE" || return 1
+        # claude-cli-invocations:start
         verify_v3_result_attestation Claude claude "$CONVERGED_CLAUDE_OUTCOME_FILE" \
             "$CONVERGED_CLAUDE_OUTCOME_SIGNATURE" || return 1
+        # claude-cli-invocations:end
     fi
 }
 
@@ -1711,10 +1713,12 @@ run_review_convergence() {
             gemini_classification="$REVIEW_PASS_CLASSIFICATION"
             gemini_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
             gemini_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
+            # claude-cli-invocations:start
             recover_v3_review_pass Claude claude "$round" "$round_base_sha" || {
                 recovery_message "Could not recover the completed Claude leg for final-round completion."
                 return 1
             }
+            # claude-cli-invocations:end
             claude_classification="$REVIEW_PASS_CLASSIFICATION"
             claude_outcome_file="$REVIEW_PASS_OUTCOME_FILE"
             claude_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
@@ -1766,9 +1770,11 @@ run_review_convergence() {
             }
 
             pass_status=0
+            # claude-cli-invocations:start
             run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" "$round" \
                 "configured Claude review hook" "Claude review hook" "Claude review" \
                 "Claude review" || pass_status=$?
+            # claude-cli-invocations:end
             if [ "$pass_status" -eq 2 ]; then
                 require_fast_forward_base_advance "$round_base_sha" \
                     "during review round $round (Claude boundary)" || return 1

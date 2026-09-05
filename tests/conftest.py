@@ -1,6 +1,7 @@
 """Shared fixtures + an `importlib` loader that lets the test modules
 import the hyphenated script files (`sync-engine.py`,
-`lint-collapse-sites.py`, `create-signed-commit.py`, `render-prompts.py`)
+`lint-collapse-sites.py`, `create-signed-commit.py`, `render-prompts.py`,
+`lint-prompt-parity.py`)
 as Python modules without renaming them on disk.
 
 The scripts are designed to be run from CI as `python3 scripts/foo.py`,
@@ -45,6 +46,12 @@ def sync_engine() -> ModuleType:
 def render_prompts() -> ModuleType:
     """The prompt renderer (scripts/render-prompts.py)."""
     return _load_script("render_prompts", SCRIPTS_DIR / "render-prompts.py")
+
+
+@pytest.fixture(scope="session")
+def lint_prompt_parity() -> ModuleType:
+    """The cross-root parity lint (scripts/lint-prompt-parity.py)."""
+    return _load_script("lint_prompt_parity", SCRIPTS_DIR / "lint-prompt-parity.py")
 
 
 @pytest.fixture(scope="session")
