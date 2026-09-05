@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import filecmp
 import importlib.util
+import json
 import re
 import shutil
 import subprocess
@@ -53,6 +54,31 @@ PROMPTS_DIR = REPO_ROOT / "prompts"
 SKILLS_SRC = PROMPTS_DIR / "skills"
 PROFILES_DIR = PROMPTS_DIR / "profiles"
 MANIFEST_PATH = PROMPTS_DIR / "rendered-files.txt"
+
+# The prompt stack's semantic version, single-sourced here and stamped into
+# every emitted stack manifest. It is not the sync protocol pin: that tag is
+# force-moved whenever content changes, so two consumers "on sync-v1" at
+# different times are running different prompts and the tag carries no content
+# identity. It is not `hashInputVersion` either — that versions the *hash input
+# definition*. This one versions the prompts themselves, and it is what makes a
+# telemetry comparison legible: a digest identifies a generation but does not
+# order two of them.
+VERSION_PATH = REPO_ROOT / "PROMPT_STACK_VERSION"
+
+# Deliberately strict. The value is emitted into a telemetry record through the
+# ledger's `--prompt-stack-version`, which accepts a protocol token — a looser
+# grammar than this. Anything that is not three dotted integers is a typo here,
+# and a typo that ships is a prompt generation nobody can order.
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+# Emitted into each harness root that declares a `prompt_stack`. Read by that
+# root's `skills/critique/scripts/prompt-stack-hash.js`.
+STACK_MANIFEST_NAME = "prompt-stack.json"
+
+# The manifest's own schema version, carried in the file so a consumer holding
+# an older synced copy is told what it is holding rather than guessed at. A
+# reader that does not recognise the value must abstain, not improvise.
+STACK_MANIFEST_SCHEMA_VERSION = 1
 
 # Same pin as the `Prettier --check` step in `.github/workflows/ci.yml`. If one
 # moves and the other does not, CI fails on the renderer's own output — which is
@@ -180,6 +206,9 @@ class Profile:
         self.root = normalized_root
         self.values = values
         self.skills = cast(dict[str, dict[str, object] | None], skills)
+        self.prompt_stack = _validated_prompt_stack(
+            doc.get("prompt_stack"), path, normalized_root
+        )
 
     def values_for(self, skill: str) -> dict[str, object]:
         """Profile-wide values, with this skill's per-skill values layered on.
@@ -208,6 +237,195 @@ def _validated_values(
             raise ValueError(f"{path}: `{label}.{key}` must be a string")
         validated[key] = value
     return validated
+
+
+def _validated_prompt_stack(
+    declared: object, path: Path, root: str
+) -> list[str] | None:
+    """Validate a profile's declared prompt stack, or return None if it has none.
+
+    Absent and empty are different profiles. A harness with no hasher declares
+    nothing and gets no manifest; a harness that declared an empty list would be
+    claiming its review runs on no prompts at all, which is never true and would
+    ship a manifest whose digest is null by construction.
+
+    Paths are repo-root-relative and must sit inside the profile's own root.
+    That is what keeps one harness's manifest from naming another's files: the
+    digest is supposed to identify *this* engine's prompt generation, and a
+    cross-root entry would fold a sibling's edits into it.
+    """
+    if declared is None:
+        return None
+    if not isinstance(declared, list) or not declared:
+        raise ValueError(f"{path}: `prompt_stack` must be a non-empty list of paths")
+    prefix = f"{root}/"
+    stack: list[str] = []
+    for entry in declared:
+        if not isinstance(entry, str) or not entry:
+            raise ValueError(
+                f"{path}: `prompt_stack` entries must be non-empty strings"
+            )
+        entry_path = Path(entry)
+        if (
+            entry.startswith("~")
+            or entry_path.is_absolute()
+            or ".." in entry_path.parts
+            or entry_path.as_posix() != entry
+        ):
+            raise ValueError(
+                f"{path}: `prompt_stack` entries must be plain relative paths: {entry!r}"
+            )
+        if not entry.startswith(prefix):
+            raise ValueError(
+                f"{path}: `prompt_stack` entries must sit inside {root!r}: {entry!r}"
+            )
+        if entry == f"{root}/{STACK_MANIFEST_NAME}":
+            raise ValueError(
+                f"{path}: `prompt_stack` must not include its own generated "
+                f"{STACK_MANIFEST_NAME!r}"
+            )
+        stack.append(entry)
+    if len(stack) != len(set(stack)):
+        raise ValueError(f"{path}: `prompt_stack` contains duplicate paths")
+    return stack
+
+
+def load_prompt_stack_version() -> str:
+    """Read and validate the single-sourced prompt-stack version."""
+    if VERSION_PATH.is_symlink():
+        raise ValueError(
+            f"prompt-stack version file must not be a symlink: {VERSION_PATH}"
+        )
+    try:
+        raw = VERSION_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise ValueError(
+            f"missing {VERSION_PATH.name}: the prompt stack has no semantic version to stamp"
+        ) from None
+    version = raw.strip()
+    if not VERSION_RE.match(version):
+        raise ValueError(
+            f"{VERSION_PATH}: version must be MAJOR.MINOR.PATCH; got {raw.strip()!r}"
+        )
+    return version
+
+
+def _version_tuple(version: str, label: str) -> tuple[int, int, int]:
+    """Parse the canonical stack version for an ordering comparison."""
+    if not VERSION_RE.fullmatch(version):
+        raise ValueError(f"{label}: version must be MAJOR.MINOR.PATCH; got {version!r}")
+    return cast(tuple[int, int, int], tuple(int(part) for part in version.split(".")))
+
+
+def _git_file_at(revision: str, relative: str) -> str | None:
+    """Read one UTF-8 file from an already-verified Git revision."""
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{relative}"],
+        check=False,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout
+    if result.returncode == 128:
+        return None
+    raise RuntimeError(
+        f"could not read {relative!r} at {revision}: {result.stderr.strip()}"
+    )
+
+
+def _manifest_files_at(revision: str, root: str) -> set[str]:
+    """Read the declared stack from one generated manifest at a Git revision."""
+    relative = f"{root}/{STACK_MANIFEST_NAME}"
+    raw = _git_file_at(revision, relative)
+    if raw is None:
+        return set()
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{revision}:{relative} is not valid JSON") from exc
+    files = doc.get("files") if isinstance(doc, dict) else None
+    if not isinstance(files, list) or any(not isinstance(item, str) for item in files):
+        raise ValueError(f"{revision}:{relative} declares an invalid file list")
+    return set(files)
+
+
+def verify_prompt_stack_version(
+    base_revision: str, profiles: list[Profile], current_version: str
+) -> None:
+    """Require the stack version to advance whenever a declared input changes."""
+    verified = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{base_revision}^{{commit}}"],
+        check=False,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if verified.returncode != 0:
+        raise ValueError(
+            f"could not resolve prompt-stack comparison base {base_revision!r}"
+        )
+    # Both ends of the comparison must come from the same commit. The diff below
+    # is scoped to what this branch changed, so the ordering value it is judged
+    # against has to be the one this branch started from — not the tip, which
+    # carries bumps that landed on the base branch after the fork and would read
+    # as a regression the branch never made.
+    merged = subprocess.run(
+        ["git", "merge-base", verified.stdout.strip(), "HEAD"],
+        check=False,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if merged.returncode != 0:
+        raise ValueError(
+            f"could not find a merge base with {base_revision!r}: "
+            f"{merged.stderr.strip()}"
+        )
+    base = merged.stdout.strip()
+    base_version_raw = _git_file_at(base, VERSION_PATH.name)
+    # The first commit that introduces the version has no earlier ordering value.
+    if base_version_raw is None:
+        return
+    base_version = base_version_raw.strip()
+    base_order = _version_tuple(base_version, f"{base}:{VERSION_PATH.name}")
+    current_order = _version_tuple(current_version, str(VERSION_PATH))
+
+    current_files = {
+        entry for profile in profiles for entry in (profile.prompt_stack or [])
+    }
+    base_files: set[str] = set()
+    manifest_paths: set[str] = set()
+    for root in sorted(SUPPORTED_PROFILE_ROOTS):
+        relative = f"{root}/{STACK_MANIFEST_NAME}"
+        old_files = _manifest_files_at(base, root)
+        base_files.update(old_files)
+        if old_files or any(
+            profile.root == root and profile.prompt_stack for profile in profiles
+        ):
+            manifest_paths.add(relative)
+
+    tracked = sorted(base_files | current_files | manifest_paths)
+    changed = subprocess.run(
+        # Two-dot: `base` is already the merge base, so the three-dot form would
+        # recompute the same commit and only obscure that the version above and
+        # the diff here are anchored to it together.
+        ["git", "diff", "--quiet", f"{base}..HEAD", "--", *tracked],
+        check=False,
+        cwd=REPO_ROOT,
+    )
+    if changed.returncode not in (0, 1):
+        raise RuntimeError("could not compare prompt-stack inputs against the base")
+    if current_order < base_order:
+        raise ValueError(
+            f"{VERSION_PATH.name} regressed from {base_version} to {current_version}"
+        )
+    if changed.returncode == 1 and current_order <= base_order:
+        raise ValueError(
+            "declared prompt-stack inputs changed without advancing "
+            f"{VERSION_PATH.name} beyond {base_version}"
+        )
 
 
 def load_profiles() -> list[Profile]:
@@ -265,7 +483,7 @@ def rendered_roster() -> list[str]:
 
 
 def render_tree(
-    engine: ModuleType, profiles: list[Profile], destination: Path
+    engine: ModuleType, profiles: list[Profile], destination: Path, version: str
 ) -> list[Path]:
     """Render every skill for every profile under `destination`.
 
@@ -285,7 +503,102 @@ def render_tree(
                 # synced with `mode: '0755'` and are executed from the skill.
                 shutil.copymode(source, target)
                 written.append(target.relative_to(destination))
+    written.extend(write_stack_manifests(profiles, destination, version))
     return written
+
+
+def write_stack_manifests(
+    profiles: list[Profile], destination: Path, version: str
+) -> list[Path]:
+    """Emit `<root>/prompt-stack.json` for every profile that declares a stack.
+
+    The manifest is a build output for the same reason the rendered skills are:
+    the prompt stack's identity stops depending on two copies of a hasher
+    holding the same hard-coded list in the same order, and starts depending on
+    one declaration that a render either satisfies or fails on.
+    """
+    written: list[Path] = []
+    for profile in profiles:
+        if profile.prompt_stack is None:
+            continue
+        engine_id = profile.values.get("ENGINE_ID")
+        if not isinstance(engine_id, str) or not engine_id:
+            raise ValueError(
+                f"{profile.path}: a profile declaring `prompt_stack` must define "
+                "`ENGINE_ID`, which names the engine the manifest identifies"
+            )
+        relative = Path(profile.root) / STACK_MANIFEST_NAME
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            _stack_manifest_text(engine_id, profile, version), encoding="utf-8"
+        )
+        written.append(relative)
+    return written
+
+
+def _stack_manifest_text(engine_id: str, profile: Profile, version: str) -> str:
+    """Serialise one stack manifest.
+
+    Two-space JSON with a trailing newline, which is what the repo's pinned
+    Prettier produces — the emitted file sits inside a harness root the
+    repo-wide `Prettier --check` covers, so a hand-rolled shape would fail the
+    build on the renderer's own output.
+
+    Paths are sorted here so the shipped artifact is the ordered one. The
+    consumer sorts again rather than trusting this, because a manifest is a file
+    that can be edited in a consumer checkout and the hash-input definition must
+    not be one of the things such an edit can change.
+    """
+    payload = {
+        "manifestVersion": STACK_MANIFEST_SCHEMA_VERSION,
+        "promptStackVersion": version,
+        "engine": engine_id,
+        "root": profile.root,
+        "files": sorted(profile.prompt_stack or []),
+    }
+    return f"{json.dumps(payload, indent=2, ensure_ascii=False)}\n"
+
+
+def verify_stack_declarations(profiles: list[Profile], written: list[Path]) -> None:
+    """Fail the render when a declared prompt-stack file does not exist.
+
+    Without this the declaration degrades silently: the hasher reports a missing
+    file as `absent`, which is the honest answer for a consumer that never
+    received it and the wrong one for a file this repository renamed. Absence
+    would move every digest at once and read downstream as a real
+    prompt-generation change, with nothing anywhere saying a path went stale.
+    """
+    generated = {path.as_posix() for path in written}
+    for profile in profiles:
+        for entry in profile.prompt_stack or []:
+            relative = Path(entry)
+            try:
+                _validate_generated_path(relative)
+            except ValueError:
+                renderer_owned = False
+            else:
+                renderer_owned = True
+            if renderer_owned and entry in generated:
+                continue
+            if not renderer_owned and _regular_file_without_symlinks(relative):
+                continue
+            raise ValueError(
+                f"{profile.path}: `prompt_stack` names a file that does not exist: "
+                f"{entry!r}. Update the declaration when a prompt file is renamed "
+                "or retired — a stack entry that silently reads as absent moves "
+                "every digest at once."
+            )
+
+
+def _regular_file_without_symlinks(relative: Path) -> bool:
+    """Return true only for an in-repo regular file with no symlink component."""
+    current = REPO_ROOT
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            return False
+    return current.is_file()
 
 
 def _source_files(source_dir: Path) -> Iterator[Path]:
@@ -311,10 +624,22 @@ def _source_files(source_dir: Path) -> Iterator[Path]:
 def _validate_generated_path(path: Path) -> None:
     """Prove a generated path belongs to an explicit root and rendered skill."""
     owned_skills = set(rendered_roster()) | set(RETIRED_SKILLS)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError(
+            f"path is outside the renderer ownership domain: {path.as_posix()!r}"
+        )
+    # The stack manifest is the one generated file that is not inside a skill
+    # directory. It is admitted by exact name at the top of a supported root and
+    # nothing else is, so widening the domain by one file does not widen the
+    # deletion authority the generated-path inventory carries.
     if (
-        path.is_absolute()
-        or ".." in path.parts
-        or len(path.parts) < 4
+        len(path.parts) == 2
+        and path.parts[0] in SUPPORTED_PROFILE_ROOTS
+        and path.parts[1] == STACK_MANIFEST_NAME
+    ):
+        return
+    if (
+        len(path.parts) < 4
         or path.parts[0] not in SUPPORTED_PROFILE_ROOTS
         or path.parts[1] != "skills"
         or path.parts[2] not in owned_skills
@@ -375,14 +700,91 @@ def _load_manifest(profiles: list[Profile]) -> list[Path]:
     return paths
 
 
+def unowned_files(profiles: list[Profile], written: list[Path]) -> list[Path]:
+    """Return files sitting inside a rendered skill directory that no render wrote.
+
+    The generated-path inventory answers "did every file we produced survive?".
+    It cannot answer "is there anything else in there?", because a file the
+    renderer never emitted is in neither the inventory nor the written set and
+    so is reported by nothing — a hand-added `EXTRA.md`, or a `scripts/exfil.py`
+    that a `SKILL.md` sources, sat in a tree the drift gate called clean.
+
+    The ownership rule this closes the gap with: a rendered skill's directory in
+    a harness root is **wholly** owned by the renderer. Everything in it comes
+    from `prompts/skills/<skill>/`, so anything else is drift regardless of who
+    put it there — which is the only rule that does not require the gate to
+    guess at intent. The single exception is the build artifacts the render step
+    already excludes at the source (`__pycache__`, `.pyc`, `.pyo`), because CI's own
+    compile step drops those next to the rendered issue scripts and failing on
+    them would turn the gate red for something no PR did.
+
+    Retired skills are swept too, so retiring a skill empties its directory
+    rather than leaving whatever the inventory did not happen to name.
+    """
+    owned_skills = sorted(set(rendered_roster()) | set(RETIRED_SKILLS))
+    generated = set(written)
+    found: list[Path] = []
+    for profile in profiles:
+        for skill in owned_skills:
+            skill_dir = REPO_ROOT / profile.root / "skills" / skill
+            for path in _existing_files(skill_dir):
+                relative = path.relative_to(REPO_ROOT)
+                if relative in generated:
+                    continue
+                found.append(relative)
+    return sorted(set(found))
+
+
+def _existing_files(directory: Path) -> Iterator[Path]:
+    """Walk a rendered skill directory without following symlinked directories.
+
+    A symlink is yielded as a file so it is reported and removed like any other
+    unowned entry, and never descended into: a link to `/` inside a harness root
+    would otherwise turn a drift check into a filesystem-wide walk, and the
+    thing being defended against here is a hostile addition to that directory.
+    """
+    if directory.is_symlink() or not directory.is_dir():
+        return
+    for entry in sorted(directory.iterdir()):
+        if entry.is_symlink():
+            yield entry
+        elif entry.is_dir():
+            if entry.name in IGNORED_DIR_NAMES:
+                continue
+            yield from _existing_files(entry)
+        elif entry.is_file():
+            if entry.suffix in IGNORED_SUFFIXES:
+                continue
+            yield entry
+
+
+def _remove_unowned(relative: Path) -> None:
+    """Delete one unowned file after re-proving it is inside a skill we own."""
+    _validate_generated_path(relative)
+    if len(relative.parts) < 4 or relative.parts[1] != "skills":
+        # `_validate_generated_path` also admits `<root>/prompt-stack.json`,
+        # which the sweep never produces. Refuse anything that reached here by
+        # another route rather than trusting the shared validator's wider domain.
+        raise ValueError(
+            f"refusing to remove a path outside a rendered skill directory: "
+            f"{relative.as_posix()!r}"
+        )
+    target = REPO_ROOT / relative
+    if target.is_file() or target.is_symlink():
+        target.unlink()
+
+
 def _publish_outputs(
     staging: Path,
     written: list[Path],
     previously_owned: list[Path],
     profiles: list[Profile],
+    unowned: list[Path],
 ) -> None:
     """Replace the generated path set and remove outputs retired from source."""
     current = set(written)
+    for relative in unowned:
+        _remove_unowned(relative)
     for relative in sorted(set(previously_owned) - current):
         # Belt and braces with `_load_manifest`: the deleting line revalidates
         # both ownership and every existing path component.
@@ -518,10 +920,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="verify the committed harness roots match a fresh render; write nothing",
     )
+    parser.add_argument(
+        "--check-version-against",
+        metavar="REVISION",
+        help="require the stack version to advance when declared inputs changed",
+    )
     args = parser.parse_args(argv)
+
+    if args.check_version_against and not args.check:
+        parser.error("--check-version-against requires --check")
 
     engine = _load_sync_engine()
     profiles = load_profiles()
+    version = load_prompt_stack_version()
+    if args.check_version_against:
+        verify_prompt_stack_version(args.check_version_against, profiles, version)
     roster = rendered_roster()
     if not roster:
         sys.stderr.write(f"no skill sources found under {SKILLS_SRC}\n")
@@ -529,28 +942,36 @@ def main(argv: list[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         staging = Path(tmp)
-        written = render_tree(engine, profiles, staging)
+        written = render_tree(engine, profiles, staging, version)
+        verify_stack_declarations(profiles, written)
         format_markdown(staging, written)
         previously_owned = _load_manifest(profiles)
+        unowned = unowned_files(profiles, written)
 
         if args.check:
-            return _report_drift(staging, written, previously_owned)
+            return _report_drift(staging, written, previously_owned, unowned)
 
-        _publish_outputs(staging, written, previously_owned, profiles)
+        _publish_outputs(staging, written, previously_owned, profiles, unowned)
 
     print(
         f"rendered {len(roster)} skill(s) into {len(profiles)} harness root(s): "
-        f"{', '.join(p.root for p in profiles)}"
+        f"{', '.join(p.root for p in profiles)} at prompt stack version {version}"
     )
     return 0
 
 
 def _report_drift(
-    staging: Path, written: list[Path], previously_owned: list[Path]
+    staging: Path,
+    written: list[Path],
+    previously_owned: list[Path],
+    unowned: list[Path],
 ) -> int:
     missing: list[Path] = []
     differing: list[Path] = []
     stale = sorted(set(previously_owned) - set(written))
+    # A stale path is already reported as stale; reporting it twice under a
+    # second name would suggest two problems where there is one.
+    unowned = [path for path in unowned if path not in set(stale)]
     for relative in written:
         committed = _destination_path(relative)
         if not committed.exists():
@@ -566,7 +987,13 @@ def _report_drift(
         encoding="utf-8"
     ) != _manifest_text(written)
 
-    if not missing and not differing and not stale and not manifest_drift:
+    if (
+        not missing
+        and not differing
+        and not stale
+        and not unowned
+        and not manifest_drift
+    ):
         print(f"rendered output matches all {len(written)} committed file(s)")
         return 0
 
@@ -577,6 +1004,8 @@ def _report_drift(
         sys.stderr.write(f"  differs:   {relative}\n")
     for relative in stale:
         sys.stderr.write(f"  stale:     {relative}\n")
+    for relative in unowned:
+        sys.stderr.write(f"  unowned:   {relative}\n")
     if manifest_drift:
         sys.stderr.write(f"  differs:   {MANIFEST_PATH.relative_to(REPO_ROOT)}\n")
     sys.stderr.write(
@@ -584,6 +1013,13 @@ def _report_drift(
         "`prompts/skills/` (or the value in `prompts/profiles/`), then run:\n"
         "  python3 scripts/render-prompts.py\n"
     )
+    if unowned:
+        sys.stderr.write(
+            "\nA rendered skill directory is wholly owned by the renderer, so a "
+            "file it did not emit is drift whoever added it. Move it into "
+            "`prompts/skills/<skill>/` if it belongs in the prompt, or delete "
+            "it; a write-mode render removes it.\n"
+        )
     for relative in differing:
         sys.stderr.write(f"\n--- diff: {relative} ---\n")
         # Capture and re-emit rather than handing `sys.stderr` to the child:

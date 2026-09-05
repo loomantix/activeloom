@@ -98,3 +98,27 @@ skills:
 
   phone-install:
     FM_EXTRAS: 'disable-model-invocation: true'
+
+# --- prompt stack ------------------------------------------------------------
+# The review prompt files this harness's telemetry identity is computed over,
+# emitted as `<root>/prompt-stack.json` and read by
+# `skills/critique/scripts/prompt-stack-hash.js`. Declaring it here rather than
+# in the helper is the point: the list and its order stop being a convention two
+# copies of a script have to keep agreeing on, and a renamed or deleted file
+# fails the render instead of silently reading as "absent" in every digest.
+#
+# Scripts are excluded — the ledger bundle and the usage extractor are not
+# prompts, and folding them in would move the digest on every ledger release
+# while nothing about the review's instructions changed.
+#
+# This engine's finder lenses are plugin agents outside the synced surface, so
+# they are not listed: a file the helper cannot read in a consumer checkout
+# cannot be part of a digest that has to be reproducible there.
+prompt_stack:
+  - .claude/MODEL_NOTES.md
+  - .claude/REVIEW_WORKFLOW.md
+  - .claude/references/local-review-ledger.md
+  - .claude/skills/critique/SKILL.md
+  - .claude/skills/deepcritique/SKILL.md
+  - .claude/skills/refactorpass/SKILL.md
+  - .claude/skills/reviewit/SKILL.md

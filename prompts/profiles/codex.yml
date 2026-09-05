@@ -59,3 +59,30 @@ skills:
 
   phone-install:
     FM_EXTRAS: ''
+
+# --- prompt stack ------------------------------------------------------------
+# See `claude.yml` for what this block is and why it lives in the profile.
+#
+# This engine's finder lenses are role files inside the synced surface, so they
+# are covered here. The sibling engine's are plugin agents outside its synced
+# surface and are not — a difference in what each engine can read in a consumer
+# checkout, not a difference in method. The two digests were never comparable to
+# each other in the first place: each names one engine's own prompt generation.
+#
+# `code-architect.md` and `code-explorer.md` are excluded. They are roles this
+# repository ships, but no review pass loads them, so an edit to either would
+# report a prompt-generation change that no review actually saw.
+prompt_stack:
+  - .codex/REVIEW_WORKFLOW.md
+  - .codex/references/local-review-ledger.md
+  - .codex/references/roles/code-reviewer.md
+  - .codex/references/roles/comment-analyzer.md
+  - .codex/references/roles/pr-test-analyzer.md
+  - .codex/references/roles/security-reviewer.md
+  - .codex/references/roles/silent-failure-hunter.md
+  - .codex/references/roles/type-design-analyzer.md
+  - .codex/skills/critique/SKILL.md
+  - .codex/skills/deepcritique/SKILL.md
+  - .codex/skills/pr-critique/SKILL.md
+  - .codex/skills/refactorpass/SKILL.md
+  - .codex/skills/reviewit/SKILL.md

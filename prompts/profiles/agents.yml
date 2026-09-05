@@ -59,3 +59,9 @@ skills:
 
   phone-install:
     FM_EXTRAS: ''
+
+# No `prompt_stack` block. This harness has no prompt-stack hasher yet, so
+# there is nothing to consume a manifest and no engine whose prompt generation
+# it would name. Wiring it is deliberately a separate change: declaring a stack
+# here would ship a manifest that nothing reads and imply a telemetry identity
+# this harness does not yet emit.

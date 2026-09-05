@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "promptStackVersion": "1.0.0",
+  "engine": "codex",
+  "root": ".codex",
+  "files": [
+    ".codex/REVIEW_WORKFLOW.md",
+    ".codex/references/local-review-ledger.md",
+    ".codex/references/roles/code-reviewer.md",
+    ".codex/references/roles/comment-analyzer.md",
+    ".codex/references/roles/pr-test-analyzer.md",
+    ".codex/references/roles/security-reviewer.md",
+    ".codex/references/roles/silent-failure-hunter.md",
+    ".codex/references/roles/type-design-analyzer.md",
+    ".codex/skills/critique/SKILL.md",
+    ".codex/skills/deepcritique/SKILL.md",
+    ".codex/skills/pr-critique/SKILL.md",
+    ".codex/skills/refactorpass/SKILL.md",
+    ".codex/skills/reviewit/SKILL.md"
+  ]
+}

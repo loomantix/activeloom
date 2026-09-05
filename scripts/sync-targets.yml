@@ -85,6 +85,17 @@ targets:
     substitutions: []
     mode: '0644'
 
+  # The stack declaration the hasher reads: which prompt files this harness's
+  # identity is computed over, and the prompt stack's semantic version. Emitted
+  # by `scripts/render-prompts.py` from `prompts/profiles/claude.yml`. It must
+  # travel with the hasher — a consumer that receives the script and not the
+  # manifest computes no prompt identity at all, and the telemetry goes quiet in
+  # the one field it was added to fill.
+  - source: .claude/prompt-stack.json
+    destination: .claude/prompt-stack.json
+    substitutions: []
+    mode: '0644'
+
   # The bundle is ESM. Node resolves module type from the NEAREST package.json
   # walking up from the file, which in a consumer is that repo's root — so
   # without this the ledger's module type depends on the consumer's manifest:
