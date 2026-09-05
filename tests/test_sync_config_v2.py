@@ -815,6 +815,39 @@ def test_legacy_sensitive_consent_stays_with_its_harness(
         assert not (consumer / ".claude").exists()
 
 
+def test_one_fail_open_legacy_file_keeps_the_shared_scope_open(
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy file that declared no allowlist was fail-open, and its run
+    delivered the shared targets. Composing the *other* file's list over the
+    shared scope would refuse a shared target the consumer used to receive, so
+    one fail-open input keeps the synthesized shared scope open."""
+    _manifest(upstream)
+    _write(consumer / ".platform-config.yml", {})
+    _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]})
+
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
+    assert (consumer / ".github/shared.md").exists()
+
+
+def test_shared_allowlist_is_enforced_when_every_legacy_file_declares_one(
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The union still gates the shared scope when no input was fail-open."""
+    _manifest(upstream)
+    _write(consumer / ".platform-config.yml", {"allowed_destinations": [".claude/**"]})
+    _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]})
+
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
+    assert not (consumer / ".github/shared.md").exists()
+
+
 def test_legacy_shared_skip_accepts_mixed_source_and_destination_spellings(
     sync_engine: ModuleType,
     upstream: Path,

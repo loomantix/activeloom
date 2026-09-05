@@ -376,14 +376,23 @@ jobs:
           targets.extend(shared)
           # A destination shipped by two harnesses is a write both of them own.
           # `create_if_missing` is the one shape where that is fine: the first
-          # harness bootstraps it and the rest preserve it.
+          # harness bootstraps it and the rest preserve it. That only holds when
+          # *every* entry for the destination is `create_if_missing` — one plain
+          # write beside a bootstrap re-writes the file on every sync, which is
+          # exactly the preserve semantics `create_if_missing` exists to give.
           owners = {}
           for t in targets:
               destination = t.get('destination') if isinstance(t, dict) else None
-              if not destination or t.get('create_if_missing') or t.get('delete'):
+              if not destination or t.get('delete'):
                   continue
-              assert destination not in owners, f"two target sets write {destination!r}"
-              owners[destination] = True
+              owners.setdefault(destination, []).append(bool(t.get('create_if_missing')))
+          for destination, bootstraps in owners.items():
+              if len(bootstraps) == 1:
+                  continue
+              assert all(bootstraps), (
+                  f"two target sets write {destination!r}; a destination shipped by "
+                  f"more than one set must be `create_if_missing` in every one"
+              )
           # A destination deleted by one set and written by another is decided
           # by plan order (harnesses first, shared last), not by anything the
           # manifest declares. Within one set the delete-then-reissue pair is

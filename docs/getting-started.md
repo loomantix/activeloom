@@ -50,6 +50,13 @@ substitutions:
     5. Maintainability.
   WHAT_NOT_TO_SUGGEST_EXTRA: ''
 
+# Required before the sync may write a sensitive path. The shared target
+# set ships `.github/workflows/dco.yml`, which every consumer receives, so
+# this entry is what lets your first sync run. The refusal names any others
+# that appear, in a block you can paste as-is.
+allow_sensitive_writes:
+  - .github/workflows/dco.yml
+
 # Optional: opt out of specific upstream files.
 # Use either the source or destination path.
 skip_targets: []

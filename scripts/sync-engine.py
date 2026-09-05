@@ -1270,9 +1270,16 @@ def compose_legacy_config(
     * **Top-level `skip_targets` is the *intersection*.** A shared target
       skipped in two files and synced by the third was being routed to a
       single owner, not switched off; a union would silently retire it.
-    * **Top-level `allowed_destinations` and `allow_sensitive_writes` are
-      unions**, since the shared scope must keep whichever grant covered the
-      shared targets before.
+    * **Top-level `allow_sensitive_writes` is a union**, since the shared
+      scope must keep whichever grant covered the shared targets before.
+    * **Top-level `allowed_destinations` is a union, but only when *every*
+      present legacy file declared one.** A file that declared none was
+      fail-open, and its run delivered the shared targets through the absence
+      of a gate rather than through an allowlist — so there is nothing for a
+      union to be a superset of. Composing the other files' lists would gate
+      the shared set below what that consumer had, and the sync would refuse
+      a shared target it used to write. One fail-open input therefore keeps
+      the synthesized shared scope fail-open, warning included.
     """
     present: dict[str, tuple[Path, dict[str, Any]]] = {}
     for harness, path in present_legacy_configs(consumer_dir, specs, only=only).items():
@@ -1286,7 +1293,7 @@ def compose_legacy_config(
     substitutions: dict[str, object] = {}
     skip_sets: list[set[str]] = []
     allowed: list[str] = []
-    allowed_declared = False
+    allowed_declared_count = 0
     sensitive: list[str] = []
 
     for harness, (path, doc) in present.items():
@@ -1335,7 +1342,7 @@ def compose_legacy_config(
             return None
         declared_here, allowed_raw = parsed_allowed
         if declared_here:
-            allowed_declared = True
+            allowed_declared_count += 1
             allowed.extend(allowed_raw)
 
         sensitive_raw = doc.get("allow_sensitive_writes") or []
@@ -1369,7 +1376,9 @@ def compose_legacy_config(
         "skip_targets": sorted(set.intersection(*skip_sets)) if skip_sets else [],
         "allow_sensitive_writes": sorted(set(sensitive)),
     }
-    if allowed_declared:
+    # Every present file must have declared one; see the composition rules
+    # above for why one fail-open input has to keep the shared scope open.
+    if present and allowed_declared_count == len(present):
         composed["allowed_destinations"] = sorted(set(allowed))
 
     return composed, [path for path, _ in present.values()]
