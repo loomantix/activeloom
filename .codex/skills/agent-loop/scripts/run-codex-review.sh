@@ -258,9 +258,11 @@ actual_install_sha="$(review_install_digest "$review_install_root")" || {
 
 review_status=0
 if [ "$engine" = codex ]; then
+    # claude-cli-invocations:start
     "$review_cli" exec --dangerously-bypass-approvals-and-sandbox --ephemeral \
         --ignore-rules --ignore-user-config --skip-git-repo-check -C "$launch_root" \
         --add-dir "$review_worktree" "$prompt" || review_status="$?"
+    # claude-cli-invocations:end
 else
     (
         # `errexit` is suppressed inside a subshell the shell tests the status
@@ -279,10 +281,12 @@ else
         }
         unset CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
         export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+        # claude-cli-invocations:start
         "$review_cli" --effort "$CLAUDE_EFFORT_POLICY" \
             --permission-mode bypassPermissions --no-session-persistence \
             --disable-slash-commands --safe-mode \
             --add-dir "$review_worktree" --print "$prompt"
+        # claude-cli-invocations:end
     ) || review_status="$?"
 fi
 exit "$review_status"

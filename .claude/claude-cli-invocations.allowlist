@@ -1,4 +1,4 @@
-# Allowlist for `claude` CLI invocations inside synced shell scripts.
+# Allowlist for agent-CLI invocations inside synced shell scripts.
 # See .claude/lint-claude-cli-invocations.py — the lint hashes each
 # `# claude-cli-invocations:start` / `:end` region and refuses to pass
 # if the (hash, path) pair isn't listed here. Adding or rotating an
@@ -8,7 +8,40 @@
 #
 # The path field binds each approval to a specific source file —
 # copying an allowlisted region into a new synced .sh file does NOT
-# inherit the approval; the reviewer has to add a separate entry.
+# inherit the approval; the reviewer has to add a separate entry. Two
+# roots holding byte-identical regions therefore need one entry each;
+# that repetition is the binding working, not redundancy to collapse.
+#
+# Every description starts with one of two labels, so a reviewer can
+# triage the list without opening every file:
+#
+#   LAUNCH:        a real unattended agent-CLI launch. Read the region.
+#   NOT-A-LAUNCH:  a line the token scan matches but which starts no
+#                  process — `claude` / `codex` / `gemini` appearing as a
+#                  positional engine-id argument to a shell function.
+#                  Locked anyway: the region hash is what makes an edit
+#                  that turns one of these INTO a launch reviewer-visible.
+#                  A rotation on one of these is normally a rename or an
+#                  argument change, and should read as one in the diff.
 
-6a803458acd032b7304b57d4a2d3934dd767905fb951cbb60ed970fe6f3e8abd  .claude/skills/agent-loop/scripts/agent-loop.sh  agent-loop.sh: default-worker Claude CLI command builder (--print --permission-mode bypassPermissions, optional --model)
-1ba298f3be4a2b302d5a0955ff447df200077f98c613b6f50859f1367641b2a4  .claude/skills/critique/scripts/run-agy-review.sh  run-agy-review.sh: unattended Antigravity reviewer launch (gemini-3.7-flash-high, --effort high, --mode accept-edits, --dangerously-skip-permissions, --add-dir <pinned surface>, --output-format json); --print-timeout is now LOCAL_REVIEW_PASS_TIMEOUT_SECONDS (default 1800), clamped to 1-3600 inside the region, with the outer bound at +30s
+6a803458acd032b7304b57d4a2d3934dd767905fb951cbb60ed970fe6f3e8abd  .claude/skills/agent-loop/scripts/agent-loop.sh  LAUNCH: agent-loop.sh default-worker Claude CLI command builder (--print --permission-mode bypassPermissions, optional --model)
+1ba298f3be4a2b302d5a0955ff447df200077f98c613b6f50859f1367641b2a4  .claude/skills/critique/scripts/run-agy-review.sh  LAUNCH: run-agy-review.sh unattended Antigravity reviewer launch (gemini-3.7-flash-high, --effort high, --mode accept-edits, --dangerously-skip-permissions, --add-dir <pinned surface>, --output-format json); --print-timeout is now LOCAL_REVIEW_PASS_TIMEOUT_SECONDS (default 1800), clamped to 1-3600 inside the region, with the outer bound at +30s
+
+# --- Gemini harness root (.agents) ------------------------------------------
+c2b9945797dafa63ac2f5fbe5836764c0c087acdebb1cb989f764aa94c60b170  .agents/skills/agent-loop/scripts/run-agy-launch.sh  LAUNCH: the shared exec point. `"$agy_cli" "$@"` with $agy_cli from ${AGY_CLI:-agy}. Both Gemini launchers route through here, so this one line decides which binary actually runs and with which argv; the token scan cannot see it (the binary name is variable-aliased), which is exactly why it is fenced by hand
+cab649135162e117d4813b75921ad13e9bbb8c0ee9ae73a7fa99cd44ce61ec59  .agents/skills/agent-loop/scripts/run-agy-review.sh  LAUNCH: agent-loop Agy reviewer launch (--model from the --engine map, --effort, --mode accept-edits, --dangerously-skip-permissions, --disable-slash-commands, --add-dir <trusted root>, --output-format json, --print-timeout LOCAL_REVIEW_PASS_TIMEOUT_SECONDS)
+35b5fabecc5be530d2ac7d823201734024d7a1e0046e7b4399280c27043720d7  .agents/skills/agent-loop/scripts/run-agy-worker.sh  LAUNCH: agent-loop default Agy worker (--model from argv, --effort high, --mode accept-edits, --dangerously-skip-permissions, --disable-slash-commands, --output-format json, --print-timeout 60m). Unlike the reviewer this one has no --add-dir pin and a fixed 60m ceiling
+a691801e45420a24b0ad278926f8dd8555f3cce901d33b1eda9a870bcfa45407  .agents/skills/agent-loop/scripts/agent-loop.sh  NOT-A-LAUNCH: `verify_v3_result_attestation Claude claude "$FILE" "$SIG"` — engine label and engine id passed to a shell function that verifies a stored attestation
+7256706c226613b263d3cdc3ef0b03ea21113425358ef05f3010ab08bef17586  .agents/skills/agent-loop/scripts/agent-loop.sh  NOT-A-LAUNCH: `recover_v3_review_pass Claude claude "$round" "$round_base_sha"` — recovers an already-completed review leg from state; starts nothing
+786965d5a8f1fcba3f16c43a612ce1462952f23edf0c5efe72dacb53aad24f64  .agents/skills/agent-loop/scripts/agent-loop.sh  NOT-A-LAUNCH: `run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" ...` — dispatches through the configured review hook; the hook itself is the launch surface and is fenced where it is built
+
+# --- Codex harness root (.codex) --------------------------------------------
+f53d97502292956f5ca3e1f8d33c9fabfc28303ae973b64a90470d0daa025360  .codex/skills/agent-loop/scripts/agent-loop.sh  LAUNCH: default-worker Codex command builder — `codex exec --dangerously-bypass-approvals-and-sandbox -C "$AGENT_LOOP_WORKTREE"`, optional `-m <model>`, then the prompt. Same role as the Claude root's builder, with the Codex spelling of full-access: no sandbox and no approvals
+e286376abb91795fa7218accc4aa48bdecf3403725d84ec54539beeaccc848ab  .codex/skills/agent-loop/scripts/run-codex-review.sh  LAUNCH: Codex reviewer leg — `codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral --ignore-rules --ignore-user-config --skip-git-repo-check -C <launch root> --add-dir <review worktree>`. Sandbox off; the isolation is the pinned launch root, not the CLI
+48dc24657008c9507a16e97ef215d5ecff1ae45fbae8245ac6607e5d26d2e20c  .codex/skills/agent-loop/scripts/run-codex-review.sh  LAUNCH: Claude reviewer leg of the same script — `--effort $CLAUDE_EFFORT_POLICY --permission-mode bypassPermissions --no-session-persistence --disable-slash-commands --safe-mode --add-dir <review worktree> --print`. Runs inside the subshell that has already cd'd to the pinned launch root
+68050e8d4e4474352a6febd44915d9c252fb6ced26d02ccecadd29a177a899ff  .codex/skills/critique/scripts/run-agy-review.sh  LAUNCH: critique Agy reviewer launch (gemini-3.7-flash-high, --effort high, --mode accept-edits, --dangerously-skip-permissions, --add-dir <pinned surface>, --output-format json, --print-timeout LOCAL_REVIEW_PASS_TIMEOUT_SECONDS). The region covers the +30s outer bound. NOTE: unlike the Claude root's copy of this launcher, the 1-3600 ceiling assertion sits OUTSIDE this fence — tracked separately, do not read the divergence as approved
+e0f33797d09242b098e6df06fc618c67d33a19f7b6535f824063834ecd76610f  .codex/skills/critique/scripts/run-claude-review.sh  LAUNCH: cross-engine Claude pass — `exec timeout --signal=TERM --kill-after=30s <bounded> "$claude_review_cli" --effort low --permission-mode bypassPermissions --no-session-persistence --print "$prompt"`
+33081ee6d3891e54e80447b1d85ff6d940397016c573a5a7874c4ad63118dead  .codex/skills/critique/scripts/run-claude-review.sh  NOT-A-LAUNCH: `python3 -I local-review-handoff.py authorize-pass ... --engine claude --round "$round"` — records the pass in the ledger; `claude` here is the --engine value
+a691801e45420a24b0ad278926f8dd8555f3cce901d33b1eda9a870bcfa45407  .codex/skills/agent-loop/scripts/agent-loop.sh  NOT-A-LAUNCH: `verify_v3_result_attestation Claude claude "$FILE" "$SIG"` — byte-identical to the .agents region; listed separately because approval is bound to a path
+7256706c226613b263d3cdc3ef0b03ea21113425358ef05f3010ab08bef17586  .codex/skills/agent-loop/scripts/agent-loop.sh  NOT-A-LAUNCH: `recover_v3_review_pass Claude claude "$round" "$round_base_sha"` — byte-identical to the .agents region
+786965d5a8f1fcba3f16c43a612ce1462952f23edf0c5efe72dacb53aad24f64  .codex/skills/agent-loop/scripts/agent-loop.sh  NOT-A-LAUNCH: `run_review_pass Claude claude "$CLAUDE_REVIEW_HOOK" ...` — byte-identical to the .agents region
