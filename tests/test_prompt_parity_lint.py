@@ -156,6 +156,45 @@ def test_a_value_rewrapped_across_a_line_break_still_matches(
     assert "<<AGENT_DOC>>" in _norm(lint_prompt_parity, rules, ".claude", wrapped)
 
 
+def test_a_value_nested_in_another_dialect_normalizes_on_every_root(
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
+) -> None:
+    # `AGENT_DOC` is `AGENTS.md or CLAUDE.md` on one harness and `AGENTS.md` on
+    # the others, so byte-identical prose used to be tagged on two roots and
+    # left alone on the third — a residual line for text that does not differ,
+    # which put zero out of reach for every skill that names the file.
+    line = "Read AGENTS.md before starting."
+    normalized = {
+        _norm(lint_prompt_parity, rules, root, line)
+        for root in (".claude", ".codex", ".agents")
+    }
+    assert normalized == {"Read <<AGENT_DOC>> before starting."}
+
+
+def test_borrowing_is_limited_to_a_nested_value(
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
+) -> None:
+    # The borrow must never reach across values that merely share a slot.
+    # `codex` is not inside `claude`, so a deliberate cross-engine mention
+    # stays visible instead of collapsing into this root's own engine token.
+    assert "<<ENGINE>>" not in _norm(
+        lint_prompt_parity, rules, ".claude", "hand off to codex"
+    )
+
+
+def test_a_trailing_space_in_a_value_does_not_swallow_a_line_break(
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
+) -> None:
+    # `Q_BULLET` is `'Q: '` here and empty elsewhere, so it is a delete rule.
+    # A greedy `\s+` at the edge consumed the newline, the blank line and the
+    # indent behind it, merging three lines into one and hiding whatever the
+    # diff would have found in that whitespace.
+    assert (
+        _norm(lint_prompt_parity, rules, ".claude", "Q: \n\n  nested\n")
+        == "\n\n  nested\n"
+    )
+
+
 def test_the_invoke_slash_is_stripped_only_from_a_skill_reference(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
@@ -199,6 +238,27 @@ def test_a_pinned_root_with_no_profile_is_an_error(
     # dialect divergence.
     with pytest.raises(lint_prompt_parity.ParityError, match=r"no profile declares"):
         lint_prompt_parity.check_root_coverage(_profiles()[:2])
+
+
+def test_a_pinned_root_with_no_skills_tree_is_an_error(
+    lint_prompt_parity: ModuleType, tree: Path
+) -> None:
+    # A declaration that is true on paper and false on disk. `_skills_in`
+    # returns nothing for a directory that is not there, so a renamed or
+    # relocated `skills/` tree drops a whole harness out of scope without ever
+    # being missing from a comparison.
+    (tree / ".claude/skills").mkdir(parents=True)
+    (tree / ".codex/skills").mkdir(parents=True)
+    with pytest.raises(
+        lint_prompt_parity.ParityError, match=r"no skills directory.*\.agents"
+    ):
+        lint_prompt_parity.check_root_trees(tree)
+
+
+def test_the_shipped_repository_has_every_pinned_root_on_disk(
+    lint_prompt_parity: ModuleType,
+) -> None:
+    lint_prompt_parity.check_root_trees()
 
 
 def test_the_shipped_profiles_cover_every_compared_root(
@@ -317,6 +377,32 @@ def test_unmatched_empty_file_is_still_divergence(
     results = [lint_prompt_parity.SkillResult("demo", [".claude", ".codex"], [pair])]
     violations, candidates = lint_prompt_parity.evaluate(results, {})
     assert violations and not candidates
+
+
+def test_an_undecodable_difference_is_rejected_rather_than_scored_as_one_line(
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]], tree: Path
+) -> None:
+    # Scoring an unmeasurable payload as a single line is a ceiling as well as
+    # a floor: a whole document's divergence would sit under `ceiling: 1` and
+    # the number in the allowlist would stop being true.
+    _write(tree / ".claude/skills/demo/SKILL.md", "same\n")
+    _write(tree / ".codex/skills/demo/SKILL.md", "same\n")
+    (tree / ".claude/skills/demo/logo.bin").write_bytes(b"\xff\xfe\x00")
+    (tree / ".codex/skills/demo/logo.bin").write_bytes(b"\xff\xfe\x01")
+    with pytest.raises(lint_prompt_parity.ParityError, match="not both UTF-8 text"):
+        lint_prompt_parity.compare_pair("demo", ".claude", ".codex", rules, tree)
+
+
+def test_identical_undecodable_payloads_are_parity(
+    lint_prompt_parity: ModuleType, rules: dict[str, list[Any]], tree: Path
+) -> None:
+    # Only a *difference* is unmeasurable. Matching bytes are matching copies,
+    # whatever their encoding, and must not fail the gate.
+    for root in (".claude", ".codex"):
+        _write(tree / root / "skills/demo/SKILL.md", "same\n")
+        (tree / root / "skills/demo/logo.bin").write_bytes(b"\xff\xfe\x00")
+    pair = lint_prompt_parity.compare_pair("demo", ".claude", ".codex", rules, tree)
+    assert pair.lines == 0
 
 
 @pytest.mark.parametrize("kind", ["file", "directory", "dangling", "skill"])
@@ -446,6 +532,19 @@ def test_a_boolean_is_not_a_ceiling(
             lint_prompt_parity,
             tmp_path,
             {"held": [{"skill": "x", "issue": 12, "ceiling": True, "reason": "d"}]},
+        )
+
+
+def test_a_boolean_is_not_an_issue_number(
+    lint_prompt_parity: ModuleType, tmp_path: Path
+) -> None:
+    # Same `bool`-is-an-`int` trap as the ceiling above. `issue: true` was
+    # accepted and rendered in the residual table as `#True`.
+    with pytest.raises(lint_prompt_parity.ParityError, match="issue"):
+        _allowlist(
+            lint_prompt_parity,
+            tmp_path,
+            {"held": [{"skill": "x", "issue": True, "ceiling": 5, "reason": "d"}]},
         )
 
 

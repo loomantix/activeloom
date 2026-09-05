@@ -37,9 +37,20 @@ synthetic `ROOT` key for the prompt root itself (`.claude` / `.codex` /
 `.agents`), which no profile declares because the renderer gets it from
 `root:`.
 
-Values are matched with `\\s+` between words, so a value Prettier re-wrapped
-across a line break still normalizes. Single-token values match on a word
-boundary, so `claude` inside `.claude/skills` is not rewritten a second time.
+Values are matched with `\\s+` *between* words, so a value Prettier re-wrapped
+across a line break still normalizes; a leading or trailing run is matched
+horizontally instead, or a value ending in a space would eat the line break
+behind it and hide whatever the diff would have found there. Single-token
+values match on a word boundary, so `claude` inside `.claude/skills` is not
+rewritten a second time.
+
+A root's rules are built from its own values plus any *nested* dialect — where
+one harness's value for a key contains another's, the shorter form is
+recognized on both. `AGENT_DOC` is `AGENTS.md or CLAUDE.md` on Claude and
+`AGENTS.md` elsewhere, and without this the identical sentence normalizes on
+two roots and not the third, which reports a residual for text that does not
+differ and puts zero permanently out of reach. Only a substring is borrowed,
+so no engine name is ever rewritten to another engine's token.
 
 Two deliberate distortions, both of which make the diff *more* honest:
 
@@ -91,7 +102,14 @@ ALLOWLIST_PATH = DECISIONS_DIR / "parity-allowlist.yml"
 
 # Prompt roots in comparison order. Adjacent pairs are what get diffed
 # (`.claude`↔`.codex`, `.codex`↔`.agents`), which is enough to prove a
-# three-way match without reporting the same divergence twice.
+# three-way match: agreement is transitive, so two pairs settle three roots.
+#
+# The residual *count* is a pair-sum and is not deduplicated. A divergence in
+# the middle root is unmatched in both pairs and is charged to both, so the
+# magnitude depends on where in this tuple a root sits — reordering the tuple
+# re-baselines every ceiling in the allowlist. That is over-counting, never
+# under-counting, so no divergence escapes on it; it is a reason to treat a
+# ceiling as a ratchet against itself rather than as a portable measurement.
 #
 # Pinned here rather than derived from the profiles, and the distinction
 # matters: a comparator that takes its subject list from the same declaration
@@ -205,20 +223,54 @@ def check_root_coverage(profiles: Iterable[ProfileLike]) -> None:
         )
 
 
+def check_root_trees(repo_root: Path = REPO_ROOT) -> None:
+    """Require every pinned root to actually have a skills tree on disk.
+
+    `check_root_coverage` checks the *declarations* agree. This checks the
+    declaration is true, and the two failures are not the same: `_skills_in`
+    returns an empty set for a directory that is not there, so a root whose
+    `skills/` tree is renamed or relocated contributes no skills, is never
+    missing from any comparison, and drops out of scope in silence. Every copy
+    that harness holds would then go unexamined while the gate reported that
+    every divergence was accounted for.
+
+    A root with a vocabulary but no skills is also just not a state this
+    repository has. Failing on it costs a real harness nothing and turns the
+    quietest way to disable the gate into a startup error.
+    """
+    missing = sorted(
+        root for root in ROOT_ORDER if not (repo_root / root / "skills").is_dir()
+    )
+    if missing:
+        raise ParityError(
+            f"prompt root(s) with no skills directory: {missing}. Every copy in "
+            f"them would go uncompared with nothing reported; restore the tree, "
+            f"or remove the root from ROOT_ORDER and its profile."
+        )
+
+
 def _value_pattern(value: str) -> re.Pattern[str]:
     """Compile a value into a whitespace-tolerant, boundary-aware pattern.
 
-    Every whitespace run in the value becomes `\\s+`, including a leading or
-    trailing one. Two reasons: the Markdown these values were rendered into is
-    re-wrapped by Prettier, so a two-word value may straddle a line break in
-    one root and not in another; and a decoration value like `'❓ '` carries a
-    deliberate trailing space that has to be consumed with it, or the harness
-    that has no decoration is left one space short of matching.
+    Whitespace *interior* to a value becomes `\\s+`: the Markdown these values
+    were rendered into is re-wrapped by Prettier, so a two-word value may
+    straddle a line break in one root and not in another.
+
+    A leading or trailing run is matched horizontally instead. It still has to
+    be consumed — a decoration value like `'❓ '` carries a deliberate trailing
+    space, or the harness that has no decoration is left one space short of
+    matching — but `\\s+` at the edge is greedy across line breaks, so `'❓ '`
+    against `"❓ \\n\\n  nested"` swallowed the marker, the blank line and the
+    indent and merged three lines into one. Anything the diff would have seen
+    in that whitespace disappeared with it, which is the fail-open direction.
     """
+    # `re.split` brackets the value with empty strings when it starts or ends
+    # on whitespace, so the edges have to be found after those are dropped.
+    splits = [part for part in re.split(r"(\s+)", value) if part]
+    edges = {0, len(splits) - 1}
     parts = [
-        r"\s+" if part.isspace() else re.escape(part)
-        for part in re.split(r"(\s+)", value)
-        if part
+        (r"[^\S\n]+" if index in edges else r"\s+") if part.isspace() else re.escape(part)
+        for index, part in enumerate(splits)
     ]
     if not parts:
         raise ParityError("cannot build a pattern for an empty value")
@@ -241,6 +293,35 @@ class Rule:
     pattern: re.Pattern[str]
     replacement: str
     length: int
+
+
+def _values_for(
+    key: str, value: str, by_root: dict[str, dict[str, str]]
+) -> list[str]:
+    """This root's value for `key`, plus any shorter dialect nested inside it.
+
+    Rules are otherwise built from one root's own values, which makes the
+    normalization asymmetric wherever one harness's value contains another's.
+    `AGENT_DOC` is `AGENTS.md or CLAUDE.md` on Claude and `AGENTS.md`
+    elsewhere, so the identical sentence `Read AGENTS.md first` was tagged on
+    two roots and left alone on the third — a residual line for text that does
+    not differ, and one that puts zero out of reach for every skill naming the
+    file.
+
+    Only a *substring* is borrowed, which is what keeps this from erasing real
+    divergence. `claude` is not inside `codex`, so no engine name is ever
+    rewritten to another engine's token; the borrow fires exactly where two
+    dialects already spell the same slot the same way.
+    """
+    nested = {
+        found
+        for other in by_root.values()
+        if (found := other.get(key)) is not None
+        and found != value
+        and found.strip()
+        and found in value
+    }
+    return [value, *sorted(nested)]
 
 
 def build_rules(
@@ -283,10 +364,11 @@ def build_rules(
                 continue
             token = ALIASES.get(key, key)
             replacement = "" if key in empty_anywhere else f"<<{token}>>"
-            pattern = _value_pattern(value)
-            if key in CASE_INSENSITIVE_KEYS:
-                pattern = re.compile(pattern.pattern, re.IGNORECASE)
-            built.append(Rule(key, pattern, replacement, len(value)))
+            for text in _values_for(key, value, by_root):
+                pattern = _value_pattern(text)
+                if key in CASE_INSENSITIVE_KEYS:
+                    pattern = re.compile(pattern.pattern, re.IGNORECASE)
+                built.append(Rule(key, pattern, replacement, len(text)))
         built.sort(key=lambda rule: (-rule.length, rule.key))
         rules[root] = built
 
@@ -459,12 +541,18 @@ def compare_pair(
             continue
 
         if left_text is None or right_text is None:
-            # Undecodable on at least one side: fall back to a byte compare so
-            # a binary payload still counts as divergence rather than silently
-            # passing as "no lines differ".
+            # Undecodable on at least one side. Identical bytes are still
+            # parity, so only a difference is a problem — and a difference here
+            # cannot be measured at all. Scoring it as one line would let a
+            # whole document's divergence sit under a ceiling of 1 and make the
+            # number in the allowlist untrue, so it is rejected the same way a
+            # symlink is: the payload has to become diffable text.
             if left_path.read_bytes() != right_path.read_bytes():
-                result.lines += 1
-                result.diff.append(f"{name}: differs (not UTF-8 text)")
+                raise ParityError(
+                    f"{left}/skills/{skill}/{name} and {right}/skills/{skill}/{name} "
+                    f"differ but are not both UTF-8 text, so the divergence cannot "
+                    f"be measured. Prompt payloads must be diffable text."
+                )
             continue
 
         left_lines = normalize(left_text, rules[left]).splitlines(keepends=True)
@@ -598,7 +686,16 @@ def _parse_entry(path: Path, kind: str, raw: object) -> Entry:
         return Entry(skill, kind, ", ".join(records), reason, None)
 
     issue = raw.get("issue")
-    if not isinstance(issue, int) or issue <= 0:
+    # `isinstance(True, int)` is true, so the bool guard is load-bearing here
+    # exactly as it is on `ceiling` below: `issue: true` would otherwise be
+    # accepted and cited as `#True`.
+    #
+    # The shape is checked; that the issue exists is not. A `record` is
+    # resolved against the filesystem because it costs a `stat`, and the
+    # asymmetry with an issue reference is deliberate — confirming one needs a
+    # network call, and a lint that fails on a rate limit or an expired token
+    # is a lint people learn to skip.
+    if not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0:
         raise ParityError(f"{path}: `{skill}` needs an `issue` number to be held against")
     ceiling = raw.get("ceiling")
     if not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling < 0:
@@ -752,6 +849,7 @@ def main(argv: list[str] | None = None) -> int:
         renderer = _load_render_prompts()
         profiles = renderer.load_profiles()
         check_root_coverage(profiles)
+        check_root_trees()
         rules = build_rules(profiles, set(_skill_universe()))
         results = measure(rules)
         entries = load_allowlist()
