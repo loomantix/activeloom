@@ -281,6 +281,66 @@ def test_build_artifacts_inside_a_skill_are_not_compared(
     assert pair.lines == 0
 
 
+@pytest.mark.parametrize("content", ["---\n", "--strict\n", "++counter\n"])
+@pytest.mark.parametrize("added", [False, True])
+def test_header_shaped_content_is_still_divergence(
+    lint_prompt_parity: ModuleType,
+    rules: dict[str, list[Any]],
+    tree: Path,
+    content: str,
+    added: bool,
+) -> None:
+    left, right = ("same\n", content + "same\n")
+    if not added:
+        left, right = right, left
+    _write(tree / ".claude/skills/demo/SKILL.md", left)
+    _write(tree / ".codex/skills/demo/SKILL.md", right)
+    pair = lint_prompt_parity.compare_pair("demo", ".claude", ".codex", rules, tree)
+    assert pair.lines == 1
+    results = [lint_prompt_parity.SkillResult("demo", [".claude", ".codex"], [pair])]
+    violations, candidates = lint_prompt_parity.evaluate(results, {})
+    assert violations and not candidates
+
+
+@pytest.mark.parametrize("root", [".claude", ".codex"])
+def test_unmatched_empty_file_is_still_divergence(
+    lint_prompt_parity: ModuleType,
+    rules: dict[str, list[Any]],
+    tree: Path,
+    root: str,
+) -> None:
+    _write(tree / ".claude/skills/demo/SKILL.md", "same\n")
+    _write(tree / ".codex/skills/demo/SKILL.md", "same\n")
+    _write(tree / root / "skills/demo/scripts/__init__.py", "")
+    pair = lint_prompt_parity.compare_pair("demo", ".claude", ".codex", rules, tree)
+    assert pair.lines == 1
+    results = [lint_prompt_parity.SkillResult("demo", [".claude", ".codex"], [pair])]
+    violations, candidates = lint_prompt_parity.evaluate(results, {})
+    assert violations and not candidates
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "dangling", "skill"])
+def test_symlinked_skill_payload_is_rejected(
+    lint_prompt_parity: ModuleType,
+    rules: dict[str, list[Any]],
+    tree: Path,
+    kind: str,
+) -> None:
+    _write(tree / ".claude/skills/demo/SKILL.md", "same\n")
+    base = tree / ".codex/skills/demo"
+    if kind == "skill":
+        base.parent.mkdir(parents=True)
+        base.symlink_to(tree / ".claude/skills/demo", target_is_directory=True)
+    else:
+        _write(base / "SKILL.md", "same\n")
+        if kind == "directory":
+            (base / "scripts").symlink_to(tree, target_is_directory=True)
+        else:
+            (base / "run.sh").symlink_to("SKILL.md" if kind == "file" else "missing")
+    with pytest.raises(lint_prompt_parity.ParityError, match="must not be a symlink"):
+        lint_prompt_parity.compare_pair("demo", ".claude", ".codex", rules, tree)
+
+
 def test_a_skill_in_one_root_only_is_out_of_scope(
     lint_prompt_parity: ModuleType, tree: Path
 ) -> None:

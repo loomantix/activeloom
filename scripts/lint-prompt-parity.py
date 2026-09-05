@@ -362,14 +362,18 @@ def shared_skills(repo_root: Path = REPO_ROOT) -> dict[str, list[str]]:
 def _skill_files(root: str, skill: str, repo_root: Path = REPO_ROOT) -> dict[str, Path]:
     """Relative-path → absolute-path for every real file in one copy."""
     base = repo_root / root / "skills" / skill
+    if base.is_symlink():
+        raise ParityError(f"{base}: skill must not be a symlink")
     found: dict[str, Path] = {}
     for path in sorted(base.rglob("*")):
-        if path.is_symlink() or not path.is_file():
-            continue
         relative = path.relative_to(base)
         if IGNORED_DIR_NAMES.intersection(relative.parts):
             continue
         if path.suffix in IGNORED_SUFFIXES:
+            continue
+        if path.is_symlink():
+            raise ParityError(f"{path}: skill asset must not be a symlink")
+        if not path.is_file():
             continue
         found[relative.as_posix()] = path
     return found
@@ -450,7 +454,8 @@ def compare_pair(
                 result.only_right.append(name)
             else:
                 result.only_left.append(name)
-            result.lines += len(present.splitlines()) if present is not None else 1
+            # Presence itself is divergence, including empty package markers.
+            result.lines += max(1, len(present.splitlines())) if present is not None else 1
             continue
 
         if left_text is None or right_text is None:
@@ -474,8 +479,10 @@ def compare_pair(
         )
         changed = [
             line
-            for line in delta
-            if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+            # Only the first two records are file headers. Real content can
+            # start with `--` or `++` (frontmatter and shell options included).
+            for line in delta[2:]
+            if line.startswith(("+", "-"))
         ]
         result.lines += len(changed)
         if delta:
