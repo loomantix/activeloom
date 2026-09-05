@@ -178,7 +178,7 @@ When there is no `.activeloom-config.yml`, the engine reads every legacy file th
 - Per-harness keys are carried over verbatim.
 - Top-level `substitutions` are merged; two files disagreeing on one key is a real collision and fails closed.
 - Shared `skip_targets` is the **intersection**, treating a target's source and destination as equivalent opt-outs. A shared target skipped in two files and synced by the third was being routed to a single owner, not switched off; a union would silently retire it.
-- Shared `allowed_destinations` and `allow_sensitive_writes` are unions, so whichever grant covered the shared targets before still covers them. These synthesized gates apply only to shared targets; each legacy harness retains its own gates without inheriting another harness's grants.
+- Shared `allow_sensitive_writes` grants are unioned. Shared `allowed_destinations` are unioned only when every present legacy config declares an allowlist; if any omits one, the shared scope retains fail-open behavior and emits a warning. These synthesized gates apply only to shared targets; each legacy harness retains its own gates without inheriting another harness's grants.
 
 The composed config is reported in the job log. `--config <legacy file>` still works and reads that one file as its harness alone, which is the transitional invocation for a consumer still running one workflow per upstream.
 
