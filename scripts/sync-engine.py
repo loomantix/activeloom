@@ -928,13 +928,11 @@ def config_write_targets(
     Matched by resolved path rather than by filename, so an explicit
     `--config` elsewhere is covered while a config file vendored in the
     consumer tree as an example or a test fixture stays an ordinary
-    destination. Takes every path the config was read from: a compose of the
-    pre-sync-v2 files leaves several consent stores on disk and each one can
-    grant what the others gate.
+    destination. Takes every input and automatically selectable config path:
+    even a currently absent file could grant permissions on the next run.
 
-    Deletion is deliberately not covered: with the file gone
-    `allow_sensitive_writes` is absent, and absent denies every sensitive
-    write.
+    Deletion is also refused: removing a config can select a different,
+    more permissive surviving config on the next run.
     """
     offenders: list[str] = []
     for target in targets:
@@ -944,8 +942,6 @@ def config_write_targets(
         if not isinstance(dest_rel, str) or not dest_rel:
             continue
         if not isinstance(target.get("delete"), (bool, type(None))):
-            continue
-        if bool(target.get("delete")):
             continue
         dest_path = resolve_under(consumer_dir, dest_rel)
         if dest_path is None or dest_path.resolve() not in set(config_paths):
@@ -1247,7 +1243,8 @@ def present_legacy_configs(
 
 
 def compose_legacy_config(
-    consumer_dir: Path, specs: dict[str, dict[str, Any]], only: Path | None = None
+    consumer_dir: Path, specs: dict[str, dict[str, Any]], only: Path | None = None,
+    shared_targets: Sequence[Any] = (),
 ) -> tuple[dict[str, Any], list[Path]] | None:
     """Compose surviving pre-sync-v2 config files into one sync-v2 config.
 
@@ -1336,6 +1333,21 @@ def compose_legacy_config(
             return None
         sensitive.extend(sensitive_raw)
 
+    # Source and destination spellings are equivalent opt-outs for a target.
+    # Normalize before intersecting, so mixed spellings cannot re-enable it.
+    for skipped in skip_sets:
+        original_skips = set(skipped)
+        for target in shared_targets:
+            if not isinstance(target, dict):
+                continue
+            destination = target.get("destination")
+            source = target.get("source")
+            if isinstance(destination, str) and (
+                destination in original_skips
+                or isinstance(source, str) and source in original_skips
+            ):
+                skipped.add(destination)
+
     composed: dict[str, Any] = {
         "harnesses": harnesses,
         "substitutions": substitutions,
@@ -1349,21 +1361,23 @@ def compose_legacy_config(
 
 
 def resolve_config(
-    explicit: Path | None, consumer_dir: Path, specs: dict[str, dict[str, Any]]
-) -> tuple[dict[str, Any], Path, list[Path]] | None:
+    explicit: Path | None, consumer_dir: Path, specs: dict[str, dict[str, Any]],
+    shared_targets: Sequence[Any] = (),
+) -> tuple[dict[str, Any], Path, list[Path], bool] | None:
     """Load the consumer config, composing legacy files when that is all there is.
 
-    Returns the config document, the path to name in errors, and every file
-    the config was read from — the last of which the config-write refusal
-    needs, since after a compose there is more than one consent store to
-    protect.
+    Returns the config document, the path to name in errors, every input
+    config path, and whether shared defaults were synthesized from legacy
+    files. Synthesized grants must not be inherited by other harnesses.
     """
     legacy_names = {str(spec["legacy_config"]) for spec in specs.values()}
 
     if explicit is not None:
         path = explicit.resolve()
         if path.name in legacy_names:
-            composed = compose_legacy_config(consumer_dir, specs, only=path)
+            composed = compose_legacy_config(
+                consumer_dir, specs, only=path, shared_targets=shared_targets
+            )
             if composed is None:
                 return None
             doc, sources = composed
@@ -1373,12 +1387,12 @@ def resolve_config(
                 f"that harness alone. Move to a single {CANONICAL_CONFIG_NAME} "
                 f"with a `harnesses:` list.\n"
             )
-            return doc, path, sources
+            return doc, path, sources, True
         loaded = load_yaml(path)
         if not isinstance(loaded, dict):
             sys.stderr.write(f"{path}: top-level YAML document must be a mapping\n")
             return None
-        return loaded, path, [path]
+        return loaded, path, [path], False
 
     canonical = (consumer_dir / CANONICAL_CONFIG_NAME).resolve()
     if canonical.is_file():
@@ -1386,7 +1400,7 @@ def resolve_config(
         if not isinstance(loaded, dict):
             sys.stderr.write(f"{canonical}: top-level YAML document must be a mapping\n")
             return None
-        return loaded, canonical, [canonical]
+        return loaded, canonical, [canonical], False
 
     if not present_legacy_configs(consumer_dir, specs):
         # Exit 2, not 1, and by the same route `load_yaml` takes for any other
@@ -1398,7 +1412,7 @@ def resolve_config(
             f"consumer needs one config declaring which harnesses it runs.\n"
         )
         sys.exit(2)
-    composed = compose_legacy_config(consumer_dir, specs)
+    composed = compose_legacy_config(consumer_dir, specs, shared_targets=shared_targets)
     if composed is None:
         return None
     doc, sources = composed
@@ -1411,7 +1425,7 @@ def resolve_config(
     # the file itself; with several there is no single place to add a key, and
     # the honest instruction is the canonical name they are being asked to
     # write.
-    return doc, sources[0] if len(sources) == 1 else canonical, sources
+    return doc, sources[0] if len(sources) == 1 else canonical, sources, True
 
 
 def _harness_blocks(
@@ -1490,6 +1504,8 @@ def resolve_scopes(
     config_path: Path,
     consumer_dir: Path,
     specs: dict[str, dict[str, Any]],
+    *,
+    legacy: bool = False,
 ) -> tuple[list[Scope], dict[str, Scope]] | None:
     """Build the shared scope and one scope per declared harness.
 
@@ -1549,7 +1565,9 @@ def resolve_scopes(
     if base_sensitive is None:
         return None
 
-    def build(label: str, block: dict[str, Any], where: str) -> Scope | None:
+    def build(
+        label: str, block: dict[str, Any], where: str, *, inherit: bool = True
+    ) -> Scope | None:
         values = dict(base_values)
         own_values = block.get("substitutions") or {}
         if not isinstance(own_values, dict):
@@ -1584,7 +1602,7 @@ def resolve_scopes(
             patterns: list[re.Pattern[str]] | None = [
                 glob_to_regex(p) for p in own_allowed_patterns
             ]
-        elif base_allowed_declared:
+        elif inherit and base_allowed_declared:
             patterns = [glob_to_regex(p) for p in base_allowed_patterns]
         else:
             # GitHub Actions annotation surfaces this in the PR UI instead of
@@ -1605,9 +1623,9 @@ def resolve_scopes(
         return Scope(
             label=label,
             values=values,
-            skip=set(base_skip_raw) | set(own_skip),
+            skip=(set(base_skip_raw) if inherit else set()) | set(own_skip),
             allowed_patterns=patterns,
-            sensitive_write_allowlist=base_sensitive | own_sensitive,
+            sensitive_write_allowlist=(base_sensitive if inherit else frozenset()) | own_sensitive,
         )
 
     shared_scope = build("shared", {}, "the shared target set")
@@ -1616,7 +1634,9 @@ def resolve_scopes(
 
     harness_scopes: dict[str, Scope] = {}
     for name, block in blocks.items():
-        scope = build(f"harness {name}", block, f"`harnesses.{name}`")
+        # Legacy top-level gates belong only to the synthesized shared scope.
+        # Each harness keeps the permissions of its own original config.
+        scope = build(f"harness {name}", block, f"`harnesses.{name}`", inherit=not legacy)
         if scope is None:
             return None
         harness_scopes[name] = scope
@@ -1659,12 +1679,19 @@ def main() -> int:
         return 1
     specs, shared_targets = manifest
 
-    resolved = resolve_config(args.config, consumer_dir, specs)
+    resolved = resolve_config(args.config, consumer_dir, specs, shared_targets)
     if resolved is None:
         return 1
-    config_doc, config_path, config_sources = resolved
+    config_doc, config_path, config_sources, legacy = resolved
+    # Every selectable consent store is protected even before it exists:
+    # upstream must not seed a config that will win selection on a later run.
+    config_sources = list({
+        *config_sources,
+        (consumer_dir / CANONICAL_CONFIG_NAME).resolve(),
+        *((consumer_dir / str(spec["legacy_config"])).resolve() for spec in specs.values()),
+    })
 
-    resolved_scopes = resolve_scopes(config_doc, config_path, consumer_dir, specs)
+    resolved_scopes = resolve_scopes(config_doc, config_path, consumer_dir, specs, legacy=legacy)
     if resolved_scopes is None:
         return 1
     (shared_scope,), harness_scopes = resolved_scopes
@@ -1687,9 +1714,8 @@ def main() -> int:
     # Checked ahead of the consent gate: a manifest that can rewrite the
     # config can grant itself consent, so this refusal has to be the one the
     # consumer sees rather than a sensitive-write refusal they could "fix"
-    # by granting the config path. Every file the config was read from is
-    # protected, not just the canonical one — after a legacy compose there is
-    # more than one consent store on disk.
+    # by granting the config path. Protect current and future selectable
+    # stores, including deletes that could change config selection.
     config_writes = config_write_targets(
         [target for _, target in plan], consumer_dir, config_sources
     )
@@ -1906,6 +1932,10 @@ def main() -> int:
             )
             return 1
 
+        if dest_path.resolve() in config_sources:
+            sys.stderr.write(config_destination_refusal([dest_rel_canonical], config_path.name))
+            return 1
+
         if delete_flag:
             # Engine-level refusal for paths whose deletion would remove
             # consumer-side guardrails (CI workflows, composite actions,
@@ -1997,12 +2027,6 @@ def main() -> int:
         # be narrow enough that it only ever covers the path the consumer
         # actually wrote down.
         is_sensitive_write = is_sensitive_write_dest(dest_rel_canonical)
-        if dest_path.resolve() in config_sources:
-            sys.stderr.write(
-                config_destination_refusal([dest_rel_canonical], config_path.name)
-            )
-            return 1
-
         if is_sensitive_write and dest_rel_canonical not in scope.sensitive_write_allowlist:
             sys.stderr.write(
                 sensitive_write_refusal(

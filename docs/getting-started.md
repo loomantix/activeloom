@@ -148,7 +148,7 @@ Use it if upstream is in a known-bad state.
 
 ## Tag-based gating
 
-Consumers track the `sync-v1` tag, not `main`. So a stray push to upstream main doesn't propagate to consumers. Shipping a new sync surface is two deliberate steps in the upstream repo:
+Migrated consumers track `sync-v2`, not `main`, so a stray push to upstream main does not propagate. The initial tag creation belongs to the coordinated consumer cutover, after the protocol implementation is merged and validated:
 
 ```bash
 # in the upstream repo, on main
@@ -156,7 +156,7 @@ git tag sync-v2 -a -m "..."
 git push origin sync-v2
 ```
 
-Then either bump `UPSTREAM_REF: sync-v2` in each consumer's workflow, or re-tag `sync-v1` to advance the existing pinned ref by re-pointing the tag (more dangerous; requires `git push --force-with-lease origin sync-v1`).
+Update each migrated consumer's workflow to `UPSTREAM_REF: sync-v2`. Keep `sync-v1` frozen at its last pre-restructure commit for consumers that have not migrated; never retag it to deliver the new protocol. Subsequent v2 content updates advance `sync-v2` as described in [Tag advancement](sync.md#tag-advancement-the-gate-that-ships).
 
 ## Troubleshooting
 

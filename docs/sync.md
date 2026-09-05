@@ -27,7 +27,7 @@ A reviewer merges the PR; once merged, the next `git pull` on a developer's mach
 
 ### Tag advancement (the gate that ships)
 
-Consumers track a tag (`sync-v2`), not `main`. So an unintended push to upstream main does NOT propagate. Shipping a new sync surface is one deliberate step: force-retag `sync-v1` to point at the commit you want consumers to receive.
+Migrated consumers track a tag (`sync-v2`), not `main`. So an unintended push to upstream main does NOT propagate. After the coordinated cutover establishes `sync-v2`, ship reviewed content updates by advancing that tag. Keep `sync-v1` frozen for consumers that have not migrated.
 
 ```bash
 # in the upstream repo, on main, after merging changes you want to ship
@@ -37,11 +37,11 @@ git push --force-with-lease origin sync-v2
 
 The `--force-with-lease` is required and intentional — it asserts the tag's previous SHA so a concurrent retag from another maintainer fails loudly rather than silently clobbering. The annotated message documents the cumulative changes since the previous retag.
 
-#### Why the `-v1` suffix is a protocol version, not a content version
+#### Why the tag suffix is a protocol version, not a content version
 
-The tag is named `sync-v1` because it pins the **sync protocol** — the manifest schema, the substitution syntax, the on-disk contract between this engine and consumer trees. Bumping to `sync-v2` is reserved for a breaking change in that protocol (e.g., a new required manifest field that older engines can't handle, or a substitution syntax change that older engine code parses incorrectly). When that happens, the bump is a coordinated migration: consumers stay on `sync-v1` until they've also updated their pinned engine tarball / workflow to understand `v2`, then bump `UPSTREAM_REF: sync-v2` in their `.github/workflows/sync-from-upstream.yml`.
+The suffix pins the **sync protocol** — the manifest schema, the substitution syntax, and the on-disk contract between this engine and consumer trees. A protocol bump requires a coordinated migration: consumers stay on their frozen protocol tag until their engine and workflow understand the new version, then update `UPSTREAM_REF` explicitly.
 
-For ordinary content advances — adding a new file to the sync surface, retiring a stub, fixing typos in a synced doc — **force-retag the existing `sync-v1`**. Don't create `sync-v2` for content; that's what advancing the tag pointer is for. A short-lived `sync-v2` tag that no consumer migrates to becomes orphaned residue.
+For ordinary content advances on the v2 protocol — adding a new file to the sync surface, retiring a stub, or fixing typos in a synced doc — advance the existing `sync-v2` tag. Do not advance `sync-v1` to a v2 commit or create a new protocol version for a content-only change.
 
 In practice: `sync-v1` was the active tag from the protocol's introduction until the manifest grew its `harnesses:` layer and the three per-harness consumer configs became one. That change is engine-breaking in both directions — a sync-v1 engine reads the new manifest as zero targets, and this engine rejects a flat `targets:` list by name — which is what the protocol pin is for. `sync-v1` stays frozen at the last pre-restructure commit for consumers that have not cut over; `sync-v2` is the tag a cut-over consumer pins.
 
@@ -164,12 +164,14 @@ When there is no `.activeloom-config.yml`, the engine reads every legacy file th
 - **A missing legacy file means that harness is absent.** A repository that never carried `.gemini-platform-config.yml` never ran that harness, and must not acquire it by upgrading its engine.
 - Per-harness keys are carried over verbatim.
 - Top-level `substitutions` are merged; two files disagreeing on one key is a real collision and fails closed.
-- Top-level `skip_targets` is the **intersection**. A shared target skipped in two files and synced by the third was being routed to a single owner, not switched off; a union would silently retire it.
-- Top-level `allowed_destinations` and `allow_sensitive_writes` are unions, so whichever grant covered the shared targets before still covers them.
+- Shared `skip_targets` is the **intersection**, treating a target's source and destination as equivalent opt-outs. A shared target skipped in two files and synced by the third was being routed to a single owner, not switched off; a union would silently retire it.
+- Shared `allowed_destinations` and `allow_sensitive_writes` are unions, so whichever grant covered the shared targets before still covers them. These synthesized gates apply only to shared targets; each legacy harness retains its own gates without inheriting another harness's grants.
 
 The composed config is reported in the job log. `--config <legacy file>` still works and reads that one file as its harness alone, which is the transitional invocation for a consumer still running one workflow per upstream.
 
 To retire the shim, write one `.activeloom-config.yml` and delete the legacy files. An `.activeloom-config.yml` present on disk wins outright — surviving legacy files are then ignored, not merged in.
+
+The engine cannot create, overwrite, or delete any automatically selectable config path, even while absent, or an explicitly supplied config file. Config migration is consumer-owned: an upstream manifest must not be able to change which permissions a later sync will read.
 
 ### `allow_sensitive_writes`
 

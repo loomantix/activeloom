@@ -648,3 +648,104 @@ def test_every_composed_config_file_is_protected_from_being_written(
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
     assert "refusing to write the consumer's own sync config" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("destination", [CANONICAL, ".codex-platform-config.yml"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_legacy_sync_cannot_seed_a_future_config(
+    destination: str,
+    explicit: bool,
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _manifest(upstream)
+    doc = yaml.safe_load((upstream / "scripts/sync-targets.yml").read_text())
+    doc["harnesses"]["claude"]["targets"].append(_copy("claude-src.md", destination))
+    _write(upstream / "scripts/sync-targets.yml", doc)
+    config = consumer / ".platform-config.yml"
+    _write(config, {"allowed_destinations": ["**"]})
+    original = config.read_bytes()
+
+    assert _run(sync_engine, upstream, consumer, monkeypatch, config if explicit else None) == 1
+    assert not (consumer / destination).exists()
+    assert not (consumer / ".claude").exists()
+    assert config.read_bytes() == original
+
+
+@pytest.mark.parametrize("bypass_preflight", [False, True])
+def test_config_deletion_cannot_select_weaker_legacy_permissions(
+    bypass_preflight: bool,
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _manifest(upstream)
+    doc = yaml.safe_load((upstream / "scripts/sync-targets.yml").read_text())
+    doc["harnesses"]["claude"]["targets"] = [{"destination": CANONICAL, "delete": True}]
+    _write(upstream / "scripts/sync-targets.yml", doc)
+    _write(consumer / CANONICAL, {
+        "harnesses": ["claude"], "allowed_destinations": ["**"], "allow_sensitive_writes": [],
+    })
+    _write(consumer / ".platform-config.yml", {
+        "allowed_destinations": ["**"],
+        "allow_sensitive_writes": [".github/workflows/example.yml"],
+    })
+    original = (consumer / CANONICAL).read_bytes()
+    if bypass_preflight:
+        monkeypatch.setattr(sync_engine, "config_write_targets", lambda *args: [])
+
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
+    assert (consumer / CANONICAL).read_bytes() == original
+
+
+@pytest.mark.parametrize("scope", ["codex", "shared"])
+def test_legacy_sensitive_consent_stays_with_its_harness(
+    scope: str,
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _manifest(upstream)
+    workflow = ".github/workflows/example.yml"
+    doc = yaml.safe_load((upstream / "scripts/sync-targets.yml").read_text())
+    target = _copy("shared-src.md", workflow)
+    if scope == "shared":
+        doc["shared"]["targets"].append(target)
+    else:
+        doc["harnesses"][scope]["targets"].append(target)
+    _write(upstream / "scripts/sync-targets.yml", doc)
+    _write(consumer / ".platform-config.yml", {
+        "allowed_destinations": ["**"], "allow_sensitive_writes": [workflow],
+    })
+    _write(consumer / ".codex-platform-config.yml", {
+        "allowed_destinations": ["**"], "allow_sensitive_writes": [],
+    })
+
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == (0 if scope == "shared" else 1)
+    assert (consumer / workflow).exists() is (scope == "shared")
+    if scope == "codex":
+        assert not (consumer / ".claude").exists()
+
+
+def test_legacy_shared_skip_accepts_mixed_source_and_destination_spellings(
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _manifest(upstream)
+    for name, skip in [
+        (".platform-config.yml", "shared-src.md"),
+        (".codex-platform-config.yml", ".github/shared.md"),
+    ]:
+        _write(consumer / name, {"allowed_destinations": ["**"], "skip_targets": [skip]})
+    destination = consumer / ".github/shared.md"
+    destination.parent.mkdir()
+    destination.write_text("consumer-owned content\n")
+
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
+    assert destination.read_text() == "consumer-owned content\n"
