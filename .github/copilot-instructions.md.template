@@ -39,7 +39,7 @@ This file is generated from the upstream repo's
 `.github/copilot-instructions.md.template` by the sync mechanism. Edits made
 here in a consumer repo will be overwritten on the next sync.
 
-To customize per-repo content, update `.platform-config.yml` in this repo with the
+To customize per-repo content, update `.activeloom-config.yml` in this repo with the
 substitutions for: PROJECT_NAME, PROJECT_OVERVIEW, CANONICAL_DOCS, STACK_TABLE,
 CODE_RULES, DOMAIN_RULES, REVIEW_FOCUS, WHAT_NOT_TO_SUGGEST_EXTRA.
 

@@ -54,10 +54,10 @@ Three agent definitions invoked by the skills above:
 
 A two-script mechanism that lets one upstream repo propagate canonical files (skills, workflows, docs) to many downstream repos via a scheduled PR:
 
-- `sync-engine.py` — reads `sync-targets.yml` from the upstream and a `.platform-config.yml` from the consumer, applies `<<KEY>>` substitutions, writes / deletes destination files. Idempotent; hard-fails on missing required substitutions; soft-warns on undeclared placeholders.
+- `sync-engine.py` — reads `sync-targets.yml` from the upstream and a `.activeloom-config.yml` from the consumer, applies `<<KEY>>` substitutions, writes / deletes destination files. The manifest emits one target set per harness plus a harness-independent shared set; the consumer's `harnesses:` list decides which it receives. Idempotent; hard-fails on missing required substitutions; soft-warns on undeclared placeholders.
 - `create-signed-commit.py` — creates the sync commit via the GitHub Contents API rather than `git commit + git push`. Commits made via the API are auto-signed by GitHub (`committer: GitHub`, `verified: true`) when invoked with a GitHub App installation token.
 
-The reference downstream workflow lives at [`.github/workflows/sync-from-upstream.yml.template`](.github/workflows/sync-from-upstream.yml.template). Drop it into a downstream repo, fill in `UPSTREAM_REPO`, set the App-token secrets, and the repo pulls daily from a `sync-v1` tag.
+The reference downstream workflow lives at [`.github/workflows/sync-from-upstream.yml.template`](.github/workflows/sync-from-upstream.yml.template). Drop it into a downstream repo, fill in `UPSTREAM_REPO` and `PR_BASE_BRANCH`, set the App-token secrets, and the repo pulls daily from a `sync-v2` tag.
 
 ### Other
 
@@ -66,7 +66,7 @@ The reference downstream workflow lives at [`.github/workflows/sync-from-upstrea
 - `.claude/skills/critique/scripts/run-agy-review.sh` — the auto-mode relay launcher for the local `gemini` reviewer. It pins the Antigravity CLI to Gemini 3.7 Flash at high effort with accept-edits, unattended permissions, structured JSON output, and a per-pass time bound (30 minutes by default, or a wrapper-supplied value under `agent-loop`), and refuses to start unless the requested exact head matches the current repository, the self-authored PR, and a clean worktree, and the CLI resolves exactly one live `deepcritique` skill backed by a clean `loomantix/gemini-platform` checkout at the launcher's pinned commit vendoring the same `review-ledger` version. Auto mode is optional: an engine with no launcher, or a repo where local conversation persistence is prohibited, runs its reviewers in fresh terminal sessions instead. A zero exit is necessary but not sufficient — the caller still verifies exact-head coverage on the PR.
 - `.claude/MODEL_NOTES.md` — prompt-authoring notes for the current default Claude model. The skills and agents here are prompts, and some patterns that helped on an earlier model generation now suppress review findings or waste tokens; this records those deltas and the checklist to apply when adding a skill.
 - `.claude/SKILL_AUTHORING.md` — how to structure a skill document, as opposed to how to phrase it for the current model. Covers invocation (and what a `description` costs in always-loaded context), where reference material sits relative to steps, completion criteria the model can check, and the pruning tests. Partly derived from the `writing-for-agents` skill in [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).
-- `.github/copilot-instructions.md.template` — substitution-driven Copilot reviewer prompt. Each downstream repo fills in `PROJECT_NAME`, `STACK_TABLE`, `CODE_RULES`, etc. via `.platform-config.yml`.
+- `.github/copilot-instructions.md.template` — substitution-driven Copilot reviewer prompt. Each downstream repo fills in `PROJECT_NAME`, `STACK_TABLE`, `CODE_RULES`, etc. via `.activeloom-config.yml`.
 - `claude/github-api-usage.md` — drop-in guidance for any repo's `CLAUDE.md` on rate-limit-aware GitHub API usage.
 
 ## Getting started
@@ -91,8 +91,8 @@ Updates flow via `git pull` in the clone — no re-install needed unless new ski
 
 See [`docs/getting-started.md`](docs/getting-started.md) for the full walkthrough. Short version:
 
-1. Create a `.platform-config.yml` at the downstream repo root with substitution values.
-2. Copy `.github/workflows/sync-from-upstream.yml.template` to `.github/workflows/sync-from-upstream.yml`, then fill in `UPSTREAM_REPO`.
+1. Create a `.activeloom-config.yml` at the downstream repo root with a `harnesses:` list and substitution values.
+2. Copy `.github/workflows/sync-from-upstream.yml.template` to `.github/workflows/sync-from-upstream.yml`, then fill in `UPSTREAM_REPO` and `PR_BASE_BRANCH`.
 3. (Skip — the manifest [`scripts/sync-targets.yml`](scripts/sync-targets.yml) is upstream-owned and ships the full skill set. Forks can edit it to add or drop entries.)
 4. Set the App-token secrets on the downstream repo or organization.
 5. Run the workflow once via `gh workflow run "Sync from upstream"` — the first PR opens cleanly.
@@ -159,7 +159,7 @@ The sync engine is intentionally minimal:
 
 - One upstream, one downstream repo, one manifest.
 - `<<KEY>>` find-and-replace, no template engine.
-- Daily PR open / merge cycle, with a tag-based gate (`sync-v1`) so unintended pushes to upstream main don't auto-propagate.
+- Daily PR open / merge cycle, with a tag-based gate (`sync-v2`) so unintended pushes to upstream main don't auto-propagate. `sync-v1` stays frozen for consumers that have not cut over.
 - `delete: true` to retire a previously-synced file across all downstream repos.
 
 It's not Renovate. It's not Dependabot. It's a deliberately small primitive for "one upstream, many downstream repos, propagate-by-PR."

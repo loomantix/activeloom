@@ -10,6 +10,10 @@
 # its own template line used to leave a double blank line in the render —
 # the exact churn class this check guards against.
 
+# Every harness, so the check renders the whole surface rather than one
+# harness's slice of it.
+harnesses: [claude, codex, gemini]
+
 substitutions:
   PROJECT_NAME: FixtureRepo
 

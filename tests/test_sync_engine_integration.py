@@ -23,7 +23,27 @@ SYNC_ENGINE = REPO_ROOT / "scripts" / "sync-engine.py"
 
 
 def _write_yaml(path: Path, doc: object) -> None:
+    """Write a fixture document, lifting a legacy manifest shape on the way.
+
+    See `_as_manifest` in `test_sync_engine.py`: these fixtures are about what
+    the engine does with a target, not about the `harnesses:` layer, and the
+    layer itself is covered in `test_sync_config_v2.py`.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == "sync-targets.yml" and isinstance(doc, dict) and "harnesses" not in doc:
+        targets = doc.get("targets")
+        if isinstance(targets, list):
+            doc = {
+                key: value for key, value in doc.items() if key != "targets"
+            } | {
+                "harnesses": {
+                    "claude": {
+                        "root": ".claude",
+                        "legacy_config": ".platform-config.yml",
+                        "targets": targets,
+                    }
+                }
+            }
     path.write_text(yaml.safe_dump(doc))
 
 

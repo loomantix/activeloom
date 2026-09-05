@@ -197,11 +197,15 @@ def test_main_rejects_an_unsafe_site(
     (repo / "scripts").mkdir(parents=True)
     (repo / "template.md").write_text("```\n<<E>>\n```\n", encoding="utf-8")
     (repo / "scripts" / "sync-targets.yml").write_text(
-        "targets:\n"
-        "  - source: template.md\n"
-        "    destination: rendered.md\n"
-        "    substitutions: [E]\n"
-        "    collapse_empty_substitutions: [E]\n",
+        "harnesses:\n"
+        "  claude:\n"
+        "    root: .claude\n"
+        "    legacy_config: .platform-config.yml\n"
+        "    targets:\n"
+        "      - source: template.md\n"
+        "        destination: rendered.md\n"
+        "        substitutions: [E]\n"
+        "        collapse_empty_substitutions: [E]\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(lint_collapse_sites, "REPO_ROOT", repo)
@@ -220,11 +224,15 @@ def test_main_rejects_non_markdown_destinations(
     (repo / "scripts").mkdir(parents=True)
     (repo / "template.sh").write_text("cat <<EOF\n<<E>>\nEOF\n", encoding="utf-8")
     (repo / "scripts" / "sync-targets.yml").write_text(
-        "targets:\n"
-        "  - source: template.sh\n"
-        "    destination: rendered.sh\n"
-        "    substitutions: [E]\n"
-        "    collapse_empty_substitutions: [E]\n",
+        "harnesses:\n"
+        "  claude:\n"
+        "    root: .claude\n"
+        "    legacy_config: .platform-config.yml\n"
+        "    targets:\n"
+        "      - source: template.sh\n"
+        "        destination: rendered.sh\n"
+        "        substitutions: [E]\n"
+        "        collapse_empty_substitutions: [E]\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(lint_collapse_sites, "REPO_ROOT", repo)

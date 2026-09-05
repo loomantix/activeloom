@@ -120,6 +120,20 @@ def test_skill_tool_targets_remain_model_invoked() -> None:
     )
 
 
+def _manifest_targets() -> list[dict[str, Any]]:
+    """Every target in the manifest, harness sets then the shared set.
+
+    Flattened in the order the engine walks them, so an ordering question
+    asked of this list is the same question the sync answers.
+    """
+    manifest = yaml.safe_load((REPO_ROOT / "scripts" / "sync-targets.yml").read_text())
+    collected: list[dict[str, Any]] = []
+    for harness in (manifest.get("harnesses") or {}).values():
+        collected.extend((harness or {}).get("targets") or [])
+    collected.extend((manifest.get("shared") or {}).get("targets") or [])
+    return collected
+
+
 def test_reissued_destinations_are_deleted_before_they_are_written() -> None:
     """A destination that is both retired and reissued must have its
     `delete: true` entry BEFORE its copy entry in the manifest.
@@ -131,11 +145,9 @@ def test_reissued_destinations_are_deleted_before_they_are_written() -> None:
     the old review skill is retired at the same path the new pre-code
     interview skill is written to.
     """
-    manifest = yaml.safe_load((REPO_ROOT / "scripts" / "sync-targets.yml").read_text())
-
     first_copy: dict[str, int] = {}
     last_delete: dict[str, int] = {}
-    for index, target in enumerate(manifest["targets"]):
+    for index, target in enumerate(_manifest_targets()):
         dest = target.get("destination")
         if not dest:
             continue

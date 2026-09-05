@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -258,12 +259,35 @@ def check_source(source: Path, collapse_keys: list[str]) -> list[str]:
     return violations
 
 
+def manifest_targets(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every target in the manifest, across all harnesses and the shared set.
+
+    The lint is about one target's template, so which set a target came from
+    does not change the answer — but missing a whole harness silently would,
+    and did not use to be possible when the manifest was one flat list.
+    """
+    collected: list[dict[str, Any]] = []
+    for harness in (manifest.get("harnesses") or {}).values():
+        collected.extend((harness or {}).get("targets") or [])
+    collected.extend((manifest.get("shared") or {}).get("targets") or [])
+    if not collected:
+        # Every lookup above degrades to empty, so a renamed or restructured
+        # top-level key yields zero targets and a green run. That shape was
+        # unreachable when the manifest was one flat list; it is reachable now,
+        # and a lint that silently inspects nothing is a disarmed guardrail.
+        raise ValueError(
+            f"manifest yielded no targets: expected `harnesses:` and/or `shared:` "
+            f"target lists, got top-level keys {sorted(manifest)!r}"
+        )
+    return collected
+
+
 def main() -> int:
     manifest_path = REPO_ROOT / "scripts" / "sync-targets.yml"
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     violations: list[str] = []
     checked = 0
-    for target in manifest.get("targets") or []:
+    for target in manifest_targets(manifest):
         collapse_keys = target.get("collapse_empty_substitutions") or []
         if target.get("delete") or not collapse_keys:
             continue
@@ -282,6 +306,15 @@ def main() -> int:
         sys.stderr.write("collapse_empty_substitutions keys must be whole-line, prose-only:\n")
         for violation in violations:
             sys.stderr.write(f"  ❌ {violation}\n")
+        return 1
+    if not checked:
+        # `manifest_targets` guarantees a non-empty target list, so zero
+        # inspected sources means every collapse opt-in disappeared from the
+        # manifest at once — a restructure, not a deliberate removal.
+        sys.stderr.write(
+            "no collapse_empty_substitutions opt-ins found in the manifest; "
+            "this lint has nothing to verify and would pass vacuously\n"
+        )
         return 1
     print(f"OK: collapse opt-ins verified in {checked} source(s)")
     return 0

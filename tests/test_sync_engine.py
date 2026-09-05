@@ -162,7 +162,7 @@ def test_substitute_exits_on_missing_required_substitution(
         sync_engine.substitute("<<REQUIRED>>", {}, ["REQUIRED"], "src.md")
     assert exc.value.code == 1
     err = capsys.readouterr().err
-    assert "requires placeholders missing from .platform-config.yml" in err
+    assert "requires placeholders missing from the consumer config" in err
 
 
 def test_substitute_strips_trailing_newlines_from_block_scalar(
@@ -683,8 +683,39 @@ def test_prune_empty_parents_tolerates_concurrent_remove(
 # ---------------------------------------------------------------------------
 
 
+# The harness a bare `{"targets": [...]}` fixture is filed under. Any name in
+# the manifest would do; `claude` keeps the legacy consumer-config filename
+# these tests already write (`.platform-config.yml`) resolving through the
+# compatibility shim, so a fixture only has to describe the targets it cares
+# about.
+FIXTURE_HARNESS = {"root": ".claude", "legacy_config": ".platform-config.yml"}
+
+
+def _as_manifest(doc: object) -> object:
+    """Lift a legacy `{"targets": [...]}` fixture into the sync-v2 shape.
+
+    The manifest grew a `harnesses:` layer in sync-v2, but almost every test
+    here is about one target's behaviour and says nothing about harnesses.
+    Adapting the shape at write time keeps those fixtures readable and keeps
+    the layer under test in the tests that are actually about it
+    (`test_sync_config_v2.py`). Anything that is not a flat target list — a
+    malformed document, or one already in the new shape — is written through
+    untouched, since those fixtures are usually the point of their test.
+    """
+    if not isinstance(doc, dict) or "harnesses" in doc or "shared" in doc:
+        return doc
+    targets = doc.get("targets")
+    if not isinstance(targets, list):
+        return doc
+    lifted = {key: value for key, value in doc.items() if key != "targets"}
+    lifted["harnesses"] = {"claude": {**FIXTURE_HARNESS, "targets": targets}}
+    return lifted
+
+
 def _write_yaml(path: Path, doc: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == "sync-targets.yml":
+        doc = _as_manifest(doc)
     path.write_text(yaml.safe_dump(doc))
 
 
@@ -1434,22 +1465,27 @@ def test_main_missing_source_file_returns_1(
     assert "source missing in upstream" in err
 
 
-def test_main_rejects_top_level_targets_not_a_list(
+def test_main_rejects_pre_sync_v2_manifest(
     sync_engine: ModuleType,
     upstream_repo: Path,
     consumer_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _write_yaml(
-        upstream_repo / "scripts" / "sync-targets.yml",
-        {"targets": {"src.md": "dest.md"}},  # mapping, not list
+    # A flat top-level `targets:` list is the pre-sync-v2 manifest format.
+    # Reject it by name: the only way to see one is an `--upstream-repo`
+    # pointed at a checkout frozen before the cutover, and a zero-target run
+    # reporting success would look like "already in sync".
+    # Written as raw text rather than through `_write_yaml`, whose adapter
+    # exists precisely to lift this shape into the current one.
+    (upstream_repo / "scripts" / "sync-targets.yml").write_text(
+        "targets:\n  - source: src.md\n    destination: dest.md\n"
     )
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 1
     err = capsys.readouterr().err
-    assert "`targets` must be a list" in err
+    assert "pre-sync-v2 manifest format" in err
 
 
 # ---------------------------------------------------------------------------
@@ -1612,9 +1648,9 @@ def test_main_allowlist_absent_warns_and_proceeds_migration(
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
     assert (consumer_dir / ".claude" / "skills" / "foo.md").read_text() == "content\n"
-    err = capsys.readouterr().err
-    assert "`allowed_destinations` not set" in err
-    assert "fail-closed" in err  # migration pointer
+    out = capsys.readouterr().out
+    assert "`allowed_destinations` not set" in out
+    assert "fail-closed" in out  # migration pointer
 
 
 def test_main_empty_allowlist_refuses_everything(
@@ -1914,6 +1950,78 @@ def test_main_allowlist_checked_before_source_read(
     assert "source missing in upstream" not in err
 
 
+def test_main_allowlist_refusal_writes_nothing_when_a_later_target_is_denied(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The allowlist is admission-controlled, not enforced mid-write. Without a
+    # pre-pass the engine writes every target ordered before the denied one and
+    # only then returns 1, leaving the consumer a half-synced tree — and with a
+    # multi-scope plan that means a whole harness lands before a later scope is
+    # refused. Assert the invariant the admission block claims: nothing is
+    # written when the gate trips.
+    (upstream_repo / "allowed.md").write_text("hello")
+    (upstream_repo / "denied.md").write_text("nope")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "allowed.md", "destination": ".claude/allowed.md"},
+                {"source": "denied.md", "destination": ".github/workflows/release.yml"},
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+
+    assert rc == 1
+    assert "destination not in consumer's `allowed_destinations`" in capsys.readouterr().err
+    # The permitted target is ordered first and would have been written by a
+    # loop-only gate.
+    assert not (consumer_dir / ".claude" / "allowed.md").exists()
+    assert not (consumer_dir / ".github" / "workflows" / "release.yml").exists()
+
+
+def test_main_allowlist_refusal_reports_every_denied_destination(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # One complete list to paste into the config, matching what the
+    # sensitive-write refusal already gives, rather than one path per red run.
+    (upstream_repo / "a.md").write_text("a")
+    (upstream_repo / "b.md").write_text("b")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "a.md", "destination": ".github/workflows/one.yml"},
+                {"source": "b.md", "destination": ".github/workflows/two.yml"},
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert ".github/workflows/one.yml" in err
+    assert ".github/workflows/two.yml" in err
+
+
 # ---------------------------------------------------------------------------
 # Adversarial path forms — destinations that exploit normalization seams
 # ---------------------------------------------------------------------------
@@ -2132,8 +2240,9 @@ def test_main_allowlist_null_value_is_config_error(
     # Hard-fail so the operator sees the problem rather than discovering
     # weeks later that their allowlist was never enforced.
     (upstream_repo / "src.md").write_text("payload\n")
-    (upstream_repo / "scripts" / "sync-targets.yml").write_text(
-        "targets:\n  - source: src.md\n    destination: .claude/foo.md\n"
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"source": "src.md", "destination": ".claude/foo.md"}]},
     )
     (consumer_dir / ".platform-config.yml").write_text("allowed_destinations:\n")
 
@@ -2152,7 +2261,9 @@ def test_main_fail_open_warning_uses_github_annotation(
 ) -> None:
     # Fail-open warning must surface in the GitHub PR UI via the
     # `::warning::` annotation prefix — otherwise a green-checkmark
-    # build buries the migration prompt in stderr where nobody looks.
+    # build buries the migration prompt where nobody looks. It must go to
+    # stdout: GitHub parses workflow commands from a step's stdout, so the
+    # same text on stderr is plain log output and renders no annotation.
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml", {"targets": []}
     )
@@ -2160,9 +2271,9 @@ def test_main_fail_open_warning_uses_github_annotation(
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
-    err = capsys.readouterr().err
-    assert "::warning" in err
-    assert "allowed_destinations" in err
+    out = capsys.readouterr().out
+    assert "::warning" in out
+    assert "allowed_destinations" in out
 
 
 # ---------------------------------------------------------------------------

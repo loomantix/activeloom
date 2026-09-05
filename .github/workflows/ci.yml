@@ -245,7 +245,7 @@ jobs:
         run: |
           set -euo pipefail
           CONSUMER=$(mktemp -d)
-          cp tests/fixtures/render-check/.platform-config.yml "$CONSUMER/"
+          cp tests/fixtures/render-check/.activeloom-config.yml "$CONSUMER/"
           python3 scripts/sync-engine.py \
             --upstream-repo . \
             --consumer-dir "$CONSUMER"
@@ -287,7 +287,7 @@ jobs:
           mkdir -p "$UPSTREAM/scripts"
           cp tests/fixtures/render-fidelity/sync-targets.yml "$UPSTREAM/scripts/"
           cp tests/fixtures/render-fidelity/template.md "$UPSTREAM/"
-          cp tests/fixtures/render-fidelity/.platform-config.yml "$CONSUMER/"
+          cp tests/fixtures/render-fidelity/.activeloom-config.yml "$CONSUMER/"
           python3 scripts/sync-engine.py \
             --upstream-repo "$UPSTREAM" \
             --consumer-dir "$CONSUMER"
@@ -382,8 +382,88 @@ jobs:
           python3 - <<'PY'
           import yaml, sys
           doc = yaml.safe_load(open('scripts/sync-targets.yml'))
-          targets = doc.get('targets')
-          assert isinstance(targets, list) and targets, "targets must be a non-empty list"
+          assert 'targets' not in doc, "top-level `targets:` is the pre-sync-v2 shape"
+          harnesses = doc.get('harnesses')
+          assert isinstance(harnesses, dict) and harnesses, "harnesses must be a non-empty mapping"
+          targets = []
+          target_sets = []
+          seen = {}
+          for name, harness in harnesses.items():
+              assert isinstance(harness, dict), f"harness {name} must be a mapping"
+              for field in ('root', 'legacy_config'):
+                  assert isinstance(harness.get(field), str) and harness[field], (
+                      f"harness {name} needs a non-empty `{field}`"
+                  )
+              legacy = harness['legacy_config']
+              assert legacy not in seen, (
+                  f"harnesses {seen[legacy]} and {name} share `legacy_config: {legacy}`"
+              )
+              seen[legacy] = name
+              own = harness.get('targets')
+              assert isinstance(own, list) and own, f"harness {name} needs a non-empty target list"
+              target_sets.append((name, own))
+              targets.extend(own)
+          shared = (doc.get('shared') or {}).get('targets') or []
+          assert isinstance(shared, list), "shared.targets must be a list"
+          target_sets.append(('shared', shared))
+          targets.extend(shared)
+          # Boolean strictness, before anything classifies on these flags. The
+          # engine hard-fails on a non-boolean `delete` or `create_if_missing`
+          # (see `sync-engine.py`), but Python truthiness would read
+          # `create_if_missing: "false"` as True here — so a stringly-typed
+          # value would pass this gate, merge, and then break the sync in every
+          # consumer at once. Classify only after the type is known good.
+          for t in targets:
+              assert isinstance(t, dict), f"non-mapping target: {t!r}"
+              for flag in ('delete', 'create_if_missing'):
+                  value = t.get(flag)
+                  assert value is None or isinstance(value, bool), (
+                      f"`{flag}` must be a boolean (true/false), got {value!r}: {t!r}"
+                  )
+              assert not (t.get('delete') and t.get('create_if_missing')), (
+                  f"`delete` and `create_if_missing` are mutually exclusive: {t!r}"
+              )
+          # A destination shipped by two harnesses is a write both of them own.
+          # `create_if_missing` is the one shape where that is fine: the first
+          # harness bootstraps it and the rest preserve it. That only holds when
+          # *every* entry for the destination is `create_if_missing` — one plain
+          # write beside a bootstrap re-writes the file on every sync, which is
+          # exactly the preserve semantics `create_if_missing` exists to give.
+          owners = {}
+          for t in targets:
+              destination = t.get('destination') if isinstance(t, dict) else None
+              if not destination or t.get('delete'):
+                  continue
+              owners.setdefault(destination, []).append(bool(t.get('create_if_missing')))
+          for destination, bootstraps in owners.items():
+              if len(bootstraps) == 1:
+                  continue
+              assert all(bootstraps), (
+                  f"two target sets write {destination!r}; a destination shipped by "
+                  f"more than one set must be `create_if_missing` in every one"
+              )
+          # A destination deleted by one set and written by another is decided
+          # by plan order (harnesses first, shared last), not by anything the
+          # manifest declares. Within one set the delete-then-reissue pair is
+          # deliberate and order-dependent, so only cross-set pairs are
+          # refused. Without this, the exemption above lets exactly the
+          # collision the owners check exists to catch through.
+          writers = {}
+          deleters = {}
+          for set_name, entries in target_sets:
+              for t in entries:
+                  destination = t.get('destination') if isinstance(t, dict) else None
+                  if not destination:
+                      continue
+                  (deleters if t.get('delete') else writers).setdefault(
+                      destination, set()
+                  ).add(set_name)
+          for destination, deleting in deleters.items():
+              writing = writers.get(destination, set())
+              assert not any(writer != deleter for writer in writing for deleter in deleting), (
+                  f"{destination!r} is deleted by {sorted(deleting)} and written by "
+                  f"{sorted(writing)}; the outcome depends on plan order"
+              )
           for t in targets:
               assert isinstance(t, dict), f"non-mapping target: {t!r}"
               if t.get('delete'):

@@ -1,0 +1,6 @@
+{
+  "$comment_purpose": "Shared Claude Code hook and env settings.",
+  "$comment_scope": "This file is synced from the upstream repo — edits in a consumer will be overwritten on next sync. Add consumer-specific settings to .claude/settings.local.json instead (gitignored, per-developer).",
+  "$comment_env": "Rendered from the `telemetry:` block of .activeloom-config.yml. An empty object declares nothing and leaves the ambient environment alone.",
+  "env": <<REVIEW_TELEMETRY_ENV>>
+}

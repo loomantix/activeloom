@@ -81,8 +81,8 @@ python3 .claude/lint-skill-content.py                # diff vs origin/main
 
 ## Sync-mechanism rules
 
-- Changes to `scripts/sync-engine.py` or `scripts/create-signed-commit.py` are **sync-propagating** — they ship to every consumer on the next `sync-v1` retag. Treat these as the highest-stakes files in the repo. Add tests where the existing surface lacks them; review extra carefully for path-traversal, token-exfil, or unintended-write paths.
-- `scripts/sync-targets.yml` is the canonical manifest. Adding to the sync surface = add an entry here. New entries should be well-commented; consumers that don't need a particular file opt out via `skip_targets` in their own `.platform-config.yml` rather than us splitting the manifest.
+- Changes to `scripts/sync-engine.py` or `scripts/create-signed-commit.py` are **sync-propagating** — they ship to migrated consumers on the next `sync-v2` advancement. Keep `sync-v1` frozen for unmigrated consumers. Treat these as the highest-stakes files in the repo. Add tests where the existing surface lacks them; review extra carefully for path-traversal, token-exfil, or unintended-write paths.
+- `scripts/sync-targets.yml` is the canonical manifest. Adding to the sync surface = add an entry here. New entries should be well-commented; consumers that don't need a particular file opt out via `skip_targets` in their own `.activeloom-config.yml` rather than us splitting the manifest. Put the entry under the harness whose consumers should receive it, or under `shared:` when every consumer should.
 
 ## Security
 

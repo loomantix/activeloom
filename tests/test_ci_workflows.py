@@ -9,6 +9,7 @@ so it detects renames rather than regressions.
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import pytest
@@ -50,6 +51,42 @@ def _jobs(workflow: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def _draft_gated(job: dict[str, Any]) -> bool:
     return "draft == false" in job.get("if", "")
+
+
+@pytest.mark.parametrize("cross_set_delete", [False, True])
+def test_manifest_gate_rejects_cross_set_delete_beside_same_set_reissue(
+    tmp_path: Path, cross_set_delete: bool
+) -> None:
+    steps = _workflow("ci.yml")["jobs"]["static-checks"]["steps"]
+    gate = next(
+        step["run"] for step in steps
+        if step.get("name") == "Validate the canonical manifest parses + has expected shape"
+    )
+    document = {
+        "harnesses": {
+            "b": {
+                "root": ".b", "legacy_config": ".b.yml",
+                "targets": [{"destination": "example.md" if cross_set_delete else "unused.md",
+                             "delete": True}],
+            },
+            "a": {
+                "root": ".a", "legacy_config": ".a.yml",
+                "targets": [
+                    {"destination": "example.md", "delete": True},
+                    {"source": "source.md", "destination": "example.md"},
+                ],
+            },
+        },
+    }
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts/sync-targets.yml").write_text(yaml.safe_dump(document))
+    result = subprocess.run(
+        ["bash", "-euc", gate], cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert (result.returncode != 0) is cross_set_delete, result.stdout + result.stderr
+    if cross_set_delete:
+        assert "example.md" in result.stderr
+        assert "deleted by" in result.stderr
 
 
 @pytest.mark.parametrize("path", _workflow_paths(), ids=lambda p: p.name)

@@ -73,8 +73,8 @@ never created one loses nothing.
    repo-owned and never synced, then add sections named for the lenses that
    read them (`code-reviewer`, `silent-failure-hunter`, `pr-test-analyzer`, the
    `critique` orchestrator, plus an "all lenses" section).
-2. Leave `.review/**` out of every `*-platform-config.yml`
-   `allowed_destinations`. Add a comment there saying the omission is
+2. Leave `.review/**` out of the consumer config's `allowed_destinations`
+   (every `allowed_destinations` in it, if the repo scopes them per harness). Add a comment there saying the omission is
    deliberate, so a later reader does not read it as an oversight.
 3. Optionally add a pointer paragraph in the repo-owned instruction files
    (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`). The synced prompts already point at
@@ -123,6 +123,6 @@ cannot derive, not a log of every issue found.
   with the same content rules as any other repo Markdown — in a
   PHI/PII-handling repo, that means redacted identifiers, not raw ones.
 - **Upstreaming ships on the tag, not the merge.** A merged platform PR reaches
-  consumers only when the `sync-v1` tag advances. Until then the consumer's
+  migrated consumers only when the `sync-v2` tag advances. Until then the consumer's
   addendum is the only place the rule is live, which is a reason to write the
   instance there even when the class is already upstream in flight.

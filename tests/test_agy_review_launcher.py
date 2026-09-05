@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import signal
 import stat
 import subprocess
@@ -12,6 +11,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1015,17 +1015,18 @@ def test_launcher_is_executable_in_the_working_tree() -> None:
 
 
 def test_launcher_is_a_synced_target_with_the_executable_mode() -> None:
-    manifest = SYNC_TARGETS.read_text(encoding="utf-8")
-    entry = re.search(
-        r"- source: \.claude/skills/critique/scripts/run-agy-review\.sh\n"
-        r"    destination: (?P<destination>\S+)\n"
-        r"    substitutions: \[\]\n"
-        r"    mode: '(?P<mode>\d{4})'\n",
-        manifest,
-    )
-    assert entry is not None, "the launcher must ship to consumers through the sync manifest"
-    assert entry.group("destination") == ".claude/skills/critique/scripts/run-agy-review.sh"
-    assert entry.group("mode") == "0755"
+    manifest = yaml.safe_load(SYNC_TARGETS.read_text(encoding="utf-8"))
+    claude = manifest["harnesses"]["claude"]["targets"]
+    entries = [
+        target
+        for target in claude
+        if target.get("source") == ".claude/skills/critique/scripts/run-agy-review.sh"
+    ]
+    assert entries, "the launcher must ship to consumers through the sync manifest"
+    (entry,) = entries
+    assert entry["destination"] == ".claude/skills/critique/scripts/run-agy-review.sh"
+    assert entry["substitutions"] == []
+    assert entry["mode"] == "0755"
 
 
 def test_launcher_locks_its_unattended_invocation_region() -> None:

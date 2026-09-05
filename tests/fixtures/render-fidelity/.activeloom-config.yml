@@ -10,6 +10,9 @@
 # emptiness test in `drop_empty_placeholder_lines` — would still match the
 # golden, since every other opted-in key here is empty.
 
+harnesses:
+  - fixture
+
 substitutions:
   FIXTURE_NAME: FidelityFixture
 
