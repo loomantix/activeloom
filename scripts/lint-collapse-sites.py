@@ -270,6 +270,15 @@ def manifest_targets(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     for harness in (manifest.get("harnesses") or {}).values():
         collected.extend((harness or {}).get("targets") or [])
     collected.extend((manifest.get("shared") or {}).get("targets") or [])
+    if not collected:
+        # Every lookup above degrades to empty, so a renamed or restructured
+        # top-level key yields zero targets and a green run. That shape was
+        # unreachable when the manifest was one flat list; it is reachable now,
+        # and a lint that silently inspects nothing is a disarmed guardrail.
+        raise ValueError(
+            f"manifest yielded no targets: expected `harnesses:` and/or `shared:` "
+            f"target lists, got top-level keys {sorted(manifest)!r}"
+        )
     return collected
 
 
@@ -297,6 +306,15 @@ def main() -> int:
         sys.stderr.write("collapse_empty_substitutions keys must be whole-line, prose-only:\n")
         for violation in violations:
             sys.stderr.write(f"  ❌ {violation}\n")
+        return 1
+    if not checked:
+        # `manifest_targets` guarantees a non-empty target list, so zero
+        # inspected sources means every collapse opt-in disappeared from the
+        # manifest at once — a restructure, not a deliberate removal.
+        sys.stderr.write(
+            "no collapse_empty_substitutions opt-ins found in the manifest; "
+            "this lint has nothing to verify and would pass vacuously\n"
+        )
         return 1
     print(f"OK: collapse opt-ins verified in {checked} source(s)")
     return 0

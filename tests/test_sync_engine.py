@@ -1950,6 +1950,78 @@ def test_main_allowlist_checked_before_source_read(
     assert "source missing in upstream" not in err
 
 
+def test_main_allowlist_refusal_writes_nothing_when_a_later_target_is_denied(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The allowlist is admission-controlled, not enforced mid-write. Without a
+    # pre-pass the engine writes every target ordered before the denied one and
+    # only then returns 1, leaving the consumer a half-synced tree — and with a
+    # multi-scope plan that means a whole harness lands before a later scope is
+    # refused. Assert the invariant the admission block claims: nothing is
+    # written when the gate trips.
+    (upstream_repo / "allowed.md").write_text("hello")
+    (upstream_repo / "denied.md").write_text("nope")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "allowed.md", "destination": ".claude/allowed.md"},
+                {"source": "denied.md", "destination": ".github/workflows/release.yml"},
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+
+    assert rc == 1
+    assert "destination not in consumer's `allowed_destinations`" in capsys.readouterr().err
+    # The permitted target is ordered first and would have been written by a
+    # loop-only gate.
+    assert not (consumer_dir / ".claude" / "allowed.md").exists()
+    assert not (consumer_dir / ".github" / "workflows" / "release.yml").exists()
+
+
+def test_main_allowlist_refusal_reports_every_denied_destination(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # One complete list to paste into the config, matching what the
+    # sensitive-write refusal already gives, rather than one path per red run.
+    (upstream_repo / "a.md").write_text("a")
+    (upstream_repo / "b.md").write_text("b")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "a.md", "destination": ".github/workflows/one.yml"},
+                {"source": "b.md", "destination": ".github/workflows/two.yml"},
+            ]
+        },
+    )
+    _write_yaml(
+        consumer_dir / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**"]},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert ".github/workflows/one.yml" in err
+    assert ".github/workflows/two.yml" in err
+
+
 # ---------------------------------------------------------------------------
 # Adversarial path forms — destinations that exploit normalization seams
 # ---------------------------------------------------------------------------

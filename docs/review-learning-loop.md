@@ -123,6 +123,6 @@ cannot derive, not a log of every issue found.
   with the same content rules as any other repo Markdown — in a
   PHI/PII-handling repo, that means redacted identifiers, not raw ones.
 - **Upstreaming ships on the tag, not the merge.** A merged platform PR reaches
-  consumers only when the `sync-v1` tag advances. Until then the consumer's
+  migrated consumers only when the `sync-v2` tag advances. Until then the consumer's
   addendum is the only place the rule is live, which is a reason to write the
   instance there even when the class is already upstream in flight.

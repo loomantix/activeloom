@@ -171,6 +171,13 @@ class Scope:
     # the migration-era fail-open applies. See `resolve_scopes`.
     allowed_patterns: list[re.Pattern[str]] | None
     sensitive_write_allowlist: frozenset[str]
+    # The harness this scope belongs to (None for the shared set), and the
+    # grants it declared itself. The refusal text needs both: the resolved
+    # allowlist above includes inherited top-level grants, so echoing it as a
+    # top-level block would hoist a harness-scoped grant to the whole
+    # repository. See `sensitive_write_refusal`.
+    harness_name: str | None
+    own_sensitive_write_allowlist: frozenset[str]
 
 
 PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
@@ -834,7 +841,11 @@ def parse_sensitive_write_allowlist(
 
 
 def sensitive_write_refusal(
-    destinations: Sequence[str], config_name: str, allowlist: frozenset[str]
+    destinations: Sequence[str],
+    config_name: str,
+    allowlist: frozenset[str],
+    harness: str | None = None,
+    own_allowlist: frozenset[str] | None = None,
 ) -> str:
     """The refusal text for unconsented writes to sensitive destinations.
 
@@ -870,6 +881,41 @@ def sensitive_write_refusal(
     """
     plural = "s" if len(destinations) > 1 else ""
     listed = "".join(f"       - {dest}\n" for dest in destinations)
+    # A harness scope's resolved allowlist includes the top-level grants it
+    # inherited, and the block below is pasted at column zero — i.e. at the top
+    # level. Echoing the resolved set there would hoist this harness's own
+    # grants to the whole repository, handing them to the shared set and to
+    # every other harness. That is exactly the per-harness separation the
+    # config schema exists to give, undone by following the engine's own
+    # remediation advice. So a harness refusal quotes only that harness's own
+    # grants and says which key to put them under.
+    # Only when the consumer actually declared grants under this harness. A
+    # legacy config has no `harnesses:` key at all (its caller passes None), and
+    # a canonical config whose grants are all top-level should be told to edit
+    # the block it already has.
+    if harness is not None and own_allowlist:
+        scoped = own_allowlist
+        granted = "".join(f"      - {dest}\n" for dest in sorted(set(destinations) | scoped))
+        return (
+            f"  \u274c refusing to write sensitive path{plural} without an explicit "
+            f"opt-in (engine-level block, applies regardless of "
+            f"allowed_destinations):\n"
+            f"{listed}"
+            f"     Content written here controls what runs in this repo, "
+            f"who has to review it, or what the build installs. These targets "
+            f"belong to the {harness} harness, so grant them under that "
+            f"harness in {config_name} — replace its `allow_sensitive_writes` "
+            f"block with the following, keeping the indentation:\n"
+            f"\n"
+            f"harnesses:\n"
+            f"  {harness}:\n"
+            f"    allow_sensitive_writes:\n"
+            f"{granted}"
+            f"\n"
+            f"     Do not paste this list at the top level: a top-level grant "
+            f"covers the shared target set and every other harness, which is "
+            f"wider than the consent these targets need.\n"
+        )
     granted = "".join(f"  - {dest}\n" for dest in sorted(set(destinations) | allowlist))
     # The prose deliberately names the key without its colon: the emitted
     # block is the one place `allow_sensitive_writes:` should appear, so a
@@ -1054,6 +1100,59 @@ def unconsented_sensitive_writes(
             if not is_real_dir and (dest_path.exists() or dest_path.is_symlink()):
                 continue
         if dest_rel_canonical not in allowlist:
+            denied.append(dest_rel_canonical)
+    return denied
+
+
+def unallowed_destinations(
+    targets: Sequence[Any],
+    skip: Collection[str],
+    consumer_dir: Path,
+    allowed_patterns: Sequence[Any] | None,
+) -> list[str]:
+    """Destinations this scope would touch that its `allowed_destinations` bars.
+
+    The companion to `unconsented_sensitive_writes`, and it exists for the same
+    reason: so the whole run is refused before anything is written. Without it
+    the primary write-surface gate was enforced only inside the main loop, which
+    returns on the first offending target — after every earlier target in plan
+    order had already been written, deleted, and had its parents pruned. That
+    left the invariant the admission block claims ("nothing is written when the
+    gate trips") true of the sensitive-write gate but false of this one, and
+    sync-v2 widened the gap: the plan is now multi-scope, so a too-narrow
+    allowlist on the *second* harness aborts only after the first harness's
+    entire tree has landed.
+
+    Gates copy, delete, and `create_if_missing` alike, mirroring the loop: all
+    three touch the destination, and unlike the sensitive-write pass there is no
+    exemption for a `create_if_missing` whose destination already exists — the
+    loop checks the allowlist before it decides to preserve.
+
+    Reachability rules match the loop's order (skip, then resolve, then
+    canonical form). Targets the loop rejects outright for other reasons —
+    escaping the consumer root, or a non-canonical destination — are left to it,
+    so the consumer gets that specific error rather than an allowlist complaint
+    about a path that was malformed to begin with.
+    """
+    if allowed_patterns is None:
+        return []
+    denied: list[str] = []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        dest_rel = target.get("destination")
+        source_rel = target.get("source")
+        if not isinstance(dest_rel, str) or not dest_rel:
+            continue
+        if (isinstance(source_rel, str) and source_rel in skip) or dest_rel in skip:
+            continue
+        dest_path = resolve_under(consumer_dir, dest_rel)
+        if dest_path is None:
+            continue
+        dest_rel_canonical = dest_path.relative_to(consumer_dir).as_posix()
+        if dest_rel_canonical != dest_rel:
+            continue
+        if not path_matches_any(dest_rel_canonical, allowed_patterns):
             denied.append(dest_rel_canonical)
     return denied
 
@@ -1597,7 +1696,8 @@ def resolve_scopes(
         return None
 
     def build(
-        label: str, block: dict[str, Any], where: str, *, inherit: bool = True
+        label: str, block: dict[str, Any], where: str, *, inherit: bool = True,
+        harness_name: str | None = None,
     ) -> Scope | None:
         values = dict(base_values)
         own_values = block.get("substitutions") or {}
@@ -1660,6 +1760,8 @@ def resolve_scopes(
             skip=(set(base_skip_raw) if inherit else set()) | set(own_skip),
             allowed_patterns=patterns,
             sensitive_write_allowlist=(base_sensitive if inherit else frozenset()) | own_sensitive,
+            harness_name=harness_name,
+            own_sensitive_write_allowlist=own_sensitive,
         )
 
     shared_scope = build("shared", {}, "the shared target set")
@@ -1670,7 +1772,10 @@ def resolve_scopes(
     for name, block in blocks.items():
         # Legacy top-level gates belong only to the synthesized shared scope.
         # Each harness keeps the permissions of its own original config.
-        scope = build(f"harness {name}", block, f"`harnesses.{name}`", inherit=not legacy)
+        scope = build(
+            f"harness {name}", block, f"`harnesses.{name}`",
+            inherit=not legacy, harness_name=None if legacy else name,
+        )
         if scope is None:
             return None
         harness_scopes[name] = scope
@@ -1768,6 +1873,21 @@ def main() -> int:
     # because consent is per scope: a grant the consumer wrote for one
     # harness must not admit the same destination under another.
     for scope, scope_targets in plan:
+        # The allowlist runs first: a destination outside it is never written,
+        # so a sensitive-consent error for the same path would send the consumer
+        # to grant `allow_sensitive_writes` for something that stays refused.
+        denied_allowed = unallowed_destinations(
+            scope_targets, scope.skip, consumer_dir, scope.allowed_patterns
+        )
+        if denied_allowed:
+            listed = "".join(f"       - {dest}\n" for dest in denied_allowed)
+            sys.stderr.write(
+                f"  \u274c destination not in consumer's `allowed_destinations` "
+                f"({scope.label}):\n{listed}"
+                f"     Add them to `allowed_destinations` in {config_path.name}, "
+                f"or opt out of those targets with `skip_targets`.\n"
+            )
+            return 1
         denied_sensitive = unconsented_sensitive_writes(
             scope_targets,
             scope.skip,
@@ -1778,7 +1898,11 @@ def main() -> int:
         if denied_sensitive:
             sys.stderr.write(
                 sensitive_write_refusal(
-                    denied_sensitive, config_path.name, scope.sensitive_write_allowlist
+                    denied_sensitive,
+                    config_path.name,
+                    scope.sensitive_write_allowlist,
+                    scope.harness_name,
+                    scope.own_sensitive_write_allowlist,
                 )
             )
             return 1
@@ -2070,6 +2194,8 @@ def main() -> int:
                         [dest_rel_canonical],
                         config_path.name,
                         scope.sensitive_write_allowlist,
+                        scope.harness_name,
+                        scope.own_sensitive_write_allowlist,
                     )
                 )
                 return 1

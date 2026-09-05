@@ -374,6 +374,22 @@ jobs:
           assert isinstance(shared, list), "shared.targets must be a list"
           target_sets.append(('shared', shared))
           targets.extend(shared)
+          # Boolean strictness, before anything classifies on these flags. The
+          # engine hard-fails on a non-boolean `delete` or `create_if_missing`
+          # (see `sync-engine.py`), but Python truthiness would read
+          # `create_if_missing: "false"` as True here — so a stringly-typed
+          # value would pass this gate, merge, and then break the sync in every
+          # consumer at once. Classify only after the type is known good.
+          for t in targets:
+              assert isinstance(t, dict), f"non-mapping target: {t!r}"
+              for flag in ('delete', 'create_if_missing'):
+                  value = t.get(flag)
+                  assert value is None or isinstance(value, bool), (
+                      f"`{flag}` must be a boolean (true/false), got {value!r}: {t!r}"
+                  )
+              assert not (t.get('delete') and t.get('create_if_missing')), (
+                  f"`delete` and `create_if_missing` are mutually exclusive: {t!r}"
+              )
           # A destination shipped by two harnesses is a write both of them own.
           # `create_if_missing` is the one shape where that is fine: the first
           # harness bootstraps it and the rest preserve it. That only holds when
