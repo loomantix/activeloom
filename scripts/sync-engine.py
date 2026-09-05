@@ -42,7 +42,7 @@ import re
 import stat
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Required, TypedDict
@@ -912,7 +912,7 @@ def config_destination_refusal(destinations: Sequence[str], config_name: str) ->
 
 
 def config_write_targets(
-    targets: list[Any], consumer_dir: Path, config_paths: Sequence[Path]
+    targets: list[Any], consumer_dir: Path, config_paths: Collection[Path]
 ) -> list[str]:
     """Canonical destinations that would overwrite the consumer's own config.
 
@@ -935,6 +935,7 @@ def config_write_targets(
     more permissive surviving config on the next run.
     """
     offenders: list[str] = []
+    config_path_set = set(config_paths)
     for target in targets:
         if not isinstance(target, dict):
             continue
@@ -944,7 +945,7 @@ def config_write_targets(
         if not isinstance(target.get("delete"), (bool, type(None))):
             continue
         dest_path = resolve_under(consumer_dir, dest_rel)
-        if dest_path is None or dest_path.resolve() not in set(config_paths):
+        if dest_path is None or dest_path.resolve() not in config_path_set:
             continue
         offenders.append(dest_path.relative_to(consumer_dir).as_posix())
     return offenders
@@ -1506,11 +1507,11 @@ def resolve_scopes(
     specs: dict[str, dict[str, Any]],
     *,
     legacy: bool = False,
-) -> tuple[list[Scope], dict[str, Scope]] | None:
+) -> tuple[Scope, dict[str, Scope]] | None:
     """Build the shared scope and one scope per declared harness.
 
-    Returns `([shared_scope], {harness: scope})`-shaped data as a pair, or
-    None after writing the error.
+    Returns `(shared_scope, {harness: scope})`, or None after writing the
+    error.
 
     Three composition rules, and they are not the same rule:
 
@@ -1559,7 +1560,12 @@ def resolve_scopes(
     base_allowed = parse_allowed_destinations(config_doc, config_path, "the top level")
     if base_allowed is None:
         return None
-    base_allowed_declared, base_allowed_patterns = base_allowed
+    base_allowed_declared, base_allowed_globs = base_allowed
+    # Compiled once here rather than inside `build`, which would otherwise
+    # recompile the same globs for the shared scope and every harness. The
+    # list is only ever read, through `path_matches_any`, so one shared
+    # object is safe.
+    base_allowed_patterns = [glob_to_regex(p) for p in base_allowed_globs]
 
     base_sensitive = parse_sensitive_write_allowlist(config_doc, config_path, consumer_dir)
     if base_sensitive is None:
@@ -1596,14 +1602,14 @@ def resolve_scopes(
         own_allowed = parse_allowed_destinations(block, config_path, where)
         if own_allowed is None:
             return None
-        own_allowed_declared, own_allowed_patterns = own_allowed
+        own_allowed_declared, own_allowed_globs = own_allowed
 
         if own_allowed_declared:
             patterns: list[re.Pattern[str]] | None = [
-                glob_to_regex(p) for p in own_allowed_patterns
+                glob_to_regex(p) for p in own_allowed_globs
             ]
         elif inherit and base_allowed_declared:
-            patterns = [glob_to_regex(p) for p in base_allowed_patterns]
+            patterns = base_allowed_patterns
         else:
             # GitHub Actions annotation surfaces this in the PR UI instead of
             # being buried in a green-checkmark build's stderr.
@@ -1641,7 +1647,7 @@ def resolve_scopes(
             return None
         harness_scopes[name] = scope
 
-    return [shared_scope], harness_scopes
+    return shared_scope, harness_scopes
 
 
 def parse_args() -> argparse.Namespace:
@@ -1685,7 +1691,7 @@ def main() -> int:
     config_doc, config_path, config_sources, legacy = resolved
     # Every selectable consent store is protected even before it exists:
     # upstream must not seed a config that will win selection on a later run.
-    config_sources = list({
+    selectable_config_paths = frozenset({
         *config_sources,
         (consumer_dir / CANONICAL_CONFIG_NAME).resolve(),
         *((consumer_dir / str(spec["legacy_config"])).resolve() for spec in specs.values()),
@@ -1694,17 +1700,18 @@ def main() -> int:
     resolved_scopes = resolve_scopes(config_doc, config_path, consumer_dir, specs, legacy=legacy)
     if resolved_scopes is None:
         return 1
-    (shared_scope,), harness_scopes = resolved_scopes
+    shared_scope, harness_scopes = resolved_scopes
 
-    # The plan pairs every target with the scope that governs it. Harnesses go
-    # first, in manifest order, so the first declared harness bootstraps a
-    # `create_if_missing` destination that more than one of them ships; the
-    # shared set follows, matching the order each separate upstream used to
-    # deliver in.
-    plan: list[tuple[Scope, Any]] = []
-    for name, scope in harness_scopes.items():
-        plan.extend((scope, target) for target in specs[name]["targets"])
-    plan.extend((shared_scope, target) for target in shared_targets)
+    # The plan pairs each scope with the targets it governs, kept grouped so
+    # admission control reads the grouping directly instead of recovering it
+    # from a flat list by object identity. Harnesses go first, in manifest
+    # order, so the first declared harness bootstraps a `create_if_missing`
+    # destination that more than one of them ships; the shared set follows,
+    # matching the order each separate upstream used to deliver in.
+    plan: list[tuple[Scope, list[Any]]] = [
+        (scope, list(specs[name]["targets"])) for name, scope in harness_scopes.items()
+    ]
+    plan.append((shared_scope, list(shared_targets)))
 
     print(
         "Harnesses: "
@@ -1717,7 +1724,9 @@ def main() -> int:
     # by granting the config path. Protect current and future selectable
     # stores, including deletes that could change config selection.
     config_writes = config_write_targets(
-        [target for _, target in plan], consumer_dir, config_sources
+        [target for _, targets in plan for target in targets],
+        consumer_dir,
+        selectable_config_paths,
     )
     if config_writes:
         sys.stderr.write(config_destination_refusal(config_writes, config_path.name))
@@ -1730,8 +1739,7 @@ def main() -> int:
     # paste into their config, not one path per red run. Run per scope,
     # because consent is per scope: a grant the consumer wrote for one
     # harness must not admit the same destination under another.
-    for scope in [*harness_scopes.values(), shared_scope]:
-        scope_targets = [target for other, target in plan if other is scope]
+    for scope, scope_targets in plan:
         denied_sensitive = unconsented_sensitive_writes(
             scope_targets,
             scope.skip,
@@ -1757,349 +1765,350 @@ def main() -> int:
     unchanged = 0
     sensitive = 0
 
-    for scope, target in plan:
-        # Each `targets:` entry must be a mapping. A bare scalar (string,
-        # int) would raise AttributeError on `.get(...)` below; surface as
-        # a clean malformed-entry error instead.
-        if not isinstance(target, dict):
-            sys.stderr.write(f"  ❌ malformed target entry: expected a mapping, got {target!r}\n")
-            return 1
-        unknown_fields = sorted(str(key) for key in target if key not in KNOWN_TARGET_FIELDS)
-        if unknown_fields:
-            sys.stderr.write(
-                f"  ❌ unknown field(s) in target entry: {', '.join(unknown_fields)} "
-                f"(known: {', '.join(sorted(KNOWN_TARGET_FIELDS))}): {target!r}\n"
-            )
-            return 1
-        source_rel = target.get("source")
-        dest_rel = target.get("destination")
-        subs = parse_str_list(target, "substitutions")
-        if subs is None:
-            return 1
-        collapse_empty_substitutions = parse_str_list(target, "collapse_empty_substitutions")
-        if collapse_empty_substitutions is None:
-            return 1
-        for field, keys in (
-            ("substitutions", subs),
-            ("collapse_empty_substitutions", collapse_empty_substitutions),
-        ):
-            invalid_keys = sorted(key for key in set(keys) if PLACEHOLDER_NAME_RE.fullmatch(key) is None)
-            if invalid_keys:
+    for scope, targets in plan:
+        for target in targets:
+            # Each `targets:` entry must be a mapping. A bare scalar (string,
+            # int) would raise AttributeError on `.get(...)` below; surface as
+            # a clean malformed-entry error instead.
+            if not isinstance(target, dict):
+                sys.stderr.write(f"  ❌ malformed target entry: expected a mapping, got {target!r}\n")
+                return 1
+            unknown_fields = sorted(str(key) for key in target if key not in KNOWN_TARGET_FIELDS)
+            if unknown_fields:
                 sys.stderr.write(
-                    f"  ❌ `{field}` contains invalid placeholder keys: "
-                    f"{', '.join(invalid_keys)}\n"
+                    f"  ❌ unknown field(s) in target entry: {', '.join(unknown_fields)} "
+                    f"(known: {', '.join(sorted(KNOWN_TARGET_FIELDS))}): {target!r}\n"
                 )
                 return 1
-        undeclared_collapse_keys = set(collapse_empty_substitutions) - set(subs)
-        if undeclared_collapse_keys:
-            sys.stderr.write(
-                f"  ❌ `collapse_empty_substitutions` keys must also appear in "
-                f"`substitutions`: {', '.join(sorted(undeclared_collapse_keys))}\n"
-            )
-            return 1
-
-        # Require `delete` to be a real boolean if present. Strings like
-        # "false" / "no" are truthy in Python, so a stringly-typed mistake
-        # would silently arm a sync-wide unlink. Hard-fail instead.
-        delete_raw = target.get("delete")
-        if delete_raw is not None and not isinstance(delete_raw, bool):
-            sys.stderr.write(
-                f"  ❌ `delete` must be a boolean (true/false), got {delete_raw!r}: {target!r}\n"
-            )
-            return 1
-        delete_flag = bool(delete_raw)
-
-        # Same boolean-strictness for `create_if_missing` — a stringly-typed
-        # value would silently disable the bootstrap-only semantics and
-        # clobber consumer customization on every sync.
-        cim_raw = target.get("create_if_missing")
-        if cim_raw is not None and not isinstance(cim_raw, bool):
-            sys.stderr.write(
-                f"  ❌ `create_if_missing` must be a boolean (true/false), got {cim_raw!r}: {target!r}\n"
-            )
-            return 1
-        create_if_missing_flag = bool(cim_raw)
-
-        if delete_flag and create_if_missing_flag:
-            sys.stderr.write(
-                f"  ❌ `delete` and `create_if_missing` are mutually exclusive: {target!r}\n"
-            )
-            return 1
-
-        # Type/shape validation. The manifest is upstream-authored, so
-        # non-string paths or bare `.`/`..` here are bugs that warrant a
-        # clean error rather than a downstream TypeError or write-the-cwd
-        # surprise. `mode` only validates here for non-delete targets —
-        # `parse_mode` raises on bad input, and a `mode` field on a
-        # delete target is meaningless. Control characters are rejected
-        # outright: `[^/]*` in the glob compiler matches newlines, so an
-        # allowlist pattern like `.claude/skills/*` would otherwise accept
-        # `.claude/skills/foo\nbar` as a valid destination. The on-disk
-        # write would succeed; downstream tooling that ingests sync diffs
-        # would see a weirdly-named file that human review could miss.
-        if dest_rel is not None and (
-            not isinstance(dest_rel, str)
-            or not dest_rel
-            or dest_rel in (".", "..")
-            or not dest_rel.isprintable()
-        ):
-            sys.stderr.write(
-                f"  ❌ `destination` must be a non-empty printable path string, "
-                f"got {dest_rel!r}: {target!r}\n"
-            )
-            return 1
-        if source_rel is not None and (
-            not isinstance(source_rel, str)
-            or not source_rel
-            or source_rel in (".", "..")
-            or not source_rel.isprintable()
-        ):
-            sys.stderr.write(
-                f"  ❌ `source` must be a non-empty printable path string, "
-                f"got {source_rel!r}: {target!r}\n"
-            )
-            return 1
-
-        # `source` is required for copy entries but optional for delete entries
-        # (the source file may no longer exist in the upstream — that's the
-        # whole point of retiring it). `destination` is always required. The
-        # manifest is upstream-authored and sync-propagating, so a malformed
-        # entry is a bug that warrants surfacing loudly rather than silently
-        # dropping.
-        if not dest_rel or (not delete_flag and not source_rel):
-            sys.stderr.write(f"  ❌ malformed entry: {target!r}\n")
-            return 1
-
-        # Parse `mode` only for copy targets. `parse_mode` raises on
-        # non-octal input; running it before the delete-branch short-circuit
-        # would crash on a typoed `mode` field that delete entries shouldn't
-        # carry anyway.
-        if delete_flag:
-            if target.get("mode") is not None:
-                sys.stderr.write(f"  ❌ `mode` is not valid on a delete target: {target!r}\n")
+            source_rel = target.get("source")
+            dest_rel = target.get("destination")
+            subs = parse_str_list(target, "substitutions")
+            if subs is None:
                 return 1
-            mode = None
-        else:
-            try:
-                mode = parse_mode(target.get("mode"))
-            except (ValueError, TypeError) as e:
-                sys.stderr.write(f"  ❌ invalid `mode` ({e}): {target!r}\n")
+            collapse_empty_substitutions = parse_str_list(target, "collapse_empty_substitutions")
+            if collapse_empty_substitutions is None:
                 return 1
-
-        if (source_rel and source_rel in scope.skip) or dest_rel in scope.skip:
-            label = source_rel or dest_rel
-            print(f"  ⏭️  skip {label} (opted out via {config_path.name})")
-            skipped += 1
-            continue
-
-        # Destination paths come from an upstream-controlled manifest today,
-        # but this guards against a typo (`../shared/foo`) becoming a
-        # cross-tree write/delete primitive outside the consumer.
-        dest_path = resolve_under(consumer_dir, dest_rel)
-        if dest_path is None:
-            sys.stderr.write(f"  ❌ destination escapes consumer root: {dest_rel}\n")
-            return 1
-
-        # Canonicalize for policy matching. `resolve_under` collapses `./`,
-        # `//`, and `foo/../` segments via `os.path.normpath`, so the on-disk
-        # write target is `dest_path` — but the allowlist and
-        # `SENSITIVE_DELETE_REGEXES` match by string against the manifest's
-        # `destination` field. Without normalization, a manifest entry like
-        # `./.github/workflows/release.yml` resolves to the guarded file on
-        # disk while bypassing the anchored `.github/workflows/**` pattern.
-        # Reject non-canonical strings outright: every fleet manifest entry
-        # uses canonical posix-relative paths, so a mismatch is either a
-        # typo (clean error beats silent rewrite) or an attack attempt.
-        dest_rel_canonical = dest_path.relative_to(consumer_dir).as_posix()
-        if dest_rel_canonical != dest_rel:
-            sys.stderr.write(
-                f"  ❌ destination must be in canonical posix form (no `./`, "
-                f"`//`, or `..` segments): got {dest_rel!r}, normalized form "
-                f"is {dest_rel_canonical!r}\n"
-            )
-            return 1
-
-        # Consumer-side allowlist enforcement. Applies uniformly to copy,
-        # delete, and create_if_missing targets — the threat model is
-        # "upstream manifest can write/delete consumer files" and all three
-        # actions touch the destination.
-        if scope.allowed_patterns is not None and not path_matches_any(
-            dest_rel_canonical, scope.allowed_patterns
-        ):
-            sys.stderr.write(
-                f"  ❌ destination not in consumer's `allowed_destinations` "
-                f"({scope.label}): {dest_rel_canonical}\n"
-            )
-            return 1
-
-        if dest_path.resolve() in config_sources:
-            sys.stderr.write(config_destination_refusal([dest_rel_canonical], config_path.name))
-            return 1
-
-        if delete_flag:
-            # Engine-level refusal for paths whose deletion would remove
-            # consumer-side guardrails (CI workflows, composite actions,
-            # CODEOWNERS, lockfiles, schema, container build). Applies
-            # regardless of allowlist — a consumer that legitimately syncs
-            # CI workflows still must not have those workflows deletable
-            # by manifest entry.
-            if is_sensitive_delete_dest(dest_rel_canonical):
+            for field, keys in (
+                ("substitutions", subs),
+                ("collapse_empty_substitutions", collapse_empty_substitutions),
+            ):
+                invalid_keys = sorted(key for key in set(keys) if PLACEHOLDER_NAME_RE.fullmatch(key) is None)
+                if invalid_keys:
+                    sys.stderr.write(
+                        f"  ❌ `{field}` contains invalid placeholder keys: "
+                        f"{', '.join(invalid_keys)}\n"
+                    )
+                    return 1
+            undeclared_collapse_keys = set(collapse_empty_substitutions) - set(subs)
+            if undeclared_collapse_keys:
                 sys.stderr.write(
-                    f"  ❌ refusing to delete sensitive path (engine-level "
-                    f"block, applies regardless of allowed_destinations): "
-                    f"{dest_rel_canonical}\n"
+                    f"  ❌ `collapse_empty_substitutions` keys must also appear in "
+                    f"`substitutions`: {', '.join(sorted(undeclared_collapse_keys))}\n"
                 )
                 return 1
-            # Refuse to unlink a real directory at the destination —
-            # `unlink()` would raise `IsADirectoryError` and abort the
-            # whole sync. Symlinks-to-directories are still removable
-            # (unlink removes the link, not the target), so guard on
-            # `is_dir() and not is_symlink()`.
-            if dest_path.is_dir() and not dest_path.is_symlink():
+
+            # Require `delete` to be a real boolean if present. Strings like
+            # "false" / "no" are truthy in Python, so a stringly-typed mistake
+            # would silently arm a sync-wide unlink. Hard-fail instead.
+            delete_raw = target.get("delete")
+            if delete_raw is not None and not isinstance(delete_raw, bool):
                 sys.stderr.write(
-                    f"  ❌ destination is a directory, refusing to unlink: {dest_rel}\n"
+                    f"  ❌ `delete` must be a boolean (true/false), got {delete_raw!r}: {target!r}\n"
                 )
                 return 1
-            # `exists()` follows symlinks and returns False on a dangling
-            # link; pair with `is_symlink()` so broken symlinks still get
-            # unlinked instead of leaving as silent residue.
-            existed = dest_path.exists() or dest_path.is_symlink()
-            if args.dry_run:
-                if existed:
-                    print(f"  🗑️  would remove {dest_rel}")
-                    removed += 1
-                else:
+            delete_flag = bool(delete_raw)
+
+            # Same boolean-strictness for `create_if_missing` — a stringly-typed
+            # value would silently disable the bootstrap-only semantics and
+            # clobber consumer customization on every sync.
+            cim_raw = target.get("create_if_missing")
+            if cim_raw is not None and not isinstance(cim_raw, bool):
+                sys.stderr.write(
+                    f"  ❌ `create_if_missing` must be a boolean (true/false), got {cim_raw!r}: {target!r}\n"
+                )
+                return 1
+            create_if_missing_flag = bool(cim_raw)
+
+            if delete_flag and create_if_missing_flag:
+                sys.stderr.write(
+                    f"  ❌ `delete` and `create_if_missing` are mutually exclusive: {target!r}\n"
+                )
+                return 1
+
+            # Type/shape validation. The manifest is upstream-authored, so
+            # non-string paths or bare `.`/`..` here are bugs that warrant a
+            # clean error rather than a downstream TypeError or write-the-cwd
+            # surprise. `mode` only validates here for non-delete targets —
+            # `parse_mode` raises on bad input, and a `mode` field on a
+            # delete target is meaningless. Control characters are rejected
+            # outright: `[^/]*` in the glob compiler matches newlines, so an
+            # allowlist pattern like `.claude/skills/*` would otherwise accept
+            # `.claude/skills/foo\nbar` as a valid destination. The on-disk
+            # write would succeed; downstream tooling that ingests sync diffs
+            # would see a weirdly-named file that human review could miss.
+            if dest_rel is not None and (
+                not isinstance(dest_rel, str)
+                or not dest_rel
+                or dest_rel in (".", "..")
+                or not dest_rel.isprintable()
+            ):
+                sys.stderr.write(
+                    f"  ❌ `destination` must be a non-empty printable path string, "
+                    f"got {dest_rel!r}: {target!r}\n"
+                )
+                return 1
+            if source_rel is not None and (
+                not isinstance(source_rel, str)
+                or not source_rel
+                or source_rel in (".", "..")
+                or not source_rel.isprintable()
+            ):
+                sys.stderr.write(
+                    f"  ❌ `source` must be a non-empty printable path string, "
+                    f"got {source_rel!r}: {target!r}\n"
+                )
+                return 1
+
+            # `source` is required for copy entries but optional for delete entries
+            # (the source file may no longer exist in the upstream — that's the
+            # whole point of retiring it). `destination` is always required. The
+            # manifest is upstream-authored and sync-propagating, so a malformed
+            # entry is a bug that warrants surfacing loudly rather than silently
+            # dropping.
+            if not dest_rel or (not delete_flag and not source_rel):
+                sys.stderr.write(f"  ❌ malformed entry: {target!r}\n")
+                return 1
+
+            # Parse `mode` only for copy targets. `parse_mode` raises on
+            # non-octal input; running it before the delete-branch short-circuit
+            # would crash on a typoed `mode` field that delete entries shouldn't
+            # carry anyway.
+            if delete_flag:
+                if target.get("mode") is not None:
+                    sys.stderr.write(f"  ❌ `mode` is not valid on a delete target: {target!r}\n")
+                    return 1
+                mode = None
+            else:
+                try:
+                    mode = parse_mode(target.get("mode"))
+                except (ValueError, TypeError) as e:
+                    sys.stderr.write(f"  ❌ invalid `mode` ({e}): {target!r}\n")
+                    return 1
+
+            if (source_rel and source_rel in scope.skip) or dest_rel in scope.skip:
+                label = source_rel or dest_rel
+                print(f"  ⏭️  skip {label} (opted out via {config_path.name})")
+                skipped += 1
+                continue
+
+            # Destination paths come from an upstream-controlled manifest today,
+            # but this guards against a typo (`../shared/foo`) becoming a
+            # cross-tree write/delete primitive outside the consumer.
+            dest_path = resolve_under(consumer_dir, dest_rel)
+            if dest_path is None:
+                sys.stderr.write(f"  ❌ destination escapes consumer root: {dest_rel}\n")
+                return 1
+
+            # Canonicalize for policy matching. `resolve_under` collapses `./`,
+            # `//`, and `foo/../` segments via `os.path.normpath`, so the on-disk
+            # write target is `dest_path` — but the allowlist and
+            # `SENSITIVE_DELETE_REGEXES` match by string against the manifest's
+            # `destination` field. Without normalization, a manifest entry like
+            # `./.github/workflows/release.yml` resolves to the guarded file on
+            # disk while bypassing the anchored `.github/workflows/**` pattern.
+            # Reject non-canonical strings outright: every fleet manifest entry
+            # uses canonical posix-relative paths, so a mismatch is either a
+            # typo (clean error beats silent rewrite) or an attack attempt.
+            dest_rel_canonical = dest_path.relative_to(consumer_dir).as_posix()
+            if dest_rel_canonical != dest_rel:
+                sys.stderr.write(
+                    f"  ❌ destination must be in canonical posix form (no `./`, "
+                    f"`//`, or `..` segments): got {dest_rel!r}, normalized form "
+                    f"is {dest_rel_canonical!r}\n"
+                )
+                return 1
+
+            # Consumer-side allowlist enforcement. Applies uniformly to copy,
+            # delete, and create_if_missing targets — the threat model is
+            # "upstream manifest can write/delete consumer files" and all three
+            # actions touch the destination.
+            if scope.allowed_patterns is not None and not path_matches_any(
+                dest_rel_canonical, scope.allowed_patterns
+            ):
+                sys.stderr.write(
+                    f"  ❌ destination not in consumer's `allowed_destinations` "
+                    f"({scope.label}): {dest_rel_canonical}\n"
+                )
+                return 1
+
+            if dest_path.resolve() in selectable_config_paths:
+                sys.stderr.write(config_destination_refusal([dest_rel_canonical], config_path.name))
+                return 1
+
+            if delete_flag:
+                # Engine-level refusal for paths whose deletion would remove
+                # consumer-side guardrails (CI workflows, composite actions,
+                # CODEOWNERS, lockfiles, schema, container build). Applies
+                # regardless of allowlist — a consumer that legitimately syncs
+                # CI workflows still must not have those workflows deletable
+                # by manifest entry.
+                if is_sensitive_delete_dest(dest_rel_canonical):
+                    sys.stderr.write(
+                        f"  ❌ refusing to delete sensitive path (engine-level "
+                        f"block, applies regardless of allowed_destinations): "
+                        f"{dest_rel_canonical}\n"
+                    )
+                    return 1
+                # Refuse to unlink a real directory at the destination —
+                # `unlink()` would raise `IsADirectoryError` and abort the
+                # whole sync. Symlinks-to-directories are still removable
+                # (unlink removes the link, not the target), so guard on
+                # `is_dir() and not is_symlink()`.
+                if dest_path.is_dir() and not dest_path.is_symlink():
+                    sys.stderr.write(
+                        f"  ❌ destination is a directory, refusing to unlink: {dest_rel}\n"
+                    )
+                    return 1
+                # `exists()` follows symlinks and returns False on a dangling
+                # link; pair with `is_symlink()` so broken symlinks still get
+                # unlinked instead of leaving as silent residue.
+                existed = dest_path.exists() or dest_path.is_symlink()
+                if args.dry_run:
+                    if existed:
+                        print(f"  🗑️  would remove {dest_rel}")
+                        removed += 1
+                    else:
+                        print(f"  ✓  already absent {dest_rel}")
+                        unchanged += 1
+                    continue
+                if not existed:
                     print(f"  ✓  already absent {dest_rel}")
                     unchanged += 1
+                    continue
+                dest_path.unlink(missing_ok=True)
+                prune_empty_parents(dest_path, consumer_dir)
+                print(f"  🗑️  removed {dest_rel}")
+                removed += 1
                 continue
-            if not existed:
-                print(f"  ✓  already absent {dest_rel}")
-                unchanged += 1
-                continue
-            dest_path.unlink(missing_ok=True)
-            prune_empty_parents(dest_path, consumer_dir)
-            print(f"  🗑️  removed {dest_rel}")
-            removed += 1
-            continue
 
-        # `create_if_missing: True` bootstraps the destination on first
-        # sync and leaves it alone thereafter, so consumer customization
-        # of the file survives subsequent syncs. Short-circuit before
-        # source read + substitution — when the file already exists,
-        # missing substitution values in the consumer's config must NOT
-        # fail the sync (the file's content is no longer the upstream's
-        # concern). `exists() or is_symlink()` mirrors the delete branch's
-        # treatment of dangling symlinks as "present."
-        #
-        # Refuse a directory at the destination — the manifest entry
-        # describes a file, and silently treating a directory as
-        # "preserved" would mask consumer-side bad state and leave the
-        # bootstrap target permanently uncreated. Mirrors the delete
-        # branch's directory-refusal pattern.
-        if create_if_missing_flag:
-            if dest_path.is_dir() and not dest_path.is_symlink():
+            # `create_if_missing: True` bootstraps the destination on first
+            # sync and leaves it alone thereafter, so consumer customization
+            # of the file survives subsequent syncs. Short-circuit before
+            # source read + substitution — when the file already exists,
+            # missing substitution values in the consumer's config must NOT
+            # fail the sync (the file's content is no longer the upstream's
+            # concern). `exists() or is_symlink()` mirrors the delete branch's
+            # treatment of dangling symlinks as "present."
+            #
+            # Refuse a directory at the destination — the manifest entry
+            # describes a file, and silently treating a directory as
+            # "preserved" would mask consumer-side bad state and leave the
+            # bootstrap target permanently uncreated. Mirrors the delete
+            # branch's directory-refusal pattern.
+            if create_if_missing_flag:
+                if dest_path.is_dir() and not dest_path.is_symlink():
+                    sys.stderr.write(
+                        f"  ❌ destination is a directory, refusing to bootstrap a file there: {dest_rel}\n"
+                    )
+                    return 1
+                if dest_path.exists() or dest_path.is_symlink():
+                    print(f"  ✓  preserved {dest_rel} (create_if_missing)")
+                    unchanged += 1
+                    continue
+
+            # Engine-level gate on *writing* a sensitive path, and the
+            # authoritative one — `unconsented_sensitive_writes` above only
+            # front-runs it so the refusal lands before anything is written.
+            #
+            # Placed below the `create_if_missing` preserve branch on purpose.
+            # Above it, a bootstrap target whose destination already exists
+            # would demand consent to write a file the engine has just decided
+            # never to touch, which breaks the documented short-circuit and
+            # fails every steady-state consumer. Everything still reaching here
+            # either writes or is a no-op write of identical bytes, and consent
+            # is required for both: gating on today's byte diff would let a
+            # sync run green for months and then fail the day upstream edits
+            # the file, which is a worse time to discover missing consent.
+            #
+            # The block matches case-insensitively while the opt-in compares
+            # exactly. That asymmetry is deliberate — a denial should be broad
+            # enough to survive a case-insensitive filesystem, a grant should
+            # be narrow enough that it only ever covers the path the consumer
+            # actually wrote down.
+            is_sensitive_write = is_sensitive_write_dest(dest_rel_canonical)
+            if is_sensitive_write and dest_rel_canonical not in scope.sensitive_write_allowlist:
                 sys.stderr.write(
-                    f"  ❌ destination is a directory, refusing to bootstrap a file there: {dest_rel}\n"
+                    sensitive_write_refusal(
+                        [dest_rel_canonical],
+                        config_path.name,
+                        scope.sensitive_write_allowlist,
+                    )
                 )
                 return 1
-            if dest_path.exists() or dest_path.is_symlink():
-                print(f"  ✓  preserved {dest_rel} (create_if_missing)")
-                unchanged += 1
+
+            # Same path-bound check on `source` as `destination` — a manifest
+            # typo with `..` segments would otherwise read arbitrary files
+            # from the runner filesystem rather than from the upstream repo.
+            # Explicit guard (not `assert`) so this still narrows under
+            # `python -O` — the malformed-entry check above also rejects None
+            # for copy targets, so this branch is defense-in-depth.
+            if source_rel is None:
+                sys.stderr.write(
+                    f"  ❌ internal invariant violated: copy target reached "
+                    f"source-resolve with `source` unset: {target!r}\n"
+                )
+                return 1
+            source_path = resolve_under(upstream_repo, source_rel)
+            if source_path is None:
+                sys.stderr.write(f"  ❌ source escapes upstream repo: {source_rel}\n")
+                return 1
+
+            if not source_path.is_file():
+                sys.stderr.write(f"  ❌ source missing in upstream: {source_rel}\n")
+                return 1
+
+            text = read_utf8(source_path)
+            # Always run substitution — even when subs=[] — so that the
+            # "undeclared placeholder in source" warning fires when a developer
+            # adds a `<<KEY>>` token to a source file but forgets to declare
+            # it in sync-targets.yml.
+            # Ordinary rendering preserves surrounding template bytes and strips
+            # trailing newlines from inserted values. A manifest may explicitly opt
+            # selected prose-only keys into structural blank collapsing; see
+            # `drop_empty_placeholder_lines`. A verbatim copy (subs == []) substitutes
+            # nothing and stays byte-identical to the upstream source.
+            substituted = substitute(
+                text, scope.values, subs, source_rel, collapse_empty_substitutions
+            )
+
+            # Both branches below report a sensitive write only where one
+            # actually happens. The daily cron is almost always at steady state,
+            # so counting at the consent check instead would make the false
+            # positive the common case and the real signal the rare one.
+            if args.dry_run:
+                existing = read_utf8(dest_path) if dest_path.is_file() else None
+                current_mode = stat.S_IMODE(dest_path.stat().st_mode) if dest_path.is_file() else None
+                content_diverged = existing != substituted
+                mode_diverged = mode is not None and current_mode is not None and current_mode != mode
+                if content_diverged or mode_diverged:
+                    reason = "content" if content_diverged else "mode"
+                    if is_sensitive_write:
+                        sensitive += 1
+                        announce_sensitive_write(dest_rel_canonical)
+                    print(f"  📝 would write {dest_rel} ({reason})")
+                    written += 1
+                else:
+                    unchanged += 1
                 continue
 
-        # Engine-level gate on *writing* a sensitive path, and the
-        # authoritative one — `unconsented_sensitive_writes` above only
-        # front-runs it so the refusal lands before anything is written.
-        #
-        # Placed below the `create_if_missing` preserve branch on purpose.
-        # Above it, a bootstrap target whose destination already exists
-        # would demand consent to write a file the engine has just decided
-        # never to touch, which breaks the documented short-circuit and
-        # fails every steady-state consumer. Everything still reaching here
-        # either writes or is a no-op write of identical bytes, and consent
-        # is required for both: gating on today's byte diff would let a
-        # sync run green for months and then fail the day upstream edits
-        # the file, which is a worse time to discover missing consent.
-        #
-        # The block matches case-insensitively while the opt-in compares
-        # exactly. That asymmetry is deliberate — a denial should be broad
-        # enough to survive a case-insensitive filesystem, a grant should
-        # be narrow enough that it only ever covers the path the consumer
-        # actually wrote down.
-        is_sensitive_write = is_sensitive_write_dest(dest_rel_canonical)
-        if is_sensitive_write and dest_rel_canonical not in scope.sensitive_write_allowlist:
-            sys.stderr.write(
-                sensitive_write_refusal(
-                    [dest_rel_canonical],
-                    config_path.name,
-                    scope.sensitive_write_allowlist,
-                )
-            )
-            return 1
-
-        # Same path-bound check on `source` as `destination` — a manifest
-        # typo with `..` segments would otherwise read arbitrary files
-        # from the runner filesystem rather than from the upstream repo.
-        # Explicit guard (not `assert`) so this still narrows under
-        # `python -O` — the malformed-entry check above also rejects None
-        # for copy targets, so this branch is defense-in-depth.
-        if source_rel is None:
-            sys.stderr.write(
-                f"  ❌ internal invariant violated: copy target reached "
-                f"source-resolve with `source` unset: {target!r}\n"
-            )
-            return 1
-        source_path = resolve_under(upstream_repo, source_rel)
-        if source_path is None:
-            sys.stderr.write(f"  ❌ source escapes upstream repo: {source_rel}\n")
-            return 1
-
-        if not source_path.is_file():
-            sys.stderr.write(f"  ❌ source missing in upstream: {source_rel}\n")
-            return 1
-
-        text = read_utf8(source_path)
-        # Always run substitution — even when subs=[] — so that the
-        # "undeclared placeholder in source" warning fires when a developer
-        # adds a `<<KEY>>` token to a source file but forgets to declare
-        # it in sync-targets.yml.
-        # Ordinary rendering preserves surrounding template bytes and strips
-        # trailing newlines from inserted values. A manifest may explicitly opt
-        # selected prose-only keys into structural blank collapsing; see
-        # `drop_empty_placeholder_lines`. A verbatim copy (subs == []) substitutes
-        # nothing and stays byte-identical to the upstream source.
-        substituted = substitute(
-            text, scope.values, subs, source_rel, collapse_empty_substitutions
-        )
-
-        # Both branches below report a sensitive write only where one
-        # actually happens. The daily cron is almost always at steady state,
-        # so counting at the consent check instead would make the false
-        # positive the common case and the real signal the rare one.
-        if args.dry_run:
-            existing = read_utf8(dest_path) if dest_path.is_file() else None
-            current_mode = stat.S_IMODE(dest_path.stat().st_mode) if dest_path.is_file() else None
-            content_diverged = existing != substituted
-            mode_diverged = mode is not None and current_mode is not None and current_mode != mode
-            if content_diverged or mode_diverged:
-                reason = "content" if content_diverged else "mode"
+            if write_if_changed(dest_path, substituted, mode):
                 if is_sensitive_write:
                     sensitive += 1
                     announce_sensitive_write(dest_rel_canonical)
-                print(f"  📝 would write {dest_rel} ({reason})")
+                print(f"  ✅ wrote {dest_rel}")
                 written += 1
             else:
                 unchanged += 1
-            continue
-
-        if write_if_changed(dest_path, substituted, mode):
-            if is_sensitive_write:
-                sensitive += 1
-                announce_sensitive_write(dest_rel_canonical)
-            print(f"  ✅ wrote {dest_rel}")
-            written += 1
-        else:
-            unchanged += 1
 
     summary = (
         f"\nDone: {written} written, {removed} removed, "
