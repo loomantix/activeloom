@@ -1045,6 +1045,10 @@ def lint_all(
     used: set[tuple[str, str, str]] = set()
     for path in _git_tracked_files(roots):
         key_path = canonical_path(path, rendered_to_source)
+        # Each physical copy gets one approved occurrence. Canonicalizing this
+        # set would reject legitimate rendered copies; sharing it across lines
+        # prevents replaying an approved command elsewhere in the same file.
+        used_in_file: set[tuple[str, str, str]] = set()
         try:
             with open(path, encoding="utf-8") as fh:
                 for lineno, line in enumerate(fh, start=1):
@@ -1053,6 +1057,14 @@ def lint_all(
                         key = (digest, key_path, rule)
                         if key in suppressed:
                             used.add(key)
+                            if key in used_in_file:
+                                findings_count += 1
+                                _report(
+                                    path, lineno, rule,
+                                    "duplicate suppressed line — one entry approves "
+                                    "one occurrence per physical file", line,
+                                )
+                            used_in_file.add(key)
                             continue
                         findings_count += 1
                         _report(path, lineno, rule, msg, line)
