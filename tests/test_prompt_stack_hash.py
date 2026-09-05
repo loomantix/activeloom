@@ -53,8 +53,17 @@ REPO_INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md"]
 
 
 def run(*args: str) -> dict[str, Any]:
+    return run_script(SCRIPT, *args)
+
+
+def run_script(script: Path, *args: str) -> dict[str, Any]:
+    """Run one engine's copy of the helper.
+
+    Named separately because which copy runs is a property under test for the
+    shipped manifests: each engine's script derives its own `HARNESS_ROOT`.
+    """
     result = subprocess.run(
-        ["node", str(SCRIPT), *args],
+        ["node", str(script), *args],
         capture_output=True,
         text=True,
         check=False,
@@ -243,13 +252,21 @@ def test_an_absent_file_is_recorded_not_skipped(tmp_path: Path) -> None:
 
 
 def test_a_stack_with_nothing_present_yields_null(tmp_path: Path) -> None:
-    """ "Everything absent" is not a prompt generation to compare against."""
+    """ "Everything absent" is not a prompt generation to compare against.
+
+    The stack half states its reason; the instructions half does not. That
+    asymmetry is the point: a manifest that parsed asserts these files *are* the
+    stack, so nothing arriving contradicts it, while a repository carrying
+    neither instruction file is simply a repository without one.
+    """
     write_manifest(tmp_path)
     payload = run("--repo-root", str(tmp_path))
     assert payload["promptStackSha256"] is None
     assert payload["repoInstructionsSha256"] is None
     assert payload["promptStack"]["present"] == 0
-    assert payload["error"] is None
+    assert payload["error"] == (
+        "no declared prompt-stack file is present under .claude"
+    )
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable files")
@@ -395,6 +412,16 @@ def test_a_changed_declaration_changes_the_identity(tmp_path: Path) -> None:
             {"files": [".claude\\x.md"]}, None, "unusable path", id="backslash"
         ),
         pytest.param({"files": [3]}, None, "unusable path", id="not-a-string"),
+        # The renderer refuses to emit this, but a manifest is an ordinary file
+        # by the time it is read here. Hashing it would fold
+        # `promptStackVersion` into the digest, so a version-only bump would
+        # move a digest that is documented never to move for one.
+        pytest.param(
+            {"files": [".claude/prompt-stack.json"]},
+            None,
+            "unusable path",
+            id="self-reference",
+        ),
         pytest.param(
             {"files": [".claude/a.md", ".claude/a.md"]},
             None,
@@ -481,16 +508,100 @@ def test_an_oversized_declared_prompt_abstains(tmp_path: Path) -> None:
     assert payload["error"] == "the prompt stack could not be read"
 
 
-def test_the_shipped_declaration_is_well_formed(tmp_path: Path) -> None:
-    """This repository's own manifest must satisfy the reader it ships with."""
-    payload = run("--repo-root", str(REPO_ROOT))
+@pytest.mark.parametrize("root", [".claude", ".codex"])
+def test_the_shipped_declaration_is_well_formed(root: str) -> None:
+    """Every shipped manifest must satisfy the reader shipped beside it.
+
+    Parametrized over both roots because the two manifests are not two copies of
+    one file the way the two scripts are. They are separately generated
+    artifacts with their own `engine`, `root`, and `files`, so the byte-equality
+    assertion below covers the script and says nothing about either of them. Each
+    engine's own copy is run here, since `HARNESS_ROOT` comes from the script's
+    location and is the whole point of the distinction.
+    """
+    script = REPO_ROOT / root / "skills/critique/scripts" / "prompt-stack-hash.js"
+    payload = run_script(script, "--repo-root", str(REPO_ROOT))
     assert payload["error"] is None
+    assert payload["harnessRoot"] == root
     assert payload["promptStackSha256"] is not None
     assert payload["promptStackVersion"] == (
         (REPO_ROOT / "PROMPT_STACK_VERSION").read_text(encoding="utf-8").strip()
     )
-    declared = json.loads((REPO_ROOT / MANIFEST_PATH).read_text(encoding="utf-8"))
+    declared = json.loads(
+        (REPO_ROOT / root / "prompt-stack.json").read_text(encoding="utf-8")
+    )
+    assert declared["root"] == root
+    assert payload["promptStack"]["declared"] == len(declared["files"])
     assert payload["promptStack"]["present"] == len(declared["files"])
+
+
+def test_a_symlinked_directory_component_abstains(tmp_path: Path) -> None:
+    """The per-component walk, which `O_NOFOLLOW` cannot stand in for.
+
+    `O_NOFOLLOW` constrains only the final component, so the two symlink cases
+    above pass with the component loop deleted. This one does not: it links a
+    *directory* component at an otherwise valid target, which is the case the
+    loop exists for and the shape the round-1 finding reported.
+    """
+    populate(tmp_path)
+    # `.claude/references` holds a declared prompt. Move the real directory
+    # outside the harness root and leave a link where it was: every declared
+    # file still resolves and still has the right bytes, so only the component
+    # check can tell the difference.
+    inside = tmp_path / ".claude/references"
+    outside = tmp_path / "external-references"
+    inside.rename(outside)
+    inside.symlink_to(outside)
+
+    payload = run("--repo-root", str(tmp_path))
+    assert payload["promptStackSha256"] is None
+    assert payload["promptStackVersion"] == STACK_VERSION
+    assert payload["error"] == "the prompt stack could not be read"
+
+
+def test_a_declared_stack_that_arrived_empty_says_so(tmp_path: Path) -> None:
+    """A null digest must never be a null reason.
+
+    A manifest that parsed is a positive assertion that these files are the
+    stack, so `declared > 0, present == 0` contradicts it. Reporting no reason
+    would leave a record that abstains without saying why — the same failure as
+    a digest that looks measured, which is what the abstention exists to avoid.
+    A partial sync reaches this: the manifest and the prompts it names are
+    separate sync targets.
+    """
+    populate(tmp_path)
+    for relative in PROMPT_STACK_FILES:
+        (tmp_path / relative).unlink()
+
+    payload = run("--repo-root", str(tmp_path))
+    assert payload["promptStackSha256"] is None
+    assert payload["promptStackVersion"] == STACK_VERSION
+    assert payload["promptStack"] == {
+        "declared": len(PROMPT_STACK_FILES),
+        "present": 0,
+    }
+    assert payload["error"] == (
+        "no declared prompt-stack file is present under .claude"
+    )
+
+
+def test_a_wholly_absent_instruction_set_is_not_an_error(tmp_path: Path) -> None:
+    """The counterpart: a repository with no instruction file has no fault.
+
+    Pinned so the reason added for the stack half is not copied to this one. A
+    repository carrying neither `AGENTS.md` nor `CLAUDE.md` is a normal
+    repository, not a broken sync.
+    """
+    populate(tmp_path)
+    for relative in REPO_INSTRUCTION_FILES:
+        path = tmp_path / relative
+        if path.exists():
+            path.unlink()
+
+    payload = run("--repo-root", str(tmp_path))
+    assert payload["repoInstructionsSha256"] is None
+    assert payload["promptStackSha256"] is not None
+    assert payload["error"] is None
 
 
 def test_both_abstention_reasons_are_reported(tmp_path: Path) -> None:

@@ -257,6 +257,12 @@ function readManifest(root) {
       typeof entry !== 'string' ||
       entry.length === 0 ||
       !entry.startsWith(prefix) ||
+      // The manifest may not name itself. The renderer refuses to emit such a
+      // declaration, but a manifest is an ordinary file by the time it is read
+      // here, and hashing it would fold `promptStackVersion` into the digest —
+      // breaking the one contract this helper reports beside it rather than in
+      // it: a version bump that changed no prompt must not move the digest.
+      entry === `${HARNESS_ROOT}/${MANIFEST_NAME}` ||
       entry.includes('\\') ||
       entry
         .split('/')
@@ -477,9 +483,18 @@ function main(argv) {
       // a manifest problem — and a null digest whose stated reason is the wrong
       // one looks diagnosed, which is the same failure as a digest that looks
       // measured, one level down.
+      //
+      // A manifest that parsed is a positive assertion that these files are the
+      // stack, so `declared > 0, present === 0` contradicts it and must say so.
+      // The repo-instructions half needs no such reason: a repository carrying
+      // neither instruction file has no instructions, and that is not a fault.
       error: joinReasons([
         manifest.error ??
-          (stack.failed ? 'the prompt stack could not be read' : null),
+          (stack.failed
+            ? 'the prompt stack could not be read'
+            : stack.declared > 0 && stack.present === 0
+              ? `no declared prompt-stack file is present under ${HARNESS_ROOT}`
+              : null),
         instructions.failed ? 'the repo instructions could not be read' : null,
       ]),
     });

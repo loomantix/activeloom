@@ -1101,6 +1101,118 @@ def test_changed_stack_inputs_require_a_version_advance(
     stacked._rp.verify_prompt_stack_version(base, profiles, "1.3.0")
 
 
+def _git(root: Path, *args: str) -> str:
+    """Run one Git command in a fixture repository."""
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            *args,
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _committed_repo(harness: Harness) -> None:
+    """Initialise a fixture repository with the rendered tree committed."""
+    _git(harness.root, "init", "-q", "-b", "main")
+    _git(harness.root, "add", ".")
+    _git(harness.root, "commit", "-qm", "base")
+
+
+def test_a_base_branch_bump_after_the_fork_is_not_a_regression(
+    stacked: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ordering value must be read where the diff is taken: the merge base.
+
+    A branch is judged on what *it* changed, so it must be judged against the
+    value it started from. Reading the version at the base branch's tip instead
+    imports bumps that landed after the fork, and reports them as a regression
+    the branch never made — failing a PR that bumped correctly, and a PR that
+    touches no prompt at all.
+    """
+    monkeypatch.setattr(stacked._rp, "format_markdown", lambda *a, **k: None)
+    assert stacked._rp.main([]) == 0
+    _committed_repo(stacked)
+
+    # The PR forks here, edits a declared prompt, and bumps correctly.
+    _git(stacked.root, "checkout", "-q", "-b", "feature")
+    (stacked.root / ".claude/REVIEW_WORKFLOW.md").write_text(
+        "# changed workflow\n", encoding="utf-8"
+    )
+    stacked.version_path.write_text("1.2.4\n", encoding="utf-8")
+    _git(stacked.root, "add", ".")
+    _git(stacked.root, "commit", "-qm", "prompt change plus patch bump")
+
+    # Meanwhile the base branch lands its own change and a larger bump.
+    _git(stacked.root, "checkout", "-q", "main")
+    stacked.version_path.write_text("1.3.0\n", encoding="utf-8")
+    _git(stacked.root, "add", ".")
+    _git(stacked.root, "commit", "-qm", "base branch bump")
+    _git(stacked.root, "checkout", "-q", "feature")
+
+    profiles = stacked._rp.load_profiles()
+    stacked._rp.verify_prompt_stack_version("main", profiles, "1.2.4")
+
+
+def test_a_version_below_the_merge_base_is_a_regression(
+    stacked: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression branch, which fires on the branch's own starting value."""
+    monkeypatch.setattr(stacked._rp, "format_markdown", lambda *a, **k: None)
+    assert stacked._rp.main([]) == 0
+    _committed_repo(stacked)
+    base = _git(stacked.root, "rev-parse", "HEAD")
+
+    stacked.version_path.write_text("1.1.0\n", encoding="utf-8")
+    _git(stacked.root, "add", ".")
+    _git(stacked.root, "commit", "-qm", "version walked backwards")
+
+    profiles = stacked._rp.load_profiles()
+    with pytest.raises(ValueError, match="regressed from 1.2.3 to 1.1.0"):
+        stacked._rp.verify_prompt_stack_version(base, profiles, "1.1.0")
+
+
+def test_changed_stack_membership_requires_a_version_advance(
+    stacked: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dropping a file from the stack moves the digest, so it must bump too.
+
+    The manifest paths are folded into the compared set for exactly this: the
+    declared membership can change with no edit to any prompt file, and that is
+    still a new prompt generation.
+    """
+    monkeypatch.setattr(stacked._rp, "format_markdown", lambda *a, **k: None)
+    assert stacked._rp.main([]) == 0
+    _committed_repo(stacked)
+    base = _git(stacked.root, "rev-parse", "HEAD")
+
+    extra = stacked.root / ".claude/EXTRA_NOTES.md"
+    extra.write_text("# extra\n", encoding="utf-8")
+    profile = stacked.profiles_dir / "claude.yml"
+    profile.write_text(
+        profile.read_text(encoding="utf-8")
+        + "  - .claude/EXTRA_NOTES.md\n",
+        encoding="utf-8",
+    )
+    assert stacked._rp.main([]) == 0
+    _git(stacked.root, "add", ".")
+    _git(stacked.root, "commit", "-qm", "declare one more prompt file")
+
+    profiles = stacked._rp.load_profiles()
+    with pytest.raises(ValueError, match="without advancing PROMPT_STACK_VERSION"):
+        stacked._rp.verify_prompt_stack_version(base, profiles, "1.2.3")
+
+    stacked.version_path.write_text("1.2.4\n", encoding="utf-8")
+    stacked._rp.verify_prompt_stack_version(base, profiles, "1.2.4")
+
+
 def test_the_manifest_is_inside_the_ownership_domain(
     render_prompts: ModuleType,
 ) -> None:

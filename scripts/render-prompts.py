@@ -366,7 +366,24 @@ def verify_prompt_stack_version(
         raise ValueError(
             f"could not resolve prompt-stack comparison base {base_revision!r}"
         )
-    base = verified.stdout.strip()
+    # Both ends of the comparison must come from the same commit. The diff below
+    # is scoped to what this branch changed, so the ordering value it is judged
+    # against has to be the one this branch started from — not the tip, which
+    # carries bumps that landed on the base branch after the fork and would read
+    # as a regression the branch never made.
+    merged = subprocess.run(
+        ["git", "merge-base", verified.stdout.strip(), "HEAD"],
+        check=False,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if merged.returncode != 0:
+        raise ValueError(
+            f"could not find a merge base with {base_revision!r}: "
+            f"{merged.stderr.strip()}"
+        )
+    base = merged.stdout.strip()
     base_version_raw = _git_file_at(base, VERSION_PATH.name)
     # The first commit that introduces the version has no earlier ordering value.
     if base_version_raw is None:
@@ -391,7 +408,10 @@ def verify_prompt_stack_version(
 
     tracked = sorted(base_files | current_files | manifest_paths)
     changed = subprocess.run(
-        ["git", "diff", "--quiet", f"{base}...HEAD", "--", *tracked],
+        # Two-dot: `base` is already the merge base, so the three-dot form would
+        # recompute the same commit and only obscure that the version above and
+        # the diff here are anchored to it together.
+        ["git", "diff", "--quiet", f"{base}..HEAD", "--", *tracked],
         check=False,
         cwd=REPO_ROOT,
     )
