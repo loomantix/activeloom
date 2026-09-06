@@ -17,7 +17,7 @@ const {
   DEFAULT_REF,
   DEFAULT_UPSTREAM,
 } = require('../lib/upstream');
-const { TIERS } = require('../lib/tiers');
+const { TIERS, RECOMMENDED_TIER } = require('../lib/tiers');
 const ui = require('../lib/ui');
 
 const USAGE = `
@@ -162,7 +162,7 @@ function printTiers() {
   }
   ui.info(
     ui.dim(
-      'Tier 2 is the recommended tier. A GitHub App is only ever needed at Tier 3.',
+      `Tier ${RECOMMENDED_TIER.n} is the recommended tier. A GitHub App is only ever needed at Tier 3.`,
     ),
   );
 }
@@ -245,7 +245,6 @@ async function main(argv) {
   // rather than silently reinterpreting the flags the user typed.
   if (opts.app && !opts.sync) {
     ui.warn('--app implies --sync; installing Tier 3.');
-    opts.sync = true;
   }
 
   let upstream;

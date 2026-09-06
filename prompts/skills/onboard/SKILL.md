@@ -80,8 +80,6 @@ Only into `.claude/skills/agent-loop/agent-loop.config` (or the equivalent root 
 
 The file's own comments show the flag placement for each hook and name the environment variables a hook must carry, or preflight rejects it. Follow them rather than composing a command from scratch.
 
-Leave a key empty rather than guessing it. An empty key is a documented "not configured yet"; a wrong one is a run that fails late.
-
 ## 4. Present for confirmation
 
 Show the drafted values before writing them. For each one give the value and the evidence in a single line — the file you took it from.
@@ -106,5 +104,4 @@ The marker scan is therefore the actual gate, not a closing formality. Grep the 
 
 - It does not choose the tier. That is `npx activeloom init` with or without `--sync`, and it is the user's call.
 - It does not set secrets, and it does not create a GitHub App. Those belong to Tier 3 and to a human.
-- It does not invent a model identifier, and it does not pick one for the user. See step 3.
 - It does not commit. Leave the change staged for the user to review.

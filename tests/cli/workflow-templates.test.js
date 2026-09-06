@@ -32,12 +32,13 @@ const TOKEN = fs.readFileSync(
   path.join(WORKFLOWS, 'sync-from-upstream-token.yml.template'),
   'utf8',
 );
+const TEMPLATES = [
+  ['app', APP],
+  ['token', TOKEN],
+];
 
 test('both templates default to the same content gate', () => {
-  for (const [name, body] of [
-    ['app', APP],
-    ['token', TOKEN],
-  ]) {
+  for (const [name, body] of TEMPLATES) {
     assert.match(
       body,
       /^ {2}UPSTREAM_REF: sync-v2$/m,
@@ -61,10 +62,7 @@ test('both templates invoke the same engine with the same arguments', () => {
 });
 
 test('both templates honour the kill switch', () => {
-  for (const [name, body] of [
-    ['app', APP],
-    ['token', TOKEN],
-  ]) {
+  for (const [name, body] of TEMPLATES) {
     assert.match(
       body,
       /if: vars\.SKIP_UPSTREAM_SYNC == ''/,
@@ -74,10 +72,7 @@ test('both templates honour the kill switch', () => {
 });
 
 test('both templates refuse to guess PR_BASE_BRANCH', () => {
-  for (const [name, body] of [
-    ['app', APP],
-    ['token', TOKEN],
-  ]) {
+  for (const [name, body] of TEMPLATES) {
     assert.match(
       body,
       /PR_BASE_BRANCH: ''/,
@@ -95,10 +90,7 @@ test('both templates carry the placeholders the CLI substitutes', () => {
   // `writeWorkflow` throws when neither placeholder is found, but only after it
   // has already decided to write. Pinning them here fails at build time
   // instead, where the fix is obvious.
-  for (const [name, body] of [
-    ['app', APP],
-    ['token', TOKEN],
-  ]) {
+  for (const [name, body] of TEMPLATES) {
     assert.ok(
       body.includes('UPSTREAM_REPO: <owner>/<repo>'),
       `${name}: no UPSTREAM_REPO placeholder`,
@@ -171,20 +163,22 @@ const { TIERS } = require(
 /** Write a workflow for `tier` into a throwaway repo and return its body. */
 const workflowFor = (tier, overrides = {}) => {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-wf-'));
-  const result = writeWorkflow({
-    tier,
-    upstreamDir: REPO_ROOT_FOR_CLI,
-    repoDir,
-    upstreamRepo: 'acme/consumer-upstream',
-    upstreamRef: 'sync-v2',
-    baseBranch: 'trunk',
-    dryRun: false,
-    force: false,
-    ...overrides,
-  });
-  const body = fs.readFileSync(result.dest, 'utf8');
-  fs.rmSync(repoDir, { recursive: true, force: true });
-  return body;
+  try {
+    const result = writeWorkflow({
+      tier,
+      upstreamDir: REPO_ROOT_FOR_CLI,
+      repoDir,
+      upstreamRepo: 'acme/consumer-upstream',
+      upstreamRef: 'sync-v2',
+      baseBranch: 'trunk',
+      dryRun: false,
+      force: false,
+      ...overrides,
+    });
+    return fs.readFileSync(result.dest, 'utf8');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
 };
 
 test('tier 2 gets the token template and tier 3 the App template', () => {
@@ -230,33 +224,36 @@ test('a template missing a placeholder is refused by name', () => {
   // long as *either* substitution landed — so a drifted `PR_BASE_BRANCH` line
   // installed a workflow the consumer's own validate step then rejected.
   const upstreamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
-  fs.mkdirSync(path.join(upstreamDir, '.github', 'workflows'), {
-    recursive: true,
-  });
-  fs.writeFileSync(
-    path.join(
-      upstreamDir,
-      '.github',
-      'workflows',
-      'sync-from-upstream-token.yml.template',
-    ),
-    'env:\n  UPSTREAM_REPO: <owner>/<repo>\n  UPSTREAM_REF: sync-v2\n',
-  );
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-wf-'));
-  assert.throws(
-    () =>
-      writeWorkflow({
-        tier: TIERS[2],
+  try {
+    fs.mkdirSync(path.join(upstreamDir, '.github', 'workflows'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(
         upstreamDir,
-        repoDir,
-        upstreamRepo: 'acme/consumer-upstream',
-        upstreamRef: 'sync-v2',
-        baseBranch: 'trunk',
-        dryRun: false,
-        force: false,
-      }),
-    /PR_BASE_BRANCH placeholder/,
-  );
-  fs.rmSync(upstreamDir, { recursive: true, force: true });
-  fs.rmSync(repoDir, { recursive: true, force: true });
+        '.github',
+        'workflows',
+        'sync-from-upstream-token.yml.template',
+      ),
+      'env:\n  UPSTREAM_REPO: <owner>/<repo>\n  UPSTREAM_REF: sync-v2\n',
+    );
+    assert.throws(
+      () =>
+        writeWorkflow({
+          tier: TIERS[2],
+          upstreamDir,
+          repoDir,
+          upstreamRepo: 'acme/consumer-upstream',
+          upstreamRef: 'sync-v2',
+          baseBranch: 'trunk',
+          dryRun: false,
+          force: false,
+        }),
+      /PR_BASE_BRANCH placeholder/,
+    );
+  } finally {
+    fs.rmSync(upstreamDir, { recursive: true, force: true });
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
 });

@@ -516,8 +516,8 @@ async function init(args) {
     return 1;
   }
 
-  let chosen = chooseHarnesses(facts, args.harnesses);
-  chosen = await confirmHarnesses(chosen, facts, {
+  const detected = chooseHarnesses(facts, args.harnesses);
+  const chosen = await confirmHarnesses(detected, facts, {
     assumeYes: args.assumeYes === true,
     explicit: args.harnesses.length > 0,
   });
