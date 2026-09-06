@@ -201,6 +201,30 @@ test('the generated config never declares the reserved telemetry key', () => {
   assert.ok(!body.includes('REVIEW_TELEMETRY_ENV'));
 });
 
+test('only tier 2 skips the workflow target GITHUB_TOKEN cannot push', () => {
+  // GitHub refuses a GITHUB_TOKEN push whose commit touches
+  // `.github/workflows/`, and no `permissions:` key grants it. Tier 2 is the
+  // only tier that pushes as GITHUB_TOKEN, so it is the only tier that must
+  // skip the shared target set's `dco.yml` — tier 1 runs the engine locally
+  // and tier 3 commits through an App installation token.
+  const render = (tierNumber) =>
+    initLib.renderConfig({ harnesses: ['claude'], facts: facts(), tierNumber });
+
+  const tier2 = render(2);
+  assert.match(tier2, /^skip_targets:\n {2}- \.github\/workflows\/dco\.yml$/m);
+  assert.match(tier2, /^allow_sensitive_writes: \[\]$/m);
+
+  for (const tierNumber of [1, 3]) {
+    const body = render(tierNumber);
+    assert.match(
+      body,
+      /^allow_sensitive_writes:\n {2}- \.github\/workflows\/dco\.yml$/m,
+      `tier ${tierNumber} must still receive the shared workflow target`,
+    );
+    assert.match(body, /^skip_targets: \[\]$/m);
+  }
+});
+
 test('the generated config marks what it could not determine', () => {
   const body = initLib.renderConfig({ harnesses: ['claude'], facts: facts() });
   assert.ok(

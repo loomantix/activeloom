@@ -249,9 +249,19 @@ function yamlScalar(value) {
  * @param {object} args
  * @param {string[]} args.harnesses
  * @param {ReturnType<import('./detect').detect>} args.facts
+ * @param {number} [args.tierNumber] Tier this config is being written for.
  * @returns {string}
  */
-function renderConfig({ harnesses, facts }) {
+function renderConfig({ harnesses, facts, tierNumber = 1 }) {
+  // Tier 2's only identity is the workflow's built-in `GITHUB_TOKEN`, and
+  // GitHub refuses a `GITHUB_TOKEN` push whose commit touches
+  // `.github/workflows/`. There is no way to grant it: the Actions
+  // `permissions:` block has no `workflows` key. So the shared target set's
+  // `.github/workflows/dco.yml` has to be skipped at that tier or the very
+  // first scheduled sync dies on `git push`, after committing. Tier 1 runs the
+  // engine locally and tier 3 commits through an App installation token, so
+  // neither is affected.
+  const skipsWorkflowTarget = tierNumber === 2;
   const name = facts.git.slug
     ? facts.git.slug.split('/')[1]
     : path.basename(facts.repoDir);
@@ -328,7 +338,22 @@ ${codeRules.map((line) => `    ${line}`).join('\n')}
 
   WHAT_NOT_TO_SUGGEST_EXTRA: ''
 
-# Required before the sync may write a sensitive path. The shared target set
+${
+  skipsWorkflowTarget
+    ? `# Required before the sync may write a sensitive path. A refusal names any
+# others it needs, in a block you can paste as-is.
+allow_sensitive_writes: []
+
+# Opt out of specific upstream files by source or destination path.
+#
+# \`.github/workflows/dco.yml\` is skipped because this repo syncs with the
+# workflow's built-in GITHUB_TOKEN (tier 2), and GitHub refuses a GITHUB_TOKEN
+# push whose commit creates or updates any file under \`.github/workflows/\`.
+# To receive it, either add the file by hand once, or move to tier 3
+# (\`npx activeloom init --sync --app\`) and delete this entry.
+skip_targets:
+  - .github/workflows/dco.yml`
+    : `# Required before the sync may write a sensitive path. The shared target set
 # ships \`.github/workflows/dco.yml\`, which every consumer receives, so this
 # entry is what lets your first sync run. A refusal names any others it needs,
 # in a block you can paste as-is.
@@ -336,7 +361,8 @@ allow_sensitive_writes:
   - .github/workflows/dco.yml
 
 # Opt out of specific upstream files by source or destination path.
-skip_targets: []
+skip_targets: []`
+}
 `;
 }
 
@@ -598,7 +624,11 @@ async function init(args) {
       `config:     ${ui.dim(`keeping legacy config${legacyConfigs.length > 1 ? 's' : ''} (${legacyConfigs.map((entry) => path.basename(entry)).join(', ')}); the sync engine will compose them`)}`,
     );
   } else {
-    const body = renderConfig({ harnesses: chosen.ids, facts });
+    const body = renderConfig({
+      harnesses: chosen.ids,
+      facts,
+      tierNumber: tier.n,
+    });
     assertSafeWritePath(facts.repoDir, configPath);
     if (!dryRun) {
       fs.writeFileSync(configPath, body);
