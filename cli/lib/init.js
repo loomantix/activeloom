@@ -159,6 +159,86 @@ function chooseHarnesses(facts, requested) {
 }
 
 /**
+ * Show what was detected and let the user correct it before anything is written.
+ *
+ * Detection can only establish that a `claude` binary is on PATH or a `.codex`
+ * directory exists. That is a proxy for "this is what I drive sessions with",
+ * and it is a leaky one: a developer with all three CLIs installed would
+ * otherwise get all three harness trees committed to a shared repository
+ * without ever being asked. `init` writes into a repo the whole team pulls, so
+ * the inference is worth one question.
+ *
+ * Not asked when:
+ *   - `--harness` was given. The user already stated the answer; re-asking
+ *     second-guesses a decision they just typed.
+ *   - `--yes`, or stdin is not a TTY. Scripts, CI, and `npx | sh` pipelines
+ *     must never block on a question nobody can answer.
+ *
+ * `prompts` is injected so the branching is testable without a terminal; the
+ * default wires it to the real `ui` implementations.
+ *
+ * @param {{ids: string[], reason: string}} chosen
+ * @param {ReturnType<import('./detect').detect>} facts
+ * @param {object} options
+ * @param {boolean} options.assumeYes
+ * @param {boolean} options.explicit  `--harness` was passed.
+ * @param {{confirm: typeof ui.confirm, ask: typeof ui.ask}} [prompts]
+ * @returns {Promise<{ids: string[], reason: string}>}
+ */
+async function confirmHarnesses(chosen, facts, options, prompts = ui) {
+  if (options.explicit || options.assumeYes || !process.stdin.isTTY) {
+    return chosen;
+  }
+
+  ui.info('');
+  ui.info(ui.bold('  Detected harnesses'));
+  for (const h of facts.harnesses) {
+    const signals = [
+      h.inRepo ? 'in repo' : null,
+      h.onMachine ? 'config on machine' : null,
+      h.cliInstalled ? 'CLI installed' : null,
+    ].filter(Boolean);
+    const mark = chosen.ids.includes(h.id) ? ui.green('•') : ' ';
+    ui.info(
+      `   ${mark} ${h.id.padEnd(8)} ${signals.length > 0 ? signals.join(', ') : ui.dim('no signal')}`,
+    );
+  }
+  ui.info('');
+
+  const accepted = await prompts.confirm(
+    `  Write ${ui.bold(chosen.ids.join(', '))} into this repo?`,
+    true,
+  );
+  if (accepted) return chosen;
+
+  const known = new Set(HARNESSES.map((h) => h.id));
+  // Bounded rather than unbounded: a user who cannot name a valid harness in
+  // three tries is better served by the error and the `--harness` flag than by
+  // a loop they have to Ctrl-C out of.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const answer = await prompts.ask(`  Which? (${[...known].join(' / ')}) >`);
+    const ids = answer.split(/[\s,]+/).filter(Boolean);
+    if (ids.length === 0) {
+      ui.warn('  name at least one harness, or press Ctrl-C to abort.');
+      continue;
+    }
+    const unknown = ids.filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      ui.warn(`  unknown: ${unknown.join(', ')}`);
+      continue;
+    }
+    // De-duplicated, and ordered by the manifest rather than by typing order,
+    // so the generated config is stable regardless of how it was entered.
+    const ordered = HARNESSES.map((h) => h.id).filter((id) => ids.includes(id));
+    return { ids: ordered, reason: 'confirmed' };
+  }
+
+  throw new Error(
+    `could not read a harness list. Pass them explicitly: --harness ${[...known][0]}`,
+  );
+}
+
+/**
  * Quote a scalar for YAML output.
  *
  * Single-quoted with internal quotes doubled: the one YAML scalar style with no
@@ -421,7 +501,11 @@ async function init(args) {
     return 1;
   }
 
-  const chosen = chooseHarnesses(facts, args.harnesses);
+  let chosen = chooseHarnesses(facts, args.harnesses);
+  chosen = await confirmHarnesses(chosen, facts, {
+    assumeYes: args.assumeYes === true,
+    explicit: args.harnesses.length > 0,
+  });
   ui.step(
     `harnesses: ${ui.bold(chosen.ids.join(', '))} ${ui.dim(`(${chosen.reason})`)}`,
   );
@@ -577,6 +661,7 @@ module.exports = {
   writeWorkflow,
   checkPython,
   refuseSelfSync,
+  confirmHarnesses,
   yamlScalar,
   TODO,
 };

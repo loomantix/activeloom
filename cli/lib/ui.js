@@ -65,7 +65,32 @@ async function confirm(question, defaultYes = true) {
   }
 }
 
+/**
+ * Ask for a line of free text on stdin.
+ *
+ * Returns `''` without prompting when stdin is not a TTY, for the same reason
+ * `confirm` returns its default: a non-interactive caller must never block on a
+ * question nobody can answer.
+ *
+ * @param {string} question
+ * @returns {Promise<string>}
+ */
+async function ask(question) {
+  if (!process.stdin.isTTY) return '';
+  const readline = require('node:readline/promises');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    return (await rl.question(`${question} `)).trim();
+  } finally {
+    rl.close();
+  }
+}
+
 module.exports = {
+  ask,
   bold,
   dim,
   green,

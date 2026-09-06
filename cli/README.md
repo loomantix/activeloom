@@ -40,6 +40,7 @@ npx activeloom tiers                 # explain the ladder
 | `--base-branch <b>`  | branch sync PRs land on (default: your `origin` HEAD)          |
 | `--python <path>`    | interpreter for the sync engine (default: `python3`)           |
 | `--consumer-dir <d>` | repository to write into (default: current directory)          |
+| `--yes`, `-y`        | accept the detected harnesses without being asked              |
 | `--dry-run`          | report what would happen, write nothing                        |
 | `--force`            | replace files that already exist                               |
 

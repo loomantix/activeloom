@@ -40,6 +40,7 @@ ${ui.bold('Options')}
   --python <path>    interpreter for the sync engine (default: python3)
   --upstream-dir <d> install from a local checkout instead of downloading
   --consumer-dir <d> repository to write into (default: current directory)
+  --yes, -y          accept detected harnesses without asking
   --dry-run          report what would happen, write nothing
   --force            replace files that already exist
   -h, --help         this message
@@ -68,6 +69,7 @@ function parseArgs(argv) {
     upstreamDir: undefined,
     consumerDir: undefined,
     dryRun: false,
+    assumeYes: false,
     force: false,
     sync: false,
     app: false,
@@ -95,6 +97,10 @@ function parseArgs(argv) {
         break;
       case '--dry-run':
         opts.dryRun = true;
+        break;
+      case '-y':
+      case '--yes':
+        opts.assumeYes = true;
         break;
       case '--force':
         opts.force = true;
@@ -268,6 +274,7 @@ async function main(argv) {
       sync: opts.sync,
       app: opts.app,
       dryRun: opts.dryRun,
+      assumeYes: opts.assumeYes,
       force: opts.force,
       python: opts.python,
       baseBranch: opts.baseBranch,

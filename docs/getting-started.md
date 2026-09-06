@@ -56,6 +56,8 @@ This writes two things:
 - **The harness roots** — `.claude/`, `.codex/`, `.agents/`, or whichever subset applies. `init` picks them by looking: a harness already checked in wins, otherwise the agent CLIs on your machine, otherwise Claude Code. Override with `--harness claude --harness codex`.
 - **`.activeloom-config.yml`** — the repository's own configuration, described below.
 
+`init` shows what it detected and asks before writing, since a machine with three agent CLIs installed is not the same thing as a team that wants three harness trees committed. Pass `--yes` to accept the detection, or `--harness claude` to state it outright — either skips the question, as does any non-interactive run.
+
 Commit both. That is the whole tier: no workflow, no secrets, no automation. To pick up upstream changes later, run `init` again.
 
 `npx activeloom detect` prints what `init` would decide, and writes nothing.

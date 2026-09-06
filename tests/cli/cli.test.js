@@ -295,3 +295,168 @@ test('refuseSelfSync permits an ordinary consumer', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- harness confirmation ---------------------------------------------------
+
+/**
+ * Force the TTY branch on.
+ *
+ * `confirmHarnesses` short-circuits when stdin is not a TTY, which is exactly
+ * what a test runner gives it — so without this the interactive assertions
+ * below would pass by never running the code they name.
+ */
+function withTTY(value, fn) {
+  const original = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+  Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true });
+  return fn().finally(() => {
+    if (original) Object.defineProperty(process.stdin, 'isTTY', original);
+    else delete process.stdin.isTTY;
+  });
+}
+
+/** Prompt doubles that record what they were asked. */
+function prompts({ accept = true, answer = '' } = {}) {
+  const asked = [];
+  return {
+    asked,
+    confirm: async (q) => {
+      asked.push(q);
+      return accept;
+    },
+    ask: async (q) => {
+      asked.push(q);
+      return answer;
+    },
+  };
+}
+
+test('confirmHarnesses does not prompt when stdin is not a TTY', async () => {
+  // Scripts, CI, and `npx | sh` pipelines must never block on a question
+  // nobody can answer.
+  const p = prompts();
+  await withTTY(false, async () => {
+    const chosen = { ids: ['claude', 'codex'], reason: 'detected' };
+    const out = await initLib.confirmHarnesses(
+      chosen,
+      facts(),
+      { assumeYes: false, explicit: false },
+      p,
+    );
+    assert.deepStrictEqual(out, chosen);
+  });
+  assert.deepStrictEqual(p.asked, [], 'nothing should have been asked');
+});
+
+test('confirmHarnesses does not prompt when --yes is passed', async () => {
+  const p = prompts();
+  await withTTY(true, async () => {
+    const chosen = { ids: ['claude'], reason: 'detected' };
+    const out = await initLib.confirmHarnesses(
+      chosen,
+      facts(),
+      { assumeYes: true, explicit: false },
+      p,
+    );
+    assert.deepStrictEqual(out, chosen);
+  });
+  assert.deepStrictEqual(p.asked, []);
+});
+
+test('confirmHarnesses does not re-ask what --harness already stated', async () => {
+  // Re-asking second-guesses a decision the user just typed.
+  const p = prompts();
+  await withTTY(true, async () => {
+    const chosen = { ids: ['codex'], reason: 'requested with --harness' };
+    const out = await initLib.confirmHarnesses(
+      chosen,
+      facts(),
+      { assumeYes: false, explicit: true },
+      p,
+    );
+    assert.deepStrictEqual(out, chosen);
+  });
+  assert.deepStrictEqual(p.asked, []);
+});
+
+test('confirmHarnesses keeps the detected set when the user accepts', async () => {
+  const p = prompts({ accept: true });
+  await withTTY(true, async () => {
+    const chosen = { ids: ['claude', 'codex', 'gemini'], reason: 'detected' };
+    const out = await initLib.confirmHarnesses(
+      chosen,
+      facts(),
+      { assumeYes: false, explicit: false },
+      p,
+    );
+    assert.deepStrictEqual(out.ids, ['claude', 'codex', 'gemini']);
+  });
+  assert.strictEqual(
+    p.asked.length,
+    1,
+    'should ask exactly once when accepted',
+  );
+});
+
+test('confirmHarnesses takes a corrected list when the user declines', async () => {
+  // The case the whole prompt exists for: three CLIs installed, one actually
+  // used, and without this all three trees get committed to a shared repo.
+  const p = prompts({ accept: false, answer: 'claude' });
+  await withTTY(true, async () => {
+    const chosen = { ids: ['claude', 'codex', 'gemini'], reason: 'detected' };
+    const out = await initLib.confirmHarnesses(
+      chosen,
+      facts(),
+      { assumeYes: false, explicit: false },
+      p,
+    );
+    assert.deepStrictEqual(out.ids, ['claude']);
+    assert.strictEqual(out.reason, 'confirmed');
+  });
+});
+
+test('a corrected list is ordered by the manifest, not by typing order', async () => {
+  // So the generated config is byte-stable regardless of how it was entered.
+  const p = prompts({ accept: false, answer: 'gemini claude' });
+  await withTTY(true, async () => {
+    const out = await initLib.confirmHarnesses(
+      { ids: ['claude', 'codex', 'gemini'], reason: 'detected' },
+      facts(),
+      { assumeYes: false, explicit: false },
+      p,
+    );
+    assert.deepStrictEqual(out.ids, ['claude', 'gemini']);
+  });
+});
+
+test('confirmHarnesses accepts comma-separated input and de-duplicates', async () => {
+  const p = prompts({ accept: false, answer: 'codex, codex,claude' });
+  await withTTY(true, async () => {
+    const out = await initLib.confirmHarnesses(
+      { ids: ['claude', 'codex', 'gemini'], reason: 'detected' },
+      facts(),
+      { assumeYes: false, explicit: false },
+      p,
+    );
+    assert.deepStrictEqual(out.ids, ['claude', 'codex']);
+  });
+});
+
+test('confirmHarnesses gives up after three unusable answers', async () => {
+  // Bounded rather than looping forever: a user who cannot name a valid
+  // harness is better served by the error and `--harness` than by a prompt
+  // they have to Ctrl-C out of.
+  const p = prompts({ accept: false, answer: 'gemeni' });
+  await withTTY(true, async () => {
+    await assert.rejects(
+      () =>
+        initLib.confirmHarnesses(
+          { ids: ['claude'], reason: 'detected' },
+          facts(),
+          { assumeYes: false, explicit: false },
+          p,
+        ),
+      /could not read a harness list/,
+    );
+  });
+  assert.strictEqual(p.asked.length, 4, 'one confirm + three retries');
+});
