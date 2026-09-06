@@ -133,7 +133,7 @@ async function resolveUpstream(options = {}) {
       // `execFileSync` throws with a bare "Command failed: tar ...". The real
       // cause — a truncated download, a corrupt archive, an HTML error page
       // served with a 200 — is on `err.stderr`, which nothing else reads.
-      const detail = String(err.stderr ?? '').trim();
+      const detail = String(err.stderr ?? '').trim() || err.message;
       throw new Error(
         `could not unpack the archive from ${url}` +
           (detail ? `\n  tar: ${detail}` : ''),

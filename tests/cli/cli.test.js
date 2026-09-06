@@ -158,6 +158,11 @@ test('an unknown harness is refused by name', () => {
   );
 });
 
+test('chooseHarnesses deduplicates repeated explicit harnesses', () => {
+  const chosen = initLib.chooseHarnesses(facts(), ['claude', 'claude']);
+  assert.deepStrictEqual(chosen.ids, ['claude']);
+});
+
 // --- config rendering -------------------------------------------------------
 
 test('the generated config never declares the reserved telemetry key', () => {
@@ -311,6 +316,27 @@ test('Tier 0 installs the harness support files used by critique', () => {
         'utf8',
       ),
       '# Keep me\n',
+    );
+
+    const claudeRoot = path.join(upstream, '.claude');
+    fs.mkdirSync(path.join(claudeRoot, 'agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(claudeRoot, 'agents', 'code-explorer.md'),
+      '# Explorer\n',
+    );
+    addLib.installSupportFiles(
+      upstream,
+      { root: '.claude', home: '.claude' },
+      home,
+      false,
+      false,
+    );
+    assert.strictEqual(
+      fs.readFileSync(
+        path.join(home, '.claude', 'agents', 'code-explorer.md'),
+        'utf8',
+      ),
+      '# Explorer\n',
     );
   } finally {
     fs.rmSync(upstream, { recursive: true, force: true });

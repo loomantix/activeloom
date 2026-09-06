@@ -436,7 +436,7 @@ function writeWorkflow({
     );
   }
   for (const substitution of substitutions) {
-    body = body.replace(substitution.pattern, substitution.replacement);
+    body = body.replace(substitution.pattern, () => substitution.replacement);
   }
 
   if (fs.existsSync(dest)) {

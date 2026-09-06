@@ -143,6 +143,7 @@ const SUPPORT_PATHS = Object.freeze([
   'MODEL_NOTES.md',
   'REVIEW_WORKFLOW.md',
   'SKILL_AUTHORING.md',
+  'agents',
   'prompt-stack.json',
   'references',
 ]);
@@ -153,11 +154,18 @@ function installSupportFiles(upstreamDir, harness, homeDir, dryRun, force) {
   const destRoot = path.join(homeDir, harness.home);
 
   const install = (src, dest) => {
-    const stat = fs.statSync(src);
+    let stat;
+    try {
+      stat = fs.lstatSync(src);
+    } catch {
+      return;
+    }
+    if (stat.isSymbolicLink()) return;
     if (stat.isDirectory()) {
       if (!dryRun) fs.mkdirSync(dest, { recursive: true });
-      for (const entry of fs.readdirSync(src)) {
-        install(path.join(src, entry), path.join(dest, entry));
+      for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        if (entry.isSymbolicLink()) continue;
+        install(path.join(src, entry.name), path.join(dest, entry.name));
       }
       return;
     }

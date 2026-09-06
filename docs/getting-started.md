@@ -248,7 +248,7 @@ cd activeloom
 - **`no tag sync-v2 in loomantix/activeloom`** — the tag has not been cut yet, or you are pointed at a fork without it. Pass `--ref main`.
 - **`python3 cannot import PyYAML`** — the sync engine needs it: `python3 -m pip install pyyaml`. Only `init` needs Python; `add` does not.
 - **`refusing to sync a tree into itself`** — you ran `init` from inside an activeloom checkout. Run it from the repository that should receive the files.
-- **First sync PR leaves `<<KEY>>` intact** — a required substitution is missing from `.activeloom-config.yml`. The log names which; the `onboard` skill fills them.
+- **Sync workflow fails with missing placeholder errors** — a required substitution is missing from `.activeloom-config.yml`. The log names which; the `onboard` skill fills them.
 - **Sync workflow fails with "could not read Username for github.com"** — the upstream is private, so you need Tier 3 and an `UPSTREAM_READ_TOKEN`.
 - **Sync PR is empty** — already in sync. The workflow prints `✅ Already in sync with upstream` and skips PR creation.
 - **Sync PR keeps reopening with the same content after merge** — your repository is edit-looping against an upstream-managed file. Fix forward upstream, or add the file to `skip_targets` until it catches up.

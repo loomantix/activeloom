@@ -336,7 +336,7 @@ function chooseHarnesses(
         `unknown harness ${unknown.join(', ')}. Known: ${[...known].join(', ')}.`,
       );
     }
-    return { ids: [...requested], reason: 'requested with --harness' };
+    return { ids: [...new Set(requested)], reason: 'requested with --harness' };
   }
 
   if (preferRepo) {
