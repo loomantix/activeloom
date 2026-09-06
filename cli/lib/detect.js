@@ -293,9 +293,58 @@ function detect(options = {}) {
   };
 }
 
+/**
+ * Pick the harnesses a command should act on.
+ *
+ * One resolver rather than one per command: `add` and `init` differ only in
+ * whether repo evidence outranks machine evidence and in how they phrase the
+ * no-evidence default. The `--harness` validation, the known-id set, and the
+ * fall back to Claude Code are the same decision in both, and a second copy of
+ * them drifts silently — the error text and the default harness would have to
+ * be changed in two files.
+ *
+ * @param {{harnesses: ReturnType<typeof detectHarnesses>}} facts
+ * @param {readonly string[]} requested  ids passed with `--harness`
+ * @param {object} options
+ * @param {boolean} [options.preferRepo]  repo evidence outranks machine evidence
+ * @param {string} options.noEvidenceReason  phrasing for the Claude Code default
+ * @returns {{ids: string[], reason: string}}
+ */
+function chooseHarnesses(
+  facts,
+  requested,
+  { preferRepo = false, noEvidenceReason },
+) {
+  if (requested.length > 0) {
+    const known = new Set(HARNESSES.map((h) => h.id));
+    const unknown = requested.filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      throw new Error(
+        `unknown harness ${unknown.join(', ')}. Known: ${[...known].join(', ')}.`,
+      );
+    }
+    return { ids: [...requested], reason: 'requested with --harness' };
+  }
+
+  if (preferRepo) {
+    const inRepo = facts.harnesses.filter((h) => h.inRepo).map((h) => h.id);
+    if (inRepo.length > 0)
+      return { ids: inRepo, reason: 'already checked into this repo' };
+  }
+
+  const onMachine = facts.harnesses
+    .filter((h) => h.onMachine || h.cliInstalled)
+    .map((h) => h.id);
+  if (onMachine.length > 0)
+    return { ids: onMachine, reason: 'detected on this machine' };
+
+  return { ids: ['claude'], reason: noEvidenceReason };
+}
+
 module.exports = {
   detect,
   detectHarnesses,
+  chooseHarnesses,
   detectPackageManager,
   detectEcosystems,
   detectScripts,

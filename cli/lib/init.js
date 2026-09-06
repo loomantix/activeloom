@@ -24,7 +24,10 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const ui = require('./ui');
 const { resolveTier } = require('./tiers');
-const { HARNESSES } = require('./detect');
+const {
+  HARNESSES,
+  chooseHarnesses: sharedChooseHarnesses,
+} = require('./detect');
 
 /**
  * Placeholder marker for a prose value the CLI will not invent.
@@ -131,31 +134,10 @@ function refuseSelfSync(repoDir, upstreamDir) {
  * @returns {{ids: string[], reason: string}}
  */
 function chooseHarnesses(facts, requested) {
-  if (requested.length > 0) {
-    const known = new Set(HARNESSES.map((h) => h.id));
-    const unknown = requested.filter((id) => !known.has(id));
-    if (unknown.length > 0) {
-      throw new Error(
-        `unknown harness ${unknown.join(', ')}. Known: ${[...known].join(', ')}.`,
-      );
-    }
-    return { ids: requested, reason: 'requested with --harness' };
-  }
-
-  const inRepo = facts.harnesses.filter((h) => h.inRepo).map((h) => h.id);
-  if (inRepo.length > 0)
-    return { ids: inRepo, reason: 'already checked into this repo' };
-
-  const onMachine = facts.harnesses
-    .filter((h) => h.onMachine || h.cliInstalled)
-    .map((h) => h.id);
-  if (onMachine.length > 0)
-    return { ids: onMachine, reason: 'detected on this machine' };
-
-  return {
-    ids: ['claude'],
-    reason: 'no evidence either way — defaulting to Claude Code',
-  };
+  return sharedChooseHarnesses(facts, requested, {
+    preferRepo: true,
+    noEvidenceReason: 'no evidence either way — defaulting to Claude Code',
+  });
 }
 
 /**
@@ -193,15 +175,8 @@ async function confirmHarnesses(chosen, facts, options, prompts = ui) {
   ui.info('');
   ui.info(ui.bold('  Detected harnesses'));
   for (const h of facts.harnesses) {
-    const signals = [
-      h.inRepo ? 'in repo' : null,
-      h.onMachine ? 'config on machine' : null,
-      h.cliInstalled ? 'CLI installed' : null,
-    ].filter(Boolean);
     const mark = chosen.ids.includes(h.id) ? ui.green('•') : ' ';
-    ui.info(
-      `   ${mark} ${h.id.padEnd(8)} ${signals.length > 0 ? signals.join(', ') : ui.dim('no signal')}`,
-    );
+    ui.info(`   ${mark} ${h.id.padEnd(8)} ${ui.harnessSignals(h)}`);
   }
   ui.info('');
 

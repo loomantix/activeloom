@@ -17,7 +17,7 @@ const {
   DEFAULT_REF,
   DEFAULT_UPSTREAM,
 } = require('../lib/upstream');
-const { TIERS, resolveTier } = require('../lib/tiers');
+const { TIERS } = require('../lib/tiers');
 const ui = require('../lib/ui');
 
 const USAGE = `
@@ -165,14 +165,7 @@ function printDetect(facts) {
   ui.info(ui.bold(`Detected in ${facts.repoDir}\n`));
   ui.info(ui.bold('  harnesses'));
   for (const h of facts.harnesses) {
-    const signals = [
-      h.inRepo ? 'in repo' : null,
-      h.onMachine ? 'config on machine' : null,
-      h.cliInstalled ? 'CLI installed' : null,
-    ].filter(Boolean);
-    ui.info(
-      `    ${h.id.padEnd(8)} ${signals.length > 0 ? signals.join(', ') : ui.dim('no signal')}`,
-    );
+    ui.info(`    ${h.id.padEnd(8)} ${ui.harnessSignals(h)}`);
   }
   ui.info('');
   ui.info(ui.bold('  repository'));
@@ -300,4 +293,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { main, parseArgs, USAGE, resolveTier };
+module.exports = { main, parseArgs, USAGE };

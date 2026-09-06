@@ -21,7 +21,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const ui = require('./ui');
-const { HARNESSES } = require('./detect');
+const {
+  HARNESSES,
+  chooseHarnesses: sharedChooseHarnesses,
+} = require('./detect');
 
 /** Matches the substitution engine's placeholder grammar exactly. */
 const PLACEHOLDER = /<<[A-Z][A-Z0-9_]*>>/;
@@ -101,26 +104,9 @@ function assertNoPlaceholders(dir, label) {
  * @returns {{ids: string[], reason: string}}
  */
 function chooseHarnesses(facts, requested) {
-  if (requested.length > 0) {
-    const known = new Set(HARNESSES.map((h) => h.id));
-    const unknown = requested.filter((id) => !known.has(id));
-    if (unknown.length > 0) {
-      throw new Error(
-        `unknown harness ${unknown.join(', ')}. Known: ${[...known].join(', ')}.`,
-      );
-    }
-    return { ids: requested, reason: 'requested with --harness' };
-  }
-
-  const present = facts.harnesses
-    .filter((h) => h.onMachine || h.cliInstalled)
-    .map((h) => h.id);
-  if (present.length > 0)
-    return { ids: present, reason: 'detected on this machine' };
-  return {
-    ids: ['claude'],
-    reason: 'no agent config found — defaulting to Claude Code',
-  };
+  return sharedChooseHarnesses(facts, requested, {
+    noEvidenceReason: 'no agent config found — defaulting to Claude Code',
+  });
 }
 
 /**

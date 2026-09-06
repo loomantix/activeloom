@@ -47,22 +47,10 @@ const fail = (msg) => console.error(`${red('✗')} ${msg}`);
  * @returns {Promise<boolean>}
  */
 async function confirm(question, defaultYes = true) {
-  if (!process.stdin.isTTY) return defaultYes;
-  const readline = require('node:readline/promises');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  try {
-    const suffix = defaultYes ? '[Y/n]' : '[y/N]';
-    const answer = (await rl.question(`${question} ${suffix} `))
-      .trim()
-      .toLowerCase();
-    if (answer === '') return defaultYes;
-    return answer === 'y' || answer === 'yes';
-  } finally {
-    rl.close();
-  }
+  const suffix = defaultYes ? '[Y/n]' : '[y/N]';
+  const answer = (await ask(`${question} ${suffix}`)).toLowerCase();
+  if (answer === '') return defaultYes;
+  return answer === 'y' || answer === 'yes';
 }
 
 /**
@@ -89,8 +77,28 @@ async function ask(question) {
   }
 }
 
+/**
+ * Render one detected harness's signal list.
+ *
+ * Shared so the `detect` command and `init`'s confirmation prompt cannot show
+ * different facts: a signal added to `detectHarnesses` appears in both views or
+ * neither. Callers own their own leading mark and padding.
+ *
+ * @param {{inRepo: boolean, onMachine: boolean, cliInstalled: boolean}} harness
+ * @returns {string}
+ */
+function harnessSignals(harness) {
+  const signals = [
+    harness.inRepo ? 'in repo' : null,
+    harness.onMachine ? 'config on machine' : null,
+    harness.cliInstalled ? 'CLI installed' : null,
+  ].filter(Boolean);
+  return signals.length > 0 ? signals.join(', ') : dim('no signal');
+}
+
 module.exports = {
   ask,
+  harnessSignals,
   bold,
   dim,
   green,
