@@ -252,12 +252,16 @@ jobs:
       # delivers is a pytest (`tests/test_cli_init_equivalence.py`), because it
       # drives the Python engine.
       #
-      # Quoted glob: `node --test <dir>` is not portable across the Node
-      # versions this repo is run under, and an unquoted glob would be expanded
-      # by the shell into a form that skips the runner's own discovery.
+      # Unquoted glob, so the SHELL expands it into an explicit file list before
+      # node sees it. Both alternatives are version-dependent: `node --test`
+      # only learned to expand glob patterns itself after Node 20 (a quoted
+      # pattern is a literal, missing path there), and directory arguments
+      # behave differently again. An explicit file list is the one form every
+      # version agrees on, and it matches how the accessibility test above is
+      # invoked.
       - name: Test the activeloom CLI
         if: '!cancelled()'
-        run: node --test 'tests/cli/*.test.js'
+        run: node --test tests/cli/*.test.js
 
       # --- was job `render-check` (Rendered template fidelity) ---
       - name: Render sync surface against fixture consumer
