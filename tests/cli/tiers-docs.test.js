@@ -20,7 +20,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const { TIERS, DEFAULT_TIER } = require(
+const { TIERS, RECOMMENDED_TIER, resolveTier } = require(
   path.join(REPO_ROOT, 'cli', 'lib', 'tiers.js'),
 );
 
@@ -63,7 +63,7 @@ test('the README names every tier command', () => {
   }
 });
 
-test('both docs state which tier is the default', () => {
+test('both docs state which tier is recommended', () => {
   // The single most load-bearing sentence in the onboarding: it is what stops a
   // reader concluding they need a GitHub App to begin.
   for (const [name, body] of [
@@ -72,10 +72,23 @@ test('both docs state which tier is the default', () => {
   ]) {
     assert.match(
       body,
-      new RegExp(`Tier ${DEFAULT_TIER} is the default`),
-      `${name} does not say Tier ${DEFAULT_TIER} is the default`,
+      new RegExp(`Tier ${RECOMMENDED_TIER} is the recommended tier`),
+      `${name} does not say Tier ${RECOMMENDED_TIER} is the recommended tier`,
     );
   }
+});
+
+test('the recommended tier is not what bare `init` resolves to', () => {
+  // The reason the prose says "recommended" rather than "default": a reader who
+  // takes "default" literally runs `npx activeloom init`, gets Tier 1, and no
+  // sync workflow is ever installed. If someone later makes bare `init` mean
+  // the recommended tier, this fails and the docs can go back to saying so.
+  assert.notStrictEqual(
+    resolveTier({}).n,
+    RECOMMENDED_TIER,
+    'bare `init` now resolves to the recommended tier — say "default" in the docs again',
+  );
+  assert.strictEqual(resolveTier({ sync: true }).n, RECOMMENDED_TIER);
 });
 
 test('both docs confine the GitHub App to tier 3', () => {

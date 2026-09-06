@@ -98,9 +98,9 @@ Then verify against the real engine rather than by re-reading your own edit:
 npx activeloom init --dry-run
 ```
 
-A clean dry run means the config parses, every required substitution resolves, and no placeholder survives into the rendered output. If it reports a missing substitution, that key is still unfilled — fix it and re-run.
+A clean dry run means the config parses and the engine renders every target from it. It does **not** mean the values are filled in: `init` writes the unfilled keys as marker _values_, so `PROJECT_OVERVIEW: TODO(activeloom): ...` substitutes as cleanly as real prose and a wholly untouched config passes.
 
-Finally, confirm that no `TODO(activeloom):` marker remains, and tell the user which files change on the next real `init`.
+The marker scan is therefore the actual gate, not a closing formality. Grep the rendered output — not just the config — for `TODO(activeloom):`, and treat any hit as unfinished work rather than reporting the repository verified. Then tell the user which files change on the next real `init`.
 
 ## What this skill does not do
 

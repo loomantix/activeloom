@@ -26,7 +26,7 @@ ${ui.bold('activeloom')} — one agent toolkit, four ways in.
 ${ui.bold('Usage')}
   npx activeloom add <skill>...        Tier 0  install skills for yourself
   npx activeloom init                  Tier 1  write the trees into this repo
-  npx activeloom init --sync           Tier 2  ...and keep them updated (default)
+  npx activeloom init --sync           Tier 2  ...and keep them updated (recommended)
   npx activeloom init --sync --app     Tier 3  ...with GitHub-signed commits
 
   npx activeloom add                   list the skills available
@@ -76,9 +76,23 @@ function parseArgs(argv) {
     help: false,
   };
 
-  /** @param {string} flag */
+  /**
+   * @param {string} flag
+   *
+   * A following token that starts with `-` is another flag, not this one's
+   * value. Accepting it silently is worse than it sounds here: `--base-branch
+   * --dry-run` would take `--dry-run` as the branch name, write it into the
+   * consumer's committed workflow, and consume the flag that was supposed to
+   * stop anything being written at all. No option here takes a value that
+   * legitimately begins with `-`.
+   */
   const needsValue = (flag, value) => {
     if (value === undefined) throw new Error(`${flag} needs a value`);
+    if (value.startsWith('-')) {
+      throw new Error(
+        `${flag} needs a value, but the next argument is \`${value}\`, which is a flag.`,
+      );
+    }
     return value;
   };
 
@@ -148,7 +162,7 @@ function printTiers() {
   }
   ui.info(
     ui.dim(
-      'Tier 2 is the default. A GitHub App is only ever needed at Tier 3.',
+      'Tier 2 is the recommended tier. A GitHub App is only ever needed at Tier 3.',
     ),
   );
 }

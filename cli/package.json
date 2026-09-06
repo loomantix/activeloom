@@ -33,6 +33,6 @@
   },
   "dependencies": {},
   "scripts": {
-    "test": "node --test '../tests/cli/*.test.js'"
+    "test": "node --test ../tests/cli/*.test.js"
   }
 }

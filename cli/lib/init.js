@@ -9,7 +9,7 @@
  * the two agree, `init` **invokes the sync engine itself** — the same
  * `scripts/sync-engine.py`, from the same tag-pinned upstream tree, with the
  * same arguments the consumer workflow uses. Equivalence is then definitional,
- * and `tests/cli/test_init_equivalence.py` demonstrates it rather than
+ * and `tests/test_cli_init_equivalence.py` demonstrates it rather than
  * propping it up.
  *
  * The cost is a Python dependency for tiers 1 and up. That is a deliberate
@@ -62,6 +62,16 @@ function checkPython(python) {
     };
   }
   const yaml = spawnSync(python, ['-c', 'import yaml'], { encoding: 'utf8' });
+  if (yaml.error || yaml.signal) {
+    // Not a PyYAML problem: the interpreter that answered `--version` a moment
+    // ago could not be started at all. Offering `pip install pyyaml` here would
+    // send the user after the wrong thing.
+    return {
+      ok: false,
+      reason: `\`${python}\` could not be run: ${yaml.error ? yaml.error.message : `killed by ${yaml.signal}`}`,
+      remedy: 'Check the interpreter path, or pass --python <path>.',
+    };
+  }
   if (yaml.status !== 0) {
     return {
       ok: false,
@@ -343,6 +353,7 @@ skip_targets: []
  * @param {string} args.upstreamDir
  * @param {string} args.repoDir
  * @param {string} args.upstreamRepo
+ * @param {string} args.upstreamRef  the ref the trees were rendered from
  * @param {string} args.baseBranch
  * @param {boolean} args.dryRun
  * @param {boolean} args.force
@@ -353,6 +364,7 @@ function writeWorkflow({
   upstreamDir,
   repoDir,
   upstreamRepo,
+  upstreamRef,
   baseBranch,
   dryRun,
   force,
@@ -384,25 +396,53 @@ function writeWorkflow({
   }
 
   let body = fs.readFileSync(src, 'utf8');
-  // Anchored on the exact placeholder text the templates ship. A silent
-  // no-op here would install a workflow that fails on its first run with
-  // "UPSTREAM_REPO: <owner>/<repo>", so assert both substitutions landed.
-  const before = body;
-  // Consume the trailing guidance comment along with the placeholder. Leaving
-  // it behind produces `UPSTREAM_REPO: loomantix/activeloom # e.g.
-  // loomantix/activeloom`, which reads as though the value were still unset.
-  body = body.replace(
-    /UPSTREAM_REPO: <owner>\/<repo>[^\n]*/,
-    `UPSTREAM_REPO: ${upstreamRepo}`,
-  );
-  body = body.replace(
-    /PR_BASE_BRANCH: ''[^\n]*/,
-    `PR_BASE_BRANCH: '${baseBranch}'`,
-  );
-  if (body === before) {
+  // Anchored on the exact placeholder text the templates ship, and asserted one
+  // at a time. A silent no-op would install a workflow that fails on its first
+  // scheduled run — with `UPSTREAM_REPO: <owner>/<repo>`, or with an empty
+  // `PR_BASE_BRANCH` the template itself refuses — and comparing the finished
+  // body against the original cannot see that, because either substitution
+  // landing on its own makes the two differ.
+  //
+  // The `UPSTREAM_REPO` pattern consumes the trailing guidance comment along
+  // with the placeholder: leaving it behind produces
+  // `UPSTREAM_REPO: loomantix/activeloom # e.g. loomantix/activeloom`, which
+  // reads as though the value were still unset.
+  const substitutions = [
+    {
+      key: 'UPSTREAM_REPO',
+      pattern: /UPSTREAM_REPO: <owner>\/<repo>[^\n]*/,
+      replacement: `UPSTREAM_REPO: ${upstreamRepo}`,
+    },
+    {
+      key: 'PR_BASE_BRANCH',
+      pattern: /PR_BASE_BRANCH: ''[^\n]*/,
+      replacement: `PR_BASE_BRANCH: '${baseBranch}'`,
+    },
+    // The ref the trees were rendered from, not the one the template happens
+    // to ship. Installing content from one ref beside a workflow that tracks
+    // another means the next scheduled sync opens a PR reverting what `init`
+    // just wrote. `local` is the `--upstream-dir` case: there is no remote ref
+    // to track, so the template's own default is left standing.
+    ...(upstreamRef && upstreamRef !== 'local'
+      ? [
+          {
+            key: 'UPSTREAM_REF',
+            pattern: /UPSTREAM_REF: [^\n]*/,
+            replacement: `UPSTREAM_REF: ${upstreamRef}`,
+          },
+        ]
+      : []),
+  ];
+  const missing = substitutions
+    .filter((substitution) => !substitution.pattern.test(body))
+    .map((substitution) => substitution.key);
+  if (missing.length > 0) {
     throw new Error(
-      `${templateName} did not contain the expected UPSTREAM_REPO / PR_BASE_BRANCH placeholders.`,
+      `${templateName} did not contain the expected ${missing.join(', ')} placeholder${missing.length > 1 ? 's' : ''}.`,
     );
+  }
+  for (const substitution of substitutions) {
+    body = body.replace(substitution.pattern, substitution.replacement);
   }
 
   if (!dryRun) {
@@ -514,19 +554,42 @@ async function init(args) {
   ];
   if (dryRun) engineArgs.push('--dry-run');
 
-  ui.step(`trees:      running the sync engine from ${ui.bold(args.ref)}`);
-  const run = spawnSync(python, engineArgs, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  if (run.status !== 0) {
-    ui.fail('the sync engine refused to write.');
-    if (run.stdout) process.stdout.write(run.stdout);
-    if (run.stderr) process.stderr.write(run.stderr);
-    // The engine's own refusals are precise and paste-ready (it prints the
-    // exact `allow_sensitive_writes` block a config is missing), so surface
-    // them verbatim rather than summarising them into something vaguer.
-    return run.status ?? 1;
+  // The engine reads `.activeloom-config.yml` off disk and exits non-zero
+  // without one. A dry run over a repository being onboarded has not written
+  // it — that is what makes the run dry — so invoking the engine here would
+  // fail every first-time `--dry-run` with a missing-file error about a file
+  // the user was never asked to create. Say what would happen instead.
+  const engineCanRun = !dryRun || fs.existsSync(configPath);
+  if (!engineCanRun) {
+    ui.step(
+      `trees:      ${ui.dim('skipped — the engine needs .activeloom-config.yml on disk, and a dry run has not written it')}`,
+    );
+  } else {
+    ui.step(`trees:      running the sync engine from ${ui.bold(args.ref)}`);
+    const run = spawnSync(python, engineArgs, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    // `status` is null when the process never ran or was killed, and `stdout`
+    // and `stderr` are null with it — so testing `status !== 0` alone reports
+    // a spawn failure as an engine refusal with nothing to act on. "Refused"
+    // is a claim about a decision the engine made; only say it when it made
+    // one.
+    if (run.error || run.signal) {
+      ui.fail(
+        `could not run the sync engine (${python}): ${run.error ? run.error.message : `killed by ${run.signal}`}`,
+      );
+      return 1;
+    }
+    if (run.status !== 0) {
+      ui.fail('the sync engine refused to write.');
+      if (run.stdout) process.stdout.write(run.stdout);
+      if (run.stderr) process.stderr.write(run.stderr);
+      // The engine's own refusals are precise and paste-ready (it prints the
+      // exact `allow_sensitive_writes` block a config is missing), so surface
+      // them verbatim rather than summarising them into something vaguer.
+      return run.status ?? 1;
+    }
   }
 
   // --- the workflow ---------------------------------------------------------
@@ -537,6 +600,7 @@ async function init(args) {
       upstreamDir,
       repoDir: facts.repoDir,
       upstreamRepo,
+      upstreamRef: args.ref,
       baseBranch,
       dryRun,
       force,

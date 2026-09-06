@@ -19,7 +19,7 @@ Each rung is the one below it plus exactly one thing, and the thing being added 
 | **2 — Automate it** | `npx activeloom init --sync`       | nothing      | ...kept up to date by a daily pull request               |
 | **3 — Sign it**     | `npx activeloom init --sync --app` | a GitHub App | ...with GitHub-signed commits, and private upstreams     |
 
-**Tier 2 is the default.** A GitHub App is only ever needed at Tier 3.
+**Tier 2 is the recommended tier** — `npx activeloom init --sync`. A GitHub App is only ever needed at Tier 3.
 
 ## Commands
 

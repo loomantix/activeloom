@@ -50,7 +50,7 @@ const TIERS = Object.freeze([
     credential: "none — the workflow's built-in GITHUB_TOKEN",
     writes:
       'tier 1, plus a sync workflow that opens an ordinary PR on a schedule',
-    who: 'Most repositories. This is the default.',
+    who: 'Most repositories. This is the recommended tier.',
   }),
   Object.freeze({
     n: 3,
@@ -63,8 +63,17 @@ const TIERS = Object.freeze([
   }),
 ]);
 
-/** The tier `init` lands on when the user asks for nothing in particular. */
-const DEFAULT_TIER = 2;
+/**
+ * The tier the docs point a reader at.
+ *
+ * Deliberately not named `DEFAULT_TIER`: bare `npx activeloom init` resolves to
+ * Tier 1, and a constant claiming otherwise made the docs and `resolveTier`
+ * disagree with nothing to catch it. `tests/cli/tiers-docs.test.js` reads this
+ * value, asserts the prose against it, and separately asserts that bare `init`
+ * does *not* resolve to it — so the constant, the docs, and `resolveTier` are
+ * pinned to one meaning.
+ */
+const RECOMMENDED_TIER = 2;
 
 /**
  * Resolve the tier a set of parsed flags selects.
@@ -86,4 +95,4 @@ function resolveTier(flags) {
   return TIERS[1];
 }
 
-module.exports = { TIERS, DEFAULT_TIER, resolveTier };
+module.exports = { TIERS, RECOMMENDED_TIER, resolveTier };

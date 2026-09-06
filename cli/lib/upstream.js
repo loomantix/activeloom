@@ -61,7 +61,18 @@ async function resolveUpstream(options = {}) {
     return { dir, ref: 'local', source: dir, cleanup: () => {} };
   }
 
-  const url = `https://codeload.github.com/${repo}/tar.gz/refs/tags/${encodeURIComponent(ref)}`;
+  // Encoded per path segment: `encodeURIComponent` on the whole ref would
+  // escape `/`, so a slashed ref like `release/2.0` could not be spelled at
+  // all. Tag first, then branch — the ref this CLI installs from is normally a
+  // tag, but a branch has to be reachable or the remedy the 404 below prints
+  // would be impossible to follow.
+  const encoded = ref.split('/').map(encodeURIComponent).join('/');
+  // The resolved URL is returned as `source`, so which of the two answered is
+  // visible to the caller without a second field to keep in step.
+  const candidates = [
+    `https://codeload.github.com/${repo}/tar.gz/refs/tags/${encoded}`,
+    `https://codeload.github.com/${repo}/tar.gz/refs/heads/${encoded}`,
+  ];
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-'));
   const cleanup = () => {
     try {
@@ -73,17 +84,26 @@ async function resolveUpstream(options = {}) {
   };
 
   try {
-    const response = await fetch(url, {
-      headers: { 'user-agent': 'activeloom-cli' },
-      redirect: 'follow',
-    });
+    let response = null;
+    let url = candidates[0];
+    for (const candidate of candidates) {
+      url = candidate;
+      const attempt = await fetch(url, {
+        headers: { 'user-agent': 'activeloom-cli' },
+        redirect: 'follow',
+      });
+      if (attempt.status === 404) continue;
+      response = attempt;
+      break;
+    }
 
-    if (response.status === 404) {
+    if (response === null) {
       // Overwhelmingly the interesting failure, and worth naming precisely:
       // until the consumer cutover cuts `sync-v2`, the default ref genuinely
-      // does not exist yet, and a bare "404" would read as a broken CLI.
+      // does not exist yet, and a bare "404" would read as a broken CLI. Both
+      // forms 404'd, so the ref is neither a tag nor a branch.
       throw new Error(
-        `no tag \`${ref}\` in ${repo}.\n` +
+        `no tag or branch \`${ref}\` in ${repo}.\n` +
           `  If \`${ref}\` has not been cut yet, pin an existing ref explicitly:\n` +
           `      npx activeloom <command> --ref main\n` +
           `  Available refs: https://github.com/${repo}/tags`,
@@ -103,9 +123,22 @@ async function resolveUpstream(options = {}) {
     // `--strip-components=1` drops the `<repo>-<ref>/` wrapper GitHub adds, so
     // the result is shaped exactly like a checkout and the sync engine's
     // `--upstream-repo` needs no special-casing for the two sources.
-    execFileSync('tar', ['-xzf', tarball, '-C', dir, '--strip-components=1'], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
+    try {
+      execFileSync(
+        'tar',
+        ['-xzf', tarball, '-C', dir, '--strip-components=1'],
+        { stdio: ['ignore', 'ignore', 'pipe'] },
+      );
+    } catch (err) {
+      // `execFileSync` throws with a bare "Command failed: tar ...". The real
+      // cause — a truncated download, a corrupt archive, an HTML error page
+      // served with a 200 — is on `err.stderr`, which nothing else reads.
+      const detail = String(err.stderr ?? '').trim();
+      throw new Error(
+        `could not unpack the archive from ${url}` +
+          (detail ? `\n  tar: ${detail}` : ''),
+      );
+    }
 
     return { dir, ref, source: url, cleanup };
   } catch (err) {

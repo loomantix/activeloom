@@ -11,7 +11,7 @@ Start at the rung whose price you are willing to pay. Nothing higher is a prereq
 | [2 — Automate it](#tier-2)   | `npx activeloom init --sync`       | nothing      | ...kept up to date by a daily pull request               |
 | [3 — Sign it](#tier-3)       | `npx activeloom init --sync --app` | a GitHub App | ...with GitHub-signed commits, and private upstreams     |
 
-**Tier 2 is the default and the right answer for most repositories.** A GitHub App is only ever needed at Tier 3.
+**Tier 2 is the recommended tier and the right answer for most repositories** — it is `npx activeloom init --sync`, not bare `init`, which stops at Tier 1. A GitHub App is only ever needed at Tier 3.
 
 `npx activeloom tiers` prints this table in your terminal.
 
@@ -93,7 +93,7 @@ npx activeloom init --sync
 
 This additionally writes `.github/workflows/sync-from-upstream.yml`, with `UPSTREAM_REPO` and `PR_BASE_BRANCH` already filled in. Commit it.
 
-**There are no secrets to set.** The workflow authenticates with the `GITHUB_TOKEN` that GitHub Actions mints for every run — nothing to create, store, or rotate. That is what makes this the default rather than the App-based setup.
+**There are no secrets to set.** The workflow authenticates with the `GITHUB_TOKEN` that GitHub Actions mints for every run — nothing to create, store, or rotate. That is what makes this the recommended setup rather than the App-based one.
 
 One repository setting is required, and it is easy to miss:
 

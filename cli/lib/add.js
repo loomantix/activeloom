@@ -49,9 +49,10 @@ function listSkills(upstreamDir, harnessRoot) {
 /**
  * Walk every file under `dir`, depth-first.
  *
- * Written out rather than using `readdirSync(recursive: true)` so the traversal
- * skips symlinks explicitly: they are not part of the shipped surface, and
- * following one would let a malformed upstream read or write outside the tree.
+ * `withFileTypes` gives `lstat`-based entries, so a symlink is neither
+ * `isDirectory()` nor `isFile()` and is skipped by both branches below. That is
+ * the property this walk relies on, and `copyTree` relies on the same one; no
+ * shipped skill contains a symlink, so nothing is lost by dropping them.
  *
  * @param {string} dir
  * @returns {string[]} absolute file paths
@@ -115,6 +116,11 @@ function chooseHarnesses(facts, requested) {
  * Modes matter: `issues/scripts/ready.py` is a `0755` sync target invoked
  * directly, so a copy that flattened permissions would install a skill that
  * silently cannot run its own helper.
+ *
+ * The `isDirectory()`/`isFile()` pair is load-bearing here, not incidental
+ * tidiness: `withFileTypes` reports a symlink as neither, so a link planted in
+ * a malformed upstream tree is dropped rather than followed out of the
+ * destination. This is the copy, so this is where that guarantee matters.
  *
  * @param {string} src
  * @param {string} dest

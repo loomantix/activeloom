@@ -81,7 +81,7 @@ Four ways in. They form a ladder, and the thing each rung adds is **credential c
 | **2 — Automate it** | `npx activeloom init --sync`       | nothing      | ...kept current by a daily pull request              |
 | **3 — Sign it**     | `npx activeloom init --sync --app` | a GitHub App | ...with GitHub-signed commits, and private upstreams |
 
-**Tier 2 is the default.** A GitHub App is only ever needed at Tier 3.
+**Tier 2 is the recommended tier** — `npx activeloom init --sync`. A GitHub App is only ever needed at Tier 3.
 
 ```bash
 npx activeloom add critique   # try one skill — no repo, no account, no key
