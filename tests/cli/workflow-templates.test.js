@@ -112,6 +112,15 @@ test("both templates preserve today's open sync PR", () => {
   }
 });
 
+test('both templates publish the replacement before closing prior PRs', () => {
+  for (const [name, body] of TEMPLATES) {
+    assert.ok(
+      body.indexOf('gh pr create') < body.indexOf('gh pr list'),
+      `${name}: prior PRs are closed before the replacement is open`,
+    );
+  }
+});
+
 test('only the app template uses App credentials', () => {
   // The whole claim of Tier 2 is "no secrets". A stray `secrets.SYNC_APP_*`
   // reference in the token template would make it fail on a repo that has none,
@@ -216,7 +225,7 @@ test('tier 2 gets the token template and tier 3 the App template', () => {
 test('the installed workflow carries the substituted values, not placeholders', () => {
   for (const tier of [TIERS[2], TIERS[3]]) {
     const body = workflowFor(tier);
-    assert.match(body, /^ {2}UPSTREAM_REPO: acme\/consumer-upstream$/m);
+    assert.match(body, /^ {2}UPSTREAM_REPO: 'acme\/consumer-upstream'$/m);
     assert.match(body, /^ {2}PR_BASE_BRANCH: 'trunk'$/m);
     assert.doesNotMatch(body, /<owner>\/<repo>/);
     assert.doesNotMatch(body, /^ {2}PR_BASE_BRANCH: ''$/m);
@@ -228,7 +237,7 @@ test('the installed workflow tracks the ref the trees came from', () => {
   // template's `sync-v2` would open a PR reverting them on its next run.
   assert.match(
     workflowFor(TIERS[2], { upstreamRef: 'main' }),
-    /^ {2}UPSTREAM_REF: main$/m,
+    /^ {2}UPSTREAM_REF: 'main'$/m,
   );
   // `--upstream-dir` has no remote ref to track, so the template's own default
   // is left standing rather than replaced with the word `local`.
@@ -236,6 +245,15 @@ test('the installed workflow tracks the ref the trees came from', () => {
     workflowFor(TIERS[2], { upstreamRef: 'local' }),
     /^ {2}UPSTREAM_REF: sync-v2$/m,
   );
+});
+
+test('workflow substitutions quote legal Git punctuation as YAML scalars', () => {
+  const body = workflowFor(TIERS[2], {
+    upstreamRef: "release/o'clock",
+    baseBranch: "release/o'clock",
+  });
+  assert.match(body, /^ {2}UPSTREAM_REF: 'release\/o''clock'$/m);
+  assert.match(body, /^ {2}PR_BASE_BRANCH: 'release\/o''clock'$/m);
 });
 
 test('an existing workflow must match the requested tier unless force replaces it', () => {

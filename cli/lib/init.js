@@ -405,12 +405,12 @@ function writeWorkflow({
     {
       key: 'UPSTREAM_REPO',
       pattern: /UPSTREAM_REPO: <owner>\/<repo>[^\n]*/,
-      replacement: `UPSTREAM_REPO: ${upstreamRepo}`,
+      replacement: `UPSTREAM_REPO: ${yamlScalar(upstreamRepo)}`,
     },
     {
       key: 'PR_BASE_BRANCH',
       pattern: /PR_BASE_BRANCH: ''[^\n]*/,
-      replacement: `PR_BASE_BRANCH: '${baseBranch}'`,
+      replacement: `PR_BASE_BRANCH: ${yamlScalar(baseBranch)}`,
     },
     // The ref the trees were rendered from, not the one the template happens
     // to ship. Installing content from one ref beside a workflow that tracks
@@ -422,7 +422,7 @@ function writeWorkflow({
           {
             key: 'UPSTREAM_REF',
             pattern: /UPSTREAM_REF: [^\n]*/,
-            replacement: `UPSTREAM_REF: ${upstreamRef}`,
+            replacement: `UPSTREAM_REF: ${yamlScalar(upstreamRef)}`,
           },
         ]
       : []),

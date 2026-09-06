@@ -146,6 +146,58 @@ function parseArgs(argv) {
   return opts;
 }
 
+const COMMAND_OPTIONS = Object.freeze({
+  add: new Set([
+    '--harness',
+    '--ref',
+    '--upstream-dir',
+    '--consumer-dir',
+    '--dry-run',
+    '--force',
+  ]),
+  init: new Set([
+    '--harness',
+    '--ref',
+    '--base-branch',
+    '--python',
+    '--upstream-dir',
+    '--consumer-dir',
+    '--yes',
+    '-y',
+    '--dry-run',
+    '--force',
+    '--sync',
+    '--app',
+  ]),
+  detect: new Set(['--consumer-dir']),
+  tiers: new Set(),
+});
+
+/** Reject flags and operands that the selected command cannot apply. */
+function validateCommandArgs(opts, argv) {
+  const allowed = COMMAND_OPTIONS[opts.command];
+  if (!allowed) return null;
+
+  if (opts.command !== 'add' && opts.positionals.length > 0) {
+    return `${opts.command} does not accept operands: ${opts.positionals.join(', ')}`;
+  }
+
+  const unsupported = [
+    ...new Set(
+      argv.filter(
+        (arg) =>
+          arg.startsWith('-') &&
+          arg !== '--help' &&
+          arg !== '-h' &&
+          !allowed.has(arg),
+      ),
+    ),
+  ];
+  return unsupported.length > 0
+    ? `${opts.command} does not accept ${unsupported.join(', ')}`
+    : null;
+}
+
 /** Print the tier ladder. Read-only; touches neither disk nor network. */
 function printTiers() {
   ui.info(
@@ -222,6 +274,21 @@ async function main(argv) {
     return opts.command === null && !opts.help ? 2 : 0;
   }
 
+  if (!COMMAND_OPTIONS[opts.command]) {
+    ui.fail(`unknown command "${opts.command}"`);
+    ui.info('');
+    ui.info(USAGE);
+    return 2;
+  }
+
+  const commandError = validateCommandArgs(opts, argv);
+  if (commandError) {
+    ui.fail(commandError);
+    ui.info('');
+    ui.info(USAGE);
+    return 2;
+  }
+
   if (opts.command === 'tiers') {
     printTiers();
     return 0;
@@ -232,13 +299,6 @@ async function main(argv) {
   if (opts.command === 'detect') {
     printDetect(facts);
     return 0;
-  }
-
-  if (opts.command !== 'add' && opts.command !== 'init') {
-    ui.fail(`unknown command "${opts.command}"`);
-    ui.info('');
-    ui.info(USAGE);
-    return 2;
   }
 
   // `--app` without `--sync` is accepted and resolves to Tier 3, but say so
@@ -306,4 +366,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { main, parseArgs, USAGE };
+module.exports = { main, parseArgs, validateCommandArgs, USAGE };

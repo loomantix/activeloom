@@ -264,7 +264,7 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
     ui.ok(
       `Dry run: ${installed} would install, ${skipped} skipped. Nothing written.`,
     );
-    return 0;
+    return notFound > 0 ? 1 : 0;
   }
 
   ui.ok(`${installed} installed, ${skipped} skipped (${chosen.reason}).`);

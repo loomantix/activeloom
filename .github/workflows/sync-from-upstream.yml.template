@@ -174,21 +174,6 @@ jobs:
           DATE=$(date -u +%Y%m%d)
           BRANCH="${SYNC_BRANCH_PREFIX}-${DATE}"
 
-          # Close any prior open sync PRs to keep history clean. `--limit 100`
-          # is deterministic; the default 30 would let stale PRs accumulate
-          # in busy repos.
-          gh pr list \
-            --state open \
-            --limit 100 \
-            --json number,headRefName \
-            --jq ".[] | select((.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) and .headRefName != \"${BRANCH}\") | .number" \
-          | while read -r prior; do
-              [ -z "$prior" ] && continue
-              echo "Closing prior sync PR #$prior"
-              gh pr close "$prior" --delete-branch \
-                --comment "Superseded by today's sync run."
-            done
-
           # Create the verified commit via the GitHub Contents API. Using
           # the API (not `git commit`+`git push`) is what makes the commit
           # signed-by-GitHub. The App token is the actor; commits show
@@ -226,3 +211,19 @@ jobs:
               exit 1
             fi
           fi
+
+          # Preserve the previous reviewable sync PR until its replacement is
+          # safely open. A commit or API failure above must not leave no sync
+          # PR. `--limit 100` is deterministic; the default 30 would let stale
+          # PRs accumulate in busy repos.
+          gh pr list \
+            --state open \
+            --limit 100 \
+            --json number,headRefName \
+            --jq ".[] | select((.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) and .headRefName != \"${BRANCH}\") | .number" \
+          | while read -r prior; do
+              [ -z "$prior" ] && continue
+              echo "Closing prior sync PR #$prior"
+              gh pr close "$prior" --delete-branch \
+                --comment "Superseded by today's sync run."
+            done

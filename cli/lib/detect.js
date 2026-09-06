@@ -290,7 +290,13 @@ function detectGit(repoDir) {
  * @param {string} [options.homeDir] Home directory. Injectable for tests.
  */
 function detect(options = {}) {
-  const repoDir = options.repoDir ?? process.cwd();
+  const requestedDir = path.resolve(options.repoDir ?? process.cwd());
+  const topLevel = tryExec(
+    'git',
+    ['rev-parse', '--show-toplevel'],
+    requestedDir,
+  );
+  const repoDir = topLevel ? path.resolve(topLevel) : requestedDir;
   const homeDir = options.homeDir ?? require('node:os').homedir();
 
   return {

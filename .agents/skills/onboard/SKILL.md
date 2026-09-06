@@ -31,7 +31,7 @@ Establish, in roughly this order:
 - **How it is tested and linted.** The declared scripts, plus the CI workflow — CI is the authority on what actually gates a merge, and it often runs more than the scripts do.
 - **The conventions.** Commit message format from `git log`, lint configuration, formatter configuration, and any `CONTRIBUTING.md`.
 
-## 2. Draft each marker
+## 2. Draft the project-specific values
 
 | Key                | What it must contain                                                                                                                                   |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -65,7 +65,7 @@ Ask explicitly about anything you had to leave marked, and about anything where 
 
 ## 5. Write, then verify
 
-After the user confirms, write the values into `.activeloom-config.yml` — editing only the marked keys, leaving everything else untouched.
+After the user confirms, write the values into `.activeloom-config.yml`. A key is editable here only when it still contains a marker or still matches the initializer's detected or generic suggestion shown in step 2. Treat every other unmarked value as human-authored and leave it untouched. This lets a user enrich a partial detected stack or replace the generic review focus without granting permission to overwrite project context they already chose.
 
 Then verify against the real engine rather than by re-reading your own edit:
 

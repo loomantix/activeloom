@@ -16,11 +16,13 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const { parseArgs } = require(
+const { parseArgs, validateCommandArgs } = require(
   path.join(REPO_ROOT, 'cli', 'bin', 'activeloom.js'),
 );
+const { detect } = require(path.join(REPO_ROOT, 'cli', 'lib', 'detect.js'));
 const { TIERS, resolveTier } = require(
   path.join(REPO_ROOT, 'cli', 'lib', 'tiers.js'),
 );
@@ -92,6 +94,32 @@ test('parseArgs rejects an unknown option instead of ignoring it', () => {
 
 test('parseArgs rejects a value-taking flag with no value', () => {
   assert.throws(() => parseArgs(['init', '--ref']), /--ref needs a value/);
+});
+
+test('commands reject operands and options they cannot apply', () => {
+  const initArgv = ['init', 'critique'];
+  assert.match(
+    validateCommandArgs(parseArgs(initArgv), initArgv),
+    /init does not accept operands: critique/,
+  );
+
+  const addArgv = ['add', 'critique', '--app'];
+  assert.match(
+    validateCommandArgs(parseArgs(addArgv), addArgv),
+    /add does not accept --app/,
+  );
+});
+
+test('detect resolves a repository subdirectory to the git top level', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-repo-'));
+  const nested = path.join(repo, 'packages', 'widget');
+  try {
+    execFileSync('git', ['init', '-q', repo]);
+    fs.mkdirSync(nested, { recursive: true });
+    assert.strictEqual(detect({ repoDir: nested }).repoDir, repo);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 // --- tiers ------------------------------------------------------------------
@@ -634,13 +662,13 @@ test('add exit code separates an unknown skill from one already installed', asyn
     fs.mkdirSync(skill, { recursive: true });
     fs.writeFileSync(path.join(skill, 'SKILL.md'), '# Critique\n');
 
-    const run = (skills) =>
+    const run = (skills, dryRun = false) =>
       addLib.add({
         skills,
         upstreamDir: upstream,
         facts: facts({ homeDir: home }),
         harnesses: ['claude'],
-        dryRun: false,
+        dryRun,
         force: false,
       });
 
@@ -659,6 +687,11 @@ test('add exit code separates an unknown skill from one already installed', asyn
       await run(['nope']),
       1,
       'an unknown skill on its own fails',
+    );
+    assert.strictEqual(
+      await run(['nope'], true),
+      1,
+      'dry-run preserves the unknown-skill failure contract',
     );
   } finally {
     fs.rmSync(upstream, { recursive: true, force: true });
