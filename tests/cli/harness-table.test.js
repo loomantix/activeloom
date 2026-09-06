@@ -25,7 +25,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const { HARNESSES } = require(path.join(REPO_ROOT, 'cli', 'lib', 'detect.js'));
 
 /**
- * Read `harnesses:` from the manifest as `{id: root}`.
+ * Read `harnesses:` from the manifest as `{id: {root, legacyConfig}}`.
  *
  * Scoped to exactly the shape being checked: the top-level `harnesses:` block,
  * whose children are two-space-indented ids each carrying a four-space-indented
@@ -57,12 +57,17 @@ function parseHarnesses() {
     const idMatch = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (idMatch) {
       currentId = idMatch[1];
+      found.set(currentId, {});
       continue;
     }
     const rootMatch = /^ {4}root:\s*(\S+)\s*$/.exec(line);
     if (rootMatch && currentId) {
-      found.set(currentId, rootMatch[1]);
-      currentId = null;
+      found.get(currentId).root = rootMatch[1];
+      continue;
+    }
+    const legacyMatch = /^ {4}legacy_config:\s*(\S+)\s*$/.exec(line);
+    if (legacyMatch && currentId) {
+      found.get(currentId).legacyConfig = legacyMatch[1];
     }
   }
   return found;
@@ -78,7 +83,12 @@ test('the manifest still has a parseable harnesses block', () => {
 
 test('CLI harness ids and roots match scripts/sync-targets.yml', () => {
   const manifest = parseHarnesses();
-  const cli = new Map(HARNESSES.map((h) => [h.id, h.root]));
+  const cli = new Map(
+    HARNESSES.map((h) => [
+      h.id,
+      { root: h.root, legacyConfig: h.legacyConfig },
+    ]),
+  );
 
   assert.deepStrictEqual(
     [...cli.keys()].sort(),
@@ -86,11 +96,11 @@ test('CLI harness ids and roots match scripts/sync-targets.yml', () => {
     'harness ids differ between cli/lib/detect.js and the manifest',
   );
 
-  for (const [id, root] of manifest) {
-    assert.strictEqual(
+  for (const [id, config] of manifest) {
+    assert.deepStrictEqual(
       cli.get(id),
-      root,
-      `harness "${id}" root differs from the manifest`,
+      config,
+      `harness "${id}" config differs from the manifest`,
     );
   }
 });

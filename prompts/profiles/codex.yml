@@ -63,6 +63,22 @@ skills:
     # load-bearing: the value is appended directly to the sentence before it.
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use after `npx activeloom init` when .activeloom-config.yml still has TODO(activeloom) markers to fill.'
+    AGENT_LOOP_SETUP: |-
+      `agent-loop` requires **both** the Codex and Claude CLIs. Its consumer-owned
+      config is `.codex/skills/agent-loop/agent-loop.config`.
+
+      The review hooks and Claude effort policy are pinned by the checked-in
+      launcher contract and reject consumer overrides. Do not edit them. Ask only
+      for the worker model and optional fallback when their keys are empty, using
+      exact identifiers supplied by the user or reported by the CLI:
+
+      | Key | Value |
+      | --- | --- |
+      | `worker_model` | Exact worker identifier from the user. |
+      | `worker_fallback_model` | Only if the user names one. |
+
+      If either required CLI is unavailable, say `agent-loop` cannot run; do not
+      change its pinned reviewer configuration.
 
   phone-install:
     FM_EXTRAS: ''

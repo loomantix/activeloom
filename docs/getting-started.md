@@ -105,6 +105,8 @@ One repository setting is required, and it is easy to miss:
 
 Without it, `GITHUB_TOKEN` may write code but may not open a pull request, and the sync fails with an error that does not name the setting. The workflow detects that specific failure and tells you.
 
+GitHub creates pull-request checks for PRs opened with `GITHUB_TOKEN`, but holds them for manual approval. On each sync PR, select **Approve workflows to run** before reviewing its checks. Push-triggered workflows are not started by a `GITHUB_TOKEN` push. See [GitHub's `GITHUB_TOKEN` documentation](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs).
+
 ### What `PR_BASE_BRANCH` means
 
 The branch sync PRs land on — your integration branch, which is **not** always your default branch. A repository that promotes `staging` → `main` lands sync PRs on `staging`, while the workflow _definition_ is still read from the default branch. `init` fills it from your `origin` HEAD; override with `--base-branch staging` if that is wrong.
@@ -138,17 +140,15 @@ npx activeloom init --sync --app
 This writes the App variant of the workflow. It needs a GitHub App installed on the repository with `contents: write` and `pull_requests: write`, and two secrets:
 
 ```bash
-gh secret set SYNC_APP_ID --repo <owner>/<repo> --body "<app-id>"
-gh secret set SYNC_APP_PRIVATE_KEY --repo <owner>/<repo> --body "$(cat key.pem)"
+gh secret set SYNC_APP_ID --repo <owner>/<repo>
+gh secret set SYNC_APP_PRIVATE_KEY --repo <owner>/<repo> < key.pem
 ```
-
-> **Use the `--body "$VALUE"` form.** Passing a secret on stdin (`echo "$TOKEN" | gh secret set --body -`) silently mangles the value.
 
 One App can serve many repositories; an org-level installation makes that straightforward:
 
 ```bash
 gh secret set SYNC_APP_ID --org <org> --visibility selected \
-  --body "<app-id>" --repos repo-a,repo-b,repo-c
+  --repos repo-a,repo-b,repo-c
 ```
 
 **If your upstream is private** — a fork of this repository kept inside your org — you also need a fine-grained PAT or App token with `Contents: Read` on it, stored as `UPSTREAM_READ_TOKEN`.

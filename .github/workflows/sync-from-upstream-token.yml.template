@@ -158,7 +158,7 @@ jobs:
             --state open \
             --limit 100 \
             --json number,headRefName \
-            --jq ".[] | select(.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) | .number" \
+            --jq ".[] | select((.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) and .headRefName != \"${BRANCH}\") | .number" \
           | while read -r prior; do
               [ -z "$prior" ] && continue
               echo "Closing prior sync PR #$prior"

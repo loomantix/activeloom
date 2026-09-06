@@ -34,9 +34,22 @@ const HARNESSES = Object.freeze([
     root: '.claude',
     home: '.claude',
     cli: 'claude',
+    legacyConfig: '.platform-config.yml',
   }),
-  Object.freeze({ id: 'codex', root: '.codex', home: '.codex', cli: 'codex' }),
-  Object.freeze({ id: 'gemini', root: '.agents', home: '.agents', cli: 'agy' }),
+  Object.freeze({
+    id: 'codex',
+    root: '.codex',
+    home: '.codex',
+    cli: 'codex',
+    legacyConfig: '.codex-platform-config.yml',
+  }),
+  Object.freeze({
+    id: 'gemini',
+    root: '.agents',
+    home: '.agents',
+    cli: 'agy',
+    legacyConfig: '.gemini-platform-config.yml',
+  }),
 ]);
 
 /**

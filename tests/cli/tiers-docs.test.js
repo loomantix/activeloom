@@ -138,3 +138,16 @@ test('tier 0 is documented as needing nothing', () => {
     'Tier 0 section mentions a GitHub App',
   );
 });
+
+test('Tier 3 keeps private keys out of process arguments', () => {
+  assert.match(
+    GETTING_STARTED,
+    /gh secret set SYNC_APP_PRIVATE_KEY[^\n]*< key\.pem/,
+  );
+  assert.doesNotMatch(GETTING_STARTED, /--body "\$\(cat key\.pem\)"/);
+});
+
+test('Tier 2 documents approval-required pull-request checks', () => {
+  assert.match(GETTING_STARTED, /Approve workflows to run/);
+  assert.match(GETTING_STARTED, /Push-triggered workflows are not started/);
+});

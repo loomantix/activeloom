@@ -162,7 +162,7 @@ function printTiers() {
   }
   ui.info(
     ui.dim(
-      `Tier ${RECOMMENDED_TIER.n} is the recommended tier. A GitHub App is only ever needed at Tier 3.`,
+      `Tier ${RECOMMENDED_TIER} is the recommended tier. A GitHub App is only ever needed at Tier 3.`,
     ),
   );
 }

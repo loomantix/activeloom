@@ -357,7 +357,7 @@ skip_targets: []
  * @param {string} args.baseBranch
  * @param {boolean} args.dryRun
  * @param {boolean} args.force
- * @returns {{written: boolean, dest: string, note?: string}}
+ * @returns {{written: boolean, ready: boolean, dest: string, note?: string}}
  */
 function writeWorkflow({
   tier,
@@ -387,13 +387,7 @@ function writeWorkflow({
     'workflows',
     'sync-from-upstream.yml',
   );
-  if (fs.existsSync(dest) && !force) {
-    return {
-      written: false,
-      dest,
-      note: 'already exists — left alone (re-run with --force to replace)',
-    };
-  }
+  assertSafeWritePath(repoDir, dest);
 
   let body = fs.readFileSync(src, 'utf8');
   // Anchored on the exact placeholder text the templates ship, and asserted one
@@ -445,11 +439,50 @@ function writeWorkflow({
     body = body.replace(substitution.pattern, substitution.replacement);
   }
 
+  if (fs.existsSync(dest)) {
+    const existing = fs.readFileSync(dest, 'utf8');
+    if (existing === body) {
+      return { written: false, ready: true, dest, note: 'already matches' };
+    }
+    if (!force) {
+      return {
+        written: false,
+        ready: false,
+        dest,
+        note: 'differs from the requested tier — re-run with --force to replace the generated workflow (your config is preserved)',
+      };
+    }
+  }
+
   if (!dryRun) {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, body);
   }
-  return { written: true, dest };
+  return { written: true, ready: true, dest };
+}
+
+/** Refuse a write through any symlink below the consumer root. */
+function assertSafeWritePath(repoDir, dest) {
+  const relative = path.relative(repoDir, dest);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(
+      `refusing to write outside the consumer repository: ${dest}`,
+    );
+  }
+  let current = repoDir;
+  for (const part of relative.split(path.sep)) {
+    current = path.join(current, part);
+    let stat;
+    try {
+      stat = fs.lstatSync(current);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`refusing to write through symlink: ${current}`);
+    }
+  }
 }
 
 /**
@@ -525,16 +558,52 @@ async function init(args) {
     `harnesses: ${ui.bold(chosen.ids.join(', '))} ${ui.dim(`(${chosen.reason})`)}`,
   );
 
+  const baseBranch = args.baseBranch ?? facts.git.defaultBranch ?? 'main';
+  const workflowArgs = {
+    tier,
+    upstreamDir,
+    repoDir: facts.repoDir,
+    upstreamRepo,
+    upstreamRef: args.ref,
+    baseBranch,
+    force,
+  };
+  if (tier.n >= 2) {
+    const preflight = writeWorkflow({ ...workflowArgs, dryRun: true });
+    if (!preflight.ready) {
+      ui.fail(`workflow:   ${preflight.note}`);
+      return 1;
+    }
+  }
+
   // --- config ---------------------------------------------------------------
   const configPath = path.join(facts.repoDir, '.activeloom-config.yml');
   const configExists = fs.existsSync(configPath);
-  if (configExists && !force) {
+  const legacyConfigs = HARNESSES.map((harness) => harness.legacyConfig)
+    .map((name) => path.join(facts.repoDir, name))
+    .filter((candidate) => fs.existsSync(candidate));
+  if ((configExists || legacyConfigs.length > 0) && args.harnesses.length > 0) {
+    ui.fail(
+      '`--harness` only applies when creating a new config; edit the existing config harness list, then re-run `init`.',
+    );
+    return 1;
+  }
+  let configWritten = false;
+  if (configExists) {
     ui.step(
       `config:     ${ui.dim('.activeloom-config.yml exists — keeping yours')}`,
     );
+  } else if (legacyConfigs.length > 0) {
+    ui.step(
+      `config:     ${ui.dim(`keeping legacy config${legacyConfigs.length > 1 ? 's' : ''} (${legacyConfigs.map((entry) => path.basename(entry)).join(', ')}); the sync engine will compose them`)}`,
+    );
   } else {
     const body = renderConfig({ harnesses: chosen.ids, facts });
-    if (!dryRun) fs.writeFileSync(configPath, body);
+    assertSafeWritePath(facts.repoDir, configPath);
+    if (!dryRun) {
+      fs.writeFileSync(configPath, body);
+      configWritten = true;
+    }
     ui.step(
       `config:     ${dryRun ? 'would write' : 'wrote'} .activeloom-config.yml`,
     );
@@ -559,7 +628,8 @@ async function init(args) {
   // it — that is what makes the run dry — so invoking the engine here would
   // fail every first-time `--dry-run` with a missing-file error about a file
   // the user was never asked to create. Say what would happen instead.
-  const engineCanRun = !dryRun || fs.existsSync(configPath);
+  const engineCanRun =
+    !dryRun || fs.existsSync(configPath) || legacyConfigs.length > 0;
   if (!engineCanRun) {
     ui.step(
       `trees:      ${ui.dim('skipped — the engine needs .activeloom-config.yml on disk, and a dry run has not written it')}`,
@@ -594,17 +664,7 @@ async function init(args) {
 
   // --- the workflow ---------------------------------------------------------
   if (tier.n >= 2) {
-    const baseBranch = args.baseBranch ?? facts.git.defaultBranch ?? 'main';
-    const result = writeWorkflow({
-      tier,
-      upstreamDir,
-      repoDir: facts.repoDir,
-      upstreamRepo,
-      upstreamRef: args.ref,
-      baseBranch,
-      dryRun,
-      force,
-    });
+    const result = writeWorkflow({ ...workflowArgs, dryRun });
     if (result.written) {
       ui.step(
         `workflow:   ${dryRun ? 'would write' : 'wrote'} .github/workflows/sync-from-upstream.yml ` +
@@ -627,7 +687,7 @@ async function init(args) {
     return 0;
   }
   ui.ok(`Tier ${tier.n} written.`);
-  printNextSteps(tier, chosen.ids, facts, configExists);
+  printNextSteps(tier, chosen.ids, facts, configWritten);
   return 0;
 }
 
@@ -642,13 +702,13 @@ async function init(args) {
  * @param {import('./tiers').Tier} tier
  * @param {string[]} harnesses
  * @param {ReturnType<import('./detect').detect>} facts
- * @param {boolean} configExisted
+ * @param {boolean} configWritten
  */
-function printNextSteps(tier, harnesses, facts, configExisted) {
+function printNextSteps(tier, harnesses, facts, configWritten) {
   ui.info('');
   ui.info(ui.bold('Next:'));
 
-  if (!configExisted) {
+  if (configWritten) {
     ui.step(
       `1. Fill the ${ui.bold(TODO.trim())} markers in .activeloom-config.yml — ` +
         `run the ${ui.bold('onboard')} skill in your agent to draft them, then confirm.`,
@@ -670,19 +730,15 @@ function printNextSteps(tier, harnesses, facts, configExisted) {
         '"Allow GitHub Actions to create and approve pull requests" — ' +
         'without it the sync cannot open its PR.',
     );
+    ui.step(
+      'On each workflow-created sync PR, select “Approve workflows to run” before its pull-request checks can start.',
+    );
   }
 
   if (tier.n === 3) {
     ui.step('Set the two App secrets on the repo:');
-    ui.info('       gh secret set SYNC_APP_ID --body "<app-id>"');
-    ui.info(
-      '       gh secret set SYNC_APP_PRIVATE_KEY --body "$(cat key.pem)"',
-    );
-    ui.info(
-      ui.dim(
-        '       Use the --body "$VALUE" form; passing a secret on stdin mangles it.',
-      ),
-    );
+    ui.info('       gh secret set SYNC_APP_ID');
+    ui.info('       gh secret set SYNC_APP_PRIVATE_KEY < key.pem');
   }
 
   if (harnesses.includes('claude')) {
@@ -703,4 +759,5 @@ module.exports = {
   confirmHarnesses,
   yamlScalar,
   TODO,
+  assertSafeWritePath,
 };

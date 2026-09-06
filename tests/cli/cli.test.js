@@ -266,6 +266,58 @@ test('copyTree preserves the executable bit', () => {
   }
 });
 
+test('Tier 0 installs the harness support files used by critique', () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+  try {
+    const root = path.join(upstream, '.codex');
+    fs.mkdirSync(path.join(root, 'references', 'roles'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'REVIEW_WORKFLOW.md'), '# Workflow\n');
+    fs.writeFileSync(path.join(root, 'prompt-stack.json'), '{}\n');
+    fs.writeFileSync(
+      path.join(root, 'references', 'local-review-ledger.md'),
+      '# Ledger\n',
+    );
+    fs.writeFileSync(
+      path.join(root, 'references', 'roles', 'code-reviewer.md'),
+      '# Reviewer\n',
+    );
+    fs.mkdirSync(path.join(home, '.codex', 'references'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.codex', 'references', 'consumer-note.md'),
+      '# Keep me\n',
+    );
+    addLib.installSupportFiles(
+      upstream,
+      { root: '.codex', home: '.codex' },
+      home,
+      false,
+      false,
+    );
+    assert.strictEqual(
+      fs.readFileSync(path.join(home, '.codex', 'REVIEW_WORKFLOW.md'), 'utf8'),
+      '# Workflow\n',
+    );
+    assert.strictEqual(
+      fs.readFileSync(
+        path.join(home, '.codex', 'references', 'roles', 'code-reviewer.md'),
+        'utf8',
+      ),
+      '# Reviewer\n',
+    );
+    assert.strictEqual(
+      fs.readFileSync(
+        path.join(home, '.codex', 'references', 'consumer-note.md'),
+        'utf8',
+      ),
+      '# Keep me\n',
+    );
+  } finally {
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('add chooses harnesses from machine evidence, not repo evidence', () => {
   // Tier 0 installs into the user's own config directory, so what this repo
   // contains is irrelevant to it — the mirror image of `init`'s rule.
@@ -293,6 +345,88 @@ test('refuseSelfSync permits an ordinary consumer', () => {
     assert.strictEqual(initLib.refuseSelfSync(dir, REPO_ROOT), null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('write destinations may not traverse repository symlinks', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-outside-'));
+  try {
+    fs.symlinkSync(outside, path.join(repo, '.github'));
+    assert.throws(
+      () =>
+        initLib.assertSafeWritePath(
+          repo,
+          path.join(repo, '.github', 'workflows', 'sync.yml'),
+        ),
+      /refusing to write through symlink/,
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+const initArgs = (repoDir, overrides = {}) => ({
+  upstreamDir: REPO_ROOT,
+  ref: 'local',
+  facts: facts({ repoDir }),
+  harnesses: [],
+  sync: false,
+  app: false,
+  dryRun: false,
+  assumeYes: true,
+  force: false,
+  python: '/bin/true',
+  baseBranch: undefined,
+  upstreamRepo: 'loomantix/activeloom',
+  ...overrides,
+});
+
+test('--force preserves an existing consumer-owned config', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  try {
+    const config = path.join(repo, '.activeloom-config.yml');
+    const original =
+      'harnesses: [codex]\nsubstitutions:\n  PROJECT_NAME: kept\n';
+    fs.writeFileSync(config, original);
+    assert.strictEqual(await initLib.init(initArgs(repo, { force: true })), 0);
+    assert.strictEqual(fs.readFileSync(config, 'utf8'), original);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('legacy configs remain authoritative until deliberately migrated', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  try {
+    fs.writeFileSync(
+      path.join(repo, '.platform-config.yml'),
+      'substitutions: {}\n',
+    );
+    assert.strictEqual(await initLib.init(initArgs(repo)), 0);
+    assert.strictEqual(
+      fs.existsSync(path.join(repo, '.activeloom-config.yml')),
+      false,
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('explicit harnesses are refused when a config already owns the list', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  try {
+    fs.writeFileSync(
+      path.join(repo, '.activeloom-config.yml'),
+      'harnesses: [claude]\n',
+    );
+    assert.strictEqual(
+      await initLib.init(initArgs(repo, { harnesses: ['codex'] })),
+      1,
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
   }
 });
 

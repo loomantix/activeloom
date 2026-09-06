@@ -50,35 +50,7 @@ Two rules about content:
 
 ## 3. Engines and models
 
-`init` installs the full skill set. Several skills cannot run without an engine the user actually has, and one — `agent-loop` — requires **both** the Claude and Codex CLIs and refuses to run without both. Its preflight checks the hook strings rather than the CLIs, so a missing engine surfaces only after the loop has opened a draft PR.
-
-None of this is detectable. A binary on `PATH` does not tell you whether the user has a working plan, which models it exposes, or which engine they actually drive sessions with. **Ask.**
-
-### Ask, in this order
-
-1. **Which engines do you drive sessions with?** Reconcile the answer against `harnesses:` in `.activeloom-config.yml`. If they differ, say so and ask which is right — a harness in the config that the user does not run means synced prompts nobody reads.
-2. **Do you have both the Claude and Codex CLIs?** If not, say plainly that `agent-loop` will fail partway through a run, and offer to leave its config empty. Do not write half a roster.
-3. **Which model for the `agent-loop` worker, and which for each reviewer?** Ask for the exact model identifier.
-
-### Never invent a model identifier
-
-Model names change, and one you recall may not exist or may not be on the user's plan. A wrong identifier is the worst kind of wrong here: it is committed, it looks deliberate, and it fails at the point of use rather than at the point of writing.
-
-Take the identifier from the user, or from a command they run — `<<ENGINE_CLI>>` and the other engine CLIs can report what they are configured for. Never supply one from memory, and never "fill in a sensible default".
-
-### What to write
-
-Only into `.claude/skills/agent-loop/agent-loop.config` (or the equivalent root for the harness), which is consumer-owned and never overwritten by a later sync:
-
-| Key | Value |
-| --- | --- |
-| `worker_model` | The exact identifier the user gave. Left empty, the worker silently follows whatever the CLI defaults to that week. |
-| `worker_fallback_model` | Only if the user names one. |
-| `claude_review_hook` | A literal shell command. Model and effort are flags on it — there are no dedicated keys. |
-| `codex_review_hook` | Same, for the other engine. |
-| `claude_effort_policy` | The literal effort string the user chose. |
-
-The file's own comments show the flag placement for each hook and name the environment variables a hook must carry, or preflight rejects it. Follow them rather than composing a command from scratch.
+<<AGENT_LOOP_SETUP>>
 
 ## 4. Present for confirmation
 
@@ -93,10 +65,10 @@ After the user confirms, write the values into `.activeloom-config.yml` — edit
 Then verify against the real engine rather than by re-reading your own edit:
 
 ```
-npx activeloom init --dry-run
+npx activeloom init --yes
 ```
 
-A clean dry run means the config parses and the engine renders every target from it. It does **not** mean the values are filled in: `init` writes the unfilled keys as marker *values*, so `PROJECT_OVERVIEW: TODO(activeloom): ...` substitutes as cleanly as real prose and a wholly untouched config passes.
+A clean run means the config parses and the engine rendered every target from it. The command is intentionally real rather than `--dry-run`: a dry run writes no rendered files, so scanning afterward would inspect stale output or nothing at all.
 
 The marker scan is therefore the actual gate, not a closing formality. Grep the rendered output — not just the config — for `TODO(activeloom):`, and treat any hit as unfinished work rather than reporting the repository verified. Then tell the user which files change on the next real `init`.
 

@@ -102,6 +102,16 @@ test('both templates carry the placeholders the CLI substitutes', () => {
   }
 });
 
+test("both templates preserve today's open sync PR", () => {
+  for (const [name, body] of TEMPLATES) {
+    assert.match(
+      body,
+      /\.headRefName != \\\"\$\{BRANCH\}\\\"/,
+      `${name}: close-prior filter does not exclude the current branch`,
+    );
+  }
+});
+
 test('only the app template uses App credentials', () => {
   // The whole claim of Tier 2 is "no secrets". A stray `secrets.SYNC_APP_*`
   // reference in the token template would make it fail on a repo that has none,
@@ -118,6 +128,15 @@ test('only the app template uses App credentials', () => {
   assert.ok(
     !/create-signed-commit\.py/.test(TOKEN),
     'the token template must not claim to create signed commits',
+  );
+});
+
+test('the app template permits anonymous reads from public upstreams', () => {
+  assert.doesNotMatch(APP, /Validate UPSTREAM_READ_TOKEN is configured/);
+  assert.match(APP, /if \[ -n "\$\{UPSTREAM_READ_TOKEN:-\}" \]/);
+  assert.match(
+    APP,
+    /If the upstream is private, configure UPSTREAM_READ_TOKEN/,
   );
 });
 
@@ -217,6 +236,37 @@ test('the installed workflow tracks the ref the trees came from', () => {
     workflowFor(TIERS[2], { upstreamRef: 'local' }),
     /^ {2}UPSTREAM_REF: sync-v2$/m,
   );
+});
+
+test('an existing workflow must match the requested tier unless force replaces it', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-wf-'));
+  try {
+    const options = {
+      tier: TIERS[2],
+      upstreamDir: REPO_ROOT_FOR_CLI,
+      repoDir,
+      upstreamRepo: 'acme/consumer-upstream',
+      upstreamRef: 'sync-v2',
+      baseBranch: 'trunk',
+      dryRun: false,
+      force: false,
+    };
+    const first = writeWorkflow(options);
+    assert.strictEqual(first.ready, true);
+    assert.strictEqual(writeWorkflow(options).ready, true);
+    const mismatch = writeWorkflow({ ...options, tier: TIERS[3] });
+    assert.strictEqual(mismatch.ready, false);
+    assert.match(mismatch.note, /--force/);
+    const replacement = writeWorkflow({
+      ...options,
+      tier: TIERS[3],
+      force: true,
+    });
+    assert.strictEqual(replacement.ready, true);
+    assert.match(fs.readFileSync(replacement.dest, 'utf8'), /SYNC_APP_ID/);
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
 });
 
 test('a template missing a placeholder is refused by name', () => {

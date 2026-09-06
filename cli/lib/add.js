@@ -139,6 +139,45 @@ function copyTree(src, dest) {
   }
 }
 
+const SUPPORT_PATHS = Object.freeze([
+  'MODEL_NOTES.md',
+  'REVIEW_WORKFLOW.md',
+  'SKILL_AUTHORING.md',
+  'prompt-stack.json',
+  'references',
+]);
+
+/** Install harness-level files referenced by skills outside their own tree. */
+function installSupportFiles(upstreamDir, harness, homeDir, dryRun, force) {
+  const sourceRoot = path.join(upstreamDir, harness.root);
+  const destRoot = path.join(homeDir, harness.home);
+
+  const install = (src, dest) => {
+    const stat = fs.statSync(src);
+    if (stat.isDirectory()) {
+      if (!dryRun) fs.mkdirSync(dest, { recursive: true });
+      for (const entry of fs.readdirSync(src)) {
+        install(path.join(src, entry), path.join(dest, entry));
+      }
+      return;
+    }
+    if (fs.existsSync(dest) && !force) return;
+    if (dryRun) {
+      ui.step(`would install support file ${dest}`);
+      return;
+    }
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+    fs.chmodSync(dest, stat.mode & 0o777);
+  };
+
+  for (const relative of SUPPORT_PATHS) {
+    const src = path.join(sourceRoot, relative);
+    if (!fs.existsSync(src)) continue;
+    install(src, path.join(destRoot, relative));
+  }
+}
+
 /**
  * @param {object} args
  * @param {string[]} args.skills      Skill names, or empty to list what exists.
@@ -171,6 +210,9 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
     const harness = HARNESSES.find((h) => h.id === id);
     const available = listSkills(upstreamDir, harness.root);
     const destRoot = path.join(facts.homeDir, harness.home, 'skills');
+    if (skills.some((name) => available.includes(name))) {
+      installSupportFiles(upstreamDir, harness, facts.homeDir, dryRun, force);
+    }
 
     for (const name of skills) {
       if (!available.includes(name)) {
@@ -234,4 +276,5 @@ module.exports = {
   assertNoPlaceholders,
   copyTree,
   walkFiles,
+  installSupportFiles,
 };
