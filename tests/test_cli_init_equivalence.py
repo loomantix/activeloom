@@ -71,6 +71,18 @@ def _init_git_repo(path: Path) -> None:
     )
 
 
+def _copy_config(path: Path, tier_flags: list[str]) -> None:
+    """Write the same valid config policy both doors receive for this tier."""
+    body = FIXTURE_CONFIG.read_text(encoding="utf-8")
+    if "--sync" in tier_flags:
+        # Tier 2 runs its workflow with GITHUB_TOKEN, which cannot push a
+        # workflow-file update. Model the policy its initializer requires on
+        # both sides so this remains an engine/CLI equivalence proof rather
+        # than an assertion that an unsafe Tier 1 config should be accepted.
+        body += "\nskip_targets:\n  - .github/workflows/dco.yml\n"
+    path.write_text(body, encoding="utf-8")
+
+
 def _tree(root: Path) -> dict[str, int]:
     """Map every file under `root` to its permission bits.
 
@@ -107,7 +119,7 @@ def test_init_writes_what_sync_writes(tmp_path: Path, tier_flags: list[str]) -> 
     # --- side A: the engine, invoked exactly as the consumer workflow does ---
     via_sync = tmp_path / "via-sync"
     via_sync.mkdir()
-    shutil.copy(FIXTURE_CONFIG, via_sync / ".activeloom-config.yml")
+    _copy_config(via_sync / ".activeloom-config.yml", tier_flags)
     engine = subprocess.run(
         [
             sys.executable,
@@ -130,7 +142,7 @@ def test_init_writes_what_sync_writes(tmp_path: Path, tier_flags: list[str]) -> 
     # rather than overwriting it, which is what makes the two sides comparable:
     # a generated config would carry this repo's detected values and substitute
     # different content into `.github/copilot-instructions.md`.
-    shutil.copy(FIXTURE_CONFIG, via_cli / ".activeloom-config.yml")
+    _copy_config(via_cli / ".activeloom-config.yml", tier_flags)
     cli = subprocess.run(
         [
             "node",
