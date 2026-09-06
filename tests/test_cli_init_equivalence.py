@@ -225,6 +225,77 @@ def test_init_refuses_to_sync_a_tree_into_itself(tmp_path: Path) -> None:
     assert "refusing to sync a tree into itself" in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize(
+    "link_kind", ["ancestor", "dangling-leaf", "existing-leaf"]
+)
+def test_init_refuses_selected_consumer_symlinks_before_writing(
+    tmp_path: Path, link_kind: str
+) -> None:
+    """A checkout-controlled link cannot redirect an init write onto the host."""
+    _require("node")
+    _require("git")
+
+    consumer = tmp_path / "consumer"
+    outside = tmp_path / "outside"
+    consumer.mkdir()
+    outside.mkdir()
+    _init_git_repo(consumer)
+    _copy_config(consumer / ".activeloom-config.yml", [])
+
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("unchanged\n", encoding="utf-8")
+    if link_kind == "ancestor":
+        (consumer / ".codex").mkdir()
+        (consumer / ".codex" / "skills").symlink_to(
+            outside, target_is_directory=True
+        )
+        redirected = outside / "onboard" / "SKILL.md"
+    else:
+        leaf = consumer / ".codex" / "skills" / "onboard" / "SKILL.md"
+        leaf.parent.mkdir(parents=True)
+        redirected = sentinel if link_kind == "existing-leaf" else outside / "missing.txt"
+        leaf.symlink_to(redirected)
+
+    subprocess.run(["git", "config", "user.name", "Probe"], cwd=consumer, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "probe@example.invalid"],
+        cwd=consumer,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=consumer, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "probe"], cwd=consumer, check=True)
+
+    result = subprocess.run(
+        [
+            "node",
+            str(CLI),
+            "init",
+            "--upstream-dir",
+            str(REPO_ROOT),
+            "--consumer-dir",
+            str(consumer),
+            "--python",
+            sys.executable,
+            "--yes",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "consumer-side symlink" in result.stdout + result.stderr
+    assert sentinel.read_text(encoding="utf-8") == "unchanged\n"
+    if link_kind != "existing-leaf":
+        assert not redirected.exists()
+    assert subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=consumer,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout == ""
+
+
 def test_init_refuses_a_non_repository(tmp_path: Path) -> None:
     """`init` writes files a team commits, so it needs a repository to be in."""
     _require("node")

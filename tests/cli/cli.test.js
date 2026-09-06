@@ -28,6 +28,7 @@ const { TIERS, resolveTier } = require(
 );
 const initLib = require(path.join(REPO_ROOT, 'cli', 'lib', 'init.js'));
 const addLib = require(path.join(REPO_ROOT, 'cli', 'lib', 'add.js'));
+const ui = require(path.join(REPO_ROOT, 'cli', 'lib', 'ui.js'));
 
 /** Minimal detect() result, overridable per test. */
 function facts(overrides = {}) {
@@ -555,6 +556,38 @@ test('explicit harnesses are refused when a config already owns the list', async
       1,
     );
   } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('an old upstream engine fails closed with a compatibility error', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  const fakePython = path.join(repo, 'old-python');
+  const failures = [];
+  const originalFail = ui.fail;
+  try {
+    fs.writeFileSync(
+      path.join(repo, '.activeloom-config.yml'),
+      'harnesses: [codex]\n',
+    );
+    fs.writeFileSync(
+      fakePython,
+      '#!/bin/sh\ncase "$1" in --version) echo "Python 3.12.0"; exit 0;; -c) exit 0;; esac\necho "error: unrecognized arguments: --reject-consumer-symlinks" >&2\nexit 2\n',
+      { mode: 0o755 },
+    );
+    ui.fail = (message) => failures.push(message);
+
+    assert.strictEqual(
+      await initLib.init(
+        initArgs(repo, { python: fakePython, ref: 'old-ref' }),
+      ),
+      2,
+    );
+    assert.deepStrictEqual(failures, [
+      'upstream ref old-ref predates safe local onboarding; choose a newer ref whose sync engine supports consumer-symlink preflight.',
+    ]);
+  } finally {
+    ui.fail = originalFail;
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });

@@ -714,6 +714,7 @@ async function init(args) {
     upstreamDir,
     '--consumer-dir',
     facts.repoDir,
+    '--reject-consumer-symlinks',
   ];
   if (dryRun) engineArgs.push('--dry-run');
 
@@ -746,7 +747,14 @@ async function init(args) {
       return 1;
     }
     if (run.status !== 0) {
-      ui.fail('the sync engine refused to write.');
+      const missingSymlinkGuard = run.stderr?.includes(
+        'unrecognized arguments: --reject-consumer-symlinks',
+      );
+      ui.fail(
+        missingSymlinkGuard
+          ? `upstream ref ${args.ref} predates safe local onboarding; choose a newer ref whose sync engine supports consumer-symlink preflight.`
+          : 'the sync engine refused to write.',
+      );
       if (run.stdout) process.stdout.write(run.stdout);
       if (run.stderr) process.stderr.write(run.stderr);
       // The engine's own refusals are precise and paste-ready (it prints the
