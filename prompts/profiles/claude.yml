@@ -96,6 +96,13 @@ skills:
       argument-hint: (optional) the idea, plan, or decision to stress-test
     DESC_TRIGGER: ''
 
+  onboard:
+    # Same pairing as `grill`: `disable-model-invocation` makes trigger prose in
+    # the description dead weight on this harness, so DESC_TRIGGER is empty here
+    # and non-empty on the harnesses that can auto-invoke. The two move together.
+    FM_EXTRAS: 'disable-model-invocation: true'
+    DESC_TRIGGER: ''
+
   phone-install:
     FM_EXTRAS: 'disable-model-invocation: true'
 

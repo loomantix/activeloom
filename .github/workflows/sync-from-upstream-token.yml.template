@@ -1,0 +1,203 @@
+# Sync canonical files from an upstream repo — Tier 2, no secrets.
+#
+# This is the DEFAULT consumer sync workflow. Drop it into a consumer repo at
+# `.github/workflows/sync-from-upstream.yml` (drop the `.template` suffix),
+# then fill in `UPSTREAM_REPO` and `PR_BASE_BRANCH`. `npx activeloom init --sync`
+# writes it for you with both already filled in.
+#
+# It needs no secrets at all. Authentication is the `GITHUB_TOKEN` that GitHub
+# Actions mints for every run, so there is nothing to create, store, or rotate —
+# which is the entire point of Tier 2 and the reason it is the default rather
+# than the App-based workflow.
+#
+# What you give up relative to Tier 3
+# (`sync-from-upstream.yml.template`, the App variant):
+#
+#   * Sync commits are NOT GitHub-signed. They are ordinary commits authored by
+#     `github-actions[bot]`. If a control requires attested-actor sign-off on
+#     every change, you need Tier 3.
+#   * The upstream must be PUBLIC. Cloning a private upstream needs a read
+#     credential, and a credential is what Tier 2 is defined by not having.
+#   * The PR is opened by `github-actions[bot]` rather than by a distinct App
+#     identity, so it does not decouple committer identity from reviewer
+#     identity for segregation-of-duties purposes.
+#
+# Upgrading to Tier 3 later is a workflow swap plus two secrets. Nothing written
+# by this workflow has to be undone first.
+#
+# ONE workflow per consumer, whatever mix of harnesses it runs. Which harnesses
+# it receives is declared in `.activeloom-config.yml` under `harnesses:`.
+#
+# `PR_BASE_BRANCH` has no default on purpose. It is not always the default
+# branch: a repository that promotes staging -> main lands sync PRs on
+# `staging` while this workflow *definition* is still read from the default
+# branch, so a change to this file only takes effect after the next promotion.
+#
+# Trust model: UPSTREAM_REF defaults to a tag (`sync-v2`), not `main`, so pushes
+# to the upstream's main don't auto-propagate. Bumping the tag is the deliberate
+# gate. Kill switch via the `SKIP_UPSTREAM_SYNC` repo variable.
+#
+# One repository setting is required, and the workflow checks it rather than
+# failing obscurely: Settings -> Actions -> General -> "Allow GitHub Actions to
+# create and approve pull requests". Without it `GITHUB_TOKEN` may read and
+# write code but may not open a pull request, and `gh pr create` fails with a
+# permissions error that does not name the setting.
+
+name: Sync from upstream
+
+on:
+  schedule:
+    - cron: '0 9 * * *' # daily at 09:00 UTC
+  workflow_dispatch:
+
+# Wider than the App variant's, and necessarily so: there, the App installation
+# token carries the write scope and `GITHUB_TOKEN` needs almost nothing. Here
+# `GITHUB_TOKEN` is the only identity, so it must be able to push the sync
+# branch and open the PR.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-from-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: <owner>/<repo> # e.g. loomantix/activeloom
+  UPSTREAM_REF: sync-v2
+  SYNC_BRANCH_PREFIX: sync/upstream
+  PR_BASE_BRANCH: '' # REQUIRED: the branch sync PRs land on
+
+jobs:
+  sync:
+    if: vars.SKIP_UPSTREAM_SYNC == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate PR_BASE_BRANCH is set
+        run: |
+          if [ -z "${PR_BASE_BRANCH}" ]; then
+            echo "::error::PR_BASE_BRANCH is empty. Set it to the branch sync PRs should land on — that is your integration branch, which is not necessarily this repository's default branch." >&2
+            exit 1
+          fi
+
+      - name: Checkout consumer repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.PR_BASE_BRANCH }}
+
+      - name: Clone upstream
+        run: |
+          set -euo pipefail
+          # Wipe any prior clone — on warm runners or rerun-failed jobs,
+          # `git remote add origin` fails if the dir already exists with state,
+          # and the workflow would silently work against stale content.
+          rm -rf /tmp/upstream
+          mkdir -p /tmp/upstream
+          cd /tmp/upstream
+          git init -q
+          git remote add origin "https://github.com/${UPSTREAM_REPO}.git"
+          # Disambiguate via ls-remote so that auth/network failures fail loud
+          # at the probe step rather than falling through into a branch fetch
+          # (which would silently ship branch content as a "sync from <tag>" —
+          # exactly what the trust model promises won't happen).
+          if git ls-remote --tags --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
+            git fetch --depth=1 origin "refs/tags/${UPSTREAM_REF}:refs/tags/${UPSTREAM_REF}"
+          elif git ls-remote --heads --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
+            git fetch --depth=1 origin "${UPSTREAM_REF}"
+          else
+            echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' is neither a tag nor a branch on ${UPSTREAM_REPO}. If the upstream is private, this workflow cannot read it — use the GitHub App variant (sync-from-upstream.yml.template)." >&2
+            exit 1
+          fi
+          git checkout -q FETCH_HEAD
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python3 -m pip install 'pyyaml==6.0.2'
+
+      - name: Run sync engine
+        run: |
+          set -euo pipefail
+          python3 /tmp/upstream/scripts/sync-engine.py \
+            --upstream-repo /tmp/upstream \
+            --consumer-dir .
+
+      - name: Detect changes
+        id: diff
+        run: |
+          set -euo pipefail
+          # `git status --porcelain` covers staged + unstaged + untracked in one
+          # call. A `git diff --quiet` + ls-files combination misses staged
+          # changes, which would report "in sync" while the engine had written
+          # files.
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Already in sync with upstream"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git status --short
+          fi
+
+      - name: Commit + open / refresh sync PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y%m%d)
+          BRANCH="${SYNC_BRANCH_PREFIX}-${DATE}"
+
+          # Close any prior open sync PRs to keep history clean. `--limit 100`
+          # is deterministic; the default 30 would let stale PRs accumulate in
+          # busy repos.
+          gh pr list \
+            --state open \
+            --limit 100 \
+            --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) | .number" \
+          | while read -r prior; do
+              [ -z "$prior" ] && continue
+              echo "Closing prior sync PR #$prior"
+              gh pr close "$prior" --delete-branch \
+                --comment "Superseded by today's sync run."
+            done
+
+          # Ordinary commit + push. Unlike the App variant this produces an
+          # UNSIGNED commit; that is the documented Tier 2 trade.
+          #
+          # The `Signed-off-by` trailer is not decoration: consumers that run a
+          # DCO check reject a bot commit without one, and that failure would
+          # look like a broken sync rather than a missing trailer.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "chore: sync from ${UPSTREAM_REPO}@${UPSTREAM_REF}" \
+            -m "Signed-off-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          git push --force origin "$BRANCH"
+
+          PR_TITLE="Sync from ${UPSTREAM_REPO}"
+          PR_BODY="Automated sync from \`${UPSTREAM_REPO}@${UPSTREAM_REF}\`. Review the diff carefully before merging — substituted content reflects current \`.activeloom-config.yml\`.
+
+          Commits are unsigned (Tier 2, \`GITHUB_TOKEN\`). To get GitHub-signed sync commits, switch to the GitHub App workflow."
+          if ! gh pr create \
+                --base "${PR_BASE_BRANCH}" \
+                --head "$BRANCH" \
+                --title "$PR_TITLE" \
+                --body "$PR_BODY" 2>/tmp/pr-create-err; then
+            if grep -q "already exists" /tmp/pr-create-err; then
+              echo "PR for $BRANCH already exists — refreshing"
+              gh pr edit "$BRANCH" --title "$PR_TITLE" --body "$PR_BODY"
+            elif grep -qi "not permitted\|GitHub Actions is not permitted" /tmp/pr-create-err; then
+              cat /tmp/pr-create-err >&2
+              echo "::error::GITHUB_TOKEN may not open pull requests in this repository. Enable Settings -> Actions -> General -> 'Allow GitHub Actions to create and approve pull requests', or switch to the GitHub App workflow (Tier 3)." >&2
+              exit 1
+            else
+              cat /tmp/pr-create-err >&2
+              exit 1
+            fi
+          fi

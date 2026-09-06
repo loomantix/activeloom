@@ -57,6 +57,13 @@ skills:
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use when the user asks to grill an idea, pressure-test a design, or work out what to build before any code exists.'
 
+  onboard:
+    # No `disable-model-invocation` on this harness, so the description carries
+    # its own trigger prose or the skill never fires. The leading space is
+    # load-bearing: the value is appended directly to the sentence before it.
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use after `npx activeloom init` when .activeloom-config.yml still has TODO(activeloom) markers to fill.'
+
   phone-install:
     FM_EXTRAS: ''
 

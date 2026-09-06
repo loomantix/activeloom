@@ -239,6 +239,26 @@ jobs:
         if: '!cancelled()'
         run: node --test tests/review-accessibility-asset.test.js
 
+      # --- `npx activeloom` CLI ---
+      # The CLI's unit + drift tests. They are Node rather than pytest because
+      # the CLI is Node, and they run here rather than in `Python types + tests`
+      # so a break in the onboarding surface is attributed to the static job
+      # that owns every other cross-file consistency gate.
+      #
+      # Three of the four files are drift guards over things stated twice: the
+      # harness table against `scripts/sync-targets.yml`, the two workflow
+      # templates against each other, and the tier ladder against the docs that
+      # describe it. The end-to-end proof that `init` delivers what sync
+      # delivers is a pytest (`tests/test_cli_init_equivalence.py`), because it
+      # drives the Python engine.
+      #
+      # Quoted glob: `node --test <dir>` is not portable across the Node
+      # versions this repo is run under, and an unquoted glob would be expanded
+      # by the shell into a form that skips the runner's own discovery.
+      - name: Test the activeloom CLI
+        if: '!cancelled()'
+        run: node --test 'tests/cli/*.test.js'
+
       # --- was job `render-check` (Rendered template fidelity) ---
       - name: Render sync surface against fixture consumer
         if: '!cancelled()'
