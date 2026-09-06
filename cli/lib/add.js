@@ -213,6 +213,10 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
 
   let installed = 0;
   let skipped = 0;
+  // Split out of `skipped` because the two skip reasons mean opposite things to
+  // a caller: a name that does not exist is the run failing, a skill already on
+  // disk is the run having nothing to do.
+  let notFound = 0;
 
   for (const id of chosen.ids) {
     const harness = HARNESSES.find((h) => h.id === id);
@@ -228,6 +232,7 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
           `${id}: no skill named "${name}" (have: ${available.join(', ')})`,
         );
         skipped += 1;
+        notFound += 1;
         continue;
       }
 
@@ -272,9 +277,12 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
       ),
     );
   }
-  // Nothing installed and something was asked for is a failed run, not a quiet
-  // no-op: a script that pipes this into `&&` needs to see it.
-  return installed === 0 && skipped > 0 ? 1 : 0;
+  // A requested skill that does not exist is a failed run, and stays failed
+  // even when other skills installed alongside it — a script that pipes this
+  // into `&&` needs to see the typo. A skill that was already on disk is not:
+  // re-running `add` is how a user updates, and an install command that exits
+  // non-zero the second time is not idempotent.
+  return notFound > 0 ? 1 : 0;
 }
 
 module.exports = {

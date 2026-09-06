@@ -17,7 +17,7 @@ If `.activeloom-config.yml` does not exist, stop and say so. Run `npx activeloom
 If it exists, work out what is still outstanding before doing anything:
 
 - `TODO(activeloom):` markers in the config — steps 1, 2, and 4.
-- Empty model or hook keys in `agent-loop.config` — step 3.
+- `agent-loop.config` that has not been checked against this machine — step 3. Step 3 always confirms the required CLIs are present, whatever the config already contains; on some harnesses it also fills keys that ship empty.
 
 Report which of the two apply and do only those. If neither applies, say the repository is already onboarded and stop. Never rewrite a value a human chose.
 

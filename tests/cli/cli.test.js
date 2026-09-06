@@ -620,3 +620,48 @@ test('confirmHarnesses gives up after three unusable answers', async () => {
   });
   assert.strictEqual(p.asked.length, 4, 'one confirm + three retries');
 });
+
+test('add exit code separates an unknown skill from one already installed', async () => {
+  // The two `skipped` branches mean opposite things to a caller: a name that
+  // does not exist is the run failing, a skill already on disk is the run
+  // having nothing left to do. Collapsing them made `add x && next` break on
+  // the second run and swallowed a typo'd name whenever anything else
+  // installed alongside it.
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+  try {
+    const skill = path.join(upstream, '.claude', 'skills', 'critique');
+    fs.mkdirSync(skill, { recursive: true });
+    fs.writeFileSync(path.join(skill, 'SKILL.md'), '# Critique\n');
+
+    const run = (skills) =>
+      addLib.add({
+        skills,
+        upstreamDir: upstream,
+        facts: facts({ homeDir: home }),
+        harnesses: ['claude'],
+        dryRun: false,
+        force: false,
+      });
+
+    assert.strictEqual(await run(['critique']), 0, 'first install succeeds');
+    assert.strictEqual(
+      await run(['critique']),
+      0,
+      're-running add is idempotent, not a failure',
+    );
+    assert.strictEqual(
+      await run(['critique', 'nope']),
+      1,
+      'an unknown skill fails even when another skill was already present',
+    );
+    assert.strictEqual(
+      await run(['nope']),
+      1,
+      'an unknown skill on its own fails',
+    );
+  } finally {
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

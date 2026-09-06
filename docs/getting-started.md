@@ -87,7 +87,7 @@ To fill them, run the **`onboard`** skill in your agent. It reads the repository
 
 <a id="tier-2"></a>
 
-## Tier 2 — Automate it (the default)
+## Tier 2 — Automate it
 
 Everything in Tier 1, plus a scheduled workflow that opens a pull request whenever upstream changes.
 
