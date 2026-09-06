@@ -24,6 +24,26 @@ If work needs non-public context, discuss that context outside this public repos
 - Read [.claude/MODEL_NOTES.md](.claude/MODEL_NOTES.md) before editing anything under `.claude/skills/` or `.claude/agents/` — those files are prompts, and the notes record the model-generation deltas that make some plausible-looking phrasings harmful.
 - Read [.claude/SKILL_AUTHORING.md](.claude/SKILL_AUTHORING.md) alongside it when adding or restructuring a skill — it covers document structure (invocation, information hierarchy, completion criteria, pruning) where MODEL_NOTES covers model-generation deltas.
 
+## OpenAI documentation (Codex and Agy)
+
+When a task needs facts about OpenAI products or APIs, including Codex
+configuration, use current official OpenAI documentation. This applies to
+both Codex and Agy (Antigravity/Gemini).
+
+- If `openai-docs` is available in the current client, use it and follow its
+  source routing. Do not assume another client's skills or global config apply.
+- Otherwise, use the OpenAI documentation MCP tools when available: search for
+  the topic, then fetch the relevant page. If unavailable or unhelpful, search
+  and open official pages on `developers.openai.com`, `platform.openai.com`,
+  or `learn.chatgpt.com`.
+- Cite supporting pages; state uncertainty when the sources do not establish
+  the answer. Preserve explicitly requested model targets and existing
+  provider choices unless the task authorizes a change.
+- Keep documentation queries generic; never send secrets, personal data, or
+  private repository content to documentation tools or web search.
+
+See [OpenAI documentation setup](docs/openai-docs.md).
+
 ## Cross-References
 
 - [README.md](README.md) — what ships here, how to install skills, how to wire up a consumer.

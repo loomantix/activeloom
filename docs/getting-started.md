@@ -15,6 +15,10 @@ Start at the rung whose price you are willing to pay. Nothing higher is a prereq
 
 `npx activeloom tiers` prints this table in your terminal.
 
+For Codex or OpenAI API work, also see [OpenAI documentation setup](openai-docs.md)
+for the official skill and a documentation MCP connection shared across local
+repositories.
+
 ---
 
 ## Tier 0 — Try it

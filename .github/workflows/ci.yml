@@ -88,9 +88,17 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      # Active LTS, and the reason to state a reason: Node 20 reached end of life
+      # on 2026-04-30, so the previous pin ran every JS gate in this repo on a
+      # runtime that no longer receives security patches. 24 is the current
+      # Active LTS (maintenance from 2026-10-20, EOL 2028-04-30). Node 26 is
+      # deliberately not chosen: it is Current, not LTS until 2026-10-28, and
+      # CI should not be the first place a new major is exercised.
+      #
+      # Keep this in step with the pin in `python-types-and-tests` below.
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Install Python tooling
         run: python3 -m pip install 'pyyaml==6.0.2' 'ruff==0.9.10'
 
@@ -534,9 +542,10 @@ jobs:
       # The suite shells out to the vendored `review-ledger.js` bundle a few
       # hundred times per run, so this job needs a pinned Node exactly like
       # `format`, `ledger-drift`, `accessibility-asset`, and `render-check`.
+      # Same pin as `static-checks` above, for the reason recorded there.
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Install pinned tooling
         run: |
           python3 -m pip install \
