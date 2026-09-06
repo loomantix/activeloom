@@ -39,6 +39,56 @@ const {
  * be worse than a blank, because nobody would think to check it.
  */
 const TODO = 'TODO(activeloom): ';
+const TIER2_SKIPPED_WORKFLOW = '.github/workflows/dco.yml';
+
+/**
+ * Verify that preserved consumer configs cannot ask a Tier 2 workflow to push
+ * a workflow file with GITHUB_TOKEN. Canonical config has one source; legacy
+ * configs compose top-level skips by intersection, so every source must carry
+ * the entry.
+ *
+ * @param {string} python
+ * @param {string[]} configPaths
+ * @returns {{ok: true} | {ok: false, reason: string}}
+ */
+function checkTier2Config(python, configPaths) {
+  const script = [
+    'import sys, yaml',
+    'target = sys.argv[1]',
+    'for filename in sys.argv[2:]:',
+    '    try:',
+    '        with open(filename, encoding="utf-8") as stream:',
+    '            doc = yaml.safe_load(stream)',
+    '    except Exception as exc:',
+    '        print(f"{filename}: {exc}", file=sys.stderr)',
+    '        raise SystemExit(2)',
+    '    skips = doc.get("skip_targets", []) if isinstance(doc, dict) else []',
+    '    if not isinstance(skips, list) or target not in skips:',
+    '        raise SystemExit(10)',
+  ].join('\n');
+  const run = spawnSync(
+    python,
+    ['-c', script, TIER2_SKIPPED_WORKFLOW, ...configPaths],
+    { encoding: 'utf8' },
+  );
+  if (run.error || run.signal) {
+    return {
+      ok: false,
+      reason: `could not inspect the existing config: ${run.error ? run.error.message : `killed by ${run.signal}`}`,
+    };
+  }
+  if (run.status === 0) return { ok: true };
+  if (run.status === 10) {
+    return {
+      ok: false,
+      reason: `the existing config must skip ${TIER2_SKIPPED_WORKFLOW} before Tier 2 can use GITHUB_TOKEN`,
+    };
+  }
+  return {
+    ok: false,
+    reason: `could not inspect the existing config${run.stderr ? `: ${run.stderr.trim()}` : ''}`,
+  };
+}
 
 /**
  * Assert the interpreter can run the sync engine.
@@ -608,6 +658,20 @@ async function init(args) {
   const legacyConfigs = HARNESSES.map((harness) => harness.legacyConfig)
     .map((name) => path.join(facts.repoDir, name))
     .filter((candidate) => fs.existsSync(candidate));
+  if (tier.n === 2 && (configExists || legacyConfigs.length > 0)) {
+    const check = checkTier2Config(
+      python,
+      configExists ? [configPath] : legacyConfigs,
+    );
+    if (!check.ok) {
+      ui.fail(`config:     ${check.reason}.`);
+      ui.info('  Preserve your existing values and add this top-level entry:');
+      ui.info('      skip_targets:');
+      ui.info(`        - ${TIER2_SKIPPED_WORKFLOW}`);
+      ui.info('  Then re-run `npx activeloom init --sync`.');
+      return 1;
+    }
+  }
   if ((configExists || legacyConfigs.length > 0) && args.harnesses.length > 0) {
     ui.fail(
       '`--harness` only applies when creating a new config; edit the existing config harness list, then re-run `init`.',
@@ -766,6 +830,9 @@ function printNextSteps(tier, harnesses, facts, configWritten) {
   }
 
   if (tier.n === 3) {
+    ui.step(
+      'Install the App with Contents: write, Pull requests: write, and Workflows: write.',
+    );
     ui.step('Set the two App secrets on the repo:');
     ui.info('       gh secret set SYNC_APP_ID');
     ui.info('       gh secret set SYNC_APP_PRIVATE_KEY < key.pem');
@@ -790,4 +857,5 @@ module.exports = {
   yamlScalar,
   TODO,
   assertSafeWritePath,
+  checkTier2Config,
 };

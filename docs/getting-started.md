@@ -137,7 +137,7 @@ Everything in Tier 2, but the sync commits are created through the GitHub Conten
 npx activeloom init --sync --app
 ```
 
-This writes the App variant of the workflow. It needs a GitHub App installed on the repository with `contents: write` and `pull_requests: write`, and two secrets:
+This writes the App variant of the workflow. It needs a GitHub App installed on the repository with `Contents: write`, `Pull requests: write`, and `Workflows: write`. The Workflows permission is required because the shared target set ships `.github/workflows/dco.yml`. It also needs two secrets:
 
 ```bash
 gh secret set SYNC_APP_ID --repo <owner>/<repo>
@@ -153,7 +153,7 @@ gh secret set SYNC_APP_ID --org <org> --visibility selected \
 
 **If your upstream is private** — a fork of this repository kept inside your org — you also need a fine-grained PAT or App token with `Contents: Read` on it, stored as `UPSTREAM_READ_TOKEN`.
 
-Upgrading from Tier 2 is a workflow swap plus those secrets. Nothing written at Tier 2 has to be undone.
+Upgrading from Tier 2 is a workflow swap plus those secrets and App permissions. Remove `.github/workflows/dco.yml` from the config's top-level `skip_targets` after the App is installed so Tier 3 can sync that workflow through its installation token.
 
 ---
 

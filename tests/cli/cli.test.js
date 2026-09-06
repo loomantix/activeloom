@@ -475,6 +475,57 @@ test('--force preserves an existing consumer-owned config', async () => {
   }
 });
 
+test('Tier 2 refuses an existing config that would let GITHUB_TOKEN push a workflow', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  try {
+    const config = path.join(repo, '.activeloom-config.yml');
+    fs.writeFileSync(
+      config,
+      'harnesses: [codex]\nallow_sensitive_writes:\n  - .github/workflows/dco.yml\nskip_targets: []\n',
+    );
+    const remoteFacts = facts({
+      repoDir: repo,
+      git: {
+        inRepo: true,
+        remote: 'git@github.com:example/consumer.git',
+        slug: 'example/consumer',
+        defaultBranch: 'main',
+        ghAuthenticated: false,
+      },
+    });
+    assert.strictEqual(
+      await initLib.init(
+        initArgs(repo, { facts: remoteFacts, sync: true, python: 'python3' }),
+      ),
+      1,
+    );
+    assert.strictEqual(fs.existsSync(path.join(repo, '.github')), false);
+    assert.match(fs.readFileSync(config, 'utf8'), /skip_targets: \[\]/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('Tier 2 config check uses the effective shared skip across config sources', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-configs-'));
+  try {
+    const safe = path.join(dir, 'safe.yml');
+    const unsafe = path.join(dir, 'unsafe.yml');
+    fs.writeFileSync(safe, 'skip_targets:\n  - .github/workflows/dco.yml\n');
+    fs.writeFileSync(unsafe, 'skip_targets: []\n');
+    assert.deepStrictEqual(initLib.checkTier2Config('python3', [safe]), {
+      ok: true,
+    });
+    assert.strictEqual(
+      initLib.checkTier2Config('python3', [safe, unsafe]).ok,
+      false,
+      'legacy config skips compose by intersection, so every source must skip',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('legacy configs remain authoritative until deliberately migrated', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
   try {
@@ -720,5 +771,51 @@ test('add exit code separates an unknown skill from one already installed', asyn
   } finally {
     fs.rmSync(upstream, { recursive: true, force: true });
     fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('add success is per requested skill across chosen harnesses', async () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const homes = [];
+  try {
+    const claudeSkill = path.join(upstream, '.claude', 'skills', 'artifact');
+    const codexSkill = path.join(upstream, '.codex', 'skills', 'critique');
+    fs.mkdirSync(claudeSkill, { recursive: true });
+    fs.mkdirSync(codexSkill, { recursive: true });
+    fs.writeFileSync(path.join(claudeSkill, 'SKILL.md'), '# Artifact\n');
+    fs.writeFileSync(path.join(codexSkill, 'SKILL.md'), '# Critique\n');
+
+    for (const harnesses of [[], ['claude', 'codex']]) {
+      const homeDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'activeloom-home-'),
+      );
+      homes.push(homeDir);
+      const detected = facts({ homeDir });
+      detected.harnesses[0].onMachine = true;
+      detected.harnesses[1].onMachine = true;
+      assert.strictEqual(
+        await addLib.add({
+          skills: ['artifact'],
+          upstreamDir: upstream,
+          facts: detected,
+          harnesses,
+          dryRun: false,
+          force: false,
+        }),
+        0,
+        harnesses.length === 0
+          ? 'auto-detected harnesses succeed when any supplies the skill'
+          : 'explicit harnesses use the same per-request success rule',
+      );
+      assert.strictEqual(
+        fs.existsSync(
+          path.join(homeDir, '.claude', 'skills', 'artifact', 'SKILL.md'),
+        ),
+        true,
+      );
+    }
+  } finally {
+    fs.rmSync(upstream, { recursive: true, force: true });
+    for (const home of homes) fs.rmSync(home, { recursive: true, force: true });
   }
 });

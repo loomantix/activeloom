@@ -23,9 +23,11 @@
 #      Required secrets on the consumer repo (or as org-level secrets):
 #        - SYNC_APP_ID         (App id)
 #        - SYNC_APP_PRIVATE_KEY (PEM-encoded private key)
-#      The App must be installed on the consumer repo with `contents: write`
-#      and `pull_requests: write`. If your conventions name the secrets
-#      differently, just update the references below.
+#      The App must be installed on the consumer repo with `contents: write`,
+#      `pull_requests: write`, and `workflows: write`. Workflows write is
+#      required because the shared target set ships `.github/workflows/dco.yml`.
+#      If your conventions name the secrets differently, update the references
+#      below.
 #
 #   2. Replaces `git commit + git push` with `scripts/create-signed-commit.py`
 #      from the cloned upstream repo. That script uses the GitHub Contents

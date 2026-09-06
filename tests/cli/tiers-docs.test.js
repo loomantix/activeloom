@@ -147,6 +147,27 @@ test('Tier 3 keeps private keys out of process arguments', () => {
   assert.doesNotMatch(GETTING_STARTED, /--body "\$\(cat key\.pem\)"/);
 });
 
+test('Tier 3 names every App permission its synced targets require', () => {
+  const template = fs.readFileSync(
+    path.join(
+      REPO_ROOT,
+      '.github',
+      'workflows',
+      'sync-from-upstream.yml.template',
+    ),
+    'utf8',
+  );
+  for (const permission of [
+    'Contents: write',
+    'Pull requests: write',
+    'Workflows: write',
+  ]) {
+    assert.match(GETTING_STARTED, new RegExp(permission));
+  }
+  assert.match(template, /`workflows: write`/);
+  assert.match(template, /\.github\/workflows\/dco\.yml/);
+});
+
 test('Tier 2 documents approval-required pull-request checks', () => {
   assert.match(GETTING_STARTED, /Approve workflows to run/);
   assert.match(GETTING_STARTED, /Push-triggered workflows are not started/);
