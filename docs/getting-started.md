@@ -8,6 +8,10 @@ If you only want the skills installed in your local Claude Code (not synced into
 
 ## Prerequisites
 
+For Codex or OpenAI API work, also see [OpenAI documentation setup](openai-docs.md)
+for the official skill and a documentation MCP connection shared across local
+repositories.
+
 - The consumer repo exists on GitHub.
 - A GitHub App is installed on the consumer with `contents: write` and `pull_requests: write`. The App's id and private key will be stored as secrets on the consumer.
   - You can use the same App across multiple consumers; org-installation makes this easy. Alternatively, create a per-consumer App.
