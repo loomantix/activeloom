@@ -46,10 +46,10 @@ for tool in git gh python3 setsid timeout; do
     command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required" >&2; exit 1; }
 done
 
-# Pinned loomantix/gemini-platform commit whose `.agents` tree is the only
+# Pinned loomantix/activeloom commit whose `.agents` tree is the only
 # relay surface this launcher exposes to the unattended reviewer. Bumping it
 # also requires updating AGY_SURFACE_SHA in tests/test_agy_review_launcher.py.
-agy_surface_sha="3d7ad7c6d1e088faca88d52490bda1f45ce7e1fd"
+agy_surface_sha="1de48f3eec1278c14a6319ab01d51e5855b833b6"
 
 # The companion surface must speak this engine's ledger protocol. Reading the
 # expectation from the vendored version file beside this script keeps the two
@@ -247,11 +247,11 @@ agy_surface_repo="$(surface_git "$agy_surface_root" rev-parse --show-toplevel)"
 }
 agy_surface_remote="$(surface_git "$agy_surface_repo" remote get-url origin)"
 case "$agy_surface_remote" in
-    https://github.com/loomantix/gemini-platform.git|git@github.com:loomantix/gemini-platform.git) ;;
+    https://github.com/loomantix/activeloom.git|git@github.com:loomantix/activeloom.git) ;;
     *) echo "the relay surface has an untrusted Git remote" >&2; exit 1 ;;
 esac
 [ "$(surface_git "$agy_surface_repo" rev-parse HEAD)" = "$agy_surface_sha" ] || {
-    echo "the relay surface is not at the pinned gemini-platform commit $agy_surface_sha" >&2
+    echo "the relay surface is not at the pinned activeloom commit $agy_surface_sha" >&2
     exit 1
 }
 [ -z "$(surface_git "$agy_surface_repo" status --porcelain)" ] || {

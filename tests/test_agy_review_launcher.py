@@ -20,7 +20,7 @@ SYNC_TARGETS = ROOT / "scripts/sync-targets.yml"
 LEDGER_VERSION_FILE = ROOT / ".claude/skills/critique/scripts/review-ledger.version"
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
-AGY_SURFACE_SHA = "3d7ad7c6d1e088faca88d52490bda1f45ce7e1fd"
+AGY_SURFACE_SHA = "1de48f3eec1278c14a6319ab01d51e5855b833b6"
 LEDGER_VERSION = LEDGER_VERSION_FILE.read_text(encoding="utf-8").strip()
 
 # Continuation flags start a fresh one-shot only by their absence, so the
@@ -38,7 +38,7 @@ def _trusted_environment(
     pr_author: str = "reviewer",
     actor: str = "reviewer",
     remote_head: str = HEAD,
-    surface_remote: str = "https://github.com/loomantix/gemini-platform.git",
+    surface_remote: str = "https://github.com/loomantix/activeloom.git",
     surface_head: str = AGY_SURFACE_SHA,
 ) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
@@ -513,7 +513,7 @@ def test_launcher_rejects_untrusted_surface_remote(tmp_path: Path) -> None:
     fake_agy, _ = _fake_agy(tmp_path)
     environment = {
         **_trusted_environment(
-            tmp_path, surface_remote="https://github.com/attacker/gemini-platform.git"
+            tmp_path, surface_remote="https://github.com/attacker/activeloom.git"
         ),
         "AGY_ARGV_FILE": str(argv_file),
         "AGY_REVIEW_CLI": str(fake_agy),
@@ -538,7 +538,7 @@ def test_launcher_rejects_unpinned_surface_commit(tmp_path: Path) -> None:
     result = _run(environment)
 
     assert result.returncode == 1
-    assert f"not at the pinned gemini-platform commit {AGY_SURFACE_SHA}" in result.stderr
+    assert f"not at the pinned activeloom commit {AGY_SURFACE_SHA}" in result.stderr
     assert not argv_file.exists()
 
 
@@ -604,6 +604,51 @@ def test_launcher_pin_matches_the_launcher_source() -> None:
     # The launcher comment promises this constant moves in lockstep with the pin,
     # so assert it rather than mirroring the value by hand.
     assert f'agy_surface_sha="{AGY_SURFACE_SHA}"' in LAUNCHER.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+@pytest.mark.parametrize(
+    ("remote", "accepted"),
+    [
+        ("https://github.com/loomantix/activeloom.git", True),
+        ("git@github.com:loomantix/activeloom.git", True),
+        ("https://github.com/loomantix/gemini-platform.git", False),
+        ("https://github.com/attacker/activeloom.git", False),
+    ],
+)
+def test_both_launchers_require_the_canonical_activeloom_surface(
+    tmp_path: Path, harness: str, remote: str, accepted: bool,
+) -> None:
+    """Exercise both real launchers with a stubbed run-admission boundary."""
+    scripts = tmp_path / "launcher"
+    scripts.mkdir()
+    launcher = scripts / "run-agy-review.sh"
+    launcher.write_bytes((ROOT / harness / "skills/critique/scripts/run-agy-review.sh").read_bytes())
+    launcher.chmod(0o755)
+    (scripts / "review-ledger.version").write_text(LEDGER_VERSION, encoding="utf-8")
+    (scripts / "local-review-handoff.py").write_text(
+        '"""Run admission is outside this surface-provenance test."""\n', encoding="utf-8"
+    )
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _ = _fake_agy(tmp_path)
+    command = _command()
+    command[0] = str(launcher)
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            **_trusted_environment(tmp_path, surface_remote=remote),
+            "AGY_ARGV_FILE": str(argv_file),
+            "AGY_REVIEW_CLI": str(fake_agy),
+        },
+    )
+    assert (result.returncode == 0) is accepted, result.stderr
+    assert argv_file.exists() is accepted
+    if not accepted:
+        assert "untrusted Git remote" in result.stderr
 
 
 # --------------------------------------------------------------------------
