@@ -211,63 +211,20 @@ the shared definition for the pinned `<base-sha>..<head-sha>` review range:
   when their extension is `.yml`, `.yaml`, `.json`, or `.toml`.
 - **Anything else** — treat as source.
 
-Zero source files means skip; one or more means run the full pass. A mixed
-changeset is not a partial skip.
+Zero review-significant files means skip; one or more means run the full pass.
+A mixed changeset is not a partial skip.
 
-## Rate every finding on one severity ladder
+The rules above are executable: `review-ledger classify-changeset --base <sha>
+--head <sha>` returns `skip` alongside per-file classifications, and every lane
+decides from that rather than from its own reading of this paragraph. Four
+skills interpreting the same prose independently is four chances to disagree
+about whether a pass was owed.
 
-Every local-review finding carries one of four severities. They are the enum the
-ledger helper accepts, and they mean the same thing in every lens, engine, and
-skill. Rate by **blast radius** — what breaks, and for whom — not by how
-important the finding feels or how hard it was to find.
-
-- **`blocking`** — ships materially wrong behavior, loses or corrupts data,
-  exposes a credible security or privacy exploit, breaks a public contract, or
-  breaks deploy or rollout.
-- **`major`** — a real defect in behavior a user or operator can reach, but not
-  blocking.
-- **`minor`** — correct-but-improvable, or a defect confined to a non-executing
-  surface (comments, docs, naming, test clarity) with no behavioral consequence.
-- **`nit`** — style or preference. No defect.
-
-**A factually wrong comment is `minor` by default.** It changes no behavior, so
-its blast radius is a reader, not a run — and that holds even when the wrongness
-matters a great deal. There is no rung meaning "important but non-behavioral";
-`minor` is that rung. The same goes for a stale doc, a misleading name, and a
-test whose assertion is weaker than its name claims.
-
-Rating a comment defect `major` because it is embarrassing, or a nit `major`
-because the file is important, destroys the ladder's one useful property: that
-`major` and above mean a user or operator is exposed.
-
-### When a non-executing surface escalates
-
-A comment or docs finding is `major` only when the statement is wrong enough to
-**cause questions about the actual implementation** — a reader acting on it
-would reach a wrong conclusion about what the code does, in a way that would
-change an engineering decision. Merely imprecise, stale, or overclaimed is
-`minor`.
-
-A test finding is `major` only when correcting the test makes it **fail**, and
-making it pass again requires an app-code change. The app-code defect the test
-was hiding is what earns the rung; the test edit alone never does. A test that is
-ineffective but whose repair still passes is `minor`.
-
-Neither bar is a reporting bar. Report the finding either way with its severity
-attached — see [`../MODEL_NOTES.md`](../MODEL_NOTES.md) §1.
-
-### Severity is not classification
-
-Severity describes a **finding**: how far the defect reaches. Classification
-(`minor` / `material`, below) describes the **change the pass made**: whether
-behavior moved. They are independent axes, and the two words colliding on
-`minor` is a naming accident, not a mapping.
-
-A `major` finding whose fix edited only comments, only docs, or only tests
-classifies `minor` — nothing that executes changed. A `nit` whose fix altered a
-conditional classifies `material`. Read the diff, not the label on the thread.
-Never restate a severity to reach a classification, or pick a classification to
-match a severity.
+The same call returns the class each file's churn belongs to — `app`, `test`,
+`docsConfig`, `generated` — which is a separate axis from whether the file is
+review-significant. A lockfile is both generated and review-significant: the
+dependency bump must be reviewed, and its line count must stay out of every
+ratio.
 
 ## Build one immutable review packet
 
@@ -432,10 +389,20 @@ per-round evidence, and no automated runner parses it.
 
 ## Resolve the round, then pick the stance
 
+The controller-based instructions below apply only when the installed controller
+supports `status`. Otherwise follow that controller's declared round-selection
+flow within the authorized run; do not count historical runs as current rounds.
+
 Resolve this engine's round number before selecting lanes. Use
-`$AGENT_LOOP_REVIEW_ROUND` when the automated runner set it. Otherwise count the
-`local-review-pass:v3` and `local-review-complete:v3` markers already on the PR
-that name this engine; this pass is one past that count.
+`$AGENT_LOOP_REVIEW_ROUND` when the automated runner set it. Otherwise ask the
+run controller's `status` command for `next_round`: it counts only the
+attestations inside the current authorized run, so a restarted run never
+inherits historical rounds. `reason=no_run` alone is not a legacy signal: on a
+PR that holds no v3 attestation it means `start-run`, and no pass runs before
+that authorized run marker exists. Only a legacy PR — one that already carries
+`local-review-pass:v3` or `local-review-complete:v3` markers but no run
+boundary — counts the markers naming this engine; that pass is one past the
+count.
 
 - **Rounds 1–2 — adversarial.** The full stance: assume the diff is guilty and
   run every applicable lane. Fix only confirmed findings whose expected user or
@@ -450,12 +417,13 @@ A convergence round:
   failure detection, and security when its signal is present. Drop type/API
   design, comment/docs, PR test analysis, and tenant-coupling. Those found what
   they were going to find in rounds 1–2, and they regenerate work indefinitely;
-- changes the PR only for a realistically reachable `blocking` defect, as the
-  severity ladder above defines it, whose expected harm justifies the churn. A
-  finding a comment or test edit could clear was never `blocking`. Defer
-  everything else and resolve the thread. Create an issue only for a concrete,
-  high-impact follow-up that should be scheduled within roughly two weeks;
-  otherwise record `outcome=deferred` with a no-issue rationale;
+- changes the PR only for a realistically reachable **blocking** defect whose
+  expected harm justifies the churn: one that ships materially wrong behavior,
+  loses or corrupts data, exposes a credible security or privacy exploit,
+  breaks a public contract, or breaks deploy or rollout. Defer everything else
+  and resolve the thread. Create an issue only for a concrete, high-impact
+  follow-up that should be scheduled within roughly two weeks; otherwise record
+  `outcome=deferred` with a no-issue rationale;
 - makes the smallest edit that clears the blocker. No refactors, no renames, no
   new abstraction, no test or comment hardening;
 - ends the loop as soon as it finds no blocking defect. Post the clean-pass
@@ -515,6 +483,24 @@ evidence, and they do not attest. Coverage counts local engines only.
 
 ## Rebuild context from GitHub
 
+Resolved, authenticated v1 threads are historical root-cause records. Their
+findings may carry the historical `severity=P0` through `P3` and `category`
+annotation pair. Every finding must have a later explicit disposition for its
+fingerprint. The single v1 marker may precede or follow its non-empty prose.
+Every disposition must name an earlier finding in the same
+thread. A later engine or round may confirm the correction for earlier passes;
+plain prose and a resolved flag alone do not establish disposition evidence.
+This compatibility does not grant current-head coverage or relax v3 occurrence
+pairing, content verification, or attestation requirements.
+
+When a settled v1 thread has only prose explaining its correction, re-verify
+the finding and append an explicit disposition using `reply --content-file`
+with `--engine`, `--round`, `--fingerprint`, and `--outcome`, plus the ordinary
+repository, PR, current head, and root comment ID arguments. The helper builds
+the legacy marker and checks that the target thread contains an actor-owned
+finding with that fingerprint. Preserve the original comments; never infer a
+fixed outcome merely from the resolved flag.
+
 At the start of every pass, read:
 
 - the PR description and changed files;
@@ -553,8 +539,7 @@ deduplicate by root cause before publishing it. For every confirmed finding:
 4. Put only the human finding prose in a regular UTF-8 content file. The helper
    owns the v3 marker, its field order, and its content hash.
 5. State severity, review lens, evidence, impact, and the expected correction.
-   Rate the severity off the ladder above, on blast radius. Keep one root cause
-   per thread.
+   Keep one root cause per thread.
 
 Post only confirmed findings. Never copy raw model output, hidden reasoning,
 logs, credentials, private data, or repository content unrelated to the
@@ -699,15 +684,110 @@ worktree-isolated session refuses a git command carrying a heredoc, redirect, or
 `&&` chain because it cannot statically verify that the command stays inside the
 worktree, and that refusal aborts the pass mid-fix.
 
-If posting, replying, pushing, or resolving fails, stop. Leave the PR draft and
-report the exact unresolved thread; do not silently continue.
+If posting, replying, pushing, or resolving fails, reconcile the observed state
+before retrying the idempotent operation. A lost response is not proof that a
+write failed. Preserve the original result, finding identity, and pre-pass
+snapshot; do not create a replacement review merely to repair bookkeeping.
+Report the unresolved action only when deterministic recovery cannot complete.
+
+## Recover interrupted reviews
+
+The ledger guides a review; routine metadata drift is not a new permission
+boundary. Existing authorization to complete an unfinished review also covers
+reconciling posted comments, refreshing an unchanged roster at the live head,
+finishing a saved result, and resuming an aborted run within its original budget.
+These operations do not consume another model pass. Never silently reset the
+budget, discard a finding, fabricate evidence, or invoke an unapproved reviewer.
+
+### Helper version prerequisite
+
+The run-scoped attestation and `finalize` capabilities below require the
+published review-ledger 1.4 or later. They are unavailable in earlier helpers.
+Before activating these capabilities, vendor the compatible
+published bundle and its version/integrity metadata through the normal verified
+dependency update. Never edit the vendored bundle or present unsupported recovery
+as completed. With an earlier helper, preserve the original result and pre-pass snapshot; use
+the existing `validate-result` and `attest` flow only when its ordinary invariants
+accept that evidence. A cross-run identity collision must await the compatible
+helper update, without spending another review pass or rewriting history.
+
+With the compatible helper, attestation identity is `(run, engine, round)`. A run is delimited by its
+authenticated `local-review-run:v1` comment, validated with the controller's
+content digest and supersession chain. Legacy attestations before the first run
+keep their legacy namespace. Restarted round 1 can coexist with historical round
+1; contradictory evidence within one run still cannot. Identical delivery
+duplicates and changed explanatory prose replay the original evidence without
+rewriting comments. Existing v3 attestation markers remain readable.
+
+When a reviewer leaves a complete structured result but the controller or CLI
+stops before finalization, first verify the actual head and required validation.
+Then finish the original result with review-ledger 1.4 or later:
+
+```bash
+node <ledger-helper> finalize --repo <owner/repo> --pr <number> \
+  --result-file <original-result.json> \
+  --historical-comment-ids-file <original-pre-pass-snapshot.json>
+```
+
+Omit the snapshot only when the pass inherited no v3 records. Do not reconstruct
+it after posting findings. `finalize` reads identity and the result digest from
+the saved result, which it trusts as the original, and rechecks every normal
+attestation invariant; a caller holding the pre-pass digest uses `attest`
+instead. It never converts a
+blocked or incomplete result into a pass. A reviewer exit status, timeout, or
+silence alone is neither completion evidence nor a reason to discard a valid
+result. Reuse verified CI at the exact head when it ran the required full suite;
+state any incomplete or failed local run separately.
+
+Run resumption belongs to the engine-specific controller, not the ledger helper;
+this package ships no controller commands. Confirm that the installed controller
+supports `status` and `resume-run` before using the contract below. Otherwise,
+follow its existing start/finish recovery flow within the applicable authorization,
+preserving completed evidence and the remaining budget. Do not claim an unsupported
+resume or silently reset the round cap.
+
+A compatible run controller — the engine-specific script that owns run markers,
+named in your `REVIEW_WORKFLOW.md` and distinct from the ledger helper — reports the
+next action through `status --repo ... --pr ... --head ... --engine ...`:
+`start-run`, `review`, `covered`, `resume-run`, `finish-exhausted`, or
+`finished`, with `next_round` present once a run exists.
+Its `covered` action means this engine has exact-head evidence, including a
+completion after minor or material fixes; it does not assert overall relay
+convergence, which `verify-coverage` and `verify-ledger` decide. A converged or
+exhausted run whose terminal names another head yields `start-run` with
+`reason=terminal_head_stale`: the run is closed, and the new head needs its own
+authorized run, started with `--restart` under a fresh user authorization. For
+an aborted run use `resume-run --repo ... --pr ... --base
+<original-base> --head <current-head>`; this appends a recovery record referencing
+the aborted terminal marker and preserves the run identity, completed passes,
+cleanup latches, and cap. A subsequent terminal marker includes `after=<resume
+comment ID>`, so another interruption at the same head remains recoverable.
+Converged and exhausted runs cannot be reopened this way.
+
+If the run is already active, `resume-run` is a no-op: it reports
+`status=already_active` and `replayed=false` without a recovery comment ID.
+An existing recovery at the requested head may instead replay its actual ID;
+an older recovery is not evidence of a new recovery at the current head.
+This never changes the run identity or remaining round budget. Trailing ASCII
+whitespace on marker-only terminal/recovery records is ignored; leading text,
+malformed identities, and conflicting parent links remain invalid evidence.
+
+A target branch advancing along the pinned base's lineage does not invalidate
+an honest exact-head review record. Keep the original base in the result and
+fetch missing ancestry before retrying validation. Fresh-base integration and
+release readiness remain separate checks. A different head, unrelated base,
+unresolved evidence conflict, or incomplete reviewer result needs actual work,
+not a marker rewrite. Explain the specific missing work if it cannot be completed
+under the existing authorization; do not send the user a generic ledger error.
 
 ## Validate before attesting
 
 A scoped run is the right validation for a _fix_. It is never sufficient
-evidence for a _pass_. Before writing any pass or completion attestation, run
-the repository's gating suite unfiltered, and state in the attestation which
-command and config it ran and at which SHA.
+evidence for a _pass_. Before writing any pass or completion attestation,
+verify a successful unfiltered run of the repository's required gating suite
+at the exact final head, and state its command, configuration, gates, and SHA
+in the attestation. Actual full-suite CI at that head satisfies this requirement
+and should be reused; do not rerun a broad local suite solely to duplicate it.
 
 Two failure modes make this non-optional, and both have shipped:
 
@@ -722,15 +802,23 @@ Two failure modes make this non-optional, and both have shipped:
   status; read which jobs actually ran, or run the suite yourself.
 
 Read the consumer repository's declared review gate — the commands its
-`AGENTS.md` (or `CLAUDE.md`) names as the gate — and run those. Where a
-repository declares none, run its broadest practical suite and say so. If the
+`AGENTS.md` (or `CLAUDE.md`) names as the gate — and verify those commands actually
+passed at the final head in CI, or run them locally if that evidence is missing.
+Where a repository declares none, use its broadest practical suite and say so.
+Read the actual CI job scope and required coverage gates; a green check list or
+scoped tests alone cannot establish full-suite coverage. If the
 gating run is genuinely impractical in the environment, the attestation must
 say that plainly instead of implying coverage it does not have.
 
-A gating run that fails is a blocking finding in its own right, even when the
+An unresolved code failure in a gating run is a blocking finding, even when the
 failure predates the round: an attestation cannot certify a head whose suite is
 red. This applies to a `clean` pass too — a round that changed nothing still
 attests to a head, and that head's suite can be red for reasons no lane examined.
+Report every failed or incomplete local run separately. If exact-head CI passed
+but a local run failed, reconcile the discrepancy: reuse CI only when evidence
+shows the local failure was environmental or an interruption, not an unresolved
+code failure. Never relabel that local run as passed or let green CI conceal a
+genuine failing path.
 
 ## Record clean passes and convergence
 
@@ -738,12 +826,7 @@ Every pass writes `$AGENT_LOOP_REVIEW_RESULT_FILE` when that variable is set.
 For a clean or changed pass, call the ledger helper's `write-result` command so
 it fetches the complete thread ledger, derives the forward transition, and
 atomically writes the canonical result. Supply `--classification
-minor|material` only when the head moved.
-
-Derive that classification from the diff this pass produced, never from the
-severities on the threads it dispositioned — see "Severity is not
-classification" above. A pass whose commits changed no executing line is
-`minor` even when a thread it closed was posted `blocking` or `major`:
+minor|material` only when the head moved:
 
 ```bash
 node <ledger-helper> write-result \
@@ -813,43 +896,50 @@ Result ownership depends on the caller:
   wrapper validates the file and owns attestation.
 - When it is unset, the reviewer is standalone. Create an owner-only temporary
   directory outside the Git worktree, serialize the same result to a regular
-  file there with `write-result`, then invoke `attest` with the exact repository,
-  PR, base, before, and final head. Pass the digest returned by `validate-result`
-  as `--expected-result-sha256`. Do not report the pass complete unless the
-  helper returns `verified: true`.
-
-**A standalone pass always has a reachable attestation.** The snapshot flags are
-optional inputs, not preconditions, and a pass that did not capture one still
-attests:
-
-- `--threads-file` / `--expected-threads-sha256` seal a review-thread export so a
-  wrapper's evidence cannot shift mid-pass. Omit both and the helper fetches the
-  threads live from GitHub, which is the normal standalone path. The sealing rule
-  — the helper refuses a `--threads-file` whose digest is not supplied as a
-  64-hex value, via that flag or the `AGENT_LOOP_REVIEW_THREADS_SHA256`
-  environment fallback — governs an export you chose to pass, not one you owe.
-- `--historical-comment-ids-file` is the one input that is genuinely
-  order-sensitive: it names the v3 comment IDs that already existed **before**
-  this pass posted anything, so the helper can tell historical evidence from
-  current-pass data. Omit it and every v3 record on the PR is treated as
-  current-pass. For a pass whose only v3 threads are its own — a first round, or
-  any round that inherited none — that is exactly right. Where earlier rounds or
-  another engine left v3 threads behind, capture the snapshot in pre-flight;
-  after the pass has posted its own findings it can no longer be reconstructed.
-- `--allowed-heads-file` widens the accepted before/head transition set. A pass
-  whose before and head are the two SHAs it actually reviewed does not need it.
-
-Never substitute prose for the marker. A write-up that names
-`local-review-pass:v3` or `local-review-complete:v3` in its text is not an
-attestation: `verify-coverage` does not match it, so the round reads as one the
-reviewer never ran, while a human reading the PR sees a finished review. If the
-helper genuinely refuses, that refusal is the finding — finalize `blocked` with
-the diagnostic and say so, rather than reporting the pass complete without one.
+  file there with `write-result`, then invoke
+  `attest --threads-file <path> --expected-threads-sha256 <sha256> --allowed-heads-file <path>`
+  with the exact repository, PR, base, before, and final head. The thread export
+  must be sealed: the helper refuses a `--threads-file` whose digest is not
+  supplied as a 64-hex value, via that flag or the
+  `AGENT_LOOP_REVIEW_THREADS_SHA256` environment fallback. Pass the digest
+  returned by `validate-result` as `--expected-result-sha256`. Do not report the
+  pass complete unless the helper returns `verified: true`.
 
 Docs/config-only skips follow the same rule with a `clean` result whose
 `beforeSha` and `afterSha` both name the reviewed head. A skip returns only
 after wrapper result creation or standalone attestation succeeds; it does not
 spend the refactor latch.
+
+## Record what the pass cost
+
+Every pass attempts to emit one `local-review-telemetry:v1` marker: adversarial reviews,
+cleanup passes, hosted lanes, and passes that skipped or were blocked. A skip
+still spends tokens reading and classifying the pull request, and a pass whose
+cost vanished from the record would have its churn attributed to nobody.
+
+The marker is a separate comment carrying a versioned JSON payload, never an
+extension of the attestation. The attestation body is byte-verified and hashed;
+a telemetry defect must never fail a review that found real defects. For the
+same reason emission failure is logged and skipped, never raised.
+
+The record writer emits known structured fields and integers only — no finding
+titles or summaries. Token validation is syntactic: callers must keep model,
+lane, version, and idempotency identifiers public-safe and non-sensitive before
+publishing the marker. It never carries money: rates move, and on a
+subscription plan the marginal cost of a pass is zero, so tokens are stored and
+priced downstream against a dated table.
+
+Two rules bind readers:
+
+- **A pass must not read prior telemetry.** The caller must exclude markers
+  from the ledger read a reviewer performs, and no reviewer prompt, packet, or
+  context assembly may include them. Visible history and a readable trend are what turn
+  a cost measurement into a target to optimise toward. Filter on the marker
+  prefix, not on an allowlist of known markers, so a record type added later is
+  excluded by default.
+- **Unavailable is not zero.** A pass with no usable usage data records
+  `tokenSource: "unavailable"` and no buckets. A zero would make that engine
+  look free and skew every average in its favour.
 
 ## Converge
 
@@ -862,13 +952,11 @@ Run the relay until all of the following hold, then mark the PR ready:
    structured disposition and is resolved.
 
 Classify committed fixes as `material` or `minor` by effect, not by path or by
-finding severity — read the diff the pass produced, per "Severity is not
-classification" above. `material` covers substantive correctness,
-security/privacy, data-safety, compatibility, deployment/sync, or
-review-integrity changes, including tests or workflows needed to prevent a false
-green. `minor` is low-risk non-behavioral cleanup or polish. A material fix
-means the round did not converge; a minor fix is kept and does not by itself
-prevent convergence.
+finding severity. `material` covers substantive correctness, security/privacy,
+data-safety, compatibility, deployment/sync, or review-integrity changes,
+including tests or workflows needed to prevent a false green. `minor` is
+low-risk non-behavioral cleanup or polish. A material fix means the round did
+not converge; a minor fix is kept and does not by itself prevent convergence.
 
 Each engine pass remains evidence for the exact head it reviewed, and a later
 minor commit does not rewrite that historical fact. A round may converge on a
