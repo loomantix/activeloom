@@ -27,6 +27,7 @@ HANDOFF_V1_RE = re.compile(
     r"base=(?P<base>[0-9a-f]{40}) "
     r"head=(?P<head>[0-9a-f]{40}) "
     r"outcome=(?P<outcome>clean|minor|material|blocked) "
+    r"(?:run=(?P<run_id>[0-9a-f]{64}) )?"
     r"content-sha256=(?P<content_sha>[0-9a-f]{64}) -->$",
     re.MULTILINE,
 )
@@ -356,10 +357,7 @@ def _start_run(args: argparse.Namespace) -> None:
             json.dumps(
                 {
                     "comment_id": previous["comment_id"],
-                    "first_round": _round_offset(
-                        rows, cast(int, previous["comment_id"])
-                    )
-                    + 1,
+                    "first_round": 1,
                     "max_rounds": max_rounds,
                     "replayed": True,
                     "run_id": previous["run_id"],
@@ -398,7 +396,7 @@ def _start_run(args: argparse.Namespace) -> None:
             {
                 "comment_id": comment_id,
                 "max_rounds": max_rounds,
-                "first_round": _round_offset(rows, comment_id) + 1,
+                "first_round": 1,
                 "replayed": replayed,
                 "run_id": run_id,
                 "tier": args.tier,
@@ -406,22 +404,6 @@ def _start_run(args: argparse.Namespace) -> None:
             },
             sort_keys=True,
         )
-    )
-
-
-def _round_offset(rows: list[dict[str, Any]], start_comment_id: int) -> int:
-    """Reserve historical PR-wide identities without spending the new run budget."""
-    return max(
-        (
-            int(marker.group("round"))
-            for row in rows
-            if isinstance(row.get("id"), int)
-            and cast(int, row["id"]) < start_comment_id
-            and isinstance(row.get("body"), str)
-            for pattern in (PASS_V3_RE, COMPLETE_V3_RE)
-            for marker in pattern.finditer(row["body"])
-        ),
-        default=0,
     )
 
 
@@ -436,17 +418,17 @@ def _authorize_pass(args: argparse.Namespace) -> None:
     if run["base"] != args.base:
         _fail("local-review run base does not match the requested pass")
     start_comment_id = cast(int, run["comment_id"])
-    offset = _round_offset(rows, start_comment_id)
-    run_round = args.round - offset
+    # Ledger 1.4 scopes attestation identities to this authenticated run.
+    run_round = args.round
     if run_round < 1:
-        _fail("requested round predates this run; use a fresh PR-wide round")
+        _fail("review round must be positive")
     if run_round > cast(int, run["max_rounds"]):
         _fail(
             f"review round {args.round} exceeds the {run['tier']} cap "
             f"of {run['max_rounds']}"
         )
     existing: set[tuple[str, int]] = set()
-    highest_round = offset
+    highest_round = 0
     for row in rows:
         if (
             not isinstance(row.get("id"), int)
@@ -463,6 +445,19 @@ def _authorize_pass(args: argparse.Namespace) -> None:
             round_number = int(marker.group("round"))
             existing.add((engine, round_number))
             highest_round = max(highest_round, round_number)
+    # A run this controller created always holds a contiguous 1..n, because the
+    # no-skip guard below only authorizes round n once n-1 has attested. A gap
+    # or a start above 1 therefore means the run predates 1.4, when
+    # `_round_offset` numbered in-run passes from the PR-wide maximum. Those
+    # rounds are invisible to the run-local budget, so continuing would re-grant
+    # the whole cap and let `highest_round` wave a skip through. Fail closed on
+    # the migration the workflow documents rather than trusting it was followed.
+    in_run_rounds = {round_number for _, round_number in existing}
+    if in_run_rounds and in_run_rounds != set(range(1, max(in_run_rounds) + 1)):
+        _fail(
+            "this run holds pre-1.4 round identities; end it with "
+            "finish-run --outcome aborted before authorizing a 1.4 run"
+        )
     if (args.engine, args.round) in existing:
         _fail("this engine already completed the requested run round")
     if args.round > highest_round + 1:
@@ -571,18 +566,20 @@ def _handoff_digest(
     head: str,
     outcome: str,
     content: str,
+    run_id: str | None = None,
 ) -> str:
-    return _canonical_digest(
-        {
-            "base": base,
-            "content": content,
-            "from_engine": from_engine,
-            "head": head,
-            "outcome": outcome,
-            "round": round_number,
-            "to_engine": to_engine,
-        }
-    )
+    payload = {
+        "base": base,
+        "content": content,
+        "from_engine": from_engine,
+        "head": head,
+        "outcome": outcome,
+        "round": round_number,
+        "to_engine": to_engine,
+    }
+    if run_id is not None:
+        payload["run_id"] = run_id
+    return _canonical_digest(payload)
 
 
 def _verify_issue_comment(repo: str, comment_id: int, expected_body: str) -> None:
@@ -608,9 +605,34 @@ def _matching_body(rows: list[dict[str, Any]], marker: str, body: str) -> int | 
     return cast(int, row["id"])
 
 
+def _handoff_run(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Resolve the active authenticated run, retaining no-run legacy support."""
+    runs = _run_records(rows)
+    if not runs:
+        return None
+    run = runs[-1]
+    if _run_end(rows, cast(str, run["run_id"])) is not None:
+        _fail("the current review run has ended; authorize a new run before handoff")
+    return run
+
+
+def _verify_handoff_run(repo: str, pr: int, expected_run_id: str | None) -> None:
+    """Refuse success if the authenticated run changes during a GitHub call."""
+    live_run = _handoff_run(_issue_comments(repo, pr))
+    if (live_run["run_id"] if live_run is not None else None) != expected_run_id:
+        _fail("review run changed during handoff; reconcile the active run")
+
+
 def _post_handoff(args: argparse.Namespace) -> None:
     if args.from_engine == args.to_engine:
         _fail("review handoff engines must be different")
+    _verify_head(args.repo, args.pr, args.head)
+    run = _handoff_run(_issue_comments(args.repo, args.pr))
+    run_id = cast(str, run["run_id"]) if run is not None else None
+    if run is not None and (
+        run["base"] != args.base or not 1 <= args.round <= run["max_rounds"]
+    ):
+        _fail("handoff base or round does not belong to the current run")
     content = _handoff_content(args, _read_context(args.context_file))
     digest = _handoff_digest(
         from_engine=args.from_engine,
@@ -620,16 +642,20 @@ def _post_handoff(args: argparse.Namespace) -> None:
         head=args.head,
         outcome=args.outcome,
         content=content,
+        run_id=run_id,
     )
     marker = (
         f"<!-- local-review-handoff:v1 from={args.from_engine} "
         f"to={args.to_engine} round={args.round} base={args.base} "
-        f"head={args.head} outcome={args.outcome} content-sha256={digest} -->"
+        f"head={args.head} outcome={args.outcome} "
+        + (f"run={run_id} " if run_id is not None else "")
+        + f"content-sha256={digest} -->"
     )
     body = f"{marker}\n{content}"
     _verify_head(args.repo, args.pr, args.head)
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body)
     _verify_head(args.repo, args.pr, args.head)
+    _verify_handoff_run(args.repo, args.pr, run_id)
     print(
         json.dumps(
             {
@@ -637,6 +663,7 @@ def _post_handoff(args: argparse.Namespace) -> None:
                 "from_engine": args.from_engine,
                 "head": args.head,
                 "replayed": replayed,
+                "run_id": run_id,
                 "to_engine": args.to_engine,
                 "verified": True,
             },
@@ -646,14 +673,30 @@ def _post_handoff(args: argparse.Namespace) -> None:
 
 
 def _show_handoff(args: argparse.Namespace) -> None:
+    rows = _issue_comments(args.repo, args.pr)
+    run = _handoff_run(rows)
+    run_id = cast(str, run["run_id"]) if run is not None else None
     candidates: list[tuple[int, str]] = []
-    for row in _issue_comments(args.repo, args.pr):
+    for row in rows:
         body = row.get("body")
         comment_id = row.get("id")
         if not isinstance(body, str) or not isinstance(comment_id, int):
             continue
-        if body.startswith("<!-- local-review-handoff:v1"):
-            candidates.append((comment_id, body))
+        if run is not None and comment_id <= run["comment_id"]:
+            continue
+        if not body.startswith("<!-- local-review-handoff:v1"):
+            continue
+        found = list(HANDOFF_V1_RE.finditer(body))
+        if len(found) != 1:
+            _fail("a local-review handoff marker is malformed")
+        # Select within the run rather than selecting the newest and refusing.
+        # `_post_handoff` verifies the run only after its comment is on the PR,
+        # so a publication that loses that race leaves a marker bound to the
+        # superseded run inside this run's window. Refusing on it would let one
+        # orphan block every later read; skipping makes it inert.
+        if found[0].group("run_id") != run_id:
+            continue
+        candidates.append((comment_id, body))
     if not candidates:
         _fail("no authenticated local-review handoff comment was found")
     comment_id, body = max(candidates, key=lambda candidate: candidate[0])
@@ -661,6 +704,11 @@ def _show_handoff(args: argparse.Namespace) -> None:
     if len(matches) != 1:
         _fail("latest local-review handoff marker is malformed")
     marker = matches[0]
+    if run is not None and (
+        marker.group("base") != run["base"]
+        or not 1 <= int(marker.group("round")) <= run["max_rounds"]
+    ):
+        _fail("handoff base or round does not belong to the current run")
     if marker.start() != 0 or not body[marker.end() :].startswith("\n"):
         _fail("a local-review handoff marker must start the PR comment")
     content = body[marker.end() + 1 :]
@@ -672,6 +720,7 @@ def _show_handoff(args: argparse.Namespace) -> None:
         head=marker.group("head"),
         outcome=marker.group("outcome"),
         content=content,
+        run_id=marker.group("run_id"),
     )
     if digest != marker.group("content_sha"):
         _fail("latest local-review handoff content digest is invalid")
@@ -680,6 +729,7 @@ def _show_handoff(args: argparse.Namespace) -> None:
             f"latest local-review handoff targets {marker.group('to_engine')}, not {args.engine}"
         )
     _verify_head(args.repo, args.pr, marker.group("head"))
+    _verify_handoff_run(args.repo, args.pr, run_id)
     print(
         json.dumps(
             {
@@ -690,6 +740,7 @@ def _show_handoff(args: argparse.Namespace) -> None:
                 "head": marker.group("head"),
                 "outcome": marker.group("outcome"),
                 "round": int(marker.group("round")),
+                "run_id": run_id,
                 "to_engine": marker.group("to_engine"),
                 "verified": True,
             },

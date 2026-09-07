@@ -1,6 +1,6 @@
 # Review Workflow
 
-This file is synced from `codex-platform` into consumer repos. Consumer-specific
+This file is synced from `loomantix/activeloom` into consumer repos. Consumer-specific
 edits will be overwritten on the next sync.
 
 ## PR-First Rule
@@ -105,7 +105,10 @@ modes silently in the middle of a round.
   choose the other engine's model, effort, flags, or runtime settings.
 
 In handoff mode, when the user says `continue review on PR <number>`, `resume
-review`, or similar, first load the latest authenticated handoff comment.
+review`, or similar, use `local-review-handoff.py show-handoff` to load the latest
+authenticated handoff in the current run. New handoffs bind their digest and
+marker to that run; handoffs from older runs are historical context only. The
+controller preserves unscoped handoffs only for legacy reviews with no run.
 Continue only when it names the current engine and its exact head is still the
 PR head. If it names the other engine, stop and ask the user to start that
 engine in a fresh terminal.
@@ -127,10 +130,24 @@ engine in a fresh terminal.
    on the same PR requires the current run to be ended and a new, explicit user
    authorization passed with `--restart`; a new session alone is not a restart.
    Use the returned `first_round` for the first pass of that run, and increment
-   it for subsequent rounds. Attestation round numbers are PR-wide: restarting
-   never reuses a historical number, even after a head rewrite or an aborted
-   run. `authorize-pass` reports both that `round` and the relative `run_round`;
-   the two/four-round cap applies to `run_round`. Preserve earlier attestations.
+   it for subsequent rounds. With the bundled ledger 1.4, attestation identities
+   are scoped to the authenticated run: a newly authorized run starts at round
+   1 without colliding with historical rounds. `authorize-pass` reports equal
+   `round` and `run_round` values and enforces the two/four-round cap. Preserve
+   earlier attestations; do not restart an active run to evade its remaining cap.
+
+   Before upgrading an in-flight review from an older controller, finalize its
+   saved results with its original pinned helper. Never renumber a sealed result.
+   If an older PR-wide run cannot be completed, preserve its evidence and close
+   it using `finish-run --outcome aborted`; starting a new run under 1.4 requires
+   explicit authorization.
+
+   The controller at `.codex/skills/critique/scripts/local-review-handoff.py`
+   has no `status` or `resume-run` command. Select one past this engine's
+   highest completed round after the active run marker (1 when it has none),
+   then validate it with `authorize-pass`. An aborted run stays terminal;
+   an explicitly authorized restart is a new run with a full cap, not a
+   budget-preserving resume.
 
 3. Declare the roster with the ledger helper's `post-roster`, naming the author
    engine and this PR's reviewer engines. Participation is declared, never
@@ -367,6 +384,23 @@ Invocation:
   rules. Its final local `deepcritique` receives the same PR number and ledger,
   and skips the refactor pass when this engine's cleanup latch is already spent
   on the PR.
+
+## Finding severity
+
+Rate findings by the behavior and people affected, using the same four levels
+in every engine and lens:
+
+- **blocking**: ships materially wrong behavior, loses or corrupts data, exposes
+  a credible security/privacy exploit, breaks a public contract, or breaks rollout.
+- **major**: a reachable defect with a concrete user or operator consequence
+  that does not meet the blocking bar.
+- **minor**: a limited defect or improvement with no material behavioral consequence.
+- **nit**: style or preference, with no defect.
+
+Severity describes a finding; pass classification describes the effect of its
+fix. Apply the classification rules in the packaged ledger protocol separately.
+Instructions and tests can affect review integrity, so their file type alone
+does not determine severity or classification.
 
 ## Review Tier
 

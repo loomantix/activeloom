@@ -26,11 +26,16 @@ the tier resolved to Deep, and Phase 0 checks it against the PR's tier marker.
 
 ## Stance resolution
 
-Resolve this engine's round number per the ledger before selecting lenses: use
-`$AGENT_LOOP_REVIEW_ROUND` when the runner set it, take it from an invoking
-`/deepcritique`, or count the `local-review-pass:v3` and
-`local-review-complete:v3`
-markers on the PR naming `engine=claude` and add one.
+Before selecting lenses, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
+or the round supplied by `/deepcritique`. Otherwise select one past Claude's
+highest completed round within the latest authenticated `local-review-run:v1`
+(1 when it has none), using only its pass/complete comments after that run marker.
+Honor the run's cap and confirm the round with the run controller at
+`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`); it
+is shared by every surface despite its path. If it is absent from the checkout,
+report that and stop rather than running unauthorized. An ended run requires explicit restart authorization.
+PR-wide history is a fallback only when no run marker exists; earlier runs never
+consume the new run's budget.
 
 The stance follows the tier's schedule, not the round ordinal alone:
 
@@ -137,8 +142,9 @@ Add only lenses whose signal exists:
 
 Every finder prompt must identify the exact head and diff, ask the agent to
 read the source, request every plausible finding with severity and `file:line`,
-and impose a concise output ceiling. Name the four-rung ladder from the ledger
-reference in the prompt — `blocking`, `major`, `minor`, `nit`, rated on blast
+and impose a concise output ceiling. Name the four-rung ladder from
+`../../REVIEW_WORKFLOW.md#finding-severity` in the prompt —
+`blocking`, `major`, `minor`, `nit`, rated on blast
 radius — so lenses do not each invent their own scale. Do not ask finders to
 suppress findings by confidence. Run selected agents in parallel; the
 orchestrator verifies them.
@@ -234,8 +240,8 @@ concern that does not clear the actionable finding bar out of the PR ledger.
 
 In a convergence round, the bar tightens further toward landing the change.
 Change the PR only for a realistically reachable `blocking` defect, as the
-ledger's severity ladder defines it, that also clears the bar above. A finding a
-comment or test edit could clear was never `blocking`:
+workflow's Finding severity section defines it, that also clears the bar above.
+Judge the behavioral consequence rather than the file type:
 
 - Fix a blocking finding with the smallest edit that clears it. No refactor, no
   rename, no new abstraction, no test or comment hardening alongside it.

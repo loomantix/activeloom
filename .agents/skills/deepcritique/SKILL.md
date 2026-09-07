@@ -31,13 +31,18 @@ draft PR before invoking any review lane. Verify the local HEAD, remote branch,
 and PR head SHA match. Record the PR number and load all prior review threads,
 including resolved and outdated threads.
 
-Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
-when the runner set it, otherwise resolve the active runtime as `gemini` or
-`antigravity` and use one past the count of `local-review-pass:v3` and
-`local-review-complete:v3` markers naming that engine. Use `codex` only when
-Codex is actually running the pass. Rounds
-1–2 are adversarial; round 3 and later are convergence rounds. State which
-applies before invoking a lane.
+Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. Otherwise
+select one past the active engine's highest completed round within the latest
+authenticated `local-review-run:v1` (1 when it has none), using only pass/complete
+comments after that run marker. Resolve Agy as `gemini`, including historical
+`antigravity` aliases in that engine's evidence; use `codex` only for a Codex pass.
+Honor the run's cap and confirm the round with the shared run controller at
+`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
+it is absent from the checkout, report that and stop rather than running
+unauthorized. An ended run requires explicit restart authorization.
+PR-wide history is a fallback only when no run marker exists. Rounds 1–2 are
+adversarial; round 3 and later are convergence rounds. State which applies
+before invoking a lane.
 
 ## Chain
 

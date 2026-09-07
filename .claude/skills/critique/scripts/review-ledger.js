@@ -5,7 +5,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.3.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.4.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -60,7 +60,7 @@ var ROSTER_V2_RE = /^<!-- local-review-roster:v2 author=(?<author>codex|claude|g
 var ROSTER_ANY_MARKER = "<!-- local-review-roster:";
 var PASS_V3_RE = /^<!-- local-review-pass:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) base=(?<base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) result-sha256=(?<result_sha>[0-9a-f]{64}) -->$/m;
 var COMPLETE_V3_RE = /^<!-- local-review-complete:v3 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) base=(?<base>[0-9a-f]{40}) before=(?<before>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) classification=(?<classification>minor|material) fingerprints=(?<fingerprints>[A-Za-z0-9._:/,-]*) result-sha256=(?<result_sha>[0-9a-f]{64}) -->$/m;
-var FINDING_V1_RE = /^<!-- local-review:v1 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) -->$/m;
+var FINDING_V1_RE = /^<!-- local-review:v1 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+)(?: severity=P[0-3] category=[A-Za-z0-9._:/-]+)? -->$/m;
 var DISPOSITION_V1_RE = /^<!-- local-review-disposition:v1 engine=(?<engine>codex|claude|gemini|antigravity) round=(?<round>[1-9][0-9]*) head=(?<head>[0-9a-f]{40}) fingerprint=(?<fingerprint>[A-Za-z0-9._:/-]+) outcome=(?<outcome>fixed|dismissed|deferred) -->$/m;
 var TELEMETRY_VERSION = 1;
 var TELEMETRY_MARKER_PREFIX = "<!-- local-review-telemetry:";
@@ -285,10 +285,10 @@ function matchMarkerLine(body, pattern, marker) {
 }
 function verifyV1Marker(body, match, label) {
   const matchEnd = match.index + match[0].length;
-  if (match.index !== 0 || !body.slice(matchEnd).startsWith("\n")) {
+  if ((body.match(/<!-- local-review(?:-disposition)?:v1\b/g) ?? []).length !== 1 || match.index > 0 && body[match.index - 1] !== "\n" || matchEnd < body.length && !body.slice(matchEnd).startsWith("\n")) {
     fail(`actor-owned v1 ${label} marker is malformed`);
   }
-  if (!body.slice(matchEnd + 1).trim()) {
+  if (!(body.slice(0, match.index) + body.slice(matchEnd)).trim()) {
     fail(`actor-owned v1 ${label} content is empty`);
   }
 }
@@ -607,8 +607,25 @@ function verifyReviewBase(repo, pr, base, before) {
     "--jq",
     ".baseRefOid"
   ]).trim();
-  if (prBase !== base) {
-    fail(`PR base mismatch: expected ${base}, found ${prBase || "<empty>"}`);
+  if (prBase === base) {
+    return;
+  }
+  if (!SHA_RE.test(prBase)) {
+    fail(`PR base is not a commit SHA: found ${prBase || "<empty>"}`);
+  }
+  let descendant;
+  try {
+    descendant = isAncestor(base, prBase);
+  } catch (error) {
+    if (!(error instanceof LedgerError)) throw error;
+    fail(
+      `could not verify PR base ${prBase} against the pinned base ${base}: ${error.message}; fetch the target branch before retrying`
+    );
+  }
+  if (!descendant) {
+    fail(
+      `PR base is outside the pinned review lineage: expected a descendant of ${base}, found ${prBase}; the target branch history diverged from the pinned base`
+    );
   }
 }
 function verifyGitTransition(before, resultHead2, liveHead) {
@@ -718,25 +735,32 @@ function verifyOwnedComment(endpoint, commentId, expectedBody, label, expectedAc
     fail(`could not verify ${label} ${commentId} after posting`);
   }
 }
-function findMatchingAttestation(rows, engine, round, body) {
+function findMatchingAttestation(rows, runs, engine, round, body) {
   const prefixes = [
     `<!-- local-review-pass:v3 engine=${engine} round=${round} `,
     `<!-- local-review-complete:v3 engine=${engine} round=${round} `
   ];
+  const start = runs.at(-1)?.commentId;
   const matches = rows.filter(
-    (row2) => prefixes.some((prefix) => String(row2["body"] ?? "").startsWith(prefix))
+    (row) => (start === void 0 || typeof row["id"] === "number" && row["id"] > start) && prefixes.some((prefix) => String(row["body"] ?? "").startsWith(prefix))
   );
   if (matches.length === 0) {
     return null;
   }
-  if (matches.length !== 1) {
-    fail("local-review attestation identity is duplicated");
+  const marker = body.split("\n")[0];
+  let earliest = null;
+  for (const row of matches) {
+    const existingBody = String(row["body"]);
+    if (existingBody.split("\n")[0] !== marker || typeof row["id"] !== "number") {
+      fail(
+        "local-review attestation identity conflicts with existing evidence in this run; recover the original sealed result instead of rewriting it"
+      );
+    }
+    if (earliest === null || row["id"] < earliest.id) {
+      earliest = { id: row["id"], body: existingBody };
+    }
   }
-  const row = matches[0];
-  if (row["body"] !== body || typeof row["id"] !== "number") {
-    fail("local-review attestation identity conflicts with existing evidence");
-  }
-  return row["id"];
+  return earliest;
 }
 function issueCommentExists(repo, pr, commentId) {
   return getAllIssueComments(repo, pr).some((row) => row["id"] === commentId);
@@ -1657,8 +1681,7 @@ function readResult(resultFile) {
     fail("review result has missing or invalid identity fields");
   }
   const data = validateResultData({ engine, round, base, before, head }, raw);
-  data.resultSha256 = sha256Bytes(raw);
-  return data;
+  return { ...data, resultSha256: sha256Bytes(raw) };
 }
 function validateResult(params) {
   const raw = readResultBytes(params.resultFile);
@@ -1694,6 +1717,73 @@ function writeBlockedResult(params) {
     ...value,
     resultSha256: sha256Bytes(raw)
   };
+}
+
+// src/runs.ts
+function isCommentId(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+var RUN = /^<!-- local-review-run:v1 id=([0-9a-f]{64}) tier=(lean|deep) max-rounds=([1-4]) base=([0-9a-f]{40}) start-head=([0-9a-f]{40}) supersedes=(none|[1-9][0-9]*) content-sha256=([0-9a-f]{64}) -->\n/;
+function reviewRuns(rows) {
+  const runs = [];
+  const aliases = /* @__PURE__ */ new Map();
+  const seen = /* @__PURE__ */ new Map();
+  const ordered = [...rows].sort((a, b) => Number(a["id"]) - Number(b["id"]));
+  for (const row of ordered) {
+    const body = row["body"];
+    if (typeof body !== "string" || !body.startsWith("<!-- local-review-run:v1"))
+      continue;
+    const match = RUN.exec(body);
+    const commentId = row["id"];
+    if (!match || !isCommentId(commentId)) {
+      fail(
+        "local-review run marker is malformed; preserve it and repair the run declaration before retrying"
+      );
+    }
+    const [, id, tier, cap, base, startHead, parent, digest] = match;
+    const maxRounds = Number(cap);
+    const supersedes = parent === "none" ? null : Number(parent);
+    if (supersedes !== null && !Number.isSafeInteger(supersedes)) {
+      fail("local-review run parent must be a safe comment ID");
+    }
+    const expected = sha256Text(
+      JSON.stringify({
+        base,
+        content: body.slice(match[0].length),
+        max_rounds: maxRounds,
+        start_head: startHead,
+        supersedes,
+        tier
+      })
+    );
+    if (expected !== id || expected !== digest || maxRounds !== (tier === "deep" ? 4 : 2)) {
+      fail("local-review run content digest or round budget is invalid");
+    }
+    const duplicate = seen.get(id);
+    if (duplicate) {
+      if (duplicate.body !== body)
+        fail("duplicate local-review run id has conflicting content");
+      aliases.set(commentId, duplicate.commentId);
+      continue;
+    }
+    const canonicalParent = supersedes === null ? null : aliases.get(supersedes) ?? supersedes;
+    if (canonicalParent !== (runs.at(-1)?.commentId ?? null)) {
+      fail("local-review run supersession chain is incomplete or forked");
+    }
+    seen.set(id, { body, commentId });
+    runs.push({ id, commentId, base, maxRounds });
+  }
+  return runs;
+}
+function reviewRunForComment(runs, commentId) {
+  if (runs.length === 0) return void 0;
+  if (!isCommentId(commentId)) {
+    fail("attestation comment ID is required to recover its review run");
+  }
+  for (let index = runs.length - 1; index >= 0; index--) {
+    if (runs[index].commentId < commentId) return runs[index];
+  }
+  return void 0;
 }
 
 // src/ledger.ts
@@ -1770,24 +1860,22 @@ function threadProtocolRecords(thread, historicalCommentIds) {
     if (thread.isResolved !== true) {
       fail("legacy local-review finding thread is unresolved");
     }
-    const used = /* @__PURE__ */ new Set();
     for (const [findingIndex, finding] of findingsV1) {
-      const matches = dispositionsV1.filter(
-        ([index, disposition]) => index > findingIndex && disposition.engine === finding.engine && disposition.round === finding.round && disposition.fingerprint === finding.fingerprint
+      const settled = dispositionsV1.some(
+        ([index, disposition]) => index > findingIndex && disposition.fingerprint === finding.fingerprint
       );
-      if (matches.length !== 1) {
+      if (!settled) {
         fail(
-          "legacy local-review finding lacks exactly one matching disposition"
+          "legacy local-review finding lacks a later root-cause disposition"
         );
       }
-      const dispositionIndex = matches[0][0];
-      if (used.has(dispositionIndex)) {
-        fail("legacy local-review disposition matches multiple findings");
-      }
-      used.add(dispositionIndex);
     }
-    if (used.size !== dispositionsV1.length) {
-      fail("legacy local-review ledger contains an orphan disposition");
+    for (const [dispositionIndex, disposition] of dispositionsV1) {
+      if (!findingsV1.some(
+        ([index, finding]) => index < dispositionIndex && finding.fingerprint === disposition.fingerprint
+      )) {
+        fail("legacy local-review ledger contains an orphan disposition");
+      }
     }
   }
   return { findingsV3, dispositionsV3, findingsV1, dispositionsV1 };
@@ -2397,12 +2485,47 @@ function dispose(params) {
   };
 }
 function reply(params) {
-  const body = readLegacyBody(
-    params.bodyFile ?? "-",
-    DISPOSITION_V1,
-    params.body
-  );
+  const content = resolveContent(params);
+  let body;
+  if (content !== void 0) {
+    if (!params.engine || params.round === void 0 || !params.fingerprint || !params.outcome) {
+      fail(
+        "legacy reply content requires engine, round, fingerprint, and outcome"
+      );
+    }
+    buildDispositionBody({
+      engine: params.engine,
+      round: params.round,
+      head: params.head,
+      fingerprint: params.fingerprint,
+      outcome: params.outcome,
+      occurrence: 1,
+      content
+    });
+    body = `${DISPOSITION_V1}engine=${params.engine} round=${params.round} head=${params.head} fingerprint=${params.fingerprint} outcome=${params.outcome} -->
+${content}`;
+  } else {
+    body = readLegacyBody(params.bodyFile ?? "-", DISPOSITION_V1, params.body);
+  }
   verifyHead(params.repo, params.pr, params.head);
+  if (content !== void 0) {
+    const thread = reviewThreads(params.repo, params.pr).find(
+      (candidate) => candidate.comments.nodes[0]?.databaseId === params.commentId
+    );
+    const actor = currentActor();
+    if (!thread?.comments.nodes.some((row) => {
+      if ((row.author ?? row.user)?.login !== actor) return false;
+      const match = FINDING_V1_RE.exec(String(row.body ?? ""));
+      if (!match || match.groups?.["fingerprint"] !== params.fingerprint)
+        return false;
+      verifyV1Marker(String(row.body), match, "finding");
+      return true;
+    })) {
+      fail(
+        "legacy reply must name an actor-owned finding in the target thread"
+      );
+    }
+  }
   const response = jsonOutput(
     [
       "api",
@@ -2462,11 +2585,20 @@ function attest(params) {
     const fingerprints = data.findingFingerprints.join(",");
     marker = `<!-- local-review-complete:v3 engine=${params.engine} round=${params.round} base=${params.base} before=${params.before} head=${params.head} classification=${data.classification} fingerprints=${fingerprints} result-sha256=${resultHash} -->`;
   }
-  const body = `${marker}
+  let body = `${marker}
 ${content}`;
   verifyHead(params.repo, params.pr, params.head);
+  const issueComments = getIssueComments(params.repo, params.pr);
+  const runs = reviewRuns(issueComments);
+  const run = runs.at(-1);
+  if (run && (run.base !== params.base || params.round > run.maxRounds)) {
+    fail(
+      "saved review result does not belong to the current run base and round budget"
+    );
+  }
   const existing = findMatchingAttestation(
-    getIssueComments(params.repo, params.pr),
+    issueComments,
+    runs,
     params.engine,
     params.round,
     body
@@ -2488,13 +2620,17 @@ ${content}`;
       commentId = getPostedCommentId(response);
     } catch (error) {
       if (error instanceof LedgerError) {
-        const recovered = findMatchingBody(
-          getIssueComments(params.repo, params.pr),
-          marker,
+        const refetched = getIssueComments(params.repo, params.pr);
+        const recovered = findMatchingAttestation(
+          refetched,
+          reviewRuns(refetched),
+          params.engine,
+          params.round,
           body
         );
         if (recovered === null) throw error;
-        commentId = recovered;
+        commentId = recovered.id;
+        body = recovered.body;
         replayed = true;
         created = false;
       } else {
@@ -2502,10 +2638,16 @@ ${content}`;
       }
     }
   } else {
-    commentId = existing;
+    commentId = existing.id;
+    body = existing.body;
   }
   try {
     verifyIssueComment(params.repo, commentId, body);
+    if (reviewRuns(getIssueComments(params.repo, params.pr)).at(-1)?.id !== run?.id) {
+      fail(
+        "review run changed during finalization; retry from the saved result after reconciling the current run"
+      );
+    }
     verifyReviewBase(params.repo, params.pr, params.base, params.before);
     verifyHead(params.repo, params.pr, params.head);
   } catch (error) {
@@ -2527,6 +2669,18 @@ ${content}`;
     result_sha256: resultHash,
     verified: true
   };
+}
+function finalize(params) {
+  const result = readResult(params.resultFile);
+  return attest({
+    ...params,
+    head: result.afterSha,
+    engine: result.engine,
+    round: result.round,
+    base: result.baseSha,
+    before: result.beforeSha,
+    expectedResultSha256: result.resultSha256
+  });
 }
 function resolve(params) {
   verifyHead(params.repo, params.pr, params.head);
@@ -4119,7 +4273,8 @@ function matchAttestationMarker(body, pattern) {
 }
 function attestationsAtHead(rows, head) {
   const found = [];
-  const identities = /* @__PURE__ */ new Set();
+  const identities = /* @__PURE__ */ new Map();
+  const runs = reviewRuns(rows);
   for (const row of rows) {
     const body = String(row["body"] ?? "");
     const pass = matchAttestationMarker(body, PASS_V3_RE);
@@ -4130,11 +4285,14 @@ function attestationsAtHead(rows, head) {
     }
     const engine = match.groups["engine"];
     const round = parseInt(match.groups["round"], 10);
-    const identity = `${engine}|${round}`;
-    if (identities.has(identity)) {
+    const run = reviewRunForComment(runs, row["id"]);
+    const identity = `${run?.id ?? "legacy"}|${engine}|${round}`;
+    const prior = identities.get(identity);
+    if (prior !== void 0 && prior !== match[0]) {
       fail("local-review attestation identity is duplicated");
     }
-    identities.add(identity);
+    if (prior !== void 0) continue;
+    identities.set(identity, match[0]);
     if (match.groups["head"] === head) {
       found.push({
         engine,
@@ -4698,9 +4856,9 @@ function runCliCommand(argv) {
       break;
     }
     case "reply": {
-      if (!args.repo || args.pr === void 0 || !args.head || args.commentId === void 0 || !args.bodyFile) {
+      if (!args.repo || args.pr === void 0 || !args.head || args.commentId === void 0 || !args.bodyFile && !args.contentFile) {
         fail(
-          "reply requires --repo, --pr, --head, --comment-id, and --body-file"
+          "reply requires --repo, --pr, --head, --comment-id, and --body-file or --content-file"
         );
       }
       const out = reply({
@@ -4708,7 +4866,12 @@ function runCliCommand(argv) {
         pr: args.pr,
         head: args.head,
         commentId: args.commentId,
-        bodyFile: args.bodyFile
+        bodyFile: args.bodyFile,
+        contentFile: args.contentFile,
+        engine: args.engine,
+        round: args.round,
+        fingerprint: args.fingerprint,
+        outcome: args.outcome
       });
       process.stdout.write(JSON.stringify(out) + "\n");
       break;
@@ -4777,6 +4940,31 @@ function runCliCommand(argv) {
         blockerFile: args.blockerFile
       });
       writeSortedJson(out);
+      break;
+    }
+    case "finalize": {
+      if (!args.repo || args.pr === void 0 || !args.resultFile) {
+        fail(
+          "finalize requires --repo, --pr, and --result-file; reuse the original pre-pass historical-comment-ids file when present"
+        );
+      }
+      if (args.head || args.base || args.before || args.engine || args.round !== void 0 || args.expectedResultSha256) {
+        fail(
+          "finalize reads identity and digest from the saved result; use attest for explicit identity checks"
+        );
+      }
+      const out = finalize({
+        repo: args.repo,
+        pr: args.pr,
+        resultFile: args.resultFile,
+        threadsFile: args.threadsFile,
+        allowedHeadsFile: args.allowedHeadsFile,
+        actor: args.actor,
+        historicalCommentIdsFile: args.historicalCommentIdsFile,
+        expectedThreadsSha256: args.expectedThreadsSha256,
+        contentFile: args.contentFile
+      });
+      process.stdout.write(JSON.stringify(out) + "\n");
       break;
     }
     case "attest": {

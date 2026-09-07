@@ -49,7 +49,7 @@ command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; 
 # Pinned loomantix/activeloom commit whose .agents tree is the only
 # relay surface this launcher will expose to unattended Agy. Bumping it
 # also requires updating AGY_SURFACE_SHA in tests/test_agy_review_launcher.py.
-agy_surface_sha="1de48f3eec1278c14a6319ab01d51e5855b833b6"
+agy_surface_sha="e5ebebfd1bf9270f2a2e63e77465acb64a89a1ab"
 
 current_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 actor="$(gh api user --jq .login)"

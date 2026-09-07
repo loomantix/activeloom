@@ -1,6 +1,6 @@
 # Review Workflow
 
-This file is synced from `claude-platform` into consumer repos. Consumer edits
+This file is synced from `loomantix/activeloom` into consumer repos. Consumer edits
 will be overwritten on the next sync.
 
 ## PR-First Rule
@@ -26,6 +26,23 @@ protocol edit must land upstream rather than here. Where the protocol writes
 ```text
 .claude/skills/critique/scripts/review-ledger.js
 ```
+
+## Finding severity
+
+Rate findings by the behavior and people affected, using the same four levels
+in every engine and lens:
+
+- **blocking**: ships materially wrong behavior, loses or corrupts data, exposes
+  a credible security/privacy exploit, breaks a public contract, or breaks rollout.
+- **major**: a reachable defect with a concrete user or operator consequence
+  that does not meet the blocking bar.
+- **minor**: a limited defect or improvement with no material behavioral consequence.
+- **nit**: style or preference, with no defect.
+
+Severity describes a finding; pass classification describes the effect of its
+fix. Apply the classification rules in the packaged ledger protocol separately.
+Instructions and tests can affect review integrity, so their file type alone
+does not determine severity or classification.
 
 ## Review Tier
 
@@ -111,6 +128,30 @@ Lean change that lands after one clean round has had enough review.
 A Lean change that reaches round 3 has either been mis-tiered — escalate it
 deliberately, below — or is not converging, which is a signal about the change
 rather than a licence for another round. Say which, and stop.
+
+### The run controller
+
+Rounds are numbered inside an authenticated `local-review-run:v1` marker, not
+across the PR's whole history. The script that owns those markers is the run
+controller, and this repository ships exactly one, shared by every engine
+surface:
+
+```
+.codex/skills/critique/scripts/local-review-handoff.py
+```
+
+It lives under `.codex/` for historical reasons and is not Codex-only; invoke it
+by that path from any surface. Its commands are `start-run`, `authorize-pass`,
+`finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
+nor `resume-run`. Select one past this engine's highest completed round inside
+the active run (1 when it has none), then confirm it with `authorize-pass`.
+An aborted run is terminal in this controller. Preserve its evidence; a new
+`start-run --restart` requires fresh explicit user authorization and starts
+at round 1 with a full cap. This is a new review, not a budget-preserving resume.
+
+If that path does not exist in the checkout under review, say so and stop rather
+than proceeding unauthorized — an absent controller is a missing gate, not a
+licence to skip one.
 
 ### Escalate and de-escalate on evidence
 
@@ -198,13 +239,9 @@ review is permitted but must be declared with a reason; see step 2.
    or polish.
 
    Severity and classification are separate axes and neither implies the other.
-   A fixed `major` whose fix edited only comments, only docs, or only tests is
-   `minor` — no executing line moved, so the round can complete through that
-   transition rather than owing every declared reviewer a fresh cold read.
-   Findings are rated on the single ladder in
-   [`references/local-review-ledger.md`](references/local-review-ledger.md);
-   that section is the only definition of `blocking`, `major`, `minor`, and
-   `nit`, and every lens and engine uses it.
+   Classify the effect of the fix under the packaged protocol, including changes
+   to instructions or tests that affect review integrity. Rate the finding
+   separately using [Finding severity](#finding-severity).
 
    **The chain gets cheaper as it repeats.** Three rules make that happen, and
    all are enforced from the ledger rather than from session memory:
@@ -269,7 +306,7 @@ A caller supplies only the repository, PR, base, head, and round. It
 refuses to start unless the current repository, the PR's ownership and head
 repository, local HEAD, PR head, and remote head all match the requested exact
 head over a clean worktree, and unless the reviewer CLI resolves exactly one
-live `deepcritique` skill backed by a clean `loomantix/gemini-platform`
+live `deepcritique` skill backed by a clean `loomantix/activeloom`
 checkout at the launcher's pinned commit that vendors this engine's
 `review-ledger` version. Hand-composing the CLI command instead is outside the
 tested contract.
