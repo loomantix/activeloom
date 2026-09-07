@@ -135,8 +135,9 @@ engine in a fresh terminal.
 
    Before upgrading an in-flight review from an older controller, finalize its
    saved results with its original pinned helper. Never renumber a sealed result.
-   If an older PR-wide run cannot be completed, preserve its evidence and end it
-   as blocked; resuming under 1.4 requires explicit authorization for a new run.
+   If an older PR-wide run cannot be completed, preserve its evidence and close
+   it using `finish-run --outcome aborted`; starting a new run under 1.4 requires
+   explicit authorization.
 
 3. Declare the roster with the ledger helper's `post-roster`, naming the author
    engine and this PR's reviewer engines. Participation is declared, never
