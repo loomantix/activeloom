@@ -108,6 +108,23 @@ the opposite of the cold read the relay exists to obtain. `coverage` reports it
 as `authorAttested` so the fact stays visible, but the tier counts distinct
 non-author engines only.
 
+## Finding severity
+
+Rate findings by the behavior and people affected, using the same four levels
+in every engine and lens:
+
+- **blocking**: ships materially wrong behavior, loses or corrupts data, exposes
+  a credible security/privacy exploit, breaks a public contract, or breaks rollout.
+- **major**: a reachable defect with a concrete user or operator consequence
+  that does not meet the blocking bar.
+- **minor**: a limited defect or improvement with no material behavioral consequence.
+- **nit**: style or preference, with no defect.
+
+Severity describes a finding; pass classification describes the effect of its
+fix. Apply the classification rules in the packaged ledger protocol separately.
+Instructions and tests can affect review integrity, so their file type alone
+does not determine severity or classification.
+
 ## Review Tier
 
 Resolve the tier **before the first reviewer runs**, on every path. An
@@ -209,10 +226,11 @@ surface:
 It lives under `.codex/` for historical reasons and is not Codex-only; invoke it
 by that path from any surface. Its commands are `start-run`, `authorize-pass`,
 `finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
-nor `resume-run`, so follow the no-`status` round-selection rule in
-[`references/local-review-ledger.md`](references/local-review-ledger.md):
-select one past this engine's highest completed round inside the active run and
-confirm it with `authorize-pass`.
+nor `resume-run`. Select one past this engine's highest completed round inside
+the active run (1 when it has none), then confirm it with `authorize-pass`.
+An aborted run is terminal in this controller. Preserve its evidence; a new
+`start-run --restart` requires fresh explicit user authorization and starts
+at round 1 with a full cap. This is a new review, not a budget-preserving resume.
 
 If that path does not exist in the checkout under review, say so and stop rather
 than proceeding unauthorized — an absent controller is a missing gate, not a

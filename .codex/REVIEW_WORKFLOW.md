@@ -142,6 +142,13 @@ engine in a fresh terminal.
    it using `finish-run --outcome aborted`; starting a new run under 1.4 requires
    explicit authorization.
 
+   The controller at `.codex/skills/critique/scripts/local-review-handoff.py`
+   has no `status` or `resume-run` command. Select one past this engine's
+   highest completed round after the active run marker (1 when it has none),
+   then validate it with `authorize-pass`. An aborted run stays terminal;
+   an explicitly authorized restart is a new run with a full cap, not a
+   budget-preserving resume.
+
 3. Declare the roster with the ledger helper's `post-roster`, naming the author
    engine and this PR's reviewer engines. Participation is declared, never
    inferred: an engine that has not attested is otherwise indistinguishable from
@@ -377,6 +384,23 @@ Invocation:
   rules. Its final local `deepcritique` receives the same PR number and ledger,
   and skips the refactor pass when this engine's cleanup latch is already spent
   on the PR.
+
+## Finding severity
+
+Rate findings by the behavior and people affected, using the same four levels
+in every engine and lens:
+
+- **blocking**: ships materially wrong behavior, loses or corrupts data, exposes
+  a credible security/privacy exploit, breaks a public contract, or breaks rollout.
+- **major**: a reachable defect with a concrete user or operator consequence
+  that does not meet the blocking bar.
+- **minor**: a limited defect or improvement with no material behavioral consequence.
+- **nit**: style or preference, with no defect.
+
+Severity describes a finding; pass classification describes the effect of its
+fix. Apply the classification rules in the packaged ledger protocol separately.
+Instructions and tests can affect review integrity, so their file type alone
+does not determine severity or classification.
 
 ## Review Tier
 
