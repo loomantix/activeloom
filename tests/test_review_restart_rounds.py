@@ -337,3 +337,73 @@ else:
     persisted = json.loads(state.read_text())
     assert persisted[:2] == rows
     assert len(persisted) == 3
+
+
+def test_legacy_numbered_attestation_inside_run_is_refused(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run carrying pre-1.4 identities fails closed instead of regaining budget."""
+    # Rounds 5 and 6 sit *after* the run marker (id 20), which is what the
+    # previous controller produced when `_round_offset` pushed `first_round`
+    # past 1. Run-local numbering would otherwise re-grant rounds 1-4 on a run
+    # that has already spent two of them.
+    rows = [
+        {"id": 30, "body": marker("codex", 5)},
+        {"id": 31, "body": marker("claude", 6)},
+    ]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
+    for round_number in (1, 4):
+        with pytest.raises(handoff.HandoffError, match="pre-1.4 round identities"):
+            handoff._authorize_pass(
+                SimpleNamespace(
+                    repo="example/repo",
+                    pr=7,
+                    base="b" * 40,
+                    head="a" * 40,
+                    engine="codex",
+                    round=round_number,
+                )
+            )
+    # A mixed run is caught too: round 1 alone would satisfy a "starts at 1"
+    # check while rounds 5 and 6 still overspend the cap.
+    rows.insert(0, {"id": 29, "body": marker("codex", 1)})
+    with pytest.raises(handoff.HandoffError, match="pre-1.4 round identities"):
+        handoff._authorize_pass(
+            SimpleNamespace(
+                repo="example/repo",
+                pr=7,
+                base="b" * 40,
+                head="a" * 40,
+                engine="claude",
+                round=2,
+            )
+        )
+
+
+def test_round_equal_to_cap_authorizes(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The accepting side of the cap: `round == max_rounds` must be allowed."""
+    # Seed rounds 1..cap-1 inside the run so the no-skip guard is satisfied and
+    # the cap itself is the only thing under test. A `>` that became `>=` would
+    # silently drop the deep cap to 3 and stays invisible to a reject-only test.
+    rows: list[dict[str, object]] = [
+        {"id": 30 + index, "body": marker("codex", index + 1)} for index in range(3)
+    ]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=7,
+        base="b" * 40,
+        head="a" * 40,
+        engine="claude",
+        round=4,
+    )
+    handoff._authorize_pass(args)
+    assert json.loads(capsys.readouterr().out)["run_round"] == 4
+    args.round = 5
+    with pytest.raises(handoff.HandoffError, match="exceeds the deep cap"):
+        handoff._authorize_pass(args)

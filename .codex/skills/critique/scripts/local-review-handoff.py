@@ -444,6 +444,19 @@ def _authorize_pass(args: argparse.Namespace) -> None:
             round_number = int(marker.group("round"))
             existing.add((engine, round_number))
             highest_round = max(highest_round, round_number)
+    # A run this controller created always holds a contiguous 1..n, because the
+    # no-skip guard below only authorizes round n once n-1 has attested. A gap
+    # or a start above 1 therefore means the run predates 1.4, when
+    # `_round_offset` numbered in-run passes from the PR-wide maximum. Those
+    # rounds are invisible to the run-local budget, so continuing would re-grant
+    # the whole cap and let `highest_round` wave a skip through. Fail closed on
+    # the migration the workflow documents rather than trusting it was followed.
+    in_run_rounds = {round_number for _, round_number in existing}
+    if in_run_rounds and in_run_rounds != set(range(1, max(in_run_rounds) + 1)):
+        _fail(
+            "this run holds pre-1.4 round identities; end it with "
+            "finish-run --outcome aborted before authorizing a 1.4 run"
+        )
     if (args.engine, args.round) in existing:
         _fail("this engine already completed the requested run round")
     if args.round > highest_round + 1:
