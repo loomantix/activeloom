@@ -356,10 +356,7 @@ def _start_run(args: argparse.Namespace) -> None:
             json.dumps(
                 {
                     "comment_id": previous["comment_id"],
-                    "first_round": _round_offset(
-                        rows, cast(int, previous["comment_id"])
-                    )
-                    + 1,
+                    "first_round": 1,
                     "max_rounds": max_rounds,
                     "replayed": True,
                     "run_id": previous["run_id"],
@@ -398,7 +395,7 @@ def _start_run(args: argparse.Namespace) -> None:
             {
                 "comment_id": comment_id,
                 "max_rounds": max_rounds,
-                "first_round": _round_offset(rows, comment_id) + 1,
+                "first_round": 1,
                 "replayed": replayed,
                 "run_id": run_id,
                 "tier": args.tier,
@@ -406,22 +403,6 @@ def _start_run(args: argparse.Namespace) -> None:
             },
             sort_keys=True,
         )
-    )
-
-
-def _round_offset(rows: list[dict[str, Any]], start_comment_id: int) -> int:
-    """Reserve historical PR-wide identities without spending the new run budget."""
-    return max(
-        (
-            int(marker.group("round"))
-            for row in rows
-            if isinstance(row.get("id"), int)
-            and cast(int, row["id"]) < start_comment_id
-            and isinstance(row.get("body"), str)
-            for pattern in (PASS_V3_RE, COMPLETE_V3_RE)
-            for marker in pattern.finditer(row["body"])
-        ),
-        default=0,
     )
 
 
@@ -436,17 +417,17 @@ def _authorize_pass(args: argparse.Namespace) -> None:
     if run["base"] != args.base:
         _fail("local-review run base does not match the requested pass")
     start_comment_id = cast(int, run["comment_id"])
-    offset = _round_offset(rows, start_comment_id)
-    run_round = args.round - offset
+    # Ledger 1.4 scopes attestation identities to this authenticated run.
+    run_round = args.round
     if run_round < 1:
-        _fail("requested round predates this run; use a fresh PR-wide round")
+        _fail("review round must be positive")
     if run_round > cast(int, run["max_rounds"]):
         _fail(
             f"review round {args.round} exceeds the {run['tier']} cap "
             f"of {run['max_rounds']}"
         )
     existing: set[tuple[str, int]] = set()
-    highest_round = offset
+    highest_round = 0
     for row in rows:
         if (
             not isinstance(row.get("id"), int)

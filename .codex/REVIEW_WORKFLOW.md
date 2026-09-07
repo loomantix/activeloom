@@ -127,10 +127,16 @@ engine in a fresh terminal.
    on the same PR requires the current run to be ended and a new, explicit user
    authorization passed with `--restart`; a new session alone is not a restart.
    Use the returned `first_round` for the first pass of that run, and increment
-   it for subsequent rounds. Attestation round numbers are PR-wide: restarting
-   never reuses a historical number, even after a head rewrite or an aborted
-   run. `authorize-pass` reports both that `round` and the relative `run_round`;
-   the two/four-round cap applies to `run_round`. Preserve earlier attestations.
+   it for subsequent rounds. With the bundled ledger 1.4, attestation identities
+   are scoped to the authenticated run: a newly authorized run starts at round
+   1 without colliding with historical rounds. `authorize-pass` reports equal
+   `round` and `run_round` values and enforces the two/four-round cap. Preserve
+   earlier attestations; do not restart an active run to evade its remaining cap.
+
+   Before upgrading an in-flight review from an older controller, finalize its
+   saved results with its original pinned helper. Never renumber a sealed result.
+   If an older PR-wide run cannot be completed, preserve its evidence and end it
+   as blocked; resuming under 1.4 requires explicit authorization for a new run.
 
 3. Declare the roster with the ledger helper's `post-roster`, naming the author
    engine and this PR's reviewer engines. Participation is declared, never
