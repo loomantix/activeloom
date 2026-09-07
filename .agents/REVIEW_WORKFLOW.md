@@ -81,17 +81,19 @@ Solo review is permitted but must be declared with a recorded reason.
      post-fix commit stays valid and does not re-run. This is what keeps a
      second reviewer from costing a full extra round every time anything
      changes.
-   - **Rounds 1–2 are adversarial; round 3 and later are convergence rounds.**
+   - **Use the resolved tier's stance:** Lean round 1 is adversarial and round 2
+     converges; Deep rounds 1–2 are adversarial and rounds 3–4 converge.
+     The first pass after escalation remains adversarial regardless of ordinal.
      A reviewer holding no attestation on this PR runs adversarially on its
      first cold read whatever the round ordinal: the stance tracks how many
      times that reviewer has read the change, not how many rounds elapsed
      before it joined.
-     Once every declared reviewer has read the change cold twice, the remaining
+     After the tier's adversarial passes, the remaining
      findings are mostly about the review's own artifacts. A convergence round
      runs only the lanes that can find a reason not to deploy, changes the PR
      only for a realistically reachable blocking defect, defers everything else,
-     creates an issue only for an urgent high-impact follow-up, and ends the
-     loop as soon as it finds no blocker.
+     creates an issue only for an urgent high-impact follow-up, and returns to
+     the controller when clean so it can verify all required exact-head coverage.
 
 7. Cap the loop at four rounds unless the consumer explicitly configures a
    different positive bound. At cap exhaustion, stop, preserve the branch,
@@ -277,6 +279,42 @@ reply, or resolve contract.
 to `critique`; typing the deep skill does not select the deep path. `reviewit`'s
 iteration cap matches the tier's round cap numerically — two at Lean, four at
 Deep.
+
+## Recover a blocked pass
+
+A reviewer returns one pass; the auto controller owns the remaining authorized
+work. A valid blocked result is not a clean attestation, but it is not by itself
+a failed launcher or a reason to end the whole run.
+
+Read the blocker and reconcile local, remote, and PR heads plus the complete
+thread ledger. Then choose the next action from evidence:
+
+- For a reachable code defect with an authorized fix, apply the smallest
+  correction, validate, push, and dispose its existing finding. Continue only
+  the missing exact-head reviewers within the remaining run budget.
+- For incomplete bookkeeping, use the installed helper's supported recovery
+  flow in [Recover interrupted reviews](references/local-review-ledger.md#recover-interrupted-reviews).
+  Preserve the original result and pre-pass snapshot. Finalization cannot turn
+  a blocked result into completed review evidence.
+- For identity conflicts, unknown mutation outcomes, unsupported recovery, or
+  a launcher failure, reconcile or report the precise unresolved boundary.
+  Retry uncertain writes only with the same idempotent operation. A known
+  preflight rejection that performed no write may be corrected and retried.
+  Keep the tested launcher and ledger invariants intact.
+
+Decide finding severity and intended disposition before posting. Reserve
+`blocking` for a defect that must be fixed or disproved before this PR can
+proceed. A planned follow-up is not a blocking disposition; evaluate its
+reachability, scope, and severity first. If an existing blocker was mistaken,
+record the evidence through the helper's supported disposition path. Dismiss
+only an invalid claim; never edit a marker or use dismissal to hide a real
+deferred blocker. An unavailable severity-amendment operation is not needed
+when the authorized code fix can resolve the finding instead.
+
+Ask for a decision only when the next action needs authority, information, or
+risk acceptance the user has not supplied. Keep the run active while recovery
+can progress; close it when it actually converges, exhausts its cap, or reaches
+an unresolved terminal boundary. Recovery does not reset the round budget.
 
 ## Hosted Reviewers
 

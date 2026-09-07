@@ -324,7 +324,8 @@ Antigravity CLI reports a turn-level `ERROR` when any single tool call in the
 turn failed, so a review that finished and posted its ledger evidence can still
 exit nonzero; and a reviewer can narrate completion, or post a comment, without
 publishing a result at the head that will merge. Read the ledger rather than the
-narration, and re-run the round rather than relaxing the launcher.
+narration. Preserve valid evidence and use the supported recovery flow below
+before spending another pass; report the launcher error separately.
 
 The launcher starts a fresh one-shot by omitting every continuation flag. The
 Antigravity CLI has no equivalent of Claude's `--no-session-persistence`, so it
@@ -339,6 +340,40 @@ re-reads the change while still holding the rationale that produced it, which is
 the opposite of the cold read the relay exists to obtain. `coverage` reports it
 as `authorAttested` so the fact stays visible, but the tier counts distinct
 non-author engines only.
+
+## Recover a blocked pass
+
+Treat a blocked reviewer result as a hand-back to the auto controller. It
+certifies no clean review. Read the reason before deciding whether the relay
+itself is blocked: a code defect the controller can fix is different from a
+launcher or ledger integrity failure.
+
+The controller reconciles the three heads and the finding thread, then takes
+the smallest authorized action. For an actionable defect, fix, validate, push,
+and dispose the existing finding; the remaining exact-head reviewers still
+run within the original cap. For unfinished bookkeeping, use the supported
+[ledger recovery](references/local-review-ledger.md#recover-interrupted-reviews)
+with the original result and snapshot. An incomplete or blocked result cannot
+be finalized as a successful pass.
+
+Rate a finding after verifying its reachability and deciding its disposition,
+before posting it. `blocking` means this PR cannot proceed until the defect
+is fixed or disproved. If the plan is an independent follow-up, settle scope
+and severity first. A mistaken claim can be dismissed with evidence through
+the helper; a real deferred defect cannot be disguised as a dismissal or
+removed by editing its marker. Prefer an authorized fix to seeking approval
+merely to re-rate a fixable blocker.
+
+Unknown write outcomes require idempotent reconciliation. A rejected preflight
+that wrote nothing can be corrected; it does not require a new model pass.
+Identity conflicts, unsupported recovery, and failed launchers retain their
+existing boundaries. Never substitute a raw CLI or fabricate an attestation.
+
+Return to the user only for missing authority or information, unresolved risk
+acceptance, exhausted budget, or a failure recovery cannot clear. Keep a
+recoverable run open while doing that work, and preserve its budget. This
+recovery is the outer controller's job; a one-pass reviewer returns its result
+without launching another engine.
 
 ## Hosted Reviewers
 

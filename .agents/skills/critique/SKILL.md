@@ -36,19 +36,21 @@ confirm the round with the shared run controller at
 `.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
 it is absent from the checkout, report that and stop rather than running
 unauthorized.
-An ended run requires explicit restart authorization. PR-wide history is a
+An aborted run uses supported ledger recovery within its original budget;
+restarting a converged or exhausted run requires new authorization. PR-wide history is a
 fallback only when no run marker exists. Use the same engine for every helper
 call and result.
 
-- **Rounds 1–2 run adversarially.** The stance, matrices, and fix bias below
-  apply as written.
-- **Round 3 and later run in convergence mode.** Both engines have read the
+- **Adversarial:** Lean round 1 and Deep rounds 1–2. The stance, matrices,
+  and fix bias below apply as written.
+- **Convergence:** Lean round 2 and Deep rounds 3–4. At Deep both engines have read the
   change cold twice; the goal moves from challenging it to landing it. See
   "Convergence Rounds" below — it overrides the lane selection and the fix bias,
   and nothing else. The post-before-editing, reply, and resolve contract is
   unchanged, and the round cap does not move.
 
-State the resolved round and stance in the output.
+The first pass after escalation and a reviewer's first cold read remain
+adversarial regardless of ordinal. State the resolved round and stance in the output.
 
 ## Adversarial Stance
 
@@ -69,6 +71,10 @@ with file/line evidence. If a suspected issue cannot be supported, dismiss it
 privately or list it as dismissed with the evidence that disproved it.
 
 ## Disposition Bar
+
+Before posting, settle the finding's severity and intended disposition using
+[Recover a blocked pass](../../REVIEW_WORKFLOW.md#recover-a-blocked-pass).
+A planned follow-up must not be published as a blocking deferral.
 
 Treat validity and actionability as separate decisions. A technically real
 concern is not automatically worth changing the PR or growing the backlog.
@@ -99,10 +105,10 @@ bar.
 
 ## Convergence Rounds
 
-In round 3 and later, run only the lanes that can find a reason not to deploy:
+When the resolved stance is convergence, run only the lanes that can find a reason not to deploy:
 the code reviewer, the silent failure hunter, and the security reviewer when its
 signal is present. Drop the type/API design, comment/docs, PR test, and
-tenant-coupling lanes. They found what they were going to find in rounds 1–2, and
+tenant-coupling lanes. The preceding adversarial passes covered them, and
 they audit a surface that regenerates every time it is hardened — guaranteed to
 return work, guaranteed not to change what ships.
 
@@ -130,9 +136,9 @@ PR is the wrong call when the expected benefit does not justify moving the head
 and re-staling the other engine's attestation. Land the change; let only urgent
 follow-ups grow the backlog.
 
-A convergence round that finds no blocking defect ends the loop: post the
-clean-pass attestation, recommend the repository's ship step, and list any
-urgent deferred issues.
+A convergence pass with no blocking defect posts its clean-pass attestation
+and returns to the controller. Recommend the ship step only after the controller
+verifies the remaining exact-head coverage and ledger; unused rounds are not owed.
 
 ## Mode
 
@@ -169,6 +175,9 @@ that the lane may inspect source, diffs, existing tests, and existing CI results
 but must not run test suites, linters, formatters, builds, coverage, package
 installation, or CI polling. If dynamic evidence is necessary, the lane returns
 the smallest proposed probe to the orchestrator instead of executing it.
+
+Mutation probes belong in an orchestrator-owned disposable copy, never the
+shared review worktree. Lane agents must not edit source even temporarily.
 
 The orchestrator owns command execution. After all lanes finish, deduplicate and
 verify their hypotheses, apply any fixes, then run one consolidated validation
@@ -266,8 +275,9 @@ Run these lanes as independently as the active runtime permits:
     fix; a second publication fails closed. Otherwise push normally with no
     force.
 12. Use the ledger helper's resumable `dispose` transaction for every posted
-    finding. Stop on any posting, push, disposition, or resolution failure; on
-    an uncertain helper response, retry only the identical command.
+    finding. Reconcile failures through the workflow's bounded recovery. On an
+    uncertain helper response, retry only the identical command; correct a
+    preflight rejection only when it is known to have performed no mutation.
 13. Always use the ledger helper's `write-result` command to create the v3
     structured result at `$AGENT_LOOP_REVIEW_RESULT_FILE` when set. The outer
     wrapper validates it and owns the pass/completion attestation. Inside

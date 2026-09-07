@@ -78,7 +78,8 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
    pass/complete comments after that run marker. Honor the run's cap and use
    `.codex/skills/critique/scripts/local-review-handoff.py authorize-pass`, the
    shared run controller. If it is absent, report that and stop.
-   An ended run requires explicit restart authorization. PR-wide history is a
+   An aborted run follows supported recovery without resetting its budget;
+   a converged or exhausted run requires new authorization to restart. PR-wide history is a
    fallback only when no run marker exists; earlier runs do not consume a new
    run's budget. Rounds 1–2 are adversarial; round 3 and later are convergence
    rounds. State which applies before running a lane.
@@ -169,9 +170,13 @@ The launcher exiting zero is necessary and not sufficient. After it returns,
 confirm that engine's authenticated attestation at the exact reviewed head with
 the ledger helper's `verify-coverage`. A nonzero exit with attestation present
 means the reviewer's CLI reported a turn-level error over work that landed —
-report it, re-run the round, and change nothing in the launcher. A zero exit
+report it and follow the workflow's bounded recovery without changing the
+launcher or discarding valid evidence. A zero exit
 with no attestation at that head means the round is not covered. State the
-launcher exit, the structured status, and the coverage result.
+launcher exit, the structured status, and the coverage result. A valid blocked
+result returns to the outer controller's
+[recovery decision](../../REVIEW_WORKFLOW.md#recover-a-blocked-pass); it is not
+automatically a terminal failure of the whole run.
 
 ## Phase 4: Handoff
 
@@ -196,13 +201,14 @@ Next local step:
   The outer runner decides convergence from the exact-head v3 results.
 ```
 
-A convergence round that found no blocking defect ends the loop. Say so and name
-the ship step; do not report the remaining rounds as owed.
+A clean convergence pass returns to the controller for remaining exact-head
+coverage and ledger verification. Recommend shipment after those are complete;
+do not spend unused rounds merely because they remain.
 
 Classify by effect, not path or finding severity. A correctness, security,
 deployment/sync, or review-integrity fix may be material even when it touches a
-test or workflow, and a fixed `major` whose fix edited only comments, only docs,
-or only tests is `minor` — the severity of the finding never sets the
+test or workflow. A non-behavioral clarification may be `minor`, but a test fix
+that prevents false success is `material` — the severity of the finding never sets the
 classification of the pass. Minor means low-risk non-behavioral cleanup or
 polish. Every attestation stays exact to its reviewed head; the outer round owns
 any explicit minor-transition convergence decision.
