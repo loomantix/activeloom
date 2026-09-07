@@ -33,6 +33,7 @@ Operational skills you can install locally or sync into a repo:
 | `/copilot-review <pr>`  | Address GitHub Copilot review comments on a PR systematically.                                                                                                                                                                                                                                                                                                                                                                     |
 | `/grill`                | Pre-code interview. Maps the problem as a design tree and asks the whole dependency-ordered frontier each round, with a recommended answer per question. Writes no code. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).                                                                                                                                                     |
 | `/diagnosing-bugs`      | Debugging discipline for bugs that survived the first read — no hypothesis until a tight, deterministic loop goes red on the user's exact symptom. Model-invoked. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).                                                                                                                                                            |
+| `/onboard`              | Agent-side door onto onboarding. Drafts the project-specific config values `npx activeloom init` refuses to invent — stack table, code rules, review focus — from the repository, and presents them for confirmation rather than writing them.                                                                                                                                                                                     |
 | `/feature-dev`          | Guided feature development — discovery → architecture → implementation → quality review.                                                                                                                                                                                                                                                                                                                                           |
 | `/issues`               | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.                                                                                                                                                                                                                                                                                                     |
 | `/backlog-refinement`   | Curate the autonomous queue, verify issues against the integration branch, classify exclusions, and turn loop bails into rubric improvements.                                                                                                                                                                                                                                                                                      |
@@ -71,31 +72,40 @@ The reference downstream workflow lives at [`.github/workflows/sync-from-upstrea
 
 ## Getting started
 
-There are two common paths: install the skills for your own Claude Code sessions, or wire this repo into another repository so the whole team gets the same checked-in workflow.
+Four ways in. They form a ladder, and the thing each rung adds is **credential cost** — so start at the one whose price you are willing to pay. Nothing higher is a prerequisite for anything lower.
 
-### Install locally
+| Tier                | Command                            | Needs        | You get                                              |
+| ------------------- | ---------------------------------- | ------------ | ---------------------------------------------------- |
+| **0 — Try it**      | `npx activeloom add critique`      | nothing      | skills in your own agent, on this machine            |
+| **1 — Commit it**   | `npx activeloom init`              | nothing      | the same skills checked into a repo, for your team   |
+| **2 — Automate it** | `npx activeloom init --sync`       | nothing      | ...kept current by a daily pull request              |
+| **3 — Sign it**     | `npx activeloom init --sync --app` | a GitHub App | ...with GitHub-signed commits, and private upstreams |
 
-To install the skills into your local Claude Code:
+**Tier 2 is the recommended tier** — `npx activeloom init --sync`. A GitHub App is only ever needed at Tier 3.
 
 ```bash
-git clone https://github.com/loomantix/claude-platform.git
-cd claude-platform
-./scripts/install-skills.sh           # symlinks each skill into ~/.claude/skills/
-./scripts/install-skills.sh --dry-run # report what would happen, write nothing
-./scripts/install-skills.sh --force   # replace existing entries (backed up)
+npx activeloom add critique   # try one skill — no repo, no account, no key
+npx activeloom add            # list every skill available
+npx activeloom detect         # show what this repo looks like; write nothing
+npx activeloom tiers          # explain the ladder
 ```
 
-Updates flow via `git pull` in the clone — no re-install needed unless new skills are added.
+The full walkthrough, including the config file and what each tier trades away, is in [`docs/getting-started.md`](docs/getting-started.md).
 
-### Wire up a downstream repo
+### Where the content comes from
 
-See [`docs/getting-started.md`](docs/getting-started.md) for the full walkthrough. Short version:
+The npm package ships the installer, not the prompts. Content is fetched from a tag-pinned tarball of this repository at run time — by default `sync-v2`, the same ref the sync workflow tracks. One gate for both doors, so the CLI and CI can never deliver different prompts.
 
-1. Create a `.activeloom-config.yml` at the downstream repo root with a `harnesses:` list and substitution values.
-2. Copy `.github/workflows/sync-from-upstream.yml.template` to `.github/workflows/sync-from-upstream.yml`, then fill in `UPSTREAM_REPO` and `PR_BASE_BRANCH`.
-3. (Skip — the manifest [`scripts/sync-targets.yml`](scripts/sync-targets.yml) is upstream-owned and ships the full skill set. Forks can edit it to add or drop entries.)
-4. Set the App-token secrets on the downstream repo or organization.
-5. Run the workflow once via `gh workflow run "Sync from upstream"` — the first PR opens cleanly.
+### Contributing to the skills themselves
+
+`scripts/install-skills.sh` **symlinks** skills out of a clone, so local edits are live and `git pull` updates every linked skill at once. That is the door for changing skills; `npx activeloom add` copies, and is the door for running them.
+
+```bash
+git clone https://github.com/loomantix/activeloom.git
+cd activeloom
+./scripts/install-skills.sh --dry-run   # report what would happen, write nothing
+./scripts/install-skills.sh             # symlink each skill into ~/.claude/skills/
+```
 
 ### Configure `/agent-loop` models
 

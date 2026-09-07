@@ -23,9 +23,11 @@
 #      Required secrets on the consumer repo (or as org-level secrets):
 #        - SYNC_APP_ID         (App id)
 #        - SYNC_APP_PRIVATE_KEY (PEM-encoded private key)
-#      The App must be installed on the consumer repo with `contents: write`
-#      and `pull_requests: write`. If your conventions name the secrets
-#      differently, just update the references below.
+#      The App must be installed on the consumer repo with `contents: write`,
+#      `pull_requests: write`, and `workflows: write`. Workflows write is
+#      required because the shared target set ships `.github/workflows/dco.yml`.
+#      If your conventions name the secrets differently, update the references
+#      below.
 #
 #   2. Replaces `git commit + git push` with `scripts/create-signed-commit.py`
 #      from the cloned upstream repo. That script uses the GitHub Contents
@@ -95,16 +97,6 @@ jobs:
           ref: ${{ env.PR_BASE_BRANCH }}
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Validate UPSTREAM_READ_TOKEN is configured
-        # Remove this entire step if your upstream is public.
-        env:
-          UPSTREAM_READ_TOKEN: ${{ secrets.UPSTREAM_READ_TOKEN }}
-        run: |
-          if [ -z "$UPSTREAM_READ_TOKEN" ]; then
-            echo "::error::UPSTREAM_READ_TOKEN secret is not configured. Set it on the consumer (fine-grained PAT or GitHub App token with 'Contents: Read' on $UPSTREAM_REPO). Remove this step entirely if the upstream is public." >&2
-            exit 1
-          fi
-
       - name: Clone upstream
         env:
           UPSTREAM_READ_TOKEN: ${{ secrets.UPSTREAM_READ_TOKEN }}
@@ -138,7 +130,7 @@ jobs:
           elif git ls-remote --heads --exit-code origin "${UPSTREAM_REF}" >/dev/null; then
             git fetch --depth=1 origin "${UPSTREAM_REF}"
           else
-            echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' is neither a tag nor a branch on ${UPSTREAM_REPO}." >&2
+            echo "::error::UPSTREAM_REF '${UPSTREAM_REF}' is neither a readable tag nor branch on ${UPSTREAM_REPO}. If the upstream is private, configure UPSTREAM_READ_TOKEN with Contents: Read." >&2
             exit 1
           fi
           git checkout -q FETCH_HEAD
@@ -184,21 +176,6 @@ jobs:
           DATE=$(date -u +%Y%m%d)
           BRANCH="${SYNC_BRANCH_PREFIX}-${DATE}"
 
-          # Close any prior open sync PRs to keep history clean. `--limit 100`
-          # is deterministic; the default 30 would let stale PRs accumulate
-          # in busy repos.
-          gh pr list \
-            --state open \
-            --limit 100 \
-            --json number,headRefName \
-            --jq ".[] | select(.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) | .number" \
-          | while read -r prior; do
-              [ -z "$prior" ] && continue
-              echo "Closing prior sync PR #$prior"
-              gh pr close "$prior" --delete-branch \
-                --comment "Superseded by today's sync run."
-            done
-
           # Create the verified commit via the GitHub Contents API. Using
           # the API (not `git commit`+`git push`) is what makes the commit
           # signed-by-GitHub. The App token is the actor; commits show
@@ -236,3 +213,19 @@ jobs:
               exit 1
             fi
           fi
+
+          # Preserve the previous reviewable sync PR until its replacement is
+          # safely open. A commit or API failure above must not leave no sync
+          # PR. `--limit 100` is deterministic; the default 30 would let stale
+          # PRs accumulate in busy repos.
+          gh pr list \
+            --state open \
+            --limit 100 \
+            --json number,headRefName \
+            --jq ".[] | select((.headRefName | startswith(\"${SYNC_BRANCH_PREFIX}-\")) and .headRefName != \"${BRANCH}\") | .number" \
+          | while read -r prior; do
+              [ -z "$prior" ] && continue
+              echo "Closing prior sync PR #$prior"
+              gh pr close "$prior" --delete-branch \
+                --comment "Superseded by today's sync run."
+            done

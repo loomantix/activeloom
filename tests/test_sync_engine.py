@@ -62,6 +62,37 @@ def test_resolve_under_tolerates_dangling_symlink_at_target(
     assert result == dangling
 
 
+def test_consumer_symlink_destinations_rejects_ancestor_and_dangling_leaf(
+    sync_engine: ModuleType, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "linked-dir").symlink_to(outside, target_is_directory=True)
+    (tmp_path / "dangling").symlink_to(tmp_path / "missing")
+
+    targets = [
+        {"source": "a", "destination": "linked-dir/file.txt", "mode": "0755"},
+        {"destination": "dangling", "delete": True},
+        {"source": "c", "destination": "ordinary/file.txt"},
+    ]
+
+    assert sync_engine.consumer_symlink_destinations(targets, set(), tmp_path) == [
+        "dangling",
+        "linked-dir/file.txt",
+    ]
+
+
+def test_consumer_symlink_destinations_ignores_skipped_targets(
+    sync_engine: ModuleType, tmp_path: Path
+) -> None:
+    (tmp_path / "skipped").symlink_to(tmp_path / "outside")
+    targets = [{"source": "source.txt", "destination": "skipped"}]
+
+    assert sync_engine.consumer_symlink_destinations(
+        targets, {"source.txt"}, tmp_path
+    ) == []
+
+
 # ---------------------------------------------------------------------------
 # parse_mode — octal coercion + type strictness
 # ---------------------------------------------------------------------------
