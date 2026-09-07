@@ -684,8 +684,19 @@ def _show_handoff(args: argparse.Namespace) -> None:
             continue
         if run is not None and comment_id <= run["comment_id"]:
             continue
-        if body.startswith("<!-- local-review-handoff:v1"):
-            candidates.append((comment_id, body))
+        if not body.startswith("<!-- local-review-handoff:v1"):
+            continue
+        found = list(HANDOFF_V1_RE.finditer(body))
+        if len(found) != 1:
+            _fail("a local-review handoff marker is malformed")
+        # Select within the run rather than selecting the newest and refusing.
+        # `_post_handoff` verifies the run only after its comment is on the PR,
+        # so a publication that loses that race leaves a marker bound to the
+        # superseded run inside this run's window. Refusing on it would let one
+        # orphan block every later read; skipping makes it inert.
+        if found[0].group("run_id") != run_id:
+            continue
+        candidates.append((comment_id, body))
     if not candidates:
         _fail("no authenticated local-review handoff comment was found")
     comment_id, body = max(candidates, key=lambda candidate: candidate[0])
@@ -693,10 +704,6 @@ def _show_handoff(args: argparse.Namespace) -> None:
     if len(matches) != 1:
         _fail("latest local-review handoff marker is malformed")
     marker = matches[0]
-    if marker.group("run_id") != run_id:
-        _fail(
-            "latest handoff belongs to another or legacy run; reconcile the active run"
-        )
     if run is not None and (
         marker.group("base") != run["base"]
         or not 1 <= int(marker.group("round")) <= run["max_rounds"]
@@ -713,7 +720,7 @@ def _show_handoff(args: argparse.Namespace) -> None:
         head=marker.group("head"),
         outcome=marker.group("outcome"),
         content=content,
-        run_id=run_id,
+        run_id=marker.group("run_id"),
     )
     if digest != marker.group("content_sha"):
         _fail("latest local-review handoff content digest is invalid")

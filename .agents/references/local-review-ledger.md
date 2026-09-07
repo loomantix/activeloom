@@ -226,6 +226,63 @@ review-significant. A lockfile is both generated and review-significant: the
 dependency bump must be reviewed, and its line count must stay out of every
 ratio.
 
+## Rate every finding on one severity ladder
+
+Every local-review finding carries one of four severities. They are the enum the
+ledger helper accepts, and they mean the same thing in every lens, engine, and
+skill. Rate by **blast radius** — what breaks, and for whom — not by how
+important the finding feels or how hard it was to find.
+
+- **`blocking`** — ships materially wrong behavior, loses or corrupts data,
+  exposes a credible security or privacy exploit, breaks a public contract, or
+  breaks deploy or rollout.
+- **`major`** — a real defect in behavior a user or operator can reach, but not
+  blocking.
+- **`minor`** — correct-but-improvable, or a defect confined to a non-executing
+  surface (comments, docs, naming, test clarity) with no behavioral consequence.
+- **`nit`** — style or preference. No defect.
+
+**A factually wrong comment is `minor` by default.** It changes no behavior, so
+its blast radius is a reader, not a run — and that holds even when the wrongness
+matters a great deal. There is no rung meaning "important but non-behavioral";
+`minor` is that rung. The same goes for a stale doc, a misleading name, and a
+test whose assertion is weaker than its name claims.
+
+Rating a comment defect `major` because it is embarrassing, or a nit `major`
+because the file is important, destroys the ladder's one useful property: that
+`major` and above mean a user or operator is exposed.
+
+### When a non-executing surface escalates
+
+A comment or docs finding is `major` only when the statement is wrong enough to
+**cause questions about the actual implementation** — a reader acting on it
+would reach a wrong conclusion about what the code does, in a way that would
+change an engineering decision. Merely imprecise, stale, or overclaimed is
+`minor`.
+
+A test finding is `major` only when correcting the test makes it **fail**, and
+making it pass again requires an app-code change. The app-code defect the test
+was hiding is what earns the rung; the test edit alone never does. A test that is
+ineffective but whose repair still passes is `minor`.
+
+Neither bar is a reporting bar. Report the finding either way with its severity
+attached. A lens asked to withhold findings by severity or confidence drops real
+defects; the narrowing is a disposition rule one level up, never a reporting rule
+pushed into the lens.
+
+### Severity is not classification
+
+Severity describes a **finding**: how far the defect reaches. Classification
+(`minor` / `material`, below) describes the **change the pass made**: whether
+behavior moved. They are independent axes, and the two words colliding on
+`minor` is a naming accident, not a mapping.
+
+A `major` finding whose fix edited only comments, only docs, or only tests
+classifies `minor` — nothing that executes changed. A `nit` whose fix altered a
+conditional classifies `material`. Read the diff, not the label on the thread.
+Never restate a severity to reach a classification, or pick a classification to
+match a severity.
+
 ## Build one immutable review packet
 
 Review fan-out must use one canonical description of the changeset. Without an
@@ -397,7 +454,13 @@ Resolve this engine's round number before selecting lanes. Use
 `$AGENT_LOOP_REVIEW_ROUND` when the automated runner set it. Otherwise ask the
 run controller's `status` command for `next_round`: it counts only the
 attestations inside the current authorized run, so a restarted run never
-inherits historical rounds. `reason=no_run` alone is not a legacy signal: on a
+inherits historical rounds. A controller without `status` resolves nothing for
+you — select one past this engine's highest completed round among the pass and
+complete markers **after** the active run marker, 1 when it has none, and
+confirm the choice with `authorize-pass` before running a lane. That command
+validates rather than resolves: it refuses a duplicate identity, a skipped
+round, and a round past the run's cap, so an accepted round is the authorized
+one and a refusal names which rule the guess broke. `reason=no_run` alone is not a legacy signal: on a
 PR that holds no v3 attestation it means `start-run`, and no pass runs before
 that authorized run marker exists. Only a legacy PR — one that already carries
 `local-review-pass:v3` or `local-review-complete:v3` markers but no run
@@ -742,9 +805,15 @@ state any incomplete or failed local run separately.
 Run resumption belongs to the engine-specific controller, not the ledger helper;
 this package ships no controller commands. Confirm that the installed controller
 supports `status` and `resume-run` before using the contract below. Otherwise,
-follow its existing start/finish recovery flow within the applicable authorization,
-preserving completed evidence and the remaining budget. Do not claim an unsupported
-resume or silently reset the round cap.
+follow its existing start/finish recovery flow within the applicable
+authorization. Be exact about what that flow does and does not keep: a
+controller with no `resume-run` cannot reopen a run in place, so the only route
+past an unfinishable run is `finish-run --outcome aborted` followed by
+`start-run --restart` under a fresh user authorization. That seals the aborted
+run's evidence and leaves it readable, but it does **not** carry the spend
+forward — the new run begins at round 1 with a full cap. Say so when you take
+that path. Do not describe it as a resume, and do not let the reset pass
+unremarked because the tool offered it.
 
 A compatible run controller — the engine-specific script that owns run markers,
 named in your `REVIEW_WORKFLOW.md` and distinct from the ledger helper — reports the

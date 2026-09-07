@@ -30,8 +30,10 @@ Before selecting lenses, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND
 or the round supplied by `/deepcritique`. Otherwise select one past Claude's
 highest completed round within the latest authenticated `local-review-run:v1`
 (1 when it has none), using only its pass/complete comments after that run marker.
-Honor the run's cap and use `local-review-handoff.py authorize-pass` when that
-controller is available. An ended run requires explicit restart authorization.
+Honor the run's cap and confirm the round with the run controller at
+`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`); it
+is shared by every surface despite its path. If it is absent from the checkout,
+report that and stop rather than running unauthorized. An ended run requires explicit restart authorization.
 PR-wide history is a fallback only when no run marker exists; earlier runs never
 consume the new run's budget.
 

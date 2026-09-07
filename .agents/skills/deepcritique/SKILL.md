@@ -36,8 +36,10 @@ select one past the active engine's highest completed round within the latest
 authenticated `local-review-run:v1` (1 when it has none), using only pass/complete
 comments after that run marker. Resolve Agy as `gemini`, including historical
 `antigravity` aliases in that engine's evidence; use `codex` only for a Codex pass.
-Honor the run's cap and use `local-review-handoff.py authorize-pass` when that
-controller is available. An ended run requires explicit restart authorization.
+Honor the run's cap and confirm the round with the shared run controller at
+`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
+it is absent from the checkout, report that and stop rather than running
+unauthorized. An ended run requires explicit restart authorization.
 PR-wide history is a fallback only when no run marker exists. Rounds 1–2 are
 adversarial; round 3 and later are convergence rounds. State which applies
 before invoking a lane.

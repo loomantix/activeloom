@@ -42,6 +42,26 @@ def handoff(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return module
 
 
+@pytest.fixture
+def real_handoff() -> ModuleType:
+    """The controller with nothing stubbed, so `_run_records` itself runs.
+
+    The `handoff` fixture replaces `_run_records` with a hand-built record, which
+    is convenient for round arithmetic but makes the run marker's own
+    authentication unreachable — a test written against `handoff` silently
+    exercises the stub instead of the parser.
+    """
+    path = (
+        Path(__file__).resolve().parents[1]
+        / ".codex/skills/critique/scripts/local-review-handoff.py"
+    )
+    spec = importlib.util.spec_from_file_location("restart_handoff_real", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def marker(engine: str, round_number: int) -> str:
     return (
         f"<!-- local-review-pass:v3 engine={engine} round={round_number} "
@@ -427,10 +447,14 @@ def test_handoff_restart_isolated_and_replayable(
     assert rows[:2] == history
     assert len(rows) == 3
 
-    # A delayed old-run write must never become verified current-run state.
+    # A delayed old-run write must never become verified current-run state --
+    # and must not block reading this run's own handoff either. Selecting the
+    # newest comment and refusing on it let one orphan wedge every later read,
+    # so the reader now selects within the run.
     rows.append({**history[0], "id": 32})
-    with pytest.raises(handoff.HandoffError, match="run"):
-        handoff._show_handoff(show)
+    handoff._show_handoff(show)
+    orphaned = json.loads(capsys.readouterr().out)
+    assert orphaned["comment_id"] == 31 and orphaned["run_id"] == "e" * 64
     rows[-1]["body"] = str(rows[-1]["body"]).replace(
         "run=" + "d" * 64, "run=" + "e" * 64
     )
@@ -588,3 +612,192 @@ def test_round_equal_to_cap_authorizes(
     args.round = 5
     with pytest.raises(handoff.HandoffError, match="exceeds the deep cap"):
         handoff._authorize_pass(args)
+
+
+def run_comment(
+    handoff: ModuleType,
+    *,
+    comment_id: int,
+    tier: str = "deep",
+    base: str = "b" * 40,
+    start_head: str = "a" * 40,
+    supersedes: int | None = None,
+    content: str = "Authorized run.",
+    max_rounds: int | None = None,
+) -> dict[str, object]:
+    """Build a genuinely digest-valid run comment, as `_run_records` demands.
+
+    The suite otherwise stubs `_run_records` everywhere, which leaves the run
+    marker's own authentication unexecuted. Constructing a real marker is what
+    lets a test reach those guards at all.
+    """
+    cap = handoff.TIER_CAPS[tier] if max_rounds is None else max_rounds
+    digest = handoff._run_digest(
+        tier=tier,
+        max_rounds=cap,
+        base=base,
+        start_head=start_head,
+        supersedes=supersedes,
+        content=content,
+    )
+    supersedes_text = "none" if supersedes is None else str(supersedes)
+    body = (
+        f"<!-- local-review-run:v1 id={digest} tier={tier} max-rounds={cap} "
+        f"base={base} start-head={start_head} supersedes={supersedes_text} "
+        f"content-sha256={digest} -->\n{content}"
+    )
+    return {"id": comment_id, "body": body, "user": {"login": "reviewer"}}
+
+
+def test_run_records_authenticates_the_marker(real_handoff: ModuleType) -> None:
+    """The run marker is the root of trust; parse it for real, not from a stub."""
+    valid = run_comment(real_handoff, comment_id=20)
+    (record,) = real_handoff._run_records([valid])
+    assert record["tier"] == "deep" and record["max_rounds"] == 4
+
+    # A tampered digest must not open a run.
+    tampered = dict(valid)
+    tampered["body"] = str(valid["body"]).replace("base=" + "b" * 40, "base=" + "c" * 40)
+    with pytest.raises(real_handoff.HandoffError, match="run content digest is invalid"):
+        real_handoff._run_records([tampered])
+
+    # A lean marker may not claim the deep cap, digest or no digest.
+    mismatched = run_comment(real_handoff, comment_id=20, tier="lean", max_rounds=4)
+    with pytest.raises(real_handoff.HandoffError, match="tier and cap disagree"):
+        real_handoff._run_records([mismatched])
+
+    # A body claiming to be a run marker must parse as one. (A body that merely
+    # contains a marker without opening it is skipped by the prefix filter
+    # rather than refused, so it is not this guard's case.)
+    unparseable = dict(valid)
+    unparseable["body"] = str(valid["body"]).replace("tier=deep", "tier=medium")
+    with pytest.raises(real_handoff.HandoffError, match="run marker is malformed"):
+        real_handoff._run_records([unparseable])
+
+
+def test_run_records_enforces_duplicate_and_supersession_rules(
+    real_handoff: ModuleType,
+) -> None:
+    first = run_comment(real_handoff, comment_id=20)
+    second = run_comment(real_handoff, comment_id=30, supersedes=20, content="Restart.")
+
+    assert [record["comment_id"] for record in real_handoff._run_records([first, second])] == [
+        20,
+        30,
+    ]
+
+    # A re-posted identical run id is an alias, not a second run.
+    alias = dict(first, id=25)
+    assert len(real_handoff._run_records([first, alias, second])) == 2
+
+    # The conflicting-duplicate branch is deliberately not asserted here: the
+    # digest covers the content, so a row sharing a run id with different
+    # content fails the digest check first. It is defense in depth behind an
+    # already-closed door, not a reachable state.
+
+    # A run that supersedes nothing cannot follow another run.
+    forked = run_comment(real_handoff, comment_id=30, content="Restart.")
+    with pytest.raises(real_handoff.HandoffError, match="supersession chain"):
+        real_handoff._run_records([first, forked])
+
+
+@pytest.mark.parametrize(
+    ("round_number", "base", "expected"),
+    [
+        (4, "b" * 40, None),
+        (5, "b" * 40, "does not belong to the current run"),
+        (1, "c" * 40, "does not belong to the current run"),
+    ],
+)
+def test_handoff_guards_run_base_and_round_bounds(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    round_number: int,
+    base: str,
+    expected: str | None,
+) -> None:
+    """Both sides of the cap, and base agreement, for the publication guard."""
+    rows: list[dict[str, object]] = []
+
+    def post(repo: str, pr: int, marker_text: str, body: str) -> tuple[int, bool]:
+        rows.append({"id": 21, "body": body, "user": {"login": "reviewer"}})
+        return 21, False
+
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
+    monkeypatch.setattr(handoff, "_post_issue_comment", post)
+    monkeypatch.setattr(handoff, "_verify_handoff_run", lambda *args: None)
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=7,
+        base=base,
+        head="a" * 40,
+        from_engine="codex",
+        to_engine="claude",
+        round=round_number,
+        outcome="clean",
+        context_file=None,
+    )
+    if expected is None:
+        handoff._post_handoff(args)
+        assert json.loads(capsys.readouterr().out)["verified"] is True
+        return
+    with pytest.raises(handoff.HandoffError, match=expected):
+        handoff._post_handoff(args)
+    assert rows == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("base", "c" * 40), ("max_rounds", 2)],
+)
+def test_show_handoff_guards_run_base_and_round_bounds(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+    value: object,
+) -> None:
+    """The read side owns the same agreement checks as publication, not just the run id."""
+    rows: list[dict[str, object]] = []
+    runs: list[dict[str, object]] = [
+        {
+            "comment_id": 20,
+            "run_id": "d" * 64,
+            "base": "b" * 40,
+            "tier": "deep",
+            "max_rounds": 4,
+        }
+    ]
+
+    def post(repo: str, pr: int, marker_text: str, body: str) -> tuple[int, bool]:
+        rows.append({"id": 21, "body": body, "user": {"login": "reviewer"}})
+        return 21, False
+
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
+    monkeypatch.setattr(handoff, "_run_records", lambda _: runs)
+    monkeypatch.setattr(handoff, "_post_issue_comment", post)
+    monkeypatch.setattr(handoff, "_verify_handoff_run", lambda *args: None)
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=7,
+        base="b" * 40,
+        head="a" * 40,
+        from_engine="codex",
+        to_engine="claude",
+        round=4,
+        outcome="clean",
+        context_file=None,
+    )
+    handoff._post_handoff(args)
+    capsys.readouterr()
+
+    show = SimpleNamespace(repo="example/repo", pr=7, engine="claude")
+    # The marker is digest-valid and belongs to this run id; only the field the
+    # run pins has moved, so nothing but this guard can refuse it.
+    handoff._show_handoff(show)
+    assert json.loads(capsys.readouterr().out)["round"] == 4
+
+    runs[0][field] = value
+    with pytest.raises(handoff.HandoffError, match="does not belong to the current run"):
+        handoff._show_handoff(show)

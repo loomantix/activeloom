@@ -112,6 +112,29 @@ A Lean change that reaches round 3 has either been mis-tiered — escalate it
 deliberately, below — or is not converging, which is a signal about the change
 rather than a licence for another round. Say which, and stop.
 
+### The run controller
+
+Rounds are numbered inside an authenticated `local-review-run:v1` marker, not
+across the PR's whole history. The script that owns those markers is the run
+controller, and this repository ships exactly one, shared by every engine
+surface:
+
+```
+.codex/skills/critique/scripts/local-review-handoff.py
+```
+
+It lives under `.codex/` for historical reasons and is not Codex-only; invoke it
+by that path from any surface. Its commands are `start-run`, `authorize-pass`,
+`finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
+nor `resume-run`, so follow the no-`status` round-selection rule in
+[`references/local-review-ledger.md`](references/local-review-ledger.md):
+select one past this engine's highest completed round inside the active run and
+confirm it with `authorize-pass`.
+
+If that path does not exist in the checkout under review, say so and stop rather
+than proceeding unauthorized — an absent controller is a missing gate, not a
+licence to skip one.
+
 ### Escalate and de-escalate on evidence
 
 Both moves require a confirmed finding. A suspicion, an unverified severity

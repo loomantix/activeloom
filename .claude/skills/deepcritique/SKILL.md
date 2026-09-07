@@ -76,7 +76,8 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
    Otherwise select one past Claude's highest completed round within the latest
    authenticated `local-review-run:v1` (1 when it has none), using only its
    pass/complete comments after that run marker. Honor the run's cap and use
-   `local-review-handoff.py authorize-pass` when that controller is available.
+   `.codex/skills/critique/scripts/local-review-handoff.py authorize-pass`, the
+   shared run controller. If it is absent, report that and stop.
    An ended run requires explicit restart authorization. PR-wide history is a
    fallback only when no run marker exists; earlier runs do not consume a new
    run's budget. Rounds 1–2 are adversarial; round 3 and later are convergence
