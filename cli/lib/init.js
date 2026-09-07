@@ -53,7 +53,12 @@ const TIER2_SKIPPED_WORKFLOW = '.github/workflows/dco.yml';
  */
 function checkTier2Config(python, configPaths) {
   const script = [
-    'import sys, yaml',
+    // `-c` puts the working directory at `sys.path[0]`, and the working
+    // directory is the consumer checkout. Drop it before importing so a
+    // checked-in `yaml.py` cannot stand in for PyYAML; see `checkPython`.
+    'import sys',
+    'sys.path = [entry for entry in sys.path if entry]',
+    'import yaml',
     'target = sys.argv[1]',
     'for filename in sys.argv[2:]:',
     '    try:',
@@ -111,7 +116,18 @@ function checkPython(python) {
         'Only `add` (Tier 0) works without Python.',
     };
   }
-  const yaml = spawnSync(python, ['-c', 'import yaml'], { encoding: 'utf8' });
+  // `python -c` puts the empty string — the working directory — at
+  // `sys.path[0]`, and the working directory here is the consumer checkout the
+  // developer just cloned. A repository-root `yaml.py` would be imported and
+  // executed ahead of the installed PyYAML, before any of this command's write
+  // guards run. Stripping the empty entry works on every supported Python;
+  // `PYTHONSAFEPATH` needs 3.11 and `-I` drops user site-packages, where
+  // PyYAML is commonly installed.
+  const yaml = spawnSync(
+    python,
+    ['-c', 'import sys; sys.path = [p for p in sys.path if p]; import yaml'],
+    { encoding: 'utf8' },
+  );
   if (yaml.error || yaml.signal) {
     // Not a PyYAML problem: the interpreter that answered `--version` a moment
     // ago could not be started at all. Offering `pip install pyyaml` here would
@@ -625,14 +641,39 @@ async function init(args) {
     return 1;
   }
 
-  const detected = chooseHarnesses(facts, args.harnesses);
-  const chosen = await confirmHarnesses(detected, facts, {
-    assumeYes: args.assumeYes === true,
-    explicit: args.harnesses.length > 0,
-  });
-  ui.step(
-    `harnesses: ${ui.bold(chosen.ids.join(', '))} ${ui.dim(`(${chosen.reason})`)}`,
-  );
+  // --- harnesses ------------------------------------------------------------
+  // The harness list is only ever written into a *new* config. When one is
+  // already on disk the engine reads the list from it, so detecting and
+  // confirming a list here would ask a question whose answer changes nothing.
+  // Resolve which case this is before the prompt, not after.
+  const configPath = path.join(facts.repoDir, '.activeloom-config.yml');
+  const configExists = fs.existsSync(configPath);
+  const legacyConfigs = HARNESSES.map((harness) => harness.legacyConfig)
+    .map((name) => path.join(facts.repoDir, name))
+    .filter((candidate) => fs.existsSync(candidate));
+  const keepingConfig = configExists || legacyConfigs.length > 0;
+  if (keepingConfig && args.harnesses.length > 0) {
+    ui.fail(
+      '`--harness` only applies when creating a new config; edit the existing config harness list, then re-run `init`.',
+    );
+    return 1;
+  }
+  let chosen = { ids: [], reason: 'from the existing config' };
+  if (keepingConfig) {
+    const source = configExists
+      ? '.activeloom-config.yml'
+      : legacyConfigs.map((entry) => path.basename(entry)).join(', ');
+    ui.step(`harnesses: ${ui.dim(`from ${source}`)}`);
+  } else {
+    const detected = chooseHarnesses(facts, args.harnesses);
+    chosen = await confirmHarnesses(detected, facts, {
+      assumeYes: args.assumeYes === true,
+      explicit: args.harnesses.length > 0,
+    });
+    ui.step(
+      `harnesses: ${ui.bold(chosen.ids.join(', '))} ${ui.dim(`(${chosen.reason})`)}`,
+    );
+  }
 
   const baseBranch = args.baseBranch ?? facts.git.defaultBranch ?? 'main';
   const workflowArgs = {
@@ -653,12 +694,7 @@ async function init(args) {
   }
 
   // --- config ---------------------------------------------------------------
-  const configPath = path.join(facts.repoDir, '.activeloom-config.yml');
-  const configExists = fs.existsSync(configPath);
-  const legacyConfigs = HARNESSES.map((harness) => harness.legacyConfig)
-    .map((name) => path.join(facts.repoDir, name))
-    .filter((candidate) => fs.existsSync(candidate));
-  if (tier.n === 2 && (configExists || legacyConfigs.length > 0)) {
+  if (tier.n === 2 && keepingConfig) {
     const check = checkTier2Config(
       python,
       configExists ? [configPath] : legacyConfigs,
@@ -671,12 +707,6 @@ async function init(args) {
       ui.info('  Then re-run `npx activeloom init --sync`.');
       return 1;
     }
-  }
-  if ((configExists || legacyConfigs.length > 0) && args.harnesses.length > 0) {
-    ui.fail(
-      '`--harness` only applies when creating a new config; edit the existing config harness list, then re-run `init`.',
-    );
-    return 1;
   }
   let configWritten = false;
   if (configExists) {
@@ -762,6 +792,11 @@ async function init(args) {
       // them verbatim rather than summarising them into something vaguer.
       return run.status ?? 1;
     }
+    // The engine's success output is the preview a dry run exists to give and
+    // the only place its warnings (an unset `allowed_destinations`, a prune it
+    // could not perform) are printed. Show it as the workflow's job log would.
+    if (run.stdout) process.stdout.write(run.stdout);
+    if (run.stderr) process.stderr.write(run.stderr);
   }
 
   // --- the workflow ---------------------------------------------------------

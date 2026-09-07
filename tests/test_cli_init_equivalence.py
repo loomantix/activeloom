@@ -311,3 +311,56 @@ def test_init_refuses_a_non_repository(tmp_path: Path) -> None:
     # The refusal has to name the tier that *does* work without a repo, or a
     # first-time user reads it as "this tool does not work here".
     assert "activeloom add" in combined
+
+
+@pytest.mark.parametrize("tier_flags", [[], ["--sync"]], ids=["tier1", "tier2"])
+def test_init_generated_config_is_accepted_by_the_engine(
+    tmp_path: Path, tier_flags: list[str]
+) -> None:
+    """A config `init` writes itself gets through the real engine at its tier.
+
+    Every other `init` test either pre-places a config or stubs the engine, so
+    the tier-specific policy `renderConfig` emits — the `dco.yml` sensitive
+    write at Tier 1, the `skip_targets` exclusion at Tier 2 — was reachable
+    only by hand. Dropping the tier from that call would leave the suite green
+    while every fresh Tier 2 consumer received a config whose first sync tries
+    to push a workflow file with `GITHUB_TOKEN`.
+    """
+    _require("node")
+    _require("git")
+
+    repo = tmp_path / "fresh"
+    repo.mkdir()
+    _init_git_repo(repo)
+    result = subprocess.run(
+        [
+            "node",
+            str(CLI),
+            "init",
+            *tier_flags,
+            "--yes",
+            "--harness",
+            "claude",
+            "--upstream-dir",
+            str(REPO_ROOT),
+            "--consumer-dir",
+            str(repo),
+            "--python",
+            sys.executable,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    config = (repo / ".activeloom-config.yml").read_text(encoding="utf-8")
+    dco = repo / ".github" / "workflows" / "dco.yml"
+    if "--sync" in tier_flags:
+        assert "skip_targets:\n  - .github/workflows/dco.yml" in config
+        assert "allow_sensitive_writes: []" in config
+        assert not dco.exists(), "tier 2 must not deliver a workflow GITHUB_TOKEN cannot push"
+    else:
+        assert "allow_sensitive_writes:\n  - .github/workflows/dco.yml" in config
+        assert "skip_targets: []" in config
+        assert dco.is_file(), "tier 1 delivers the shared DCO workflow"
+    assert (repo / ".claude" / "REVIEW_WORKFLOW.md").is_file()

@@ -852,3 +852,55 @@ test('add success is per requested skill across chosen harnesses', async () => {
     for (const home of homes) fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('init keeps the existing config without asking which harnesses to write', async () => {
+  // The harness list only ever lands in a *new* config. With one already on
+  // disk the engine reads the list from it, so a prompt here would ask a
+  // question whose answer is discarded — and the interactive path must not
+  // block a re-run on it.
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  const originalConfirm = ui.confirm;
+  const asked = [];
+  ui.confirm = async (question) => {
+    asked.push(question);
+    return true;
+  };
+  try {
+    fs.writeFileSync(
+      path.join(repo, '.activeloom-config.yml'),
+      'harnesses: [codex]\nsubstitutions:\n  PROJECT_NAME: kept\n',
+    );
+    await withTTY(true, async () => {
+      assert.strictEqual(
+        await initLib.init(initArgs(repo, { assumeYes: false })),
+        0,
+      );
+    });
+    assert.deepStrictEqual(asked, [], 'nothing should have been asked');
+  } finally {
+    ui.confirm = originalConfirm;
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('checkPython ignores a yaml.py in the working directory', () => {
+  // `python -c` puts the working directory on sys.path first, and the
+  // working directory is the consumer checkout. A checked-in `yaml.py` must
+  // neither run nor stand in for PyYAML.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-cwd-'));
+  const marker = path.join(dir, 'ran');
+  const previous = process.cwd();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'yaml.py'),
+      `open(${JSON.stringify(marker)}, "w").close()\nraise SystemExit(7)\n`,
+    );
+    process.chdir(dir);
+    const result = initLib.checkPython('python3');
+    assert.strictEqual(fs.existsSync(marker), false, 'yaml.py must not run');
+    assert.strictEqual(result.ok, true, JSON.stringify(result));
+  } finally {
+    process.chdir(previous);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
