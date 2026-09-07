@@ -26,11 +26,14 @@ the tier resolved to Deep, and Phase 0 checks it against the PR's tier marker.
 
 ## Stance resolution
 
-Resolve this engine's round number per the ledger before selecting lenses: use
-`$AGENT_LOOP_REVIEW_ROUND` when the runner set it, take it from an invoking
-`/deepcritique`, or count the `local-review-pass:v3` and
-`local-review-complete:v3`
-markers on the PR naming `engine=claude` and add one.
+Before selecting lenses, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
+or the round supplied by `/deepcritique`. Otherwise select one past Claude's
+highest completed round within the latest authenticated `local-review-run:v1`
+(1 when it has none), using only its pass/complete comments after that run marker.
+Honor the run's cap and use `local-review-handoff.py authorize-pass` when that
+controller is available. An ended run requires explicit restart authorization.
+PR-wide history is a fallback only when no run marker exists; earlier runs never
+consume the new run's budget.
 
 The stance follows the tier's schedule, not the round ordinal alone:
 

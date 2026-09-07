@@ -1,6 +1,6 @@
 # Review Workflow
 
-This file is synced from `claude-platform` into consumer repos. Consumer edits
+This file is synced from `loomantix/activeloom` into consumer repos. Consumer edits
 will be overwritten on the next sync.
 
 ## PR-First Rule
@@ -269,7 +269,7 @@ A caller supplies only the repository, PR, base, head, and round. It
 refuses to start unless the current repository, the PR's ownership and head
 repository, local HEAD, PR head, and remote head all match the requested exact
 head over a clean worktree, and unless the reviewer CLI resolves exactly one
-live `deepcritique` skill backed by a clean `loomantix/gemini-platform`
+live `deepcritique` skill backed by a clean `loomantix/activeloom`
 checkout at the launcher's pinned commit that vendors this engine's
 `review-ledger` version. Hand-composing the CLI command instead is outside the
 tested contract.

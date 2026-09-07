@@ -339,6 +339,187 @@ else:
     assert len(persisted) == 3
 
 
+@pytest.mark.parametrize("lost_response", [False, True])
+def test_handoff_restart_isolated_and_replayable(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    lost_response: bool,
+) -> None:
+    """A same-head restart must not reuse or read an older reverse handoff."""
+    rows: list[dict[str, object]] = []
+    runs = [
+        {
+            "comment_id": 20,
+            "run_id": "d" * 64,
+            "base": "b" * 40,
+            "tier": "deep",
+            "max_rounds": 4,
+        }
+    ]
+    lose_next_post = False
+    advance_run_on_post = False
+
+    def github(args: list[str], payload: dict[str, object] | None = None) -> object:
+        nonlocal lose_next_post
+        if args[:3] == ["api", "-X", "POST"]:
+            assert payload is not None
+            comment_id = (
+                max(
+                    [int(str(row["id"])) for row in rows]
+                    + [int(str(run["comment_id"])) for run in runs]
+                )
+                + 1
+            )
+            row: dict[str, object] = {
+                "id": comment_id,
+                "body": payload["body"],
+                "user": {"login": "reviewer"},
+            }
+            rows.append(row)
+            if advance_run_on_post:
+                runs.append(
+                    {**runs[-1], "comment_id": comment_id + 1, "run_id": "f" * 64}
+                )
+            if lose_next_post:
+                lose_next_post = False
+                raise handoff.HandoffError("simulated lost POST response")
+            return row
+        assert args[0] == "api" and "/issues/comments/" in args[1]
+        return next(row for row in rows if str(row["id"]) == args[1].rsplit("/", 1)[1])
+
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
+    monkeypatch.setattr(handoff, "_run_records", lambda _: runs)
+    monkeypatch.setattr(handoff, "_current_actor", lambda: "reviewer")
+    monkeypatch.setattr(handoff, "_json_output", github)
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=7,
+        base="b" * 40,
+        head="a" * 40,
+        from_engine="codex",
+        to_engine="claude",
+        round=1,
+        outcome="clean",
+        context_file=None,
+    )
+    handoff._post_handoff(args)
+    capsys.readouterr()
+    args.from_engine, args.to_engine = "claude", "codex"
+    handoff._post_handoff(args)
+    capsys.readouterr()
+    history = [dict(row) for row in rows]
+    runs.append({**runs[0], "comment_id": 30, "run_id": "e" * 64})
+    show = SimpleNamespace(repo="example/repo", pr=7, engine="claude")
+    with pytest.raises(handoff.HandoffError, match="no authenticated"):
+        handoff._show_handoff(show)
+    args.from_engine, args.to_engine = "codex", "claude"
+    lose_next_post = lost_response
+    handoff._post_handoff(args)
+    posted = json.loads(capsys.readouterr().out)
+    assert posted["comment_id"] == 31
+    assert posted["replayed"] is lost_response
+    handoff._post_handoff(args)
+    assert json.loads(capsys.readouterr().out)["replayed"] is True
+    handoff._show_handoff(show)
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["comment_id"] == 31 and shown["verified"] is True
+    assert rows[:2] == history
+    assert len(rows) == 3
+
+    # A delayed old-run write must never become verified current-run state.
+    rows.append({**history[0], "id": 32})
+    with pytest.raises(handoff.HandoffError, match="run"):
+        handoff._show_handoff(show)
+    rows[-1]["body"] = str(rows[-1]["body"]).replace(
+        "run=" + "d" * 64, "run=" + "e" * 64
+    )
+    with pytest.raises(handoff.HandoffError, match="digest"):
+        handoff._show_handoff(show)
+
+    # Even at the same Git head, a concurrent run transition invalidates a read.
+    rows.pop()
+    monkeypatch.setattr(
+        handoff,
+        "_verify_head",
+        lambda *args: runs.append(
+            {
+                **runs[-1],
+                "comment_id": 40,
+                "run_id": "f" * 64,
+            }
+        ),
+    )
+    with pytest.raises(handoff.HandoffError, match="run changed"):
+        handoff._show_handoff(show)
+    # A run can also advance while a mutation response is in flight.
+    monkeypatch.setattr(handoff, "_verify_head", lambda *args: None)
+    runs[-1]["run_id"] = "e" * 64
+    advance_run_on_post = True
+    args.round = 2
+    with pytest.raises(handoff.HandoffError, match="run changed"):
+        handoff._post_handoff(args)
+
+
+def test_legacy_handoff_without_run_still_reads(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Preserve the old digest/marker contract only when no run exists."""
+    rows: list[dict[str, object]] = []
+    monkeypatch.setattr(handoff, "_run_records", lambda _: [])
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
+
+    def post(repo: str, pr: int, marker: str, body: str) -> tuple[int, bool]:
+        assert " run=" not in marker
+        rows.append({"id": 1, "body": body})
+        return 1, False
+
+    monkeypatch.setattr(handoff, "_post_issue_comment", post)
+    handoff._post_handoff(
+        SimpleNamespace(
+            repo="example/repo",
+            pr=7,
+            base="b" * 40,
+            head="a" * 40,
+            from_engine="codex",
+            to_engine="claude",
+            round=1,
+            outcome="clean",
+            context_file=None,
+        )
+    )
+    capsys.readouterr()
+    handoff._show_handoff(SimpleNamespace(repo="example/repo", pr=7, engine="claude"))
+    assert json.loads(capsys.readouterr().out)["verified"] is True
+
+
+def test_ended_run_refuses_handoff_reads_and_writes(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: [])
+    monkeypatch.setattr(handoff, "_run_end", lambda *args: {"outcome": "aborted"})
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=7,
+        base="b" * 40,
+        head="a" * 40,
+        from_engine="codex",
+        to_engine="claude",
+        round=1,
+        outcome="clean",
+        context_file=None,
+    )
+    with pytest.raises(handoff.HandoffError, match="ended"):
+        handoff._post_handoff(args)
+    with pytest.raises(handoff.HandoffError, match="ended"):
+        handoff._show_handoff(
+            SimpleNamespace(repo="example/repo", pr=7, engine="claude")
+        )
+
+
 def test_legacy_numbered_attestation_inside_run_is_refused(
     handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,

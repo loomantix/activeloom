@@ -82,19 +82,25 @@ session mode or on the user having said "continue" or "resume". Read every
 `local-review-pass:v3` and `local-review-complete:v3` attestation on the PR,
 their bodies, and the inline v3 threads their fingerprints name; that record,
 not a handoff comment, is the authority on what another engine already found
-here. A `local-review-handoff:v1` comment addressed to Codex is a richer read
+here. A current-run `local-review-handoff:v1` comment addressed to Codex is a richer read
 when one exists, and its absence is normal rather than a reason to refuse.
 
-Stop and hand back to the user only when a handoff comment exists and targets
+Use `local-review-handoff.py show-handoff` to verify a handoff's run and recipient;
+historical handoffs are context, not authority for a restarted run.
+Stop and hand back to the user only when a current-run handoff exists and targets
 another engine — that pass is owed and belongs in its own fresh session. Another
 declared reviewer holding no attestation is not a stop: reviewer order within a
 round is a scheduling choice, not a protocol rule.
 
-Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
-when the runner set it, otherwise one past the count of `local-review-pass:v3`
-and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds
-1–2 are adversarial; round 3 and later are convergence rounds. State which
-applies before invoking a lane.
+Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied. Otherwise,
+within the latest authenticated `local-review-run:v1`, select one past this
+engine's highest completed round (1 when it has none), considering only its
+`local-review-pass:v3` and `local-review-complete:v3` comments after that run's
+marker. Validate the selection with `local-review-handoff.py authorize-pass`
+before a lane. An ended run requires explicit restart authorization; never
+count earlier runs toward the new run's round or cap. Only a legacy review with
+no run marker uses PR-wide history. Rounds 1–2 are adversarial; round 3 and later
+are convergence rounds. State which applies before invoking a lane.
 
 ## Chain
 

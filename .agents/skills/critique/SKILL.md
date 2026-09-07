@@ -26,12 +26,16 @@ Do not proceed in the current session unless the user explicitly overrides.
 
 ## Stance Resolution
 
-Resolve this engine's round number per `.agents/references/local-review-ledger.md`
-before selecting lanes: use `$AGENT_LOOP_REVIEW_ROUND` when the runner set it,
-take it from an invoking `deepcritique`, or resolve the active runtime as
-`gemini` or `antigravity` and count the `local-review-pass:v3` and
-`local-review-complete:v3` markers naming that engine, then add one. Use the same resolved
-engine for every helper call and result; use `codex` only for a Codex pass.
+Before selecting lanes, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
+or the round supplied by `deepcritique`. Otherwise select one past the active
+engine's highest completed round within the latest authenticated
+`local-review-run:v1` (1 when it has none), using only pass/complete comments after
+that run marker. Resolve Agy as `gemini`, including historical `antigravity`
+aliases in its evidence; use `codex` only for a Codex pass. Honor the run's cap and
+use `local-review-handoff.py authorize-pass` when that controller is available.
+An ended run requires explicit restart authorization. PR-wide history is a
+fallback only when no run marker exists. Use the same engine for every helper
+call and result.
 
 - **Rounds 1–2 run adversarially.** The stance, matrices, and fix bias below
   apply as written.

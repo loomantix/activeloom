@@ -1,6 +1,6 @@
 # Review Workflow
 
-This file is synced from `codex-platform` into consumer repos. Consumer-specific
+This file is synced from `loomantix/activeloom` into consumer repos. Consumer-specific
 edits will be overwritten on the next sync.
 
 ## PR-First Rule
@@ -105,7 +105,10 @@ modes silently in the middle of a round.
   choose the other engine's model, effort, flags, or runtime settings.
 
 In handoff mode, when the user says `continue review on PR <number>`, `resume
-review`, or similar, first load the latest authenticated handoff comment.
+review`, or similar, use `local-review-handoff.py show-handoff` to load the latest
+authenticated handoff in the current run. New handoffs bind their digest and
+marker to that run; handoffs from older runs are historical context only. The
+controller preserves unscoped handoffs only for legacy reviews with no run.
 Continue only when it names the current engine and its exact head is still the
 PR head. If it names the other engine, stop and ask the user to start that
 engine in a fresh terminal.

@@ -31,10 +31,13 @@ separate-session protocol transition requires another reviewer.
 
 ## Stance Resolution
 
-Resolve this engine's round number per `.codex/references/local-review-ledger.md`
-before selecting lanes: use `$AGENT_LOOP_REVIEW_ROUND` when the runner set it,
-take it from an invoking `deepcritique`, or count the `local-review-pass:v3` and
-`local-review-complete:v3` markers on the PR naming `engine=codex` and add one.
+Before selecting lanes, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
+or the round supplied by `deepcritique`. Otherwise select one past Codex's
+highest completed round within the latest authenticated `local-review-run:v1`
+(1 when it has none), using only pass/complete comments after that run marker.
+Validate it with `local-review-handoff.py authorize-pass`. An ended run requires
+explicit restart authorization. PR-wide history is a fallback only when no run
+marker exists; it never consumes a restarted run's budget.
 
 - **Rounds 1–2 run adversarially.** The stance, matrices, and fix bias below
   apply as written.

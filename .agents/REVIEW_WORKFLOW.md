@@ -1,6 +1,6 @@
 # Review Workflow
 
-This file is synced from `gemini-platform` into consumer repos. Consumer-specific
+This file is synced from `loomantix/activeloom` into consumer repos. Consumer-specific
 edits will be overwritten on the next sync.
 
 ## PR-First Rule

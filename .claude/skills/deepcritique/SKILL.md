@@ -72,11 +72,15 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
    build a new immutable packet before deep critique. If refactorpass is a no-op,
    both lanes may reuse the initial packet. The ledger's diff-delivery rules
    govern both.
-8. Resolve this engine's round number per the ledger — `$AGENT_LOOP_REVIEW_ROUND`
-   when the runner set it, otherwise one past the count of `local-review-pass:v3`
-   and `local-review-complete:v3` markers naming `engine=claude`. Rounds 1–2 are
-   adversarial; round 3 and later are convergence rounds. State which applies
-   before running a lane.
+8. Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied.
+   Otherwise select one past Claude's highest completed round within the latest
+   authenticated `local-review-run:v1` (1 when it has none), using only its
+   pass/complete comments after that run marker. Honor the run's cap and use
+   `local-review-handoff.py authorize-pass` when that controller is available.
+   An ended run requires explicit restart authorization. PR-wide history is a
+   fallback only when no run marker exists; earlier runs do not consume a new
+   run's budget. Rounds 1–2 are adversarial; round 3 and later are convergence
+   rounds. State which applies before running a lane.
 
 ### Tier gate
 
