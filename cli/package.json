@@ -1,0 +1,38 @@
+{
+  "name": "activeloom",
+  "version": "0.1.0",
+  "description": "One agent toolkit for many repositories — install the skills, or wire a repo to receive them.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loomantix/activeloom.git",
+    "directory": "cli"
+  },
+  "homepage": "https://github.com/loomantix/activeloom#readme",
+  "bugs": {
+    "url": "https://github.com/loomantix/activeloom/issues"
+  },
+  "keywords": [
+    "claude",
+    "codex",
+    "agents",
+    "skills",
+    "code-review",
+    "cli"
+  ],
+  "bin": {
+    "activeloom": "bin/activeloom.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {},
+  "scripts": {
+    "test": "node --test ../tests/cli/*.test.js"
+  }
+}

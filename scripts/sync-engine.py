@@ -1157,6 +1157,40 @@ def unallowed_destinations(
     return denied
 
 
+def consumer_symlink_destinations(
+    targets: Sequence[Any], skip: Collection[str], consumer_dir: Path
+) -> list[str]:
+    """Selected destinations containing a consumer-side symlink component.
+
+    The regular workflow sync preserves the engine's documented trusted-tree
+    behavior. The local onboarding CLI opts into this stricter preflight so a
+    checkout-controlled link cannot turn a repository write into a host write.
+    """
+    denied: set[str] = set()
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        dest_rel = target.get("destination")
+        source_rel = target.get("source")
+        if not isinstance(dest_rel, str) or not dest_rel:
+            continue
+        if (isinstance(source_rel, str) and source_rel in skip) or dest_rel in skip:
+            continue
+        dest_path = resolve_under(consumer_dir, dest_rel)
+        if dest_path is None:
+            continue
+        dest_rel_canonical = dest_path.relative_to(consumer_dir).as_posix()
+        if dest_rel_canonical != dest_rel:
+            continue
+        probe = consumer_dir
+        for part in dest_path.relative_to(consumer_dir).parts:
+            probe /= part
+            if probe.is_symlink():
+                denied.add(dest_rel_canonical)
+                break
+    return sorted(denied)
+
+
 def render_telemetry_env(raw: object, config_path: Path) -> str | None:
     """Render the `telemetry:` block as a one-line JSON object literal.
 
@@ -1798,6 +1832,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--dry-run", action="store_true", help="don't write files; report what would change")
+    parser.add_argument(
+        "--reject-consumer-symlinks",
+        action="store_true",
+        help="refuse selected destinations containing consumer-side symlinks",
+    )
     return parser.parse_args()
 
 
@@ -1906,6 +1945,17 @@ def main() -> int:
                 )
             )
             return 1
+        if args.reject_consumer_symlinks:
+            denied_symlinks = consumer_symlink_destinations(
+                scope_targets, scope.skip, consumer_dir
+            )
+            if denied_symlinks:
+                listed = "".join(f"       - {dest}\n" for dest in denied_symlinks)
+                sys.stderr.write(
+                    "  ❌ refusing selected destination(s) containing a "
+                    f"consumer-side symlink:\n{listed}"
+                )
+                return 1
 
     print(f"Syncing from {upstream_repo} → {consumer_dir}")
     if args.dry_run:

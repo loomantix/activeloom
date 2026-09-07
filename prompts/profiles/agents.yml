@@ -57,6 +57,21 @@ skills:
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use when the user asks to grill an idea, pressure-test a design, or work out what to build before any code exists.'
 
+  onboard:
+    # No `disable-model-invocation` on this harness, so the description carries
+    # its own trigger prose or the skill never fires. The leading space is
+    # load-bearing: the value is appended directly to the sentence before it.
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use after `npx activeloom init` when .activeloom-config.yml still has TODO(activeloom) markers to fill.'
+    AGENT_LOOP_SETUP: |-
+      `agent-loop` requires **both** the Gemini (`agy`) and Claude CLIs. Its
+      consumer-owned config is `.agents/skills/agent-loop/agent-loop.config`.
+
+      The Gemini and Claude review hooks, Claude effort policy, worker model, and
+      fallback model ship with supported defaults. Do not rewrite those values as
+      part of onboarding. Verify that both required CLIs are available; if either
+      is missing, say `agent-loop` cannot run and leave its configuration intact.
+
   phone-install:
     FM_EXTRAS: ''
 

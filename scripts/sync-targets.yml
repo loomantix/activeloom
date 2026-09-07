@@ -218,6 +218,14 @@ harnesses:
         destination: .claude/skills/task-packet/SKILL.md
         substitutions: []
 
+      # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
+      # project-specific substitution values that `npx activeloom init` refuses
+      # to invent, for a human to confirm. Consumers receive it so a teammate
+      # can re-run onboarding after the first install without the CLI.
+      - source: .claude/skills/onboard/SKILL.md
+        destination: .claude/skills/onboard/SKILL.md
+        substitutions: []
+
       - source: .claude/skills/phone-install/SKILL.md
         destination: .claude/skills/phone-install/SKILL.md
         substitutions: []
@@ -602,6 +610,14 @@ harnesses:
         destination: .codex/skills/ship-staging/SKILL.md
         substitutions: []
 
+      # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
+      # project-specific substitution values that `npx activeloom init` refuses
+      # to invent, for a human to confirm. Consumers receive it so a teammate
+      # can re-run onboarding after the first install without the CLI.
+      - source: .codex/skills/onboard/SKILL.md
+        destination: .codex/skills/onboard/SKILL.md
+        substitutions: []
+
       - source: .codex/skills/phone-install/SKILL.md
         destination: .codex/skills/phone-install/SKILL.md
         substitutions: []
@@ -928,6 +944,14 @@ harnesses:
 
       - source: .agents/skills/ship-staging/SKILL.md
         destination: .agents/skills/ship-staging/SKILL.md
+        substitutions: []
+
+      # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
+      # project-specific substitution values that `npx activeloom init` refuses
+      # to invent, for a human to confirm. Consumers receive it so a teammate
+      # can re-run onboarding after the first install without the CLI.
+      - source: .agents/skills/onboard/SKILL.md
+        destination: .agents/skills/onboard/SKILL.md
         substitutions: []
 
       - source: .agents/skills/phone-install/SKILL.md

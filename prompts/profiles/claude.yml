@@ -96,6 +96,34 @@ skills:
       argument-hint: (optional) the idea, plan, or decision to stress-test
     DESC_TRIGGER: ''
 
+  onboard:
+    # Same pairing as `grill`: `disable-model-invocation` makes trigger prose in
+    # the description dead weight on this harness, so DESC_TRIGGER is empty here
+    # and non-empty on the harnesses that can auto-invoke. The two move together.
+    FM_EXTRAS: 'disable-model-invocation: true'
+    DESC_TRIGGER: ''
+    AGENT_LOOP_SETUP: |-
+      `agent-loop` requires **both** the Claude and Codex CLIs. Its consumer-owned
+      config is `.claude/skills/agent-loop/agent-loop.config`.
+
+      Ask which exact worker and reviewer model identifiers the user wants, and
+      which Claude effort policy they selected. Take identifiers from the user or
+      from CLI output; never invent one from memory.
+
+      Fill only these currently empty keys, following the template comments for
+      hook flags and required environment variables:
+
+      | Key | Value |
+      | --- | --- |
+      | `worker_model` | Exact worker identifier from the user. |
+      | `worker_fallback_model` | Only if the user names one. |
+      | `claude_review_hook` | Literal Claude reviewer command from the template contract. |
+      | `codex_review_hook` | Literal Codex reviewer command from the template contract. |
+      | `claude_effort_policy` | Literal effort selected by the user. |
+
+      If either CLI is unavailable, say `agent-loop` cannot run and leave the
+      review configuration empty. Do not write half a roster.
+
   phone-install:
     FM_EXTRAS: 'disable-model-invocation: true'
 
