@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, NoReturn, cast
+from urllib.parse import quote
 
 
 CURRENT_ACTOR: str | None = None
@@ -109,13 +110,13 @@ def _current_actor() -> str:
     return CURRENT_ACTOR
 
 
-def _flatten_pages(value: Any) -> list[dict[str, Any]]:
+def _flatten_pages(value: Any, label: str = "PR-comment") -> list[dict[str, Any]]:
     if not isinstance(value, list) or any(not isinstance(page, list) for page in value):
-        _fail("GitHub returned malformed PR-comment pagination")
+        _fail(f"GitHub returned malformed {label} pagination")
     rows: list[dict[str, Any]] = []
     for page in value:
         if any(not isinstance(row, dict) for row in page):
-            _fail("GitHub returned malformed PR-comment rows")
+            _fail(f"GitHub returned malformed {label} rows")
         rows.extend(cast(list[dict[str, Any]], page))
     return rows
 
@@ -157,6 +158,87 @@ def _verify_head(repo: str, pr: int, expected_head: str) -> None:
         _fail(
             f"PR head mismatch: expected {expected_head}, found {actual or '<empty>'}"
         )
+
+
+def _verify_signed_pr_history(repo: str, pr: int, expected_head: str) -> None:
+    """Require GitHub to verify every commit currently introduced by the PR."""
+    pull = _json_output(["api", f"repos/{repo}/pulls/{pr}"])
+    if not isinstance(pull, dict):
+        _fail("GitHub returned malformed pull-request metadata")
+    commit_count = pull.get("commits")
+    head = pull.get("head")
+    base = pull.get("base")
+    live_head = head.get("sha") if isinstance(head, dict) else None
+    base_ref = base.get("ref") if isinstance(base, dict) else None
+    if live_head != expected_head:
+        _fail(
+            f"PR head mismatch while verifying commit signatures: expected "
+            f"{expected_head}, found {live_head or '<empty>'}"
+        )
+    if not isinstance(commit_count, int) or commit_count < 1:
+        _fail("GitHub returned an invalid PR commit count")
+    if not isinstance(base_ref, str) or not base_ref:
+        _fail("GitHub returned an invalid PR base branch")
+
+    encoded_base_ref = quote(base_ref, safe="")
+    rules = _json_output(
+        ["api", f"repos/{repo}/rules/branches/{encoded_base_ref}"]
+    )
+    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+        _fail("GitHub returned malformed effective branch rules")
+    if not any(rule.get("type") == "required_signatures" for rule in rules):
+        return
+
+    pages = _json_output(
+        [
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{repo}/pulls/{pr}/commits?per_page=100",
+        ]
+    )
+    commits = _flatten_pages(pages, "PR-commit")
+    if len(commits) != commit_count:
+        _fail(
+            "could not verify the entire PR commit history: GitHub reported "
+            f"{commit_count} commits but returned {len(commits)}"
+        )
+    if commits[-1].get("sha") != expected_head:
+        _fail("GitHub PR commit history does not end at the expected head")
+
+    unverified: list[str] = []
+    for row in commits:
+        sha = row.get("sha")
+        commit = row.get("commit")
+        verification = commit.get("verification") if isinstance(commit, dict) else None
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            _fail("GitHub returned malformed PR commit identity data")
+        if not isinstance(verification, dict):
+            _fail(f"GitHub returned no signature verification for PR commit {sha}")
+        if verification.get("verified") is not True:
+            reason = verification.get("reason")
+            label = reason if isinstance(reason, str) and reason else "unverified"
+            unverified.append(f"{sha} ({label})")
+
+    if unverified:
+        shown = ", ".join(unverified[:10])
+        remainder = len(unverified) - 10
+        suffix = f", and {remainder} more" if remainder > 0 else ""
+        _fail(
+            "PR history contains commits GitHub does not verify: "
+            f"{shown}{suffix}. Review cannot start or continue because a signed "
+            "head does not repair an unsigned ancestor. Prepare signed replacement "
+            "commits in an isolated worktree, prove the replacement trees match, "
+            "and obtain explicit approval for a lease-protected force-push before "
+            "rewriting the PR branch. Do not amend, rebase, or force-push without "
+            "that approval."
+        )
+
+
+def _verify_reviewable_head(repo: str, pr: int, expected_head: str) -> None:
+    """Verify the exact live head and its complete commit-signature history."""
+    _verify_head(repo, pr, expected_head)
+    _verify_signed_pr_history(repo, pr, expected_head)
 
 
 def _read_context(path_value: str | None) -> str:
@@ -352,7 +434,7 @@ def _start_run(args: argparse.Namespace) -> None:
         and previous["start_head"] == args.head
         and previous["content"] == content
     ):
-        _verify_head(args.repo, args.pr, args.head)
+        _verify_reviewable_head(args.repo, args.pr, args.head)
         print(
             json.dumps(
                 {
@@ -388,9 +470,9 @@ def _start_run(args: argparse.Namespace) -> None:
         f"content-sha256={run_id} -->"
     )
     body = f"{marker}\n{content}"
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body)
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     print(
         json.dumps(
             {
@@ -462,7 +544,7 @@ def _authorize_pass(args: argparse.Namespace) -> None:
         _fail("this engine already completed the requested run round")
     if args.round > highest_round + 1:
         _fail("review passes may not skip a run round")
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     print(
         json.dumps(
             {
@@ -494,16 +576,25 @@ def _finish_run(args: argparse.Namespace) -> None:
     if existing is not None:
         if existing["head"] != args.head or existing["outcome"] != args.outcome:
             _fail("local-review run already ended with a different result")
-        _verify_head(args.repo, args.pr, args.head)
+        if args.outcome == "converged":
+            _verify_reviewable_head(args.repo, args.pr, args.head)
+        else:
+            _verify_head(args.repo, args.pr, args.head)
         print(
             json.dumps(
                 {**existing, "replayed": True, "run_id": run["run_id"]}, sort_keys=True
             )
         )
         return
-    _verify_head(args.repo, args.pr, args.head)
+    if args.outcome == "converged":
+        _verify_reviewable_head(args.repo, args.pr, args.head)
+    else:
+        _verify_head(args.repo, args.pr, args.head)
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, marker)
-    _verify_head(args.repo, args.pr, args.head)
+    if args.outcome == "converged":
+        _verify_reviewable_head(args.repo, args.pr, args.head)
+    else:
+        _verify_head(args.repo, args.pr, args.head)
     print(
         json.dumps(
             {
@@ -626,7 +717,7 @@ def _verify_handoff_run(repo: str, pr: int, expected_run_id: str | None) -> None
 def _post_handoff(args: argparse.Namespace) -> None:
     if args.from_engine == args.to_engine:
         _fail("review handoff engines must be different")
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     run = _handoff_run(_issue_comments(args.repo, args.pr))
     run_id = cast(str, run["run_id"]) if run is not None else None
     if run is not None and (
@@ -652,9 +743,9 @@ def _post_handoff(args: argparse.Namespace) -> None:
         + f"content-sha256={digest} -->"
     )
     body = f"{marker}\n{content}"
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body)
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     _verify_handoff_run(args.repo, args.pr, run_id)
     print(
         json.dumps(

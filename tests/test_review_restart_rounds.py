@@ -25,6 +25,7 @@ def handoff(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "_verify_head", lambda *args: None)
+    monkeypatch.setattr(module, "_verify_signed_pr_history", lambda *args: None)
     monkeypatch.setattr(
         module,
         "_run_records",

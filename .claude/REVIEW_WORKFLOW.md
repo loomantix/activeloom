@@ -149,6 +149,16 @@ An aborted run is terminal in this controller. Preserve its evidence; a new
 `start-run --restart` requires fresh explicit user authorization and starts
 at round 1 with a full cap. This is a new review, not a budget-preserving resume.
 
+When the target branch's effective GitHub rules require signed commits,
+`start-run` verifies GitHub's signature status for every commit introduced by
+the PR, not only its current head. `authorize-pass`, `post-handoff`, and a
+converged `finish-run` repeat that check so a later unsigned fix cannot pass
+through the relay. An unsigned or otherwise unverified commit stops before a
+reviewer budget is spent. Prepare signed replacement commits in an isolated
+worktree, prove their trees match, and obtain explicit approval for a
+lease-protected force-push before rewriting published history. Repositories
+whose effective target-branch rules accept unsigned commits are unchanged.
+
 If that path does not exist in the checkout under review, say so and stop rather
 than proceeding unauthorized — an absent controller is a missing gate, not a
 licence to skip one.
