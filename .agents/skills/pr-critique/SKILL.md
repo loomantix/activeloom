@@ -103,14 +103,15 @@ RANGE="$REVIEW_BASE_SHA..HEAD"
 
 Skip docs/config-only changesets (same heuristic as `critique`): if `git diff
 --name-only "$RANGE"` contains no source files, report the skip and exit — there
-is nothing for the matrix to find.
+is nothing for the review to find.
 
 ## Phase 1: Review at the resolved tier
 
 Resolve the tier from `.agents/REVIEW_WORKFLOW.md` and the authenticated tier
 marker before selecting work. Being a cross-engine reviewer does not select
-Deep. Run `critique` against `$RANGE` at that tier and stance, using its lens and
-execution policy. Load only the matching role references; preserve explicit
+Deep. Run `critique` against `$RANGE` at that tier and stance, following that
+skill's own lens and execution policy as this prompt root states it. Do not
+import another root's. Load only the matching role references; preserve explicit
 user choices about independent reviewers. Report the actual lenses and execution
 method instead of inferring them from the skill name.
 

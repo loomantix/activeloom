@@ -190,6 +190,8 @@ not by itself evidence of repeated failed fixes; a recurring regression or a
 separate recent defect in the same behavior still counts. A new sanitizer, a
 broadened allowlist value shape, or an unproven boundary change remains Deep.
 Record why the exception applies. Small line count alone is not that evidence.
+The exception fails closed: when it is unclear whether a change stays inside
+it, it does not, and trigger 1 stands.
 
 ### What does not set the tier
 

@@ -40,11 +40,11 @@ including an aborted one, requires fresh restart authorization: this controller
 has no budget-preserving resume command. PR-wide history is a fallback only when no run
 marker exists; it never consumes a restarted run's budget.
 
-- **Adversarial:** Lean round 1 and Deep rounds 1–2. The stance, matrices,
-  and fix bias below apply as written.
+- **Adversarial:** Lean round 1 and Deep rounds 1–2. The stance, lens
+  selection, and fix bias below apply as written.
 - **Convergence:** Lean round 2 and Deep rounds 3–4. At Deep both engines have read the
   change cold twice; the goal moves from challenging it to landing it. See
-  "Convergence Rounds" below — it overrides the lane selection and the fix bias,
+  "Convergence Rounds" below — it overrides the lens selection and the fix bias,
   and nothing else. The post-before-editing, reply, and resolve contract is
   unchanged, and the round cap does not move.
 
@@ -260,7 +260,7 @@ role references needed for the selected lenses.
    the exact changed paths its lens needs, and have it pull path-scoped diffs per
    the ledger instead of receiving one pasted or stored whole diff.
 6. Resolve the round and stance per "Stance Resolution". In a convergence round,
-   the lane selection in "Convergence Rounds" narrows steps 7 and 8, and its
+   the lens selection in "Convergence Rounds" overrides steps 7 and 8, and its
    fix bias replaces step 10. Every other step, including step 9, is unchanged.
 7. Select lenses using "Review lenses and execution" and the resolved stance.
    Load only their matching files under `.codex/references/roles/`.
