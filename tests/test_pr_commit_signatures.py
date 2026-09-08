@@ -47,6 +47,7 @@ def github_responses(
     reported_count: int | None = None,
     live_head: str = HEAD,
     require_signatures: bool = True,
+    classic_signatures: bool = False,
     base_ref: str = "main",
 ) -> None:
     """Stub the GitHub reads used by the signature preflight."""
@@ -62,6 +63,21 @@ def github_responses(
         encoded_base_ref = base_ref.replace("/", "%2F")
         if args == ["api", f"repos/{REPO}/rules/branches/{encoded_base_ref}"]:
             return [{"type": "required_signatures"}] if require_signatures else []
+        if args == [
+            "api",
+            "graphql",
+            "-f",
+            "query=query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){ref(qualifiedName:$qualifiedName){branchProtectionRule{requiresCommitSignatures}}}}",
+            "-F",
+            "owner=example",
+            "-F",
+            "name=repository",
+            "-F",
+            f"qualifiedName=refs/heads/{base_ref}",
+        ]:
+            assert not require_signatures
+            rule = {"requiresCommitSignatures": True} if classic_signatures else None
+            return {"data": {"repository": {"ref": {"branchProtectionRule": rule}}}}
         if args == [
             "api",
             "--paginate",
@@ -122,6 +138,54 @@ def test_unsigned_history_is_allowed_when_target_policy_does_not_require_signatu
     )
 
     handoff._verify_signed_pr_history(REPO, 7, HEAD)
+
+
+def test_classic_branch_protection_requires_full_history(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github_responses(
+        monkeypatch,
+        handoff,
+        [
+            commit(UNSIGNED, verified=False, reason="unsigned"),
+            commit(HEAD, verified=True, reason="valid"),
+        ],
+        require_signatures=False,
+        classic_signatures=True,
+    )
+
+    with pytest.raises(handoff.HandoffError) as error:
+        handoff._verify_signed_pr_history(REPO, 7, HEAD)
+
+    assert f"{UNSIGNED} (unsigned)" in str(error.value)
+
+
+def test_branch_without_classic_signature_policy_allows_unsigned_history(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github_responses(
+        monkeypatch,
+        handoff,
+        [commit(HEAD, verified=False, reason="unsigned")],
+        require_signatures=False,
+    )
+
+    handoff._verify_signed_pr_history(REPO, 7, HEAD)
+
+
+def test_classic_policy_query_fails_closed_on_graphql_errors(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        handoff,
+        "_json_output",
+        lambda *args, **kwargs: {"errors": [{"message": "denied"}]},
+    )
+
+    with pytest.raises(
+        handoff.HandoffError, match="could not resolve classic branch protection"
+    ):
+        handoff._classic_signatures_required(REPO, "main")
 
 
 def test_base_branch_is_encoded_for_effective_rules_lookup(

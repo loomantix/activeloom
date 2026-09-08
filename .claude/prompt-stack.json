@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "promptStackVersion": "2.1.1",
+  "promptStackVersion": "2.1.2",
   "engine": "claude",
   "root": ".claude",
   "files": [

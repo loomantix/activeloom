@@ -160,6 +160,48 @@ def _verify_head(repo: str, pr: int, expected_head: str) -> None:
         )
 
 
+def _classic_signatures_required(repo: str, base_ref: str) -> bool:
+    """Return the classic branch-protection signature requirement."""
+    parts = repo.split("/")
+    if len(parts) != 2 or not all(parts):
+        _fail("repository identity must have owner/name form")
+    owner, name = parts
+    query = (
+        "query($owner:String!,$name:String!,$qualifiedName:String!){"
+        "repository(owner:$owner,name:$name){ref(qualifiedName:$qualifiedName){"
+        "branchProtectionRule{requiresCommitSignatures}}}}"
+    )
+    response = _json_output(
+        [
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"name={name}",
+            "-F",
+            f"qualifiedName=refs/heads/{base_ref}",
+        ]
+    )
+    if not isinstance(response, dict) or response.get("errors") is not None:
+        _fail("GitHub could not resolve classic branch protection")
+    data = response.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    ref = repository.get("ref") if isinstance(repository, dict) else None
+    if not isinstance(ref, dict):
+        _fail("GitHub returned malformed base-branch protection metadata")
+    protection = ref.get("branchProtectionRule")
+    if protection is None:
+        return False
+    if not isinstance(protection, dict) or not isinstance(
+        protection.get("requiresCommitSignatures"), bool
+    ):
+        _fail("GitHub returned malformed commit-signature protection")
+    return cast(bool, protection["requiresCommitSignatures"])
+
+
 def _verify_signed_pr_history(repo: str, pr: int, expected_head: str) -> None:
     """Require GitHub to verify every commit currently introduced by the PR."""
     pull = _json_output(["api", f"repos/{repo}/pulls/{pr}"])
@@ -181,12 +223,15 @@ def _verify_signed_pr_history(repo: str, pr: int, expected_head: str) -> None:
         _fail("GitHub returned an invalid PR base branch")
 
     encoded_base_ref = quote(base_ref, safe="")
-    rules = _json_output(
-        ["api", f"repos/{repo}/rules/branches/{encoded_base_ref}"]
-    )
+    rules = _json_output(["api", f"repos/{repo}/rules/branches/{encoded_base_ref}"])
     if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
         _fail("GitHub returned malformed effective branch rules")
-    if not any(rule.get("type") == "required_signatures" for rule in rules):
+    requires_signatures = any(
+        rule.get("type") == "required_signatures" for rule in rules
+    )
+    if not requires_signatures:
+        requires_signatures = _classic_signatures_required(repo, base_ref)
+    if not requires_signatures:
         return
 
     pages = _json_output(
