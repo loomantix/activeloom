@@ -97,8 +97,8 @@ within the latest authenticated `local-review-run:v1`, select one past this
 engine's highest completed round (1 when it has none), considering only its
 `local-review-pass:v3` and `local-review-complete:v3` comments after that run's
 marker. Validate the selection with `local-review-handoff.py authorize-pass`
-before a lane. An aborted run uses supported recovery within its original
-budget; a converged or exhausted run requires new restart authorization. Never
+before a lane. An ended run, including an aborted one, requires fresh restart
+authorization: this controller has no budget-preserving resume command. Never
 count earlier runs toward the new run's round or cap. Only a legacy review with
 no run marker uses PR-wide history. Rounds 1–2 are adversarial; round 3 and later
 are convergence rounds. State which applies before invoking a lane.

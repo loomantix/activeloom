@@ -35,9 +35,9 @@ Before selecting lanes, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
 or the round supplied by `deepcritique`. Otherwise select one past Codex's
 highest completed round within the latest authenticated `local-review-run:v1`
 (1 when it has none), using only pass/complete comments after that run marker.
-Validate it with `local-review-handoff.py authorize-pass`. An aborted run uses
-supported ledger recovery within its original budget; restarting a converged
-or exhausted run requires new authorization. PR-wide history is a fallback only when no run
+Validate it with `local-review-handoff.py authorize-pass`. An ended run,
+including an aborted one, requires fresh restart authorization: this controller
+has no budget-preserving resume command. PR-wide history is a fallback only when no run
 marker exists; it never consumes a restarted run's budget.
 
 - **Adversarial:** Lean round 1 and Deep rounds 1–2. The stance, matrices,

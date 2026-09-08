@@ -153,6 +153,48 @@ If that path does not exist in the checkout under review, say so and stop rather
 than proceeding unauthorized — an absent controller is a missing gate, not a
 licence to skip one.
 
+### Start an interactive run before authorizing a pass
+
+The top-level interactive controller owns initialization in either mode.
+Once the PR identity, tier, base, and user-authorized mode are resolved, read
+the authenticated run markers: list the PR's issue comments and take the latest
+`local-review-run:v1` marker. There is no `status` command.
+
+If no run exists, write the review authorization to a regular, non-symlink file
+and start it before calling `authorize-pass` or running a review lane. **That
+file's contents are posted verbatim as a pull-request comment and are public
+wherever the repository is.** Write a short scope statement — repository, PR,
+tier, mode, and what is and is not authorized — and never the requester's
+identity, their verbatim words, or any private context:
+
+```bash
+python3 .codex/skills/critique/scripts/local-review-handoff.py start-run \
+  --repo <owner/repo> --pr <number> --head <exact-head-sha> \
+  --base <review-base-sha> --tier <lean|deep> \
+  --authorization-file <private-authorization-file>
+```
+
+A nonzero exit from `start-run`, or a refusal from `authorize-pass`, ends the
+chain: report the controller's message and stop. Never clear either error by
+re-running with `--restart` — that is a new run with a full cap.
+
+An explicit request to run the review chain in auto mode supplies that review
+authorization for a **first** run only; it does not authorize merge or
+deployment. To reuse an active run and its pinned base and remaining cap, do not
+call `start-run` again: it replays only on a byte-identical authorization file
+and otherwise refuses. Never read the round to run from a replayed `start-run` —
+its `first_round` is always `1`; count this engine's pass markers after the run
+marker instead. An ended run requires the fresh restart authorization described
+under [The run controller](#the-run-controller), and that means a user statement
+naming the restart: neither a new session nor a repeated request to run the
+chain is one.
+
+A one-pass reviewer invoked by a launcher or wrapper inherits the authorized
+run, base, and round. It neither creates nor ends runs, changes the roster, nor
+starts another reviewer. A missing inherited run returns to its controller for
+initialization instead of silently becoming an interactive run. Sub-skills
+inside the same pass retain the enclosing identity and pre-cleanup snapshot.
+
 ### Escalate and de-escalate on evidence
 
 Both moves require a confirmed finding. A suspicion, an unverified severity
@@ -218,7 +260,10 @@ review is permitted but must be declared with a reason; see step 2.
    in the content file, which puts the choice on the PR rather than in a
    session's memory.
 3. Pin the exact base SHA for the round, resolve the tier, and give both to
-   every reviewer. Do not start a reviewer with the tier unresolved.
+   every reviewer. Apply the
+   [run initialization](#start-an-interactive-run-before-authorizing-a-pass)
+   before authorizing the first pass. Do not start a reviewer with the tier
+   unresolved.
 4. Run each declared reviewer against the current head, under the ledger's
    comment/fix/reply/resolve contract. Claude's lane is `critique <pr-number>`
    at Lean and `deepcritique <pr-number>` at Deep; other engines use their own
@@ -289,6 +334,25 @@ review is permitted but must be declared with a reason; see step 2.
    instead of continuing an unbounded cycle.
 
 ### Auto mode
+
+Resolve mode and launcher availability before spending a reviewer pass. A
+top-level request for auto mode makes the current session the controller; a
+launcher's request for exactly one pass takes precedence inside its child.
+The child returns its result, and the parent schedules remaining reviewers.
+
+This Claude surface ships the `gemini` launcher below. It does not ship a
+mutating Codex review launcher: `codex-review` is a read-only second opinion,
+not a substitute for a declared Codex relay pass. When a requested roster
+includes an engine without a tested launcher, report that capability gap at
+preflight and offer the exact session handoff. Preserve the roster and mode;
+do not silently substitute Gemini, use a raw CLI, or claim full auto support.
+
+The fresh-context gate applies to a session performing review, not merely
+coordinating it. An authoring session may prepare the run and invoke a supported
+independent reviewer; it must not count that orchestration as its own review
+pass. If the requested route also requires a fresh author-engine pass without
+a supported launcher, that leg still needs a fresh session or an explicit
+in-process override under the context rule.
 
 Auto mode is available for the `gemini` reviewer, launched through
 [`skills/critique/scripts/run-agy-review.sh`](skills/critique/scripts/run-agy-review.sh).
