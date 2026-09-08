@@ -337,6 +337,16 @@ invalidates one.
 
 ## Recover a blocked pass
 
+Before interrupting a running reviewer for an apparent posting-order violation,
+read the installed skill for its active phase. A local cleanup commit ahead of
+the PR, or a latch not yet posted, can be expected before the enclosing pass's
+single publication. Older skills also allowed cleanup without inline findings;
+that instruction mismatch is not proof that the reviewer ignored its contract.
+Reconcile at the phase's publication/result boundary. Current cleanup must have
+fixed finding evidence; neither a commit title nor a latch can replace it.
+If evidence is genuinely missing, preserve the work and use supported recovery;
+never fabricate a prior finding or certify an incomplete pass.
+
 A reviewer returns one pass; the auto controller owns the remaining authorized
 work. A valid blocked result is not a clean attestation, but it is not by itself
 a failed launcher or a reason to end the whole run.

@@ -46,7 +46,7 @@ recorded:
       - 0003-refactorpass-architecture.md
       - 0006-review-chains-never-converge.md
     reason: >-
-      Claude delegates the pass to a single `simplify` invocation; the Codex
+      Claude delegates proposals to one read-only cleanup worker; the Codex
       and Gemini copies carry an inline Cleanup Matrix because those harnesses
       have no equivalent skill to delegate to.
 

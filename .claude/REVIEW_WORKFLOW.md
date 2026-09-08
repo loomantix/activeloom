@@ -245,7 +245,7 @@ review is permitted but must be declared with a reason; see step 2.
 
    **The chain gets cheaper as it repeats.** Three rules make that happen, and
    all are enforced from the ledger rather than from session memory:
-   - **The refactor pass runs once per engine per PR.** A second `/simplify` over
+   - **The refactor pass runs once per engine per PR.** A second cleanup pass over
      an already-simplified diff returns naming and shape churn, which moves the
      head and invalidates the other engines' attestations for nothing that ships.
      Each engine's cleanup lane latches on a `local-review-refactor:v1` marker;
@@ -342,6 +342,16 @@ as `authorAttested` so the fact stays visible, but the tier counts distinct
 non-author engines only.
 
 ## Recover a blocked pass
+
+Before interrupting a running reviewer for an apparent posting-order violation,
+read the installed skill for its active phase. A local cleanup commit ahead of
+the PR, or a latch not yet posted, can be expected before the enclosing pass's
+single publication. Older skills also allowed cleanup without inline findings;
+that instruction mismatch is not proof that the reviewer ignored its contract.
+Reconcile at the phase's publication/result boundary. Current cleanup must have
+fixed finding evidence; neither a commit title nor a latch can replace it.
+If evidence is genuinely missing, preserve the work and use supported recovery;
+never fabricate a prior finding or certify an incomplete pass.
 
 Treat a blocked reviewer result as a hand-back to the auto controller. It
 certifies no clean review. Read the reason before deciding whether the relay

@@ -20,7 +20,7 @@ this skill reads that decision rather than making its own.
 
 ### Context-window check
 
-This chain invokes `/simplify` and up to six adversarial sub-agents. If this
+This chain invokes cleanup analysis and up to six adversarial sub-agents. If this
 session authored the change or carries dense implementation context, stop and
 recommend a fresh Claude session. A larger context window does not relax this
 gate: authoring rationale anchors the reviewer and is expensive to fan out. See
@@ -68,7 +68,7 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
    `status=skipped` under the ledger's wrapper/standalone ownership rule. Return
    after it completes without spending the refactor latch.
 7. Resolve the changed-file list once for the initial packet. If refactorpass
-   commits, that packet ends with its reviewed head: reload the PR head and
+   commits, that packet ends with its reviewed head: resolve the new local head and
    build a new immutable packet before deep critique. If refactorpass is a no-op,
    both lanes may reuse the initial packet. The ledger's diff-delivery rules
    govern both.
@@ -117,7 +117,13 @@ it to return. Do not stop when the sub-skill returns.
 ## Phase 2: Deep critique
 
 Reload the PR head and ledger. When refactorpass moved the head, rebuild the
-immutable review packet from the same pinned base through that new head. Then
+immutable review packet from the same pinned base through the new local head.
+Inside a wrapper, cleanup remains unpublished until critique's single final
+push: retain the original PR head and pre-pass snapshot, and carry forward
+the pending cleanup finding identities and latch. Do not re-enter a fresh-pass
+head-equality gate or replace the enclosing before SHA. Finding anchors still
+use GitHub's current published patch; local cleanup lines are not new anchors.
+Then
 `Skill(skill="critique", args="<pr-number> deep")`, passing the resolved round so
 the lane selects the matching stance.
 
