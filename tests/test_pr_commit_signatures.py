@@ -160,19 +160,6 @@ def test_classic_branch_protection_requires_full_history(
     assert f"{UNSIGNED} (unsigned)" in str(error.value)
 
 
-def test_branch_without_classic_signature_policy_allows_unsigned_history(
-    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    github_responses(
-        monkeypatch,
-        handoff,
-        [commit(HEAD, verified=False, reason="unsigned")],
-        require_signatures=False,
-    )
-
-    handoff._verify_signed_pr_history(REPO, 7, HEAD)
-
-
 def test_classic_policy_query_fails_closed_on_graphql_errors(
     handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -613,6 +613,7 @@ def _finish_run(args: argparse.Namespace) -> None:
     if not records:
         _fail("no authenticated local-review run exists")
     run = records[-1]
+    verify = _verify_reviewable_head if args.outcome == "converged" else _verify_head
     existing = _run_end(rows, cast(str, run["run_id"]))
     marker = (
         f"<!-- local-review-run-end:v1 id={run['run_id']} "
@@ -621,25 +622,16 @@ def _finish_run(args: argparse.Namespace) -> None:
     if existing is not None:
         if existing["head"] != args.head or existing["outcome"] != args.outcome:
             _fail("local-review run already ended with a different result")
-        if args.outcome == "converged":
-            _verify_reviewable_head(args.repo, args.pr, args.head)
-        else:
-            _verify_head(args.repo, args.pr, args.head)
+        verify(args.repo, args.pr, args.head)
         print(
             json.dumps(
                 {**existing, "replayed": True, "run_id": run["run_id"]}, sort_keys=True
             )
         )
         return
-    if args.outcome == "converged":
-        _verify_reviewable_head(args.repo, args.pr, args.head)
-    else:
-        _verify_head(args.repo, args.pr, args.head)
+    verify(args.repo, args.pr, args.head)
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, marker)
-    if args.outcome == "converged":
-        _verify_reviewable_head(args.repo, args.pr, args.head)
-    else:
-        _verify_head(args.repo, args.pr, args.head)
+    verify(args.repo, args.pr, args.head)
     print(
         json.dumps(
             {
