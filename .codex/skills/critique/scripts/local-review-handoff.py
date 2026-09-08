@@ -206,7 +206,15 @@ def _classic_signatures_required(repo: str, base_ref: str) -> bool:
             update_rule.get("requiresSignatures"), bool
         ):
             _fail("GitHub returned malformed effective branch protection")
-        return cast(bool, update_rule["requiresSignatures"])
+        if update_rule["requiresSignatures"] is True:
+            return True
+        _fail(
+            "cannot determine the absolute classic branch-protection signature "
+            f"policy for {base_ref}: GitHub exposed only a viewer-effective rule, "
+            "and this viewer may bypass an underlying signature requirement. "
+            "Re-run with a token that can read branch protection, or express the "
+            "signature requirement as a repository ruleset."
+        )
     if not isinstance(protection, dict) or not isinstance(
         protection.get("requiresCommitSignatures"), bool
     ):

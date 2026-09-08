@@ -48,7 +48,7 @@ def github_responses(
     live_head: str = HEAD,
     require_signatures: bool = True,
     classic_signatures: bool = False,
-    effective_classic_signatures: bool | None = False,
+    effective_classic_signatures: bool | None = None,
     base_ref: str = "main",
 ) -> None:
     """Stub the GitHub reads used by the signature preflight."""
@@ -191,16 +191,32 @@ def test_effective_classic_policy_is_used_for_a_non_admin_viewer(
         handoff._verify_signed_pr_history(REPO, 7, HEAD)
 
 
-def test_non_admin_viewer_allows_unsigned_history_when_effective_rule_does(
+def test_viewer_effective_false_is_not_absolute_policy_proof(
     handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Ordinary reviewer tokens preserve repositories that allow unsigned commits."""
+    """A bypass-capable viewer cannot prove the underlying rule allows unsigned commits."""
     github_responses(
         monkeypatch,
         handoff,
         [commit(HEAD, verified=False, reason="unsigned")],
         require_signatures=False,
         effective_classic_signatures=False,
+    )
+
+    with pytest.raises(handoff.HandoffError, match="viewer may bypass"):
+        handoff._verify_signed_pr_history(REPO, 7, HEAD)
+
+
+def test_absent_classic_policy_allows_unsigned_history_for_a_non_admin_viewer(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit absence of both classic rule views remains permissive."""
+    github_responses(
+        monkeypatch,
+        handoff,
+        [commit(HEAD, verified=False, reason="unsigned")],
+        require_signatures=False,
+        effective_classic_signatures=None,
     )
 
     handoff._verify_signed_pr_history(REPO, 7, HEAD)
