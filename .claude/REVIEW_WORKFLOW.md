@@ -155,8 +155,9 @@ licence to skip one.
 
 ### Start an interactive run before authorizing a pass
 
-The top-level interactive controller owns initialization in either mode. Once the PR identity, tier,
-base, and user-authorized mode are resolved, read the authenticated run markers.
+The top-level interactive controller owns initialization in either mode.
+Once the PR identity, tier, base, and user-authorized mode are resolved, read
+the authenticated run markers.
 If no run exists, write the user's bounded review authorization to an owner-only
 regular file and start it before calling `authorize-pass` or running a review lane:
 
@@ -169,9 +170,9 @@ python3 .codex/skills/critique/scripts/local-review-handoff.py start-run \
 
 An explicit request to run the review chain in auto mode supplies that review
 authorization; it does not authorize merge or deployment. Reuse an active run
-and its pinned base and remaining cap. An ended run requires fresh explicit
-restart authorization and `start-run --restart`; the shipped controller cannot
-resume it with its old budget. Do not infer a restart from a new session.
+and its pinned base and remaining cap. An ended run requires the fresh restart
+authorization described under [The run controller](#the-run-controller). Do not
+infer a restart from a new session.
 
 A one-pass reviewer invoked by a launcher or wrapper inherits the authorized
 run, base, and round. It neither creates nor ends runs, changes the roster, nor
@@ -244,8 +245,10 @@ review is permitted but must be declared with a reason; see step 2.
    in the content file, which puts the choice on the PR rather than in a
    session's memory.
 3. Pin the exact base SHA for the round, resolve the tier, and give both to
-   every reviewer. Apply the run initialization above before authorizing the
-   first pass. Do not start a reviewer with the tier unresolved.
+   every reviewer. Apply the
+   [run initialization](#start-an-interactive-run-before-authorizing-a-pass)
+   before authorizing the first pass. Do not start a reviewer with the tier
+   unresolved.
 4. Run each declared reviewer against the current head, under the ledger's
    comment/fix/reply/resolve contract. Claude's lane is `critique <pr-number>`
    at Lean and `deepcritique <pr-number>` at Deep; other engines use their own

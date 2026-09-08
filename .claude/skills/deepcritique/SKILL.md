@@ -97,8 +97,8 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
    including an aborted one, needs fresh restart authorization; this controller
    has no budget-preserving resume command. Earlier runs do not consume a new
    run's budget, and PR-wide history cannot substitute for an authenticated run.
-   Rounds 1–2 are adversarial; round 3 and later are convergence
-   rounds. State which applies before running a lane.
+   Rounds 1–2 are adversarial; round 3 and later are convergence rounds. State
+   which applies before running a lane.
 
 ### Tier gate
 
