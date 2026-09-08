@@ -41,7 +41,8 @@ Proceed in the current session only after an explicit override.
 This gate applies before this session performs review. An authoring session
 may still coordinate supported independent reviewers as the auto controller.
 Cleanup and fixes within an already-fresh review do not require another fresh
-session when moving between its sub-skills.
+session when moving between its sub-skills. This exception does not admit a
+session that implemented the feature before review started.
 
 ### PR-first boundary
 
@@ -134,7 +135,8 @@ it to return. Do not stop when the sub-skill returns.
 
 Reload the PR head and ledger. When refactorpass moved the head, rebuild the
 immutable review packet from the same pinned base through the new local head.
-Inside a wrapper, cleanup remains unpublished until critique's single final
+Inside a wrapper whose `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, cleanup
+remains unpublished until critique's single final
 push: retain the original PR head and pre-pass snapshot, and carry forward
 the pending cleanup finding identities and latch. Do not re-enter a fresh-pass
 head-equality gate or replace the enclosing before SHA. Finding anchors still

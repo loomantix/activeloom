@@ -18,6 +18,8 @@ session. Continue only after an explicit override.
 
 In an already-fresh review, cleanup and review fixes belong to the same pass;
 they do not trigger another context gate before the enclosing critique runs.
+This exception does not admit a session that implemented the feature before
+review started.
 
 ## PR-first pre-flight
 

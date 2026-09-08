@@ -36,8 +36,8 @@ confirm the round with the shared run controller at
 `.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
 it is absent from the checkout, report that and stop rather than running
 unauthorized.
-An aborted run uses supported ledger recovery within its original budget;
-restarting a converged or exhausted run requires new authorization. PR-wide history is a
+An ended run, including an aborted one, requires fresh restart authorization:
+this controller has no budget-preserving resume command. PR-wide history is a
 fallback only when no run marker exists. Use the same engine for every helper
 call and result.
 

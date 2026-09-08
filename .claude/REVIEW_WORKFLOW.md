@@ -157,9 +157,15 @@ licence to skip one.
 
 The top-level interactive controller owns initialization in either mode.
 Once the PR identity, tier, base, and user-authorized mode are resolved, read
-the authenticated run markers.
-If no run exists, write the user's bounded review authorization to an owner-only
-regular file and start it before calling `authorize-pass` or running a review lane:
+the authenticated run markers: list the PR's issue comments and take the latest
+`local-review-run:v1` marker. There is no `status` command.
+
+If no run exists, write the review authorization to a regular, non-symlink file
+and start it before calling `authorize-pass` or running a review lane. **That
+file's contents are posted verbatim as a pull-request comment and are public
+wherever the repository is.** Write a short scope statement — repository, PR,
+tier, mode, and what is and is not authorized — and never the requester's
+identity, their verbatim words, or any private context:
 
 ```bash
 python3 .codex/skills/critique/scripts/local-review-handoff.py start-run \
@@ -168,11 +174,20 @@ python3 .codex/skills/critique/scripts/local-review-handoff.py start-run \
   --authorization-file <private-authorization-file>
 ```
 
+A nonzero exit from `start-run`, or a refusal from `authorize-pass`, ends the
+chain: report the controller's message and stop. Never clear either error by
+re-running with `--restart` — that is a new run with a full cap.
+
 An explicit request to run the review chain in auto mode supplies that review
-authorization; it does not authorize merge or deployment. Reuse an active run
-and its pinned base and remaining cap. An ended run requires the fresh restart
-authorization described under [The run controller](#the-run-controller). Do not
-infer a restart from a new session.
+authorization for a **first** run only; it does not authorize merge or
+deployment. To reuse an active run and its pinned base and remaining cap, do not
+call `start-run` again: it replays only on a byte-identical authorization file
+and otherwise refuses. Never read the round to run from a replayed `start-run` —
+its `first_round` is always `1`; count this engine's pass markers after the run
+marker instead. An ended run requires the fresh restart authorization described
+under [The run controller](#the-run-controller), and that means a user statement
+naming the restart: neither a new session nor a repeated request to run the
+chain is one.
 
 A one-pass reviewer invoked by a launcher or wrapper inherits the authorized
 run, base, and round. It neither creates nor ends runs, changes the roster, nor
