@@ -33,7 +33,9 @@ highest completed round within the latest authenticated `local-review-run:v1`
 Honor the run's cap and confirm the round with the run controller at
 `.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`); it
 is shared by every surface despite its path. If it is absent from the checkout,
-report that and stop rather than running unauthorized. An ended run requires explicit restart authorization.
+report that and stop rather than running unauthorized. Recover an aborted run
+with the supported controller and its existing budget; a converged or exhausted
+run requires new authorization to restart.
 PR-wide history is a fallback only when no run marker exists; earlier runs never
 consume the new run's budget.
 
@@ -149,6 +151,12 @@ radius — so lenses do not each invent their own scale. Do not ask finders to
 suppress findings by confidence. Run selected agents in parallel; the
 orchestrator verifies them.
 
+Finders inspect the pinned source and return hypotheses. Every finder brief
+must make that read-only ownership explicit: no source edits, mutation tests,
+test-suite runs, builds, installs, or CI polling. A needed dynamic probe comes
+back as a proposed command. The orchestrator runs mutation probes only in a
+disposable copy, so a fail-open test edit cannot escape into the review branch.
+
 Explicitly audit claims about un-diffed plumbing: when a PR description or comment
 claims existing background plumbing already handles a new event, field, or state
 transition ("already re-polls", "already listened to", "existing pipe handles this"),
@@ -192,6 +200,11 @@ pre-existing issues outside the diff, and unsupported style preferences.
 
 Before presenting or editing a surviving finding:
 
+Settle reachability, severity, and intended disposition first, using
+[Recover a blocked pass](../../REVIEW_WORKFLOW.md#recover-a-blocked-pass).
+Keep finder hypotheses separate from the final posted severity: a scheduled
+follow-up cannot also be a blocking deferral.
+
 1. derive its stable fingerprint;
 2. search all prior local-review threads for that fingerprint or defect;
 3. reuse the existing thread when present;
@@ -212,7 +225,8 @@ helper before reporting completion. The helper's snapshot flags are optional
 inputs — omit them and it reads the threads live — so a pass that did not seal
 one still attests. Never report a pass complete on a write-up that only names
 the marker in prose; if the helper refuses, finalize `blocked` with its
-diagnostic instead.
+diagnostic instead. Return that result to the outer controller for the
+workflow's bounded recovery; it does not by itself end the controller's run.
 
 ## Phase 3: Disposition and fixes
 
@@ -289,8 +303,9 @@ change needed to prevent a false green. `minor` is low-risk non-behavioral
 cleanup, clarity, or test/docs polish.
 
 Severity is a property of the finding, classification a property of this pass's
-diff, and neither implies the other. A `major` finding whose fix touched only
-comments, only docs, or only tests is a `minor` pass. Never restate a severity
+diff, and neither implies the other. A non-behavioral clarification may be a
+`minor` pass; a test change that prevents a false green remains `material`.
+Never restate a severity
 to reach a classification: the thread's severity is fixed evidence, and the
 classification is read off the diff. See "Severity is not classification" in the
 ledger reference.
@@ -320,8 +335,9 @@ and whether material fixes require another local-engine pass. Reporting this
 pass's own measured spend here is permitted; reading any earlier pass's record
 is not.
 
-A convergence round that found no blocking defect ends the loop: record a clean
-result, recommend the ship step, and list any urgent deferred issues.
+A clean convergence pass ends Claude's work at this head. Record the result
+and hand it to the controller, which verifies every owed exact-head attestation
+and the ledger before recommending shipment. Unused rounds are not owed.
 
 If this Claude pass made a material fix, it moved the head: every declared
 reviewer whose attestation named the superseded commit re-runs against the new
@@ -331,7 +347,8 @@ launcher — `.claude/skills/critique/scripts/run-agy-review.sh` for `gemini` �
 `verify-coverage` check at the exact reviewed head, per
 [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md). Otherwise it completes Claude's part of the current round. Always finalize
 `clean`, `changed`, or `blocked` per the ledger's wrapper/standalone ownership
-rule before returning. Use `write-result` for `clean` or `changed`, and use
+rule before returning. A one-pass invocation leaves reviewer scheduling to its
+outer controller. Use `write-result` for `clean` or `changed`, and use
 `write-blocked-result` with an owner-only blocker file for `blocked`.
 
 ## Boundaries

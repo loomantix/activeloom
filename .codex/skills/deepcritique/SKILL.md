@@ -97,7 +97,8 @@ within the latest authenticated `local-review-run:v1`, select one past this
 engine's highest completed round (1 when it has none), considering only its
 `local-review-pass:v3` and `local-review-complete:v3` comments after that run's
 marker. Validate the selection with `local-review-handoff.py authorize-pass`
-before a lane. An ended run requires explicit restart authorization; never
+before a lane. An aborted run uses supported recovery within its original
+budget; a converged or exhausted run requires new restart authorization. Never
 count earlier runs toward the new run's round or cap. Only a legacy review with
 no run marker uses PR-wide history. Rounds 1–2 are adversarial; round 3 and later
 are convergence rounds. State which applies before invoking a lane.
@@ -273,8 +274,9 @@ Next:
   produced no material fix, and every local-review thread is resolved.
 ```
 
-A convergence round that found no blocking defect ends the loop. Say so and name
-the repository's ship step; do not report the remaining rounds as owed.
+A clean convergence pass returns to the controller for remaining exact-head
+coverage and ledger verification. Recommend shipment after those are complete;
+unused rounds are not owed.
 
 Do not invoke `reviewit` from inside this skill; hosted review is a separate
 lane the caller runs when it is useful, not a side effect of this pass. The
