@@ -1,6 +1,6 @@
 ---
 name: critique
-description: PR-first adversarial code review for Codex. Use after implementation or refactorpass on an open draft PR, especially when the user asks to critique, review hard, find bugs, or run the platform review chain. Posts verified findings inline before fixing, then replies and resolves. Lean mode runs the two highest-signal lanes; the deep matrix runs only when the resolved review tier is Deep.
+description: PR-first adversarial code review for Codex. Use after implementation or refactorpass on an open draft PR, especially when the user asks to critique, review hard, find bugs, or run the platform review chain. Posts verified findings inline before fixing, then replies and resolves. Select relevant lenses and proportionate delegation; Lean is the default and Deep follows the recorded risk.
 ---
 
 # Critique
@@ -11,7 +11,7 @@ finding and disposition in the PR.
 
 ## Context Window Check
 
-Run this check before anything else. `critique` runs adversarial review lanes—two in lean mode, six core lanes in deep mode, plus a conditional tenant-coupling lane—each of which reads the diff, reads changed files, and produces structured findings. When subagents/delegation are available the lanes run in parallel, and each subagent inherits cache state from this session; when subagents are not available the lanes run as serial local passes that compete for the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and `critique` (especially `critique deep`) runs slower and more expensively.
+Choose review scope before allocating agents. A bounded diff can be reviewed directly; delegate substantial independent tracks when a fresh reader adds value. Carrying implementation history into each reviewer can add cost and anchoring without improving coverage.
 
 Assess honestly:
 
@@ -152,8 +152,8 @@ authenticated, forward-only transition rule. If none exists, classify against
 the workflow doc's triggers and post the marker before starting a lane. Lean is
 the tier when no trigger matches.
 
-- **Lean**: the default. Run the lean two-lane review: code reviewer plus silent failure hunter. This is still an adversarial PR review, not a casual skim.
-- **Deep**: run the full independent review matrix below only when the recorded tier is Deep. A `deep` argument handed down from `deepcritique` asserts that recorded tier; a direct human `deep` request is trigger 6 and posts a Deep replacement marker that preserves the recorded triggers and adds 6 before lanes start. Deep mode is intentionally much heavier than lean mode; do not collapse it into one general review pass.
+- **Lean**: the default. Review correctness and add lenses only for signals in the diff, including security and tests for a bounded sensitive-path repair.
+- **Deep**: examine the risks that selected Deep using the relevant lenses below. A `deep` argument handed down from `deepcritique` asserts that recorded tier; a direct human `deep` request is trigger 6 and posts a Deep replacement marker that preserves the recorded triggers and adds 6 before lanes start. Trace those risks beyond the edited lines; choose execution by the scope of that work.
 
 Escalate mid-pass only on a confirmed finding that reaches a trigger, per the
 workflow doc's evidence rule, and post the replacement marker naming it. A
@@ -161,7 +161,7 @@ suspicion is not evidence. State the resolved tier and the trigger that selected
 it in the output.
 
 The tenant-coupling lane catches one customer's values hardcoded into shared
-logic and is intentionally not part of the lean two-lane set. A diff that
+logic and is selected when that signal is present. A diff that
 materially changes customer/tenant-variable application behavior — vendor
 integrations, branching or transformation driven by per-tenant configuration,
 prompt/output generation, or data normalization — trips trigger 1's isolation
@@ -196,41 +196,41 @@ would be true of any codebase, it belongs in this skill or a role prompt
 upstream instead; if it names this repo's flags, paths, or past incidents, it
 belongs in the addendum.
 
-## Lean Review Matrix
+## Review lenses and execution
 
-Lean mode must cover two independent lanes:
+Both tiers select lenses from the diff; the matrix is a menu, not an agent quota.
+Always examine correctness. Add the following lenses when their signal exists:
 
-1. **Code reviewer** — correctness bugs, regressions, edge cases, broken contracts, project conventions, and meaningful test gaps.
-2. **Silent failure hunter** — swallowed errors, partial failures, async races, retries, timeouts, idempotency, and missing observability for critical paths.
+| Signal                                                   | Lens                     |
+| -------------------------------------------------------- | ------------------------ |
+| Errors, async work, retries, fallbacks, partial failure  | Silent failure hunter    |
+| Public types, API contracts, generics, compatibility     | Type/API design analyzer |
+| Substantial comments, documentation, operational claims  | Comment/docs analyzer    |
+| Changed tests or a repair that needs a regression guard  | PR test analyzer         |
+| Secrets, auth, privacy, injection, trust boundaries      | Security reviewer        |
+| Tenant-variable behavior, configuration or normalization | Tenant-coupling reviewer |
 
-Run these lanes as independently as the active runtime permits:
+Deep requires tracing the affected boundary and realistic failure paths beyond
+the edited lines, with evidence for every risk that selected the tier. It does
+not require unrelated lenses or a minimum number of agents. Convergence rounds
+narrow the selection as described above.
 
-- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent reviewers for both lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from the other lane.
-- If subagents are unavailable or not permitted, perform two separate local passes using the lane prompts above. Do not present that as equivalent to independent subagents.
-- If lean mode was requested but independent subagents could not be used, explicitly say so in the output under `review depth`.
+Use one direct pass when the selected scope is cohesive and manageable. Delegate
+substantial independent tracks when they benefit from a fresh reader; combine
+overlapping lenses, and use at most five subagents per pass unless the user
+explicitly requests a larger roster. An explicit request for independent lanes
+still applies. The skill name and tool availability alone do not require fan-out.
 
-## Deep Review Matrix
+State the selected lenses, a short reason for the selection, and whether they
+ran directly, delegated, or both. A direct pass is supported, not a failed or
+degraded review; report it honestly. This execution choice does not change the
+declared cross-engine roster, exact-head evidence, or round budget. Complete the
+selected scope and required validation before attesting.
 
-Deep mode must cover six core independent lanes, plus the conditional tenant-coupling lane when its signal is present:
-
-1. **Code reviewer** — correctness bugs, regressions, edge cases, and broken contracts.
-2. **Silent failure hunter** — swallowed errors, partial failures, async races, retries, timeouts, idempotency, and observability gaps.
-3. **Type/API design analyzer** — public API shape, type soundness, compatibility, dependency boundaries, and versioning drift.
-4. **Comment/docs analyzer** — misleading comments, stale docs, migration instructions, public/private information leaks, and docs that overpromise behavior.
-5. **PR test analyzer** — missing tests, weak assertions, CI gaps, fixture realism, and whether validation actually exercises the risk.
-6. **Security reviewer** — auth, secrets, injection, supply-chain, workflow permissions, sensitive-data exposure, and fail-closed behavior.
-7. **Tenant-coupling reviewer (conditional)** — literals or branches that encode one customer's data, configuration, or vocabulary into shared logic. For every suspicious value ask: _would this still be correct for a second customer with different values?_ If not, move the value to configuration/data with a safe default. Ignore genuinely universal protocol constants, standard enums, and framework keys.
-
-Run these lanes as independently as the active runtime permits:
-
-- Invoking `critique deep` is an explicit request to use independent subagents for
-  every applicable lane whenever the active runtime exposes subagent/delegation tools.
-  Do not require the user to separately say "use subagents" before spawning
-  those lane reviewers.
-- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent reviewers using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the disjoint lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from other lanes.
-- If subagents are unavailable or not permitted, perform a separate local pass for every applicable lane using the prompts above. Do not present that as equivalent to independent subagents.
-- If deep mode was requested but independent subagents could not be used, explicitly say so in the output under `review depth`.
-- Run the tenant-coupling lane as a separate use of the code-reviewer role with the narrow prompt above; do not dilute it into the general correctness lane.
+For delegated work, use the ledger's immutable packet, no inherited conversation
+when supported, exact file scopes, and concise output limits. Keep findings
+separate until the orchestrator verifies and deduplicates them. Load only the
+role references needed for the selected lenses.
 
 ## Process
 
@@ -260,20 +260,13 @@ Run these lanes as independently as the active runtime permits:
    the exact changed paths its lens needs, and have it pull path-scoped diffs per
    the ledger instead of receiving one pasted or stored whole diff.
 6. Resolve the round and stance per "Stance Resolution". In a convergence round,
-   the lane list in "Convergence Rounds" replaces steps 7 and 8, and its inverted
+   the lane selection in "Convergence Rounds" narrows steps 7 and 8, and its
    fix bias replaces step 10. Every other step, including step 9, is unchanged.
-7. In lean mode, execute every lane in the Lean Review Matrix. Load these role references for lane prompts:
-   - `.codex/references/roles/code-reviewer.md`
-   - `.codex/references/roles/silent-failure-hunter.md`
-     Keep lane findings separated until both lanes complete, then deduplicate by root cause.
-8. In deep mode, execute every lane in the Deep Review Matrix. Load these role references for lane prompts:
-   - `.codex/references/roles/code-reviewer.md`
-   - `.codex/references/roles/silent-failure-hunter.md`
-   - `.codex/references/roles/type-design-analyzer.md`
-   - `.codex/references/roles/comment-analyzer.md`
-   - `.codex/references/roles/pr-test-analyzer.md`
-   - `.codex/references/roles/security-reviewer.md`
-     When the tenant-coupling signal is present, load `.codex/references/roles/code-reviewer.md` again for the dedicated conditional pass. Keep lane findings separated until all lanes complete, then deduplicate by root cause.
+7. Select lenses using "Review lenses and execution" and the resolved stance.
+   Load only their matching files under `.codex/references/roles/`.
+8. Review the selected scope directly or with the chosen independent workers.
+   Keep worker findings separate until they finish, then deduplicate by root cause.
+
 9. Verify and deduplicate lane findings against the source and complete PR
    ledger. For each confirmed root cause, use the deterministic ledger helper
    required by `.codex/references/local-review-ledger.md` to post one inline
@@ -328,7 +321,7 @@ pass's telemetry record is not.
 End with:
 
 - round and stance: `<n>` plus adversarial or convergence
-- review depth: lean with independent subagents, lean local two-pass fallback, deep with independent subagents, or deep local multi-pass fallback
+- review depth: tier, selected lenses, and direct/delegated/mixed execution
 - findings fixed
 - findings deferred (with an issue link only for urgent follow-ups) or dismissed
   (with one-line evidence)
@@ -343,4 +336,4 @@ End with:
   `local-review-handoff:v1` and stop — and add `reviewit <pr>` /
   `reviewit <pr> deep` whenever a hosted pass is wanted. When recommending
   `reviewit`, recommend a fresh session; the current one has absorbed critique
-  findings, fix commits, and (in deep mode) the full review matrix.
+  findings, fix commits, and coverage of the selected review scope.

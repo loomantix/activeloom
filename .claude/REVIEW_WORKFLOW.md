@@ -67,8 +67,8 @@ Resolve the changed-file list once with
 **Any one selects Deep; no trigger means Lean.**
 
 1. **Sensitive path** — authentication, authorization, cryptography, secret or
-   credential handling, PHI/PII, tenant or customer isolation. However small
-   the edit.
+   credential handling, PHI/PII, tenant or customer isolation. Evaluate the
+   bounded-repair exception below before selecting this trigger.
 2. **Irreversible in production data or a published artifact** — migration,
    backfill, a published package's API or version: anything a revert cannot
    undo.
@@ -83,10 +83,28 @@ Resolve the changed-file list once with
    revert, or hotfix in roughly the last 90 days. Evidence is a specific defect,
    revert, or hotfix commit you can name; ordinary commit traffic on an actively
    developed path is not evidence, and neither is the path being important.
-6. **Explicitly requested** — a human directly asked for a deep review, or the
-   change is a first of its kind the author cannot self-assess. An internal
+6. **Explicitly requested** — a human directly asked for a deep review.
+   Novelty alone does not select this trigger; assess the actual risk under
+   triggers 1–5. An internal
    `deep` argument passed between tier-aware skills only asserts the recorded
    tier; it is not a new request.
+
+### Bounded repairs
+
+A narrow repair may remain Lean even on a sensitive path when it removes an
+unsafe operation or restores an established invariant using existing controls,
+without changing authorization, cryptography, tenant isolation, persistence,
+public contracts, or the control's accepted value shapes. Verify the affected
+call site and regression coverage; include the security and test lenses where
+applicable. For example, replacing a sensitive log value with a constant or a
+boolean passed through an existing type-restricted sanitizer can qualify.
+
+This is an exception to trigger 1, not an exemption from risk review. Evaluate
+triggers 2–6 independently. For trigger 5, the original defect being repaired is
+not by itself evidence of repeated failed fixes; a recurring regression or a
+separate recent defect in the same behavior still counts. A new sanitizer, a
+broadened allowlist value shape, or an unproven boundary change remains Deep.
+Record why the exception applies. Small line count alone is not that evidence.
 
 ### What does not set the tier
 
@@ -197,8 +215,17 @@ inside the same pass retain the enclosing identity and pre-cleanup snapshot.
 
 ### Escalate and de-escalate on evidence
 
-Both moves require a confirmed finding. A suspicion, an unverified severity
-label, or "this feels risky" is not evidence and does not move a tier.
+Resolve the initial classification, including the bounded-repair exception,
+before starting a run. A tentative Deep guess is not a reason to spend a Deep
+pass: inspect the actual delta and record the justified tier first. For an
+existing run, use the evidence-based transitions below and the installed
+controller's supported recovery flow; preserve findings and consumed rounds.
+This policy does not add a tier-amendment command or authorize a budget reset.
+An explicit human request for Deep remains in force until the human revises it;
+internal launcher arguments and "continue in auto" do not create that request.
+
+After a justified classification, escalation and de-escalation follow the
+evidence rules below. Suspicion or an unverified severity label does not move a tier.
 
 **Lean → Deep.** Escalate when a confirmed finding shows the change reaches a
 trigger the classification missed — a real authorization or isolation bypass, a
@@ -218,7 +245,7 @@ set, one further round at most. Running the full matrix again over a
 substantively unchanged diff audits the review rather than the change. Record
 the de-escalation and the lenses that came back clean.
 
-Trigger 6 — an explicitly requested deep review — is never de-escalated. The
+Trigger 6 — an explicitly requested deep review — is never de-escalated by a reviewer alone. The
 request is the evidence, and no clean lens overrides it. For the rest, a trigger
 de-escalates only through the lens that owns it:
 

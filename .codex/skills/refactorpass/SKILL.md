@@ -12,7 +12,7 @@ PR.
 
 ## Context Window Check
 
-Run this check before anything else. `refactorpass` (and the `critique` that typically follows) does diff-reading, multi-lane reviewing, and edit application — all cache-hungry. If the current Codex session has already been heavily used for feature implementation, the cache is largely spent on context the cleanup pass does not need, and the downstream `critique` (especially `critique deep`'s six independent lanes) will be measurably slower and more expensive.
+Choose review scope before allocating agents. A bounded diff can be reviewed directly; delegate substantial independent tracks when a fresh reader adds value. Carrying implementation history into each reviewer can add cost and anchoring without improving coverage.
 
 Assess honestly:
 
@@ -30,23 +30,19 @@ already authorized the cleanup or asked you to proceed. Pause only when the user
 requested a fresh-session boundary, the runtime cannot continue safely, or a
 separate-session protocol transition requires another reviewer.
 
-## Fix Bias
+## Cleanup scope and value
 
-Apply every valid cleanup `refactorpass` surfaces in this pass. Skip suggestions only when they are wrong: would change behavior, would make the code worse, would introduce speculative abstraction, or are based on a misread of the diff. Do not defer valid cleanups to a "follow-up PR" — the only legitimate defer is a major architectural rework (roughly 300+ lines or a cross-cutting redesign), and in that case file a GitHub issue at deferral time rather than leaving the suggestion as an undocumented todo. Reason: every valid cleanup that ships becomes the floor for the next PR in this area, and letting them accrue as "deferred" turns the backlog into review noise and makes future cleanups more expensive.
+Use one focused pass over the changed code. Consider simplicity, duplication,
+bug-prone complexity, and local conventions where they matter; these are lenses,
+not three required agent runs. Delegate only substantial independent cleanup
+tracks, with read-only workers and bounded file scopes.
 
-## Cleanup Matrix
-
-Refactorpass must cover three lanes:
-
-1. **Simplicity/DRY lane** — remove fresh duplication, collapse awkward control flow, inline one-use abstractions, delete dead code, and simplify names when the diff makes intent clearer.
-2. **Correctness-preserving lane** — look for cleanup that reduces bug risk without changing behavior: narrower conditions, safer defaults, clearer error paths, less state mutation, and tighter async/resource cleanup.
-3. **Convention/API lane** — align fresh code with local patterns, package boundaries, exports, dependency placement, and documented repo conventions.
-
-Run these lanes as independently as the active runtime permits:
-
-- If subagents/delegation are available and permitted by the active Codex instructions, spawn independent cleanup reviewers for the three lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the cleanup lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to suggest behavior-preserving cleanup and avoid broad rewrites.
-- If subagents are unavailable or not permitted, perform three separate local passes using the lane prompts above. Do not present that as equivalent to independent subagents.
-- If refactorpass could not use independent subagents, explicitly say so in the output under `cleanup depth`.
+Apply cleanup when it materially improves clarity or reduces bug risk enough to
+justify its churn. Leave subjective naming, cosmetic preferences, and speculative
+abstractions alone. A no-op is a successful outcome. For already-posted suggestions,
+record an honest disposition under the ledger; create a follow-up issue only for
+concrete urgent work, not to preserve every possible cleanup. Correctness fixes
+belong in `critique`, where their behavior change can be reviewed and tested.
 
 ## Process
 
@@ -82,9 +78,8 @@ Run these lanes as independently as the active runtime permits:
    returns naming and shape churn, not cleanups. That churn moves the head and
    re-stales the other engine's attestation for no shipped benefit.
 
-6. Assign each lane the exact changed source paths its lens needs and execute
-   every lane in the Cleanup Matrix. Follow the ledger's scoped-read contract;
-   do not hand every lane a whole-diff artifact.
+6. Review the changed source using "Cleanup scope and value". For delegated
+   work, assign bounded paths and follow the ledger's scoped-read contract.
 7. Consolidate lane suggestions, verify them, and deduplicate them against the
    complete PR ledger.
 8. Post each confirmed cleanup inline before editing, then apply only cleanup
@@ -131,14 +126,12 @@ Run these lanes as independently as the active runtime permits:
 
 Report:
 
-- cleanup depth: independent subagents, local three-pass fallback, docs/config-only skip, or no source changes
+- cleanup depth: direct, delegated, mixed, docs/config-only skip, or no source changes
 - latch state: first pass for this engine, skipped because already spent at `<sha>`, or forced re-run
 - whether changes were made
 - commit SHA if created
 - validation run
 - PR number plus comments, replies, and resolved-thread counts
 - recommended next step from the selected path: if invoked by `deepcritique`,
-  return so it can run `critique deep`; if run standalone, run `deepcritique`
-  next and let it follow the selected auto or handoff mode before handing to the
-  next declared reviewer; add `reviewit <pr-number>` whenever a hosted pass is
-  wanted
+  return to its controller; if run standalone, use `critique` at the resolved
+  tier. Cleanup does not select Deep or add a reviewer to the declared roster.
