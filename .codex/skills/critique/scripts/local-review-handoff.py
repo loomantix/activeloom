@@ -168,9 +168,9 @@ def _classic_signatures_required(repo: str, base_ref: str) -> bool:
     owner, name = parts
     query = (
         "query($owner:String!,$name:String!,$qualifiedName:String!){"
-        "repository(owner:$owner,name:$name){viewerCanAdminister "
-        "ref(qualifiedName:$qualifiedName){"
-        "branchProtectionRule{requiresCommitSignatures}}}}"
+        "repository(owner:$owner,name:$name){ref(qualifiedName:$qualifiedName){"
+        "branchProtectionRule{requiresCommitSignatures}"
+        "refUpdateRule{requiresSignatures}}}}"
     )
     response = _json_output(
         [
@@ -193,27 +193,20 @@ def _classic_signatures_required(repo: str, base_ref: str) -> bool:
     ref = repository.get("ref") if isinstance(repository, dict) else None
     if not isinstance(ref, dict):
         _fail("GitHub returned malformed base-branch protection metadata")
-    can_administer = cast(dict[str, Any], repository).get("viewerCanAdminister")
-    if not isinstance(can_administer, bool):
-        _fail("GitHub returned malformed repository administration metadata")
-    protection = ref.get("branchProtectionRule")
+    if "branchProtectionRule" not in ref or "refUpdateRule" not in ref:
+        _fail("GitHub returned incomplete branch protection metadata")
+    protection = ref["branchProtectionRule"]
     if protection is None:
-        # GitHub exposes `branchProtectionRule` only to an administrator, and
-        # expresses the refusal as a null field on an otherwise successful
-        # response rather than as a GraphQL error. A non-admin viewer therefore
-        # cannot tell "this branch is unprotected" from "you may not ask", so
-        # treating null as permissive would silently disable the whole
-        # signature gate for every ordinary reviewer token.
-        if not can_administer:
-            _fail(
-                "cannot determine the classic branch-protection signature policy "
-                f"for {base_ref}: GitHub exposes it only to a repository "
-                "administrator, and this token is not one. Re-run with a token "
-                "that can read branch protection, or express the signature "
-                "requirement as a repository ruleset, so the preflight is not "
-                "silently skipped."
-            )
-        return False
+        # The full rule is administrator-only. `refUpdateRule` exposes the
+        # effective branch-protection requirements to ordinary viewers.
+        update_rule = ref["refUpdateRule"]
+        if update_rule is None:
+            return False
+        if not isinstance(update_rule, dict) or not isinstance(
+            update_rule.get("requiresSignatures"), bool
+        ):
+            _fail("GitHub returned malformed effective branch protection")
+        return cast(bool, update_rule["requiresSignatures"])
     if not isinstance(protection, dict) or not isinstance(
         protection.get("requiresCommitSignatures"), bool
     ):

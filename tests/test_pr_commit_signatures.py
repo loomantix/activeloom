@@ -48,7 +48,7 @@ def github_responses(
     live_head: str = HEAD,
     require_signatures: bool = True,
     classic_signatures: bool = False,
-    viewer_can_administer: bool = True,
+    effective_classic_signatures: bool | None = False,
     base_ref: str = "main",
 ) -> None:
     """Stub the GitHub reads used by the signature preflight."""
@@ -68,7 +68,7 @@ def github_responses(
             "api",
             "graphql",
             "-f",
-            "query=query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){viewerCanAdminister ref(qualifiedName:$qualifiedName){branchProtectionRule{requiresCommitSignatures}}}}",
+            "query=query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){ref(qualifiedName:$qualifiedName){branchProtectionRule{requiresCommitSignatures}refUpdateRule{requiresSignatures}}}}",
             "-F",
             "owner=example",
             "-F",
@@ -78,11 +78,18 @@ def github_responses(
         ]:
             assert not require_signatures
             rule = {"requiresCommitSignatures": True} if classic_signatures else None
+            update_rule = (
+                None
+                if effective_classic_signatures is None
+                else {"requiresSignatures": effective_classic_signatures}
+            )
             return {
                 "data": {
                     "repository": {
-                        "viewerCanAdminister": viewer_can_administer,
-                        "ref": {"branchProtectionRule": rule},
+                        "ref": {
+                            "branchProtectionRule": rule,
+                            "refUpdateRule": update_rule,
+                        },
                     }
                 }
             }
@@ -168,24 +175,35 @@ def test_classic_branch_protection_requires_full_history(
     assert f"{UNSIGNED} (unsigned)" in str(error.value)
 
 
-def test_unreadable_classic_policy_fails_closed_for_a_non_admin_viewer(
+def test_effective_classic_policy_is_used_for_a_non_admin_viewer(
     handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A null rule the viewer may not read is indeterminate, never permissive."""
+    """The non-admin-visible effective rule still enforces signed history."""
     github_responses(
         monkeypatch,
         handoff,
         [commit(HEAD, verified=False, reason="unsigned")],
         require_signatures=False,
-        classic_signatures=False,
-        viewer_can_administer=False,
+        effective_classic_signatures=True,
     )
 
-    with pytest.raises(
-        handoff.HandoffError,
-        match="cannot determine the classic branch-protection signature policy",
-    ):
+    with pytest.raises(handoff.HandoffError, match=HEAD):
         handoff._verify_signed_pr_history(REPO, 7, HEAD)
+
+
+def test_non_admin_viewer_allows_unsigned_history_when_effective_rule_does(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ordinary reviewer tokens preserve repositories that allow unsigned commits."""
+    github_responses(
+        monkeypatch,
+        handoff,
+        [commit(HEAD, verified=False, reason="unsigned")],
+        require_signatures=False,
+        effective_classic_signatures=False,
+    )
+
+    handoff._verify_signed_pr_history(REPO, 7, HEAD)
 
 
 def test_classic_policy_query_fails_closed_on_graphql_errors(
@@ -199,6 +217,26 @@ def test_classic_policy_query_fails_closed_on_graphql_errors(
 
     with pytest.raises(
         handoff.HandoffError, match="could not resolve classic branch protection"
+    ):
+        handoff._classic_signatures_required(REPO, "main")
+
+
+def test_classic_policy_query_fails_closed_on_incomplete_metadata(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An omitted effective-rule field is an incomplete response, not no policy."""
+    monkeypatch.setattr(
+        handoff,
+        "_json_output",
+        lambda *args, **kwargs: {
+            "data": {
+                "repository": {"ref": {"branchProtectionRule": None}},
+            }
+        },
+    )
+
+    with pytest.raises(
+        handoff.HandoffError, match="incomplete branch protection metadata"
     ):
         handoff._classic_signatures_required(REPO, "main")
 
