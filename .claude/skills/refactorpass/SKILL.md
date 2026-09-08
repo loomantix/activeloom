@@ -1,6 +1,6 @@
 ---
 name: refactorpass
-description: PR-first refactor pass that runs /simplify once against an open draft PR, verifies and commits the surviving cleanups, pushes, and records them in the PR ledger. Runs at most once per PR for this engine.
+description: PR-first refactor pass that gathers read-only cleanup proposals once against an open draft PR, posts verified findings before edits, and records validated fixes in the PR ledger. Runs at most once per PR for this engine.
 argument-hint: (optional PR number, optional "force"; always single-pass)
 ---
 
@@ -12,7 +12,7 @@ that repeats each review round.
 
 ## Context-window check
 
-`/simplify` reads and edits the full changeset. If this session authored the
+Cleanup reads the full changeset. If this session authored the
 change or carries dense implementation context, recommend a fresh Claude
 session. Continue only after an explicit override.
 
@@ -52,7 +52,7 @@ session. Continue only after an explicit override.
    `local-review-refactor:v1 engine=claude`, authored by the actor running this
    review. If it is present, this PR has already had its Claude cleanup pass:
    set the telemetry status to `clean` and continue directly to Output. Do not
-   run `/simplify`. Continue to cleanup only when the marker is absent or
+   run cleanup again. Continue to cleanup only when the marker is absent or
    `$ARGUMENTS` contains `force`, and say which of the two applied.
 
    The rule exists because the second pass over an already-simplified diff
@@ -64,58 +64,58 @@ session. Continue only after an explicit override.
     files it reviews rather than giving every angle the same whole-diff
     artifact.
 
-## Single `/simplify` pass
+## Single read-only cleanup pass
 
-Record the exact HEAD and clean worktree status. Invoke
-`Skill(skill="simplify", args="Analyze the PR diff and propose
-behavior-preserving cleanups. Do not commit.")` once. Do not run a second pass.
+Record the exact HEAD and clean worktree status. Gather proposals with at most
+one read-only cleanup worker using the ledger's immutable packet and scoped
+diff. Ask it to identify duplication, unnecessarily complex control flow, and
+local convention mismatches, with file/line evidence and a concrete
+behavior-preserving correction. It may read source and existing tests only;
+it must not edit, commit, publish, run validation or mutation probes, or invoke
+another skill or agent. Limit its response to 500 words without suppressing
+material findings. If delegation is unavailable, perform the same analysis
+locally before editing. The coordinator owns verification and mutations.
 
-`/simplify` applies the cleanups it finds — that is its contract, and asking it
-for a proposal-only run is not reliable. Handle whichever outcome you get:
+Do not invoke `/simplify` here: it applies edits even when asked for proposals,
+which cannot satisfy the ledger's post-before-edit contract.
 
-- **It left the tree clean and HEAD unmoved.** It found nothing, or it only
-  reported. Nothing to commit.
-- **It edited the worktree.** Normal. Review every edit before keeping it.
-- **It committed.** Verify the commit is behavior-preserving and in scope; keep
-  it rather than rewriting history. Never resolve this by force-push or
-  `git stash`.
-
-Verify each cleanup against the source and drop any that:
+Verify each proposal against the source and drop any that:
 
 1. changes behavior, or reaches outside the changed code apart from a tiny
    adjacent edit required to complete it safely;
 2. is a broad rewrite, unrelated style churn, or speculative abstraction.
 
-Revert what you drop (`git checkout -- <path>` for uncommitted edits, a follow-up
-edit for committed ones) before validating.
+For each surviving cleanup, deduplicate its fingerprint against the complete
+ledger, preflight its diff anchor, and post the finding through the helper
+before applying the edit. Run focused validation and commit the accepted
+cleanups locally as `refactor: claude cleanup pass - <summary>`.
 
-Cleanups are not adversarial findings, so the ledger's post-before-editing rule
-does not apply here: there is no defect to disposition and no thread to resolve,
-and `/simplify` has already edited by the time you could post one.
+When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, return the original head, local
+commit, finding identities, and pending latch to the enclosing critique.
+Leave publication, dispositions, and the latch to its single final push after
+all cleanup and adversarial fixes. An unpublished cleanup commit is an
+expected intermediate state, not a head-identity failure. If no helper is set,
+push normally, then use `dispose` for every cleanup finding at the published
+head. A no-op needs no publication.
 
-If anything survived: run the smallest relevant formatter or test, stage the
-remaining edits, create one `refactor: /simplify pass — <summary>` commit, and
-push normally. Then post **one** informational PR comment naming the cleanup
-lane, the exact reviewed head, the resulting commit SHA, and a one-line list of
-what was consolidated. Stop if any step fails.
-
-If nothing survived, the branch is unchanged: post the same informational
-comment with no commit SHA and move on. Do not push.
-
-Either way, that comment closes the latch for this engine and must carry the
-ledger's marker:
+After publication (or immediately for a no-op), post **one** informational PR
+comment naming the cleanup lane, original reviewed head, resulting commit when
+present, and what was consolidated. Use the helper's `post-pr-comment` with
+the current PR head. This comment closes the once-per-engine latch:
 
 ```text
 <!-- local-review-refactor:v1 engine=claude head=<reviewed-sha> outcome=<committed|no-op> -->
 ```
 
-Post it only for a pass that actually ran `/simplify`. A docs/config-only skip
+Post it only for a pass that actually ran cleanup. A docs/config-only skip
 leaves the latch open, so a later round whose changeset contains source can still
 spend the one pass.
 
-Do not write a `local-review-pass:v3` result or open `local-review:v3` finding
-threads for cleanups: only the final adversarial `critique` lane may certify the
-enclosing Claude review hook, and the outer wrapper owns its attestation.
+The latch is informational; it cannot replace fixed finding evidence. Only the
+final adversarial `critique` lane writes the enclosing review's v3 result. It
+includes the cleanup findings and original pre-cleanup head; under a wrapper,
+the wrapper owns attestation. Return an incomplete step to the controller's
+bounded recovery without inventing evidence or resetting the budget.
 
 ## Output
 
