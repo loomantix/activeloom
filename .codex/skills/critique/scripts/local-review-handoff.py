@@ -243,9 +243,15 @@ def _verify_signed_pr_history(repo: str, pr: int, expected_head: str) -> None:
         _fail("GitHub returned an invalid PR base branch")
 
     encoded_base_ref = quote(base_ref, safe="")
-    rules = _json_output(["api", f"repos/{repo}/rules/branches/{encoded_base_ref}"])
-    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
-        _fail("GitHub returned malformed effective branch rules")
+    rule_pages = _json_output(
+        [
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{repo}/rules/branches/{encoded_base_ref}?per_page=100",
+        ]
+    )
+    rules = _flatten_pages(rule_pages, "branch-rule")
     requires_signatures = any(
         rule.get("type") == "required_signatures" for rule in rules
     )

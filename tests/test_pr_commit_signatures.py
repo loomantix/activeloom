@@ -6,7 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -50,6 +50,7 @@ def github_responses(
     classic_signatures: bool = False,
     effective_classic_signatures: bool | None = None,
     base_ref: str = "main",
+    rule_pages: list[list[dict[str, Any]]] | None = None,
 ) -> None:
     """Stub the GitHub reads used by the signature preflight."""
 
@@ -62,8 +63,15 @@ def github_responses(
                 "head": {"sha": live_head},
             }
         encoded_base_ref = base_ref.replace("/", "%2F")
-        if args == ["api", f"repos/{REPO}/rules/branches/{encoded_base_ref}"]:
-            return [{"type": "required_signatures"}] if require_signatures else []
+        if args == [
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{REPO}/rules/branches/{encoded_base_ref}?per_page=100",
+        ]:
+            if rule_pages is not None:
+                return rule_pages
+            return [[{"type": "required_signatures"}] if require_signatures else []]
         if args == [
             "api",
             "graphql",
@@ -295,4 +303,37 @@ def test_signature_check_rejects_head_change_during_preflight(
     )
 
     with pytest.raises(handoff.HandoffError, match="head mismatch"):
+        handoff._verify_signed_pr_history(REPO, 7, HEAD)
+
+
+def test_required_signatures_rule_beyond_the_first_page_is_honored(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A paginated branch-rules response is read whole, not just its first page."""
+    github_responses(
+        monkeypatch,
+        handoff,
+        [commit(HEAD, verified=False, reason="unsigned")],
+        rule_pages=[
+            [{"type": "deletion"}, {"type": "non_fast_forward"}],
+            [{"type": "pull_request"}, {"type": "required_signatures"}],
+        ],
+    )
+
+    with pytest.raises(handoff.HandoffError, match=HEAD):
+        handoff._verify_signed_pr_history(REPO, 7, HEAD)
+
+
+def test_malformed_branch_rules_pagination_fails_closed(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A branch-rules response that is not a list of pages is rejected, not ignored."""
+    github_responses(
+        monkeypatch,
+        handoff,
+        [commit(HEAD, verified=True, reason="valid")],
+        rule_pages=cast("Any", [{"type": "required_signatures"}]),
+    )
+
+    with pytest.raises(handoff.HandoffError, match="branch-rule"):
         handoff._verify_signed_pr_history(REPO, 7, HEAD)
