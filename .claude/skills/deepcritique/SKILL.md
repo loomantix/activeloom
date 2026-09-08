@@ -18,6 +18,16 @@ this skill reads that decision rather than making its own.
 
 ## Phase 0: Pre-flight
 
+### Controller or one-pass reviewer
+
+A top-level auto request follows the workflow's
+[auto-mode preflight](../../REVIEW_WORKFLOW.md#auto-mode) and
+[run initialization](../../REVIEW_WORKFLOW.md#start-an-interactive-run-before-authorizing-a-pass).
+Resolve the roster's available launchers before spending a pass. A launcher or
+wrapper invocation that requests exactly one pass inherits that run and returns
+to its caller after finalizing the result; it skips Phase 3 and never schedules
+another engine, even when the enclosing run is automatic.
+
 ### Context-window check
 
 This chain invokes cleanup analysis and up to six adversarial sub-agents. If this
@@ -27,6 +37,11 @@ gate: authoring rationale anchors the reviewer and is expensive to fan out. See
 [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
 
 Proceed in the current session only after an explicit override.
+
+This gate applies before this session performs review. An authoring session
+may still coordinate supported independent reviewers as the auto controller.
+Cleanup and fixes within an already-fresh review do not require another fresh
+session when moving between its sub-skills.
 
 ### PR-first boundary
 
@@ -78,10 +93,11 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
    pass/complete comments after that run marker. Honor the run's cap and use
    `.codex/skills/critique/scripts/local-review-handoff.py authorize-pass`, the
    shared run controller. If it is absent, report that and stop.
-   An aborted run follows supported recovery without resetting its budget;
-   a converged or exhausted run requires new authorization to restart. PR-wide history is a
-   fallback only when no run marker exists; earlier runs do not consume a new
-   run's budget. Rounds 1–2 are adversarial; round 3 and later are convergence
+   Follow the workflow's run initialization when no run exists. An ended run,
+   including an aborted one, needs fresh restart authorization; this controller
+   has no budget-preserving resume command. Earlier runs do not consume a new
+   run's budget, and PR-wide history cannot substitute for an authenticated run.
+   Rounds 1–2 are adversarial; round 3 and later are convergence
    rounds. State which applies before running a lane.
 
 ### Tier gate
@@ -152,8 +168,9 @@ regular file and call `write-blocked-result`.
 
 ## Phase 3: Auto-mode relay
 
-Skip this phase in session mode, where the user starts the next reviewer in a
-fresh terminal.
+Only the top-level auto controller enters this phase. Skip it in session mode,
+where the user starts the next reviewer in a fresh terminal, and in a one-pass
+launcher or wrapper invocation, which returns its result to its caller.
 
 In auto mode, read the effective roster and exact-head coverage from the ledger,
 then start each declared reviewer that holds no attestation at the current head.

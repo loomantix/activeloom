@@ -16,6 +16,9 @@ Cleanup reads the full changeset. If this session authored the
 change or carries dense implementation context, recommend a fresh Claude
 session. Continue only after an explicit override.
 
+In an already-fresh review, cleanup and review fixes belong to the same pass;
+they do not trigger another context gate before the enclosing critique runs.
+
 ## PR-first pre-flight
 
 1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
