@@ -32,7 +32,10 @@ def log(path: Path, cwd: Path, identity: str) -> None:
 
 
 def invoke(
-    tmp_path: Path, *args: str, identity: str | None = "selected"
+    tmp_path: Path,
+    *args: str,
+    identity: str | None = "selected",
+    id_env: str = "CODEX_THREAD_ID",
 ) -> dict[str, Any]:
     worktree = tmp_path / "worktree"
     worktree.mkdir(exist_ok=True)
@@ -46,7 +49,7 @@ def invoke(
         env.pop(name, None)
     env.update(LOOM_REVIEW_TELEMETRY_EXTRACT="on", LOOM_REVIEW_TELEMETRY="off")
     if identity is not None:
-        env["CODEX_THREAD_ID"] = identity
+        env[id_env] = identity
     result = subprocess.run(
         ["node", str(SCRIPT), *args, "--sessions-dir", str(tmp_path / "sessions")],
         env=env,
@@ -59,7 +62,10 @@ def invoke(
 
 
 def snapshot(
-    tmp_path: Path, *args: str, identity: str | None = "selected"
+    tmp_path: Path,
+    *args: str,
+    identity: str | None = "selected",
+    id_env: str = "CODEX_THREAD_ID",
 ) -> dict[str, Any]:
     return invoke(
         tmp_path,
@@ -68,6 +74,7 @@ def snapshot(
         str(tmp_path / "start.json"),
         *args,
         identity=identity,
+        id_env=id_env,
     )
 
 
@@ -160,30 +167,7 @@ def test_duplicate_identity_across_directories_abstains(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("name", ["CODEX_THREAD_ID", "CODEX_SESSION_ID"])
 def test_both_host_identity_variables_are_supported(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    tmp_path: Path, name: str
 ) -> None:
-    # invoke deliberately clears ambient IDs; test each source directly here.
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
     log(tmp_path / "sessions/rollout-selected.jsonl", tmp_path / "primary", "selected")
-    for key in ("CODEX_SESSION_LOG", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv(name, "selected")
-    monkeypatch.setenv("LOOM_REVIEW_TELEMETRY_EXTRACT", "on")
-    monkeypatch.setenv("LOOM_REVIEW_TELEMETRY", "off")
-    result = subprocess.run(
-        [
-            "node",
-            str(SCRIPT),
-            "snapshot",
-            "--out",
-            str(tmp_path / "start.json"),
-            "--sessions-dir",
-            str(tmp_path / "sessions"),
-        ],
-        cwd=worktree,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert json.loads(result.stdout)["scoped"] is True
+    assert snapshot(tmp_path, id_env=name)["scoped"] is True
