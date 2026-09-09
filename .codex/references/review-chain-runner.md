@@ -56,7 +56,8 @@ The runner uses the existing Claude/Agy launchers without overriding their model
 effort or permission flags. The new Codex one-pass launcher retains configured
 model/provider choices and uses ephemeral noninteractive execution. Its unattended
 permissions match the existing agent-loop use case; a dedicated worktree is not
-a security sandbox. See [official Codex noninteractive documentation](https://learn.chatgpt.com/docs/non-interactive-mode).
+a security sandbox. See the repository's [OpenAI documentation setup](../../docs/openai-docs.md)
+for current official documentation sources.
 
 ## Results and recovery
 
