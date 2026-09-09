@@ -12,15 +12,16 @@ on any divergence that is neither `recorded` against a file below nor `held`
 against a tracking issue and a residual ceiling. A divergence with no record is
 presumed accidental.
 
-| #    | Record                                                                                                                                            |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0001 | [Pre-review session gate postures](0001-session-gate-postures.md) — hard gate in Claude and Gemini, advisory in Codex                             |
-| 0002 | [Reviewer precision postures](0002-reviewer-precision-postures.md) — report-everything-scored (Claude) vs high-precision (Codex, Gemini)          |
-| 0003 | [refactorpass architecture](0003-refactorpass-architecture.md) — delegation to `/simplify` (Claude) vs inline Cleanup Matrix (Codex, Gemini)      |
-| 0004 | [reviewit as two documents](0004-reviewit-two-documents.md) — tier-authority orchestrator (Claude) vs resumable thin orchestrator (Codex, Gemini) |
-| 0005 | [copilot-review Fix Bias](0005-copilot-review-fix-bias.md) — Codex and Gemini only                                                                |
-| 0006 | [Review chains never converge](0006-review-chains-never-converge.md) — the standing record the others point at                                    |
-| 0007 | [agent-loop is per-harness](0007-agent-loop-per-harness-launch.md) — three launch models, three supervision models                                |
+| #    | Record                                                                                                                                                              |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0001 | [Pre-review session gate postures](0001-session-gate-postures.md) — hard gate in Claude and Gemini, advisory in Codex                                               |
+| 0002 | [Reviewer precision postures](0002-reviewer-precision-postures.md) — report-everything-scored (Claude) vs high-precision (Codex, Gemini)                            |
+| 0003 | [refactorpass architecture](0003-refactorpass-architecture.md) — one read-only cleanup worker (Claude), focused direct pass (Codex), inline Cleanup Matrix (Gemini) |
+| 0004 | [reviewit as two documents](0004-reviewit-two-documents.md) — tier-authority orchestrator (Claude) vs resumable thin orchestrator (Codex, Gemini)                   |
+| 0005 | [copilot-review Fix Bias](0005-copilot-review-fix-bias.md) — Codex and Gemini only                                                                                  |
+| 0006 | [Review chains never converge](0006-review-chains-never-converge.md) — the standing record the others point at                                                      |
+| 0007 | [agent-loop is per-harness](0007-agent-loop-per-harness-launch.md) — three launch models, three supervision models                                                  |
+| 0008 | [Proportionate Codex review](0008-proportionate-review.md) — lens selection and delegation chosen from risk, not from the skill name                                |
 
 New records take the next number, use the same shape (Status / Date, divergent
 files, the behavioural difference, why it stands), and stay a few paragraphs.

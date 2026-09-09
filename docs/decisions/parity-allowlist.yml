@@ -26,6 +26,7 @@ recorded:
     record:
       - 0002-reviewer-precision-postures.md
       - 0006-review-chains-never-converge.md
+      - 0008-proportionate-review.md
     reason: >-
       Where the precision filter runs is per-model calibration — Claude finders
       report everything scored and the orchestrator cuts; the Codex and Gemini
@@ -36,6 +37,7 @@ recorded:
     record:
       - 0001-session-gate-postures.md
       - 0006-review-chains-never-converge.md
+      - 0008-proportionate-review.md
     reason: >-
       The pre-review session gate is a hard stop in Claude and Gemini and
       advisory in Codex, deliberately: Codex runs inside relay protocols where
@@ -46,9 +48,9 @@ recorded:
       - 0003-refactorpass-architecture.md
       - 0006-review-chains-never-converge.md
     reason: >-
-      Claude delegates proposals to one read-only cleanup worker; the Codex
-      and Gemini copies carry an inline Cleanup Matrix because those harnesses
-      have no equivalent skill to delegate to.
+      Claude delegates proposals to at most one read-only cleanup worker;
+      Codex defaults to focused direct analysis with optional delegation;
+      Gemini retains its inline Cleanup Matrix.
 
   - skill: reviewit
     record:
