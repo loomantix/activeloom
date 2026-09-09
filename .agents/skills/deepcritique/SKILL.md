@@ -39,8 +39,8 @@ comments after that run marker. Resolve Agy as `gemini`, including historical
 Honor the run's cap and confirm the round with the shared run controller at
 `.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
 it is absent from the checkout, report that and stop rather than running
-unauthorized. An aborted run uses supported recovery within its original
-budget; a converged or exhausted run requires new restart authorization.
+unauthorized. An ended run, including an aborted one, requires fresh restart
+authorization: this controller has no budget-preserving resume command.
 PR-wide history is a fallback only when no run marker exists. Rounds 1–2 are
 adversarial; round 3 and later are convergence rounds. State which applies
 before invoking a lane.

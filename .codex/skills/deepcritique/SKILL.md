@@ -25,7 +25,7 @@ back to a direct Claude invocation.
 
 ## Context Window Check
 
-Run this check before anything else. `deepcritique` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `critique deep` (six core independent review lanes, plus a conditional tenant-coupling lane). When subagents/delegation are available, the lanes run in parallel, each inheriting cache state from this session; when subagents are not available they run as serial local passes against the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.
+Choose review scope before allocating agents. A bounded diff can be reviewed directly; delegate substantial independent tracks when a fresh reader adds value. Carrying implementation history into each reviewer can add cost and anchoring without improving coverage.
 
 Assess honestly:
 
@@ -97,8 +97,8 @@ within the latest authenticated `local-review-run:v1`, select one past this
 engine's highest completed round (1 when it has none), considering only its
 `local-review-pass:v3` and `local-review-complete:v3` comments after that run's
 marker. Validate the selection with `local-review-handoff.py authorize-pass`
-before a lane. An aborted run uses supported recovery within its original
-budget; a converged or exhausted run requires new restart authorization. Never
+before a lane. An ended run, including an aborted one, requires fresh restart
+authorization: this controller has no budget-preserving resume command. Never
 count earlier runs toward the new run's round or cap. Only a legacy review with
 no run marker uses PR-wide history. Rounds 1–2 are adversarial; round 3 and later
 are convergence rounds. State which applies before invoking a lane.
@@ -115,9 +115,8 @@ adversarial stance holds for two rounds and then gives way to landing the change
    `refactor pass: skipped (convergence round)`.
 2. Reload the PR head and review ledger.
 3. Execute `critique <pr-number> deep`, passing the resolved round so the lane picks
-   the matching stance. An adversarial round runs all six core independent review
-   lanes and the conditional tenant-coupling lane when customer-variable behavior
-   is present. A convergence round runs only the code reviewer, silent failure
+   the matching stance. An adversarial round selects relevant lenses and
+   proportionate execution using `critique`'s review-lens policy. A convergence round runs only the code reviewer, silent failure
    hunter, and security reviewer when its signal is present, and changes the PR
    only for a blocking defect. `critique` owns those rules; do not restate or relax
    them here.
@@ -151,12 +150,10 @@ choice. The ledger governs scoped diff reads, bounded output, and PR-ledger
 deduplication; do not paste the whole diff or the implementation conversation
 into lane prompts.
 
-Deep critique is not a single generalized review. If the active Codex runtime permits subagents/delegation, use independent reviewers for every applicable lane. If subagents are unavailable or not permitted, run a separate local pass for every applicable lane and disclose the downgrade in the final output.
-
-Invoking `deepcritique` is an explicit request to use independent subagents for the
-six core review lanes, plus the conditional tenant-coupling lane when signaled,
-whenever the active runtime exposes subagent/delegation tools. Do not require the
-user to separately say "use subagents" before spawning those lane reviewers.
+Use `critique`'s "Review lenses and execution" policy. A focused direct pass is
+valid at either tier when it covers the selected risks. Delegate for independent
+work that earns the extra context; the Deep label alone does not require agents.
+Preserve explicit user requests for independent review.
 
 Every deep lane must use an adversarial stance: assume the diff contains
 defects, search for the highest-impact failure modes first, and require code,
@@ -257,7 +254,7 @@ PR: #<pr-number>
 Reviewed head: <sha>
 Round: <n> (<adversarial | convergence>)
 Refactor pass: <ran | already spent at <sha> | skipped (convergence round) | docs-config skip>
-Review depth: <deep with independent subagents | deep local multi-pass fallback>
+Review depth: deep; lenses <selected>; execution <direct | delegated | mixed>
 Next:
   Run each declared reviewer that has not attested this head, against
   <review-base-sha>.
@@ -288,7 +285,7 @@ When the caller asked for the hosted lane as the next step, tell the user:
 ```text
 Deep PR review complete.
 PR: #<pr-number>
-Review depth: <deep with independent subagents | deep local multi-pass fallback>
+Review depth: deep; lenses <selected>; execution <direct | delegated | mixed>
 Next:
   reviewit <pr-number> deep
 

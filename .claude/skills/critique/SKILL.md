@@ -33,11 +33,12 @@ highest completed round within the latest authenticated `local-review-run:v1`
 Honor the run's cap and confirm the round with the run controller at
 `.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`); it
 is shared by every surface despite its path. If it is absent from the checkout,
-report that and stop rather than running unauthorized. Recover an aborted run
-with the supported controller and its existing budget; a converged or exhausted
-run requires new authorization to restart.
-PR-wide history is a fallback only when no run marker exists; earlier runs never
-consume the new run's budget.
+report that and stop rather than running unauthorized. Follow the workflow's
+[run initialization](../../REVIEW_WORKFLOW.md#start-an-interactive-run-before-authorizing-a-pass)
+when no run exists. An ended run, including an aborted one, requires fresh
+restart authorization: this controller has no budget-preserving resume command.
+Earlier runs never consume a new run's budget, and PR-wide history cannot
+substitute for the authenticated run required by `authorize-pass`.
 
 The stance follows the tier's schedule, not the round ordinal alone:
 
@@ -66,6 +67,11 @@ If this session authored the change or carries dense implementation context,
 stop and recommend a fresh Claude session. Continue only after an explicit
 override. Fresh eyes and prompt-cache headroom are part of the review quality
 contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
+
+Cleanup and fixes made inside this same already-fresh review pass do not make
+it an authoring session. Continue from refactorpass with the enclosing identity
+and snapshot; do not demand a new session between those phases. This exception
+does not admit a session that implemented the feature before review started.
 
 ### PR-first pre-flight
 

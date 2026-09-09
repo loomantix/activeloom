@@ -1,4 +1,4 @@
-# 0003 — refactorpass architecture: one cleanup worker (Claude) vs inline Cleanup Matrix (Codex, Gemini)
+# 0003 — refactorpass architecture: proportionate cleanup per harness
 
 - Status: accepted
 - Date: 2026-08-30
@@ -19,12 +19,14 @@ worker, with local analysis as the fallback. The coordinator verifies proposals,
 posts findings before edits, and commits the validated corrections. Wrapped
 cleanup shares the enclosing pass's single publication and fixed finding set.
 
-Codex and Gemini have no `/simplify` in their harnesses, so their
-`refactorpass` carries the cleanup judgment inline as a three-lane Cleanup
-Matrix — a simplicity/DRY lane, a correctness-preserving lane, and a
-convention/API lane — run as independent subagent reviewers where the runtime
-permits, or as three serial local passes otherwise, with the degraded mode
-disclosed in the output as `cleanup depth`.
+Codex carries cleanup judgment inline and defaults to one focused direct pass.
+It delegates only substantial independent tracks and applies cleanup when its
+clarity or bug-risk benefit justifies the churn. Direct execution is a supported
+choice, reported as such, rather than a degraded mode. A no-op is successful.
+
+Gemini retains its three-lane Cleanup Matrix and its existing execution policy.
+The absence of `/simplify` does not itself require either agent fan-out or a
+fixed number of serial reads.
 
 ## Why it changed
 

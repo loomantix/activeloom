@@ -1,11 +1,11 @@
 ---
 name: pr-critique
-description: Cross-engine deep review of an existing PR. Run when you want a second engine's deep adversarial pass on a PR another engine (or you) already opened — typically after the authoring engine's own critique/reviewit. Runs the deep review matrix on the PR diff, applies fixes, and pushes them back to the PR head branch so the originating engine can re-review.
+description: Cross-engine review of an existing PR at its resolved Lean or Deep tier. Read prior findings, review the relevant risks, apply justified fixes, and push them back to the PR head branch for exact-head re-review.
 ---
 
 # PR Critique — cross-engine relay review
 
-Run the deep review matrix against an **already-open PR** as a different engine
+Review an **already-open PR** at its resolved Lean or Deep tier as a different engine
 from the one that authored it, fix what you find, and push the fixes back so the
 originating engine can re-review. The value is engine diversity: a second model
 catches design-level blind spots the authoring engine baked in and would not
@@ -26,11 +26,11 @@ record at all.
 
 Read the prior pass before running any lane, per
 `.codex/REVIEW_WORKFLOW.md` "Read the prior pass before every
-review". On this lane the originating engine has always already
-run, so starting without its `local-review-pass:v3` /
-`local-review-complete:v3` attestation, that attestation's body, and the inline
-v3 threads its fingerprints name means re-deriving what it already posted. Do
-not re-litigate a fingerprint it dispositioned at this head.
+review". Read existing `local-review-pass:v3` / `local-review-complete:v3`
+attestations, their bodies, and the inline threads they name. Their absence is
+normal before the first reviewer and does not itself block a pass. Follow the
+current run and any authenticated handoff; do not re-litigate a fingerprint
+already dispositioned at this head without new evidence.
 
 This is **not** `deepcritique`. Both are PR-first and use the same thread ledger,
 but `deepcritique` runs the current engine's deep matrix, preceded by `refactorpass`
@@ -41,7 +41,8 @@ decisions, and pushes signed fix commits back to the PR head branch.
 A relay leg is still a round for the engine running it. Resolve the round and
 stance per the ledger's "Resolve the round, then pick the stance" — from round 3
 on, a relay pass narrows to the deploy-blocking lanes, changes the PR only for a
-blocking defect, and defers the rest to linked issues.
+blocking defect, and dispositions the rest without creating unnecessary issues.
+At Lean, round 2 is already convergence; follow the tier-specific stance in `critique`.
 
 ## Safety preconditions — verify before doing anything
 
@@ -124,30 +125,17 @@ RANGE="$REVIEW_BASE_SHA..HEAD"
 
 Skip docs/config-only changesets (same heuristic as `critique`): if `git diff
 --name-only "$RANGE"` contains no source files, report the skip and exit — there
-is nothing for the matrix to find.
+is nothing for the review to find.
 
-## Phase 1: Deep matrix on the PR diff
+## Phase 1: Review at the resolved tier
 
-Run `critique`'s **deep** matrix against `$RANGE`: the six core lanes plus the
-conditional tenant-coupling lane when customer-variable behavior is present. Load the lane prompts
-from `critique`'s role references — do not re-author them:
-
-- `.codex/references/roles/code-reviewer.md`
-- `.codex/references/roles/silent-failure-hunter.md`
-- `.codex/references/roles/type-design-analyzer.md`
-- `.codex/references/roles/comment-analyzer.md`
-- `.codex/references/roles/pr-test-analyzer.md`
-- `.codex/references/roles/security-reviewer.md`
-
-Run the lanes as independently as the active runtime permits; if subagents are
-unavailable, run separate local passes and disclose the downgrade under `review
-depth` in the output. Keep lane findings separate until all lanes complete, then
-deduplicate by root cause.
-
-Invoking `pr-critique` is an explicit request to use independent subagents for the
-six core review lanes, plus the conditional tenant-coupling lane when signaled,
-whenever the active runtime exposes subagent/delegation tools. Do not require the
-user to separately say "use subagents" before spawning those lane reviewers.
+Resolve the tier from `.codex/REVIEW_WORKFLOW.md` and the authenticated tier
+marker before selecting work. Being a cross-engine reviewer does not select
+Deep. Run `critique` against `$RANGE` at that tier and stance, following that
+skill's own lens and execution policy as this prompt root states it. Do not
+import another root's. Load only the matching role references; preserve explicit
+user choices about independent reviewers. Report the actual lenses and execution
+method instead of inferring them from the skill name.
 
 Review lanes are read-only analysis workers. Every spawned lane prompt must say
 that the lane may inspect source, diffs, existing tests, and existing CI results,
@@ -169,9 +157,9 @@ exists.
 Verify and deduplicate every finding against the full PR ledger. Post one inline
 comment per confirmed root cause before editing, using the local-review marker
 and an exact diff anchor. Apply `critique`'s round-matched fix bias to `$RANGE`:
-in adversarial rounds, fix every valid finding including nits and defer only
-extremely large follow-ups; in convergence rounds, fix only blocking defects
-and defer every confirmed non-blocker to a linked issue. Dismiss invalid
+in adversarial rounds, apply its Disposition Bar so harm reduction justifies
+churn; in convergence rounds, fix only blocking defects. Record other dispositions
+under the ledger and create issues only for concrete urgent follow-ups. Dismiss invalid
 findings or suggestions that would make the code worse with the evidence that
 disproves them. Critical correctness/security findings must not be silently
 dropped. Run the smallest relevant formatter/test command the repo documents
@@ -238,7 +226,7 @@ know what changed and what to scrutinize:
 
 ```text
 pr-critique complete on PR #<pr-number> (cross-engine pass).
-review depth: <deep with independent subagents | deep local multi-pass fallback>
+review depth: <lean | deep>; lenses <selected>; execution <direct | delegated | mixed>
 findings fixed:    <count + one-line each>
 design tradeoffs flagged: <any decisions the re-review should adjudicate — e.g. a fix
                            that simplified logic but changed a latency/UX property>
