@@ -253,10 +253,11 @@ function sessionMeta(path) {
  * `id` is the log's own id on every header shape the CLI writes. `session_id`
  * is not: on a child log it repeats `parent_thread_id`, so reading it first
  * gives a child the parent's identity — which makes the descendant walk reject
- * every child as already-seen, and makes discovery by host session id
- * ambiguous as soon as one child shares the working directory. Descent is
- * carried by `parent_thread_id` alone; `session_id` is only a fallback for a
- * header that omits `id`.
+ * every child as already-seen, and makes discovery by host session id ambiguous
+ * whenever such a child exists anywhere under the sessions root. Discovery is
+ * no longer directory-scoped once an exact id is supplied, so a single colliding
+ * header forces an abstain. Descent is carried by `parent_thread_id` alone;
+ * `session_id` is only a fallback for a header that omits `id`.
  */
 function sessionId(meta) {
   return meta
@@ -265,13 +266,13 @@ function sessionId(meta) {
 }
 
 function sessionDescriptors(root, cwd) {
-  const expectedCwd = resolve(cwd);
+  const expectedCwd = cwd === null ? null : resolve(cwd);
   return listRolloutLogs(root).flatMap((path) => {
     const meta = sessionMeta(path);
     if (
       !meta ||
       typeof meta['cwd'] !== 'string' ||
-      resolve(meta['cwd']) !== expectedCwd
+      (expectedCwd !== null && resolve(meta['cwd']) !== expectedCwd)
     ) {
       return [];
     }
@@ -307,9 +308,22 @@ function descendantDescriptors(descriptors, rootId) {
 /**
  * Resolve the rollout log for the session this pass is running in.
  *
- * The header records the working directory, so discovery can require a match
- * rather than assuming the most recent session anywhere on the machine is this
- * one. Discovery happens at snapshot time; `delta` reads the path the snapshot
+ * An exact session ID identifies the session even after its shell moves into a
+ * linked worktree. Without that identity (or with an explicit --cwd boundary),
+ * require a directory match.
+ *
+ * Discovery abstains rather than guesses: zero or several candidates return
+ * `null`, and the caller reports `tokenSource: 'unavailable'` carrying no token
+ * buckets, never a zero. It never falls back to the most recent session.
+ *
+ * The exemption is narrower than it looks — only this root lookup skips the
+ * directory match. `runSnapshot` and `runDelta` enumerate descendants with
+ * `sessionDescriptors(root, cwd)` against the root session's recorded
+ * `session_meta.cwd`, so descendant accounting stays directory-scoped. That
+ * holds because a child session is created by the same CLI process, whose own
+ * working directory does not follow a shell into a worktree.
+ *
+ * Discovery happens at snapshot time; `delta` reads the path the snapshot
  * recorded, so a second session becoming the most recent one mid-pass cannot
  * silently retarget the measurement.
  */
@@ -319,12 +333,18 @@ function discoverSessionLog(args) {
     return resolve(explicit);
   }
   const cwd = resolve(args.cwd ?? process.cwd());
-  const candidates = sessionDescriptors(sessionsRoot(args), cwd);
   const requestedId = safeToken(
     args.sessionId ??
       process.env['CODEX_SESSION_ID'] ??
       process.env['CODEX_THREAD_ID'],
   );
+  // CLI sessions retain their launch directory in session_meta. Filtering by
+  // the shell's current directory first loses an otherwise exact identity as
+  // soon as a task follows the linked-worktree workflow. An explicit --cwd
+  // remains a caller-supplied restriction, including when an ID is supplied.
+  const discoveryCwd =
+    requestedId !== null && args.cwd === undefined ? null : cwd;
+  const candidates = sessionDescriptors(sessionsRoot(args), discoveryCwd);
   if (requestedId !== null) {
     const matches = candidates.filter(
       (candidate) => candidate.id === requestedId,
