@@ -5,6 +5,16 @@ description: High-fidelity PR-first Codex review chain that opens or reuses a dr
 
 # Deep Critique
 
+## Automatic chain dispatch
+
+When the user requests a full automatic chain and this is not already a
+one-pass worker invocation, read `.codex/references/review-chain-runner.md` and
+start the deterministic runner with the authorized plan, resolved tier and
+required gates. Do not drive the cross-engine loop from conversation. This
+skill remains the one-pass review worker; a set
+`AGENT_LOOP_REVIEW_RESULT_FILE` means write the result and return to its caller,
+without starting the runner or publishing an attestation yourself.
+
 ## Mandatory Claude Launcher Boundary
 
 Read and apply this boundary before any preflight, lane, or cross-engine

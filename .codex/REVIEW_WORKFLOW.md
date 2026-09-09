@@ -3,6 +3,23 @@
 This file is synced from `loomantix/activeloom` into consumer repos. Consumer-specific
 edits will be overwritten on the next sync.
 
+## Automatic chain execution
+
+For an explicitly requested automatic review chain, use the deterministic
+`.codex/skills/critique/scripts/review-chain-runner.py` controller. Resolve the
+tier and its triggers first, then supply either an exact `--chain` or a repeating
+`--cycle --until-converged`. Do not implement the outer loop in conversation.
+Read [runner usage](../.codex/references/review-chain-runner.md) before starting;
+it defines required validation commands, durable checkpoints, and recovery.
+The Codex control surface must be installed even when another engine starts
+the command. If it is absent, report the missing installation; do not substitute
+a raw reviewer CLI or silently fall back to a conversational auto loop.
+
+Each worker owns one pass only. The runner owns launch order, result verification,
+attestation, and bounded progression. Existing handoff sessions and the separate
+issue-implementation `agent-loop` keep their own contracts. An active legacy run
+is not silently converted to a new plan or granted a fresh budget.
+
 ## PR-First Rule
 
 Open a draft pull request before any structured review cleanup such as

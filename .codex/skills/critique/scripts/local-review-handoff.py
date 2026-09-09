@@ -283,6 +283,7 @@ def _run_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "supersedes": supersedes,
                 "tier": marker.group("tier"),
                 "sequence": _content_sequence(content),
+                "plan_mode": _content_mode(content),
             }
         )
     records.sort(key=lambda record: cast(int, record["comment_id"]))
@@ -341,6 +342,11 @@ def _start_run(args: argparse.Namespace) -> None:
     if not content:
         _fail("review-run authorization must not be empty")
     sequence = getattr(args, "sequence", None)
+    mode = "cycle"
+    if getattr(args, "chain", None) is not None:
+        sequence, mode = args.chain, "chain"
+    elif getattr(args, "cycle", None) is not None:
+        sequence = args.cycle
     if sequence is None and args.restart and previous is not None:
         # Preserve a declared cycle across a restart. Dropping the flag must not
         # silently downgrade a sequenced run to one where every alternation
@@ -348,11 +354,20 @@ def _start_run(args: argparse.Namespace) -> None:
         previous_sequence = cast(list[str] | None, previous.get("sequence"))
         if previous_sequence:
             sequence = ",".join(previous_sequence)
+            mode = previous.get("plan_mode", "cycle")
     if sequence is not None:
-        _parse_sequence(sequence)
+        engines = _parse_plan(sequence, mode)
+        if any(engines.count(engine) > TIER_CAPS[args.tier] for engine in engines):
+            _fail("plan exceeds the tier's per-engine pass cap")
+        sequence = ",".join(engines)
         # Run v1 hashes arbitrary content, so this policy is bound without
         # changing the vendored ledger's marker or digest contract.
-        content = f"<!-- local-review-sequence:v1 engines={sequence} -->\n\n{content}"
+        if mode == "chain":
+            content = f"<!-- local-review-plan:v1 mode=chain engines={sequence} -->\n\n{content}"
+        else:
+            content = (
+                f"<!-- local-review-sequence:v1 engines={sequence} -->\n\n{content}"
+            )
     max_rounds = TIER_CAPS[args.tier]
     previous_end = (
         None if previous is None else _run_end(rows, cast(str, previous["run_id"]))
@@ -508,6 +523,8 @@ def _finish_run(args: argparse.Namespace) -> None:
     if not records:
         _fail("no authenticated local-review run exists")
     run = records[-1]
+    if getattr(args, "run_id", None) is not None and args.run_id != run["run_id"]:
+        _fail("active review run changed during finalization")
     existing = _run_end(rows, cast(str, run["run_id"]))
     marker = (
         f"<!-- local-review-run-end:v1 id={run['run_id']} "
@@ -523,7 +540,10 @@ def _finish_run(args: argparse.Namespace) -> None:
                 _fail("review sequence has not converged; inspect next-pass")
         _verify_convergence_ledger(args)
     elif args.outcome == "exhausted" and run.get("sequence"):
-        if _sequence_decision(rows, run, args.head)["status"] != "exhausted":
+        if _sequence_decision(rows, run, args.head)["status"] not in (
+            "exhausted",
+            "plan-complete",
+        ):
             _fail("review sequence has not exhausted its cap")
     _verify_head(args.repo, args.pr, args.head)
     if existing is not None:
@@ -806,7 +826,10 @@ def _sha(value: str) -> str:
 
 
 def _parse_sequence(value: str) -> list[str]:
-    engines = value.split(",")
+    engines = [
+        "gemini" if part.strip() == "antigravity" else part.strip()
+        for part in value.split(",")
+    ]
     if not 2 <= len(engines) <= len(ENGINES) or len(set(engines)) != len(engines):
         _fail("sequence must contain two or three distinct ordered engines")
     if any(engine not in ENGINES for engine in engines):
@@ -814,7 +837,36 @@ def _parse_sequence(value: str) -> list[str]:
     return engines
 
 
+def _parse_plan(value: str, mode: str) -> list[str]:
+    if mode == "cycle":
+        return _parse_sequence(value)
+    engines = [
+        "gemini" if part.strip() == "antigravity" else part.strip()
+        for part in value.split(",")
+    ]
+    if mode != "chain" or not 1 <= len(engines) <= 12:
+        _fail("chain must contain one to twelve engine steps")
+    if any(engine not in ENGINES for engine in engines):
+        _fail("chain engines must be codex, claude, or gemini")
+    return engines
+
+
+def _content_mode(content: str) -> str:
+    return "chain" if content.startswith("<!-- local-review-plan:") else "cycle"
+
+
 def _content_sequence(content: str) -> list[str] | None:
+    if "<!-- local-review-plan:" in content:
+        match = re.match(
+            r"<!-- local-review-plan:v1 mode=chain engines=([^\n]+) -->\n\n", content
+        )
+        if (
+            match is None
+            or content.count("<!-- local-review-plan:") != 1
+            or "<!-- local-review-sequence:" in content
+        ):
+            _fail("local-review plan policy is malformed")
+        return _parse_plan(match.group(1), "chain")
     prefix = "<!-- local-review-sequence:"
     if prefix not in content:
         return None
@@ -833,6 +885,7 @@ def _sequence_decision(
             "run has no engine sequence; preserve it or explicitly authorize a restart"
         )
     events: list[dict[str, Any]] = []
+    fixed = run.get("plan_mode") == "chain"
     seen: dict[tuple[str, int], str] = {}
     latest: dict[str, dict[str, Any]] = {}
     for row in sorted(rows, key=lambda row: cast(int, row.get("id", 0))):
@@ -881,7 +934,11 @@ def _sequence_decision(
                 )
             continue
         index = len(events)
-        if identity != (sequence[index % len(sequence)], index // len(sequence) + 1):
+        if fixed and index >= len(sequence):
+            _fail(f"attestation exceeds the fixed plan in comment {comment_id}")
+        expected_engine = sequence[index if fixed else index % len(sequence)]
+        expected_round = 1 + sum(event["engine"] == expected_engine for event in events)
+        if identity != (expected_engine, expected_round):
             _fail(
                 "attested passes violate the declared engine sequence "
                 f"in comment {comment_id}"
@@ -906,6 +963,7 @@ def _sequence_decision(
         "sequence": sequence,
         "passes": events,
         "max_rounds": run["max_rounds"],
+        "mode": "chain" if fixed else "cycle",
     }
     # A completed cycle plus a return leg is part of an alternating chain, even
     # when the independent reviewer was clean on its first pass. The return leg
@@ -913,17 +971,24 @@ def _sequence_decision(
     # requiring the initiator to be chronologically last adds no evidence over
     # the head check below, and at the lean cap it makes convergence unreachable
     # whenever the reviewer's pass was material.
-    if (
-        len(events) > len(sequence)
+    clean = (
+        len(latest) == len(set(sequence))
         and all(latest[engine]["head"] == head for engine in sequence)
         and all(latest[engine]["classification"] != "material" for engine in sequence)
-    ):
+    )
+    if fixed and len(events) == len(sequence):
+        return {
+            **result,
+            "status": "converged" if clean and len(latest) > 1 else "plan-complete",
+        }
+    if not fixed and len(events) > len(sequence) and clean:
         return {**result, "status": "converged"}
-    number = len(events) // len(sequence) + 1
+    engine = sequence[len(events) if fixed else len(events) % len(sequence)]
+    number = 1 + sum(event["engine"] == engine for event in events)
     return {
         **result,
         "status": "exhausted" if number > run["max_rounds"] else "next",
-        "engine": sequence[len(events) % len(sequence)],
+        "engine": engine,
         "round": number,
     }
 
@@ -995,7 +1060,14 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--tier", required=True, choices=sorted(TIER_CAPS))
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
-    start.add_argument("--sequence", help="ordered cycle, e.g. codex,claude")
+    plan = start.add_mutually_exclusive_group()
+    plan.add_argument("--sequence", help="legacy alias for --cycle")
+    plan.add_argument(
+        "--cycle", help="repeat distinct ordered engines until convergence"
+    )
+    plan.add_argument(
+        "--chain", help="fixed engine steps, including repeats; no early exit"
+    )
     start.set_defaults(handler=_start_run)
 
     authorize = commands.add_parser("authorize-pass")
@@ -1017,6 +1089,9 @@ def _parser() -> argparse.ArgumentParser:
     finish.add_argument("--repo", required=True)
     finish.add_argument("--pr", required=True, type=int)
     finish.add_argument("--head", required=True, type=_sha)
+    finish.add_argument(
+        "--run-id", help="require this authenticated run during recovery"
+    )
     finish.add_argument(
         "--outcome", required=True, choices=("converged", "exhausted", "aborted")
     )

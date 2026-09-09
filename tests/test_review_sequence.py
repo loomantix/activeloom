@@ -285,7 +285,7 @@ def test_start_binds_sequence_to_run_digest(
 
 
 @pytest.mark.parametrize(
-    "value", ["codex", "codex,codex", "codex,unknown", "codex, claude"]
+    "value", ["codex", "codex,codex", "codex,unknown", "codex,notantigravity"]
 )
 def test_invalid_sequences(controller: ModuleType, value: str) -> None:
     with pytest.raises(controller.HandoffError):
@@ -476,3 +476,69 @@ def test_restart_preserves_a_declared_engine_sequence(
         )
     )
     assert "<!-- local-review-sequence:v1 engines=codex,claude -->" in bodies[0]
+
+
+def test_fixed_chain_runs_every_step_even_when_clean(controller: ModuleType) -> None:
+    plan = {
+        **run(),
+        "plan_mode": "chain",
+        "sequence": ["codex", "claude", "codex", "claude"],
+    }
+    for count in range(4):
+        result = controller._sequence_decision(
+            [event(i) for i in range(count)], plan, HEAD
+        )
+        assert result["status"] == "next"
+        assert result["engine"] == plan["sequence"][count]
+    assert (
+        controller._sequence_decision([event(i) for i in range(4)], plan, HEAD)[
+            "status"
+        ]
+        == "converged"
+    )
+
+
+def test_fixed_final_fix_completes_plan_without_convergence(
+    controller: ModuleType,
+) -> None:
+    plan = {**run(), "plan_mode": "chain"}
+    rows = [event(0), event(1, classification="material")]
+    assert controller._sequence_decision(rows, plan, HEAD)["status"] == "plan-complete"
+    with pytest.raises(controller.HandoffError, match="exceeds the fixed plan"):
+        controller._sequence_decision([*rows, event(2)], plan, HEAD)
+
+
+def test_fixed_repeats_use_per_engine_rounds(controller: ModuleType) -> None:
+    plan = {**run(), "plan_mode": "chain", "sequence": ["codex", "codex", "claude"]}
+    second = event(1, engine="codex")
+    second["body"] = second["body"].replace("round=1", "round=2")
+    result = controller._sequence_decision([event(0), second], plan, HEAD)
+    assert (result["engine"], result["round"]) == ("claude", 1)
+
+
+def test_single_engine_plan_never_claims_independent_coverage(
+    controller: ModuleType,
+) -> None:
+    plan = {**run(), "plan_mode": "chain", "sequence": ["codex"]}
+    assert (
+        controller._sequence_decision([event(0)], plan, HEAD)["status"]
+        == "plan-complete"
+    )
+
+
+def test_plan_alias_and_policy_parsing(controller: ModuleType) -> None:
+    assert controller._parse_plan("codex, antigravity, codex", "chain") == [
+        "codex",
+        "gemini",
+        "codex",
+    ]
+    assert controller._parse_sequence("antigravity,claude") == ["gemini", "claude"]
+    content = (
+        "<!-- local-review-plan:v1 mode=chain engines=codex,codex -->\n\nExplicit plan."
+    )
+    assert controller._content_sequence(content) == ["codex", "codex"]
+    assert controller._content_mode(content) == "chain"
+    with pytest.raises(controller.HandoffError):
+        controller._content_sequence(
+            content + "<!-- local-review-sequence:v1 engines=codex,claude -->"
+        )

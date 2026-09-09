@@ -561,6 +561,20 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .codex/skills/critique/scripts/review-chain-runner.py
+        destination: .codex/skills/critique/scripts/review-chain-runner.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .codex/references/review-chain-runner.md
+        destination: .codex/references/review-chain-runner.md
+        substitutions: []
+
+      - source: .codex/skills/critique/scripts/run-codex-review.py
+        destination: .codex/skills/critique/scripts/run-codex-review.py
+        substitutions: []
+        mode: '0755'
+
       - source: .codex/skills/deepcritique/SKILL.md
         destination: .codex/skills/deepcritique/SKILL.md
         substitutions: []
