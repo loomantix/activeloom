@@ -66,6 +66,7 @@ def wire(
     monkeypatch.setattr(controller, "_issue_comments", lambda *_: rows)
     monkeypatch.setattr(controller, "_run_records", lambda _: [run()])
     monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+
     def post(*args: Any) -> tuple[int, bool]:
         posted.append(args[-1])
         return 99, False
@@ -212,6 +213,7 @@ def test_start_binds_sequence_to_run_digest(
     posted: list[dict[str, Any]] = []
     monkeypatch.setattr(controller, "_issue_comments", lambda *_: [])
     monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+
     def post(*args: Any) -> tuple[int, bool]:
         posted.append({"id": 20, "body": args[-1]})
         return 20, False
@@ -255,3 +257,56 @@ def test_legacy_run_needs_explicit_restart_for_sequence(controller: ModuleType) 
     legacy = {**run(), "sequence": None}
     with pytest.raises(controller.HandoffError, match="no engine sequence"):
         controller._sequence_decision([], legacy, HEAD)
+
+
+def test_three_engine_chain(controller: ModuleType) -> None:
+    policy = {**run(), "sequence": ["codex", "claude", "gemini"]}
+    rows = [
+        event(0),
+        event(1),
+        {"id": 23, "body": event(1, engine="gemini")["body"]},
+        {"id": 24, "body": event(2)["body"]},
+    ]
+    assert controller._sequence_decision(rows[:3], policy, HEAD)["engine"] == "codex"
+    assert controller._sequence_decision(rows, policy, HEAD)["status"] == "converged"
+
+
+def test_terminal_replay_cannot_bypass_convergence(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [
+        event(0),
+        {
+            "id": 30,
+            "body": (
+                f"<!-- local-review-run-end:v1 id={run()['run_id']} outcome=converged head={HEAD} -->"
+            ),
+        },
+    ]
+    posted = wire(controller, monkeypatch, rows)
+    with pytest.raises(controller.HandoffError, match="has not converged"):
+        controller._finish_run(
+            SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
+        )
+    assert not posted
+
+
+def test_coverage_failure_prevents_terminal_post(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    posted = wire(controller, monkeypatch, [event(i) for i in range(3)])
+    commands: list[str] = []
+
+    def execute(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(command[2])
+        return subprocess.CompletedProcess(
+            command, int(command[2] == "verify-coverage"), "", "missing roster reviewer"
+        )
+
+    monkeypatch.setattr(controller.subprocess, "run", execute)
+    with pytest.raises(controller.HandoffError, match="verify-coverage refused"):
+        controller._finish_run(
+            SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
+        )
+    assert commands == ["verify-ledger", "verify-coverage"]
+    assert not posted

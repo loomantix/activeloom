@@ -509,13 +509,6 @@ def _finish_run(args: argparse.Namespace) -> None:
     if existing is not None:
         if existing["head"] != args.head or existing["outcome"] != args.outcome:
             _fail("local-review run already ended with a different result")
-        _verify_head(args.repo, args.pr, args.head)
-        print(
-            json.dumps(
-                {**existing, "replayed": True, "run_id": run["run_id"]}, sort_keys=True
-            )
-        )
-        return
     if args.outcome == "converged":
         if run.get("sequence"):
             decision = _sequence_decision(rows, run, args.head)
@@ -526,6 +519,13 @@ def _finish_run(args: argparse.Namespace) -> None:
         if _sequence_decision(rows, run, args.head)["status"] != "exhausted":
             _fail("review sequence has not exhausted its cap")
     _verify_head(args.repo, args.pr, args.head)
+    if existing is not None:
+        print(
+            json.dumps(
+                {**existing, "replayed": True, "run_id": run["run_id"]}, sort_keys=True
+            )
+        )
+        return
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, marker)
     _verify_head(args.repo, args.pr, args.head)
     print(
