@@ -259,11 +259,24 @@ For a requested alternating chain, record its ordered participants with
 remains a required participant when named, separate from independent reviewer
 coverage. Before each leg, call `next-pass --repo <owner/repo> --pr <number>
 --head <exact-head-sha>` and authorize its returned engine and per-engine round.
-The controller requires a return to the initiating engine and every participant's
-latest attestation on the current head with no material outcome. Coverage alone
-cannot complete a sequenced chain. `finish-run --outcome converged` also verifies
-ledger dispositions and exact-head coverage. Preserve legacy runs; adding a
-sequence requires an explicitly authorized restart, not an implicit upgrade.
+Name each engine exactly once: the sequence must be two or three distinct
+engines, and the controller repeats that cycle rather than taking a spelled-out
+round trip. List the initiating engine first — convergence tests that the last
+attested pass belongs to the sequence's first element, so any other order
+prevents the run from ever converging.
+
+Convergence requires strictly more than one full cycle: a return to the
+initiating engine, and every participant's latest attestation on the current
+head with no material outcome. A two-engine chain therefore does not converge
+when the second engine comes back clean; it converges on the initiator's return
+pass. Coverage alone cannot complete a sequenced chain. `finish-run --outcome
+converged` also runs `verify-ledger` and `verify-coverage`.
+
+In handoff mode, `post-handoff --to-engine` must name the engine `next-pass`
+returned, not necessarily the originating engine, and the handoff's from-engine,
+round, head, and outcome must describe the last completed pass. Preserve legacy
+runs; adding a sequence requires an explicitly authorized restart, not an
+implicit upgrade.
 
 Preflight the sequence, tier, cap, mode, and tested launcher availability. A
 missing launcher blocks that auto leg; it does not authorize substituting

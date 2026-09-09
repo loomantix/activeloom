@@ -127,6 +127,26 @@ def test_stale_heads_and_cap(controller: ModuleType) -> None:
     assert len(decision["passes"]) == 8
 
 
+def test_stale_participant_head_blocks_convergence(controller: ModuleType) -> None:
+    """A full cycle plus a return leg is not convergence if a participant's
+    latest attestation names a superseded commit."""
+    rows = [event(0), event(1, head="e" * 40), event(2)]
+    decision = controller._sequence_decision(rows, run(), HEAD)
+    assert decision["status"] == "next"
+    assert decision["engine"] == "claude"
+    assert decision["round"] == 2
+
+
+def test_cycle_without_return_leg_is_not_converged(controller: ModuleType) -> None:
+    """The chain must end on the initiating engine, even when every
+    participant is clean on the current head."""
+    rows = [event(i) for i in range(4)]
+    decision = controller._sequence_decision(rows, run(), HEAD)
+    assert decision["status"] == "next"
+    assert decision["engine"] == "codex"
+    assert decision["round"] == 3
+
+
 def test_historical_and_duplicate_passes_do_not_count(controller: ModuleType) -> None:
     historical = {**event(7), "id": 19}
     rows = [historical, event(0), {**event(0), "id": 25}]

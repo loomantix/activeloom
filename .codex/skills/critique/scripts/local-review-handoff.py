@@ -829,7 +829,8 @@ def _sequence_decision(
     seen: dict[tuple[str, int], str] = {}
     latest: dict[str, dict[str, Any]] = {}
     for row in sorted(rows, key=lambda row: cast(int, row.get("id", 0))):
-        if row.get("id", 0) <= run["comment_id"]:
+        comment_id = cast(int, row.get("id", 0))
+        if comment_id <= run["comment_id"]:
             continue
         body = row.get("body", "")
         if not isinstance(body, str):
@@ -840,10 +841,16 @@ def _sequence_decision(
                 "<!-- local-review-pass:" in body
                 or "<!-- local-review-complete:" in body
             ):
-                _fail("sequence contains an unsupported or malformed attestation")
+                _fail(
+                    "sequence contains an unsupported or malformed attestation "
+                    f"in comment {comment_id}"
+                )
             continue
         if len(markers) != 1:
-            _fail("sequence comment must contain exactly one attestation")
+            _fail(
+                "sequence comment must contain exactly one attestation "
+                f"in comment {comment_id}"
+            )
         marker = markers[0]
         # Keep participation aligned with the ledger's matchAttestationMarker:
         # examples and empty markers are not evidence of a completed pass.
@@ -852,19 +859,31 @@ def _sequence_decision(
             or not body[marker.end() :].startswith("\n")
             or not body[marker.end() + 1 :].strip()
         ):
-            _fail("sequence attestation envelope is incomplete or embedded")
+            _fail(
+                "sequence attestation envelope is incomplete or embedded "
+                f"in comment {comment_id}"
+            )
         engine = marker.group("engine").replace("antigravity", "gemini")
         number = int(marker.group("round"))
         identity = (engine, number)
         if identity in seen:
             if seen[identity] != marker.group(0):
-                _fail("sequence has conflicting attestations for one pass")
+                _fail(
+                    "sequence has conflicting attestations for one pass "
+                    f"in comment {comment_id}"
+                )
             continue
         index = len(events)
         if identity != (sequence[index % len(sequence)], index // len(sequence) + 1):
-            _fail("attested passes violate the declared engine sequence")
+            _fail(
+                "attested passes violate the declared engine sequence "
+                f"in comment {comment_id}"
+            )
         if number > run["max_rounds"] or marker.group("base") != run["base"]:
-            _fail("sequence attestation exceeds its cap or names a different base")
+            _fail(
+                "sequence attestation exceeds its cap or names a different base "
+                f"in comment {comment_id}"
+            )
         event = {
             "engine": engine,
             "round": number,
