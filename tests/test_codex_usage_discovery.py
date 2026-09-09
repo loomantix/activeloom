@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from typing import Any, cast
 
 import pytest
 
@@ -14,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".codex/skills/critique/scripts/usage-snapshot.js"
 
 
-def event(kind: str, payload: dict) -> str:
+def event(kind: str, payload: dict[str, Any]) -> str:
     return (
         json.dumps(
             {"type": kind, "timestamp": "2026-08-20T12:00:00.000Z", "payload": payload}
@@ -30,7 +31,9 @@ def log(path: Path, cwd: Path, identity: str) -> None:
     )
 
 
-def invoke(tmp_path: Path, *args: str, identity: str | None = "selected") -> dict:
+def invoke(
+    tmp_path: Path, *args: str, identity: str | None = "selected"
+) -> dict[str, Any]:
     worktree = tmp_path / "worktree"
     worktree.mkdir(exist_ok=True)
     env = dict(os.environ)
@@ -52,10 +55,12 @@ def invoke(tmp_path: Path, *args: str, identity: str | None = "selected") -> dic
         text=True,
         check=True,
     )
-    return json.loads(result.stdout)
+    return cast(dict[str, Any], json.loads(result.stdout))
 
 
-def snapshot(tmp_path: Path, *args: str, identity: str | None = "selected") -> dict:
+def snapshot(
+    tmp_path: Path, *args: str, identity: str | None = "selected"
+) -> dict[str, Any]:
     return invoke(
         tmp_path,
         "snapshot",
@@ -155,7 +160,7 @@ def test_duplicate_identity_across_directories_abstains(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("name", ["CODEX_THREAD_ID", "CODEX_SESSION_ID"])
 def test_both_host_identity_variables_are_supported(
-    tmp_path: Path, monkeypatch, name: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     # invoke deliberately clears ambient IDs; test each source directly here.
     worktree = tmp_path / "worktree"
