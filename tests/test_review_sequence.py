@@ -56,7 +56,7 @@ def event(
             f"<!-- local-review-complete:v3 {fields}before={HEAD} head={head} "
             f"classification={classification} fingerprints=x result-sha256={'c' * 64} -->"
         )
-    return {"id": 21 + index, "body": marker}
+    return {"id": 21 + index, "body": marker + "\nCompleted review result."}
 
 
 def wire(
@@ -310,3 +310,61 @@ def test_coverage_failure_prevents_terminal_post(
         )
     assert commands == ["verify-ledger", "verify-coverage"]
     assert not posted
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    ["{marker}", "{marker}\n", "{marker}\n  \n", "Example:\n{marker}\nReview result."],
+)
+def test_incomplete_return_attestation_cannot_finish(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, envelope: str
+) -> None:
+    marker = event(2)["body"].split("\n", 1)[0]
+    rows = [event(0), event(1), {"id": 23, "body": envelope.format(marker=marker)}]
+    posted = wire(controller, monkeypatch, rows)
+    args = SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
+    monkeypatch.setattr(controller, "_verify_convergence_ledger", lambda *_: None)
+    with pytest.raises(controller.HandoffError, match="attestation envelope"):
+        controller._sequence_decision(rows, run(), HEAD)
+    with pytest.raises(controller.HandoffError, match="attestation envelope"):
+        controller._finish_run(args)
+    assert not posted
+
+
+def test_three_engine_handoff_targets_and_reaches_next_participant(
+    controller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = [event(0, engine="gemini"), event(1, engine="codex")]
+    policy = {**run(), "sequence": ["gemini", "codex", "claude"]}
+    monkeypatch.setattr(controller, "_issue_comments", lambda *_: rows)
+    monkeypatch.setattr(controller, "_run_records", lambda _: [policy])
+    monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+
+    def post(*args: Any) -> tuple[int, bool]:
+        rows.append({"id": 30, "body": args[-1]})
+        return 30, False
+
+    monkeypatch.setattr(controller, "_post_issue_comment", post)
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=1,
+        head=HEAD,
+        base=BASE,
+        from_engine="codex",
+        to_engine="gemini",
+        round=1,
+        outcome="clean",
+        context_file=None,
+    )
+    with pytest.raises(controller.HandoffError, match="next required engine"):
+        controller._post_handoff(args)
+    assert len(rows) == 2
+    args.to_engine = "claude"
+    controller._post_handoff(args)
+    assert json.loads(capsys.readouterr().out)["to_engine"] == "claude"
+    controller._show_handoff(
+        SimpleNamespace(repo="example/repo", pr=1, engine="claude")
+    )
+    assert json.loads(capsys.readouterr().out)["to_engine"] == "claude"

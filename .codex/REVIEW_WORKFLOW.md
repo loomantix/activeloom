@@ -263,6 +263,10 @@ subagents are lanes, not another engine. A missing or failed tested launcher
 blocks that leg; preserve the requested chain and report the gap. A launcher
 return is not evidence: require its authenticated attestation before advancing.
 
+In handoff mode, use the returned next engine as `post-handoff --to-engine`,
+not necessarily the author. Supply the last completed pass as the handoff's
+from-engine, round, head, and outcome. A terminal sequence has no next handoff.
+
 `next-pass` derives completed passes only from the current authenticated run.
 It requires ordered participation, a return to the initiating engine, and every
 participant's latest attestation on the current head with no material outcome.

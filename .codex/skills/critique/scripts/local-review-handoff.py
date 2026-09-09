@@ -653,12 +653,27 @@ def _post_handoff(args: argparse.Namespace) -> None:
     if args.from_engine == args.to_engine:
         _fail("review handoff engines must be different")
     _verify_head(args.repo, args.pr, args.head)
-    run = _handoff_run(_issue_comments(args.repo, args.pr))
+    rows = _issue_comments(args.repo, args.pr)
+    run = _handoff_run(rows)
     run_id = cast(str, run["run_id"]) if run is not None else None
     if run is not None and (
         run["base"] != args.base or not 1 <= args.round <= run["max_rounds"]
     ):
         _fail("handoff base or round does not belong to the current run")
+    if run is not None and run.get("sequence"):
+        decision = _sequence_decision(rows, run, args.head)
+        if decision["status"] != "next" or not decision["passes"]:
+            _fail("sequence has no completed pass requiring a handoff")
+        last = decision["passes"][-1]
+        if args.to_engine != decision["engine"] or (
+            args.from_engine,
+            args.round,
+            args.head,
+            args.outcome,
+        ) != (last["engine"], last["round"], last["head"], last["classification"]):
+            _fail(
+                "handoff must describe the completed pass and target the next required engine"
+            )
     content = _handoff_content(args, _read_context(args.context_file))
     digest = _handoff_digest(
         from_engine=args.from_engine,
@@ -830,6 +845,14 @@ def _sequence_decision(
         if len(markers) != 1:
             _fail("sequence comment must contain exactly one attestation")
         marker = markers[0]
+        # Keep participation aligned with the ledger's matchAttestationMarker:
+        # examples and empty markers are not evidence of a completed pass.
+        if (
+            marker.start() != 0
+            or not body[marker.end() :].startswith("\n")
+            or not body[marker.end() + 1 :].strip()
+        ):
+            _fail("sequence attestation envelope is incomplete or embedded")
         engine = marker.group("engine").replace("antigravity", "gemini")
         number = int(marker.group("round"))
         identity = (engine, number)
