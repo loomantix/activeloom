@@ -165,6 +165,15 @@ def test_duplicate_identity_across_directories_abstains(tmp_path: Path) -> None:
     assert snapshot(tmp_path)["scoped"] is False
 
 
+def test_duplicate_identity_in_one_directory_abstains(tmp_path: Path) -> None:
+    # The count check, not the directory filter, is what refuses to guess:
+    # rollout logs are listed unordered, so "take the first match" would be
+    # invisible to every cross-directory case above.
+    log(tmp_path / "sessions/rollout-one.jsonl", tmp_path / "primary", "selected")
+    log(tmp_path / "sessions/rollout-two.jsonl", tmp_path / "primary", "selected")
+    assert snapshot(tmp_path)["scoped"] is False
+
+
 @pytest.mark.parametrize("name", ["CODEX_THREAD_ID", "CODEX_SESSION_ID"])
 def test_both_host_identity_variables_are_supported(
     tmp_path: Path, name: str
