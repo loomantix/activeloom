@@ -10,12 +10,28 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
 
+VerifyCalls = list[tuple[str, tuple[Any, ...]]]
+
+
 @pytest.fixture
-def handoff(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+def verify_calls() -> VerifyCalls:
+    """Every head verification the command under test performed, in order.
+
+    The `handoff` fixture used to stub both verifiers to no-ops, which left the
+    call sites themselves untested: deleting a `_verify_reviewable_head` call
+    from a command still passed. Recording instead of discarding keeps the
+    stubs' convenience and makes the invocation assertable.
+    """
+    return []
+
+
+@pytest.fixture
+def handoff(monkeypatch: pytest.MonkeyPatch, verify_calls: VerifyCalls) -> ModuleType:
     path = (
         Path(__file__).resolve().parents[1]
         / ".codex/skills/critique/scripts/local-review-handoff.py"
@@ -24,7 +40,14 @@ def handoff(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "_verify_head", lambda *args: None)
+    def record_head(*args: Any) -> None:
+        verify_calls.append(("head", args))
+
+    def record_history(*args: Any) -> None:
+        verify_calls.append(("history", args))
+
+    monkeypatch.setattr(module, "_verify_head", record_head)
+    monkeypatch.setattr(module, "_verify_signed_pr_history", record_history)
     monkeypatch.setattr(
         module,
         "_run_records",
@@ -801,3 +824,121 @@ def test_show_handoff_guards_run_base_and_round_bounds(
     runs[0][field] = value
     with pytest.raises(handoff.HandoffError, match="does not belong to the current run"):
         handoff._show_handoff(show)
+
+
+HEAD_SHA = "a" * 40
+EXPECTED_CALL = ("example/repo", 7, HEAD_SHA)
+
+
+def test_authorize_pass_verifies_signed_history_at_the_reviewed_head(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verify_calls: VerifyCalls,
+) -> None:
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: [])
+    handoff._authorize_pass(
+        SimpleNamespace(
+            repo="example/repo",
+            pr=7,
+            base="b" * 40,
+            head=HEAD_SHA,
+            engine="codex",
+            round=1,
+        )
+    )
+    capsys.readouterr()
+    assert ("history", EXPECTED_CALL) in verify_calls
+
+
+def test_start_run_verifies_signed_history_before_and_after_publication(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    verify_calls: VerifyCalls,
+) -> None:
+    authorization = tmp_path / "authorization.txt"
+    authorization.write_text("Explicit review authorization.\n")
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: [])
+    monkeypatch.setattr(handoff, "_run_records", lambda rows: [])
+
+    def post(*args: Any) -> tuple[int, bool]:
+        verify_calls.append(("post", args))
+        return (20, False)
+
+    monkeypatch.setattr(handoff, "_post_issue_comment", post)
+    handoff._start_run(
+        SimpleNamespace(
+            repo="example/repo",
+            pr=7,
+            base="b" * 40,
+            head=HEAD_SHA,
+            tier="deep",
+            restart=False,
+            authorization_file=str(authorization),
+        )
+    )
+    capsys.readouterr()
+    kinds = [kind for kind, _ in verify_calls]
+    posted = kinds.index("post")
+    # The write window is what the surrounding checks exist to close, so the
+    # ordering is the assertion: a signed-history check on each side of it.
+    assert "history" in kinds[:posted]
+    assert "history" in kinds[posted + 1 :]
+    assert all(call == EXPECTED_CALL for kind, call in verify_calls if kind == "history")
+
+
+def test_post_handoff_verifies_signed_history_at_the_reviewed_head(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verify_calls: VerifyCalls,
+) -> None:
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: [])
+    monkeypatch.setattr(handoff, "_handoff_run", lambda rows: None)
+    monkeypatch.setattr(handoff, "_post_issue_comment", lambda *args: (30, False))
+    monkeypatch.setattr(handoff, "_verify_handoff_run", lambda *args: None)
+    handoff._post_handoff(
+        SimpleNamespace(
+            repo="example/repo",
+            pr=7,
+            base="b" * 40,
+            head=HEAD_SHA,
+            from_engine="codex",
+            to_engine="claude",
+            round=1,
+            outcome="clean",
+            context_file=None,
+        )
+    )
+    capsys.readouterr()
+    assert ("history", EXPECTED_CALL) in verify_calls
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expects_history"),
+    [("converged", True), ("exhausted", False), ("aborted", False)],
+)
+def test_finish_run_verifies_signed_history_only_when_converged(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verify_calls: VerifyCalls,
+    outcome: str,
+    expects_history: bool,
+) -> None:
+    """Convergence is where an unsigned ancestor would be blessed as reviewed."""
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: [])
+    monkeypatch.setattr(handoff, "_post_issue_comment", lambda *args: (40, False))
+    handoff._finish_run(
+        SimpleNamespace(repo="example/repo", pr=7, head=HEAD_SHA, outcome=outcome)
+    )
+    capsys.readouterr()
+    kinds = [kind for kind, _ in verify_calls]
+    # Two verification points: one before the run-end marker is posted and one
+    # after. The replay branch's third is unreachable here because `_run_end`
+    # reports no existing terminal marker.
+    assert kinds.count("head") == 2
+    assert kinds.count("history") == (2 if expects_history else 0)
+    assert all(call == EXPECTED_CALL for _, call in verify_calls)
