@@ -161,13 +161,31 @@ surface:
 ```
 
 It lives under `.codex/` for historical reasons and is not Codex-only; invoke it
-by that path from any surface. Its commands are `start-run`, `authorize-pass`,
-`finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
-nor `resume-run`. Select one past this engine's highest completed round inside
+by that path from any surface. Its commands are `start-run`, `next-pass`,
+`authorize-pass`, `finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
+nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
 the active run (1 when it has none), then confirm it with `authorize-pass`.
 An aborted run is terminal in this controller. Preserve its evidence; a new
 `start-run --restart` requires fresh explicit user authorization and starts
 at round 1 with a full cap. This is a new review, not a budget-preserving resume.
+
+For a requested alternating chain, record its ordered participants with
+`start-run --sequence claude,codex` (or the user's chosen order). The author
+remains a required participant when named, separate from independent reviewer
+coverage. Before each leg, call `next-pass --repo <owner/repo> --pr <number>
+--head <exact-head-sha>` and authorize its returned engine and per-engine round.
+The controller requires a return to the initiating engine and every participant's
+latest attestation on the current head with no material outcome. Coverage alone
+cannot complete a sequenced chain. `finish-run --outcome converged` also verifies
+ledger dispositions and exact-head coverage. Preserve legacy runs; adding a
+sequence requires an explicitly authorized restart, not an implicit upgrade.
+
+Preflight the sequence, tier, cap, mode, and tested launcher availability. A
+missing launcher blocks that auto leg; it does not authorize substituting
+same-engine subagents or shrinking the chain. Keep the existing auto-mode
+capability rules below. At completion or handoff, report ordered
+engine/round/head/outcome evidence, per-engine pass counts, validation, and the
+actual terminal status. Count authenticated passes, not launches or subagent lanes.
 
 If that path does not exist in the checkout under review, say so and stop rather
 than proceeding unauthorized — an absent controller is a missing gate, not a

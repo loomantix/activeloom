@@ -180,6 +180,7 @@ def test_start_run_returns_first_round(
 
 
 @pytest.mark.parametrize(("tier", "cap"), [("lean", 2), ("deep", 4)])
+@pytest.mark.parametrize("sequenced", [False, True])
 def test_restarted_controller_round_finalizes_with_published_ledger(
     handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -187,10 +188,13 @@ def test_restarted_controller_round_finalizes_with_published_ledger(
     tmp_path: Path,
     tier: str,
     cap: int,
+    sequenced: bool,
 ) -> None:
     """Exercise the controller/Node boundary and replay without GitHub writes."""
     base, head = "b" * 40, "a" * 40
     content = "Explicitly authorized new review run.\n"
+    if sequenced:
+        content = "<!-- local-review-sequence:v1 engines=codex,claude -->\n\n" + content
     digest = hashlib.sha256(
         json.dumps(
             {
@@ -228,6 +232,7 @@ def test_restarted_controller_round_finalizes_with_published_ledger(
                 "base": base,
                 "tier": tier,
                 "max_rounds": cap,
+                "sequence": ["codex", "claude"] if sequenced else None,
             }
         ],
     )
