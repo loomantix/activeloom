@@ -152,6 +152,16 @@ engine in a fresh terminal.
    the user's chosen order where specified (for example `codex,claude`). This
    does not change the default reviewer selection above. Omit `--sequence` for
    an explicitly requested unsequenced or solo review, not for a full chain.
+
+   When the target branch's effective GitHub rules require signed commits,
+   `start-run` verifies GitHub's signature status for every commit introduced by
+   the PR, not only its current head. `authorize-pass`, `post-handoff`, and a
+   converged `finish-run` repeat that check so a later unsigned fix cannot pass
+   through the relay. An unsigned or otherwise unverified commit stops before a
+   reviewer budget is spent. Prepare signed replacement commits in an isolated
+   worktree, prove their trees match, and obtain explicit approval for a
+   lease-protected force-push before rewriting published history. Repositories
+   whose effective target-branch rules accept unsigned commits are unchanged.
    The helper fixes the cap at two Lean rounds or four Deep rounds. A later run
    on the same PR requires the current run to be ended and a new, explicit user
    authorization passed with `--restart`; a new session alone is not a restart.

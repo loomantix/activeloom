@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, NoReturn, cast
+from urllib.parse import quote
 
 
 CURRENT_ACTOR: str | None = None
@@ -109,13 +110,13 @@ def _current_actor() -> str:
     return CURRENT_ACTOR
 
 
-def _flatten_pages(value: Any) -> list[dict[str, Any]]:
+def _flatten_pages(value: Any, label: str = "PR-comment") -> list[dict[str, Any]]:
     if not isinstance(value, list) or any(not isinstance(page, list) for page in value):
-        _fail("GitHub returned malformed PR-comment pagination")
+        _fail(f"GitHub returned malformed {label} pagination")
     rows: list[dict[str, Any]] = []
     for page in value:
         if any(not isinstance(row, dict) for row in page):
-            _fail("GitHub returned malformed PR-comment rows")
+            _fail(f"GitHub returned malformed {label} rows")
         rows.extend(cast(list[dict[str, Any]], page))
     return rows
 
@@ -157,6 +158,158 @@ def _verify_head(repo: str, pr: int, expected_head: str) -> None:
         _fail(
             f"PR head mismatch: expected {expected_head}, found {actual or '<empty>'}"
         )
+
+
+def _classic_signatures_required(repo: str, base_ref: str) -> bool:
+    """Return the classic branch-protection signature requirement."""
+    parts = repo.split("/")
+    if len(parts) != 2 or not all(parts):
+        _fail("repository identity must have owner/name form")
+    owner, name = parts
+    query = (
+        "query($owner:String!,$name:String!,$qualifiedName:String!){"
+        "repository(owner:$owner,name:$name){ref(qualifiedName:$qualifiedName){"
+        "branchProtectionRule{requiresCommitSignatures}"
+        "refUpdateRule{requiresSignatures}}}}"
+    )
+    response = _json_output(
+        [
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"name={name}",
+            "-F",
+            f"qualifiedName=refs/heads/{base_ref}",
+        ]
+    )
+    if not isinstance(response, dict) or response.get("errors") is not None:
+        _fail("GitHub could not resolve classic branch protection")
+    data = response.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    ref = repository.get("ref") if isinstance(repository, dict) else None
+    if not isinstance(ref, dict):
+        _fail("GitHub returned malformed base-branch protection metadata")
+    if "branchProtectionRule" not in ref or "refUpdateRule" not in ref:
+        _fail("GitHub returned incomplete branch protection metadata")
+    protection = ref["branchProtectionRule"]
+    if protection is None:
+        # The full rule is administrator-only. `refUpdateRule` exposes the
+        # effective branch-protection requirements to ordinary viewers.
+        update_rule = ref["refUpdateRule"]
+        if update_rule is None:
+            return False
+        if not isinstance(update_rule, dict) or not isinstance(
+            update_rule.get("requiresSignatures"), bool
+        ):
+            _fail("GitHub returned malformed effective branch protection")
+        if update_rule["requiresSignatures"] is True:
+            return True
+        _fail(
+            "cannot determine the absolute classic branch-protection signature "
+            f"policy for {base_ref}: GitHub exposed only a viewer-effective rule, "
+            "and this viewer may bypass an underlying signature requirement. "
+            "Re-run with a token that can read branch protection, or express the "
+            "signature requirement as a repository ruleset."
+        )
+    if not isinstance(protection, dict) or not isinstance(
+        protection.get("requiresCommitSignatures"), bool
+    ):
+        _fail("GitHub returned malformed commit-signature protection")
+    return cast(bool, protection["requiresCommitSignatures"])
+
+
+def _verify_signed_pr_history(repo: str, pr: int, expected_head: str) -> None:
+    """Require GitHub to verify every commit currently introduced by the PR."""
+    pull = _json_output(["api", f"repos/{repo}/pulls/{pr}"])
+    if not isinstance(pull, dict):
+        _fail("GitHub returned malformed pull-request metadata")
+    commit_count = pull.get("commits")
+    head = pull.get("head")
+    base = pull.get("base")
+    live_head = head.get("sha") if isinstance(head, dict) else None
+    base_ref = base.get("ref") if isinstance(base, dict) else None
+    if live_head != expected_head:
+        _fail(
+            f"PR head mismatch while verifying commit signatures: expected "
+            f"{expected_head}, found {live_head or '<empty>'}"
+        )
+    if not isinstance(commit_count, int) or commit_count < 1:
+        _fail("GitHub returned an invalid PR commit count")
+    if not isinstance(base_ref, str) or not base_ref:
+        _fail("GitHub returned an invalid PR base branch")
+
+    encoded_base_ref = quote(base_ref, safe="")
+    rule_pages = _json_output(
+        [
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{repo}/rules/branches/{encoded_base_ref}?per_page=100",
+        ]
+    )
+    rules = _flatten_pages(rule_pages, "branch-rule")
+    requires_signatures = any(
+        rule.get("type") == "required_signatures" for rule in rules
+    )
+    if not requires_signatures:
+        requires_signatures = _classic_signatures_required(repo, base_ref)
+    if not requires_signatures:
+        return
+
+    pages = _json_output(
+        [
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{repo}/pulls/{pr}/commits?per_page=100",
+        ]
+    )
+    commits = _flatten_pages(pages, "PR-commit")
+    if len(commits) != commit_count:
+        _fail(
+            "could not verify the entire PR commit history: GitHub reported "
+            f"{commit_count} commits but returned {len(commits)}"
+        )
+    if commits[-1].get("sha") != expected_head:
+        _fail("GitHub PR commit history does not end at the expected head")
+
+    unverified: list[str] = []
+    for row in commits:
+        sha = row.get("sha")
+        commit = row.get("commit")
+        verification = commit.get("verification") if isinstance(commit, dict) else None
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            _fail("GitHub returned malformed PR commit identity data")
+        if not isinstance(verification, dict):
+            _fail(f"GitHub returned no signature verification for PR commit {sha}")
+        if verification.get("verified") is not True:
+            reason = verification.get("reason")
+            label = reason if isinstance(reason, str) and reason else "unverified"
+            unverified.append(f"{sha} ({label})")
+
+    if unverified:
+        shown = ", ".join(unverified[:10])
+        remainder = len(unverified) - 10
+        suffix = f", and {remainder} more" if remainder > 0 else ""
+        _fail(
+            "PR history contains commits GitHub does not verify: "
+            f"{shown}{suffix}. Review cannot start or continue because a signed "
+            "head does not repair an unsigned ancestor. Prepare signed replacement "
+            "commits in an isolated worktree, prove the replacement trees match, "
+            "and obtain explicit approval for a lease-protected force-push before "
+            "rewriting the PR branch. Do not amend, rebase, or force-push without "
+            "that approval."
+        )
+
+
+def _verify_reviewable_head(repo: str, pr: int, expected_head: str) -> None:
+    """Verify the exact live head and its complete commit-signature history."""
+    _verify_head(repo, pr, expected_head)
+    _verify_signed_pr_history(repo, pr, expected_head)
 
 
 def _read_context(path_value: str | None) -> str:
@@ -381,7 +534,7 @@ def _start_run(args: argparse.Namespace) -> None:
         and previous["start_head"] == args.head
         and previous["content"] == content
     ):
-        _verify_head(args.repo, args.pr, args.head)
+        _verify_reviewable_head(args.repo, args.pr, args.head)
         print(
             json.dumps(
                 {
@@ -417,9 +570,9 @@ def _start_run(args: argparse.Namespace) -> None:
         f"content-sha256={run_id} -->"
     )
     body = f"{marker}\n{content}"
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body)
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     print(
         json.dumps(
             {
@@ -499,7 +652,7 @@ def _authorize_pass(args: argparse.Namespace) -> None:
         _fail("this engine already completed the requested run round")
     if args.round > highest_round + 1:
         _fail("review passes may not skip a run round")
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     print(
         json.dumps(
             {
@@ -525,6 +678,7 @@ def _finish_run(args: argparse.Namespace) -> None:
     run = records[-1]
     if getattr(args, "run_id", None) is not None and args.run_id != run["run_id"]:
         _fail("active review run changed during finalization")
+    verify = _verify_reviewable_head if args.outcome == "converged" else _verify_head
     existing = _run_end(rows, cast(str, run["run_id"]))
     marker = (
         f"<!-- local-review-run-end:v1 id={run['run_id']} "
@@ -545,7 +699,7 @@ def _finish_run(args: argparse.Namespace) -> None:
             "plan-complete",
         ):
             _fail("review sequence has not exhausted its cap")
-    _verify_head(args.repo, args.pr, args.head)
+    verify(args.repo, args.pr, args.head)
     if existing is not None:
         print(
             json.dumps(
@@ -554,7 +708,7 @@ def _finish_run(args: argparse.Namespace) -> None:
         )
         return
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, marker)
-    _verify_head(args.repo, args.pr, args.head)
+    verify(args.repo, args.pr, args.head)
     print(
         json.dumps(
             {
@@ -679,7 +833,7 @@ def _verify_handoff_run(repo: str, pr: int, expected_run_id: str | None) -> None
 def _post_handoff(args: argparse.Namespace) -> None:
     if args.from_engine == args.to_engine:
         _fail("review handoff engines must be different")
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     rows = _issue_comments(args.repo, args.pr)
     run = _handoff_run(rows)
     run_id = cast(str, run["run_id"]) if run is not None else None
@@ -720,9 +874,9 @@ def _post_handoff(args: argparse.Namespace) -> None:
         + f"content-sha256={digest} -->"
     )
     body = f"{marker}\n{content}"
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body)
-    _verify_head(args.repo, args.pr, args.head)
+    _verify_reviewable_head(args.repo, args.pr, args.head)
     _verify_handoff_run(args.repo, args.pr, run_id)
     print(
         json.dumps(

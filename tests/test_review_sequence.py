@@ -16,7 +16,7 @@ BASE = "b" * 40
 
 
 @pytest.fixture
-def controller() -> ModuleType:
+def controller(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     path = (
         Path(__file__).resolve().parents[1]
         / ".codex/skills/critique/scripts/local-review-handoff.py"
@@ -25,6 +25,9 @@ def controller() -> ModuleType:
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Signature API behavior is covered separately; keep sequence tests offline
+    # while retaining the merged reviewable-head call sites.
+    monkeypatch.setattr(module, "_verify_signed_pr_history", lambda *_: None)
     return module
 
 
@@ -524,6 +527,38 @@ def test_single_engine_plan_never_claims_independent_coverage(
         controller._sequence_decision([event(0)], plan, HEAD)["status"]
         == "plan-complete"
     )
+
+
+@pytest.mark.parametrize("replay", [False, True])
+def test_converged_sequence_still_requires_signed_history(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, replay: bool
+) -> None:
+    rows = [event(i) for i in range(3)]
+    if replay:
+        rows.append(
+            {
+                "id": 99,
+                "body": f"<!-- local-review-run-end:v1 id={'d' * 64} outcome=converged head={HEAD} -->",
+            }
+        )
+    posted = wire(controller, monkeypatch, rows)
+    ledger_checks: list[str] = []
+    monkeypatch.setattr(
+        controller,
+        "_verify_convergence_ledger",
+        lambda args: ledger_checks.append(args.head),
+    )
+
+    def unsigned(*args: Any) -> None:
+        raise controller.HandoffError("unsigned PR history")
+
+    monkeypatch.setattr(controller, "_verify_signed_pr_history", unsigned)
+    with pytest.raises(controller.HandoffError, match="unsigned PR history"):
+        controller._finish_run(
+            SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
+        )
+    assert ledger_checks == [HEAD]
+    assert posted == []
 
 
 def test_plan_alias_and_policy_parsing(controller: ModuleType) -> None:

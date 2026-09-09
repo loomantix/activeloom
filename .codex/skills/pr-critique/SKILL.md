@@ -56,6 +56,11 @@ At Lean, round 2 is already convergence; follow the tier-specific stance in `cri
    remote head moved, stop and report — do not `--force`.
 4. **Never bypass commit signing.** Commit with the repo's normal signing
    config. Do not pass `--no-gpg-sign` or disable `commit.gpgsign`.
+5. **Honor signed-commit policy.** When the target branch's effective GitHub
+   rules require signatures, the shared run controller checks GitHub's
+   verification for every commit introduced by the PR before it authorizes this
+   pass. A signed head does not repair an unsigned ancestor. Stop on failure and
+   follow its isolated replacement and explicit force-push approval guidance.
 
 ## Phase 0: Resolve the PR target
 
