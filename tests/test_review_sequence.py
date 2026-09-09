@@ -137,14 +137,33 @@ def test_stale_participant_head_blocks_convergence(controller: ModuleType) -> No
     assert decision["round"] == 2
 
 
-def test_cycle_without_return_leg_is_not_converged(controller: ModuleType) -> None:
-    """The chain must end on the initiating engine, even when every
-    participant is clean on the current head."""
+def test_completed_cycle_converges_without_a_trailing_initiator_leg(
+    controller: ModuleType,
+) -> None:
+    """Exact-head coverage by every participant is the return leg. Which engine
+    attested last adds no evidence over it."""
     rows = [event(i) for i in range(4)]
-    decision = controller._sequence_decision(rows, run(), HEAD)
-    assert decision["status"] == "next"
-    assert decision["engine"] == "codex"
-    assert decision["round"] == 3
+    assert controller._sequence_decision(rows, run(), HEAD)["status"] == "converged"
+
+
+def test_lean_chain_converges_after_a_material_reviewer_pass(
+    controller: ModuleType,
+) -> None:
+    """A lean run has four legs inside its cap. A material reviewer pass costs
+    two of them, so convergence must not additionally require a fifth."""
+    lean = {**run(), "tier": "lean", "max_rounds": 2}
+    stale = "e" * 40
+    rows = [
+        event(0),
+        event(1, head=stale, classification="material"),
+        event(2),
+    ]
+    pending = controller._sequence_decision(rows, lean, HEAD)
+    assert pending["status"] == "next"
+    assert (pending["engine"], pending["round"]) == ("claude", 2)
+
+    rows.append(event(3))
+    assert controller._sequence_decision(rows, lean, HEAD)["status"] == "converged"
 
 
 def test_historical_and_duplicate_passes_do_not_count(controller: ModuleType) -> None:
@@ -388,3 +407,72 @@ def test_three_engine_handoff_targets_and_reaches_next_participant(
         SimpleNamespace(repo="example/repo", pr=1, engine="claude")
     )
     assert json.loads(capsys.readouterr().out)["to_engine"] == "claude"
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("from_engine", "gemini"),
+        ("round", 3),
+        ("head", "e" * 40),
+        ("outcome", "material"),
+    ],
+)
+def test_handoff_must_describe_the_attested_pass(
+    controller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: Any,
+) -> None:
+    """Targeting the right recipient is not enough: the handoff's own account of
+    the completed pass must match the attestation it claims to describe."""
+    rows = [event(0)]
+    posted = wire(controller, monkeypatch, rows)
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=1,
+        head=HEAD,
+        base=BASE,
+        from_engine="codex",
+        to_engine="claude",
+        round=1,
+        outcome="clean",
+        context_file=None,
+    )
+    setattr(args, field, value)
+    with pytest.raises(controller.HandoffError, match="describe the completed pass"):
+        controller._post_handoff(args)
+    assert posted == []
+
+
+def test_restart_preserves_a_declared_engine_sequence(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart that omits --sequence must not silently downgrade a sequenced
+    run to one where every alternation guard is skipped."""
+    previous = {**run(), "content": "prior authorization"}
+    monkeypatch.setattr(controller, "_issue_comments", lambda *_: [])
+    monkeypatch.setattr(controller, "_run_records", lambda _: [previous])
+    monkeypatch.setattr(controller, "_run_end", lambda *_: {"outcome": "aborted"})
+    monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+    monkeypatch.setattr(controller, "_read_context", lambda *_: "restart reason")
+    bodies: list[str] = []
+
+    def post(*args: Any) -> tuple[int, bool]:
+        bodies.append(args[-1])
+        return 40, False
+
+    monkeypatch.setattr(controller, "_post_issue_comment", post)
+    controller._start_run(
+        SimpleNamespace(
+            repo="example/repo",
+            pr=1,
+            base=BASE,
+            head=HEAD,
+            tier="deep",
+            restart=True,
+            sequence=None,
+            authorization_file=None,
+        )
+    )
+    assert "<!-- local-review-sequence:v1 engines=codex,claude -->" in bodies[0]

@@ -341,6 +341,13 @@ def _start_run(args: argparse.Namespace) -> None:
     if not content:
         _fail("review-run authorization must not be empty")
     sequence = getattr(args, "sequence", None)
+    if sequence is None and args.restart and previous is not None:
+        # Preserve a declared cycle across a restart. Dropping the flag must not
+        # silently downgrade a sequenced run to one where every alternation
+        # guard is skipped; an explicit --sequence still overrides this.
+        previous_sequence = cast(list[str] | None, previous.get("sequence"))
+        if previous_sequence:
+            sequence = ",".join(previous_sequence)
     if sequence is not None:
         _parse_sequence(sequence)
         # Run v1 hashes arbitrary content, so this policy is bound without
@@ -900,11 +907,14 @@ def _sequence_decision(
         "passes": events,
         "max_rounds": run["max_rounds"],
     }
-    # A return to the initiating engine is part of an alternating chain, even
-    # when the independent reviewer was clean on its first pass.
+    # A completed cycle plus a return leg is part of an alternating chain, even
+    # when the independent reviewer was clean on its first pass. The return leg
+    # is established by exact-head coverage, not by which engine attested last:
+    # requiring the initiator to be chronologically last adds no evidence over
+    # the head check below, and at the lean cap it makes convergence unreachable
+    # whenever the reviewer's pass was material.
     if (
         len(events) > len(sequence)
-        and events[-1]["engine"] == sequence[0]
         and all(latest[engine]["head"] == head for engine in sequence)
         and all(latest[engine]["classification"] != "material" for engine in sequence)
     ):
