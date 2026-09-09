@@ -265,13 +265,13 @@ function sessionId(meta) {
 }
 
 function sessionDescriptors(root, cwd) {
-  const expectedCwd = resolve(cwd);
+  const expectedCwd = cwd === null ? null : resolve(cwd);
   return listRolloutLogs(root).flatMap((path) => {
     const meta = sessionMeta(path);
     if (
       !meta ||
       typeof meta['cwd'] !== 'string' ||
-      resolve(meta['cwd']) !== expectedCwd
+      (expectedCwd !== null && resolve(meta['cwd']) !== expectedCwd)
     ) {
       return [];
     }
@@ -307,9 +307,10 @@ function descendantDescriptors(descriptors, rootId) {
 /**
  * Resolve the rollout log for the session this pass is running in.
  *
- * The header records the working directory, so discovery can require a match
- * rather than assuming the most recent session anywhere on the machine is this
- * one. Discovery happens at snapshot time; `delta` reads the path the snapshot
+ * An exact session ID identifies the session even after its shell moves into a
+ * linked worktree. Without that identity (or with an explicit --cwd boundary),
+ * require a directory match; never choose the most recent session on the machine.
+ * Discovery happens at snapshot time; `delta` reads the path the snapshot
  * recorded, so a second session becoming the most recent one mid-pass cannot
  * silently retarget the measurement.
  */
@@ -319,12 +320,18 @@ function discoverSessionLog(args) {
     return resolve(explicit);
   }
   const cwd = resolve(args.cwd ?? process.cwd());
-  const candidates = sessionDescriptors(sessionsRoot(args), cwd);
   const requestedId = safeToken(
     args.sessionId ??
       process.env['CODEX_SESSION_ID'] ??
       process.env['CODEX_THREAD_ID'],
   );
+  // CLI sessions retain their launch directory in session_meta. Filtering by
+  // the shell's current directory first loses an otherwise exact identity as
+  // soon as a task follows the linked-worktree workflow. An explicit --cwd
+  // remains a caller-supplied restriction, including when an ID is supplied.
+  const discoveryCwd =
+    requestedId !== null && args.cwd === undefined ? null : cwd;
+  const candidates = sessionDescriptors(sessionsRoot(args), discoveryCwd);
   if (requestedId !== null) {
     const matches = candidates.filter(
       (candidate) => candidate.id === requestedId,
