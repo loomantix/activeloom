@@ -292,10 +292,16 @@ class Runner:
             return
         if self.args.resume:
             raise Blocked("no checkpoint to resume")
-        self.control.mkdir(mode=0o700)
+        # No checkpoint means no worker was launched. Rebuild a partial
+        # snapshot left by failed initialization, without following symlinks.
+        if self.control.is_symlink():
+            raise Blocked("control directory cannot be a symlink")
+        self.control.mkdir(mode=0o700, exist_ok=True)
         source = Path(__file__).resolve().parent
         for name in CONTROL_FILES:
             digest(source / name)
+            if (self.control / name).is_symlink():
+                raise Blocked("control file cannot be a symlink")
             shutil.copyfile(source / name, self.control / name)
         auth = Path(self.args.authorization_file).read_text().strip()
         if not auth or "<!-- local-review-" in auth:
@@ -526,10 +532,7 @@ class Runner:
             self.helper(
                 "ledger",
                 "post-pr-comment",
-                "--repo",
-                self.args.repo,
-                "--pr",
-                str(self.args.pr),
+                *self.scope(self.state["head"]),
                 "--body-file",
                 str(tier),
             )
@@ -579,7 +582,20 @@ class Runner:
             if authorization.get("run_id") != self.state["run_id"]:
                 raise Blocked("active run changed before launch")
             folder = self.directory / f"pass-{len(self.state['completed']) + 1}"
-            folder.mkdir(mode=0o700)
+            # pending is persisted before launch. With no pending pass, only
+            # pre-launch snapshot files may be left by an interrupted export.
+            if folder.is_symlink():
+                raise Blocked("pass directory cannot be a symlink")
+            folder.mkdir(mode=0o700, exist_ok=True)
+            if any(
+                p.name not in ("before-threads.json", "historical.json")
+                or p.is_symlink()
+                or not p.is_file()
+                for p in folder.iterdir()
+            ):
+                raise Blocked(
+                    "unexpected uncheckpointed pass evidence; reconcile before launch"
+                )
             ids = self.threads(folder / "before-threads.json")
             save(folder / "historical.json", ids)
             pending = {

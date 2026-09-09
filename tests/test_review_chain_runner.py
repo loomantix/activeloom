@@ -175,6 +175,118 @@ def test_cycle_stops_on_verified_convergence(harness: Any) -> None:
     assert harness.launches == ["codex", "claude", "codex"]
 
 
+def test_tier_publication_reaches_real_ledger_dispatch(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import shutil
+
+    node = shutil.which("node")
+    assert node
+    original = harness.runner.helper
+    checked: list[str] = []
+
+    def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        if parts[0] == "post-pr-comment":
+            # Let the real parser/dispatcher validate the call, but make gh
+            # unavailable so this test cannot perform any external mutation.
+            result = subprocess.run(
+                [node, str(SCRIPTS / "review-ledger.js"), *parts],
+                env={**os.environ, "PATH": str(tmp_path)},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0
+            assert "post-pr-comment requires" not in result.stderr
+            assert "GitHub operation failed" in result.stderr
+            checked.append(parts[parts.index("--head") + 1])
+        return dict(original(self, name, *parts))
+
+    monkeypatch.setattr(harness.runner, "helper", helper)
+    assert harness.runner(harness.args, harness.directory).run() == "converged"
+    assert checked == [HEAD]
+
+
+@pytest.mark.parametrize("failure", ["authorization", "base", "copy"])
+def test_initialization_failure_can_be_retried(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    authorization = Path(harness.args.authorization_file)
+    content = authorization.read_text()
+    original_command = harness.module.command
+    original_copy = harness.module.shutil.copyfile
+    if failure == "authorization":
+        authorization.unlink()
+    elif failure == "base":
+
+        def missing_base(argv: list[str]) -> str:
+            if argv[:3] == ["git", "rev-parse", "--verify"]:
+                raise harness.module.Blocked("synthetic missing base")
+            return str(original_command(argv))
+
+        monkeypatch.setattr(harness.module, "command", missing_base)
+    else:
+
+        def interrupted_copy(source: Path, target: Path) -> None:
+            raise OSError("synthetic interrupted copy")
+
+        monkeypatch.setattr(harness.module.shutil, "copyfile", interrupted_copy)
+    with pytest.raises((OSError, harness.module.Blocked)):
+        harness.runner(harness.args, harness.directory).run()
+    assert not (harness.directory / "state.json").exists()
+    assert not harness.launches
+    authorization.write_text(content)
+    monkeypatch.setattr(harness.module, "command", original_command)
+    monkeypatch.setattr(harness.module.shutil, "copyfile", original_copy)
+    assert harness.runner(harness.args, harness.directory).run() == "converged"
+    assert len(harness.launches) == 4
+
+
+def test_resume_retries_unlaunched_thread_snapshot(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = harness.runner.threads
+
+    def unavailable(self: Any, path: Path) -> list[int]:
+        raise harness.module.Blocked("synthetic network failure")
+
+    monkeypatch.setattr(harness.runner, "threads", unavailable)
+    with pytest.raises(harness.module.Blocked, match="network failure"):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    assert state["pending"] is None
+    assert not harness.launches
+    monkeypatch.setattr(harness.runner, "threads", original)
+    harness.args.resume = True
+    resumed = harness.runner(harness.args, harness.directory)
+    assert resumed.run() == "converged"
+    assert resumed.state["run_id"] == state["run_id"]
+    assert len(harness.launches) == 4
+
+
+@pytest.mark.parametrize("directory", ["control", "pass-1"])
+def test_preparation_refuses_symlink_directories(
+    harness: Any, tmp_path: Path, directory: str
+) -> None:
+    target = tmp_path / "external"
+    target.mkdir()
+    (harness.directory / directory).symlink_to(target, target_is_directory=True)
+    with pytest.raises(harness.module.Blocked, match="cannot be a symlink"):
+        harness.runner(harness.args, harness.directory).run()
+    assert not list(target.iterdir())
+    assert not harness.launches
+
+
+def test_uncheckpointed_worker_evidence_is_preserved(harness: Any) -> None:
+    folder = harness.directory / "pass-1"
+    folder.mkdir()
+    evidence = folder / "worker.log"
+    evidence.write_text("Existing worker evidence")
+    with pytest.raises(harness.module.Blocked, match="uncheckpointed pass evidence"):
+        harness.runner(harness.args, harness.directory).run()
+    assert evidence.read_text() == "Existing worker evidence"
+    assert not harness.launches
+
+
 @pytest.mark.parametrize("failure", ["missing", "blocked", "exit", "check"])
 def test_worker_failure_never_starts_next_engine(harness: Any, failure: str) -> None:
     if failure == "missing":
