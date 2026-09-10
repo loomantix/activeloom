@@ -5,7 +5,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.4.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.4.3" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -3283,6 +3283,7 @@ function classifyRange(params) {
 }
 
 // src/telemetry.ts
+import { createHash as createHash2 } from "crypto";
 function isTelemetryComment(body) {
   return body.includes(TELEMETRY_MARKER_PREFIX);
 }
@@ -3507,14 +3508,20 @@ function validateFindings(value) {
   };
 }
 function telemetryIdempotencyKey(fields) {
-  return [
+  const fieldsForKey = [
     fields.repo,
     String(fields.pr),
     fields.engine,
     fields.passType,
     String(fields.round),
     fields.headSha
-  ].join(":");
+  ];
+  if (fields.runId !== void 0) {
+    if (!SHA_64_RE.test(fields.runId))
+      fail("telemetry runId must be a lowercase SHA-256 digest");
+    return "run:" + createHash2("sha256").update(JSON.stringify([fields.runId, ...fieldsForKey])).digest("hex");
+  }
+  return fieldsForKey.join(":");
 }
 function validateTelemetryRecord(value) {
   const source = requireObject(value, "record");
@@ -3692,7 +3699,8 @@ function buildTelemetryRecord(params) {
     engine: params.engine,
     passType: params.passType,
     round: params.round,
-    headSha: params.headSha
+    headSha: params.headSha,
+    runId: params.runId
   });
   return validateTelemetryRecord({
     version: TELEMETRY_VERSION,
@@ -4544,6 +4552,9 @@ function parseCliArgs(argv) {
       case "--engine-version":
         args.engineVersion = parseVal(arg);
         break;
+      case "--telemetry-run-id":
+        args.telemetryRunId = parseVal(arg);
+        break;
       case "--pass-type":
         args.passType = parseEnum(arg, parseVal(arg), TELEMETRY_PASS_TYPES);
         break;
@@ -5108,12 +5119,18 @@ function runCliCommand(argv) {
             "emit-telemetry requires --pass-type, --trigger, --stance, --status, --token-source, --round, --base, and --head"
           );
         }
+        if (!args.findingsFile) {
+          fail(
+            "emit-telemetry requires --findings-file; omitted measurements are not zero findings"
+          );
+        }
         const changeset = args.changesetFile ? readJsonFile(args.changesetFile, "changeset file") : resolveChangesetReport(args).changeset;
         const record = buildTelemetryRecord({
           emittedAt: args.emittedAt ?? nowUtcSecond(),
           repo: args.repo,
           pr: args.pr,
           idempotencyKey: args.idempotencyKey,
+          runId: args.telemetryRunId,
           engine: args.engineRaw,
           engineVersion: args.engineVersion ?? null,
           passType: args.passType,
@@ -5139,10 +5156,9 @@ function runCliCommand(argv) {
           truncated: args.truncated === true,
           durationSeconds: parseDurationSeconds(args.durationSeconds),
           changeset: normalizeChangesetInput(changeset),
-          findings: args.findingsFile ? readJsonFile(
-            args.findingsFile,
-            "findings file"
-          ) : void 0
+          findings: validateFindings(
+            readJsonFile(args.findingsFile, "findings file")
+          )
         });
         if (args.dryRun) {
           process.stdout.write(buildTelemetryBody(record) + "\n");
