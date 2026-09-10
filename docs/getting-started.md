@@ -1,19 +1,39 @@
 # Getting started
 
-There are four ways to use activeloom. They form a ladder: each rung is the one below it plus exactly one thing, and the thing being added is always **credential cost**.
+ActiveLoom distributes engineering skills and supporting tools to existing agent clients. For scope and task selection, start with the [README](../README.md) or [agent entry guide](agent-guide.md).
 
-Start at the rung whose price you are willing to pay. Nothing higher is a prerequisite for anything lower, and moving up later never means undoing what you already did.
+## Run the CLI from source
 
-| Tier                         | Command                            | Needs        | You get                                                  |
-| ---------------------------- | ---------------------------------- | ------------ | -------------------------------------------------------- |
-| [0 — Try it](#tier-0-try-it) | `npx activeloom add <skill>`       | nothing      | skills in your own agent, on this machine                |
-| [1 — Commit it](#tier-1)     | `npx activeloom init`              | nothing      | the same skills checked into a repo, for your whole team |
-| [2 — Automate it](#tier-2)   | `npx activeloom init --sync`       | nothing      | ...kept up to date by a daily pull request               |
-| [3 — Sign it](#tier-3)       | `npx activeloom init --sync --app` | a GitHub App | ...with GitHub-signed commits, and private upstreams     |
+As of September 10, 2026, the public npm registry does not serve the `activeloom` package. Use the checked-in CLI. In a Bash or compatible shell:
 
-**Tier 2 is the recommended tier and the right answer for most repositories** — it is `npx activeloom init --sync`, not bare `init`, which stops at Tier 1. A GitHub App is only ever needed at Tier 3.
+```bash
+git clone https://github.com/loomantix/activeloom.git
+cd activeloom
+export ACTIVELOOM_CHECKOUT="$PWD"
+activeloom() { node "$ACTIVELOOM_CHECKOUT/cli/bin/activeloom.js" "$@"; }
+activeloom tiers
+```
 
-`npx activeloom tiers` prints this table in your terminal.
+Keep this shell open for the commands below. The `activeloom` function invokes the local installer; it still downloads content from `sync-v2` by default. After npm publication, `npx activeloom` will be the equivalent package invocation. Source examples do not require publication or a global npm install.
+
+Requirements: Node 18.17+; Python 3.9+ with PyYAML for `init`; network access to fetch upstream content. Installation does not supply an agent client, model access, GitHub authentication, or the additional tools a skill needs to run.
+
+## Choose an adoption tier
+
+Choose by where files should live and how updates should arrive. These tiers are separate from Lean/Deep review scope.
+
+| Tier                         | Command                                       | Scope and requirements                                                            |
+| ---------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
+| [0 — Try it](#tier-0-try-it) | `activeloom add <skill> --harness <id>`       | Personal skills and support files; no GitHub credential needed for public content |
+| [1 — Commit it](#tier-1)     | `activeloom init --harness <id>`              | Repository files and config; review and commit updates yourself                   |
+| [2 — Automate it](#tier-2)   | `activeloom init --sync --harness <id>`       | Scheduled update PRs; GitHub Actions permissions and built-in token               |
+| [3 — Sign it](#tier-3)       | `activeloom init --sync --app --harness <id>` | App-backed sync; GitHub App setup and optional private-upstream read access       |
+
+Tier 2 is the recommended tier for scheduled repository updates (`init --sync`); `init --sync --app` selects Tier 3. For sync setup, a GitHub App is only ever needed at Tier 3. Personal evaluation and manual adoption do not require one.
+
+Use Tier 0 for personal evaluation, Tier 1 for manual repository adoption, and Tier 2 when scheduled update proposals are useful. Tier 3 adds App identity and signed sync commits. Higher tiers are optional.
+
+`activeloom tiers` prints this table in your terminal.
 
 For Codex or OpenAI API work, also see [OpenAI documentation setup](openai-docs.md)
 for the official skill and a documentation MCP connection shared across local
@@ -21,26 +41,28 @@ repositories.
 
 ---
 
+<a id="tier-0-try-it"></a>
+
 ## Tier 0 — Try it
 
-No repository. No account. No key. Nothing committed.
+No consumer repository or GitHub credential is needed to copy public skills. Running them still requires the relevant agent client and any tools or authentication named in the skill.
 
 ```bash
-npx activeloom add critique
+activeloom add critique
 ```
 
-That installs the `critique` skill into your own agent configuration directory (`~/.claude/skills/`, and the equivalent for any other agent CLI it finds). Start a new agent session and it is there.
+That copies `critique` and supporting harness files into the selected personal configuration roots. Use `--harness claude`, `--harness codex`, or `--harness gemini` explicitly; otherwise the installer uses machine detection. Start a new agent session and check which skill it loads before running it. A review chain can require additional skills and peer reviewer clients.
 
 ```bash
-npx activeloom add                 # list every skill available
-npx activeloom add critique issues # install several at once
-npx activeloom add critique --harness codex
-npx activeloom add critique --dry-run   # show what would happen, write nothing
+activeloom add                 # list every skill available
+activeloom add critique issues # install several at once
+activeloom add critique --harness codex
+activeloom add critique --dry-run   # show what would happen, write nothing
 ```
 
 Re-run with `--force` to replace something already installed.
 
-This tier writes outside your current directory — into your home directory — and nowhere else. It touches no repository, so there is nothing to review, revert, or explain to a teammate.
+This tier installs into your home directory rather than a consumer repository. Review its preview because supporting references and agent definitions are installed alongside the selected skills. Existing destinations are preserved unless you request replacement.
 
 **When to move up:** when you want your team to have the same skills, rather than just you.
 
@@ -48,23 +70,23 @@ This tier writes outside your current directory — into your home directory —
 
 ## Tier 1 — Commit it
 
-The skills, checked into the repository, so every teammate gets them without installing anything.
+The skills and supporting configuration are checked into the repository so teammates share the same files. Each teammate still supplies the agent client and tools required to execute them.
 
 ```bash
-cd your-repo
-npx activeloom init
+cd /path/to/your-repo
+activeloom init --harness codex
 ```
 
-This writes two things:
+This writes the selected harness trees, shared sync targets, and consumer configuration:
 
 - **The harness roots** — `.claude/`, `.codex/`, `.agents/`, or whichever subset applies. `init` picks them by looking: a harness already checked in wins, otherwise the agent CLIs on your machine, otherwise Claude Code. Override with `--harness claude --harness codex`.
 - **`.activeloom-config.yml`** — the repository's own configuration, described below.
 
 `init` shows what it detected and asks before writing, since a machine with three agent CLIs installed is not the same thing as a team that wants three harness trees committed. Pass `--yes` to accept the detection, or `--harness claude` to state it outright — either skips the question, as does any non-interactive run.
 
-Commit both. That is the whole tier: no workflow, no secrets, no automation. To pick up upstream changes later, run `init` again.
+Review the generated diff and commit the intended files. Tier 1 does not add a scheduled sync workflow, but shared targets can include other workflow files such as DCO. To pick up upstream changes later, run `init` again; upstream-managed files may be replaced, while consumer-owned config is preserved.
 
-`npx activeloom detect` prints what `init` would decide, and writes nothing.
+`activeloom detect` prints what `init` would decide, and writes nothing.
 
 ### Filling in the config
 
@@ -81,7 +103,7 @@ It refuses to guess these on purpose. They are substituted into `.github/copilot
 
 To fill them, run the **`onboard`** skill in your agent. It reads the repository, drafts each value with the evidence it came from, and presents them for you to confirm — it does not write until you say so. Then re-run `init` so the values reach the rendered files.
 
-`npx activeloom init --dry-run` reports what would change without writing.
+`activeloom init --dry-run` previews changes without writing consumer files. On a new consumer, the full tree render is skipped until `.activeloom-config.yml` exists; the output identifies that limitation.
 
 **When to move up:** when re-running `init` by hand starts getting forgotten.
 
@@ -89,10 +111,10 @@ To fill them, run the **`onboard`** skill in your agent. It reads the repository
 
 ## Tier 2 — Automate it
 
-Everything in Tier 1, plus a scheduled workflow that opens a pull request whenever upstream changes.
+Repository installation plus a scheduled workflow that proposes changes available at the configured upstream ref. Tier 2 skips the shared DCO workflow target because its built-in token cannot push workflow-file updates.
 
 ```bash
-npx activeloom init --sync
+activeloom init --sync
 ```
 
 This additionally writes `.github/workflows/sync-from-upstream.yml`, with `UPSTREAM_REPO` and `PR_BASE_BRANCH` already filled in. Commit it.
@@ -131,10 +153,10 @@ gh variable delete SKIP_UPSTREAM_SYNC --repo <owner>/<repo>   # re-enable
 
 ## Tier 3 — Sign it
 
-Everything in Tier 2, but the sync commits are created through the GitHub Contents API using a GitHub App identity, which makes them **GitHub-signed** (`committer: GitHub`, `verified: true`). This is the tier for repositories under SOC 2, ISO 27001, or a similar regime that requires attested-actor sign-off on every change. It is also the only tier that can read a private upstream.
+Everything in Tier 2, but the sync commits are created through the GitHub Contents API using a GitHub App identity, which makes them **GitHub-signed** (`committer: GitHub`, `verified: true`). Choose this tier when your repository policy requires signed sync commits or a GitHub App identity. It does not establish compliance with a security standard. It is also the only tier that can read a private upstream.
 
 ```bash
-npx activeloom init --sync --app
+activeloom init --sync --app
 ```
 
 This writes the App variant of the workflow. It needs a GitHub App installed on the repository with `Contents: write`, `Pull requests: write`, and `Workflows: write`. The Workflows permission is required because the shared target set ships `.github/workflows/dco.yml`. It also needs two secrets:
@@ -153,7 +175,7 @@ gh secret set SYNC_APP_ID --org <org> --visibility selected \
 
 **If your upstream is private** — a fork of this repository kept inside your org — you also need a fine-grained PAT or App token with `Contents: Read` on it, stored as `UPSTREAM_READ_TOKEN`.
 
-Upgrading from Tier 2 is a workflow swap plus those secrets and App permissions. Remove `.github/workflows/dco.yml` from the config's top-level `skip_targets` after the App is installed so Tier 3 can sync that workflow through its installation token.
+Upgrading from Tier 2 is a workflow swap plus those secrets and App permissions. After reviewing the replacement, run `activeloom init --sync --app --force` to replace the existing generated workflow; the CLI preserves your consumer config. Remove `.github/workflows/dco.yml` from the config's top-level `skip_targets` after the App is installed so Tier 3 can sync that workflow through its installation token.
 
 ---
 
@@ -185,8 +207,8 @@ substitutions:
     3. Convention adherence.
   WHAT_NOT_TO_SUGGEST_EXTRA: ''
 
-# Required before the sync may write a sensitive path. Every consumer receives
-# `.github/workflows/dco.yml`, so this entry is what lets your first sync run.
+# Required for syncing DCO in Tier 1 or Tier 3. Tier 2 skips this target
+# because its built-in token cannot push workflow changes.
 # A refusal names any others it needs, in a block you can paste as-is.
 allow_sensitive_writes:
   - .github/workflows/dco.yml
@@ -207,19 +229,19 @@ Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-l
 
 ## Where the content comes from
 
-`npx activeloom` ships the installer, not the prompts. It fetches content from a **tag-pinned tarball** of this repository at run time — by default the `sync-v2` tag, which is the same ref the sync workflow tracks.
+`activeloom` ships the installer, not the prompts. It fetches content from a **tarball at the selected ref** of this repository at run time — by default the `sync-v2` tag, which is the same ref the sync workflow tracks.
 
-That is deliberate: both doors read one gate, so the CLI and CI can never deliver different prompts. A push to upstream `main` propagates to neither until the tag moves.
+Both routes default to the same distribution gate. The tag is movable: consumers installed at different times can differ, as can different harness selections, substitutions, and explicit refs. A push to upstream `main` does not propagate through the default route until the tag advances and the consumer installs or merges the update.
 
 ```bash
-npx activeloom add critique --ref main   # install from a different ref
+activeloom add critique --ref main   # install from a different ref
 ```
 
-> **If `sync-v2` has not been cut yet**, every command fails with a message naming the tag. Pass `--ref main` until the consumer cutover creates it.
+Use `--ref` deliberately. A branch such as `main` opts into development content; a commit SHA identifies a fixed revision. When `init --sync` generates a workflow, it records the selected remote ref. With `--upstream-dir`, local files are used for installation and the workflow keeps its template ref; local content is not automatically published for future syncs.
 
 ## Referencing the synced docs
 
-The sync brings `.claude/REVIEW_WORKFLOW.md`, `.claude/MODEL_NOTES.md`, and `.claude/references/local-review-ledger.md` into your repository. The ledger is loaded by the review skills themselves, but the other two are only read if your `CLAUDE.md` points at them:
+Each selected harness receives its own review workflow and supporting references. Link the installed documents from your repository agent instructions. For a Claude consumer, for example:
 
 ```markdown
 ## AI review workflow
@@ -232,9 +254,9 @@ Add these **after** the first sync lands, so the links resolve.
 
 ## Installing from a clone
 
-`scripts/install-skills.sh` is a different door with a different job: it **symlinks** skills out of a clone of this repository, so local edits are live and `git pull` updates every linked skill at once. That is the workflow for contributing to activeloom itself.
+`scripts/install-skills.sh` is a Claude-specific contributor helper: it **symlinks** skills out of a clone of this repository, so local edits are live and `git pull` updates every linked skill at once. That is the workflow for contributing to activeloom itself.
 
-`npx activeloom add` copies, and is the door for using the skills. Use the script if you are changing skills; use the CLI if you are running them.
+`activeloom add` copies, and is the door for using the skills. Use the script if you are changing skills; use the CLI if you are running them.
 
 ```bash
 git clone https://github.com/loomantix/activeloom.git
@@ -245,7 +267,7 @@ cd activeloom
 
 ## Troubleshooting
 
-- **`no tag sync-v2 in loomantix/activeloom`** — the tag has not been cut yet, or you are pointed at a fork without it. Pass `--ref main`.
+- **`no tag sync-v2 in loomantix/activeloom`** — check repository access and whether the selected upstream has that tag. Choose another verified ref only if you intend to install its content; `main` selects development content.
 - **`python3 cannot import PyYAML`** — the sync engine needs it: `python3 -m pip install pyyaml`. Only `init` needs Python; `add` does not.
 - **`refusing to sync a tree into itself`** — you ran `init` from inside an activeloom checkout. Run it from the repository that should receive the files.
 - **Sync workflow fails with missing placeholder errors** — a required substitution is missing from `.activeloom-config.yml`. The log names which; the `onboard` skill fills them.

@@ -1,6 +1,6 @@
-# claude-platform — Claude project guide
+# ActiveLoom — Claude project guide
 
-Upstream source-of-truth for Loomantix's Claude Code skills, agents, and sync engine. Apache 2.0 + DCO. See [README.md](README.md) for what ships here and [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow.
+Unified upstream for engineering skills, review protocols, and sync tooling for Claude Code, Codex, and Gemini/Agy. Apache 2.0 + DCO. Start with [README.md](README.md) for scope, [the agent entry guide](docs/agent-guide.md) for task routing and source ownership, and [CONTRIBUTING.md](CONTRIBUTING.md) before editing.
 
 ## Public-Repo Policy
 
