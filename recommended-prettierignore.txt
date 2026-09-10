@@ -73,6 +73,7 @@
 .claude/skills/issues/scripts/ready.py
 .claude/skills/phone-install/SKILL.md
 .claude/skills/pr-stats/SKILL.md
+.claude/skills/product-grill/SKILL.md
 .claude/skills/refactorpass/SKILL.md
 .claude/skills/review-accessibility/SKILL.md
 .claude/skills/review-accessibility/assets/axe-scan.js

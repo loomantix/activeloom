@@ -474,6 +474,13 @@ harnesses:
         destination: .claude/skills/grill/SKILL.md
         substitutions: []
 
+      # /product-grill — the same interview run from the product and user side,
+      # for PMs and designers. User-invoked, like /grill. A fresh path, so unlike
+      # /grill it has no ordering constraint against the deletes above.
+      - source: .claude/skills/product-grill/SKILL.md
+        destination: .claude/skills/product-grill/SKILL.md
+        substitutions: []
+
   # Codex. Ships the cross-engine review roles under `references/roles/` that
   # the Claude tree expresses as `.claude/agents/` subagents instead.
   codex:
@@ -890,6 +897,12 @@ harnesses:
         destination: .codex/skills/grill/SKILL.md
         substitutions: []
 
+      # product-grill — the same interview run from the product and user side,
+      # for PMs and designers.
+      - source: .codex/skills/product-grill/SKILL.md
+        destination: .codex/skills/product-grill/SKILL.md
+        substitutions: []
+
   # Gemini, whose harness reads `.agents` rather than a vendor-named root.
   gemini:
     root: .agents
@@ -1191,6 +1204,10 @@ harnesses:
 
       - source: .agents/skills/grill/SKILL.md
         destination: .agents/skills/grill/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/product-grill/SKILL.md
+        destination: .agents/skills/product-grill/SKILL.md
         substitutions: []
 
 # Harness-independent targets. Every consumer receives these regardless of
