@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import importlib.util
 import json
 import os
@@ -27,8 +28,36 @@ def load(name: str) -> ModuleType:
     return module
 
 
+@pytest.fixture(params=[False, True], ids=["standalone", "inside-review-worker"])
+def enclosing_review(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    result = tmp_path / "enclosing-result.json"
+    sentinel = "Original enclosing review evidence\n"
+    result.write_text(sentinel)
+    if request.param:
+        for name, value in {
+            "AGENT_LOOP_REVIEW_RESULT_FILE": str(result),
+            "AGENT_LOOP_REVIEW_ENGINE": "claude",
+            "AGENT_LOOP_REVIEW_ROUND": "1",
+            "AGENT_LOOP_REVIEW_BASE_SHA": BASE,
+            "AGENT_LOOP_PR_HEAD_SHA": HEAD,
+        }.items():
+            monkeypatch.setenv(name, value)
+    yield
+    assert result.read_text() == sentinel
+
+
 @pytest.fixture
-def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+def harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enclosing_review: None
+) -> Any:
+    # This is a synthetic top-level controller, even when pytest itself runs
+    # inside a real reviewer. Inherited worker state otherwise makes fake
+    # validation commands look like launches and can overwrite the real result.
+    for name in list(os.environ):
+        if name.startswith("AGENT_LOOP_"):
+            monkeypatch.delenv(name)
     module = load("review-chain-runner")
     controller = load("local-review-handoff")
     directory = tmp_path / "checkpoint"
