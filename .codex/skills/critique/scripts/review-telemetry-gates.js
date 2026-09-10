@@ -25,7 +25,7 @@ export function resolveGates() {
     if (error.code !== 'ENOENT')
       configError = 'review telemetry configuration is invalid or unreadable';
   }
-  function gate(name) {
+  function gate(name, defaultEnabled = false) {
     if (configError)
       return {
         set: true,
@@ -33,9 +33,13 @@ export function resolveGates() {
         reason: configError,
         error: configError,
       };
-    const raw = process.env[name] || repository[name];
+    const raw = process.env[name]?.trim() || repository[name];
     if (raw === undefined || raw.trim() === '')
-      return { set: false, enabled: false, reason: `${name} is unset` };
+      return {
+        set: false,
+        enabled: defaultEnabled,
+        reason: defaultEnabled ? null : `${name} is unset`,
+      };
     const value = raw.trim().toLowerCase();
     if (value === 'on') return { set: true, enabled: true, reason: null };
     if (value === 'off')
@@ -43,7 +47,7 @@ export function resolveGates() {
     const reason = `${name} must be exactly "on" or "off"`;
     return { set: true, enabled: false, reason, error: reason };
   }
-  const emission = gate('LOOM_REVIEW_TELEMETRY');
+  const emission = gate('LOOM_REVIEW_TELEMETRY', true);
   const declared = gate('LOOM_REVIEW_TELEMETRY_EXTRACT');
   return { emission, extraction: declared.set ? declared : emission };
 }

@@ -519,7 +519,9 @@ node .agents/skills/critique/scripts/usage-snapshot.js snapshot
 The helper reads repository gates from its synced `review-telemetry.json` and
 non-empty environment overrides. `LOOM_REVIEW_TELEMETRY` governs publication;
 `LOOM_REVIEW_TELEMETRY_EXTRACT` governs measurement and inherits publication
-when unset. Missing gates default off. Invalid configuration reports an error.
+when unset. Missing gates default on. Set `telemetry.emit: off` in repository
+configuration or `LOOM_REVIEW_TELEMETRY=off` to opt out; extraction also turns
+off unless explicitly enabled. Invalid configuration reports an error.
 Never infer permission from anything except the helper's `emit` field.
 
 This distribution has no Gemini usage adapter. The helper truthfully reports

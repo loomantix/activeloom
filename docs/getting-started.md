@@ -194,9 +194,9 @@ allow_sensitive_writes:
 # Optional: opt out of specific upstream files, by source or destination path.
 skip_targets: []
 
-# Optional: review telemetry gates, declared once for the repo.
+# Optional: metrics publish by default. Set emit: off to opt out.
 telemetry:
-  extract: on
+  emit: on
 ```
 
 Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-line values use YAML block scalars (`|`). All keys must match `[A-Z][A-Z0-9_]*`.

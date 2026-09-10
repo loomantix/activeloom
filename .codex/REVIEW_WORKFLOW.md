@@ -743,7 +743,7 @@ re-priceable.
 
 Repository defaults come from the synced sibling `review-telemetry.json` beside
 this harness's usage helper. Non-empty process environment values override
-those defaults. Missing configuration preserves opt-in behavior; malformed
+those defaults. Missing configuration enables publication and extraction; malformed
 configuration disables both gates with an error. See `docs/sync.md` upstream
 for the required sync destinations.
 
@@ -754,20 +754,18 @@ prompt would block an autonomous run.
 
 | Variable                        | Governs                             | Default           |
 | ------------------------------- | ----------------------------------- | ----------------- |
-| `LOOM_REVIEW_TELEMETRY`         | emitting a record to a pull request | off               |
+| `LOOM_REVIEW_TELEMETRY`         | emitting a record to a pull request | on                |
 | `LOOM_REVIEW_TELEMETRY_EXTRACT` | measuring this pass at all          | the emission gate |
 
 Each accepts exactly `on` or `off`. Any other non-empty value is neither: the
 helper stays disabled and says why, so a typo reads as a misconfiguration
 rather than as a deliberate opt-out.
 
-Publication is the part that warrants an opt-in rollout, so it is the part that
-keeps the original variable and its original meaning — nothing changes for a
-repository that has already set it. Measurement is separable because a local
-consumer of usage data has no business publishing anything: set
-`LOOM_REVIEW_TELEMETRY_EXTRACT=on` with the emission gate off and the numbers
-are available while emission is structurally unreachable rather than merely
-unrequested.
+Publication defaults on for every review pass. Set `telemetry.emit: off` in
+repository configuration or `LOOM_REVIEW_TELEMETRY=off` in the process
+environment to opt out. Extraction inherits emission unless explicitly set,
+so an emission opt-out also disables extraction by default. For local-only
+measurement, set `LOOM_REVIEW_TELEMETRY_EXTRACT=on` with emission off.
 
 The helper reports `enabled` for extraction and `emit` for emission on every
 payload, in every mode and on every failure path. **Invoke `emit-telemetry`
