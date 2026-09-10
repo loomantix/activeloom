@@ -57,6 +57,12 @@ skills:
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use when the user asks to grill an idea, pressure-test a design, or work out what to build before any code exists.'
 
+  product-grill:
+    # Model-invoked here, so the trigger has to separate it from `grill`: the
+    # distinguishing branch is who is asking and which side of the plan is open.
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when a product manager, designer, or other non-engineer wants a plan or design pressure-tested from the product and user side, before technical design.'
+
   onboard:
     # No `disable-model-invocation` on this harness, so the description carries
     # its own trigger prose or the skill never fires. The leading space is

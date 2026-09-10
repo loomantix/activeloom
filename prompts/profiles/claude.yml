@@ -96,6 +96,14 @@ skills:
       argument-hint: (optional) the idea, plan, or decision to stress-test
     DESC_TRIGGER: ''
 
+  product-grill:
+    # Same pairing as `grill`: user-invoked here, so no trigger prose. Keeping it
+    # user-invoked also keeps it from competing with `grill` for the same asks.
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: (optional) the product idea, plan, or design to stress-test
+    DESC_TRIGGER: ''
+
   onboard:
     # Same pairing as `grill`: `disable-model-invocation` makes trigger prose in
     # the description dead weight on this harness, so DESC_TRIGGER is empty here

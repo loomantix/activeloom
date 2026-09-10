@@ -32,6 +32,11 @@ has been rewritten, and the frontier model, the "facts are your job,
 decisions are theirs" rule, and the handoffs to the skills in this repo are
 our own.
 
+`.claude/skills/product-grill/SKILL.md` is a product-side variant of the
+grill skill above and derives from the same "grilling" skill on the same
+terms. Its product branches, plain-language rule, and routing of technical
+decisions to engineering are our own.
+
 `.claude/skills/diagnosing-bugs/SKILL.md` is derived from the
 "diagnosing-bugs" skill in that repository. The phase structure and its
 central claim -- that a tight, red-capable feedback loop is the whole skill
