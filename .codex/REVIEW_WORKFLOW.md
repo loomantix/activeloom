@@ -761,9 +761,10 @@ Each accepts exactly `on` or `off`. Any other non-empty value is neither: the
 helper stays disabled and says why, so a typo reads as a misconfiguration
 rather than as a deliberate opt-out.
 
-Publication defaults on for every review pass. Set `telemetry.emit: off` in
-repository configuration or `LOOM_REVIEW_TELEMETRY=off` in the process
-environment to opt out. Extraction inherits emission unless explicitly set,
+Publication defaults on for every review pass. Set `telemetry.emit: off` in the
+consumer's sync configuration — not in the rendered `review-telemetry.json`,
+whose only keys are the two variables named above — or set
+`LOOM_REVIEW_TELEMETRY=off` in the process environment to opt out. Extraction inherits emission unless explicitly set,
 so an emission opt-out also disables extraction by default. For local-only
 measurement, set `LOOM_REVIEW_TELEMETRY_EXTRACT=on` with emission off.
 

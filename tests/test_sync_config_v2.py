@@ -933,12 +933,23 @@ def test_real_manifest_delivers_repository_telemetry(
     root = Path(__file__).resolve().parents[1]
     manifest = yaml.safe_load((root / "scripts/sync-targets.yml").read_text())
     selected = manifest["harnesses"][harness]
+    # The gate reader is imported by `usage-snapshot.js` and the pass-key helper
+    # is invoked by every lane, so a consumer that receives the rendered config
+    # without them loses measurement and emission entirely. Assert all three
+    # against the harness root the manifest declares, rather than against a
+    # destination read back out of the manifest under test.
+    scripts = f"{selected['root']}/skills/critique/scripts"
+    expected = {
+        f"{scripts}/review-telemetry.json",
+        f"{scripts}/review-telemetry-gates.js",
+        f"{scripts}/telemetry-pass-key.js",
+    }
     targets = [
         target
         for target in selected["targets"]
-        if target.get("destination", "").endswith("/review-telemetry.json")
+        if target.get("destination", "") in expected
     ]
-    assert len(targets) == 1
+    assert {target["destination"] for target in targets} == expected
     for target in targets:
         path = upstream / target["source"]
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -959,7 +970,12 @@ def test_real_manifest_delivers_repository_telemetry(
         },
     )
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
-    assert json.loads((consumer / targets[0]["destination"]).read_text()) == {
+    assert json.loads((consumer / f"{scripts}/review-telemetry.json").read_text()) == {
         "LOOM_REVIEW_TELEMETRY": "on",
         "LOOM_REVIEW_TELEMETRY_EXTRACT": "off",
     }
+    for name in ("review-telemetry-gates.js", "telemetry-pass-key.js"):
+        delivered = consumer / scripts / name
+        assert delivered.read_bytes() == (
+            root / ".claude/skills/critique/scripts" / name
+        ).read_bytes()

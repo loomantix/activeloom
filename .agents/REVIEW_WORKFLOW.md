@@ -510,7 +510,11 @@ the review outcome. Never read prior telemetry into reviewer context; filter
 all comments carrying the `local-review-telemetry:` prefix.
 
 Before reading or classifying the diff, resolve the repository, PR, literal
-base/head SHAs, engine (`gemini`), pass type, round, and stance. Then invoke:
+base/head SHAs, engine, pass type, round, and stance. Resolve the engine from
+the runtime actually running the pass — `gemini` or `antigravity` — the same
+way the skills do; never hardcode it. A misattributed record is counted against
+the wrong engine and skews both series, which is worse than the absent
+measurement this distribution already reports. Then invoke:
 
 ```bash
 node .agents/skills/critique/scripts/usage-snapshot.js snapshot
@@ -519,12 +523,16 @@ node .agents/skills/critique/scripts/usage-snapshot.js snapshot
 The helper reads repository gates from its synced `review-telemetry.json` and
 non-empty environment overrides. `LOOM_REVIEW_TELEMETRY` governs publication;
 `LOOM_REVIEW_TELEMETRY_EXTRACT` governs measurement and inherits publication
-when unset. Missing gates default on. Set `telemetry.emit: off` in repository
-configuration or `LOOM_REVIEW_TELEMETRY=off` to opt out; extraction also turns
-off unless explicitly enabled. Invalid configuration reports an error.
+when unset. Missing gates default on. Set `telemetry.emit: off` in the
+consumer's sync configuration — not in the rendered `review-telemetry.json`,
+whose only keys are the two variables named above — or set
+`LOOM_REVIEW_TELEMETRY=off` to opt out; extraction also turns off unless
+explicitly enabled. An invalid value is not an opt-out: it disables the gate
+and reports an error, so a typo reads as a misconfiguration rather than as a
+deliberate `off`.
 Never infer permission from anything except the helper's `emit` field.
 
-This distribution has no Gemini usage adapter. The helper truthfully reports
+This distribution has no pass-scoped usage adapter. The helper truthfully reports
 `tokenSource: unavailable` and no token buckets; do not guess counts from
 context size, another engine's log, or a whole-session estimate. At the end of
 each pass run the helper with `delta` and retain this unavailable provenance.
@@ -532,7 +540,8 @@ Record elapsed wall time only when a start/end clock was actually captured.
 
 When `emit` is true, invoke the ledger's `emit-telemetry` command with:
 
-- `--repo`, `--pr`, `--engine gemini`, `--base`, and `--head` from the pass boundary;
+- `--repo`, `--pr`, `--engine` (the engine resolved at the pass boundary),
+  `--base`, and `--head` from the pass boundary;
 - `--pass-type review` or `refactor`, `--round`, and `--stance`;
 - `--review-tier lean` or `deep` when resolved;
 - `--trigger autonomous` for a runner invocation, otherwise `interactive`;

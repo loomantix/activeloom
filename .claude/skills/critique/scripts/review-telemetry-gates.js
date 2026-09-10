@@ -32,10 +32,15 @@ export function resolveGates() {
       !repository ||
       typeof repository !== 'object' ||
       Array.isArray(repository) ||
+      // Normalize before the membership test so a file value is accepted on
+      // the same terms as an environment value. Without this, `"Off"` in the
+      // file is not `off` — it fails whole-file validation and hard-disables
+      // both gates, which no environment variable can then restore.
       Object.entries(repository).some(
         ([key, value]) =>
           ![EMISSION_GATE, EXTRACTION_GATE].includes(key) ||
-          !['on', 'off'].includes(value),
+          typeof value !== 'string' ||
+          !['on', 'off'].includes(value.trim().toLowerCase()),
       )
     ) {
       throw new Error('invalid configuration');
