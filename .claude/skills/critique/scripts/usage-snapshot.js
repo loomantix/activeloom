@@ -37,11 +37,10 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-
-const SNAPSHOT_VERSION = 1;
-
 // Repository defaults and process overrides are shared by every harness.
 import { resolveGates } from './review-telemetry-gates.js';
+
+const SNAPSHOT_VERSION = 1;
 
 const GATES = resolveGates();
 

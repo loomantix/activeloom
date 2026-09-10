@@ -37,13 +37,12 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+// Repository defaults and process overrides are shared by every harness.
+import { resolveGates } from './review-telemetry-gates.js';
 
 const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = constants;
 
 const SNAPSHOT_VERSION = 2;
-
-// Repository defaults and process overrides are shared by every harness.
-import { resolveGates } from './review-telemetry-gates.js';
 
 const GATES = resolveGates();
 
