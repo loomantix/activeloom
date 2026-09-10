@@ -1,183 +1,108 @@
-# claude-platform
+# ActiveLoom
 
-A reusable [Claude Code](https://claude.com/claude-code) toolkit for teams that want the same agent workflows in more than one repository. It ships operational skills, supporting sub-agents, and a small sync engine that opens propagation PRs against downstream repos.
+**Reusable engineering workflows for coding agents, distributed from one upstream to many repositories.**
 
-Apache 2.0 + DCO.
+ActiveLoom supplies skills, review protocols, supporting scripts, and repository configuration for Claude Code, Codex, and Gemini through Antigravity/Agy. It helps an existing agent plan work, investigate bugs, implement bounded tasks, and review pull requests with traceable findings. Its installer and sync engine keep those workflows consistent while each repository owns its project context.
 
-> **Status:** v0.1 — public bootstrap release. APIs and workflows may evolve as the sync surface stabilizes.
+This is the unified project formerly named **claude-platform**. New consumers use `loomantix/activeloom`, one `.activeloom-config.yml`, and the harnesses they select. Separate engine upstreams are not required.
 
-## Why this exists
+**Point an agent here:** [Agent entry guide](docs/agent-guide.md). It contains a copyable session prompt, a task-to-skill map, prerequisites, and a source ownership map. For installation, use [Getting started](docs/getting-started.md).
 
-Claude Code project setup tends to drift as soon as a team has several repos: one repo gets a better review prompt, another gets a safer issue workflow, and a third still has last month's instructions. This repo keeps that surface reviewable in one place while still letting each downstream repo own its local project context.
+## What it provides
 
-Use this project if you want:
+| Capability              | What you get                                                                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Engineering skills      | Instructions and helpers for design, diagnosis, implementation, issue management, and review. Load the skill relevant to the task.             |
+| PR review protocol      | Draft-PR-first review, verified findings recorded before fixes, and a shared ledger tying review evidence to a specific commit.                |
+| Bounded automation      | A deterministic runner for explicitly requested automatic review chains, plus a separate `agent-loop` workflow for an allowlisted issue queue. |
+| Multiple harnesses      | Harness-specific prompts and tools under `.claude/`, `.codex/`, and `.agents/`; shared skills are rendered where their behavior can be shared. |
+| Repository distribution | A CLI for personal or repository installation, and a sync engine that proposes downstream changes through pull requests.                       |
+| Local customization     | Consumer-owned configuration and review addenda for project rules, validation commands, and domain knowledge.                                  |
 
-- A repeatable PR-first local review relay, plus a hosted-reviewer lane that runs alongside it.
-- Repository-local skills that every teammate can invoke the same way.
-- A pull-request-based sync flow instead of direct writes to downstream default branches.
-- Public, auditable defaults for DCO, Copilot instructions, and Claude Code guidance.
+## What it does not provide
 
-## What's in here
+- **An agent runtime or model service.** Bring the supported agent clients, model access, and tools required by the selected skill. Installing prompts does not install or authenticate reviewers.
+- **A hosted engineering platform.** The repository ships files and local/CI tooling, not a hosted workspace, dashboard, or managed execution service.
+- **A general-purpose agent application SDK.** Its focus is engineering work in repositories; it is not an application framework for building arbitrary agents.
+- **Identical behavior across engines.** Review prompts deliberately differ by harness. Skill availability, launch requirements, and telemetry support also differ.
+- **Automatic knowledge of your project.** The installer detects facts and leaves judgment-dependent fields for the `onboard` skill and a maintainer to resolve.
+- **A guarantee of correctness, security, or compliance.** Review evidence complements tests and human judgment. Local automation runs with the reviewer's permissions; it is not a security sandbox.
+- **Implicit permission to ship.** A converged review is evidence about a commit. The automatic review runner does not mark ready or merge, and sync proposes changes for review.
 
-### Claude Code skills (`.claude/skills/`)
+## Choose a starting point
 
-Operational skills you can install locally or sync into a repo:
+| Your task                                 | Start with                                                    | Read next                                                                        |
+| ----------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Decide whether this fits an agent session | The agent entry guide                                         | [Task selection and boundaries](docs/agent-guide.md)                             |
+| Try a workflow personally                 | CLI `add <skill> --harness <id>`                              | [Personal installation](docs/getting-started.md#tier-0-try-it)                   |
+| Give a repository a shared setup          | CLI `init --harness <id>` and `onboard`                       | [Repository installation](docs/getting-started.md#tier-1)                        |
+| Keep multiple repositories current        | CLI `init --sync`                                             | [Sync setup](docs/getting-started.md#tier-2) and [sync contract](docs/sync.md)   |
+| Review an existing PR                     | The installed harness's `REVIEW_WORKFLOW.md` and review skill | [Review entry points](docs/agent-guide.md#review-an-existing-pr)                 |
+| Run an automatic review chain             | The deterministic review runner                               | [Runner requirements and outcomes](.codex/references/review-chain-runner.md)     |
+| Improve the toolkit itself                | Source ownership map and contribution guide                   | [Contributing](CONTRIBUTING.md) and [prompt rendering](docs/prompt-rendering.md) |
 
-| Skill                   | What it does                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/refactorpass <pr>`    | PR-first wrapper around `/simplify` — single-pass refactor, commits and pushes the result, skips on docs-only changesets.                                                                                                                                                                                                                                                                                                          |
-| `/critique <pr>`        | PR-first adversarial review. Lean default runs `code-reviewer` + `silent-failure-hunter`; `deep` runs the full matrix plus the conditional tenant-coupling pass.                                                                                                                                                                                                                                                                   |
-| `/deepcritique <pr>`    | PR-first local Claude chain (`/refactorpass` + `/critique deep`) with inline finding, fix-reply, and resolution traceability.                                                                                                                                                                                                                                                                                                      |
-| `/reviewit <pr>`        | Post-push AI review orchestrator. Both modes fire Gemini Flash + Copilot with staggered handling (Gemini first, Copilot folded in) — no in-skill `/review`. Lean caps at 2 iterations. `deep` arg bumps the cap to 4, early-exits when an iteration produced no fix-pushes, and runs a final `/deepcritique` so fresh Claude-side agents look at the PR's current state. Dedups, addresses each finding, replies in the PR thread. |
-| `/codex-review <pr>`    | Independent local Codex second opinion. Codex finds read-only; Claude verifies and records confirmed findings in the same PR thread ledger before fixes.                                                                                                                                                                                                                                                                           |
-| `/copilot-review <pr>`  | Address GitHub Copilot review comments on a PR systematically.                                                                                                                                                                                                                                                                                                                                                                     |
-| `/grill`                | Pre-code interview. Maps the problem as a design tree and asks the whole dependency-ordered frontier each round, with a recommended answer per question. Writes no code. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).                                                                                                                                                     |
-| `/diagnosing-bugs`      | Debugging discipline for bugs that survived the first read — no hypothesis until a tight, deterministic loop goes red on the user's exact symptom. Model-invoked. Partly derived from [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).                                                                                                                                                            |
-| `/onboard`              | Agent-side door onto onboarding. Drafts the project-specific config values `npx activeloom init` refuses to invent — stack table, code rules, review focus — from the repository, and presents them for confirmation rather than writing them.                                                                                                                                                                                     |
-| `/feature-dev`          | Guided feature development — discovery → architecture → implementation → quality review.                                                                                                                                                                                                                                                                                                                                           |
-| `/issues`               | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.                                                                                                                                                                                                                                                                                                     |
-| `/backlog-refinement`   | Curate the autonomous queue, verify issues against the integration branch, classify exclusions, and turn loop bails into rubric improvements.                                                                                                                                                                                                                                                                                      |
-| `/agent-loop`           | Autonomous issue relay that opens a draft PR before bounded local Codex/Claude review and marks it ready only after the inline thread ledger converges.                                                                                                                                                                                                                                                                            |
-| `/actions-usage-audit`  | Read-only GitHub Actions billing and workflow-usage analysis with month-over-month attribution.                                                                                                                                                                                                                                                                                                                                    |
-| `/task-packet`          | Execute a markdown Task Packet end-to-end (code, tests, GitHub issue, PR, closure).                                                                                                                                                                                                                                                                                                                                                |
-| `/phone-install`        | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                                                                                                                                                                                                                                                                                          |
-| `/review-accessibility` | Accessibility audit against a non-production web app containing only public or synthetic data — axe-core scans approved static routes, returns sanitized findings, fixes violations confidently mapped to source, and opens a PR. Human-triggered, needs a browser tool family, not part of the pre/post-push chain.                                                                                                               |
+## Run the installer today
 
-### Custom sub-agents (`.claude/agents/`)
-
-Three agent definitions invoked by the skills above:
-
-- `code-explorer` — traces feature execution paths across an existing codebase.
-- `code-architect` — designs implementation blueprints by analyzing existing patterns.
-- `code-reviewer` — confidence-filtered code review against project conventions.
-
-### Sync engine (`scripts/`)
-
-A two-script mechanism that lets one upstream repo propagate canonical files (skills, workflows, docs) to many downstream repos via a scheduled PR:
-
-- `sync-engine.py` — reads `sync-targets.yml` from the upstream and a `.activeloom-config.yml` from the consumer, applies `<<KEY>>` substitutions, writes / deletes destination files. The manifest emits one target set per harness plus a harness-independent shared set; the consumer's `harnesses:` list decides which it receives. Idempotent; hard-fails on missing required substitutions; soft-warns on undeclared placeholders.
-- `create-signed-commit.py` — creates the sync commit via the GitHub Contents API rather than `git commit + git push`. Commits made via the API are auto-signed by GitHub (`committer: GitHub`, `verified: true`) when invoked with a GitHub App installation token.
-
-The reference downstream workflow lives at [`.github/workflows/sync-from-upstream.yml.template`](.github/workflows/sync-from-upstream.yml.template). Drop it into a downstream repo, fill in `UPSTREAM_REPO` and `PR_BASE_BRANCH`, set the App-token secrets, and the repo pulls daily from a `sync-v2` tag.
-
-### Other
-
-- `.claude/REVIEW_WORKFLOW.md` — canonical doc describing the lean / deep AI review chains. Sync this into each downstream repo's `.claude/` so Claude sessions follow the same flow.
-- `.claude/references/local-review-ledger.md` — the draft-PR ledger contract every local review skill loads before it reviews. Sync it alongside `REVIEW_WORKFLOW.md`; `/refactorpass`, `/critique`, `/deepcritique`, `/codex-review`, and `/reviewit` all resolve it relative to their own skill directory, so a locally installed skill reads it from this checkout.
-- `.claude/skills/critique/scripts/run-agy-review.sh` — the auto-mode relay launcher for the local `gemini` reviewer. It pins the Antigravity CLI to Gemini 3.7 Flash at high effort with accept-edits, unattended permissions, structured JSON output, and a per-pass time bound (30 minutes by default, or a wrapper-supplied value under `agent-loop`), and refuses to start unless the requested exact head matches the current repository, the self-authored PR, and a clean worktree, and the CLI resolves exactly one live `deepcritique` skill backed by a clean `loomantix/activeloom` checkout at the launcher's pinned commit vendoring the same `review-ledger` version. Auto mode is optional: an engine with no launcher, or a repo where local conversation persistence is prohibited, runs its reviewers in fresh terminal sessions instead. A zero exit is necessary but not sufficient — the caller still verifies exact-head coverage on the PR.
-- `.claude/MODEL_NOTES.md` — prompt-authoring notes for the current default Claude model. The skills and agents here are prompts, and some patterns that helped on an earlier model generation now suppress review findings or waste tokens; this records those deltas and the checklist to apply when adding a skill.
-- `.claude/SKILL_AUTHORING.md` — how to structure a skill document, as opposed to how to phrase it for the current model. Covers invocation (and what a `description` costs in always-loaded context), where reference material sits relative to steps, completion criteria the model can check, and the pruning tests. Partly derived from the `writing-for-agents` skill in [mattpocock/skills](https://github.com/mattpocock/skills) — see [NOTICE](NOTICE).
-- `.github/copilot-instructions.md.template` — substitution-driven Copilot reviewer prompt. Each downstream repo fills in `PROJECT_NAME`, `STACK_TABLE`, `CODE_RULES`, etc. via `.activeloom-config.yml`.
-- `claude/github-api-usage.md` — drop-in guidance for any repo's `CLAUDE.md` on rate-limit-aware GitHub API usage.
-
-## Getting started
-
-Four ways in. They form a ladder, and the thing each rung adds is **credential cost** — so start at the one whose price you are willing to pay. Nothing higher is a prerequisite for anything lower.
-
-| Tier                | Command                            | Needs        | You get                                              |
-| ------------------- | ---------------------------------- | ------------ | ---------------------------------------------------- |
-| **0 — Try it**      | `npx activeloom add critique`      | nothing      | skills in your own agent, on this machine            |
-| **1 — Commit it**   | `npx activeloom init`              | nothing      | the same skills checked into a repo, for your team   |
-| **2 — Automate it** | `npx activeloom init --sync`       | nothing      | ...kept current by a daily pull request              |
-| **3 — Sign it**     | `npx activeloom init --sync --app` | a GitHub App | ...with GitHub-signed commits, and private upstreams |
-
-**Tier 2 is the recommended tier** — `npx activeloom init --sync`. A GitHub App is only ever needed at Tier 3.
-
-```bash
-npx activeloom add critique   # try one skill — no repo, no account, no key
-npx activeloom add            # list every skill available
-npx activeloom detect         # show what this repo looks like; write nothing
-npx activeloom tiers          # explain the ladder
-```
-
-The full walkthrough, including the config file and what each tier trades away, is in [`docs/getting-started.md`](docs/getting-started.md).
-
-### Where the content comes from
-
-The npm package ships the installer, not the prompts. Content is fetched from a tag-pinned tarball of this repository at run time — by default `sync-v2`, the same ref the sync workflow tracks. One gate for both doors, so the CLI and CI can never deliver different prompts.
-
-### Contributing to the skills themselves
-
-`scripts/install-skills.sh` **symlinks** skills out of a clone, so local edits are live and `git pull` updates every linked skill at once. That is the door for changing skills; `npx activeloom add` copies, and is the door for running them.
+**Publication status, verified September 10, 2026:** the public npm registry does not currently serve the `activeloom` package. The CLI implementation is in [`cli/`](cli/). Use it from a source checkout; `npx activeloom` is the intended invocation after publication, not a working prerequisite today.
 
 ```bash
 git clone https://github.com/loomantix/activeloom.git
 cd activeloom
-./scripts/install-skills.sh --dry-run   # report what would happen, write nothing
-./scripts/install-skills.sh             # symlink each skill into ~/.claude/skills/
+node cli/bin/activeloom.js tiers
+node cli/bin/activeloom.js add --harness codex
+node cli/bin/activeloom.js add diagnosing-bugs --harness codex --dry-run
 ```
 
-### Configure `/agent-loop` models
+The last command previews a personal installation. Remove `--dry-run` to install it. Choose `claude`, `codex`, or `gemini` explicitly to avoid relying on machine detection. `add` also installs supporting harness files; it does more than copy one `SKILL.md`.
 
-`.claude/skills/agent-loop/agent-loop.config` is bootstrapped from a template on
-first sync (`create_if_missing`) and is **consumer-owned** — later upstream syncs
-never overwrite it, so every downstream repo configures its own models and must
-migrate template changes by hand.
+The CLI requires Node 18.17 or later; `init` also requires Python 3.9 or later with PyYAML. Fetching upstream content requires network access. Running a skill has additional requirements described in that skill, such as an authenticated agent client and GitHub CLI for PR operations.
 
-Three model-backed aspects, configured in two places:
+For repository setup, run the CLI against the **consumer repository**, not the ActiveLoom checkout. The [full walkthrough](docs/getting-started.md) provides commands and explains the four adoption tiers:
 
-| Aspect                           | Where                                               |
-| -------------------------------- | --------------------------------------------------- |
-| Default worker (writes the code) | `worker_model` / `worker_fallback_model`            |
-| Codex reviewer                   | model + effort as flags inside `codex_review_hook`  |
-| Claude reviewer                  | model + effort as flags inside `claude_review_hook` |
+| Tier                | Scope                                                    | Update method                               | Additional sync identity                                 |
+| ------------------- | -------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------- |
+| 0 — Personal        | Selected skills and support files in your home directory | Rerun `add`; replacement requires `--force` | None                                                     |
+| 1 — Repository      | Selected harness trees and shared configuration          | Rerun `init`, review and commit             | None                                                     |
+| 2 — Scheduled sync  | Repository setup plus a GitHub Actions workflow          | Scheduled propagation PRs                   | Built-in `GITHUB_TOKEN`; repository permissions required |
+| 3 — App-backed sync | Scheduled sync with GitHub-signed commits                | Propagation PRs from a configured App       | GitHub App; separate read access for a private upstream  |
 
-Review hooks are literal shell commands, so a reviewer's model and effort are
-just flags on that command — there are no dedicated keys for them. Pin
-`worker_model` explicitly: left empty, the default worker silently follows
-whatever your CLI defaults to that week. Both worker keys apply to the default
-worker only and are ignored when `worker_hook` is set, which pins its own model.
+Tier 2 is the recommended tier for scheduled repository updates (`init --sync`); `init --sync --app` selects Tier 3. For sync setup, a GitHub App is only ever needed at Tier 3. Personal evaluation and manual adoption do not require one.
 
-**You need both the Claude and Codex CLIs.** Both review hooks are required and
-the roster is fixed at Codex then Claude. Preflight checks the hook strings, not
-the CLIs, so a run missing one gets as far as the draft PR before failing at that
-engine's leg. See "Model Selection" in
-[`.claude/skills/agent-loop/SKILL.md`](.claude/skills/agent-loop/SKILL.md) for
-the cost breakdown behind choosing each aspect, and for why substituting one
-engine's CLI inside another's hook corrupts the review ledger rather than working
-around this.
+These are adoption tiers, not the **Lean/Deep review tiers**. Choose personal or manual installation for evaluation; choose scheduled sync when maintaining shared repository workflows is the objective.
 
-### Feeding lessons back
+## Harnesses and review
 
-Review cycles teach things the generic prompts cannot know. [`docs/review-learning-loop.md`](docs/review-learning-loop.md) says where each lesson goes — a rule true of any codebase belongs in a role prompt or the `critique` skill here, and a rule that names one repo's flags, paths, or past incidents belongs in that repo's consumer-owned `.review/addendum.local.md`, which no sync can overwrite.
+| CLI/config ID | Distributed root | Entry document                                           |
+| ------------- | ---------------- | -------------------------------------------------------- |
+| `claude`      | `.claude/`       | [Claude review workflow](.claude/REVIEW_WORKFLOW.md)     |
+| `codex`       | `.codex/`        | [Codex review workflow](.codex/REVIEW_WORKFLOW.md)       |
+| `gemini`      | `.agents/`       | [Gemini/Agy review workflow](.agents/REVIEW_WORKFLOW.md) |
 
-## How to think about this project
+Use the selected harness's actual skill files as the authority for invocation and prerequisites. A `gemini` selection refers to this project's Agy integration; it is not a promise of compatibility with every Gemini client.
 
-The skills assume a PR-first local review chain: open a draft, use inline
-threads as the durable Codex/Claude ledger, and mark ready only after a clean
-exact-head pass. The hosted `/reviewit` path remains an explicit fallback.
-The chain is documented in [`.claude/REVIEW_WORKFLOW.md`](.claude/REVIEW_WORKFLOW.md).
+Local review starts from a draft PR and resolves Lean or Deep before reviewers run. Cleanup changes the code's shape; adversarial review examines the resulting code for defects. Independent engines share a ledger protocol, while retaining different review prompts. Material fixes require fresh evidence under that protocol.
 
-### Why the local PR chain is two separate passes, in order
+For explicitly requested automatic chains, the checked-in [review runner](.codex/references/review-chain-runner.md) controls pass order, validation, checkpoints, and termination. Its Codex control surface must be installed even when another engine starts the chain. A completed fixed plan, an exhausted budget, and convergence are different outcomes. The separate `agent-loop` implements issues; it is not the same controller.
 
-`/refactorpass` and `/critique` look like a cheap-filter-then-expensive-filter funnel — clean up the easy stuff first so the costly agents have less to do. They aren't, and understanding why explains the ordering.
+The hosted `reviewit` skill remains an explicit option where repository policy permits it. Installation does not trigger hosted reviewers, and hosted review is not a prerequisite for the local chain.
 
-The two passes have **orthogonal jobs**:
+## How updates and ownership work
 
-- `/refactorpass` (wrapping `/simplify`) is **constructive** — DRY, readability, dead-code removal, extracting repeated blocks. It changes the _shape_ of the code.
-- `/critique` is **adversarial** — logic bugs, swallowed errors, type-design holes, missing test coverage. It hunts for _defects_.
+The installer contains code, not the prompt payload. By default it downloads this repository at `sync-v2`; scheduled sync uses the same distribution ref. `sync-v2` is a movable release gate, not an immutable version. `main` may contain work not yet distributed, and consumers update only when they install or merge a sync PR. Explicit refs, harness selections, and consumer substitutions can produce different installed content.
 
-Because they look for different categories of thing, the overlap is thin: tidying duplication doesn't make `silent-failure-hunter` cheaper or stop `code-reviewer` from finding a real bug. So running `/refactorpass` first is **not** a cost-saving pre-filter — the critique agents reason over the whole diff regardless of how clean it is, and their cost is dominated by agent reasoning, not diff size. The real payoff is landing the code in its final shape _before_ anything — adversarial agent, bot reviewer, or human — scrutinizes it.
+`sync-v1` is the frozen compatibility route for older consumers. See [migration guidance](docs/sync.md#migrating-from-the-pre-sync-v2-config-files) before changing an existing setup.
 
-That payoff is also why the two run **sequentially rather than in parallel**, despite the thin overlap. `/simplify` is a writer; `/critique` is a reader of what it wrote. Run them concurrently and critique anchors findings to `file:line` locations that simplify is actively rewriting — you get stale references, findings about code that's about to be deleted, and an adversarial pass critiquing a shape that won't ship. You want critique (and the reviewers after it) to scrutinize the code as it will actually merge.
+| If you need to change…                             | The owner is…                                                                           |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| A generated skill                                  | `prompts/skills/` and `prompts/profiles/`; regenerate the harness outputs               |
+| A harness-specific review prompt                   | The corresponding harness source; follow its authoring notes and parity rules           |
+| Which files consumers receive                      | `scripts/sync-targets.yml`                                                              |
+| A repository's stack, rules, or selected harnesses | Its `.activeloom-config.yml`                                                            |
+| Repository-specific review lessons                 | Its consumer-owned `.review/addendum.local.md`                                          |
+| A vendored ledger contract or helper               | The upstream package identified by its version/integrity files; do not patch the bundle |
 
-The mental model: **orthogonal in what they look for, sequentially dependent in that one rewrites what the other reads.** `/deepcritique` bakes the ordering in — it runs `/refactorpass` then `/critique deep` as a single chain. For the full operational walkthrough and the hosted-reviewer lane (`/reviewit`), see [`.claude/REVIEW_WORKFLOW.md`](.claude/REVIEW_WORKFLOW.md).
+Managed consumer files are overwritten on sync. Files marked `create_if_missing` are bootstrapped once and remain consumer-owned. See [sync ownership](docs/sync.md), [prompt rendering](docs/prompt-rendering.md), and the [review learning loop](docs/review-learning-loop.md).
 
-### The sync engine
+## Contributing and license
 
-The sync engine is intentionally minimal:
-
-- One upstream, one downstream repo, one manifest.
-- `<<KEY>>` find-and-replace, no template engine.
-- Daily PR open / merge cycle, with a tag-based gate (`sync-v2`) so unintended pushes to upstream main don't auto-propagate. `sync-v1` stays frozen for consumers that have not cut over.
-- `delete: true` to retire a previously-synced file across all downstream repos.
-
-It's not Renovate. It's not Dependabot. It's a deliberately small primitive for "one upstream, many downstream repos, propagate-by-PR."
-
-## Contributing
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). Apache 2.0 + DCO sign-off (`git commit -s`) required on every commit.
-
-## License
-
-Apache 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+ActiveLoom is public, Apache 2.0, and requires DCO sign-off on every contribution. Keep examples reusable and free of private project details. Start with [CONTRIBUTING.md](CONTRIBUTING.md); report vulnerabilities using [SECURITY.md](SECURITY.md). See [LICENSE](LICENSE) and [NOTICE](NOTICE).

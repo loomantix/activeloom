@@ -1,6 +1,6 @@
-# Contributing to claude-platform
+# Contributing to ActiveLoom
 
-Thank you for considering a contribution. This repo is the upstream source-of-truth for a set of Claude Code skills, agents, and a sync engine that propagates them to consumer repos. Bugs here propagate to every downstream consumer; the bar on review and testing is therefore deliberately high.
+Thank you for considering a contribution. This repo is the upstream source-of-truth for engineering skills, review protocols, harness-specific tools, and a sync engine that propagates them to consumer repos. Bugs here propagate to every downstream consumer; the bar on review and testing is therefore deliberately high.
 
 ## License
 
@@ -24,7 +24,7 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 
 **In scope:**
 
-- New Claude Code skills that have value across multiple consumers (avoid skills that are tightly coupled to a single project's conventions — those belong in that project's repo).
+- New engineering skills for the supported harnesses that have value across multiple consumers (avoid skills that are tightly coupled to a single project's conventions — those belong in that project's repo).
 - Improvements to existing skills (`/critique`, `/refactorpass`, `/reviewit`, `/issues`, `/feature-dev`, `/copilot-review`, `/agent-loop`, `/deepcritique`, `/phone-install`, `/task-packet`, `/grill`,
   `/diagnosing-bugs`).
 - Improvements to the sync engine (`scripts/sync-engine.py`, `scripts/create-signed-commit.py`) that make it more robust, more portable, or safer to operate.
@@ -36,9 +36,9 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 
 - New layers in the sync model (e.g. inheritance between manifests, recursive imports). The simple "one upstream, one consumer, one manifest" shape is intentional.
 - Skills that bind to a specific tech stack in their core (e.g. a skill that only works on Rails, or only on Expo) — those belong in stack-specific repos.
-- Hooks that auto-fire hosted reviewers on every PR. Local `/deepcritique` and
-  `/codex-review` operate manually through the draft PR ledger; `/reviewit`
-  remains an explicit hosted-reviewer lane.
+- Hooks that auto-fire hosted reviewers on every PR. Local review follows the draft PR ledger and the installed harness workflow;
+  explicitly requested automatic chains use the checked-in runner. `/reviewit`
+  remains an explicit hosted-reviewer option where repository policy permits it.
 
 ## Workflow
 
@@ -47,6 +47,14 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 3. **Make your changes**, with `git commit -s` (DCO sign-off) on every commit.
 4. **Run CI locally** — see CI workflow for the exact commands.
 5. **Open a PR** against `main`. CI must pass.
+
+## Find the source before editing
+
+Use the [agent entry guide](docs/agent-guide.md#know-which-source-to-edit) to identify ownership. Shared rendered skills live in `prompts/skills/` with vocabulary in `prompts/profiles/`; edit those sources and regenerate rather than hand-editing outputs. Harness-specific review prompts remain separate by design. The root harness trees and `scripts/sync-targets.yml` are the unified consumer distribution surface; imported engine trees are not additional installation sources.
+
+Read [prompt rendering](docs/prompt-rendering.md) for generation, parity, and prompt-stack version rules. Vendored review-ledger files must come from their declared upstream package. Consumer-specific rules belong in consumer configuration or `.review/addendum.local.md`.
+
+For public documentation changes, keep the root README, [agent entry guide](docs/agent-guide.md), [getting-started guide](docs/getting-started.md), and [CLI README](cli/README.md) consistent. Verify package availability before presenting an npm command as usable. Distinguish installer version, distribution ref, prompt-stack version, and installed consumer state.
 
 ## Skill-edit conventions
 

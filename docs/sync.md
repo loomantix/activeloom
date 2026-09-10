@@ -1,6 +1,6 @@
 # Sync from upstream
 
-Canonical files (Claude Code skills, the Copilot instructions template, optional GitHub workflows) live in this repo. Consumer repos pull them via a daily-cron GitHub Action, and developers refresh their local skill set with a one-shot install script. This doc explains both flows and the on-disk contract.
+ActiveLoom distributes selected Claude Code, Codex, and Gemini/Agy harness files plus shared targets from one upstream. Consumer repositories receive update proposals through a scheduled GitHub Action; the CLI also installs files locally. This page defines the sync and ownership contract. Start with [Getting started](getting-started.md) for installation or the [agent entry guide](agent-guide.md) for task selection. The root `scripts/sync-targets.yml` is authoritative; separate installs from imported engine trees are not required.
 
 ## What flows where
 

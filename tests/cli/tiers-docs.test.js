@@ -34,11 +34,13 @@ const GETTING_STARTED = fs.readFileSync(
  * The command a tier is reached by, as it appears in prose.
  *
  * `tiers.js` writes Tier 0's command with a `<skill>` metavariable, which the
- * docs replace with a real skill name. Compare the invariant part.
+ * docs replace with a real skill name. Source-checkout instructions invoke the
+ * same commands without npx; compare arguments independently of the launcher.
  *
  * @param {import('../../cli/lib/tiers').Tier} tier
  */
-const commandStem = (tier) => tier.command.replace(/ <skill>$/, '');
+const commandStem = (tier) =>
+  tier.command.replace(/^npx activeloom /, '').replace(/ <skill>$/, '');
 
 test('getting-started names every tier by number and command', () => {
   for (const tier of TIERS) {
