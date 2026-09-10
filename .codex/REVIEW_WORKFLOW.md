@@ -939,6 +939,25 @@ times are running different prompts and the tag carries no content identity.
 
 ### Count the findings
 
+Before every emission attempt, including `clean`, `changed`, `skipped`, and
+`blocked` exits, write this pass's complete findings object to an owner-only
+regular file and pass its path as `--findings-file`. This step also applies to
+early returns before the normal end-of-pass sequence and to a spent cleanup
+latch. Never omit the file or reuse a previous pass's measurements.
+
+Use the all-zero object below only when this pass is known to have posted or
+dispositioned no findings and introduced no chain-induced regressions. Status
+alone does not establish zero: a blocked pass may have posted findings before
+it failed, and a clean pass may have deferred or dismissed findings. Preserve
+those actual counts. Include posted threads whose disposition is still pending
+in `posted`; count only completed dispositions in the outcome buckets. Do not
+invent a `validDeferred` disposition to make the totals equal.
+
+If any required finding count is unknown, do not fabricate zeros or send an
+incomplete file. Report `telemetry not emitted: findings measurement unavailable`
+and return through the existing nonfatal telemetry path. Missing token usage
+is separate: it does not prevent emission when findings counts are known.
+
 Write this pass's own dispositions to a regular file with the active
 file-editing tool — never a heredoc or command substitution:
 

@@ -5,6 +5,15 @@ description: PR-first adversarial code review for Codex. Use after implementatio
 
 # Critique
 
+## Findings before telemetry emission
+
+Before every telemetry emission attempt, including an early `skipped`, `blocked`,
+or spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
+write the complete measured findings file and supply `--findings-file`.
+Preserve findings posted before an interruption; unknown counts are not zeros.
+If counts cannot be established, report `telemetry not emitted: findings measurement unavailable`
+and follow the existing nonfatal telemetry path.
+
 Review an open draft PR adversarially. The goal is to catch bugs, missing tests,
 security issues, and convention violations while preserving every verified
 finding and disposition in the PR.

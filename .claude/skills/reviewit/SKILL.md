@@ -6,6 +6,15 @@ argument-hint: PR number (e.g., 42), optionally followed by "deep" (e.g., 42 dee
 
 # reviewit — post-push AI review cycle
 
+## Findings before telemetry emission
+
+Before every telemetry emission attempt, including an early `skipped`, `blocked`,
+or spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
+write the complete measured findings file and supply `--findings-file`.
+Preserve findings posted before an interruption; unknown counts are not zeros.
+If counts cannot be established, report `telemetry not emitted: findings measurement unavailable`
+and follow the existing nonfatal telemetry path.
+
 You are orchestrating the post-push AI review cycle for an open pull request.
 
 **Lean mode (default)**: Two reviewers are fired at the same iteration watermark — Gemini Flash and GitHub Copilot — but handling is staggered. Act on Gemini as soon as it returns, push those fixes, then collect Copilot when it finishes before starting the next iteration. Cap is **2 iterations**.
