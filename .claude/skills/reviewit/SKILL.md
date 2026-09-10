@@ -23,6 +23,20 @@ default path and uses the draft PR ledger with `/deepcritique <pr>` and
 
 This replaces the older `/review-cycle` skill. Auto-trigger of Gemini and Copilot is intentionally disabled — `/reviewit` is the only path that fires AI review.
 
+## Hosted pass telemetry
+
+Follow "Pass Telemetry" in `.claude/REVIEW_WORKFLOW.md` for gates,
+identity keys, numeric findings, and best-effort emission. For each requested
+hosted reviewer in each iteration, capture its reviewed head and create a
+separate saved key before dispatch. After handling its findings, emit one
+record with `--pass-type hosted`, that reviewer's engine (`gemini` or
+`copilot`), and the actual iteration and outcome, including blocked/timeouts.
+Do not use coordinator-session usage as hosted-reviewer usage: when the
+provider exposes no attributable counts, use `--token-source unavailable`
+and no token buckets. Record only that reviewer's actual posted findings and
+dispositions; unavailable review results are blocked, never clean. Do not
+count a nested local critique twice. Report emission failures in the summary.
+
 ## Mode resolution
 
 `$ARGUMENTS` is whitespace-tokenized. The first token is the PR number; if a second token exists and equals `deep` (case-insensitive), set `MODE=deep` and `MAX_ITERS=4`. Otherwise `MODE=lean` and `MAX_ITERS=2`. Surface the resolved mode in the Phase 6 summary.

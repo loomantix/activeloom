@@ -484,3 +484,77 @@ Invocation:
   metadata. Only the concise verified finding and its disposition belong there.
 - Stop at the configured cap and preserve recovery state when reviewers do not
   converge.
+
+## Pass Telemetry
+
+At the pass boundary, create and save this pass's idempotency key:
+
+```bash
+node .agents/skills/critique/scripts/telemetry-pass-key.js \
+  <owner/repo> <pr> <controller-run-id-or-standalone> <authenticated-actor> \
+  <engine> <review-or-refactor-or-hosted> <round> <reviewed-head>
+```
+
+Use the controller's authenticated run ID when present. `standalone` creates
+a fresh attempt identity; invoke it once and retain its returned key in the
+pass's private working files. Pass `--idempotency-key <returned-key>` to every
+emission, reusing it on a retry. Different actors and restarted runs must not
+share keys. Never regenerate a standalone key to retry publication. If key
+creation fails, report telemetry failure rather than falling back to a key
+that may identify a different pass. This works with existing ledger bundles.
+
+Every review and cleanup pass attempts one `local-review-telemetry:v1` PR
+comment after finalizing its review result, including blocked and skipped
+passes. Telemetry is best-effort: report failure and continue without changing
+the review outcome. Never read prior telemetry into reviewer context; filter
+all comments carrying the `local-review-telemetry:` prefix.
+
+Before reading or classifying the diff, resolve the repository, PR, literal
+base/head SHAs, engine (`gemini`), pass type, round, and stance. Then invoke:
+
+```bash
+node .agents/skills/critique/scripts/usage-snapshot.js snapshot
+```
+
+The helper reads repository gates from its synced `review-telemetry.json` and
+non-empty environment overrides. `LOOM_REVIEW_TELEMETRY` governs publication;
+`LOOM_REVIEW_TELEMETRY_EXTRACT` governs measurement and inherits publication
+when unset. Missing gates default off. Invalid configuration reports an error.
+Never infer permission from anything except the helper's `emit` field.
+
+This distribution has no Gemini usage adapter. The helper truthfully reports
+`tokenSource: unavailable` and no token buckets; do not guess counts from
+context size, another engine's log, or a whole-session estimate. At the end of
+each pass run the helper with `delta` and retain this unavailable provenance.
+Record elapsed wall time only when a start/end clock was actually captured.
+
+When `emit` is true, invoke the ledger's `emit-telemetry` command with:
+
+- `--repo`, `--pr`, `--engine gemini`, `--base`, and `--head` from the pass boundary;
+- `--pass-type review` or `refactor`, `--round`, and `--stance`;
+- `--review-tier lean` or `deep` when resolved;
+- `--trigger autonomous` for a runner invocation, otherwise `interactive`;
+- `--status clean`, `changed`, `blocked`, or `skipped` as actually observed;
+- `--token-source unavailable`, omitting token/model/version arguments;
+- `--findings-file` pointing to an explicit numeric findings object below.
+
+Omit `--changeset-file` to use the package's changeset classifier. `skipped`
+is reserved for a changeset with zero review-significant files; a cleanup
+that stops at its previously spent latch reports `clean`. Pass the original
+boundary even when fixes moved the head; do not silently attribute the pass
+to a different diff. Omit prompt hashes until this harness has a hasher.
+
+The findings file contains `posted`, `chainInducedRegressions`, and
+`bySeverityAndOutcome`. The latter has one object for each of `blocking`,
+`major`, `minor`, and `nit`, each containing `validFixed`, `validDeferred`, and
+`invalidDismissed` integer counts. Derive these from findings and dispositions
+this pass actually posted, including dispositions of older findings in
+`posted`. Count a chain-induced regression only when its new fingerprint's
+anchor traces to an earlier fix on this PR. Explicit zeros mean measured zero;
+never omit the file and assume the package knows what happened. Carry no
+finding titles, paths, transcript text, or other prose into telemetry.
+
+If the pass fails before its mandatory identity is resolved, report
+`telemetry not emitted: boundary unresolved`. Otherwise blocked passes follow
+the same emission path. Report the returned `emitted` result and reason;
+never retry a telemetry failure into a review or treat missing usage as zero.

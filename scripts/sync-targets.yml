@@ -126,6 +126,23 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      # Deliver repository gates independently of the host application env.
+      - source: .claude/skills/critique/scripts/review-telemetry-gates.js
+        destination: .claude/skills/critique/scripts/review-telemetry-gates.js
+        substitutions: []
+        mode: '0644'
+
+      - source: .claude/skills/critique/scripts/telemetry-pass-key.js
+        destination: .claude/skills/critique/scripts/telemetry-pass-key.js
+        substitutions: []
+        mode: '0644'
+
+      - source: scripts/review-telemetry.json.template
+        destination: .claude/skills/critique/scripts/review-telemetry.json
+        substitutions:
+          - REVIEW_TELEMETRY_ENV
+        mode: '0644'
+
       # The bundle is ESM. Node resolves module type from the NEAREST package.json
       # walking up from the file, which in a consumer is that repo's root — so
       # without this the ledger's module type depends on the consumer's manifest:
@@ -531,6 +548,23 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      # Deliver repository gates independently of the host application env.
+      - source: .claude/skills/critique/scripts/review-telemetry-gates.js
+        destination: .codex/skills/critique/scripts/review-telemetry-gates.js
+        substitutions: []
+        mode: '0644'
+
+      - source: .claude/skills/critique/scripts/telemetry-pass-key.js
+        destination: .codex/skills/critique/scripts/telemetry-pass-key.js
+        substitutions: []
+        mode: '0644'
+
+      - source: scripts/review-telemetry.json.template
+        destination: .codex/skills/critique/scripts/review-telemetry.json
+        substitutions:
+          - REVIEW_TELEMETRY_ENV
+        mode: '0644'
+
       - source: .codex/skills/critique/scripts/package.json
         destination: .codex/skills/critique/scripts/package.json
         substitutions: []
@@ -896,6 +930,28 @@ harnesses:
       # published tarball these bytes came from; `gemini-platform` CI pins them.
       - source: .agents/skills/critique/scripts/review-ledger.js
         destination: .agents/skills/critique/scripts/review-ledger.js
+        substitutions: []
+        mode: '0644'
+
+      # Deliver repository gates independently of the host application env.
+      - source: .claude/skills/critique/scripts/review-telemetry-gates.js
+        destination: .agents/skills/critique/scripts/review-telemetry-gates.js
+        substitutions: []
+        mode: '0644'
+
+      - source: .claude/skills/critique/scripts/telemetry-pass-key.js
+        destination: .agents/skills/critique/scripts/telemetry-pass-key.js
+        substitutions: []
+        mode: '0644'
+
+      - source: scripts/review-telemetry.json.template
+        destination: .agents/skills/critique/scripts/review-telemetry.json
+        substitutions:
+          - REVIEW_TELEMETRY_ENV
+        mode: '0644'
+
+      - source: .agents/skills/critique/scripts/usage-snapshot.js
+        destination: .agents/skills/critique/scripts/usage-snapshot.js
         substitutions: []
         mode: '0644'
 

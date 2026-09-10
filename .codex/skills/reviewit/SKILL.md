@@ -7,6 +7,20 @@ description: Post-push AI review orchestrator for pull requests. Use when the us
 
 Run the post-push review cycle for an open PR.
 
+## Hosted pass telemetry
+
+Follow "Pass Telemetry" in `.codex/REVIEW_WORKFLOW.md` for gates,
+identity keys, numeric findings, and best-effort emission. For each requested
+hosted reviewer in each iteration, capture its reviewed head and create a
+separate saved key before dispatch. After handling its findings, emit one
+record with `--pass-type hosted`, that reviewer's engine (`gemini` or
+`copilot`), and the actual iteration and outcome, including blocked/timeouts.
+Do not use coordinator-session usage as hosted-reviewer usage: when the
+provider exposes no attributable counts, use `--token-source unavailable`
+and no token buckets. Record only that reviewer's actual posted findings and
+dispositions; unavailable review results are blocked, never clean. Do not
+count a nested local critique twice. Report emission failures in the summary.
+
 ## Modes
 
 - **Lean**: default. Fire Gemini Flash and request Copilot review, but use staggered handling: fix Gemini first, then fold in Copilot when it finishes. Cap at 2 iterations.

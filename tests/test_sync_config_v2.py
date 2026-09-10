@@ -8,6 +8,7 @@ read.
 The fixtures here write manifests in the real shape rather than through
 `test_sync_engine.py`'s adapter, because that shape is the thing under test.
 """
+
 from __future__ import annotations
 
 import json
@@ -105,7 +106,9 @@ def test_only_declared_harnesses_are_delivered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _manifest(upstream)
-    _write(consumer / CANONICAL, {"harnesses": ["claude"], "allowed_destinations": ["**"]})
+    _write(
+        consumer / CANONICAL, {"harnesses": ["claude"], "allowed_destinations": ["**"]}
+    )
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
     assert (consumer / ".claude/skills/a/SKILL.md").is_file()
@@ -121,7 +124,9 @@ def test_shared_targets_reach_every_consumer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _manifest(upstream)
-    _write(consumer / CANONICAL, {"harnesses": ["codex"], "allowed_destinations": ["**"]})
+    _write(
+        consumer / CANONICAL, {"harnesses": ["codex"], "allowed_destinations": ["**"]}
+    )
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
     assert (consumer / ".github/shared.md").is_file()
@@ -177,7 +182,9 @@ def test_manifest_rejects_duplicate_legacy_config(
     _write(consumer / CANONICAL, {"harnesses": ["claude"]})
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
-    assert "both declare `legacy_config: .platform-config.yml`" in capsys.readouterr().err
+    assert (
+        "both declare `legacy_config: .platform-config.yml`" in capsys.readouterr().err
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +343,10 @@ def test_top_level_allowed_destinations_admit_an_inheriting_harness(
     _manifest(upstream)
     _write(
         consumer / CANONICAL,
-        {"harnesses": {"claude": {}}, "allowed_destinations": [".claude/**", ".github/**"]},
+        {
+            "harnesses": {"claude": {}},
+            "allowed_destinations": [".claude/**", ".github/**"],
+        },
     )
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
@@ -353,7 +363,10 @@ def test_skip_targets_union_across_levels(
     _write(
         consumer / CANONICAL,
         {
-            "harnesses": {"claude": {"skip_targets": [".claude/skills/a/SKILL.md"]}, "codex": {}},
+            "harnesses": {
+                "claude": {"skip_targets": [".claude/skills/a/SKILL.md"]},
+                "codex": {},
+            },
             "skip_targets": [".github/shared.md"],
             "allowed_destinations": ["**"],
         },
@@ -475,7 +488,9 @@ def test_telemetry_absent_renders_an_empty_object(
     # Settings-declared environment beats the ambient shell, so a consumer
     # that declared no gate must get an env block that names none — not one
     # defaulted to `off`, which would override a developer who exported `on`.
-    rendered = _render_telemetry(sync_engine, upstream, consumer, monkeypatch, None, omit=True)
+    rendered = _render_telemetry(
+        sync_engine, upstream, consumer, monkeypatch, None, omit=True
+    )
     assert json.loads(rendered)["env"] == {}
 
 
@@ -504,7 +519,8 @@ def test_telemetry_accepts_yaml_booleans_and_fixes_key_order(
         sync_engine, upstream, consumer, monkeypatch, {"extract": False, "emit": True}
     )
     assert (
-        '{ "LOOM_REVIEW_TELEMETRY": "on", "LOOM_REVIEW_TELEMETRY_EXTRACT": "off" }' in rendered
+        '{ "LOOM_REVIEW_TELEMETRY": "on", "LOOM_REVIEW_TELEMETRY_EXTRACT": "off" }'
+        in rendered
     )
 
 
@@ -528,7 +544,11 @@ def test_telemetry_rejects_bad_input(
     _manifest(upstream)
     _write(
         consumer / CANONICAL,
-        {"harnesses": ["claude"], "allowed_destinations": ["**"], "telemetry": telemetry},
+        {
+            "harnesses": ["claude"],
+            "allowed_destinations": ["**"],
+            "telemetry": telemetry,
+        },
     )
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
@@ -548,8 +568,13 @@ def test_legacy_files_compose_into_their_own_harnesses(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _manifest(upstream)
-    _write(consumer / ".platform-config.yml", {"allowed_destinations": [".claude/**", ".github/**"]})
-    _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]})
+    _write(
+        consumer / ".platform-config.yml",
+        {"allowed_destinations": [".claude/**", ".github/**"]},
+    )
+    _write(
+        consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]}
+    )
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
     assert (consumer / ".claude/skills/a/SKILL.md").is_file()
@@ -657,7 +682,9 @@ def test_canonical_config_wins_over_surviving_legacy_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _manifest(upstream)
-    _write(consumer / CANONICAL, {"harnesses": ["claude"], "allowed_destinations": ["**"]})
+    _write(
+        consumer / CANONICAL, {"harnesses": ["claude"], "allowed_destinations": ["**"]}
+    )
     _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": ["**"]})
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
@@ -752,7 +779,10 @@ def test_legacy_sync_cannot_seed_a_future_config(
     _write(config, {"allowed_destinations": ["**"]})
     original = config.read_bytes()
 
-    assert _run(sync_engine, upstream, consumer, monkeypatch, config if explicit else None) == 1
+    assert (
+        _run(sync_engine, upstream, consumer, monkeypatch, config if explicit else None)
+        == 1
+    )
     assert not (consumer / destination).exists()
     assert not (consumer / ".claude").exists()
     assert config.read_bytes() == original
@@ -770,13 +800,21 @@ def test_config_deletion_cannot_select_weaker_legacy_permissions(
     doc = yaml.safe_load((upstream / "scripts/sync-targets.yml").read_text())
     doc["harnesses"]["claude"]["targets"] = [{"destination": CANONICAL, "delete": True}]
     _write(upstream / "scripts/sync-targets.yml", doc)
-    _write(consumer / CANONICAL, {
-        "harnesses": ["claude"], "allowed_destinations": ["**"], "allow_sensitive_writes": [],
-    })
-    _write(consumer / ".platform-config.yml", {
-        "allowed_destinations": ["**"],
-        "allow_sensitive_writes": [".github/workflows/example.yml"],
-    })
+    _write(
+        consumer / CANONICAL,
+        {
+            "harnesses": ["claude"],
+            "allowed_destinations": ["**"],
+            "allow_sensitive_writes": [],
+        },
+    )
+    _write(
+        consumer / ".platform-config.yml",
+        {
+            "allowed_destinations": ["**"],
+            "allow_sensitive_writes": [".github/workflows/example.yml"],
+        },
+    )
     original = (consumer / CANONICAL).read_bytes()
     if bypass_preflight:
         monkeypatch.setattr(sync_engine, "config_write_targets", lambda *args: [])
@@ -802,14 +840,24 @@ def test_legacy_sensitive_consent_stays_with_its_harness(
     else:
         doc["harnesses"][scope]["targets"].append(target)
     _write(upstream / "scripts/sync-targets.yml", doc)
-    _write(consumer / ".platform-config.yml", {
-        "allowed_destinations": ["**"], "allow_sensitive_writes": [workflow],
-    })
-    _write(consumer / ".codex-platform-config.yml", {
-        "allowed_destinations": ["**"], "allow_sensitive_writes": [],
-    })
+    _write(
+        consumer / ".platform-config.yml",
+        {
+            "allowed_destinations": ["**"],
+            "allow_sensitive_writes": [workflow],
+        },
+    )
+    _write(
+        consumer / ".codex-platform-config.yml",
+        {
+            "allowed_destinations": ["**"],
+            "allow_sensitive_writes": [],
+        },
+    )
 
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == (0 if scope == "shared" else 1)
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == (
+        0 if scope == "shared" else 1
+    )
     assert (consumer / workflow).exists() is (scope == "shared")
     if scope == "codex":
         assert not (consumer / ".claude").exists()
@@ -827,7 +875,9 @@ def test_one_fail_open_legacy_file_keeps_the_shared_scope_open(
     one fail-open input keeps the synthesized shared scope open."""
     _manifest(upstream)
     _write(consumer / ".platform-config.yml", {})
-    _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]})
+    _write(
+        consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]}
+    )
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
     assert (consumer / ".github/shared.md").exists()
@@ -842,7 +892,9 @@ def test_shared_allowlist_is_enforced_when_every_legacy_file_declares_one(
     """The union still gates the shared scope when no input was fail-open."""
     _manifest(upstream)
     _write(consumer / ".platform-config.yml", {"allowed_destinations": [".claude/**"]})
-    _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]})
+    _write(
+        consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]}
+    )
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
     assert not (consumer / ".github/shared.md").exists()
@@ -859,10 +911,55 @@ def test_legacy_shared_skip_accepts_mixed_source_and_destination_spellings(
         (".platform-config.yml", "shared-src.md"),
         (".codex-platform-config.yml", ".github/shared.md"),
     ]:
-        _write(consumer / name, {"allowed_destinations": ["**"], "skip_targets": [skip]})
+        _write(
+            consumer / name, {"allowed_destinations": ["**"], "skip_targets": [skip]}
+        )
     destination = consumer / ".github/shared.md"
     destination.parent.mkdir()
     destination.write_text("consumer-owned content\n")
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
     assert destination.read_text() == "consumer-owned content\n"
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "gemini"])
+def test_real_manifest_delivers_repository_telemetry(
+    sync_engine: ModuleType,
+    upstream: Path,
+    consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    manifest = yaml.safe_load((root / "scripts/sync-targets.yml").read_text())
+    selected = manifest["harnesses"][harness]
+    targets = [
+        target
+        for target in selected["targets"]
+        if target.get("destination", "").endswith("/review-telemetry.json")
+    ]
+    assert len(targets) == 1
+    for target in targets:
+        path = upstream / target["source"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((root / target["source"]).read_bytes())
+    _write(
+        upstream / "scripts/sync-targets.yml",
+        {
+            "harnesses": {harness: {**selected, "targets": targets}},
+            "shared": {"targets": []},
+        },
+    )
+    _write(
+        consumer / CANONICAL,
+        {
+            "harnesses": [harness],
+            "allowed_destinations": ["**"],
+            "telemetry": {"emit": "on", "extract": "off"},
+        },
+    )
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
+    assert json.loads((consumer / targets[0]["destination"]).read_text()) == {
+        "LOOM_REVIEW_TELEMETRY": "on",
+        "LOOM_REVIEW_TELEMETRY_EXTRACT": "off",
+    }

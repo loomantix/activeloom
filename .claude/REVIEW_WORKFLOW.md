@@ -589,6 +589,22 @@ Invocation:
 
 ## Pass Telemetry
 
+At the pass boundary, create and save this pass's idempotency key:
+
+```bash
+node .claude/skills/critique/scripts/telemetry-pass-key.js \
+  <owner/repo> <pr> <controller-run-id-or-standalone> <authenticated-actor> \
+  <engine> <review-or-refactor-or-hosted> <round> <reviewed-head>
+```
+
+Use the controller's authenticated run ID when present. `standalone` creates
+a fresh attempt identity; invoke it once and retain its returned key in the
+pass's private working files. Pass `--idempotency-key <returned-key>` to every
+emission, reusing it on a retry. Different actors and restarted runs must not
+share keys. Never regenerate a standalone key to retry publication. If key
+creation fails, report telemetry failure rather than falling back to a key
+that may identify a different pass. This works with existing ledger bundles.
+
 Every pass records what it cost, as a `local-review-telemetry:v1` marker in its
 own PR comment. The record carries token buckets per exact model, classified
 line churn, finding dispositions, and the pass identity needed to ask whether
@@ -598,6 +614,12 @@ dollar figure is wrong when written and unverifiable later. Counts keep the
 whole series re-priceable.
 
 ### Two gates: measuring and publishing
+
+Repository defaults come from the synced sibling `review-telemetry.json` beside
+this harness's usage helper. Non-empty process environment values override
+those defaults. Missing configuration preserves opt-in behavior; malformed
+configuration disables both gates with an error. See `docs/sync.md` upstream
+for the required sync destinations.
 
 Extraction and emission are separate decisions and have separate gates. Both
 are read by the usage helper and nowhere else; both are environment

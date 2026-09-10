@@ -42,60 +42,8 @@ const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = constants;
 
 const SNAPSHOT_VERSION = 2;
 
-/**
- * Two gates, because extraction and emission are different decisions.
- *
- * `LOOM_REVIEW_TELEMETRY` keeps its name and its meaning: it governs whether a
- * pass **emits** a record to a pull request, which is the thing that warrants
- * an opt-in rollout. `LOOM_REVIEW_TELEMETRY_EXTRACT` governs whether this
- * helper **measures** at all, and defaults to the emission gate so no existing
- * configuration changes meaning.
- *
- * Splitting them is what makes measurement usable without publication: a cost
- * join, an offline run, or any local analysis can set the extraction gate on
- * and leave the emission gate off, and emission is then structurally
- * unreachable rather than merely unrequested. One variable meaning both
- * forecloses that combination entirely.
- *
- * Both gates are read here and nowhere else, so widening either is a one-line
- * change in a synced file rather than an edit in every skill, and no model
- * decides the question by reading the environment itself.
- *
- * A misconfigured value is not an opt-out: the helper stays disabled and says
- * why, so a typo that switches the rollout off cannot pass for a deliberate
- * `off`.
- */
-const EMISSION_GATE = 'LOOM_REVIEW_TELEMETRY';
-const EXTRACTION_GATE = 'LOOM_REVIEW_TELEMETRY_EXTRACT';
-
-function readGate(name) {
-  const raw = process.env[name];
-  if (raw === undefined || raw === '') {
-    return { set: false, enabled: false, reason: `${name} is unset` };
-  }
-  if (raw === 'on') {
-    return { set: true, enabled: true, reason: null };
-  }
-  if (raw === 'off') {
-    return { set: true, enabled: false, reason: `${name} is off` };
-  }
-  return {
-    set: true,
-    enabled: false,
-    reason: `${name} must be exactly "on" or "off"`,
-  };
-}
-
-function resolveGates() {
-  const emission = readGate(EMISSION_GATE);
-  const declared = readGate(EXTRACTION_GATE);
-  // An unset extraction gate inherits the emission gate rather than defaulting
-  // to on. Reading session transcripts on a repository that never opted in
-  // would be a new behaviour for every existing consumer, and the reason it
-  // reports stays the one that is actually true.
-  const extraction = declared.set ? declared : emission;
-  return { emission, extraction };
-}
+// Repository defaults and process overrides are shared by every harness.
+import { resolveGates } from './review-telemetry-gates.js';
 
 const GATES = resolveGates();
 
