@@ -3,6 +3,23 @@
 This file is synced from `loomantix/activeloom` into consumer repos. Consumer-specific
 edits will be overwritten on the next sync.
 
+## Automatic chain execution
+
+For an explicitly requested automatic review chain, use the deterministic
+`.codex/skills/critique/scripts/review-chain-runner.py` controller. Resolve the
+tier and its triggers first, then supply either an exact `--chain` or a repeating
+`--cycle --until-converged`. Do not implement the outer loop in conversation.
+Read [runner usage](../.codex/references/review-chain-runner.md) before starting;
+it defines required validation commands, durable checkpoints, and recovery.
+The Codex control surface must be installed even when another engine starts
+the command. If it is absent, report the missing installation; do not substitute
+a raw reviewer CLI or silently fall back to a conversational auto loop.
+
+Each worker owns one pass only. The runner owns launch order, result verification,
+attestation, and bounded progression. Existing handoff sessions and the separate
+issue-implementation `agent-loop` keep their own contracts. An active legacy run
+is not silently converted to a new plan or granted a fresh budget.
+
 ## PR-First Rule
 
 Open a draft pull request before any structured review cleanup such as
@@ -246,13 +263,45 @@ surface:
 ```
 
 It lives under `.codex/` for historical reasons and is not Codex-only; invoke it
-by that path from any surface. Its commands are `start-run`, `authorize-pass`,
-`finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
-nor `resume-run`. Select one past this engine's highest completed round inside
+by that path from any surface. Its commands are `start-run`, `next-pass`,
+`authorize-pass`, `finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
+nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
 the active run (1 when it has none), then confirm it with `authorize-pass`.
 An aborted run is terminal in this controller. Preserve its evidence; a new
 `start-run --restart` requires fresh explicit user authorization and starts
 at round 1 with a full cap. This is a new review, not a budget-preserving resume.
+
+For a requested alternating chain, record its ordered participants with
+`start-run --sequence gemini,claude` (or the user's chosen order). The author
+remains a required participant when named, separate from independent reviewer
+coverage. Before each leg, call `next-pass --repo <owner/repo> --pr <number>
+--head <exact-head-sha>` and authorize its returned engine and per-engine round.
+Name each engine exactly once: the sequence must be two or three distinct
+engines, and the controller repeats that cycle rather than taking a spelled-out
+round trip. List the initiating engine first. A cycle must include its return
+pass, but that pass need not be chronologically last when every participant
+already holds non-material evidence at the exact current head. For literal
+repeated steps, use the runner's finite `--chain` instead of `--sequence`.
+
+Convergence requires strictly more than one full cycle: a return to the
+initiating engine, and every participant's latest attestation on the current
+head with no material outcome. A two-engine chain therefore does not converge
+when the second engine comes back clean; it converges on the initiator's return
+pass. Coverage alone cannot complete a sequenced chain. `finish-run --outcome
+converged` also runs `verify-ledger` and `verify-coverage`.
+
+In handoff mode, `post-handoff --to-engine` must name the engine `next-pass`
+returned, not necessarily the originating engine, and the handoff's from-engine,
+round, head, and outcome must describe the last completed pass. Preserve legacy
+runs; adding a sequence requires an explicitly authorized restart, not an
+implicit upgrade.
+
+Preflight the sequence, tier, cap, mode, and tested launcher availability. A
+missing launcher blocks that auto leg; it does not authorize substituting
+same-engine subagents or shrinking the chain. Keep the existing auto-mode
+capability rules below. At completion or handoff, report ordered
+engine/round/head/outcome evidence, per-engine pass counts, validation, and the
+actual terminal status. Count authenticated passes, not launches or subagent lanes.
 
 When the target branch's effective GitHub rules require signed commits,
 `start-run` verifies GitHub's signature status for every commit introduced by

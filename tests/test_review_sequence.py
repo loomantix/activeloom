@@ -1,0 +1,579 @@
+"""Alternating chains require actual ordered, run-local engine participation."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from typing import Any
+
+import pytest
+
+HEAD = "a" * 40
+BASE = "b" * 40
+
+
+@pytest.fixture
+def controller(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / ".codex/skills/critique/scripts/local-review-handoff.py"
+    )
+    spec = importlib.util.spec_from_file_location("sequence_controller", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # Signature API behavior is covered separately; keep sequence tests offline
+    # while retaining the merged reviewable-head call sites.
+    monkeypatch.setattr(module, "_verify_signed_pr_history", lambda *_: None)
+    return module
+
+
+def run() -> dict[str, Any]:
+    return {
+        "comment_id": 20,
+        "run_id": "d" * 64,
+        "base": BASE,
+        "start_head": HEAD,
+        "tier": "deep",
+        "max_rounds": 4,
+        "sequence": ["codex", "claude"],
+    }
+
+
+def event(
+    index: int,
+    *,
+    engine: str | None = None,
+    head: str = HEAD,
+    classification: str = "clean",
+) -> dict[str, Any]:
+    engine = engine or ("codex" if index % 2 == 0 else "claude")
+    fields = f"engine={engine} round={index // 2 + 1} base={BASE} "
+    if classification == "clean":
+        marker = f"<!-- local-review-pass:v3 {fields}head={head} result-sha256={'c' * 64} -->"
+    else:
+        marker = (
+            f"<!-- local-review-complete:v3 {fields}before={HEAD} head={head} "
+            f"classification={classification} fingerprints=x result-sha256={'c' * 64} -->"
+        )
+    return {"id": 21 + index, "body": marker + "\nCompleted review result."}
+
+
+def wire(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]]
+) -> list[str]:
+    posted: list[str] = []
+    monkeypatch.setattr(controller, "_issue_comments", lambda *_: rows)
+    monkeypatch.setattr(controller, "_run_records", lambda _: [run()])
+    monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+
+    def post(*args: Any) -> tuple[int, bool]:
+        posted.append(args[-1])
+        return 99, False
+
+    monkeypatch.setattr(controller, "_post_issue_comment", post)
+    return posted
+
+
+@pytest.mark.parametrize(
+    "count, status, engine, number",
+    [
+        (0, "next", "codex", 1),
+        (1, "next", "claude", 1),
+        (2, "next", "codex", 2),
+        (3, "converged", None, None),
+    ],
+)
+def test_clean_chain_returns_to_initiator(
+    controller: ModuleType,
+    count: int,
+    status: str,
+    engine: str | None,
+    number: int | None,
+) -> None:
+    decision = controller._sequence_decision(
+        [event(i) for i in range(count)], run(), HEAD
+    )
+    assert decision["status"] == status
+    assert decision.get("engine") == engine
+    assert decision.get("round") == number
+    assert len(decision["passes"]) == count
+
+
+def test_solo_pass_cannot_replace_other_engine(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wire(controller, monkeypatch, [event(0)])
+    args = SimpleNamespace(
+        repo="example/repo", pr=1, base=BASE, head=HEAD, engine="codex", round=2
+    )
+    with pytest.raises(controller.HandoffError, match="claude round 1"):
+        controller._authorize_pass(args)
+    args.engine, args.round = "claude", 1
+    controller._authorize_pass(args)
+
+
+def test_material_fix_requires_clean_followup(controller: ModuleType) -> None:
+    rows = [event(0), event(1, classification="material"), event(2)]
+    assert controller._sequence_decision(rows, run(), HEAD)["engine"] == "claude"
+    rows.extend([event(3), event(4)])
+    assert controller._sequence_decision(rows, run(), HEAD)["status"] == "converged"
+
+
+def test_stale_heads_and_cap(controller: ModuleType) -> None:
+    rows = [event(i) for i in range(8)]
+    decision = controller._sequence_decision(rows, run(), "e" * 40)
+    assert decision["status"] == "exhausted"
+    assert len(decision["passes"]) == 8
+
+
+def test_stale_participant_head_blocks_convergence(controller: ModuleType) -> None:
+    """A full cycle plus a return leg is not convergence if a participant's
+    latest attestation names a superseded commit."""
+    rows = [event(0), event(1, head="e" * 40), event(2)]
+    decision = controller._sequence_decision(rows, run(), HEAD)
+    assert decision["status"] == "next"
+    assert decision["engine"] == "claude"
+    assert decision["round"] == 2
+
+
+def test_completed_cycle_converges_without_a_trailing_initiator_leg(
+    controller: ModuleType,
+) -> None:
+    """Exact-head coverage by every participant is the return leg. Which engine
+    attested last adds no evidence over it."""
+    rows = [event(i) for i in range(4)]
+    assert controller._sequence_decision(rows, run(), HEAD)["status"] == "converged"
+
+
+def test_lean_chain_converges_after_a_material_reviewer_pass(
+    controller: ModuleType,
+) -> None:
+    """A lean run has four legs inside its cap. A material reviewer pass costs
+    two of them, so convergence must not additionally require a fifth."""
+    lean = {**run(), "tier": "lean", "max_rounds": 2}
+    stale = "e" * 40
+    rows = [
+        event(0),
+        event(1, head=stale, classification="material"),
+        event(2),
+    ]
+    pending = controller._sequence_decision(rows, lean, HEAD)
+    assert pending["status"] == "next"
+    assert (pending["engine"], pending["round"]) == ("claude", 2)
+
+    rows.append(event(3))
+    assert controller._sequence_decision(rows, lean, HEAD)["status"] == "converged"
+
+
+def test_historical_and_duplicate_passes_do_not_count(controller: ModuleType) -> None:
+    historical = {**event(7), "id": 19}
+    rows = [historical, event(0), {**event(0), "id": 25}]
+    decision = controller._sequence_decision(rows, run(), HEAD)
+    assert len(decision["passes"]) == 1
+    assert decision["engine"] == "claude"
+
+
+@pytest.mark.parametrize(
+    "rows, message",
+    [
+        ([event(0, engine="claude")], "violate"),
+        ([event(0), event(2)], "violate"),
+        ([event(0), {**event(0, head="e" * 40), "id": 25}], "conflicting"),
+        ([{"id": 21, "body": "<!-- local-review-pass:v2 malformed -->"}], "malformed"),
+        (
+            [{"id": 21, "body": event(0)["body"] + "\n" + event(1)["body"]}],
+            "exactly one",
+        ),
+        (
+            [{"id": 21, "body": event(0)["body"].replace(BASE, "f" * 40)}],
+            "different base",
+        ),
+    ],
+)
+def test_invalid_evidence_fails_closed(
+    controller: ModuleType, rows: list[dict[str, Any]], message: str
+) -> None:
+    with pytest.raises(controller.HandoffError, match=message):
+        controller._sequence_decision(rows, run(), HEAD)
+
+
+def test_finish_checks_sequence_then_ledger_before_posting(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [event(0), event(1)]
+    posted = wire(controller, monkeypatch, rows)
+    args = SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
+    with pytest.raises(controller.HandoffError, match="has not converged"):
+        controller._finish_run(args)
+    assert not posted
+    rows.append(event(2))
+    commands: list[str] = []
+
+    def execute(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(command[2])
+        return subprocess.CompletedProcess(command, 1, "", "unresolved thread")
+
+    monkeypatch.setattr(controller.subprocess, "run", execute)
+    with pytest.raises(controller.HandoffError, match="verify-ledger refused"):
+        controller._finish_run(args)
+    assert not posted
+    monkeypatch.setattr(
+        controller.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    controller._finish_run(args)
+    assert len(posted) == 1
+
+
+def test_next_pass_checks_live_head(
+    controller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wire(controller, monkeypatch, [event(0)])
+    args = SimpleNamespace(repo="example/repo", pr=1, head=HEAD)
+    controller._next_pass(args)
+    assert json.loads(capsys.readouterr().out)["engine"] == "claude"
+    monkeypatch.setattr(
+        controller, "_verify_head", lambda *_: controller._fail("head moved")
+    )
+    with pytest.raises(controller.HandoffError, match="head moved"):
+        controller._next_pass(args)
+    assert not capsys.readouterr().out
+
+
+def test_start_binds_sequence_to_run_digest(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    authorization = tmp_path / "authorization.txt"
+    authorization.write_text("Review the scoped change.")
+    posted: list[dict[str, Any]] = []
+    monkeypatch.setattr(controller, "_issue_comments", lambda *_: [])
+    monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+
+    def post(*args: Any) -> tuple[int, bool]:
+        posted.append({"id": 20, "body": args[-1]})
+        return 20, False
+
+    monkeypatch.setattr(controller, "_post_issue_comment", post)
+    args = controller._parser().parse_args(
+        [
+            "start-run",
+            "--repo",
+            "example/repo",
+            "--pr",
+            "1",
+            "--head",
+            HEAD,
+            "--base",
+            BASE,
+            "--tier",
+            "deep",
+            "--authorization-file",
+            str(authorization),
+            "--sequence",
+            "codex,claude",
+        ]
+    )
+    args.handler(args)
+    assert controller._run_records(posted)[0]["sequence"] == ["codex", "claude"]
+    posted[0]["body"] = posted[0]["body"].replace("codex,claude", "claude,codex")
+    with pytest.raises(controller.HandoffError, match="digest"):
+        controller._run_records(posted)
+
+
+@pytest.mark.parametrize(
+    "value", ["codex", "codex,codex", "codex,unknown", "codex,notantigravity"]
+)
+def test_invalid_sequences(controller: ModuleType, value: str) -> None:
+    with pytest.raises(controller.HandoffError):
+        controller._parse_sequence(value)
+
+
+def test_legacy_run_needs_explicit_restart_for_sequence(controller: ModuleType) -> None:
+    legacy = {**run(), "sequence": None}
+    with pytest.raises(controller.HandoffError, match="no engine sequence"):
+        controller._sequence_decision([], legacy, HEAD)
+
+
+def test_three_engine_chain(controller: ModuleType) -> None:
+    policy = {**run(), "sequence": ["codex", "claude", "gemini"]}
+    rows = [
+        event(0),
+        event(1),
+        {"id": 23, "body": event(1, engine="gemini")["body"]},
+        {"id": 24, "body": event(2)["body"]},
+    ]
+    assert controller._sequence_decision(rows[:3], policy, HEAD)["engine"] == "codex"
+    assert controller._sequence_decision(rows, policy, HEAD)["status"] == "converged"
+
+
+def test_terminal_replay_cannot_bypass_convergence(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [
+        event(0),
+        {
+            "id": 30,
+            "body": (
+                f"<!-- local-review-run-end:v1 id={run()['run_id']} outcome=converged head={HEAD} -->"
+            ),
+        },
+    ]
+    posted = wire(controller, monkeypatch, rows)
+    with pytest.raises(controller.HandoffError, match="has not converged"):
+        controller._finish_run(
+            SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
+        )
+    assert not posted
+
+
+def test_coverage_failure_prevents_terminal_post(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    posted = wire(controller, monkeypatch, [event(i) for i in range(3)])
+    commands: list[str] = []
+
+    def execute(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(command[2])
+        return subprocess.CompletedProcess(
+            command, int(command[2] == "verify-coverage"), "", "missing roster reviewer"
+        )
+
+    monkeypatch.setattr(controller.subprocess, "run", execute)
+    with pytest.raises(controller.HandoffError, match="verify-coverage refused"):
+        controller._finish_run(
+            SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
+        )
+    assert commands == ["verify-ledger", "verify-coverage"]
+    assert not posted
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    ["{marker}", "{marker}\n", "{marker}\n  \n", "Example:\n{marker}\nReview result."],
+)
+def test_incomplete_return_attestation_cannot_finish(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, envelope: str
+) -> None:
+    marker = event(2)["body"].split("\n", 1)[0]
+    rows = [event(0), event(1), {"id": 23, "body": envelope.format(marker=marker)}]
+    posted = wire(controller, monkeypatch, rows)
+    args = SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
+    monkeypatch.setattr(controller, "_verify_convergence_ledger", lambda *_: None)
+    with pytest.raises(controller.HandoffError, match="attestation envelope"):
+        controller._sequence_decision(rows, run(), HEAD)
+    with pytest.raises(controller.HandoffError, match="attestation envelope"):
+        controller._finish_run(args)
+    assert not posted
+
+
+def test_three_engine_handoff_targets_and_reaches_next_participant(
+    controller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = [event(0, engine="gemini"), event(1, engine="codex")]
+    policy = {**run(), "sequence": ["gemini", "codex", "claude"]}
+    monkeypatch.setattr(controller, "_issue_comments", lambda *_: rows)
+    monkeypatch.setattr(controller, "_run_records", lambda _: [policy])
+    monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+
+    def post(*args: Any) -> tuple[int, bool]:
+        rows.append({"id": 30, "body": args[-1]})
+        return 30, False
+
+    monkeypatch.setattr(controller, "_post_issue_comment", post)
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=1,
+        head=HEAD,
+        base=BASE,
+        from_engine="codex",
+        to_engine="gemini",
+        round=1,
+        outcome="clean",
+        context_file=None,
+    )
+    with pytest.raises(controller.HandoffError, match="next required engine"):
+        controller._post_handoff(args)
+    assert len(rows) == 2
+    args.to_engine = "claude"
+    controller._post_handoff(args)
+    assert json.loads(capsys.readouterr().out)["to_engine"] == "claude"
+    controller._show_handoff(
+        SimpleNamespace(repo="example/repo", pr=1, engine="claude")
+    )
+    assert json.loads(capsys.readouterr().out)["to_engine"] == "claude"
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("from_engine", "gemini"),
+        ("round", 3),
+        ("head", "e" * 40),
+        ("outcome", "material"),
+    ],
+)
+def test_handoff_must_describe_the_attested_pass(
+    controller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: Any,
+) -> None:
+    """Targeting the right recipient is not enough: the handoff's own account of
+    the completed pass must match the attestation it claims to describe."""
+    rows = [event(0)]
+    posted = wire(controller, monkeypatch, rows)
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=1,
+        head=HEAD,
+        base=BASE,
+        from_engine="codex",
+        to_engine="claude",
+        round=1,
+        outcome="clean",
+        context_file=None,
+    )
+    setattr(args, field, value)
+    with pytest.raises(controller.HandoffError, match="describe the completed pass"):
+        controller._post_handoff(args)
+    assert posted == []
+
+
+def test_restart_preserves_a_declared_engine_sequence(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart that omits --sequence must not silently downgrade a sequenced
+    run to one where every alternation guard is skipped."""
+    previous = {**run(), "content": "prior authorization"}
+    monkeypatch.setattr(controller, "_issue_comments", lambda *_: [])
+    monkeypatch.setattr(controller, "_run_records", lambda _: [previous])
+    monkeypatch.setattr(controller, "_run_end", lambda *_: {"outcome": "aborted"})
+    monkeypatch.setattr(controller, "_verify_head", lambda *_: None)
+    monkeypatch.setattr(controller, "_read_context", lambda *_: "restart reason")
+    bodies: list[str] = []
+
+    def post(*args: Any) -> tuple[int, bool]:
+        bodies.append(args[-1])
+        return 40, False
+
+    monkeypatch.setattr(controller, "_post_issue_comment", post)
+    controller._start_run(
+        SimpleNamespace(
+            repo="example/repo",
+            pr=1,
+            base=BASE,
+            head=HEAD,
+            tier="deep",
+            restart=True,
+            sequence=None,
+            authorization_file=None,
+        )
+    )
+    assert "<!-- local-review-sequence:v1 engines=codex,claude -->" in bodies[0]
+
+
+def test_fixed_chain_runs_every_step_even_when_clean(controller: ModuleType) -> None:
+    plan = {
+        **run(),
+        "plan_mode": "chain",
+        "sequence": ["codex", "claude", "codex", "claude"],
+    }
+    for count in range(4):
+        result = controller._sequence_decision(
+            [event(i) for i in range(count)], plan, HEAD
+        )
+        assert result["status"] == "next"
+        assert result["engine"] == plan["sequence"][count]
+    assert (
+        controller._sequence_decision([event(i) for i in range(4)], plan, HEAD)[
+            "status"
+        ]
+        == "converged"
+    )
+
+
+def test_fixed_final_fix_completes_plan_without_convergence(
+    controller: ModuleType,
+) -> None:
+    plan = {**run(), "plan_mode": "chain"}
+    rows = [event(0), event(1, classification="material")]
+    assert controller._sequence_decision(rows, plan, HEAD)["status"] == "plan-complete"
+    with pytest.raises(controller.HandoffError, match="exceeds the fixed plan"):
+        controller._sequence_decision([*rows, event(2)], plan, HEAD)
+
+
+def test_fixed_repeats_use_per_engine_rounds(controller: ModuleType) -> None:
+    plan = {**run(), "plan_mode": "chain", "sequence": ["codex", "codex", "claude"]}
+    second = event(1, engine="codex")
+    second["body"] = second["body"].replace("round=1", "round=2")
+    result = controller._sequence_decision([event(0), second], plan, HEAD)
+    assert (result["engine"], result["round"]) == ("claude", 1)
+
+
+def test_single_engine_plan_never_claims_independent_coverage(
+    controller: ModuleType,
+) -> None:
+    plan = {**run(), "plan_mode": "chain", "sequence": ["codex"]}
+    assert (
+        controller._sequence_decision([event(0)], plan, HEAD)["status"]
+        == "plan-complete"
+    )
+
+
+@pytest.mark.parametrize("replay", [False, True])
+def test_converged_sequence_still_requires_signed_history(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, replay: bool
+) -> None:
+    rows = [event(i) for i in range(3)]
+    if replay:
+        rows.append(
+            {
+                "id": 99,
+                "body": f"<!-- local-review-run-end:v1 id={'d' * 64} outcome=converged head={HEAD} -->",
+            }
+        )
+    posted = wire(controller, monkeypatch, rows)
+    ledger_checks: list[str] = []
+    monkeypatch.setattr(
+        controller,
+        "_verify_convergence_ledger",
+        lambda args: ledger_checks.append(args.head),
+    )
+
+    def unsigned(*args: Any) -> None:
+        raise controller.HandoffError("unsigned PR history")
+
+    monkeypatch.setattr(controller, "_verify_signed_pr_history", unsigned)
+    with pytest.raises(controller.HandoffError, match="unsigned PR history"):
+        controller._finish_run(
+            SimpleNamespace(repo="example/repo", pr=1, head=HEAD, outcome="converged")
+        )
+    assert ledger_checks == [HEAD]
+    assert posted == []
+
+
+def test_plan_alias_and_policy_parsing(controller: ModuleType) -> None:
+    assert controller._parse_plan("codex, antigravity, codex", "chain") == [
+        "codex",
+        "gemini",
+        "codex",
+    ]
+    assert controller._parse_sequence("antigravity,claude") == ["gemini", "claude"]
+    content = (
+        "<!-- local-review-plan:v1 mode=chain engines=codex,codex -->\n\nExplicit plan."
+    )
+    assert controller._content_sequence(content) == ["codex", "codex"]
+    assert controller._content_mode(content) == "chain"
+    with pytest.raises(controller.HandoffError):
+        controller._content_sequence(
+            content + "<!-- local-review-sequence:v1 engines=codex,claude -->"
+        )

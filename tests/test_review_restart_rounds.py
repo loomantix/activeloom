@@ -40,6 +40,7 @@ def handoff(monkeypatch: pytest.MonkeyPatch, verify_calls: VerifyCalls) -> Modul
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
     def record_head(*args: Any) -> None:
         verify_calls.append(("head", args))
 
@@ -203,6 +204,7 @@ def test_start_run_returns_first_round(
 
 
 @pytest.mark.parametrize(("tier", "cap"), [("lean", 2), ("deep", 4)])
+@pytest.mark.parametrize("sequenced", [False, True])
 def test_restarted_controller_round_finalizes_with_published_ledger(
     handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -210,10 +212,13 @@ def test_restarted_controller_round_finalizes_with_published_ledger(
     tmp_path: Path,
     tier: str,
     cap: int,
+    sequenced: bool,
 ) -> None:
     """Exercise the controller/Node boundary and replay without GitHub writes."""
     base, head = "b" * 40, "a" * 40
     content = "Explicitly authorized new review run.\n"
+    if sequenced:
+        content = "<!-- local-review-sequence:v1 engines=codex,claude -->\n\n" + content
     digest = hashlib.sha256(
         json.dumps(
             {
@@ -251,6 +256,7 @@ def test_restarted_controller_round_finalizes_with_published_ledger(
                 "base": base,
                 "tier": tier,
                 "max_rounds": cap,
+                "sequence": ["codex", "claude"] if sequenced else None,
             }
         ],
     )
@@ -680,8 +686,12 @@ def test_run_records_authenticates_the_marker(real_handoff: ModuleType) -> None:
 
     # A tampered digest must not open a run.
     tampered = dict(valid)
-    tampered["body"] = str(valid["body"]).replace("base=" + "b" * 40, "base=" + "c" * 40)
-    with pytest.raises(real_handoff.HandoffError, match="run content digest is invalid"):
+    tampered["body"] = str(valid["body"]).replace(
+        "base=" + "b" * 40, "base=" + "c" * 40
+    )
+    with pytest.raises(
+        real_handoff.HandoffError, match="run content digest is invalid"
+    ):
         real_handoff._run_records([tampered])
 
     # A lean marker may not claim the deep cap, digest or no digest.
@@ -704,7 +714,9 @@ def test_run_records_enforces_duplicate_and_supersession_rules(
     first = run_comment(real_handoff, comment_id=20)
     second = run_comment(real_handoff, comment_id=30, supersedes=20, content="Restart.")
 
-    assert [record["comment_id"] for record in real_handoff._run_records([first, second])] == [
+    assert [
+        record["comment_id"] for record in real_handoff._run_records([first, second])
+    ] == [
         20,
         30,
     ]
@@ -822,7 +834,9 @@ def test_show_handoff_guards_run_base_and_round_bounds(
     assert json.loads(capsys.readouterr().out)["round"] == 4
 
     runs[0][field] = value
-    with pytest.raises(handoff.HandoffError, match="does not belong to the current run"):
+    with pytest.raises(
+        handoff.HandoffError, match="does not belong to the current run"
+    ):
         handoff._show_handoff(show)
 
 
@@ -886,7 +900,9 @@ def test_start_run_verifies_signed_history_before_and_after_publication(
     # ordering is the assertion: a signed-history check on each side of it.
     assert "history" in kinds[:posted]
     assert "history" in kinds[posted + 1 :]
-    assert all(call == EXPECTED_CALL for kind, call in verify_calls if kind == "history")
+    assert all(
+        call == EXPECTED_CALL for kind, call in verify_calls if kind == "history"
+    )
 
 
 def test_post_handoff_verifies_signed_history_at_the_reviewed_head(
@@ -931,6 +947,12 @@ def test_finish_run_verifies_signed_history_only_when_converged(
     """Convergence is where an unsigned ancestor would be blessed as reviewed."""
     monkeypatch.setattr(handoff, "_issue_comments", lambda *args: [])
     monkeypatch.setattr(handoff, "_post_issue_comment", lambda *args: (40, False))
+    ledger_checks: list[str] = []
+    monkeypatch.setattr(
+        handoff,
+        "_verify_convergence_ledger",
+        lambda args: ledger_checks.append(args.head),
+    )
     handoff._finish_run(
         SimpleNamespace(repo="example/repo", pr=7, head=HEAD_SHA, outcome=outcome)
     )
@@ -942,3 +964,4 @@ def test_finish_run_verifies_signed_history_only_when_converged(
     assert kinds.count("head") == 2
     assert kinds.count("history") == (2 if expects_history else 0)
     assert all(call == EXPECTED_CALL for _, call in verify_calls)
+    assert ledger_checks == ([HEAD_SHA] if outcome == "converged" else [])

@@ -218,8 +218,8 @@ relay recursively. In auto mode, return to the calling orchestrator so it can
 authorize and, if needed, start the next bounded pass. In handoff mode,
 post a `local-review-handoff:v1` comment with the `local-review-handoff.py`
 helper. The comment
-targets the originating engine, pins the current head and review base, and
-contains the fresh-session prompt; the user starts it in a new terminal.
+targets `next-pass`'s engine for sequenced runs, otherwise the originating engine.
+It pins the head/base and fresh-session prompt for a user-started terminal.
 
 Print a summary aimed at the **originating engine's re-review** — it needs to
 know what changed and what to scrutinize:

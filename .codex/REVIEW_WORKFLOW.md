@@ -3,6 +3,23 @@
 This file is synced from `loomantix/activeloom` into consumer repos. Consumer-specific
 edits will be overwritten on the next sync.
 
+## Automatic chain execution
+
+For an explicitly requested automatic review chain, use the deterministic
+`.codex/skills/critique/scripts/review-chain-runner.py` controller. Resolve the
+tier and its triggers first, then supply either an exact `--chain` or a repeating
+`--cycle --until-converged`. Do not implement the outer loop in conversation.
+Read [runner usage](../.codex/references/review-chain-runner.md) before starting;
+it defines required validation commands, durable checkpoints, and recovery.
+The Codex control surface must be installed even when another engine starts
+the command. If it is absent, report the missing installation; do not substitute
+a raw reviewer CLI or silently fall back to a conversational auto loop.
+
+Each worker owns one pass only. The runner owns launch order, result verification,
+attestation, and bounded progression. Existing handoff sessions and the separate
+issue-implementation `agent-loop` keep their own contracts. An active legacy run
+is not silently converted to a new plan or granted a fresh budget.
+
 ## PR-First Rule
 
 Open a draft pull request before any structured review cleanup such as
@@ -128,8 +145,13 @@ engine in a fresh terminal.
    ```bash
    local-review-handoff.py start-run --repo <owner/repo> --pr <number> \
      --head <head-sha> --base <base-sha> --tier <lean|deep> \
-     --authorization-file <private-file>
+     --authorization-file <private-file> --sequence <ordered-engines>
    ```
+
+   Include the author and every declared reviewer in `<ordered-engines>`, using
+   the user's chosen order where specified (for example `codex,claude`). This
+   does not change the default reviewer selection above. Omit `--sequence` for
+   an explicitly requested unsequenced or solo review, not for a full chain.
 
    When the target branch's effective GitHub rules require signed commits,
    `start-run` verifies GitHub's signature status for every commit introduced by
@@ -140,12 +162,11 @@ engine in a fresh terminal.
    worktree, prove their trees match, and obtain explicit approval for a
    lease-protected force-push before rewriting published history. Repositories
    whose effective target-branch rules accept unsigned commits are unchanged.
-
    The helper fixes the cap at two Lean rounds or four Deep rounds. A later run
    on the same PR requires the current run to be ended and a new, explicit user
    authorization passed with `--restart`; a new session alone is not a restart.
-   Use the returned `first_round` for the first pass of that run, and increment
-   it for subsequent rounds. With the bundled ledger 1.4, attestation identities
+   For an alternating chain, select each pass with `next-pass` as described
+   below. With the bundled ledger 1.4, attestation identities
    are scoped to the authenticated run: a newly authorized run starts at round
    1 without colliding with historical rounds. `authorize-pass` reports equal
    `round` and `run_round` values and enforces the two/four-round cap. Preserve
@@ -158,7 +179,7 @@ engine in a fresh terminal.
    explicit authorization.
 
    The controller at `.codex/skills/critique/scripts/local-review-handoff.py`
-   has no `status` or `resume-run` command. Select one past this engine's
+   has no `status` or `resume-run` command. For legacy unsequenced runs, select one past this engine's
    highest completed round after the active run marker (1 when it has none),
    then validate it with `authorize-pass`. An aborted run stays terminal;
    an explicitly authorized restart is a new run with a full cap, not a
@@ -178,9 +199,9 @@ engine in a fresh terminal.
    validate, commit, push, reply, and resolve. Codex's lane is
    `deepcritique <pr-number>` when Codex is the author engine and
    `pr-critique <pr-number>` when it is reviewing another engine's change; other
-   engines use their own equivalents. Reviewer order within a round is a
-   scheduling choice, not a protocol rule — what matters is which commit each
-   one read.
+   engines use their own equivalents. In a sequenced run, use the engine and
+   round returned by `next-pass`; otherwise reviewer order is a scheduling
+   choice. Every attestation still names the exact commit that engine read.
 
    How the next reviewer starts is a mode choice, not a protocol rule. In auto
    mode the outer controller authorizes one pass, launches it through the
@@ -233,7 +254,8 @@ engine in a fresh terminal.
    not assume a pass is budget-checked merely because it was launched.
    At cap exhaustion, stop, preserve the branch,
    worktree, and draft PR, and report non-convergence. Do not mark it ready.
-8. Converge when `verify-coverage` passes at the exact current head — a roster
+8. A sequenced run must first reach `next-pass` status `converged`. Also require
+   `verify-coverage` to pass at the exact current head — a roster
    is declared and every declared reviewer holds an attestation naming that
    head — the round that produced those attestations had no material fix, and
    every local-review thread contains a disposition reply and is resolved.
@@ -241,6 +263,50 @@ engine in a fresh terminal.
    `local-review-handoff.py finish-run --outcome converged` and mark the PR
    ready. Record `exhausted` or `aborted` when those are the actual terminal
    outcomes. Never leave a terminal run open merely to permit another pass.
+
+### Explicit alternating chains
+
+A request for a full auto review chain means an outer orchestration loop, not
+one local skill invocation or several subagent lanes from the same engine.
+Resolve and report the engine sequence, tier, per-engine cap, mode, and tested
+launcher paths before spending a pass. Preserve a user-specified sequence.
+For Codex → Claude Code → Codex, start with `--sequence codex,claude`;
+the controller repeats that cycle and requires a return to Codex before stopping.
+The author engine is a required participant when named in the sequence, even
+though it does not count as an independent reviewer in the roster. Do not
+change authorship or shrink the roster to make coverage pass.
+
+Before each leg, run:
+
+```bash
+python3 .codex/skills/critique/scripts/local-review-handoff.py next-pass \
+  --repo <owner/repo> --pr <number> --head <exact-head-sha>
+```
+
+For `status: next`, pass the returned engine and per-engine round to
+`authorize-pass`. Run the current engine's review skill locally; launch Claude
+only with `.codex/skills/critique/scripts/run-claude-review.sh`. Same-engine
+subagents are lanes, not another engine. A missing or failed tested launcher
+blocks that leg; preserve the requested chain and report the gap. A launcher
+return is not evidence: require its authenticated attestation before advancing.
+
+In handoff mode, use the returned next engine as `post-handoff --to-engine`,
+not necessarily the author. Supply the last completed pass as the handoff's
+from-engine, round, head, and outcome. A terminal sequence has no next handoff.
+
+`next-pass` derives completed passes only from the current authenticated run.
+It requires ordered participation, a return to the initiating engine, and every
+participant's latest attestation on the current head with no material outcome.
+`finish-run --outcome converged` additionally runs `verify-ledger` and
+`verify-coverage`; neither a green test suite nor coverage alone replaces the
+sequence check. Report `exhausted` at the tier cap and leave the PR draft.
+Existing unsequenced runs are not silently upgraded: preserve them or obtain
+explicit authorization to end and restart with a sequence.
+
+At handoff or completion, report the ordered engine/round/head/outcome evidence,
+per-engine pass counts, validation performed, and the actual terminal status.
+Distinguish reviewer passes from subagent lanes and from full cycles; never
+report an attempted or failed launch as a completed round.
 
 ### One publication per wrapper pass
 

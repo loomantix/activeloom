@@ -53,16 +53,16 @@ RUN_END_V1_RE = re.compile(
 PASS_V3_RE = re.compile(
     r"^<!-- local-review-pass:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
-    r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
-    r"head=[0-9a-f]{40} result-sha256=[0-9a-f]{64} -->$",
+    r"round=(?P<round>[1-9][0-9]*) base=(?P<base>[0-9a-f]{40}) "
+    r"head=(?P<head>[0-9a-f]{40}) result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
 )
 COMPLETE_V3_RE = re.compile(
     r"^<!-- local-review-complete:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
-    r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
-    r"before=[0-9a-f]{40} head=[0-9a-f]{40} "
-    r"classification=(?:minor|material) fingerprints=[A-Za-z0-9._:/,-]* "
+    r"round=(?P<round>[1-9][0-9]*) base=(?P<base>[0-9a-f]{40}) "
+    r"before=[0-9a-f]{40} head=(?P<head>[0-9a-f]{40}) "
+    r"classification=(?P<classification>minor|material) fingerprints=[A-Za-z0-9._:/,-]* "
     r"result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
 )
@@ -435,6 +435,8 @@ def _run_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "start_head": marker.group("start_head"),
                 "supersedes": supersedes,
                 "tier": marker.group("tier"),
+                "sequence": _content_sequence(content),
+                "plan_mode": _content_mode(content),
             }
         )
     records.sort(key=lambda record: cast(int, record["comment_id"]))
@@ -492,6 +494,33 @@ def _start_run(args: argparse.Namespace) -> None:
     content = _read_context(args.authorization_file).strip()
     if not content:
         _fail("review-run authorization must not be empty")
+    sequence = getattr(args, "sequence", None)
+    mode = "cycle"
+    if getattr(args, "chain", None) is not None:
+        sequence, mode = args.chain, "chain"
+    elif getattr(args, "cycle", None) is not None:
+        sequence = args.cycle
+    if sequence is None and args.restart and previous is not None:
+        # Preserve a declared cycle across a restart. Dropping the flag must not
+        # silently downgrade a sequenced run to one where every alternation
+        # guard is skipped; an explicit --sequence still overrides this.
+        previous_sequence = cast(list[str] | None, previous.get("sequence"))
+        if previous_sequence:
+            sequence = ",".join(previous_sequence)
+            mode = previous.get("plan_mode", "cycle")
+    if sequence is not None:
+        engines = _parse_plan(sequence, mode)
+        if any(engines.count(engine) > TIER_CAPS[args.tier] for engine in engines):
+            _fail("plan exceeds the tier's per-engine pass cap")
+        sequence = ",".join(engines)
+        # Run v1 hashes arbitrary content, so this policy is bound without
+        # changing the vendored ledger's marker or digest contract.
+        if mode == "chain":
+            content = f"<!-- local-review-plan:v1 mode=chain engines={sequence} -->\n\n{content}"
+        else:
+            content = (
+                f"<!-- local-review-sequence:v1 engines={sequence} -->\n\n{content}"
+            )
     max_rounds = TIER_CAPS[args.tier]
     previous_end = (
         None if previous is None else _run_end(rows, cast(str, previous["run_id"]))
@@ -570,6 +599,14 @@ def _authorize_pass(args: argparse.Namespace) -> None:
         _fail("the current local-review run has ended")
     if run["base"] != args.base:
         _fail("local-review run base does not match the requested pass")
+    if run.get("sequence"):
+        decision = _sequence_decision(rows, run, args.head)
+        if decision["status"] != "next":
+            _fail(f"review sequence is {decision['status']}; no pass is authorized")
+        if (args.engine, args.round) != (decision["engine"], decision["round"]):
+            _fail(
+                f"next required pass is {decision['engine']} round {decision['round']}"
+            )
     start_comment_id = cast(int, run["comment_id"])
     # Ledger 1.4 scopes attestation identities to this authenticated run.
     run_round = args.round
@@ -639,6 +676,8 @@ def _finish_run(args: argparse.Namespace) -> None:
     if not records:
         _fail("no authenticated local-review run exists")
     run = records[-1]
+    if getattr(args, "run_id", None) is not None and args.run_id != run["run_id"]:
+        _fail("active review run changed during finalization")
     verify = _verify_reviewable_head if args.outcome == "converged" else _verify_head
     existing = _run_end(rows, cast(str, run["run_id"]))
     marker = (
@@ -648,14 +687,26 @@ def _finish_run(args: argparse.Namespace) -> None:
     if existing is not None:
         if existing["head"] != args.head or existing["outcome"] != args.outcome:
             _fail("local-review run already ended with a different result")
-        verify(args.repo, args.pr, args.head)
+    if args.outcome == "converged":
+        if run.get("sequence"):
+            decision = _sequence_decision(rows, run, args.head)
+            if decision["status"] != "converged":
+                _fail("review sequence has not converged; inspect next-pass")
+        _verify_convergence_ledger(args)
+    elif args.outcome == "exhausted" and run.get("sequence"):
+        if _sequence_decision(rows, run, args.head)["status"] not in (
+            "exhausted",
+            "plan-complete",
+        ):
+            _fail("review sequence has not exhausted its cap")
+    verify(args.repo, args.pr, args.head)
+    if existing is not None:
         print(
             json.dumps(
                 {**existing, "replayed": True, "run_id": run["run_id"]}, sort_keys=True
             )
         )
         return
-    verify(args.repo, args.pr, args.head)
     comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, marker)
     verify(args.repo, args.pr, args.head)
     print(
@@ -691,7 +742,9 @@ Find and follow the latest authenticated local-review-handoff:v1 comment before
 reviewing. Verify that its exact head is still current, load the complete PR
 ledger including resolved threads and prior attestations, and continue as the
 {next_engine} reviewer against the pinned base. Do not invoke the other review
-engine from this session. When this pass ends, inspect every declared
+engine from this session. For a sequenced run, use next-pass before authorizing
+the leg and after it attests; only its converged status permits finishing.
+When this pass ends, inspect every declared
 engine's authenticated outcome for the round. If they satisfy the repository's convergence
 rule, publish the terminal review result and follow its configured finalization
 step without another handoff. Otherwise publish the next authenticated handoff
@@ -781,12 +834,27 @@ def _post_handoff(args: argparse.Namespace) -> None:
     if args.from_engine == args.to_engine:
         _fail("review handoff engines must be different")
     _verify_reviewable_head(args.repo, args.pr, args.head)
-    run = _handoff_run(_issue_comments(args.repo, args.pr))
+    rows = _issue_comments(args.repo, args.pr)
+    run = _handoff_run(rows)
     run_id = cast(str, run["run_id"]) if run is not None else None
     if run is not None and (
         run["base"] != args.base or not 1 <= args.round <= run["max_rounds"]
     ):
         _fail("handoff base or round does not belong to the current run")
+    if run is not None and run.get("sequence"):
+        decision = _sequence_decision(rows, run, args.head)
+        if decision["status"] != "next" or not decision["passes"]:
+            _fail("sequence has no completed pass requiring a handoff")
+        last = decision["passes"][-1]
+        if args.to_engine != decision["engine"] or (
+            args.from_engine,
+            args.round,
+            args.head,
+            args.outcome,
+        ) != (last["engine"], last["round"], last["head"], last["classification"]):
+            _fail(
+                "handoff must describe the completed pass and target the next required engine"
+            )
     content = _handoff_content(args, _read_context(args.context_file))
     digest = _handoff_digest(
         from_engine=args.from_engine,
@@ -911,6 +979,210 @@ def _sha(value: str) -> str:
     return value
 
 
+def _parse_sequence(value: str) -> list[str]:
+    engines = [
+        "gemini" if part.strip() == "antigravity" else part.strip()
+        for part in value.split(",")
+    ]
+    if not 2 <= len(engines) <= len(ENGINES) or len(set(engines)) != len(engines):
+        _fail("sequence must contain two or three distinct ordered engines")
+    if any(engine not in ENGINES for engine in engines):
+        _fail("sequence engines must be codex, claude, or gemini")
+    return engines
+
+
+def _parse_plan(value: str, mode: str) -> list[str]:
+    if mode == "cycle":
+        return _parse_sequence(value)
+    engines = [
+        "gemini" if part.strip() == "antigravity" else part.strip()
+        for part in value.split(",")
+    ]
+    if mode != "chain" or not 1 <= len(engines) <= 12:
+        _fail("chain must contain one to twelve engine steps")
+    if any(engine not in ENGINES for engine in engines):
+        _fail("chain engines must be codex, claude, or gemini")
+    return engines
+
+
+def _content_mode(content: str) -> str:
+    return "chain" if content.startswith("<!-- local-review-plan:") else "cycle"
+
+
+def _content_sequence(content: str) -> list[str] | None:
+    if "<!-- local-review-plan:" in content:
+        match = re.match(
+            r"<!-- local-review-plan:v1 mode=chain engines=([^\n]+) -->\n\n", content
+        )
+        if (
+            match is None
+            or content.count("<!-- local-review-plan:") != 1
+            or "<!-- local-review-sequence:" in content
+        ):
+            _fail("local-review plan policy is malformed")
+        return _parse_plan(match.group(1), "chain")
+    prefix = "<!-- local-review-sequence:"
+    if prefix not in content:
+        return None
+    match = re.match(r"<!-- local-review-sequence:v1 engines=([^\n]+) -->\n\n", content)
+    if match is None or content.count(prefix) != 1:
+        _fail("local-review sequence policy is malformed")
+    return _parse_sequence(match.group(1))
+
+
+def _sequence_decision(
+    rows: list[dict[str, Any]], run: dict[str, Any], head: str
+) -> dict[str, Any]:
+    sequence = cast(list[str] | None, run.get("sequence"))
+    if not sequence:
+        _fail(
+            "run has no engine sequence; preserve it or explicitly authorize a restart"
+        )
+    events: list[dict[str, Any]] = []
+    fixed = run.get("plan_mode") == "chain"
+    seen: dict[tuple[str, int], str] = {}
+    latest: dict[str, dict[str, Any]] = {}
+    for row in sorted(rows, key=lambda row: cast(int, row.get("id", 0))):
+        comment_id = cast(int, row.get("id", 0))
+        if comment_id <= run["comment_id"]:
+            continue
+        body = row.get("body", "")
+        if not isinstance(body, str):
+            continue
+        markers = [*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body)]
+        if not markers:
+            if (
+                "<!-- local-review-pass:" in body
+                or "<!-- local-review-complete:" in body
+            ):
+                _fail(
+                    "sequence contains an unsupported or malformed attestation "
+                    f"in comment {comment_id}"
+                )
+            continue
+        if len(markers) != 1:
+            _fail(
+                "sequence comment must contain exactly one attestation "
+                f"in comment {comment_id}"
+            )
+        marker = markers[0]
+        # Keep participation aligned with the ledger's matchAttestationMarker:
+        # examples and empty markers are not evidence of a completed pass.
+        if (
+            marker.start() != 0
+            or not body[marker.end() :].startswith("\n")
+            or not body[marker.end() + 1 :].strip()
+        ):
+            _fail(
+                "sequence attestation envelope is incomplete or embedded "
+                f"in comment {comment_id}"
+            )
+        engine = marker.group("engine").replace("antigravity", "gemini")
+        number = int(marker.group("round"))
+        identity = (engine, number)
+        if identity in seen:
+            if seen[identity] != marker.group(0):
+                _fail(
+                    "sequence has conflicting attestations for one pass "
+                    f"in comment {comment_id}"
+                )
+            continue
+        index = len(events)
+        if fixed and index >= len(sequence):
+            _fail(f"attestation exceeds the fixed plan in comment {comment_id}")
+        expected_engine = sequence[index if fixed else index % len(sequence)]
+        expected_round = 1 + sum(event["engine"] == expected_engine for event in events)
+        if identity != (expected_engine, expected_round):
+            _fail(
+                "attested passes violate the declared engine sequence "
+                f"in comment {comment_id}"
+            )
+        if number > run["max_rounds"] or marker.group("base") != run["base"]:
+            _fail(
+                "sequence attestation exceeds its cap or names a different base "
+                f"in comment {comment_id}"
+            )
+        event = {
+            "engine": engine,
+            "round": number,
+            "head": marker.group("head"),
+            "classification": marker.groupdict().get("classification", "clean"),
+        }
+        seen[identity] = marker.group(0)
+        events.append(event)
+        latest[engine] = event
+    result: dict[str, Any] = {
+        "run_id": run["run_id"],
+        "head": head,
+        "sequence": sequence,
+        "passes": events,
+        "max_rounds": run["max_rounds"],
+        "mode": "chain" if fixed else "cycle",
+    }
+    # A completed cycle plus a return leg is part of an alternating chain, even
+    # when the independent reviewer was clean on its first pass. The return leg
+    # is established by exact-head coverage, not by which engine attested last:
+    # requiring the initiator to be chronologically last adds no evidence over
+    # the head check below, and at the lean cap it makes convergence unreachable
+    # whenever the reviewer's pass was material.
+    clean = (
+        len(latest) == len(set(sequence))
+        and all(latest[engine]["head"] == head for engine in sequence)
+        and all(latest[engine]["classification"] != "material" for engine in sequence)
+    )
+    if fixed and len(events) == len(sequence):
+        return {
+            **result,
+            "status": "converged" if clean and len(latest) > 1 else "plan-complete",
+        }
+    if not fixed and len(events) > len(sequence) and clean:
+        return {**result, "status": "converged"}
+    engine = sequence[len(events) if fixed else len(events) % len(sequence)]
+    number = 1 + sum(event["engine"] == engine for event in events)
+    return {
+        **result,
+        "status": "exhausted" if number > run["max_rounds"] else "next",
+        "engine": engine,
+        "round": number,
+    }
+
+
+def _next_pass(args: argparse.Namespace) -> None:
+    rows = _issue_comments(args.repo, args.pr)
+    records = _run_records(rows)
+    if not records:
+        _fail("no authenticated local-review run exists")
+    run = records[-1]
+    if _run_end(rows, cast(str, run["run_id"])) is not None:
+        _fail("the current local-review run has ended")
+    decision = _sequence_decision(rows, run, args.head)
+    _verify_head(args.repo, args.pr, args.head)
+    print(json.dumps(decision, sort_keys=True))
+
+
+def _verify_convergence_ledger(args: argparse.Namespace) -> None:
+    helper = Path(__file__).with_name("review-ledger.js")
+    for command in ("verify-ledger", "verify-coverage"):
+        result = subprocess.run(
+            [
+                "node",
+                str(helper),
+                command,
+                "--repo",
+                args.repo,
+                "--pr",
+                str(args.pr),
+                "--head",
+                args.head,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            _fail(f"{command} refused convergence: {result.stderr.strip()}")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(required=True)
@@ -942,6 +1214,14 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--tier", required=True, choices=sorted(TIER_CAPS))
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
+    plan = start.add_mutually_exclusive_group()
+    plan.add_argument("--sequence", help="legacy alias for --cycle")
+    plan.add_argument(
+        "--cycle", help="repeat distinct ordered engines until convergence"
+    )
+    plan.add_argument(
+        "--chain", help="fixed engine steps, including repeats; no early exit"
+    )
     start.set_defaults(handler=_start_run)
 
     authorize = commands.add_parser("authorize-pass")
@@ -953,10 +1233,19 @@ def _parser() -> argparse.ArgumentParser:
     authorize.add_argument("--round", required=True, type=int)
     authorize.set_defaults(handler=_authorize_pass)
 
+    next_pass = commands.add_parser("next-pass")
+    next_pass.add_argument("--repo", required=True)
+    next_pass.add_argument("--pr", required=True, type=int)
+    next_pass.add_argument("--head", required=True, type=_sha)
+    next_pass.set_defaults(handler=_next_pass)
+
     finish = commands.add_parser("finish-run")
     finish.add_argument("--repo", required=True)
     finish.add_argument("--pr", required=True, type=int)
     finish.add_argument("--head", required=True, type=_sha)
+    finish.add_argument(
+        "--run-id", help="require this authenticated run during recovery"
+    )
     finish.add_argument(
         "--outcome", required=True, choices=("converged", "exhausted", "aborted")
     )
