@@ -117,11 +117,10 @@ allowed_destinations:
   - agent-loop-instructions.md
 
 # Review telemetry, declared once for the repository. Each gate is `on` or
-# `off`; omit either to leave it to the ambient environment. These render
-# into the synced `.claude/settings.json` env block — see below.
+# `off`. Both default on when omitted; extraction inherits emission.
+# Set emit: off to opt out. Gates reach all selected harnesses — see below.
 telemetry:
-  emit: off
-  extract: on
+  emit: on
 
 substitutions:
   PROJECT_NAME: <your project>
@@ -161,9 +160,11 @@ The manifest's `shared:` set is governed by the top-level keys alone. A harness 
 
 ### Review telemetry
 
-`LOOM_REVIEW_TELEMETRY` (emitting a record to a pull request) and `LOOM_REVIEW_TELEMETRY_EXTRACT` (measuring the pass at all) are read by the usage helper from the environment. `telemetry:` is how a repository declares them once, in the same file as everything else the sync knows about it: the engine renders the gates you declared into the `env` block of the synced `.claude/settings.json`.
+`telemetry:` declares review publication (`emit`) and usage extraction (`extract`) once in `.activeloom-config.yml`. Sync renders the declared gates into `skills/critique/scripts/review-telemetry.json` in each selected harness. All three usage helpers read this file; no developer-specific shell setup is required. Claude also receives the existing `.claude/settings.json` environment block.
 
-Only gates you actually declare are rendered. Settings-declared environment beats the ambient shell, so an env block that named every gate would have to invent a value for the ones you left alone — and a defaulted `off` would silently override a developer who had exported `on`. Declaring neither renders `"env": {}`, which sets nothing.
+Only declared gates are rendered. Missing configuration enables publication and extraction for every review. Set `telemetry.emit: off` to opt out of publication and, unless separately enabled, extraction. A non-empty process environment value overrides the corresponding file value, and explicit `off` disables that gate. An absent extraction gate inherits emission. Invalid or unreadable JSON disables both gates and reports an error. Add each selected harness's `skills/critique/scripts/review-telemetry.json` , `review-telemetry-gates.js`, and `telemetry-pass-key.js` to restrictive destination allowlists before syncing. Gemini also needs `usage-snapshot.js`.
+
+Gemini currently has no usage adapter in this distribution. Its helper reports `tokenSource: unavailable`; it still permits the pass identity, outcome, changeset and finding counts to be published when emission is enabled. Never substitute zero tokens for unavailable usage.
 
 The value is computed by the engine and exposed as the reserved substitution key `REVIEW_TELEMETRY_ENV`. Declaring that key under `substitutions:` is a config error rather than an override: two sources for one derived value is a bug either way.
 

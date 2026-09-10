@@ -52,6 +52,8 @@ def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
     environment.pop("CLAUDE_CODE_SESSION_ID", None)
     if enabled:
         environment["LOOM_REVIEW_TELEMETRY"] = "on"
+    else:
+        environment["LOOM_REVIEW_TELEMETRY"] = "off"
     environment.update(env)
     result = subprocess.run(
         ["node", str(SCRIPT), *args],
@@ -151,11 +153,11 @@ def tokens_of(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def test_gate_off_writes_nothing(tmp_path: Path, session: Path) -> None:
-    """Emission is opt-in, and a gated-off run must not touch the filesystem."""
+    """An explicit opt-out must not touch the filesystem."""
     out = tmp_path / "start.json"
     payload = run("snapshot", "--out", str(out), enabled=False)
     assert payload["enabled"] is False
-    assert payload["reason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert payload["reason"] == "LOOM_REVIEW_TELEMETRY is off"
     assert not out.exists()
 
 
@@ -931,7 +933,7 @@ def test_extraction_runs_with_emission_off(tmp_path: Path, session: Path) -> Non
     )
     assert payload["enabled"] is True
     assert payload["emit"] is False
-    assert payload["emitReason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert payload["emitReason"] == "LOOM_REVIEW_TELEMETRY is off"
     assert out.exists()
 
 
@@ -952,7 +954,7 @@ def test_delta_measures_and_writes_files_with_emission_off(
     )
     assert payload["enabled"] is True
     assert payload["emit"] is False
-    assert payload["emitReason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert payload["emitReason"] == "LOOM_REVIEW_TELEMETRY is off"
     assert payload["tokenSource"] == "session-log-delta"
     assert payload["tokensFile"] is not None
     assert tokens_of(payload)[0]["output"] == 5
@@ -1003,7 +1005,7 @@ def test_the_extraction_gate_defaults_to_the_emission_gate(
     off = run("snapshot", "--out", str(tmp_path / "off.json"), enabled=False)
     assert off["enabled"] is False
     assert off["emit"] is False
-    assert off["reason"] == "LOOM_REVIEW_TELEMETRY is unset"
+    assert off["reason"] == "LOOM_REVIEW_TELEMETRY is off"
     assert not (tmp_path / "off.json").exists()
 
 

@@ -11,6 +11,15 @@ repeats each review round: it is the active engine's **one** cleanup pass on tha
 PR. Resolve the active runtime as `gemini` or `antigravity`; use `codex` only
 when Codex is actually running the pass.
 
+## Pass measurement
+
+Follow "Pass Telemetry" in `.agents/REVIEW_WORKFLOW.md`. After resolving the
+mandatory pass identity and before diff classification, run the usage helper's
+`snapshot`. On every terminal path, including skip and blocked, finalize the
+review result first, then run `delta` and attempt emission only when `emit` is
+true. Report publication failures and unavailable usage explicitly. A failure
+before identity resolution reports `telemetry not emitted: boundary unresolved`.
+
 ## Context Window Check
 
 Run this check before anything else. `refactorpass` (and the `critique` that typically follows) does diff-reading, multi-lane reviewing, and edit application — all cache-hungry. If the current Antigravity or Gemini session has already been heavily used for feature implementation, the cache is largely spent on context the cleanup pass does not need, and the downstream `critique` (especially `critique deep`'s six independent lanes) will be measurably slower and more expensive.

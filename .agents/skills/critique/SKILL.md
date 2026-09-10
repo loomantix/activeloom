@@ -9,6 +9,15 @@ Review an open draft PR adversarially. The goal is to catch bugs, missing tests,
 security issues, and convention violations while preserving every verified
 finding and disposition in the PR.
 
+## Pass measurement
+
+Follow "Pass Telemetry" in `.agents/REVIEW_WORKFLOW.md`. After resolving the
+mandatory pass identity and before diff classification, run the usage helper's
+`snapshot`. On every terminal path, including skip and blocked, finalize the
+review result first, then run `delta` and attempt emission only when `emit` is
+true. Report publication failures and unavailable usage explicitly. A failure
+before identity resolution reports `telemetry not emitted: boundary unresolved`.
+
 ## Context Window Check
 
 Run this check before anything else. `critique` runs adversarial review lanes—two in lean mode, six core lanes in deep mode, plus a conditional tenant-coupling lane—each of which reads the diff, reads changed files, and produces structured findings. When subagents/delegation are available the lanes run in parallel, and each subagent inherits cache state from this session; when subagents are not available the lanes run as serial local passes that compete for the same context. Either way, if the current Antigravity or Gemini session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and `critique` (especially `critique deep`) runs slower and more expensively.

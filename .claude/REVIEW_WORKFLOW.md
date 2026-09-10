@@ -589,6 +589,22 @@ Invocation:
 
 ## Pass Telemetry
 
+At the pass boundary, create and save this pass's idempotency key:
+
+```bash
+node .claude/skills/critique/scripts/telemetry-pass-key.js \
+  <owner/repo> <pr> <controller-run-id-or-standalone> <authenticated-actor> \
+  <engine> <review-or-refactor-or-hosted> <round> <reviewed-head>
+```
+
+Use the controller's authenticated run ID when present. `standalone` creates
+a fresh attempt identity; invoke it once and retain its returned key in the
+pass's private working files. Pass `--idempotency-key <returned-key>` to every
+emission, reusing it on a retry. Different actors and restarted runs must not
+share keys. Never regenerate a standalone key to retry publication. If key
+creation fails, report telemetry failure rather than falling back to a key
+that may identify a different pass. This works with existing ledger bundles.
+
 Every pass records what it cost, as a `local-review-telemetry:v1` marker in its
 own PR comment. The record carries token buckets per exact model, classified
 line churn, finding dispositions, and the pass identity needed to ask whether
@@ -599,6 +615,12 @@ whole series re-priceable.
 
 ### Two gates: measuring and publishing
 
+Repository defaults come from the synced sibling `review-telemetry.json` beside
+this harness's usage helper. Non-empty process environment values override
+those defaults. Missing configuration enables publication and extraction; malformed
+configuration disables both gates with an error. See `docs/sync.md` upstream
+for the required sync destinations.
+
 Extraction and emission are separate decisions and have separate gates. Both
 are read by the usage helper and nowhere else; both are environment
 configuration set once, never an interactive prompt during a pass, because a
@@ -606,7 +628,7 @@ prompt would block an autonomous run.
 
 | Variable                        | Governs                             | Default           |
 | ------------------------------- | ----------------------------------- | ----------------- |
-| `LOOM_REVIEW_TELEMETRY`         | emitting a record to a pull request | off               |
+| `LOOM_REVIEW_TELEMETRY`         | emitting a record to a pull request | on                |
 | `LOOM_REVIEW_TELEMETRY_EXTRACT` | measuring this pass at all          | the emission gate |
 
 Each accepts exactly `on` or `off`, ignoring surrounding whitespace and case.
@@ -614,13 +636,12 @@ Any other non-empty value is neither: the helper stays disabled and reports an
 error, so a typo reads as a misconfiguration rather than as a deliberate
 opt-out.
 
-Publication is the part that warrants an opt-in rollout, so it is the part that
-keeps the original variable and its original meaning — nothing changes for a
-repository that has already set it. Measurement is separable because a local
-consumer of usage data has no business publishing anything: set
-`LOOM_REVIEW_TELEMETRY_EXTRACT=on` with the emission gate off and the numbers
-are available while emission is structurally unreachable rather than merely
-unrequested.
+Publication defaults on for every review pass. Set `telemetry.emit: off` in the
+consumer's sync configuration — not in the rendered `review-telemetry.json`,
+whose only keys are the two variables named above — or set
+`LOOM_REVIEW_TELEMETRY=off` in the process environment to opt out. Extraction inherits emission unless explicitly set,
+so an emission opt-out also disables extraction by default. For local-only
+measurement, set `LOOM_REVIEW_TELEMETRY_EXTRACT=on` with emission off.
 
 The helper reports `enabled` for extraction and `emit` for emission on every
 payload, in every mode and on every failure path. **Invoke `emit-telemetry`
