@@ -555,6 +555,51 @@ that stops at its previously spent latch reports `clean`. Pass the original
 boundary even when fixes moved the head; do not silently attribute the pass
 to a different diff. Omit prompt hashes until this harness has a hasher.
 
+### Count the findings
+
+Before every emission attempt, including `clean`, `changed`, `skipped`, and
+`blocked` exits, write this pass's complete findings object to an owner-only
+regular file and pass its path as `--findings-file`. This step also applies to
+early returns before the normal end-of-pass sequence and to a spent cleanup
+latch. Never omit the file or reuse a previous pass's measurements.
+
+Use the all-zero object below only when this pass is known to have posted or
+dispositioned no findings and introduced no chain-induced regressions. Status
+alone does not establish zero: a blocked pass may have posted findings before
+it failed, and a clean pass may have deferred or dismissed findings. Preserve
+those actual counts. Include posted threads whose disposition is still pending
+in `posted`; count only completed dispositions in the outcome buckets. Do not
+invent a `validDeferred` disposition to make the totals equal.
+
+If any required finding count is unknown, re-derive it from this pass's own
+finding threads and dispositions on the pull request before doing anything
+else. That ledger is the source of truth for `posted` and for the completed
+outcome buckets, so "unknown" is a property of a failed query, not of what the
+pass happens to remember. Declaring the measurement unavailable without
+attempting it is the cheapest exit from this section and the one that costs the
+record, so it is not available.
+
+Only when that re-derivation itself fails: do not fabricate zeros or send an
+incomplete file. Report `telemetry not emitted: findings measurement
+unavailable`, naming which count could not be established. Do not invoke
+`emit-telemetry` on this branch, do not retry it, and do not let the omission
+change the pass result or its reported findings — this harness defines no other
+nonfatal telemetry path, so the reporting is the whole of it. Missing token
+usage is separate: it does not prevent emission when findings counts are known.
+
+```json
+{
+  "posted": 0,
+  "bySeverityAndOutcome": {
+    "blocking": { "validFixed": 0, "validDeferred": 0, "invalidDismissed": 0 },
+    "major": { "validFixed": 0, "validDeferred": 0, "invalidDismissed": 0 },
+    "minor": { "validFixed": 0, "validDeferred": 0, "invalidDismissed": 0 },
+    "nit": { "validFixed": 0, "validDeferred": 0, "invalidDismissed": 0 }
+  },
+  "chainInducedRegressions": 0
+}
+```
+
 The findings file contains `posted`, `chainInducedRegressions`, and
 `bySeverityAndOutcome`. The latter has one object for each of `blocking`,
 `major`, `minor`, and `nit`, each containing `validFixed`, `validDeferred`, and

@@ -6,6 +6,15 @@ argument-hint: (optional PR number, optional "force"; always single-pass)
 
 # Refactor pass — PR-first wrapper
 
+## Findings before telemetry emission
+
+Before every telemetry emission attempt, including an early `skipped`, `blocked`,
+or spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
+write the complete measured findings file and supply `--findings-file`.
+Preserve findings posted before an interruption; unknown counts are not zeros.
+If counts cannot be established, report `telemetry not emitted: findings measurement unavailable`
+and follow the existing nonfatal telemetry path.
+
 Run one behavior-preserving cleanup pass on an open draft PR before adversarial
 review. This is the Claude engine's **one** cleanup pass on that PR, not a step
 that repeats each review round.
