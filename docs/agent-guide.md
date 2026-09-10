@@ -50,6 +50,8 @@ Names below identify skills; use the invocation supported by the current harness
 
 Specialized skills also exist, such as Actions usage auditing, mobile installation, accessibility review, and package publication. Their presence varies by harness; inspect their requirements rather than treating the toolkit as a uniform menu.
 
+Not every artifact here is a skill: [`claude/github-api-usage.md`](../claude/github-api-usage.md) is drop-in guidance on rate-limit-aware GitHub API usage, written to be pasted into a project's own agent guide.
+
 ## Review an existing PR
 
 Read the installed harness's `REVIEW_WORKFLOW.md`, then `references/local-review-ledger.md`, then the selected review skill. Upstream entry points are [Claude](../.claude/REVIEW_WORKFLOW.md), [Codex](../.codex/REVIEW_WORKFLOW.md), and [Gemini/Agy](../.agents/REVIEW_WORKFLOW.md).

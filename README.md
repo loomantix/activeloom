@@ -35,7 +35,7 @@ This is the unified project formerly named **claude-platform**. New consumers us
 | ----------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | Decide whether this fits an agent session | The agent entry guide                                         | [Task selection and boundaries](docs/agent-guide.md)                             |
 | Try a workflow personally                 | CLI `add <skill> --harness <id>`                              | [Personal installation](docs/getting-started.md#tier-0-try-it)                   |
-| Give a repository a shared setup          | CLI `init --harness <id>` and `onboard`                       | [Repository installation](docs/getting-started.md#tier-1)                        |
+| Give a repository a shared setup          | CLI `init --harness <id>` and the `onboard` skill             | [Repository installation](docs/getting-started.md#tier-1)                        |
 | Keep multiple repositories current        | CLI `init --sync`                                             | [Sync setup](docs/getting-started.md#tier-2) and [sync contract](docs/sync.md)   |
 | Review an existing PR                     | The installed harness's `REVIEW_WORKFLOW.md` and review skill | [Review entry points](docs/agent-guide.md#review-an-existing-pr)                 |
 | Run an automatic review chain             | The deterministic review runner                               | [Runner requirements and outcomes](.codex/references/review-chain-runner.md)     |

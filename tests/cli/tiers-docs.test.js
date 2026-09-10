@@ -42,10 +42,26 @@ const GETTING_STARTED = fs.readFileSync(
 const commandStem = (tier) =>
   tier.command.replace(/^npx activeloom /, '').replace(/ <skill>$/, '');
 
+/**
+ * Whether a page presents a tier's command *as a command*.
+ *
+ * Tier 0 and Tier 1 stem to `add` and `init`, which are ordinary English
+ * words: a bare substring search passes on any page that happens to use them
+ * in a sentence. Require either a real invocation — `npx activeloom init`,
+ * `node cli/bin/activeloom.js add` — or the arguments written as a code span.
+ *
+ * @param {string} body
+ * @param {string} stem
+ */
+const mentionsCommand = (body, stem) => {
+  const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:activeloom(?:\\.js)?\\s+|\`)${escaped}\\b`).test(body);
+};
+
 test('getting-started names every tier by number and command', () => {
   for (const tier of TIERS) {
     assert.ok(
-      GETTING_STARTED.includes(commandStem(tier)),
+      mentionsCommand(GETTING_STARTED, commandStem(tier)),
       `docs/getting-started.md does not mention \`${commandStem(tier)}\` (tier ${tier.n})`,
     );
     assert.match(
@@ -59,7 +75,7 @@ test('getting-started names every tier by number and command', () => {
 test('the README names every tier command', () => {
   for (const tier of TIERS) {
     assert.ok(
-      README.includes(commandStem(tier)),
+      mentionsCommand(README, commandStem(tier)),
       `README.md does not mention \`${commandStem(tier)}\` (tier ${tier.n})`,
     );
   }

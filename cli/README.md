@@ -6,7 +6,7 @@ For what ActiveLoom is and is not, read the [project README](https://github.com/
 
 ## Run from source
 
-As of September 10, 2026, the public npm registry does not serve `activeloom`. The source CLI works without publishing or globally installing the package:
+The CLI runs straight from a source checkout — no publication and no global install required:
 
 ```bash
 git clone https://github.com/loomantix/activeloom.git
@@ -39,7 +39,7 @@ node cli/bin/activeloom.js init --harness codex --consumer-dir /path/to/your-rep
 node cli/bin/activeloom.js init --sync --harness codex --consumer-dir /path/to/your-repo
 ```
 
-`detect` reports facts without installing files. `init` leaves `TODO(activeloom)` markers where project judgment is needed; use `onboard` to draft those values for confirmation. On a fresh consumer, `init --dry-run` cannot render the complete harness trees until its configuration exists and reports the skipped render.
+`detect` reports facts without installing files. `init` leaves `TODO(activeloom)` markers where project judgment is needed; run the `onboard` skill in your agent to draft those values for confirmation. On a fresh consumer, `init --dry-run` cannot render the complete harness trees until its configuration exists and reports the skipped render.
 
 ### Options
 
