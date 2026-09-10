@@ -664,18 +664,19 @@ two.
 
 ## Fix, reply, and resolve
 
-For each published finding:
-
-1. Apply the correction and run the smallest relevant validation. That scoped
-   run dispositions the finding; it never substitutes for the gating run below.
-2. Commit the correction. When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke
-   that wrapper-owned helper with no arguments; otherwise push normally without
-   force.
-3. Put the fix SHA, validation result, and concise rationale in a content file.
-   Use `dispose` with the matching fingerprint and occurrence. For dismissal or
-   tracked deferral, use `outcome=dismissed` or `outcome=deferred` and the exact
-   reviewed head.
-4. Let `dispose` verify the reply and resolution as one resumable transaction.
+1. For each published finding requiring a correction, apply the fix, run the
+   smallest relevant validation, and commit it locally. That scoped validation
+   dispositions the finding; it never substitutes for the gating run below.
+2. After all corrections are committed, publish the final head. When
+   `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke that wrapper-owned helper with
+   no arguments exactly once for the pass, not once per finding. Otherwise push
+   normally without force. A pass with no new commits needs no publication.
+3. For each finding, put the fix SHA, validation result, and concise rationale
+   in a content file. Use `dispose` with the matching fingerprint and occurrence
+   at the published head. For dismissal or tracked deferral, use
+   `outcome=dismissed` or `outcome=deferred` and the exact reviewed head.
+4. Let each `dispose` verify its reply and resolution as one resumable
+   transaction.
 
 Write the commit message with the file-editing tool into the same owner-only
 temporary directory used for ledger content, then commit with
