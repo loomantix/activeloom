@@ -953,10 +953,20 @@ those actual counts. Include posted threads whose disposition is still pending
 in `posted`; count only completed dispositions in the outcome buckets. Do not
 invent a `validDeferred` disposition to make the totals equal.
 
-If any required finding count is unknown, do not fabricate zeros or send an
-incomplete file. Report `telemetry not emitted: findings measurement unavailable`
-and return through the existing nonfatal telemetry path. Missing token usage
-is separate: it does not prevent emission when findings counts are known.
+If any required finding count is unknown, re-derive it from this pass's own
+finding threads and dispositions on the pull request before doing anything
+else. That ledger is the source of truth for `posted` and for the completed
+outcome buckets, so "unknown" is a property of a failed query, not of what the
+pass happens to remember. Declaring the measurement unavailable without
+attempting it is the cheapest exit from this section and the one that costs the
+record, so it is not available.
+
+Only when that re-derivation itself fails: do not fabricate zeros or send an
+incomplete file. Report `telemetry not emitted: findings measurement
+unavailable`, naming which count could not be established, do not invoke
+`emit-telemetry`, and return through the existing nonfatal telemetry path.
+Missing token usage is separate: it does not prevent emission when findings
+counts are known.
 
 Write this pass's own dispositions to a regular file with the active
 file-editing tool — never a heredoc or command substitution:
