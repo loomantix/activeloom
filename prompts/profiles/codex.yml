@@ -59,9 +59,9 @@ skills:
 
   product-grill:
     # Model-invoked here, so the trigger has to separate it from `grill`: the
-    # distinguishing branch is who is asking and which side of the plan is open.
+    # distinguishing branch is product-discovery intent, regardless of role.
     FM_EXTRAS: ''
-    DESC_TRIGGER: ' Use when a product manager, designer, or other non-engineer wants a plan or design pressure-tested from the product and user side, before technical design.'
+    DESC_TRIGGER: ' Use when the user wants to validate a product problem, challenge whether to build, or pressure-test user value and experience before technical design, regardless of job title.'
 
   onboard:
     # No `disable-model-invocation` on this harness, so the description carries

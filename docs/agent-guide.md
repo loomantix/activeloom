@@ -37,7 +37,7 @@ Names below identify skills; use the invocation supported by the current harness
 | Need                                         | Entry point                                | Boundary                                                                                                |
 | -------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
 | Clarify a design before code                 | `grill`                                    | An interview and design exercise; does not implement the feature                                        |
-| Pressure-test a plan from the user's side    | `product-grill`                            | A plain-language interview for PMs and designers; technical decisions are listed for engineering        |
+| Validate a product problem or user value     | `product-grill`                            | Product discovery regardless of job title; can conclude don't build or gather evidence first            |
 | Investigate a reproducible bug               | `diagnosing-bugs`                          | Establish the symptom and a tight reproduction before changing code                                     |
 | Build a feature with architectural discovery | `feature-dev`                              | Requires a concrete user objective and repository context                                               |
 | Fill project-specific onboarding fields      | `onboard`                                  | Draft evidence-based values for confirmation; do not invent domain rules                                |

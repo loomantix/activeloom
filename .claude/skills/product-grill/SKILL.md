@@ -7,7 +7,7 @@ argument-hint: (optional) the product idea, plan, or design to stress-test
 
 # /product-grill — interview until the user is understood
 
-Interview the user until you reach a shared understanding of who this is for, what problem it solves for them, and what changes in their experience. The person you are interviewing is usually a product manager, designer, or someone else who works with engineers but does not write the code. **This skill does not write code and does not implement anything.** It ends when the questions run out, and the user decides what happens next.
+Interview the user until you reach a shared understanding of who this is for, what problem it solves for them, and whether anything should be built. Use this for product-discovery intent regardless of job title, including engineers exploring a product problem. **This skill does not write code and does not implement anything.** It ends with a confirmed or provisional understanding, and the user decides what happens next.
 
 This is the product-side sibling of `/grill`. `/grill` settles how a thing gets built; this settles what it must do for the people who use it, and why it is worth building at all.
 
@@ -18,9 +18,12 @@ Map the problem as a **design tree**: every decision branches into the decisions
 - **Who** — the users it is for, and the people it touches indirectly: support, admins, users who never opt in.
 - **Problem** — what they cannot do, or do badly, today — and the evidence it matters: requests, support volume, usage data, or a hunch named as a hunch.
 - **Outcome** — what success looks like and how anyone would know: the change in behavior or the number that moves.
+- **Premise** — whether building something is justified by that evidence and outcome. Challenge the proposed solution: could an existing capability or a change outside the product solve the problem? Put proceed, don't build, and gather evidence first to the user as valid outcomes before opening dependent feature-design branches.
 - **Experience** — the path through it, including first use, empty states, errors, undo, and what a user who ignores the feature sees.
 - **Boundaries** — what is deliberately left out, and what existing users lose or have to relearn.
 - **Rollout** — who gets it first, how they hear about it, and what would make you pull it back.
+
+If the user rejects the premise or chooses research first, close dependent experience, boundary, and rollout branches as inapplicable to this outcome, with the reason. A decision not to build or to gather evidence is a successful interview outcome.
 
 Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled — the questions you can ask _now_ without guessing at answers you have not heard yet.
 
@@ -36,7 +39,7 @@ Then wait. Each round of answers reshapes the tree — settled decisions push th
 
 **A question whose answer depends on another question still open in this round belongs to a later round.** Asking it now forces the user to guess at their own unmade decision.
 
-Always recommend an answer, argued from what the end user would experience. A bare question makes the user do all the work; a recommendation gives them something to push against, and disagreement is faster than composition.
+Always recommend an answer, argued from what the end user would experience. When evidence is missing, recommend what to learn next rather than an unsupported product choice. A bare question makes the user do all the work; a recommendation gives them something to push against, and disagreement is faster than composition.
 
 ## Plain language
 
@@ -54,7 +57,9 @@ Delegate a lookup only when it is genuinely independent and too large for a hand
 
 The _product decisions_ are always the user's. Put each one to them and wait.
 
-**Technical decisions go to engineering.** When a branch reaches a choice the interviewee is not placed to make — data model, architecture, performance budget — add it to a running list of **questions for engineering** and keep working the product branches. Where the technical answer would change the product, ask the product half in plain terms: "Keeping deleted items restorable is extra work — is recovering a mistake worth a later launch?"
+**Technical decisions go to engineering.** When a branch reaches a data-model, architecture, feasibility, cost, or performance choice, add it to a running list of **questions for engineering** and keep working the product branches. Ask the product half in plain terms: "How important is recovering an accidental deletion, and what should a user be able to recover?" Present a technical cost or schedule tradeoff as fact only with supporting evidence; otherwise leave it for engineering to verify.
+
+Track actual technical assumptions separately from product requirements. For each assumption, record the product decision that depends on it and the verification needed. Keep that decision conditional until verified; do not invent assumptions to fill the record.
 
 ## Ubiquitous language
 
@@ -66,11 +71,17 @@ Where a repo already carries a glossary, product docs, or ADRs for the area, rea
 
 ## Done
 
-The session is done when **the frontier is empty** — every branch of the tree visited, nothing about the user left silently assumed.
+The session is complete when every applicable branch is settled and each inapplicable branch has an explicit reason. A visited branch is not necessarily settled.
 
-Then summarize for a reader who was not in the room: who it is for, the problem and its evidence, how success will be measured, the decisions made, the alternatives rejected and why, what is out of scope, and the questions for engineering. Keep it under 500 words — it is a record of decisions, not a spec.
+A **provisional finish** is also valid when no answerable frontier remains and further progress requires unavailable research or engineering input. Separate settled decisions, assumptions, and blocking unknowns; record the evidence needed to resume each affected branch. An empty frontier caused by blocked prerequisites is not full completion, and the user need not guess to finish.
 
-**Do not act on it until the user confirms the understanding is shared.** When they do, the natural next steps are `/grill` for an engineer to work the technical branches from this summary, or `/issues` to file it.
+Produce one self-contained, shareable summary for a reader who was not in the room: the completion status and chosen outcome (proceed, don't build, or gather evidence first), who it is for, the problem and evidence, success measures, settled decisions, alternatives rejected and why, scope, and any blocking unknowns with the evidence needed to resume. Target 500 words; use more when necessary to preserve consequential dependencies.
+
+Include a labeled **Technical review** section that distinguishes product requirements from unverified technical assumptions. For each actual assumption, include its dependent product decision and required verification, followed by unresolved engineering questions. State when there are no recorded assumptions or questions rather than manufacturing them.
+
+**Do not act on it until the user confirms the understanding is shared.** For a proceed outcome, `/grill` can help an engineer work the technical branches from this summary; `/issues` can record the chosen next step, including research. Don't-build outcomes need no implementation handoff.
+
+When engineering finds that an assumption does not hold, preserve the original product intent in the handoff. Have engineering explain the constraint and feasible alternatives, then return the affected choices to the product decision-maker to reconsider intent, scope, or approach. Reopen only the branches that depend on the finding; keep unrelated decisions settled.
 
 ## Scope
 
