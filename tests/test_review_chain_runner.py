@@ -616,9 +616,7 @@ def test_runner_launchers_mark_execution_before_the_reviewer_starts(
     )
     assert lines.count(marker) == 1
     assert lines[lines.index(marker) + 1].startswith(starts_reviewer)
-    authorization = next(
-        i for i, line in enumerate(lines) if "authorize-pass" in line
-    )
+    authorization = next(i for i, line in enumerate(lines) if "authorize-pass" in line)
     block = "\n".join(lines[authorization : authorization + 18])
     assert (
         "ACTIVELOOM_RUN_ID" in block
@@ -847,7 +845,9 @@ def test_migration_preserves_the_v1_snapshot_and_budget(
     assert len(harness.launches) == 4
 
 
-@pytest.mark.parametrize("corruption", ["log", "controller", "result", "head"])
+@pytest.mark.parametrize(
+    "corruption", ["log", "log-proof", "controller", "result", "head"]
+)
 def test_legacy_reconciliation_rejects_uncertain_evidence(
     harness: Any, monkeypatch: pytest.MonkeyPatch, corruption: str
 ) -> None:
@@ -881,6 +881,10 @@ def test_legacy_reconciliation_rejects_uncertain_evidence(
     proof = harness.module.digest(folder / "worker.log")
     if corruption == "log":
         (folder / "worker.log").write_text("review interrupted\n")
+    elif corruption == "log-proof":
+        # The operator hashes the log as found; only its exact bytes can reject it.
+        (folder / "worker.log").write_text("review interrupted\n")
+        proof = harness.module.digest(folder / "worker.log")
     elif corruption == "controller":
         (runner.control / "run-agy-review.sh").write_text("changed")
     elif corruption == "result":
