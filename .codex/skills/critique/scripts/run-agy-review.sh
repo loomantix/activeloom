@@ -16,6 +16,7 @@ pr=""
 base=""
 head=""
 round=""
+preflight_only=false
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -24,6 +25,7 @@ while [ "$#" -gt 0 ]; do
         --base) [ "$#" -ge 2 ] || usage; base="$2"; shift 2 ;;
         --head) [ "$#" -ge 2 ] || usage; head="$2"; shift 2 ;;
         --round) [ "$#" -ge 2 ] || usage; round="$2"; shift 2 ;;
+        --preflight-only) preflight_only=true; shift ;;
         *) usage ;;
     esac
 done
@@ -33,6 +35,9 @@ done
 [[ "$base" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$round" =~ ^[1-9][0-9]*$ ]] || usage
+script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+launch_state() { python3 -I "$script_dir/review-launch-state.py" "$@"; }
+launch_state preflight missing_tool
 review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
 [[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
     [ "$review_timeout_seconds" -le 3600 ] || {
@@ -40,6 +45,7 @@ review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
     exit 2
 }
 
+command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "gh is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
@@ -51,6 +57,7 @@ command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; 
 # also requires updating AGY_SURFACE_SHA in tests/test_agy_review_launcher.py.
 agy_surface_sha="e5ebebfd1bf9270f2a2e63e77465acb64a89a1ab"
 
+launch_state preflight pr_boundary
 current_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 actor="$(gh api user --jq .login)"
 pr_row="$(
@@ -71,11 +78,14 @@ remote_head="${remote_row%%[[:space:]]*}"
 [ "$remote_head" = "$head" ] || { echo "remote branch head does not match --head" >&2; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo "review worktree must be clean" >&2; exit 1; }
 
-script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! "$preflight_only"; then
+launch_state preflight authorization
 python3 -I "$script_dir/local-review-handoff.py" authorize-pass \
     --repo "$repo" --pr "$pr" --base "$base" --head "$head" \
     --engine gemini --round "$round" >/dev/null
+fi
 
+launch_state preflight missing_tool
 agy_review_cli="${AGY_REVIEW_CLI:-agy}"
 command -v "$agy_review_cli" >/dev/null 2>&1 || { echo "agy is required" >&2; exit 1; }
 
@@ -131,21 +141,33 @@ trap 'forward_signal HUP 129' HUP
 
 # The outer bound stays above --print-timeout so the CLI's own timeout fires
 # first and still writes a structured payload for the parser below.
+launch_state preflight skill_discovery
+if [ -z "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
 run_agy_managed "$skills_file" 2m \
     --model gemini-3.7-flash-high \
     --effort high \
     --output-format json \
     --print-timeout 90s \
     --print '/skills'
+fi
 
 agy_surface_root="$(python3 - "$skills_file" <<'PY'
 import json
+import os
 import pathlib
 import sys
 
-try:
+if os.environ.get("ACTIVELOOM_REVIEW_SURFACE"):
+    nominated = pathlib.Path(os.environ["ACTIVELOOM_REVIEW_SURFACE"])
+    if not nominated.is_absolute() or nominated.is_symlink():
+        raise SystemExit("managed review surface must be an absolute regular directory")
+    payload = {"status": "SUCCESS", "command": {"data": {"skills": [
+        {"name": "deepcritique", "path": str(nominated / "skills/deepcritique/SKILL.md")}
+    ]}}}
+else:
+  try:
     payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-except (OSError, UnicodeError, json.JSONDecodeError) as error:
+  except (OSError, UnicodeError, json.JSONDecodeError) as error:
     raise SystemExit(f"agy skill preflight returned invalid JSON: {error}")
 
 if payload.get("status") != "SUCCESS":
@@ -219,6 +241,7 @@ surface_git() {
         -C "$dir" "$@"
 }
 
+launch_state preflight surface_provenance
 agy_surface_repo="$(surface_git "$agy_surface_root" rev-parse --show-toplevel)"
 [ "$agy_surface_root" = "$agy_surface_repo/.agents" ] || {
     echo "agy relay surface must be the .agents directory of its trusted checkout" >&2
@@ -233,10 +256,14 @@ esac
     echo "agy relay surface is not at the pinned activeloom commit $agy_surface_sha" >&2
     exit 1
 }
-[ -z "$(surface_git "$agy_surface_repo" status --porcelain)" ] || {
-    echo "agy relay surface checkout must be clean" >&2
+launch_state preflight dirty_surface
+surface_changes="$(surface_git "$agy_surface_repo" status --porcelain)"
+[ -z "$surface_changes" ] || {
+    printf 'agy relay surface checkout must be clean: %s\n%s\n' "$agy_surface_repo" "$surface_changes" >&2
     exit 1
 }
+launch_state ready
+if "$preflight_only"; then exit 0; fi
 
 prompt="/deepcritique ${pr}
 
@@ -254,6 +281,10 @@ edits, then validate, push, reply, resolve, and publish the normal review result
 This invocation owns exactly one Gemini pass: do not invoke Codex, Claude,
 another reviewer, or any review launcher. Return control to the calling Codex
 session when the Gemini pass is complete."
+if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
+    prompt="Read ${agy_surface_root}/skills/deepcritique/SKILL.md and follow it for this pass.
+${prompt#*$'\n'}"
+fi
 
 export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"
@@ -264,6 +295,7 @@ agy_exit=0
 # process-group guard terminates the pass and every descendant.
 # claude-cli-invocations:start
 agy_outer_timeout_seconds=$((review_timeout_seconds + 30))
+launch_state execution
 run_agy_managed "$result_file" "${agy_outer_timeout_seconds}s" \
     --model gemini-3.7-flash-high \
     --effort high \

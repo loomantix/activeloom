@@ -56,7 +56,7 @@ def harness(
     # inside a real reviewer. Inherited worker state otherwise makes fake
     # validation commands look like launches and can overwrite the real result.
     for name in list(os.environ):
-        if name.startswith("AGENT_LOOP_"):
+        if name.startswith(("AGENT_LOOP_", "ACTIVELOOM_")):
             monkeypatch.delenv(name)
     module = load("review-chain-runner")
     controller = load("local-review-handoff")
@@ -129,6 +129,16 @@ sys.exit(int(sys.argv[2]))
     monkeypatch.setattr(module, "managed", managed)
 
     class FakeRunner(module.Runner):  # type: ignore[misc, name-defined]
+        def preflight(self) -> None:
+            pass
+
+        def environment(self, engine: str) -> dict[str, str]:
+            return {
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))
+            }
+
         def boundary(self) -> str:
             return HEAD
 
@@ -375,6 +385,7 @@ def test_resume_cannot_promote_unknown_worker_exit(harness: Any) -> None:
     with pytest.raises(harness.module.Blocked):
         harness.runner(harness.args, harness.directory).run()
     harness.args.resume = True
+    harness.args.recover_preflight = True
     with pytest.raises(harness.module.Blocked, match="exit is unknown"):
         harness.runner(harness.args, harness.directory).run()
     assert len(harness.launches) == 1
@@ -423,6 +434,9 @@ def test_codex_launcher_pins_boundary_without_changing_model(
 
     launcher = tmp_path / "run-codex-review.py"
     shutil.copyfile(SCRIPTS / launcher.name, launcher)
+    shutil.copyfile(
+        SCRIPTS / "review-launch-state.py", tmp_path / "review-launch-state.py"
+    )
     (tmp_path / "local-review-handoff.py").write_text("print('{}')\n")
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -461,7 +475,11 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         ],
         cwd=tmp_path,
         env={
-            **os.environ,
+            **{
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))
+            },
             "PATH": str(bindir) + os.pathsep + os.environ["PATH"],
             "CAPTURE": str(capture),
             "STALE": "1" if stale else "0",
@@ -479,3 +497,304 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         assert "--model" not in argv and "--ignore-user-config" not in argv
         assert "one Codex review pass" in argv[-1]
         assert "Do not launch another engine" in argv[-1]
+
+
+def test_preflight_recovery_keeps_completed_passes_and_budget(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness.args.chain = "claude,codex,gemini"
+    original = harness.module.managed
+    rejected = False
+
+    def managed(
+        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+    ) -> None:
+        nonlocal rejected
+        if env.get("AGENT_LOOP_REVIEW_ENGINE") == "gemini" and not rejected:
+            rejected = True
+            log.write_text("agy relay surface checkout must be clean\n")
+            if env.get("ACTIVELOOM_LAUNCH_STATE"):
+                harness.module.save(
+                    Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+                    {
+                        "version": 1,
+                        "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                        "phase": "preflight",
+                        "review_started": False,
+                        "failure_reason": "dirty_surface",
+                    },
+                )
+            raise harness.module.Blocked("synthetic dirty surface")
+        original(argv, log, env, timeout)
+
+    monkeypatch.setattr(harness.module, "managed", managed)
+    with pytest.raises(harness.module.Blocked, match="dirty surface"):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    assert harness.launches == ["claude", "codex"]
+    assert state["pending"]["engine"] == "gemini"
+    assert state["pending"]["round"] == 1
+    harness.args.resume = True
+    harness.args.recover_preflight = True
+    resumed = harness.runner(harness.args, harness.directory)
+    assert resumed.run() == "converged"
+    assert resumed.state["run_id"] == state["run_id"]
+    assert resumed.state["config"] == state["config"]
+    assert resumed.state["completed"][:2] == state["completed"]
+    assert harness.launches == ["claude", "codex", "gemini"]
+    assert len(resumed.state["attempts"]) == 4
+    assert resumed.state["attempts"][2]["review_started"] is False
+    assert resumed.state["attempts"][2]["failure_reason"] == "dirty_surface"
+
+
+@pytest.mark.parametrize("broken_engine", ["codex", "claude", "gemini"])
+def test_all_engines_preflight_before_any_review(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, broken_engine: str
+) -> None:
+    harness.args.chain = "claude,codex,gemini"
+    checked: list[str] = []
+    monkeypatch.setattr(harness.runner, "prepare_installation", lambda self: None)
+    monkeypatch.setattr(harness.runner, "preflight", harness.module.Runner.preflight)
+
+    def managed(
+        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+    ) -> None:
+        assert argv[-1] == "--preflight-only"
+        engine = next(
+            e
+            for e, name in harness.module.LAUNCHERS.items()
+            if name == Path(argv[1]).name
+        )
+        checked.append(engine)
+        if engine == broken_engine:
+            raise harness.module.Blocked("synthetic missing tool")
+
+    monkeypatch.setattr(harness.module, "managed", managed)
+    runner = harness.runner(harness.args, harness.directory)
+    with pytest.raises(harness.module.Blocked, match="selected-engine preflight"):
+        runner.run()
+    assert checked == ["claude", "codex", "gemini"]
+    assert runner.state["run_id"] is None
+    assert runner.state["attempts"] == []
+    assert harness.events == harness.launches == []
+
+
+@pytest.mark.parametrize("phase", ["execution", "ready", "preflight"])
+def test_resume_never_retries_an_unrecorded_exit(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    original = harness.module.managed
+
+    def interrupted(
+        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+    ) -> None:
+        if "AGENT_LOOP_REVIEW_ENGINE" not in env:
+            original(argv, log, env, timeout)
+            return
+        harness.module.save(
+            Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+            {
+                "version": 1,
+                "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                "phase": phase,
+                "review_started": False if phase == "preflight" else None,
+            },
+        )
+        # An uncatchable controller interruption has no returned exit to record.
+        raise SystemExit(137)
+
+    monkeypatch.setattr(harness.module, "managed", interrupted)
+    with pytest.raises(SystemExit):
+        harness.runner(harness.args, harness.directory).run()
+    harness.args.resume = harness.args.recover_preflight = True
+    monkeypatch.setattr(harness.module, "managed", original)
+    with pytest.raises(harness.module.Blocked, match="returned no result"):
+        harness.runner(harness.args, harness.directory).run()
+    assert not harness.launches
+
+
+def test_migration_preserves_the_v1_snapshot_and_budget(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness.controls.fail_check = True
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    state_path = harness.directory / "state.json"
+    prior = harness.module.read(state_path)
+    prior["version"] = 1
+    prior.pop("attempts")
+    harness.module.save(state_path, prior)
+    original = harness.module.command
+
+    def command(argv: list[str]) -> str:
+        if argv[:1] == ["git"] and "-C" in argv:
+            if "--show-toplevel" in argv:
+                return str(ROOT)
+            return "" if "status" in argv else HEAD
+        return str(original(argv))
+
+    monkeypatch.setattr(harness.module, "command", command)
+    harness.args.resume = True
+    harness.args.migrate_controller = HEAD
+    harness.controls.fail_check = False
+    runner = harness.runner(harness.args, harness.directory)
+    runner.initialize()
+    assert harness.module.read(harness.directory / "state-v1.json") == prior
+    for key in (
+        "run_id",
+        "config",
+        "pending",
+        "completed",
+        "base",
+        "head",
+        "start_head",
+    ):
+        assert runner.state[key] == prior[key]
+    for name, sha in prior["control_hashes"].items():
+        assert harness.module.digest(harness.directory / "control" / name) == sha
+    assert runner.run() == "converged"
+    assert len(harness.launches) == 4
+
+
+@pytest.mark.parametrize("corruption", ["log", "controller", "result", "head"])
+def test_legacy_reconciliation_rejects_uncertain_evidence(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, corruption: str
+) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+    runner.initialize()
+    pending = {
+        "phase": "launching",
+        "engine": "gemini",
+        "round": 1,
+        "before": HEAD,
+        "folder": "pass-3",
+    }
+    folder = harness.directory / "pass-3"
+    folder.mkdir()
+    (folder / "worker.log").write_text("agy relay surface checkout must be clean\n")
+    for name in ("historical.json", "before-threads.json"):
+        harness.module.save(folder / name, [])
+    backup = harness.directory / "state-v1.json"
+    harness.module.save(backup, runner.state)
+    runner.state["migrations"] = [
+        {
+            "prior_state": backup.name,
+            "prior_state_sha256": harness.module.digest(backup),
+            "prior_control": "control",
+            "prior_control_hashes": runner.state["control_hashes"],
+        }
+    ]
+    monkeypatch.setattr(
+        harness.module, "LEGACY_PREFLIGHT_HASHES", dict(runner.state["control_hashes"])
+    )
+    proof = harness.module.digest(folder / "worker.log")
+    if corruption == "log":
+        (folder / "worker.log").write_text("review interrupted\n")
+    elif corruption == "controller":
+        (runner.control / "run-agy-review.sh").write_text("changed")
+    elif corruption == "result":
+        (folder / "result.json").write_text("{}")
+    else:
+        pending["before"] = BASE
+    with pytest.raises(harness.module.Blocked):
+        runner.reconcile_legacy_preflight(pending, proof)
+    assert not runner.state["attempts"]
+
+
+def test_installation_repair_preserves_dirty_bytes_and_the_original_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-chain-runner")
+    source = tmp_path / "consumer"
+    source.mkdir()
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    workflow = source / ".codex/REVIEW_WORKFLOW.md"
+    workflow.parent.mkdir()
+    workflow.write_text("original review instructions\n")
+    for relative in (
+        "references/local-review-ledger.md",
+        "skills/critique/scripts/review-ledger.js",
+        "skills/critique/scripts/review-ledger.version",
+        "skills/critique/scripts/review-ledger.integrity",
+        "skills/critique/scripts/package.json",
+        "skills/deepcritique/SKILL.md",
+        "skills/critique/SKILL.md",
+        "skills/refactorpass/SKILL.md",
+    ):
+        path = source / ".codex" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("synthetic installation input\n")
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "synthetic review surface",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    revision = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+    ).strip()
+    monkeypatch.chdir(source)
+    directory = tmp_path / "checkpoint"
+    directory.mkdir()
+    runner = module.Runner(
+        SimpleNamespace(repo="example/repo", repair_installation=False), directory
+    )
+    runner.state = {
+        "head": revision,
+        "installation_revision": revision,
+        "config": {"plan": "codex"},
+    }
+    runner.prepare_installation()
+    installed = directory / "installation/native/.codex/REVIEW_WORKFLOW.md"
+    assert installed.read_bytes() == workflow.read_bytes()
+    environment = runner.environment("codex")
+    for key, value in environment.items():
+        if key.startswith("ACTIVELOOM_"):
+            monkeypatch.setenv(key, value)
+    verifier = load("review-launch-state")
+    verifier.verify_installation()
+    installed.write_text("local change that must be preserved\n")
+    with pytest.raises(ValueError, match="installation changed"):
+        verifier.verify_installation()
+    workflow.write_text("later consumer changes must not redefine the pin\n")
+    runner.state["head"] = HEAD
+    runner.args.repair_installation = True
+    runner.prepare_installation()
+    assert installed.read_text() == "original review instructions\n"
+    assert runner.state["installation"]["revision"] == revision
+    preserved = directory / runner.state["installation_history"][0]["directory"]
+    assert (
+        preserved / "native/.codex/REVIEW_WORKFLOW.md"
+    ).read_text() == "local change that must be preserved\n"
+    for key, value in runner.environment("codex").items():
+        if key.startswith("ACTIVELOOM_"):
+            monkeypatch.setenv(key, value)
+    verifier.verify_installation()
+
+
+def test_execution_marker_cannot_be_replaced_by_nested_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-launch-state")
+    marker = tmp_path / "launch.json"
+    monkeypatch.setenv("ACTIVELOOM_LAUNCH_STATE", str(marker))
+    monkeypatch.setenv("ACTIVELOOM_ATTEMPT_ID", "owned-attempt")
+    module.record("preflight", "missing_tool")
+    module.record("execution")
+    execution = marker.read_bytes()
+    with pytest.raises(ValueError, match="cannot return to preflight"):
+        module.record("preflight", "dirty_surface")
+    assert marker.read_bytes() == execution

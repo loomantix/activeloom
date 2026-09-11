@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import io
 import json
 import os
 import re
@@ -19,6 +20,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import tarfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -34,12 +37,25 @@ CONTROL_FILES = [
     "package.json",
     "review-ledger.version",
     "review-ledger.integrity",
+    "review-launch-state.py",
     *LAUNCHERS.values(),
 ]
+# This v1 pair has exactly one dirty-surface diagnostic, followed by exit 1
+# before the mutating Agy invocation. No other legacy log is recovery evidence.
+LEGACY_PREFLIGHT_HASHES = {
+    "review-chain-runner.py": "708b421366df3d04e59dabccbf1e6a9e8358b8f5b7c281f72e39b1d834d370cf",
+    "run-agy-review.sh": "114657daa10c196915d351c7ebc4e8df767bf4fa92b3edbe0a577b095667cd5a",
+}
 
 
 class Blocked(RuntimeError):
     pass
+
+
+class ProcessFailure(Blocked):
+    def __init__(self, message: str, exit_status: int):
+        super().__init__(message)
+        self.exit_status = exit_status
 
 
 def digest(path: Path) -> str:
@@ -96,8 +112,8 @@ def managed(
             try:
                 code = child.wait(timeout=timeout)
                 if code:
-                    raise Blocked(
-                        f"{Path(argv[0]).name} exited {code}; inspect {log.name}"
+                    raise ProcessFailure(
+                        f"{Path(argv[0]).name} exited {code}; inspect {log}", code
                     )
             finally:
                 # Also clean up descendants left behind after the leader exits.
@@ -127,14 +143,21 @@ class Runner:
         self.state: dict[str, Any] = (
             read(self.checkpoint) if self.checkpoint.exists() else {}
         )
+        self.control = directory / self.state.get("control_directory", "control")
+        self.installation_repaired = False
 
     def persist(self) -> None:
         save(self.checkpoint, self.state)
 
+    def verify_control(self) -> None:
+        for name, expected in self.state.get("control_hashes", {}).items():
+            if digest(self.control / name) != expected:
+                raise Blocked(
+                    "pinned controller or launcher changed; reconcile, do not relaunch"
+                )
+
     def helper(self, name: str, *args: str) -> dict[str, Any]:
-        for filename, expected in self.state.get("control_hashes", {}).items():
-            if digest(self.control / filename) != expected:
-                raise Blocked("pinned controller or launcher changed")
+        self.verify_control()
         executable = (
             ["node", str(self.control / "review-ledger.js")]
             if name == "ledger"
@@ -273,10 +296,16 @@ class Runner:
             or Path(".github/workflows/dco.yml").is_file(),
         }
         if self.state:
+            if self.state.get("version") not in (1, 2):
+                raise Blocked("unsupported checkpoint version")
             if not self.args.resume or self.state["config"] != config:
                 raise Blocked(
                     "checkpoint exists; use --resume with the same plan, tier, and gates"
                 )
+            self.verify_control()
+            migration = getattr(self.args, "migrate_controller", None)
+            if migration:
+                self.migrate(migration)
             if (
                 digest(Path(__file__))
                 != self.state["control_hashes"]["review-chain-runner.py"]
@@ -284,11 +313,6 @@ class Runner:
                 raise Blocked(
                     "runner version changed; deliberate checkpoint migration required"
                 )
-            for name, expected in self.state["control_hashes"].items():
-                if digest(self.control / name) != expected:
-                    raise Blocked(
-                        "pinned controller or launcher changed; reconcile, do not relaunch"
-                    )
             return
         if self.args.resume:
             raise Blocked("no checkpoint to resume")
@@ -312,7 +336,7 @@ class Runner:
         os.chmod(self.directory / "authorization.txt", 0o600)
         base = command(["git", "rev-parse", "--verify", self.args.base + "^{commit}"])
         self.state = {
-            "version": 1,
+            "version": 2,
             "config": config,
             "base": base,
             "head": head,
@@ -322,9 +346,491 @@ class Runner:
             "run_id": None,
             "pending": None,
             "completed": [],
+            "attempts": [],
+            "installation_revision": head,
             "status": "prepared",
         }
         self.persist()
+
+    def migrate(self, revision: str) -> None:
+        """Explicitly adopt committed controller bytes, retaining every old file."""
+        if self.state["version"] != 1:
+            if self.state.get("migrations", [{}])[-1].get("revision") == revision:
+                return
+            raise Blocked("only version 1 checkpoints support this migration")
+        source = Path(__file__).resolve().parent
+        root = command(["git", "-C", str(source), "rev-parse", "--show-toplevel"])
+        if (
+            not re.fullmatch(r"[0-9a-f]{40}", revision)
+            or command(["git", "-C", root, "rev-parse", "HEAD"]) != revision
+            or command(["git", "-C", root, "status", "--porcelain"])
+        ):
+            raise Blocked(
+                "migration requires a clean checkout at the explicitly verified controller commit"
+            )
+        if self.boundary() != self.state["head"]:
+            raise Blocked("reconcile the pending review head before migration")
+        backup = self.directory / "state-v1.json"
+        if not backup.exists():
+            save(backup, self.state)
+        elif read(backup) != self.state:
+            raise Blocked("existing migration snapshot differs; reconcile it")
+        replacement = self.directory / ("control-" + revision)
+        if replacement.is_symlink():
+            raise Blocked("migration control directory cannot be a symlink")
+        replacement.mkdir(mode=0o700, exist_ok=True)
+        for name in CONTROL_FILES:
+            expected = digest(source / name)
+            target = replacement / name
+            if target.exists() or target.is_symlink():
+                if digest(target) != expected:
+                    raise Blocked("partial migration snapshot changed")
+            else:
+                shutil.copyfile(source / name, target)
+        migration = {
+            "revision": revision,
+            "prior_state": backup.name,
+            "prior_state_sha256": digest(backup),
+            "prior_control": self.control.name,
+            "prior_control_hashes": self.state["control_hashes"],
+        }
+        self.control = replacement
+        self.state.update(
+            version=2,
+            control_directory=replacement.name,
+            control_hashes={name: digest(replacement / name) for name in CONTROL_FILES},
+            migrations=[migration],
+            attempts=[],
+            installation_revision=self.state["head"],
+        )
+        self.persist()
+
+    def prepare_installation(self) -> None:
+        """Own prompt bytes independently of review edits and global skill links."""
+        directory = self.directory / "installation"
+        if (
+            getattr(self.args, "repair_installation", False)
+            and not self.installation_repaired
+        ):
+            if directory.is_symlink():
+                raise Blocked("review installation cannot be a symlink")
+            if directory.exists():
+                preserved = self.directory / (
+                    "installation-preserved-" + uuid.uuid4().hex
+                )
+                directory.rename(preserved)
+                self.state.setdefault("installation_history", []).append(
+                    {
+                        "directory": preserved.name,
+                        "installation": self.state.get("installation"),
+                    }
+                )
+            self.state.pop("installation", None)
+            self.persist()
+            self.installation_repaired = True
+        if "installation" in self.state:
+            return
+        if directory.is_symlink():
+            raise Blocked("review installation cannot be a symlink")
+        directory.mkdir(mode=0o700, exist_ok=True)
+        native = directory / "native"
+        if native.exists():
+            raise Blocked(f"partial review installation requires inspection: {native}")
+        native.mkdir(mode=0o700)
+        revision = self.state["installation_revision"]
+        roots = [
+            ".codex" if e == "codex" else ".claude"
+            for e in self.engines()
+            if e != "gemini"
+        ]
+        files: dict[str, str] = {}
+        if roots:
+            archive = subprocess.check_output(
+                ["git", "archive", revision, *roots], timeout=120
+            )
+            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+                for member in tar:
+                    relative = Path(member.name)
+                    if (
+                        relative.is_absolute()
+                        or ".." in relative.parts
+                        or relative.parts[0] not in roots
+                    ):
+                        raise Blocked("unsafe path in review installation")
+                    target = native / relative
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                    elif member.isfile():
+                        data = tar.extractfile(member)
+                        assert data
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(data.read())
+                        target.chmod(member.mode & 0o755)
+                        files[member.name] = digest(target)
+                    else:
+                        raise Blocked(
+                            f"review installation requires regular files: {member.name}"
+                        )
+        manifest = directory / "manifest.json"
+        for root in roots:
+            required = [
+                "REVIEW_WORKFLOW.md",
+                "references/local-review-ledger.md",
+                "skills/critique/scripts/review-ledger.js",
+                "skills/critique/scripts/review-ledger.version",
+                "skills/critique/scripts/review-ledger.integrity",
+                "skills/critique/scripts/package.json",
+                *[
+                    f"skills/{skill}/SKILL.md"
+                    for skill in ("deepcritique", "critique", "refactorpass")
+                ],
+            ]
+            for name in required:
+                if f"{root}/{name}" not in files:
+                    raise Blocked(f"review installation is incomplete: {root}/{name}")
+        save(manifest, {"revision": revision, "files": files})
+        self.state["installation"] = {
+            "revision": revision,
+            "manifest_sha256": digest(manifest),
+        }
+        self.persist()
+
+    def engines(self) -> list[str]:
+        return list(
+            dict.fromkeys(
+                "gemini" if e.strip() == "antigravity" else e.strip()
+                for e in self.state["config"]["plan"].split(",")
+            )
+        )
+
+    def environment(self, engine: str) -> dict[str, str]:
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))
+        }
+        for key in ("CLAUDE_REVIEW_CLI", "AGY_REVIEW_CLI", "CODEX_REVIEW_CLI"):
+            env.pop(key, None)
+        installation = self.directory / "installation"
+        env.update(
+            ACTIVELOOM_INSTALLATION_MANIFEST=str(installation / "manifest.json"),
+            ACTIVELOOM_INSTALLATION_SHA256=self.state["installation"][
+                "manifest_sha256"
+            ],
+            GH_REPO=self.args.repo,
+        )
+        if engine == "gemini":
+            checkout = installation / "agy"
+            match = re.search(
+                r'^agy_surface_sha="([0-9a-f]{40})"$',
+                (self.control / LAUNCHERS[engine]).read_text(),
+                re.M,
+            )
+            if not match:
+                raise Blocked("Agy launcher lacks a trusted surface pin")
+            if not checkout.exists():
+                command(["git", "init", str(checkout)])
+                command(
+                    [
+                        "git",
+                        "-C",
+                        str(checkout),
+                        "remote",
+                        "add",
+                        "origin",
+                        "https://github.com/loomantix/activeloom.git",
+                    ]
+                )
+                command(
+                    [
+                        "git",
+                        "-C",
+                        str(checkout),
+                        "fetch",
+                        "--depth=1",
+                        "origin",
+                        match[1],
+                    ]
+                )
+                command(
+                    [
+                        "git",
+                        "-c",
+                        "core.hooksPath=/dev/null",
+                        "-C",
+                        str(checkout),
+                        "checkout",
+                        "--detach",
+                        match[1],
+                    ]
+                )
+            if checkout.is_symlink():
+                raise Blocked("Agy installation cannot be a symlink")
+            env["ACTIVELOOM_REVIEW_SURFACE"] = str(checkout / ".agents")
+        else:
+            env["ACTIVELOOM_REVIEW_SURFACE"] = str(
+                installation / "native" / (".codex" if engine == "codex" else ".claude")
+            )
+        return env
+
+    def launcher_command(self, engine: str, head: str, number: int) -> list[str]:
+        return [
+            sys.executable if engine == "codex" else "bash",
+            str(self.control / LAUNCHERS[engine]),
+            *self.scope(head),
+            "--base",
+            self.state["base"],
+            "--round",
+            str(number),
+        ]
+
+    def preflight(self) -> None:
+        self.verify_control()
+        self.prepare_installation()
+        head = self.boundary()
+        failures = []
+        for engine in self.engines():
+            try:
+                managed(
+                    [*self.launcher_command(engine, head, 1), "--preflight-only"],
+                    self.directory / f"preflight-{engine}.log",
+                    self.environment(engine),
+                    180,
+                )
+            except (Blocked, OSError, subprocess.SubprocessError) as error:
+                failures.append(f"{engine}: {error}")
+        if failures:
+            raise Blocked(
+                "selected-engine preflight failed; "
+                + "; ".join(failures)
+                + "; --resume --repair-installation preserves and replaces damaged installations"
+            )
+
+    def launch(self, pending: dict[str, Any]) -> None:
+        self.verify_control()
+        if self.boundary() != pending["before"]:
+            raise Blocked("head changed before reviewer launch")
+        folder = self.directory / pending["folder"]
+        attempt = {
+            "attempt_id": uuid.uuid4().hex,
+            "engine": pending["engine"],
+            "round": pending["round"],
+            "folder": pending["folder"],
+            "review_started": None,
+            "exit_status": None,
+            "failure_reason": None,
+            "phase": "launching",
+        }
+        self.state.setdefault("attempts", []).append(attempt)
+        pending.update(phase="launching", attempt_id=attempt["attempt_id"])
+        self.persist()
+        env = self.environment(pending["engine"])
+        env.update(
+            ACTIVELOOM_LAUNCH_STATE=str(folder / "launch.json"),
+            ACTIVELOOM_ATTEMPT_ID=attempt["attempt_id"],
+            AGENT_LOOP_REVIEW_RESULT_FILE=str(folder / "result.json"),
+            AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE=str(
+                folder / "historical.json"
+            ),
+            AGENT_LOOP_PR_NUMBER=str(self.args.pr),
+            AGENT_LOOP_PR_HEAD_SHA=pending["before"],
+            AGENT_LOOP_REVIEW_BASE_SHA=self.state["base"],
+            AGENT_LOOP_REVIEW_ROUND=str(pending["round"]),
+            AGENT_LOOP_REVIEW_ENGINE=pending["engine"],
+            AGENT_LOOP_LOG_DIR=str(folder),
+        )
+        error: BaseException | None = None
+        try:
+            print(
+                f"Starting {pending['engine']} pass {pending['round']} at {pending['before']}",
+                flush=True,
+            )
+            managed(
+                self.launcher_command(
+                    pending["engine"], pending["before"], pending["round"]
+                ),
+                folder / "worker.log",
+                env,
+                3660,
+            )
+            attempt.update(exit_status=0, review_started=True, phase="returned")
+            pending["phase"] = "returned"
+        except (
+            Blocked,
+            OSError,
+            subprocess.SubprocessError,
+            KeyboardInterrupt,
+        ) as caught:
+            error = caught
+            attempt["exit_status"] = getattr(caught, "exit_status", None)
+            attempt["failure_reason"] = "execution_failed_or_unknown"
+            marker = folder / "launch.json"
+            if marker.is_file():
+                evidence = read(marker)
+                if (
+                    evidence.get("attempt_id") == attempt["attempt_id"]
+                    and evidence.get("version") == 1
+                ):
+                    attempt["launch_sha256"] = digest(marker)
+                    if (
+                        evidence.get("phase") == "preflight"
+                        and evidence.get("review_started") is False
+                    ):
+                        attempt.update(
+                            review_started=False,
+                            phase="preflight_failed",
+                            failure_reason=evidence.get("failure_reason"),
+                        )
+                        pending["phase"] = "preflight_failed"
+                    elif evidence.get("phase") == "execution":
+                        attempt["phase"] = pending["phase"] = "execution_failed"
+        finally:
+            self.persist()
+        if error:
+            raise error
+
+    def recover_preflight(self, pending: dict[str, Any]) -> None:
+        if not getattr(self.args, "recover_preflight", False):
+            raise Blocked(
+                "preflight-only failure; repair the installation and use --resume --recover-preflight"
+            )
+        self.verify_control()
+        head = self.boundary()
+        if head != pending["before"] or head != self.state["head"]:
+            raise Blocked("head changed; preflight recovery requires reconciliation")
+        decision = self.decision(head)
+        if (
+            decision.get("passes") != self.state["completed"]
+            or decision.get("status") != "next"
+            or (decision.get("engine"), decision.get("round"))
+            != (pending["engine"], pending["round"])
+        ):
+            raise Blocked(
+                "ledger changed; preflight recovery cannot change the owed pass or budget"
+            )
+        folder = self.directory / pending["folder"]
+        if (folder / "result.json").exists() or digest(
+            folder / "historical.json"
+        ) != pending["historical_sha256"]:
+            raise Blocked("review evidence changed; reconcile before recovery")
+        attempt = self.state["attempts"][-1]
+        if (
+            attempt.get("attempt_id") != pending.get("attempt_id")
+            or attempt.get("review_started") is not False
+            or attempt.get("phase") != "preflight_failed"
+            or digest(folder / "launch.json") != attempt.get("launch_sha256")
+        ):
+            raise Blocked("worker exit is unknown; no proven preflight-only failure")
+        retry = folder / ("retry-" + str(len(self.state["attempts"])))
+        if retry.exists() or retry.is_symlink():
+            raise Blocked("retry directory already contains evidence; reconcile it")
+        retry.mkdir(mode=0o700)
+        shutil.copyfile(folder / "historical.json", retry / "historical.json")
+        pending["folder"] = str(retry.relative_to(self.directory))
+        pending["phase"] = "prepared"
+        self.persist()
+        self.launch(pending)
+
+    def reconcile_legacy_preflight(
+        self, pending: dict[str, Any], expected_log: str
+    ) -> None:
+        """Narrow, operator-requested proof for the supported pre-instrumentation pair."""
+        if (
+            self.state.get("attempts")
+            or pending.get("phase") != "launching"
+            or pending.get("engine") != "gemini"
+            or not self.state.get("migrations")
+        ):
+            raise Blocked(
+                "legacy preflight reconciliation does not apply to this attempt"
+            )
+        migration = self.state["migrations"][0]
+        if (
+            digest(self.directory / migration["prior_state"])
+            != migration["prior_state_sha256"]
+        ):
+            raise Blocked("legacy migration evidence changed")
+        for name, sha in migration["prior_control_hashes"].items():
+            if digest(self.directory / migration["prior_control"] / name) != sha:
+                raise Blocked("legacy controller evidence changed")
+        if any(
+            migration["prior_control_hashes"].get(name) != sha
+            for name, sha in LEGACY_PREFLIGHT_HASHES.items()
+        ):
+            raise Blocked(
+                "unsupported legacy launcher; unknown exits require reconciliation"
+            )
+        folder = self.directory / pending["folder"]
+        log = folder / "worker.log"
+        if (
+            digest(log) != expected_log
+            or log.read_bytes() != b"agy relay surface checkout must be clean\n"
+            or {p.name for p in folder.iterdir()}
+            != {"worker.log", "historical.json", "before-threads.json"}
+        ):
+            raise Blocked("legacy log does not prove a preflight-only failure")
+        if self.boundary() != pending["before"]:
+            raise Blocked("legacy review head changed; reconcile it")
+        attempt = {
+            "attempt_id": uuid.uuid4().hex,
+            "engine": pending["engine"],
+            "round": pending["round"],
+            "folder": pending["folder"],
+            "review_started": False,
+            "exit_status": 1,
+            "phase": "preflight_failed",
+            "failure_reason": "dirty_surface",
+            "legacy_log_sha256": expected_log,
+        }
+        save(
+            folder / "launch.json",
+            {
+                "version": 1,
+                "attempt_id": attempt["attempt_id"],
+                "phase": "preflight",
+                "review_started": False,
+                "failure_reason": "dirty_surface",
+                "proof": "explicit legacy reconciliation against pinned pre-execution exit",
+                "legacy_log_sha256": expected_log,
+            },
+        )
+        attempt["launch_sha256"] = digest(folder / "launch.json")
+        self.state["attempts"].append(attempt)
+        pending.update(phase="preflight_failed", attempt_id=attempt["attempt_id"])
+        self.persist()
+
+    def recovery_command(self) -> str:
+        config = self.state["config"]
+        argv = [
+            sys.executable,
+            str(self.control / "review-chain-runner.py"),
+            "--repo",
+            config["repo"],
+            "--pr",
+            str(config["pr"]),
+            "--base",
+            config["base_argument"],
+            "--tier",
+            config["tier"],
+            "--author",
+            config["author"],
+            "--" + config["mode"],
+            config["plan"],
+            "--authorization-file",
+            str(self.directory / "authorization.txt"),
+            "--resume",
+        ]
+        if config["mode"] == "cycle":
+            argv.append("--until-converged")
+        if config["trigger"]:
+            argv.extend(["--trigger", str(config["trigger"])])
+        if config["require_dco"]:
+            argv.append("--require-dco")
+        for check in config["checks"]:
+            argv.extend(["--check", check])
+        if (self.state.get("pending") or {}).get("phase") == "preflight_failed":
+            argv.append("--recover-preflight")
+        return shlex.join(argv)
 
     def decision(self, head: str) -> dict[str, Any]:
         result = self.helper("controller", "next-pass", *self.scope(head))
@@ -362,7 +868,7 @@ class Runner:
                 "reviewer reported blocked; inspect saved result and recover the owed pass"
             )
         # A late failure after result creation must not be silently accepted.
-        if pending["phase"] == "launching":
+        if pending["phase"] != "returned":
             raise Blocked(
                 "worker exit is unknown; reconcile before accepting its saved result"
             )
@@ -446,6 +952,7 @@ class Runner:
             if self.boundary() != self.state["head"]:
                 raise Blocked("terminal result belongs to a different head")
             return str(self.state["status"])
+        self.preflight()
         self.dco(self.boundary())
         if self.state.get("finishing"):
             terminal = self.state["finishing"]
@@ -540,7 +1047,16 @@ class Runner:
             self.persist()
         while True:
             if self.state["pending"]:
-                self.complete_pass(self.state["pending"])
+                pending = self.state["pending"]
+                legacy_proof = getattr(self.args, "reconcile_legacy_preflight", None)
+                if legacy_proof and pending["phase"] == "launching":
+                    self.reconcile_legacy_preflight(pending, legacy_proof)
+                if pending["phase"] == "preflight_failed":
+                    self.recover_preflight(pending)
+                elif pending["phase"] == "prepared":
+                    self.launch(pending)
+                else:
+                    self.complete_pass(pending)
                 continue
             head = self.boundary()
             if head != self.state["head"]:
@@ -608,42 +1124,7 @@ class Runner:
             }
             self.state["pending"] = pending
             self.persist()
-            env = {
-                k: v for k, v in os.environ.items() if not k.startswith("AGENT_LOOP_")
-            }
-            for key in ("CLAUDE_REVIEW_CLI", "AGY_REVIEW_CLI", "CODEX_REVIEW_CLI"):
-                env.pop(key, None)
-            env.update(
-                AGENT_LOOP_REVIEW_RESULT_FILE=str(folder / "result.json"),
-                AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE=str(
-                    folder / "historical.json"
-                ),
-                AGENT_LOOP_PR_NUMBER=str(self.args.pr),
-                AGENT_LOOP_PR_HEAD_SHA=head,
-                AGENT_LOOP_REVIEW_BASE_SHA=self.state["base"],
-                AGENT_LOOP_REVIEW_ROUND=str(number),
-                AGENT_LOOP_REVIEW_ENGINE=engine,
-                AGENT_LOOP_LOG_DIR=str(folder),
-                GH_REPO=self.args.repo,
-            )
-            print(f"Starting {engine} pass {number} at {head}", flush=True)
-            launcher = self.control / LAUNCHERS[engine]
-            managed(
-                [
-                    sys.executable if engine == "codex" else "bash",
-                    str(launcher),
-                    *self.scope(head),
-                    "--base",
-                    self.state["base"],
-                    "--round",
-                    str(number),
-                ],
-                folder / "worker.log",
-                env,
-                3660,
-            )
-            pending["phase"] = "returned"
-            self.persist()
+            self.launch(pending)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -675,7 +1156,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--require-dco", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--recover-preflight",
+        action="store_true",
+        help="retry a proven preflight-only attempt within the same run",
+    )
+    parser.add_argument(
+        "--migrate-controller",
+        metavar="COMMIT",
+        help="explicitly adopt this clean controller commit for a v1 checkpoint",
+    )
+    parser.add_argument(
+        "--reconcile-legacy-preflight",
+        metavar="LOG_SHA256",
+        help="explicitly verify a supported v1 pre-execution rejection log",
+    )
+    parser.add_argument(
+        "--repair-installation",
+        action="store_true",
+        help="preserve and replace the managed installation at its existing pins",
+    )
     args = parser.parse_args(argv)
+    if (
+        args.recover_preflight or args.migrate_controller or args.repair_installation
+    ) and not args.resume:
+        parser.error("recovery and controller migration require --resume")
+    if args.reconcile_legacy_preflight and (
+        not args.recover_preflight
+        or not re.fullmatch(r"[0-9a-f]{64}", args.reconcile_legacy_preflight)
+    ):
+        parser.error(
+            "legacy proof requires --recover-preflight and the reviewed log SHA256"
+        )
     if not re.fullmatch(r"[0-9a-f]{40}", args.base):
         parser.error("--base must be a pinned full commit SHA")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or args.pr < 1:
@@ -715,6 +1227,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"review-chain blocked: {error}; checkpoint: {directory}",
                 file=sys.stderr,
             )
+            if runner.state:
+                print(
+                    f"After reconciliation, in {runner.state['config']['worktree']}:\n{runner.recovery_command()}",
+                    file=sys.stderr,
+                )
             return 2
         print(
             json.dumps(
