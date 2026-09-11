@@ -93,6 +93,7 @@ def managed(
             child = subprocess.Popen(
                 argv, stdout=output, stderr=output, env=env, start_new_session=True
             )
+            pending: BaseException | None = None
 
             def signal_group(sig: int) -> None:
                 try:
@@ -114,10 +115,20 @@ def managed(
                         if child.returncode is not None
                         else "exit not confirmed"
                     )
+                    # This raise replaces any in-flight failure, so carry its
+                    # cause. TimeoutExpired's text includes argv; keep it out.
+                    if isinstance(pending, subprocess.TimeoutExpired):
+                        cause = f"; worker timed out after {pending.timeout:g}s"
+                    elif isinstance(pending, Blocked):
+                        cause = f"; worker failure: {pending}"
+                    elif pending is not None:
+                        cause = f"; worker failure: {type(pending).__name__}"
+                    else:
+                        cause = ""
                     raise Blocked(
                         f"{Path(argv[0]).name} {exit_state}; process-group cleanup "
                         f"denied for {child.pid}; reconcile surviving processes "
-                        "before resuming"
+                        f"before resuming{cause}"
                     ) from error
 
             try:
@@ -126,6 +137,9 @@ def managed(
                     raise Blocked(
                         f"{Path(argv[0]).name} exited {code}; inspect {log.name}"
                     )
+            except BaseException as failure:
+                pending = failure
+                raise
             finally:
                 # Also clean up descendants left behind after the leader exits.
                 signal_group(signal.SIGTERM)

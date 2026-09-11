@@ -466,6 +466,41 @@ def test_managed_cleanup_denial_does_not_hide_failed_exit(
         )
 
 
+def test_managed_cleanup_denial_keeps_timeout_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-chain-runner")
+    real_killpg = os.killpg
+    groups: list[int] = []
+
+    def killpg(pid: int, sig: int) -> None:
+        groups.append(pid)
+        if sig:
+            raise PermissionError(1, "Operation not permitted")
+        real_killpg(pid, sig)
+
+    monkeypatch.setattr(module.os, "killpg", killpg)
+    try:
+        with pytest.raises(module.Blocked) as caught:
+            module.managed(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                tmp_path / "worker.log",
+                dict(os.environ),
+                1,
+            )
+    finally:
+        for pid in set(groups):
+            try:
+                real_killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    message = str(caught.value)
+    assert "exit not confirmed" in message
+    assert "process-group cleanup denied" in message
+    assert "worker timed out after 1s" in message
+    assert "sleep" not in message
+
+
 def test_managed_timeout_stops_worker(tmp_path: Path) -> None:
     module = load("review-chain-runner")
     with pytest.raises(subprocess.TimeoutExpired):
