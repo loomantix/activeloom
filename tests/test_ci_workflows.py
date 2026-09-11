@@ -222,7 +222,10 @@ def test_pytest_run_pins_coverage_and_names_the_branch_config() -> None:
     steps = _workflow("ci.yml")["jobs"]["python-types-and-tests"]["steps"]
     install = next(s for s in steps if s.get("name") == "Install pinned tooling")
     assert "'coverage==7.16.0'" in install["run"]
+    assert "'pytest-xdist==3.8.0'" in install["run"]
     pytest_step = next(
         s for s in steps if s.get("run", "").startswith("python3 -m pytest")
     )
     assert "--cov-config=pyproject.toml" in pytest_step["run"]
+    assert "-n 2" in pytest_step["run"]
+    assert "--dist worksteal" in pytest_step["run"]

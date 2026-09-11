@@ -1156,6 +1156,7 @@ def test_v3_review_hook_cannot_self_authorize_direct_push(
             codex_review_hook=hook,
             claude_review_hook=_clean_v3_hook("claude"),
         ),
+        timeout=120,
     )
     assert result.returncode == 0, result.stderr + result.stdout
     rejection = (consumer[3] / "direct-v3-push.stderr").read_text(encoding="utf-8")
