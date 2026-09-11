@@ -1,0 +1,138 @@
+name: Publish activeloom
+
+on:
+  push:
+    tags:
+      - 'activeloom-v*'
+
+permissions:
+  contents: read
+
+# This workflow asserts an exact npm CLI version, so it pins Node to the exact
+# patch that ships it rather than tracking `.nvmrc`. Both jobs must stay on the
+# same pair. See cli/RELEASING.md.
+env:
+  RELEASE_NODE_VERSION: 24.18.0
+  RELEASE_NPM_VERSION: 11.16.0
+
+concurrency:
+  group: publish-activeloom-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore the annotated release tag
+        run: bash .github/scripts/restore-release-tag.sh
+      - name: Verify tagged commit is on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.RELEASE_NODE_VERSION }}
+
+      - name: Verify tag matches package.json version
+        working-directory: cli
+        run: |
+          tag_version="${GITHUB_REF_NAME#activeloom-v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag version ($tag_version) does not match package.json ($pkg_version)"
+            exit 1
+          fi
+          echo "Preparing activeloom@$pkg_version"
+
+      - name: Run CLI unit tests
+        run: node --test tests/cli/*.test.js
+
+      - name: Pack publish artifact
+        working-directory: cli
+        run: |
+          mkdir -p "$RUNNER_TEMP/activeloom-package"
+          npm pack --pack-destination "$RUNNER_TEMP/activeloom-package"
+
+      - name: Verify signed release and seal the artifact
+        env:
+          RELEASE_SIGNER: 8B680106EACC77AA538529E61E2DF3CE6E27C317
+        run: |
+          set -euo pipefail
+          test "$(npm --version)" = "$RELEASE_NPM_VERSION"
+          for tool in node npm python3 git gpg openssl; do
+            command -v "$tool" >/dev/null || {
+              echo "::error::missing required tool: $tool"
+              exit 1
+            }
+          done
+          node --version
+          git --version
+          gpg --version
+          openssl version
+          curl --fail --silent --show-error --location --proto '=https' \
+            https://github.com/BaxterDevs.gpg -o "$RUNNER_TEMP/release-signer.asc"
+          gpg --batch --import "$RUNNER_TEMP/release-signer.asc"
+          set -- "$RUNNER_TEMP"/activeloom-package/*.tgz
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "::error::Expected exactly one package tarball"
+            exit 1
+          fi
+          python3 .codex/skills/publish-npm-package/scripts/release-preflight.py \
+            --package-dir cli --artifact "$1" \
+            --tag "$GITHUB_REF_NAME" --phase publish --access public \
+            --signer-fingerprint "$RELEASE_SIGNER" \
+            --output "$RUNNER_TEMP/activeloom-package/preflight.json"
+          cd "$RUNNER_TEMP/activeloom-package"
+          sha256sum ./*.tgz preflight.json > SHA256SUMS
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: activeloom-package
+          path: ${{ runner.temp }}/activeloom-package/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  publish:
+    name: Stage for independent npm approval
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    # A tag-triggered run executes the workflow definition from the tagged ref.
+    # The environment's protection rules live in repository settings, outside
+    # the ref's reach, and are what actually gate publication; scope the npm
+    # Trusted Publisher to this environment so the gate is unavoidable.
+    environment: npm-publish
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: activeloom-package
+          path: package
+      # registry-url writes token auth config that masks Trusted Publisher OIDC (actions/setup-node#1551).
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.RELEASE_NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Stage the verified tarball
+        run: |
+          set -euo pipefail
+          test "$(npm --version)" = "$RELEASE_NPM_VERSION"
+          cd package
+          sha256sum --check --strict SHA256SUMS
+          set -- ./*.tgz
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "::error::Expected exactly one package tarball"
+            exit 1
+          fi
+          npm stage publish "$1" --registry=https://registry.npmjs.org --access public --provenance --ignore-scripts
