@@ -258,6 +258,7 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
         fs.mkdirSync(destRoot, { recursive: true });
         const staging = fs.mkdtempSync(path.join(destRoot, `.tmp-${name}-`));
         let backup = null;
+        let promoted = false;
         try {
           copyTree(src, staging);
           let destExists = false;
@@ -274,13 +275,17 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
           }
           try {
             fs.renameSync(staging, dest);
+            promoted = true;
           } catch (renameError) {
             if (backup) {
               try {
                 fs.renameSync(backup, dest);
                 backup = null;
-              } catch {
-                // best-effort restore
+              } catch (restoreError) {
+                throw new Error(
+                  `${renameError.message}; could not restore the original skill: ${restoreError.message}. Original skill preserved at ${backup}.`,
+                  { cause: renameError },
+                );
               }
             }
             throw renameError;
@@ -288,7 +293,7 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
           ui.step(`installed ${ui.bold(name)} to ${dest}`);
         } finally {
           fs.rmSync(staging, { recursive: true, force: true });
-          if (backup) {
+          if (backup && promoted) {
             fs.rmSync(backup, { recursive: true, force: true });
           }
         }

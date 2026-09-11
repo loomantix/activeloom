@@ -1049,7 +1049,100 @@ test('add preserves an existing skill when replacement copy fails', async () => 
   }
 });
 
-test('add replaces an existing skill atomically when force is passed and cleans up temp directories', async () => {
+for (const restoreFails of [false, true]) {
+  test(`add preserves the original skill when promotion fails and restoration ${restoreFails ? 'fails' : 'succeeds'}`, async () => {
+    const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+    const originalRename = fs.renameSync;
+    try {
+      const upstreamSkill = path.join(
+        upstream,
+        '.claude',
+        'skills',
+        'critique',
+      );
+      const destDir = path.join(home, '.claude', 'skills');
+      const destSkill = path.join(destDir, 'critique');
+      for (const dir of [upstreamSkill, destSkill]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(
+        path.join(upstreamSkill, 'SKILL.md'),
+        '# New Critique\n',
+      );
+      fs.writeFileSync(
+        path.join(destSkill, 'SKILL.md'),
+        '# Original Critique\n',
+      );
+
+      fs.renameSync = (from, to) => {
+        if (to === destSkill && !path.basename(from).includes('-old-')) {
+          if (restoreFails) {
+            // A competing installer claims the destination between renames.
+            // Both promotion and restoration then fail on the real filesystem.
+            fs.mkdirSync(destSkill);
+            fs.writeFileSync(path.join(destSkill, 'concurrent.txt'), 'keep me');
+          } else {
+            throw new Error('simulated promotion failure');
+          }
+        }
+        return originalRename(from, to);
+      };
+
+      let failure;
+      await assert.rejects(
+        () =>
+          addLib.add({
+            skills: ['critique'],
+            upstreamDir: upstream,
+            facts: facts({ homeDir: home }),
+            harnesses: ['claude'],
+            dryRun: false,
+            force: true,
+          }),
+        (error) => {
+          failure = error;
+          return true;
+        },
+      );
+      const remaining = fs.readdirSync(destDir);
+      let originalDir = destSkill;
+      if (restoreFails) {
+        const backups = remaining.filter((name) =>
+          name.startsWith('.tmp-critique-old-'),
+        );
+        assert.strictEqual(backups.length, 1);
+        originalDir = path.join(destDir, backups[0]);
+        assert.ok(
+          failure.message.includes(
+            `Original skill preserved at ${originalDir}`,
+          ),
+        );
+        assert.strictEqual(
+          fs.readFileSync(path.join(destSkill, 'concurrent.txt'), 'utf8'),
+          'keep me',
+        );
+        assert.deepStrictEqual(
+          remaining.sort(),
+          [backups[0], 'critique'].sort(),
+        );
+      } else {
+        assert.match(failure.message, /simulated promotion failure/);
+        assert.deepStrictEqual(remaining, ['critique']);
+      }
+      assert.strictEqual(
+        fs.readFileSync(path.join(originalDir, 'SKILL.md'), 'utf8'),
+        '# Original Critique\n',
+      );
+    } finally {
+      fs.renameSync = originalRename;
+      fs.rmSync(upstream, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
+
+test('add replaces an existing skill when force is passed and cleans up temp directories', async () => {
   const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
   try {
