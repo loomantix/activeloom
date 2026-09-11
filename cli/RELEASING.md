@@ -54,9 +54,13 @@ Because npm OIDC Trusted Publishing requires the package to exist on npm before
 package settings and OIDC trust can be configured, the initial release
 `activeloom@0.1.0` requires a tightly gated manual bootstrap publication:
 
-1. Confirm package absence on the registry: `npm view activeloom` must return 404.
+Use Node 24.18.0 and npm 11.16.0 for the local helpers as well as CI.
+
+1. Confirm package absence on the registry:
+   `npm view activeloom --registry=https://registry.npmjs.org` must return 404.
 2. Build the release tarball once:
    ```bash
+   mkdir -p /tmp/activeloom-bootstrap
    (cd cli && npm pack --pack-destination /tmp/activeloom-bootstrap)
    ```
 3. Run preflight in prepare phase outside the git worktree:
@@ -69,41 +73,77 @@ package settings and OIDC trust can be configured, the initial release
      --access public \
      --output /tmp/activeloom-bootstrap/preflight.json
    ```
-4. Merge the release PR to `main` with explicit merge authorization.
+4. Merge the release PR to `main` with explicit merge authorization. Continue in a
+   clean, isolated checkout of that merged release commit, retaining the original
+   tarball outside the checkout. Verify the packed package still matches the
+   release source; if merge changes affected the package, restart preparation.
 5. Create and sign the annotated tag:
    ```bash
    git tag -s activeloom-v0.1.0 -m "activeloom 0.1.0" <commit>
    git verify-tag activeloom-v0.1.0
    ```
-6. Stop for credential-use authorization before `npm login` with interactive 2FA.
-   Verify identity with `npm whoami --registry=https://registry.npmjs.org`.
-7. Stop for manual-publish authorization, then publish the inspected tarball:
+6. Validate the signed tag against the approved signer and release checkout:
    ```bash
-   npm publish /tmp/activeloom-bootstrap/activeloom-0.1.0.tgz \
-     --ignore-scripts \
-     --access public \
-     --registry=https://registry.npmjs.org
-   ```
-8. Verify artifact integrity using `--provenance unavailable` (manual publish carries
-   registry signatures but no CI SLSA attestation):
-   ```bash
-   python3 .codex/skills/publish-npm-package/scripts/verify-published-package.py \
-     --package activeloom --version 0.1.0 \
-     --artifact /tmp/activeloom-bootstrap/activeloom-0.1.0.tgz --access public \
-     --provenance unavailable \
-     --source-repository https://github.com/loomantix/activeloom \
-     --tag activeloom-v0.1.0 --commit <commit> \
-     --repository-dir . --remote origin \
+   python3 .codex/skills/publish-npm-package/scripts/release-preflight.py \
+     --package-dir cli \
+     --artifact /tmp/activeloom-bootstrap/activeloom-0.1.0.tgz \
+     --tag activeloom-v0.1.0 --phase tag --access public \
      --signer-fingerprint 8B680106EACC77AA538529E61E2DF3CE6E27C317 \
-     --output /tmp/activeloom-bootstrap/verification.json
+     --output /tmp/activeloom-bootstrap/tag-preflight.json
    ```
-9. Configure Trusted Publisher on npm:
-   - GitHub Owner: `loomantix`
-   - Repository: `activeloom`
-   - Workflow: `publish-activeloom.yml`
-   - Environment: `npm-publish`
-   - Allowed action: `npm stage publish`
-10. Log out via `npm logout --registry=https://registry.npmjs.org` and revoke any
+7. Obtain explicit tag-push authorization, then run:
+   ```bash
+   git push origin refs/tags/activeloom-v0.1.0
+   ```
+   This starts the tag-triggered workflow. Leave its `npm-publish` environment
+   unapproved for bootstrap; this version uses the manual path below. Do not stage
+   the same version before or after the manual publication. Preserve the tag and
+   workflow run as release history.
+8. Before credential use, verify the remote tag matches and the version remains
+   unpublished:
+   ```bash
+   python3 .codex/skills/publish-npm-package/scripts/release-preflight.py \
+     --package-dir cli \
+     --artifact /tmp/activeloom-bootstrap/activeloom-0.1.0.tgz \
+     --tag activeloom-v0.1.0 --phase publish --access public \
+     --signer-fingerprint 8B680106EACC77AA538529E61E2DF3CE6E27C317 \
+     --output /tmp/activeloom-bootstrap/publish-preflight.json
+   ```
+9. Stop for credential-use authorization before `npm login` with interactive 2FA.
+   Verify identity with `npm whoami --registry=https://registry.npmjs.org`.
+10. Stop for manual-publish authorization, then publish the inspected tarball:
+
+```bash
+npm publish /tmp/activeloom-bootstrap/activeloom-0.1.0.tgz \
+  --ignore-scripts \
+  --access public \
+  --registry=https://registry.npmjs.org
+```
+
+11. Verify artifact integrity using `--provenance unavailable` (manual publish carries
+    registry signatures but no CI SLSA attestation):
+
+```bash
+python3 .codex/skills/publish-npm-package/scripts/verify-published-package.py \
+  --package activeloom --version 0.1.0 \
+  --artifact /tmp/activeloom-bootstrap/activeloom-0.1.0.tgz --access public \
+  --provenance unavailable \
+  --source-repository https://github.com/loomantix/activeloom \
+  --tag activeloom-v0.1.0 --commit <commit> \
+  --repository-dir . --remote origin \
+  --signer-fingerprint 8B680106EACC77AA538529E61E2DF3CE6E27C317 \
+  --output /tmp/activeloom-bootstrap/verification.json
+```
+
+12. Configure Trusted Publisher on npm:
+
+- GitHub Owner: `loomantix`
+- Repository: `activeloom`
+- Workflow: `publish-activeloom.yml`
+- Environment: `npm-publish`
+- Allowed action: `npm stage publish`
+
+13. Log out via `npm logout --registry=https://registry.npmjs.org` and revoke any
     temporary credentials. Subsequent releases use the automated staged workflow.
 
 ## Current upstream contracts
