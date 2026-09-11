@@ -522,6 +522,119 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         assert "Do not launch another engine" in argv[-1]
 
 
+def test_codex_launcher_records_execution_and_forwards_run_id(
+    tmp_path: Path,
+) -> None:
+    import shutil
+
+    launcher = tmp_path / "run-codex-review.py"
+    shutil.copyfile(SCRIPTS / launcher.name, launcher)
+    shutil.copyfile(
+        SCRIPTS / "review-launch-state.py", tmp_path / "review-launch-state.py"
+    )
+    handoff = tmp_path / "handoff.json"
+    (tmp_path / "local-review-handoff.py").write_text(
+        "import json, os, sys\n"
+        "open(os.environ['HANDOFF'], 'w').write(json.dumps(sys.argv[1:]))\n"
+    )
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    tool = """import json, os, pathlib, sys
+name = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+if name == "gh":
+    if args[0] == "pr": print(json.dumps(dict(headRefOid="a"*40, headRefName="fix/example", headRepository=dict(nameWithOwner="example/repo"), author=dict(login="actor"))))
+    elif args[0] == "repo": print("example/repo")
+    else: print("actor")
+elif name == "git":
+    if args[0] == "rev-parse": print("a"*40)
+    elif args[0] == "ls-remote": print("a"*40 + "\\trefs/heads/fix/example")
+elif name == "timeout": os.execvp(args[3], args[3:])
+else: pathlib.Path(os.environ["CAPTURE"]).write_text(pathlib.Path(os.environ["ACTIVELOOM_LAUNCH_STATE"]).read_text())
+"""
+    for name in ("gh", "git", "timeout", "codex"):
+        path = bindir / name
+        path.write_text(f"#!{sys.executable}\n" + tool)
+        path.chmod(0o700)
+    capture = tmp_path / "observed-by-reviewer.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(launcher),
+            *("--repo", "example/repo", "--pr", "1", "--base", BASE),
+            *("--head", HEAD, "--round", "1"),
+        ],
+        cwd=tmp_path,
+        env={
+            **{
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))
+            },
+            "PATH": str(bindir) + os.pathsep + os.environ["PATH"],
+            "CAPTURE": str(capture),
+            "HANDOFF": str(handoff),
+            "ACTIVELOOM_LAUNCH_STATE": str(tmp_path / "launch.json"),
+            "ACTIVELOOM_ATTEMPT_ID": "attempt-1",
+            "ACTIVELOOM_RUN_ID": "f" * 64,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    # The reviewer process itself must already see execution evidence, so any
+    # failure it reports can never be read back as preflight-only.
+    observed = json.loads(capture.read_text())
+    assert observed["attempt_id"] == "attempt-1"
+    assert observed["phase"] == "execution"
+    assert observed["review_started"] is None
+    argv = json.loads(handoff.read_text())
+    assert argv[0] == "authorize-pass"
+    assert argv[argv.index("--run-id") + 1] == "f" * 64
+
+
+@pytest.mark.parametrize(
+    ("launcher", "starts_reviewer"),
+    [
+        ("run-claude-review.sh", "exec timeout "),
+        ("run-agy-review.sh", 'run_agy_managed "$result_file" '),
+        ("run-codex-review.py", "os.execv("),
+    ],
+)
+def test_runner_launchers_mark_execution_before_the_reviewer_starts(
+    launcher: str, starts_reviewer: str
+) -> None:
+    lines = [
+        line.strip()
+        for line in (SCRIPTS / launcher).read_text().splitlines()
+        if line.strip()
+    ]
+    marker = (
+        'launch_state("execution")'
+        if launcher.endswith(".py")
+        else "launch_state execution"
+    )
+    assert lines.count(marker) == 1
+    assert lines[lines.index(marker) + 1].startswith(starts_reviewer)
+    authorization = next(
+        i for i, line in enumerate(lines) if "authorize-pass" in line
+    )
+    block = "\n".join(lines[authorization : authorization + 18])
+    assert (
+        "ACTIVELOOM_RUN_ID" in block
+        if launcher.endswith(".py")
+        else '"${run_id_args[@]}"' in block
+    )
+    if not launcher.endswith(".py"):
+        assert 'run_id_args=(--run-id "$ACTIVELOOM_RUN_ID")' in lines
+
+
+def test_launch_state_helper_copies_are_identical() -> None:
+    assert (SCRIPTS / "review-launch-state.py").read_bytes() == (
+        ROOT / ".claude/skills/critique/scripts/review-launch-state.py"
+    ).read_bytes()
+
+
 def test_preflight_recovery_keeps_completed_passes_and_budget(
     harness: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -311,7 +311,10 @@ class Runner:
                 != self.state["control_hashes"]["review-chain-runner.py"]
             ):
                 raise Blocked(
-                    "runner version changed; deliberate checkpoint migration required"
+                    "runner version changed; deliberate checkpoint migration required: "
+                    "from the original review worktree, run a clean checkout's runner "
+                    "with the original arguments plus --resume --migrate-controller "
+                    "<that checkout's HEAD sha>"
                 )
             return
         if self.args.resume:
@@ -435,7 +438,10 @@ class Runner:
         directory.mkdir(mode=0o700, exist_ok=True)
         native = directory / "native"
         if native.exists():
-            raise Blocked(f"partial review installation requires inspection: {native}")
+            raise Blocked(
+                f"partial review installation requires inspection: {native}; "
+                "--resume --repair-installation preserves it and rebuilds at the original pin"
+            )
         native.mkdir(mode=0o700)
         revision = self.state["installation_revision"]
         roots = [
