@@ -93,6 +93,33 @@ def managed(
             child = subprocess.Popen(
                 argv, stdout=output, stderr=output, env=env, start_new_session=True
             )
+
+            def signal_group(sig: int) -> None:
+                try:
+                    os.killpg(child.pid, sig)
+                except ProcessLookupError:
+                    pass
+                except PermissionError as error:
+                    # A denied signal is not evidence of surviving descendants.
+                    # Only ESRCH from a fresh, non-signalling probe proves the
+                    # group is gone; EPERM on that probe still fails closed.
+                    try:
+                        os.killpg(child.pid, 0)
+                    except ProcessLookupError:
+                        return
+                    except PermissionError:
+                        pass
+                    exit_state = (
+                        f"exited {child.returncode}"
+                        if child.returncode is not None
+                        else "exit not confirmed"
+                    )
+                    raise Blocked(
+                        f"{Path(argv[0]).name} {exit_state}; process-group cleanup "
+                        f"denied for {child.pid}; reconcile surviving processes "
+                        "before resuming"
+                    ) from error
+
             try:
                 code = child.wait(timeout=timeout)
                 if code:
@@ -101,18 +128,12 @@ def managed(
                     )
             finally:
                 # Also clean up descendants left behind after the leader exits.
-                try:
-                    os.killpg(child.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                signal_group(signal.SIGTERM)
                 try:
                     child.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
-                try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                signal_group(signal.SIGKILL)
                 child.wait()
     finally:
         for sig, handler in handlers.items():

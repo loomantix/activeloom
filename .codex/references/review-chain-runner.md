@@ -100,6 +100,11 @@ ledger's supported recovery procedure; if recovery needs new authority, ask.
 The controller never automatically starts a replacement run.
 
 Process timeouts and ordinary cancellation stop the owned process group.
+If a cleanup signal is denied after a process exits, the runner probes the
+group without sending a signal. Cleanup succeeds only if the probe confirms
+that the group no longer exists. A surviving group or a denied probe still
+blocks progression; the diagnostic includes the observed worker exit status
+and group ID for reconciliation.
 After host failure or an uncatchable kill, an operator must reconcile any
 surviving reviewer before recovery; no script can guarantee progress while its
 host is down. The guarantee is that a running controller advances verified
