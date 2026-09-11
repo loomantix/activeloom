@@ -59,7 +59,6 @@ agy_surface_sha="e5ebebfd1bf9270f2a2e63e77465acb64a89a1ab"
 # The companion surface must speak this engine's ledger protocol. Reading the
 # expectation from the vendored version file beside this script keeps the two
 # in step through a ledger bump instead of pinning the number twice.
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ledger_version_file="$script_dir/review-ledger.version"
 [ -f "$ledger_version_file" ] || { echo "vendored review-ledger.version is missing" >&2; exit 1; }
 ledger_version="$(tr -d '[:space:]' <"$ledger_version_file")"
