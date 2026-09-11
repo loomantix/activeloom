@@ -47,11 +47,11 @@ Name things the way the interviewee names them. Every question, recommendation, 
 
 "Today, cancelling an order cancels every item in it" — not the name of the handler that does it.
 
-Each question stands on its own for someone who has not read the earlier rounds, the repo, your lookups, or this skill. When a term comes from you rather than the interviewee — a product or domain word found in docs or code, a label you coined, shorthand carried over from an earlier round — define it in a clause where it first appears in that question, or replace it with what the user would see.
+In questions, answer options, and recommendations, introduce unfamiliar terms or concepts through what the user sees or experiences. This includes words found in docs or code and labels you coined: the interviewee need not know your sources. Prefer replacing jargon with that description; retain a specific unfamiliar term with a short inline explanation when it appears in the product's UI or customer-facing copy. Reuse language once its meaning is shared with the interviewee, without re-explaining it in every question or round; clarify again if ambiguity surfaces. Your earlier use of a term alone does not establish shared understanding.
 
-"Should an order on _hold_ (paused because the card was declined) still show in the customer's order history?" — not "Should held orders show in history?"
+"Should an order paused because the card was declined still show in the customer's order history?" — not "Should held orders show in history?"
 
-This skill's own working words — design tree, branch, frontier, round, settled, provisional finish, blocking unknowns — steer you, not the interviewee. In anything they read, say what the word stands for in their terms: "once we know who this is for" — not "once the Who branch is settled".
+Ask direct product questions and keep the interview's decision tree, frontier, and round tracking internal. Words such as branch, block, or round are appropriate when they name actual product concepts, such as editor content blocks or funding rounds. When reporting progress or the final outcome, describe the product decisions made and the evidence or engineering input still needed, without narrating the interview mechanics.
 
 ## Facts are your job, decisions are theirs
 
