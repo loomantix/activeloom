@@ -457,13 +457,16 @@ def test_managed_cleanup_denial_does_not_hide_failed_exit(
         real_killpg(pid, sig)
 
     monkeypatch.setattr(module.os, "killpg", killpg)
-    with pytest.raises(module.Blocked, match="exited 7"):
+    with pytest.raises(module.Blocked) as caught:
         module.managed(
             [sys.executable, "-c", "raise SystemExit(7)"],
             tmp_path / "worker.log",
             dict(os.environ),
             5,
         )
+    # The probe proves the group is gone, so the worker's own failure surfaces.
+    assert str(caught.value).endswith("exited 7; inspect worker.log")
+    assert "process-group cleanup denied" not in str(caught.value)
 
 
 def test_managed_cleanup_denial_keeps_timeout_cause(
