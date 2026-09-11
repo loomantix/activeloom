@@ -16,8 +16,8 @@ env:
   RELEASE_NPM_VERSION: 11.16.0
 
 concurrency:
-  group: publish-activeloom-${{ github.ref }}
-  cancel-in-progress: false
+  group: publish-activeloom-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
