@@ -397,6 +397,76 @@ test('Tier 0 installs the harness support files used by critique', () => {
   }
 });
 
+test('installSupportFiles rethrows filesystem errors other than ENOENT', () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+  const originalLstat = fs.lstatSync;
+  try {
+    const root = path.join(upstream, '.codex');
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, 'REVIEW_WORKFLOW.md'), '# Workflow\n');
+
+    const eacces = new Error('permission denied');
+    eacces.code = 'EACCES';
+    fs.lstatSync = (p, ...rest) => {
+      if (typeof p === 'string' && p.endsWith('REVIEW_WORKFLOW.md')) {
+        throw eacces;
+      }
+      return originalLstat(p, ...rest);
+    };
+
+    assert.throws(
+      () =>
+        addLib.installSupportFiles(
+          upstream,
+          { root: '.codex', home: '.codex' },
+          home,
+          false,
+          false,
+        ),
+      (err) => err.code === 'EACCES',
+    );
+  } finally {
+    fs.lstatSync = originalLstat;
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('installSupportFiles ignores ENOENT from lstatSync', () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+  const originalLstat = fs.lstatSync;
+  try {
+    const root = path.join(upstream, '.codex');
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, 'REVIEW_WORKFLOW.md'), '# Workflow\n');
+
+    const enoent = new Error('not found');
+    enoent.code = 'ENOENT';
+    fs.lstatSync = (p, ...rest) => {
+      if (typeof p === 'string' && p.endsWith('REVIEW_WORKFLOW.md')) {
+        throw enoent;
+      }
+      return originalLstat(p, ...rest);
+    };
+
+    assert.doesNotThrow(() =>
+      addLib.installSupportFiles(
+        upstream,
+        { root: '.codex', home: '.codex' },
+        home,
+        false,
+        false,
+      ),
+    );
+  } finally {
+    fs.lstatSync = originalLstat;
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('add chooses harnesses from machine evidence, not repo evidence', () => {
   // Tier 0 installs into the user's own config directory, so what this repo
   // contains is irrelevant to it — the mirror image of `init`'s rule.
@@ -588,6 +658,82 @@ test('an old upstream engine fails closed with a compatibility error', async () 
     ]);
   } finally {
     ui.fail = originalFail;
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('init rolls back newly written config when the sync engine exits non-zero', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  const config = path.join(repo, '.activeloom-config.yml');
+  const fakePython = path.join(repo, 'failing-python');
+  try {
+    fs.writeFileSync(
+      fakePython,
+      '#!/bin/sh\ncase "$1" in --version) echo "Python 3.12.0"; exit 0;; -c) exit 0;; esac\necho "allow_sensitive_writes refusal" >&2\nexit 1\n',
+      { mode: 0o755 },
+    );
+    assert.strictEqual(
+      await initLib.init(initArgs(repo, { python: fakePython })),
+      1,
+    );
+    assert.strictEqual(
+      fs.existsSync(config),
+      false,
+      'config written by this run must be removed on engine failure',
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('init rolls back newly written config when the sync engine fails to spawn', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  const config = path.join(repo, '.activeloom-config.yml');
+  const fakePython = path.join(repo, 'spawn-failing-python');
+  try {
+    fs.writeFileSync(
+      fakePython,
+      '#!/bin/sh\ncase "$1" in --version) echo "Python 3.12.0"; exit 0;; -c) chmod 0000 "$0"; exit 0;; esac\nexit 0\n',
+      { mode: 0o755 },
+    );
+    assert.strictEqual(
+      await initLib.init(initArgs(repo, { python: fakePython })),
+      1,
+    );
+    assert.strictEqual(
+      fs.existsSync(config),
+      false,
+      'config written by this run must be removed on spawn failure',
+    );
+  } finally {
+    try {
+      fs.chmodSync(fakePython, 0o755);
+    } catch {}
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('init preserves pre-existing config when the sync engine exits non-zero', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
+  const config = path.join(repo, '.activeloom-config.yml');
+  const fakePython = path.join(repo, 'failing-python');
+  try {
+    fs.writeFileSync(config, 'harnesses: [claude]\n');
+    fs.writeFileSync(
+      fakePython,
+      '#!/bin/sh\ncase "$1" in --version) echo "Python 3.12.0"; exit 0;; -c) exit 0;; esac\nexit 1\n',
+      { mode: 0o755 },
+    );
+    assert.strictEqual(
+      await initLib.init(initArgs(repo, { python: fakePython })),
+      1,
+    );
+    assert.strictEqual(
+      fs.existsSync(config),
+      true,
+      'pre-existing config must not be removed on engine failure',
+    );
+  } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
@@ -850,6 +996,189 @@ test('add success is per requested skill across chosen harnesses', async () => {
   } finally {
     fs.rmSync(upstream, { recursive: true, force: true });
     for (const home of homes) fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('add preserves an existing skill when replacement copy fails', async () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+  const originalCopyFileSync = fs.copyFileSync;
+  try {
+    const upstreamSkill = path.join(upstream, '.claude', 'skills', 'critique');
+    fs.mkdirSync(upstreamSkill, { recursive: true });
+    fs.writeFileSync(path.join(upstreamSkill, 'SKILL.md'), '# New Critique\n');
+
+    const destDir = path.join(home, '.claude', 'skills');
+    const destSkill = path.join(destDir, 'critique');
+    fs.mkdirSync(destSkill, { recursive: true });
+    fs.writeFileSync(path.join(destSkill, 'SKILL.md'), '# Original Critique\n');
+
+    fs.copyFileSync = () => {
+      throw new Error('simulated ENOSPC mid-copy');
+    };
+
+    await assert.rejects(
+      () =>
+        addLib.add({
+          skills: ['critique'],
+          upstreamDir: upstream,
+          facts: facts({ homeDir: home }),
+          harnesses: ['claude'],
+          dryRun: false,
+          force: true,
+        }),
+      /simulated ENOSPC mid-copy/,
+    );
+
+    assert.strictEqual(
+      fs.readFileSync(path.join(destSkill, 'SKILL.md'), 'utf8'),
+      '# Original Critique\n',
+      'existing skill must remain intact when copy fails',
+    );
+
+    const remaining = fs.readdirSync(destDir);
+    assert.deepStrictEqual(
+      remaining,
+      ['critique'],
+      'temporary staging directory must be cleaned up on failure',
+    );
+  } finally {
+    fs.copyFileSync = originalCopyFileSync;
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+for (const restoreFails of [false, true]) {
+  test(`add preserves the original skill when promotion fails and restoration ${restoreFails ? 'fails' : 'succeeds'}`, async () => {
+    const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+    const originalRename = fs.renameSync;
+    try {
+      const upstreamSkill = path.join(
+        upstream,
+        '.claude',
+        'skills',
+        'critique',
+      );
+      const destDir = path.join(home, '.claude', 'skills');
+      const destSkill = path.join(destDir, 'critique');
+      for (const dir of [upstreamSkill, destSkill]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(
+        path.join(upstreamSkill, 'SKILL.md'),
+        '# New Critique\n',
+      );
+      fs.writeFileSync(
+        path.join(destSkill, 'SKILL.md'),
+        '# Original Critique\n',
+      );
+
+      fs.renameSync = (from, to) => {
+        if (to === destSkill && !path.basename(from).includes('-old-')) {
+          if (restoreFails) {
+            // A competing installer claims the destination between renames.
+            // Both promotion and restoration then fail on the real filesystem.
+            fs.mkdirSync(destSkill);
+            fs.writeFileSync(path.join(destSkill, 'concurrent.txt'), 'keep me');
+          } else {
+            throw new Error('simulated promotion failure');
+          }
+        }
+        return originalRename(from, to);
+      };
+
+      let failure;
+      await assert.rejects(
+        () =>
+          addLib.add({
+            skills: ['critique'],
+            upstreamDir: upstream,
+            facts: facts({ homeDir: home }),
+            harnesses: ['claude'],
+            dryRun: false,
+            force: true,
+          }),
+        (error) => {
+          failure = error;
+          return true;
+        },
+      );
+      const remaining = fs.readdirSync(destDir);
+      let originalDir = destSkill;
+      if (restoreFails) {
+        const backups = remaining.filter((name) =>
+          name.startsWith('.tmp-critique-old-'),
+        );
+        assert.strictEqual(backups.length, 1);
+        originalDir = path.join(destDir, backups[0]);
+        assert.ok(
+          failure.message.includes(
+            `Original skill preserved at ${originalDir}`,
+          ),
+        );
+        assert.strictEqual(
+          fs.readFileSync(path.join(destSkill, 'concurrent.txt'), 'utf8'),
+          'keep me',
+        );
+        assert.deepStrictEqual(
+          remaining.sort(),
+          [backups[0], 'critique'].sort(),
+        );
+      } else {
+        assert.match(failure.message, /simulated promotion failure/);
+        assert.deepStrictEqual(remaining, ['critique']);
+      }
+      assert.strictEqual(
+        fs.readFileSync(path.join(originalDir, 'SKILL.md'), 'utf8'),
+        '# Original Critique\n',
+      );
+    } finally {
+      fs.renameSync = originalRename;
+      fs.rmSync(upstream, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
+
+test('add replaces an existing skill when force is passed and cleans up temp directories', async () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+  try {
+    const upstreamSkill = path.join(upstream, '.claude', 'skills', 'critique');
+    fs.mkdirSync(upstreamSkill, { recursive: true });
+    fs.writeFileSync(path.join(upstreamSkill, 'SKILL.md'), '# New Critique\n');
+
+    const destDir = path.join(home, '.claude', 'skills');
+    const destSkill = path.join(destDir, 'critique');
+    fs.mkdirSync(destSkill, { recursive: true });
+    fs.writeFileSync(path.join(destSkill, 'SKILL.md'), '# Original Critique\n');
+
+    const code = await addLib.add({
+      skills: ['critique'],
+      upstreamDir: upstream,
+      facts: facts({ homeDir: home }),
+      harnesses: ['claude'],
+      dryRun: false,
+      force: true,
+    });
+    assert.strictEqual(code, 0);
+
+    assert.strictEqual(
+      fs.readFileSync(path.join(destSkill, 'SKILL.md'), 'utf8'),
+      '# New Critique\n',
+    );
+
+    const remaining = fs.readdirSync(destDir);
+    assert.deepStrictEqual(
+      remaining,
+      ['critique'],
+      'temporary staging and backup directories must be cleaned up on success',
+    );
+  } finally {
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 

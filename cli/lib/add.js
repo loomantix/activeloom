@@ -157,8 +157,9 @@ function installSupportFiles(upstreamDir, harness, homeDir, dryRun, force) {
     let stat;
     try {
       stat = fs.lstatSync(src);
-    } catch {
-      return;
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      throw error;
     }
     if (stat.isSymbolicLink()) return;
     if (stat.isDirectory()) {
@@ -254,9 +255,48 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
       if (dryRun) {
         ui.step(`would install ${ui.bold(name)} to ${dest}`);
       } else {
-        fs.rmSync(dest, { recursive: true, force: true });
-        copyTree(src, dest);
-        ui.step(`installed ${ui.bold(name)} to ${dest}`);
+        fs.mkdirSync(destRoot, { recursive: true });
+        const staging = fs.mkdtempSync(path.join(destRoot, `.tmp-${name}-`));
+        let backup = null;
+        let promoted = false;
+        try {
+          copyTree(src, staging);
+          let destExists = false;
+          try {
+            fs.lstatSync(dest);
+            destExists = true;
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+          }
+          if (destExists) {
+            backup = fs.mkdtempSync(path.join(destRoot, `.tmp-${name}-old-`));
+            fs.rmdirSync(backup);
+            fs.renameSync(dest, backup);
+          }
+          try {
+            fs.renameSync(staging, dest);
+            promoted = true;
+          } catch (renameError) {
+            if (backup) {
+              try {
+                fs.renameSync(backup, dest);
+                backup = null;
+              } catch (restoreError) {
+                throw new Error(
+                  `${renameError.message}; could not restore the original skill: ${restoreError.message}. Original skill preserved at ${backup}.`,
+                  { cause: renameError },
+                );
+              }
+            }
+            throw renameError;
+          }
+          ui.step(`installed ${ui.bold(name)} to ${dest}`);
+        } finally {
+          fs.rmSync(staging, { recursive: true, force: true });
+          if (backup && promoted) {
+            fs.rmSync(backup, { recursive: true, force: true });
+          }
+        }
       }
       installed += 1;
     }

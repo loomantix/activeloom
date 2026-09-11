@@ -771,12 +771,20 @@ async function init(args) {
     // is a claim about a decision the engine made; only say it when it made
     // one.
     if (run.error || run.signal) {
+      if (configWritten) {
+        fs.rmSync(configPath, { force: true });
+        configWritten = false;
+      }
       ui.fail(
         `could not run the sync engine (${python}): ${run.error ? run.error.message : `killed by ${run.signal}`}`,
       );
       return 1;
     }
     if (run.status !== 0) {
+      if (configWritten) {
+        fs.rmSync(configPath, { force: true });
+        configWritten = false;
+      }
       const missingSymlinkGuard = run.stderr?.includes(
         'unrecognized arguments: --reject-consumer-symlinks',
       );
