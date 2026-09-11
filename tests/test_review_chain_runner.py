@@ -514,6 +514,11 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         assert argv[:2] == ["exec", "--ephemeral"]
         assert "--model" not in argv and "--ignore-user-config" not in argv
         assert "one Codex review pass" in argv[-1]
+        assert (
+            f"review pass on PR #1 in example/repo, round 1, pinned base {BASE}, "
+            f"exact head {HEAD}. "
+        ) in argv[-1]
+        assert "absolute paths" not in argv[-1]
         assert "Do not launch another engine" in argv[-1]
 
 
@@ -628,6 +633,61 @@ def test_resume_never_retries_an_unrecorded_exit(
     monkeypatch.setattr(harness.module, "managed", original)
     with pytest.raises(harness.module.Blocked, match="returned no result"):
         harness.runner(harness.args, harness.directory).run()
+    assert not harness.launches
+
+
+@pytest.mark.parametrize(
+    ("phase", "classified"), [("execution", "execution_failed"), ("ready", "launching")]
+)
+def test_caught_failure_after_preflight_is_never_recoverable(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, phase: str, classified: str
+) -> None:
+    original = harness.module.managed
+
+    def failed(
+        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+    ) -> None:
+        if "AGENT_LOOP_REVIEW_ENGINE" not in env:
+            original(argv, log, env, timeout)
+            return
+        harness.module.save(
+            Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+            {
+                "version": 1,
+                "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                "phase": phase,
+                "review_started": None,
+                "failure_reason": None,
+            },
+        )
+        raise harness.module.ProcessFailure("synthetic reviewer failure", 1)
+
+    monkeypatch.setattr(harness.module, "managed", failed)
+    runner = harness.runner(harness.args, harness.directory)
+    with pytest.raises(harness.module.Blocked):
+        runner.run()
+    assert runner.state["pending"]["phase"] == classified
+    assert runner.state["attempts"][-1]["review_started"] is not False
+    harness.args.resume = harness.args.recover_preflight = True
+    monkeypatch.setattr(harness.module, "managed", original)
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    assert not harness.launches
+
+
+def test_launch_environment_failure_leaves_the_pass_resumable(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+
+    def broken(engine: str) -> dict[str, str]:
+        raise harness.module.Blocked("synthetic environment failure")
+
+    monkeypatch.setattr(runner, "environment", broken)
+    with pytest.raises(harness.module.Blocked, match="synthetic environment failure"):
+        runner.run()
+    assert runner.state.get("attempts", []) == []
+    assert runner.state["pending"]["phase"] == "prepared"
     assert not harness.launches
 
 

@@ -631,6 +631,9 @@ class Runner:
         folder = self.directory / pending["folder"]
         if digest(folder / "historical.json") != pending["historical_sha256"]:
             raise Blocked("pre-pass comment snapshot changed before launch")
+        # Build the environment first: a failure here launched nothing and must
+        # leave the owed pass resumable, not an unknown "launching" attempt.
+        env = self.environment(pending["engine"])
         attempt = {
             "attempt_id": uuid.uuid4().hex,
             "engine": pending["engine"],
@@ -644,7 +647,6 @@ class Runner:
         self.state.setdefault("attempts", []).append(attempt)
         pending.update(phase="launching", attempt_id=attempt["attempt_id"])
         self.persist()
-        env = self.environment(pending["engine"])
         env.update(
             ACTIVELOOM_RUN_ID=self.state["run_id"],
             ACTIVELOOM_LAUNCH_STATE=str(folder / "launch.json"),
@@ -1199,7 +1201,10 @@ class Runner:
                 "round": number,
                 "before": head,
                 "folder": folder.name,
-                "phase": "launching",
+                # launch() alone moves a pass to "launching" once its attempt
+                # is recorded; until then nothing has started and resume may
+                # relaunch it.
+                "phase": "prepared",
                 "historical_sha256": digest(folder / "historical.json"),
             }
             self.state["pending"] = pending

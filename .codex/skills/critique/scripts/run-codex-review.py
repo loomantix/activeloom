@@ -139,9 +139,13 @@ def main() -> int:
         return 0
     prompt = (
         f"Use {surface}/skills/deepcritique/SKILL.md for one Codex review pass on PR #{args.pr} "
-        f"Use absolute paths under {surface} for its skills, references and helpers. "
         f"in {args.repo}, round {args.round}, pinned base {args.base}, exact head {args.head}. "
-        "Resolve the recorded tier; use critique for Lean. Read prior non-telemetry ledger evidence. "
+        + (
+            f"Use absolute paths under {surface} for its skills, references and helpers. "
+            if os.environ.get("ACTIVELOOM_REVIEW_SURFACE")
+            else ""
+        )
+        + "Resolve the recorded tier; use critique for Lean. Read prior non-telemetry ledger evidence. "
         "Post verified findings inline before edits; validate, commit with repository-required sign-off, "
         "push normally, reply and resolve. When AGENT_LOOP_REVIEW_RESULT_FILE is set, write the "
         "canonical result there and return without attesting; the runner owns attestation. "
