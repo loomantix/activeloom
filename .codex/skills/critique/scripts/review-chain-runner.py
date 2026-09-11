@@ -445,9 +445,17 @@ class Runner:
         ]
         files: dict[str, str] = {}
         if roots:
-            archive = subprocess.check_output(
-                ["git", "archive", revision, *roots], timeout=120
-            )
+            try:
+                archive = subprocess.check_output(
+                    ["git", "archive", revision, *roots],
+                    timeout=120,
+                    stderr=subprocess.PIPE,
+                )
+            except subprocess.SubprocessError as error:
+                raise Blocked(
+                    f"cannot archive selected review harnesses {', '.join(roots)} at {revision}; "
+                    "verify the installed harnesses, then use --resume --repair-installation"
+                ) from error
             with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
                 for member in tar:
                     relative = Path(member.name)
@@ -610,7 +618,19 @@ class Runner:
         self.verify_control()
         if self.boundary() != pending["before"]:
             raise Blocked("head changed before reviewer launch")
+        decision = self.decision(pending["before"])
+        if (
+            decision.get("passes") != self.state["completed"]
+            or decision.get("status") != "next"
+            or (decision.get("engine"), decision.get("round"))
+            != (pending["engine"], pending["round"])
+        ):
+            raise Blocked(
+                "ledger changed before launch; reconcile the owed pass and budget"
+            )
         folder = self.directory / pending["folder"]
+        if digest(folder / "historical.json") != pending["historical_sha256"]:
+            raise Blocked("pre-pass comment snapshot changed before launch")
         attempt = {
             "attempt_id": uuid.uuid4().hex,
             "engine": pending["engine"],
@@ -626,6 +646,7 @@ class Runner:
         self.persist()
         env = self.environment(pending["engine"])
         env.update(
+            ACTIVELOOM_RUN_ID=self.state["run_id"],
             ACTIVELOOM_LAUNCH_STATE=str(folder / "launch.json"),
             ACTIVELOOM_ATTEMPT_ID=attempt["attempt_id"],
             AGENT_LOOP_REVIEW_RESULT_FILE=str(folder / "result.json"),
@@ -721,13 +742,42 @@ class Runner:
             or digest(folder / "launch.json") != attempt.get("launch_sha256")
         ):
             raise Blocked("worker exit is unknown; no proven preflight-only failure")
-        retry = folder / ("retry-" + str(len(self.state["attempts"])))
-        if retry.exists() or retry.is_symlink():
-            raise Blocked("retry directory already contains evidence; reconcile it")
-        retry.mkdir(mode=0o700)
-        shutil.copyfile(folder / "historical.json", retry / "historical.json")
+        if "recovery" not in pending:
+            retry = folder / ("retry-" + str(len(self.state["attempts"])))
+            if retry.exists() or retry.is_symlink():
+                raise Blocked("retry directory already contains evidence; reconcile it")
+            pending["recovery"] = {
+                "folder": str(retry.relative_to(self.directory)),
+                "attempt_id": attempt["attempt_id"],
+            }
+            self.persist()
+        recovery = pending["recovery"]
+        retry = self.directory / recovery["folder"]
+        if recovery["attempt_id"] != attempt["attempt_id"] or retry.is_symlink():
+            raise Blocked("recovery transaction identity changed")
+        retry.mkdir(mode=0o700, exist_ok=True)
+        if any(
+            p.name not in ("historical.json", "history.pending")
+            or p.is_symlink()
+            or not p.is_file()
+            for p in retry.iterdir()
+        ):
+            raise Blocked("unexpected retry evidence; reconcile before launch")
+        history = retry / "historical.json"
+        if history.exists():
+            if digest(history) != pending["historical_sha256"]:
+                raise Blocked("retry snapshot changed")
+        else:
+            # Atomic creation prevents a failed copy from leaving a partial snapshot.
+            temporary = retry / "history.pending"
+            with temporary.open("wb") as stream:
+                stream.write((folder / "historical.json").read_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, history)
         pending["folder"] = str(retry.relative_to(self.directory))
         pending["phase"] = "prepared"
+        pending.pop("recovery")
         self.persist()
         self.launch(pending)
 
@@ -762,17 +812,26 @@ class Runner:
             )
         folder = self.directory / pending["folder"]
         log = folder / "worker.log"
+        intent = pending.get("legacy_reconciliation")
+        allowed = {"worker.log", "historical.json", "before-threads.json"}
+        present = {p.name for p in folder.iterdir()}
         if (
             digest(log) != expected_log
             or log.read_bytes() != b"agy relay surface checkout must be clean\n"
-            or {p.name for p in folder.iterdir()}
-            != {"worker.log", "historical.json", "before-threads.json"}
+            or not allowed <= present
+            or present - allowed - ({"launch.json"} if intent else set())
         ):
             raise Blocked("legacy log does not prove a preflight-only failure")
         if self.boundary() != pending["before"]:
             raise Blocked("legacy review head changed; reconcile it")
+        if not intent:
+            intent = {"attempt_id": uuid.uuid4().hex, "log_sha256": expected_log}
+            pending["legacy_reconciliation"] = intent
+            self.persist()
+        if intent["log_sha256"] != expected_log:
+            raise Blocked("legacy reconciliation proof changed")
         attempt = {
-            "attempt_id": uuid.uuid4().hex,
+            "attempt_id": intent["attempt_id"],
             "engine": pending["engine"],
             "round": pending["round"],
             "folder": pending["folder"],
@@ -782,21 +841,31 @@ class Runner:
             "failure_reason": "dirty_surface",
             "legacy_log_sha256": expected_log,
         }
-        save(
-            folder / "launch.json",
-            {
-                "version": 1,
-                "attempt_id": attempt["attempt_id"],
-                "phase": "preflight",
-                "review_started": False,
-                "failure_reason": "dirty_surface",
-                "proof": "explicit legacy reconciliation against pinned pre-execution exit",
-                "legacy_log_sha256": expected_log,
-            },
-        )
+        evidence = {
+            "version": 1,
+            "attempt_id": attempt["attempt_id"],
+            "phase": "preflight",
+            "review_started": False,
+            "failure_reason": "dirty_surface",
+            "proof": "explicit legacy reconciliation against pinned pre-execution exit",
+            "legacy_log_sha256": expected_log,
+        }
+        marker = folder / "launch.json"
+        if marker.exists() or marker.is_symlink():
+            if read(marker) != evidence:
+                raise Blocked("legacy reconciliation evidence changed")
+        else:
+            # Stage outside the evidence allowlist. A killed atomic save may
+            # leave its temporary file; that must not invalidate the same proof.
+            staged = self.directory / (
+                "legacy-launch-" + attempt["attempt_id"] + ".json"
+            )
+            save(staged, evidence)
+            os.replace(staged, marker)
         attempt["launch_sha256"] = digest(folder / "launch.json")
         self.state["attempts"].append(attempt)
         pending.update(phase="preflight_failed", attempt_id=attempt["attempt_id"])
+        pending.pop("legacy_reconciliation")
         self.persist()
 
     def recovery_command(self) -> str:
@@ -830,6 +899,15 @@ class Runner:
             argv.extend(["--check", check])
         if (self.state.get("pending") or {}).get("phase") == "preflight_failed":
             argv.append("--recover-preflight")
+        intent = (self.state.get("pending") or {}).get("legacy_reconciliation")
+        if intent:
+            argv.extend(
+                [
+                    "--recover-preflight",
+                    "--reconcile-legacy-preflight",
+                    intent["log_sha256"],
+                ]
+            )
         return shlex.join(argv)
 
     def decision(self, head: str) -> dict[str, Any]:
@@ -840,6 +918,7 @@ class Runner:
 
     def complete_pass(self, pending: dict[str, Any]) -> None:
         head = self.boundary()
+        self.decision(head)
         folder = self.directory / pending["folder"]
         if digest(folder / "historical.json") != pending["historical_sha256"]:
             raise Blocked("pre-pass comment snapshot changed")
@@ -912,6 +991,7 @@ class Runner:
             + "\n".join(self.state["config"]["checks"])
             + "\n"
         )
+        self.decision(head)
         attestation = self.helper(
             "ledger",
             "attest",

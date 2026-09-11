@@ -80,9 +80,13 @@ remote_head="${remote_row%%[[:space:]]*}"
 
 if ! "$preflight_only"; then
 launch_state preflight authorization
+run_id_args=()
+if [ -n "${ACTIVELOOM_RUN_ID:-}" ]; then
+    run_id_args=(--run-id "$ACTIVELOOM_RUN_ID")
+fi
 python3 -I "$script_dir/local-review-handoff.py" authorize-pass \
     --repo "$repo" --pr "$pr" --base "$base" --head "$head" \
-    --engine gemini --round "$round" >/dev/null
+    --engine gemini --round "$round" "${run_id_args[@]}" >/dev/null
 fi
 
 launch_state preflight missing_tool

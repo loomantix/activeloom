@@ -83,7 +83,12 @@ def harness(
     events: list[dict[str, Any]] = []
     launches: list[str] = []
     controls = SimpleNamespace(
-        outcome="clean", exit_code=0, missing=False, fail_attest=False, fail_check=False
+        outcome="clean",
+        exit_code=0,
+        missing=False,
+        fail_attest=False,
+        fail_check=False,
+        preflight=False,
     )
     monkeypatch.setattr(
         module, "command", lambda argv: BASE if argv[0] == "git" else "test-actor"
@@ -109,6 +114,19 @@ sys.exit(int(sys.argv[2]))
         argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
     ) -> None:
         if "AGENT_LOOP_REVIEW_RESULT_FILE" in env:
+            if controls.preflight:
+                module.save(
+                    Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+                    {
+                        "version": 1,
+                        "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                        "phase": "preflight",
+                        "review_started": False,
+                        "failure_reason": "dirty_surface",
+                    },
+                )
+                log.write_text("synthetic preflight rejection\n")
+                raise module.ProcessFailure("synthetic preflight failure", 1)
             launches.append(env["AGENT_LOOP_REVIEW_ENGINE"])
             real_managed(
                 [
@@ -798,3 +816,162 @@ def test_execution_marker_cannot_be_replaced_by_nested_preflight(
     with pytest.raises(ValueError, match="cannot return to preflight"):
         module.record("preflight", "dirty_surface")
     assert marker.read_bytes() == execution
+
+
+@pytest.mark.parametrize("cut", ["snapshot", "checkpoint"])
+def test_recovery_resumes_after_retry_directory_checkpoint_interruption(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, cut: str
+) -> None:
+    harness.controls.preflight = True
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    before = harness.module.read(harness.directory / "state.json")
+    harness.args.resume = harness.args.recover_preflight = True
+    harness.controls.preflight = False
+    original = harness.module.save
+    original_replace = harness.module.os.replace
+
+    def interrupted(path: Path, value: Any) -> None:
+        if (
+            cut == "checkpoint"
+            and path.name == "state.json"
+            and (value.get("pending") or {}).get("phase") == "prepared"
+        ):
+            raise OSError("injected retry checkpoint interruption")
+        original(path, value)
+
+    def interrupted_replace(source: Any, target: Any) -> None:
+        if cut == "snapshot" and Path(source).name == "history.pending":
+            raise OSError("injected retry snapshot interruption")
+        original_replace(source, target)
+
+    monkeypatch.setattr(harness.module, "save", interrupted)
+    monkeypatch.setattr(harness.module.os, "replace", interrupted_replace)
+    with pytest.raises(OSError, match="injected retry"):
+        harness.runner(harness.args, harness.directory).run()
+    monkeypatch.setattr(harness.module, "save", original)
+    monkeypatch.setattr(harness.module.os, "replace", original_replace)
+    resumed = harness.runner(harness.args, harness.directory)
+    assert resumed.run() == "converged"
+    assert resumed.state["run_id"] == before["run_id"]
+    assert resumed.state["config"] == before["config"]
+    assert harness.launches == ["codex", "claude", "codex", "claude"]
+    assert len(resumed.state["attempts"]) == 5
+
+
+@pytest.mark.parametrize("cut", ["snapshot", "checkpoint"])
+def test_legacy_reconciliation_resumes_after_evidence_write(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, cut: str
+) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+    runner.initialize()
+    pending = {
+        "phase": "launching",
+        "engine": "gemini",
+        "round": 1,
+        "before": HEAD,
+        "folder": "pass-3",
+    }
+    runner.state["pending"] = pending
+    folder = harness.directory / "pass-3"
+    folder.mkdir()
+    (folder / "worker.log").write_text("agy relay surface checkout must be clean\n")
+    for name in ("historical.json", "before-threads.json"):
+        harness.module.save(folder / name, [])
+    backup = harness.directory / "state-v1.json"
+    harness.module.save(backup, runner.state)
+    runner.state["migrations"] = [
+        {
+            "prior_state": backup.name,
+            "prior_state_sha256": harness.module.digest(backup),
+            "prior_control": "control",
+            "prior_control_hashes": runner.state["control_hashes"],
+        }
+    ]
+    monkeypatch.setattr(
+        harness.module, "LEGACY_PREFLIGHT_HASHES", dict(runner.state["control_hashes"])
+    )
+    runner.persist()
+    original = runner.persist
+    original_replace = harness.module.os.replace
+
+    def interrupted() -> None:
+        if (
+            cut == "checkpoint"
+            and runner.state["pending"]["phase"] == "preflight_failed"
+        ):
+            raise OSError("injected legacy checkpoint interruption")
+        original()
+
+    def interrupted_replace(source: Any, target: Any) -> None:
+        if cut == "snapshot" and Path(target).name.startswith("legacy-launch-"):
+            raise OSError("injected legacy snapshot interruption")
+        original_replace(source, target)
+
+    monkeypatch.setattr(runner, "persist", interrupted)
+    monkeypatch.setattr(harness.module.os, "replace", interrupted_replace)
+    proof = harness.module.digest(folder / "worker.log")
+    with pytest.raises(OSError, match="injected legacy"):
+        runner.reconcile_legacy_preflight(pending, proof)
+    evidence = (folder / "launch.json").read_bytes() if cut == "checkpoint" else None
+    monkeypatch.setattr(harness.module.os, "replace", original_replace)
+    resumed = harness.runner(harness.args, harness.directory)
+    resumed.reconcile_legacy_preflight(resumed.state["pending"], proof)
+    assert resumed.state["pending"]["phase"] == "preflight_failed"
+    assert len(resumed.state["attempts"]) == 1
+    if evidence is not None:
+        assert (folder / "launch.json").read_bytes() == evidence
+    assert harness.module.digest(folder / "worker.log") == proof
+
+
+def test_prepared_retry_rejects_replacement_run_before_launch(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness.controls.preflight = True
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    harness.args.resume = harness.args.recover_preflight = True
+    harness.controls.preflight = False
+    runner = harness.runner(harness.args, harness.directory)
+
+    def interrupted(pending: dict[str, Any]) -> None:
+        raise OSError("interrupted after preparation")
+
+    monkeypatch.setattr(runner, "launch", interrupted)
+    with pytest.raises(OSError, match="after preparation"):
+        runner.run()
+    resumed = harness.runner(harness.args, harness.directory)
+    original = resumed.helper
+
+    def replacement(name: str, *parts: str) -> dict[str, Any]:
+        result: dict[str, Any] = original(name, *parts)
+        if parts[0] in ("next-pass", "authorize-pass"):
+            result["run_id"] = "e" * 64
+        return result
+
+    monkeypatch.setattr(resumed, "helper", replacement)
+    with pytest.raises(harness.module.Blocked, match="active run changed"):
+        resumed.run()
+    assert harness.launches == []
+    assert harness.events == []
+
+
+def test_missing_selected_harness_has_recovery_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-chain-runner")
+    directory = tmp_path / "checkpoint"
+    directory.mkdir()
+    runner = module.Runner.__new__(module.Runner)
+    runner.directory = directory
+    runner.state = {"installation_revision": HEAD, "config": {"plan": "claude"}}
+    runner.args = SimpleNamespace(repair_installation=False)
+
+    def unavailable(*args: Any, **kwargs: Any) -> bytes:
+        raise subprocess.CalledProcessError(128, ["git", "archive"])
+
+    monkeypatch.setattr(module.subprocess, "check_output", unavailable)
+    with pytest.raises(
+        module.Blocked, match=r"\.claude.*--resume --repair-installation"
+    ):
+        runner.prepare_installation()

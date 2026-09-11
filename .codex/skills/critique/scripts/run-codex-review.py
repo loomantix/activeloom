@@ -118,6 +118,11 @@ def main() -> int:
                 "codex",
                 "--round",
                 str(args.round),
+                *(
+                    ["--run-id", os.environ["ACTIVELOOM_RUN_ID"]]
+                    if os.environ.get("ACTIVELOOM_RUN_ID")
+                    else []
+                ),
             ],
             check=True,
         )

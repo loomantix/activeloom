@@ -71,10 +71,14 @@ remote_head="${remote_row%%[[:space:]]*}"
 
 if ! "$preflight_only"; then
 launch_state preflight authorization
+run_id_args=()
+if [ -n "${ACTIVELOOM_RUN_ID:-}" ]; then
+    run_id_args=(--run-id "$ACTIVELOOM_RUN_ID")
+fi
 # claude-cli-invocations:start
 python3 -I "$script_dir/local-review-handoff.py" authorize-pass \
     --repo "$repo" --pr "$pr" --base "$base" --head "$head" \
-    --engine claude --round "$round" >/dev/null
+    --engine claude --round "$round" "${run_id_args[@]}" >/dev/null
 # claude-cli-invocations:end
 fi
 

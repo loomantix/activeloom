@@ -126,6 +126,11 @@ same remaining run budget. A missing/blocked result after execution, unknown
 exit, interrupted reviewer, changed head or changed evidence still requires
 reconciliation; none is silently retried or converted into passing evidence.
 
+Recovery preparation records its intent before staging files so an interruption
+can resume the same transaction. Each launch rechecks the saved run and owed
+pass; the launcher's `authorize-pass --run-id` check also rejects a replacement
+run at the same head and round.
+
 ### Migrate an existing checkpoint
 
 Version 1 checkpoints require an explicit adoption step. Validate the new
