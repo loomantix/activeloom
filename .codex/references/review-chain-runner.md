@@ -68,6 +68,26 @@ does not change interactive sessions. It is a completion workaround, not a
 guarantee that a worker writes its result: the runner still verifies that file.
 See [Claude Code's environment-variable reference](https://code.claude.com/docs/en/env-vars).
 
+## Preflight and installed review tools
+
+Before posting a run or launching its first reviewer, the runner preflights every
+selected engine. Launchers repeat their checks immediately before each review.
+Missing executables, dirty surfaces, failed provenance checks, and incompatible
+skill contracts stop the chain before review time is spent.
+
+The runner owns its review installation under the checkpoint directory. Native
+Codex/Claude surfaces are archived from a recorded consumer commit and checked
+against a pinned file manifest. Gemini uses a separate clean checkout at the
+Agy launcher's existing trusted ActiveLoom commit. Its first installation needs
+network access to the canonical public upstream. Review prompts address those
+files directly instead of depending on mutable development trees or global
+skill symlinks. Consumer instructions and review addenda still come from the
+review worktree; model and provider choices retain the launcher defaults.
+
+If an installation is damaged, add `--repair-installation` to the printed resume
+command. The runner preserves the old directory and builds a replacement at
+the same pins. It never cleans or discards a developer's modified checkout.
+
 ## Results and recovery
 
 Each worker writes a canonical result, not an attestation. The runner verifies
@@ -101,12 +121,46 @@ The runner never marks ready or merges, even on success. It reports the evidence
 to the caller, who follows the repository's finalization policy.
 
 `--resume` can rerun a failed validation command and reconcile an attestation
-posted before a checkpoint write, without relaunching the worker. A missing or
-blocked result, failed launcher, unknown worker exit, or externally changed head
-stops at the owed pass. Resume does not automatically retry that reviewer or
-convert a blocked result into clean evidence. Preserve its files and use the
-ledger's supported recovery procedure; if recovery needs new authority, ask.
-The controller never automatically starts a replacement run.
+posted before a checkpoint write, without relaunching the worker. Each launch
+attempt records its execution boundary, known exit status, and structured
+failure reason. A crash between the boundary write and process creation remains
+unknown; it is not evidence that a retry is safe. Local logs name the failing
+checkout and changed paths, and blocked output prints the exact resume command.
+
+After repairing a proven preflight-only failure, add `--recover-preflight` to
+that command. Proof requires a recorded unsuccessful launcher exit and completed
+process-group cleanup; a preflight marker alone cannot authorize a retry.
+Recovery rechecks the live head and ledger, preserves the run ID,
+round, completed passes, original comment snapshots and attempt history, and
+launches only the owed pass. The retry has its own directory. It consumes the
+same remaining run budget. A missing/blocked result after execution, unknown
+exit, interrupted reviewer, changed head or changed evidence still requires
+reconciliation; none is silently retried or converted into passing evidence.
+
+Recovery preparation records its intent before staging files so an interruption
+can resume the same transaction. Each launch rechecks the saved run and owed
+pass; the launcher's `authorize-pass --run-id` check also rejects a replacement
+run at the same head and round.
+
+### Migrate an existing checkpoint
+
+Version 1 checkpoints require an explicit adoption step. Validate the new
+controller in a clean checkout at a full commit SHA, then invoke that checkout's
+runner with the original arguments plus `--resume --migrate-controller <sha>`.
+The migration validates old control hashes, saves `state-v1.json`, retains the
+old control directory, and records the new hashes and source revision. It does
+not restart or renumber the run. Future resumes use the newly printed command.
+
+For a version 1 Gemini attempt with only the supported dirty-checkout rejection,
+an operator can additionally supply `--recover-preflight
+--reconcile-legacy-preflight <worker-log-sha256>`. This narrow reconciliation
+requires the recognized old controller/launcher hashes, the exact pre-execution
+diagnostic, unchanged head and ledger, and no reviewer output. Inspect the log
+and old launcher before supplying its hash. All other legacy failures remain
+unknown; migration alone never grants permission to relaunch them.
+
+The controller never automatically starts a replacement run or replenishes a
+budget. Keep the entire checkpoint directory until recovery is complete.
 
 Process timeouts and ordinary cancellation stop the owned process group unless
 a cleanup signal is denied. If any cleanup signal is denied, whether or not the

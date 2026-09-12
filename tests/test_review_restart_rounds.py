@@ -135,6 +135,26 @@ def test_restart_still_enforces_cap_and_no_skips(
         handoff._authorize_pass(args)
 
 
+def test_authorization_rejects_replacement_run_at_same_head_and_round(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *args: [])
+    args = SimpleNamespace(
+        repo="example/repo",
+        pr=7,
+        base="b" * 40,
+        head="a" * 40,
+        engine="codex",
+        round=1,
+        run_id="e" * 64,
+    )
+    with pytest.raises(handoff.HandoffError, match="active run changed"):
+        handoff._authorize_pass(args)
+    args.run_id = "d" * 64
+    handoff._authorize_pass(args)
+
+
 def test_first_run_and_duplicate_identity(
     handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,

@@ -23,6 +23,10 @@ def test_launcher_disables_background_tasks(
     shutil.copyfile(
         ROOT / ".codex/skills/critique/scripts/run-claude-review.sh", launcher
     )
+    shutil.copyfile(
+        ROOT / ".codex/skills/critique/scripts/review-launch-state.py",
+        tmp_path / "review-launch-state.py",
+    )
     # Only the launcher is under test; authorize the synthetic PR locally.
     (tmp_path / "local-review-handoff.py").write_text(
         "import sys\nassert sys.argv[1] == 'authorize-pass'\n"

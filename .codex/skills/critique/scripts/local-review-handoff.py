@@ -595,6 +595,9 @@ def _authorize_pass(args: argparse.Namespace) -> None:
     if not records:
         _fail("no authenticated local-review run exists")
     run = records[-1]
+    expected_run = getattr(args, "run_id", None)
+    if expected_run is not None and run["run_id"] != expected_run:
+        _fail("active run changed before launch; refusing a different budget")
     if _run_end(rows, cast(str, run["run_id"])) is not None:
         _fail("the current local-review run has ended")
     if run["base"] != args.base:
@@ -1225,6 +1228,7 @@ def _parser() -> argparse.ArgumentParser:
     start.set_defaults(handler=_start_run)
 
     authorize = commands.add_parser("authorize-pass")
+    authorize.add_argument("--run-id")
     authorize.add_argument("--repo", required=True)
     authorize.add_argument("--pr", required=True, type=int)
     authorize.add_argument("--head", required=True, type=_sha)

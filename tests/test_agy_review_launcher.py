@@ -115,7 +115,7 @@ def _trusted_environment(
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
-    return {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    return {**{k: v for k, v in os.environ.items() if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))}, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
 
 def _surface_files(surface: Path, *, ledger_version: str = LEDGER_VERSION) -> dict[Path, str]:
@@ -625,6 +625,7 @@ def test_both_launchers_require_the_canonical_activeloom_surface(
     launcher = scripts / "run-agy-review.sh"
     launcher.write_bytes((ROOT / harness / "skills/critique/scripts/run-agy-review.sh").read_bytes())
     launcher.chmod(0o755)
+    (scripts / "review-launch-state.py").write_bytes((ROOT / ".codex/skills/critique/scripts/review-launch-state.py").read_bytes())
     (scripts / "review-ledger.version").write_text(LEDGER_VERSION, encoding="utf-8")
     (scripts / "local-review-handoff.py").write_text(
         '"""Run admission is outside this surface-provenance test."""\n', encoding="utf-8"
@@ -1023,6 +1024,7 @@ def test_race_coverage_fails_when_the_jobs_table_fallback_is_removed(tmp_path: P
     (mutant_dir / "review-ledger.version").write_text(
         LEDGER_VERSION_FILE.read_text(encoding="utf-8"), encoding="utf-8"
     )
+    (mutant_dir / "review-launch-state.py").write_bytes((ROOT / ".claude/skills/critique/scripts/review-launch-state.py").read_bytes())
     mutated = mutant_dir / "run-agy-review.sh"
     source = LAUNCHER.read_text(encoding="utf-8")
     fallback = (
@@ -1096,3 +1098,37 @@ def test_review_workflow_documents_the_auto_relay_contract() -> None:
     assert "verify-coverage" in workflow
     assert "run-agy-review.sh" in deepcritique
     assert "verify-coverage" in deepcritique
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_managed_installation_preflight_ignores_global_skill_links(
+    tmp_path: Path, dirty: bool
+) -> None:
+    fake_agy, surface = _fake_agy(tmp_path, skills_payload="invalid global discovery")
+    marker = tmp_path / "launch.json"
+    argv_file = tmp_path / "argv.json"
+    result = subprocess.run(
+        [*_command(), "--preflight-only"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            **_trusted_environment(tmp_path),
+            "AGY_REVIEW_CLI": str(fake_agy),
+            "AGY_ARGV_FILE": str(argv_file),
+            "ACTIVELOOM_REVIEW_SURFACE": str(surface),
+            "ACTIVELOOM_LAUNCH_STATE": str(marker),
+            "ACTIVELOOM_ATTEMPT_ID": "test-attempt",
+            "AGY_TEST_SURFACE_DIRTY": "1" if dirty else "0",
+        },
+    )
+    evidence = json.loads(marker.read_text())
+    assert evidence["review_started"] is False
+    assert evidence["attempt_id"] == "test-attempt"
+    assert evidence["phase"] == ("preflight" if dirty else "ready")
+    assert result.returncode == (1 if dirty else 0)
+    assert not argv_file.exists()
+    if dirty:
+        assert evidence["failure_reason"] == "dirty_surface"
+        assert str(surface.parent) in result.stderr
+        assert ".agents/skills/critique/SKILL.md" in result.stderr

@@ -159,6 +159,12 @@ harnesses:
       # effort, permission, output, and timeout contract so no caller can
       # hand-compose an unattended reviewer command; executable because the
       # skills invoke it directly.
+      # Durable preflight/execution boundary evidence for local launchers.
+      - source: .claude/skills/critique/scripts/review-launch-state.py
+        destination: .claude/skills/critique/scripts/review-launch-state.py
+        substitutions: []
+        mode: '0644'
+
       - source: .claude/skills/critique/scripts/run-agy-review.sh
         destination: .claude/skills/critique/scripts/run-agy-review.sh
         substitutions: []
@@ -591,6 +597,12 @@ harnesses:
         destination: .codex/skills/critique/scripts/run-claude-review.sh
         substitutions: []
         mode: '0755'
+
+      # Durable preflight/execution boundary evidence for local launchers.
+      - source: .codex/skills/critique/scripts/review-launch-state.py
+        destination: .codex/skills/critique/scripts/review-launch-state.py
+        substitutions: []
+        mode: '0644'
 
       - source: .codex/skills/critique/scripts/run-agy-review.sh
         destination: .codex/skills/critique/scripts/run-agy-review.sh
