@@ -108,7 +108,14 @@ convert a blocked result into clean evidence. Preserve its files and use the
 ledger's supported recovery procedure; if recovery needs new authority, ask.
 The controller never automatically starts a replacement run.
 
-Process timeouts and ordinary cancellation stop the owned process group.
+Process timeouts and ordinary cancellation stop the owned process group unless
+a cleanup signal is denied. If any cleanup signal is denied, whether or not the
+worker has exited, the runner probes the group without sending a signal. In
+that case cleanup succeeds only if the probe confirms that the group no longer
+exists. A surviving group or a denied probe blocks progression immediately,
+without further escalation. The diagnostic includes the group ID, the worker
+exit status once the worker has exited, and the timeout, interruption, or
+failed exit that started cleanup, for reconciliation.
 After host failure or an uncatchable kill, an operator must reconcile any
 surviving reviewer before recovery; no script can guarantee progress while its
 host is down. The guarantee is that a running controller advances verified
