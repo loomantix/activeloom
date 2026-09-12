@@ -269,6 +269,7 @@ URL_ALLOWLIST: set[str] = {
     # Anthropic's docs, alongside `anthropic.com` / `docs.anthropic.com` /
     # `claude.com`. Same reasoning.
     "platform.claude.com",
+    "code.claude.com",
     # NOT a documentation host, and the one entry in this block that differs
     # in kind: the public npm registry serves executable packages. It is here
     # because the publish/verify skills have to name the registry they publish

@@ -59,6 +59,15 @@ permissions match the existing agent-loop use case; a dedicated worktree is not
 a security sandbox. See the repository's [OpenAI documentation setup](../../docs/openai-docs.md)
 for current official documentation sources.
 
+The automatic Claude launcher sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`
+for its worker, overriding an inherited value. Claude waits for shell commands
+and subagents in the foreground instead of leaving background work unfinished
+when the one-shot session exits. Foreground subagents can still run concurrently
+when dispatched together. This setting is local to the launched process; it
+does not change interactive sessions. It is a completion workaround, not a
+guarantee that a worker writes its result: the runner still verifies that file.
+See [Claude Code's environment-variable reference](https://code.claude.com/docs/en/env-vars).
+
 ## Preflight and installed review tools
 
 Before posting a run or launching its first reviewer, the runner preflights every
@@ -151,7 +160,14 @@ unknown; migration alone never grants permission to relaunch them.
 The controller never automatically starts a replacement run or replenishes a
 budget. Keep the entire checkpoint directory until recovery is complete.
 
-Process timeouts and ordinary cancellation stop the owned process group.
+Process timeouts and ordinary cancellation stop the owned process group unless
+a cleanup signal is denied. If any cleanup signal is denied, whether or not the
+worker has exited, the runner probes the group without sending a signal. In
+that case cleanup succeeds only if the probe confirms that the group no longer
+exists. A surviving group or a denied probe blocks progression immediately,
+without further escalation. The diagnostic includes the group ID, the worker
+exit status once the worker has exited, and the timeout, interruption, or
+failed exit that started cleanup, for reconciliation.
 After host failure or an uncatchable kill, an operator must reconcile any
 surviving reviewer before recovery; no script can guarantee progress while its
 host is down. The guarantee is that a running controller advances verified

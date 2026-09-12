@@ -6,6 +6,7 @@ from collections.abc import Iterator
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -431,6 +432,105 @@ def test_dco_checks_every_non_merge_commit(
         else "Signed-off-by: Test <test@example.com>",
     )
     runner.dco(HEAD)
+
+
+@pytest.mark.parametrize("denied_signal", [signal.SIGTERM, signal.SIGKILL])
+def test_chain_advances_after_cleanup_denial_for_absent_group(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, denied_signal: int
+) -> None:
+    real_killpg = os.killpg
+    probes: list[int] = []
+
+    def killpg(pid: int, sig: int) -> None:
+        if sig == denied_signal:
+            raise PermissionError(1, "Operation not permitted")
+        if sig == 0:
+            probes.append(pid)
+        real_killpg(pid, sig)
+
+    monkeypatch.setattr(harness.module.os, "killpg", killpg)
+    assert harness.runner(harness.args, harness.directory).run() == "converged"
+    assert harness.launches == ["codex", "claude", "codex", "claude"]
+    assert probes
+
+
+@pytest.mark.parametrize("probe_denied", [False, True])
+def test_managed_cleanup_denial_blocks_when_group_absence_is_unproven(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_denied: bool
+) -> None:
+    module = load("review-chain-runner")
+
+    def killpg(pid: int, sig: int) -> None:
+        if sig != 0 or probe_denied:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(module.os, "killpg", killpg)
+    with pytest.raises(module.Blocked, match="process-group cleanup denied"):
+        module.managed(
+            [sys.executable, "-c", "pass"],
+            tmp_path / "worker.log",
+            dict(os.environ),
+            5,
+        )
+
+
+def test_managed_cleanup_denial_does_not_hide_failed_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-chain-runner")
+    real_killpg = os.killpg
+
+    def killpg(pid: int, sig: int) -> None:
+        if sig:
+            raise PermissionError(1, "Operation not permitted")
+        real_killpg(pid, sig)
+
+    monkeypatch.setattr(module.os, "killpg", killpg)
+    with pytest.raises(module.Blocked) as caught:
+        module.managed(
+            [sys.executable, "-c", "raise SystemExit(7)"],
+            tmp_path / "worker.log",
+            dict(os.environ),
+            5,
+        )
+    # The probe proves the group is gone, so the worker's own failure surfaces.
+    assert str(caught.value).endswith(f"exited 7; inspect {tmp_path / 'worker.log'}")
+    assert "process-group cleanup denied" not in str(caught.value)
+
+
+def test_managed_cleanup_denial_keeps_timeout_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-chain-runner")
+    real_killpg = os.killpg
+    groups: list[int] = []
+
+    def killpg(pid: int, sig: int) -> None:
+        groups.append(pid)
+        if sig:
+            raise PermissionError(1, "Operation not permitted")
+        real_killpg(pid, sig)
+
+    monkeypatch.setattr(module.os, "killpg", killpg)
+    try:
+        with pytest.raises(module.Blocked) as caught:
+            module.managed(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                tmp_path / "worker.log",
+                dict(os.environ),
+                1,
+            )
+    finally:
+        for pid in set(groups):
+            try:
+                real_killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    message = str(caught.value)
+    assert "exit not confirmed" in message
+    assert "process-group cleanup denied" in message
+    assert "worker timed out after 1s" in message
+    assert "sleep" not in message
 
 
 def test_managed_timeout_stops_worker(tmp_path: Path) -> None:
