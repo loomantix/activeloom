@@ -59,6 +59,15 @@ permissions match the existing agent-loop use case; a dedicated worktree is not
 a security sandbox. See the repository's [OpenAI documentation setup](../../docs/openai-docs.md)
 for current official documentation sources.
 
+The automatic Claude launcher sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`
+for its worker, overriding an inherited value. Claude waits for shell commands
+and subagents in the foreground instead of leaving background work unfinished
+when the one-shot session exits. Foreground subagents can still run concurrently
+when dispatched together. This setting is local to the launched process; it
+does not change interactive sessions. It is a completion workaround, not a
+guarantee that a worker writes its result: the runner still verifies that file.
+See [Claude Code's environment-variable reference](https://code.claude.com/docs/en/env-vars).
+
 ## Results and recovery
 
 Each worker writes a canonical result, not an attestation. The runner verifies

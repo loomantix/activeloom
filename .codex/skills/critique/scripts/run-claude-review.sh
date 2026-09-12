@@ -86,6 +86,10 @@ export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="claude"
 
+# One-shot workers must collect tool results before returning to the runner.
+# Foreground subagents can still run concurrently in a tool-call batch.
+export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+
 # claude-cli-invocations:start
 exec timeout --signal=TERM --kill-after=30s "${review_timeout_seconds}s" \
     "$claude_review_cli" \
