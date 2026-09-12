@@ -216,6 +216,7 @@ sys.exit(int(sys.argv[2]))
         controls=controls,
         events=events,
         launches=launches,
+        real_managed=real_managed,
     )
 
 
@@ -758,7 +759,7 @@ def test_preflight_recovery_keeps_completed_passes_and_budget(
                         "failure_reason": "dirty_surface",
                     },
                 )
-            raise harness.module.Blocked("synthetic dirty surface")
+            raise harness.module.ProcessFailure("synthetic dirty surface", 1)
         original(argv, log, env, timeout)
 
     monkeypatch.setattr(harness.module, "managed", managed)
@@ -843,6 +844,88 @@ def test_resume_never_retries_an_unrecorded_exit(
     harness.args.resume = harness.args.recover_preflight = True
     monkeypatch.setattr(harness.module, "managed", original)
     with pytest.raises(harness.module.Blocked, match="returned no result"):
+        harness.runner(harness.args, harness.directory).run()
+    assert not harness.launches
+
+
+def test_preflight_cleanup_denial_cannot_retry_a_surviving_launcher(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ordinary = harness.module.managed
+    real_killpg = os.killpg
+    groups: set[int] = set()
+
+    def denied_cleanup(pid: int, sig: int) -> None:
+        groups.add(pid)
+        if sig:
+            raise PermissionError(1, "synthetic denied cleanup")
+        real_killpg(pid, sig)
+
+    def stalled_preflight(
+        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+    ) -> None:
+        if "AGENT_LOOP_REVIEW_ENGINE" not in env:
+            ordinary(argv, log, env, timeout)
+            return
+        helper = SCRIPTS / "review-launch-state.py"
+        program = (
+            f"import runpy,time; runpy.run_path({str(helper)!r})"
+            "['record']('preflight','pr_boundary'); time.sleep(30)"
+        )
+        monkeypatch.setattr(harness.module.os, "killpg", denied_cleanup)
+        try:
+            harness.real_managed([sys.executable, "-c", program], log, env, 1)
+        finally:
+            monkeypatch.setattr(harness.module.os, "killpg", real_killpg)
+
+    monkeypatch.setattr(harness.module, "managed", stalled_preflight)
+    try:
+        runner = harness.runner(harness.args, harness.directory)
+        with pytest.raises(
+            harness.module.Blocked, match="process-group cleanup denied"
+        ):
+            runner.run()
+        assert groups
+        for pid in groups:
+            real_killpg(pid, 0)
+        marker = harness.directory / runner.state["pending"]["folder"] / "launch.json"
+        assert harness.module.read(marker)["phase"] == "preflight"
+        attempt = runner.state["attempts"][-1]
+        assert attempt["exit_status"] is None
+        assert attempt["phase"] == "launching"
+        assert attempt["review_started"] is None
+        harness.args.resume = harness.args.recover_preflight = True
+        monkeypatch.setattr(harness.module, "managed", ordinary)
+        with pytest.raises(harness.module.Blocked):
+            harness.runner(harness.args, harness.directory).run()
+        assert not harness.launches
+        for pid in groups:
+            real_killpg(pid, 0)
+    finally:
+        for pid in groups:
+            try:
+                real_killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+
+
+def test_recovery_rejects_previously_misclassified_unknown_preflight_exit(
+    harness: Any,
+) -> None:
+    harness.controls.preflight = True
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    # Older recovery controllers could label denied cleanup this way.
+    state["attempts"][-1]["exit_status"] = None
+    harness.module.save(harness.directory / "state.json", state)
+    harness.controls.preflight = False
+    harness.args.resume = harness.args.recover_preflight = True
+    with pytest.raises(harness.module.Blocked, match="worker exit is unknown"):
         harness.runner(harness.args, harness.directory).run()
     assert not harness.launches
 

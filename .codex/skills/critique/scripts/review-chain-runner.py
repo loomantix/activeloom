@@ -736,8 +736,13 @@ class Runner:
                     and evidence.get("version") == 1
                 ):
                     attempt["launch_sha256"] = digest(marker)
+                    # Only ProcessFailure proves the launcher exited and its
+                    # process-group cleanup completed. A preflight marker can
+                    # belong to a stalled launcher whose cleanup was denied.
                     if (
-                        evidence.get("phase") == "preflight"
+                        isinstance(caught, ProcessFailure)
+                        and caught.exit_status > 0
+                        and evidence.get("phase") == "preflight"
                         and evidence.get("review_started") is False
                     ):
                         attempt.update(
@@ -782,6 +787,8 @@ class Runner:
             attempt.get("attempt_id") != pending.get("attempt_id")
             or attempt.get("review_started") is not False
             or attempt.get("phase") != "preflight_failed"
+            or type(attempt.get("exit_status")) is not int
+            or attempt["exit_status"] <= 0
             or digest(folder / "launch.json") != attempt.get("launch_sha256")
         ):
             raise Blocked("worker exit is unknown; no proven preflight-only failure")

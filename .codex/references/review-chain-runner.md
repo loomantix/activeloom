@@ -128,7 +128,9 @@ unknown; it is not evidence that a retry is safe. Local logs name the failing
 checkout and changed paths, and blocked output prints the exact resume command.
 
 After repairing a proven preflight-only failure, add `--recover-preflight` to
-that command. Recovery rechecks the live head and ledger, preserves the run ID,
+that command. Proof requires a recorded unsuccessful launcher exit and completed
+process-group cleanup; a preflight marker alone cannot authorize a retry.
+Recovery rechecks the live head and ledger, preserves the run ID,
 round, completed passes, original comment snapshots and attempt history, and
 launches only the owed pass. The retry has its own directory. It consumes the
 same remaining run budget. A missing/blocked result after execution, unknown
