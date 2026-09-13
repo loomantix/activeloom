@@ -15,10 +15,29 @@ ROOT = Path(__file__).resolve().parent.parent
 HEAD = "a" * 40
 
 
-@pytest.mark.parametrize("inherited", [None, "0", "1"])
-def test_launcher_disables_background_tasks(
-    tmp_path: Path, inherited: str | None
-) -> None:
+PROFILE_SOURCE = ROOT / "prompts/skills/review-setup/scripts"
+
+
+def _write_profile(path: Path, *, model: str, effort: str) -> None:
+    defaults = json.loads((PROFILE_SOURCE / "review-profile.defaults.json").read_text())
+    engines = defaults["engines"]
+    engines["claude"] = {"model": model, "effort": effort}
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "defaults_version": defaults["defaults_version"],
+                "confirmed_at": "2026-01-01T00:00:00Z",
+                "engines": engines,
+                "order": defaults["order"],
+            }
+        )
+    )
+
+
+def _invoke(
+    tmp_path: Path, extra_env: dict[str, str], *, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     launcher = tmp_path / "run-claude-review.sh"
     shutil.copyfile(
         ROOT / ".codex/skills/critique/scripts/run-claude-review.sh", launcher
@@ -27,6 +46,10 @@ def test_launcher_disables_background_tasks(
         ROOT / ".codex/skills/critique/scripts/review-launch-state.py",
         tmp_path / "review-launch-state.py",
     )
+    for name in ("review-profile.py", "review-profile.defaults.json"):
+        shutil.copyfile(
+            ROOT / ".codex/skills/critique/scripts" / name, tmp_path / name
+        )
     # Only the launcher is under test; authorize the synthetic PR locally.
     (tmp_path / "local-review-handoff.py").write_text(
         "import sys\nassert sys.argv[1] == 'authorize-pass'\n"
@@ -64,17 +87,20 @@ def test_launcher_disables_background_tasks(
         path = bin_dir / name
         path.write_text("#!/usr/bin/env python3\n" + source)
         path.chmod(0o755)
-    result_file = tmp_path / "invocation.json"
     env = {
-        **os.environ,
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("ACTIVELOOM_")
+            and k != "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+        },
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "CLAUDE_REVIEW_CLI": str(bin_dir / "claude"),
-        "PROBE_RESULT": str(result_file),
+        "PROBE_RESULT": str(tmp_path / "invocation.json"),
+        "ACTIVELOOM_REVIEW_PROFILE": str(tmp_path / "review-profile.json"),
+        **extra_env,
     }
-    env.pop("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", None)
-    if inherited is not None:
-        env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = inherited
-    subprocess.run(
+    return subprocess.run(
         [
             "bash",
             str(launcher),
@@ -91,18 +117,61 @@ def test_launcher_disables_background_tasks(
         ],
         cwd=tmp_path,
         env=env,
-        check=True,
+        check=check,
         capture_output=True,
         text=True,
         timeout=15,
     )
-    invocation = json.loads(result_file.read_text())
+
+
+@pytest.mark.parametrize("inherited", [None, "0", "1"])
+def test_launcher_disables_background_tasks(
+    tmp_path: Path, inherited: str | None
+) -> None:
+    _write_profile(tmp_path / "review-profile.json", model="opus", effort="medium")
+    extra = {} if inherited is None else {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": inherited}
+    _invoke(tmp_path, extra)
+    invocation = json.loads((tmp_path / "invocation.json").read_text())
     assert invocation["background"] == "1"
-    assert invocation["argv"][:6] == [
+    assert invocation["argv"][:8] == [
+        "--model",
+        "opus",
         "--effort",
-        "low",
+        "medium",
         "--permission-mode",
         "bypassPermissions",
         "--no-session-persistence",
         "--print",
     ]
+
+
+def test_launcher_omits_the_model_flag_for_an_inherited_model(tmp_path: Path) -> None:
+    _write_profile(tmp_path / "review-profile.json", model="inherit", effort="xhigh")
+    _invoke(tmp_path, {})
+    argv = json.loads((tmp_path / "invocation.json").read_text())["argv"]
+    assert "--model" not in argv
+    assert argv[:2] == ["--effort", "xhigh"]
+
+
+def test_run_pinned_settings_override_the_profile(tmp_path: Path) -> None:
+    _write_profile(tmp_path / "review-profile.json", model="opus", effort="medium")
+    _invoke(
+        tmp_path,
+        {"ACTIVELOOM_REVIEW_MODEL": "sonnet", "ACTIVELOOM_REVIEW_EFFORT": "low"},
+    )
+    argv = json.loads((tmp_path / "invocation.json").read_text())["argv"]
+    assert argv[:4] == ["--model", "sonnet", "--effort", "low"]
+
+
+@pytest.mark.parametrize(
+    "profile_state", ["missing", "invalid-effort"], ids=["no-profile", "invalid"]
+)
+def test_launcher_refuses_to_start_without_a_valid_profile(
+    tmp_path: Path, profile_state: str
+) -> None:
+    if profile_state == "invalid-effort":
+        _write_profile(tmp_path / "review-profile.json", model="opus", effort="extreme")
+    result = _invoke(tmp_path, {}, check=False)
+    assert result.returncode != 0
+    assert not (tmp_path / "invocation.json").exists()
+    assert "review profile" in result.stderr

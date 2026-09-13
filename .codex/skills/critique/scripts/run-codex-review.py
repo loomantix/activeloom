@@ -3,7 +3,9 @@
 
 Run only in a dedicated, trusted review worktree. Like the existing unattended
 agent-loop launcher, the worker needs commit, push and PR-comment permissions.
-Model and provider selection remain the user's configured choices.
+Model and reasoning effort come from the user's review profile, or from the
+settings a review-chain run pinned when it started; the provider remains the
+Codex CLI's own configuration.
 """
 
 from __future__ import annotations
@@ -34,6 +36,24 @@ def launch_state(phase: str, reason: str | None = None) -> None:
 
 def output(args: list[str]) -> str:
     return subprocess.check_output(args, text=True, timeout=120).strip()
+
+
+def review_settings(repo: str) -> tuple[str, str]:
+    lines = output(
+        [
+            sys.executable,
+            "-I",
+            str(Path(__file__).with_name("review-profile.py")),
+            "launch-args",
+            "--engine",
+            "codex",
+            "--repo",
+            repo,
+        ]
+    ).splitlines()
+    if len(lines) != 2:
+        raise ValueError("review profile returned malformed settings")
+    return lines[0], lines[1]
 
 
 def main() -> int:
@@ -98,6 +118,8 @@ def main() -> int:
         or output(["git", "status", "--porcelain"])
     ):
         raise ValueError("requires a clean self-authored same-repository exact PR head")
+    launch_state("preflight", "review_profile")
+    model, effort = review_settings(args.repo)
     if not args.preflight_only:
         launch_state("preflight", "authorization")
         subprocess.run(
@@ -172,6 +194,9 @@ def main() -> int:
             "danger-full-access",
             "-c",
             'approval_policy="never"',
+            *([] if model == "inherit" else ["-m", model]),
+            "-c",
+            f'model_reasoning_effort="{effort}"',
             prompt,
         ],
     )

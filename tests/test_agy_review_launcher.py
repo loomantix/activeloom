@@ -115,7 +115,13 @@ def _trusted_environment(
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
-    return {**{k: v for k, v in os.environ.items() if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))}, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    return {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))},
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        # The settings a review-chain run pins; profile-file resolution has its own tests.
+        "ACTIVELOOM_REVIEW_MODEL": "gemini-3.7-flash-high",
+        "ACTIVELOOM_REVIEW_EFFORT": "high",
+    }
 
 
 def _surface_files(surface: Path, *, ledger_version: str = LEDGER_VERSION) -> dict[Path, str]:
@@ -625,7 +631,8 @@ def test_both_launchers_require_the_canonical_activeloom_surface(
     launcher = scripts / "run-agy-review.sh"
     launcher.write_bytes((ROOT / harness / "skills/critique/scripts/run-agy-review.sh").read_bytes())
     launcher.chmod(0o755)
-    (scripts / "review-launch-state.py").write_bytes((ROOT / ".codex/skills/critique/scripts/review-launch-state.py").read_bytes())
+    for name in ("review-launch-state.py", "review-profile.py", "review-profile.defaults.json"):
+        (scripts / name).write_bytes((ROOT / ".codex/skills/critique/scripts" / name).read_bytes())
     (scripts / "review-ledger.version").write_text(LEDGER_VERSION, encoding="utf-8")
     (scripts / "local-review-handoff.py").write_text(
         '"""Run admission is outside this surface-provenance test."""\n', encoding="utf-8"
@@ -1024,7 +1031,8 @@ def test_race_coverage_fails_when_the_jobs_table_fallback_is_removed(tmp_path: P
     (mutant_dir / "review-ledger.version").write_text(
         LEDGER_VERSION_FILE.read_text(encoding="utf-8"), encoding="utf-8"
     )
-    (mutant_dir / "review-launch-state.py").write_bytes((ROOT / ".claude/skills/critique/scripts/review-launch-state.py").read_bytes())
+    for name in ("review-launch-state.py", "review-profile.py", "review-profile.defaults.json"):
+        (mutant_dir / name).write_bytes((ROOT / ".claude/skills/critique/scripts" / name).read_bytes())
     mutated = mutant_dir / "run-agy-review.sh"
     source = LAUNCHER.read_text(encoding="utf-8")
     fallback = (
@@ -1094,7 +1102,7 @@ def test_review_workflow_documents_the_auto_relay_contract() -> None:
     deepcritique = (ROOT / ".claude/skills/deepcritique/SKILL.md").read_text(encoding="utf-8")
     assert "run-agy-review.sh" in workflow
     assert "gemini-3.7-flash-high" in workflow
-    assert "literal `--effort high`" in workflow
+    assert "takes its model and effort from the review profile" in workflow
     assert "verify-coverage" in workflow
     assert "run-agy-review.sh" in deepcritique
     assert "verify-coverage" in deepcritique
@@ -1132,3 +1140,57 @@ def test_managed_installation_preflight_ignores_global_skill_links(
         assert evidence["failure_reason"] == "dirty_surface"
         assert str(surface.parent) in result.stderr
         assert ".agents/skills/critique/SKILL.md" in result.stderr
+
+
+def test_launcher_takes_model_and_effort_from_the_user_profile(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _surface = _fake_agy(tmp_path)
+    profile = tmp_path / "review-profile.json"
+    defaults = json.loads(
+        (ROOT / "prompts/skills/review-setup/scripts/review-profile.defaults.json").read_text()
+    )
+    engines = defaults["engines"]
+    engines["gemini"] = {"model": "gemini-example", "effort": "medium"}
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "defaults_version": defaults["defaults_version"],
+                "confirmed_at": "2026-01-01T00:00:00Z",
+                "engines": engines,
+                "order": defaults["order"],
+            }
+        )
+    )
+    environment = _trusted_environment(tmp_path)
+    for name in ("ACTIVELOOM_REVIEW_MODEL", "ACTIVELOOM_REVIEW_EFFORT"):
+        environment.pop(name)
+    environment.update(
+        AGY_ARGV_FILE=str(argv_file),
+        AGY_REVIEW_CLI=str(fake_agy),
+        ACTIVELOOM_REVIEW_PROFILE=str(profile),
+    )
+
+    _run(environment, check=True)
+
+    argv = json.loads(argv_file.read_text(encoding="utf-8"))["argv"]
+    assert argv[:4] == ["--model", "gemini-example", "--effort", "medium"]
+
+
+def test_launcher_refuses_to_start_without_a_review_profile(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _surface = _fake_agy(tmp_path)
+    environment = _trusted_environment(tmp_path)
+    for name in ("ACTIVELOOM_REVIEW_MODEL", "ACTIVELOOM_REVIEW_EFFORT"):
+        environment.pop(name)
+    environment.update(
+        AGY_ARGV_FILE=str(argv_file),
+        AGY_REVIEW_CLI=str(fake_agy),
+        ACTIVELOOM_REVIEW_PROFILE=str(tmp_path / "absent.json"),
+    )
+
+    result = _run(environment)
+
+    assert result.returncode != 0
+    assert "review-setup" in result.stderr
+    assert not argv_file.exists()

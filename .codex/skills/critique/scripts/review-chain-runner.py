@@ -38,6 +38,8 @@ CONTROL_FILES = [
     "review-ledger.version",
     "review-ledger.integrity",
     "review-launch-state.py",
+    "review-profile.py",
+    "review-profile.defaults.json",
     *LAUNCHERS.values(),
 ]
 # This v1 pair has exactly one dirty-surface diagnostic, followed by exit 1
@@ -568,6 +570,11 @@ class Runner:
             ],
             GH_REPO=self.args.repo,
         )
+        settings = self.review_settings(engine)
+        env.update(
+            ACTIVELOOM_REVIEW_MODEL=settings["model"],
+            ACTIVELOOM_REVIEW_EFFORT=settings["effort"],
+        )
         if engine == "gemini":
             checkout = installation / "agy"
             match = re.search(
@@ -621,6 +628,41 @@ class Runner:
                 installation / "native" / (".codex" if engine == "codex" else ".claude")
             )
         return env
+
+    def review_settings(self, engine: str) -> dict[str, str]:
+        """Pin an engine's profile settings once; profile edits apply to the next run."""
+        pinned = self.state.setdefault("review_settings", {})
+        if engine not in pinned:
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("ACTIVELOOM_REVIEW_MODEL", "ACTIVELOOM_REVIEW_EFFORT")
+            }
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(self.control / "review-profile.py"),
+                    "resolve",
+                    "--engine",
+                    engine,
+                    "--repo",
+                    self.args.repo,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=env,
+            )
+            if result.returncode:
+                # The helper's own diagnostics name only the profile path and
+                # the invalid setting, and the unconfigured case points at setup.
+                raise Blocked(
+                    result.stderr.strip() or f"review profile cannot resolve {engine}"
+                )
+            pinned[engine] = json.loads(result.stdout)
+            self.persist()
+        return dict(pinned[engine])
 
     def launcher_command(self, engine: str, head: str, number: int) -> list[str]:
         return [
@@ -1037,7 +1079,8 @@ class Runner:
         summary.write_text(
             f"Runner-verified {pending['engine']} pass {pending['round']} at {head}.\n"
             f"Base: {self.state['base']}. Result: {result['status']}.\n"
-            "Required unfiltered validation commands passed at this exact head:\n"
+            + self.settings_line(pending["engine"])
+            + "Required unfiltered validation commands passed at this exact head:\n"
             + "\n".join(self.state["config"]["checks"])
             + "\n"
         )
@@ -1075,6 +1118,15 @@ class Runner:
             raise Blocked("ledger did not advance by exactly the authorized pass")
         self.state.update(head=head, completed=passes, pending=None, status="running")
         self.persist()
+
+    def settings_line(self, engine: str) -> str:
+        settings = self.state.get("review_settings", {}).get(engine)
+        if not settings:
+            return "Reviewer settings: not recorded by this run.\n"
+        return (
+            f"Reviewer settings: model {settings['model']}, "
+            f"effort {settings['effort']} ({settings['source']}).\n"
+        )
 
     def run(self) -> str:
         self.initialize()

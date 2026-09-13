@@ -89,6 +89,14 @@ launch_state preflight missing_tool
 agy_review_cli="${AGY_REVIEW_CLI:-agy}"
 command -v "$agy_review_cli" >/dev/null 2>&1 || { echo "the Antigravity CLI is required" >&2; exit 1; }
 
+# Model and effort come from the user's review profile, or from the settings a
+# review-chain run pinned when it started. The launch region below resolves
+# them again under its hash.
+launch_state preflight review_profile
+agy_settings="$(python3 -I "$script_dir/review-profile.py" launch-args --engine gemini --repo "$repo")"
+agy_model="${agy_settings%%$'\n'*}"
+agy_effort="${agy_settings#*$'\n'}"
+
 temp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temp_dir"' EXIT
 chmod 700 "$temp_dir"
@@ -145,8 +153,8 @@ launch_state preflight skill_discovery
 skills_exit=0
 if [ -z "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
 run_agy_managed "$skills_file" 2m \
-    --model gemini-3.7-flash-high \
-    --effort high \
+    --model "$agy_model" \
+    --effort "$agy_effort" \
     --output-format json \
     --print-timeout 90s \
     --print '/skills' || skills_exit="$?"
@@ -297,7 +305,7 @@ resolved threads and prior attestations. Post verified findings inline before
 edits, then validate, push, reply, resolve, and publish the normal review result.
 Write every scratch artifact under your own agent artifact directory rather than
 a path outside it. Do not invoke Claude Code or Codex; return control to the
-calling Claude session when the Gemini pass is complete."
+calling session when the Gemini pass is complete."
 
 if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
     prompt="Read ${agy_surface_root}/skills/deepcritique/SKILL.md and follow it for this pass.
@@ -323,10 +331,13 @@ agy_exit=0
     exit 2
 }
 agy_outer_timeout_seconds=$((review_timeout_seconds + 30))
+agy_settings="$(python3 -I "$script_dir/review-profile.py" launch-args --engine gemini --repo "$repo")"
+agy_model="${agy_settings%%$'\n'*}"
+agy_effort="${agy_settings#*$'\n'}"
 launch_state execution
 run_agy_managed "$result_file" "${agy_outer_timeout_seconds}s" \
-    --model gemini-3.7-flash-high \
-    --effort high \
+    --model "$agy_model" \
+    --effort "$agy_effort" \
     --mode accept-edits \
     --dangerously-skip-permissions \
     --add-dir "$agy_surface_root" \

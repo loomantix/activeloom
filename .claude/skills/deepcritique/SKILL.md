@@ -20,10 +20,12 @@ this skill reads that decision rather than making its own.
 
 ### Controller or one-pass reviewer
 
-A top-level auto request follows the workflow's
-[auto-mode preflight](../../REVIEW_WORKFLOW.md#auto-mode) and
-[run initialization](../../REVIEW_WORKFLOW.md#start-an-interactive-run-before-authorizing-a-pass).
-Resolve the roster's available launchers before spending a pass. A launcher or
+A top-level auto request makes this session the controller. Follow the workflow's
+[automatic chain execution](../../REVIEW_WORKFLOW.md#automatic-chain-execution)
+and [auto-mode preflight](../../REVIEW_WORKFLOW.md#auto-mode): confirm the review
+profile and the roster's launchers, start the runner in the background, and report
+its outcome when it returns. The runner initializes the run itself; do not also
+call `start-run`. Coordinating the runner is not this session's review pass. A launcher or
 wrapper invocation that requests exactly one pass inherits that run and returns
 to its caller after finalizing the result; it skips Phase 3 and never schedules
 another engine, even when the enclosing run is automatic.

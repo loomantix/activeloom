@@ -7,6 +7,9 @@
 .agents/skills/onboard/SKILL.md
 .agents/skills/phone-install/SKILL.md
 .agents/skills/product-grill/SKILL.md
+.agents/skills/review-setup/SKILL.md
+.agents/skills/review-setup/scripts/review-profile.defaults.json
+.agents/skills/review-setup/scripts/review-profile.py
 .agents/skills/task-packet/SKILL.md
 .claude/prompt-stack.json
 .claude/skills/diagnosing-bugs/SKILL.md
@@ -18,6 +21,9 @@
 .claude/skills/onboard/SKILL.md
 .claude/skills/phone-install/SKILL.md
 .claude/skills/product-grill/SKILL.md
+.claude/skills/review-setup/SKILL.md
+.claude/skills/review-setup/scripts/review-profile.defaults.json
+.claude/skills/review-setup/scripts/review-profile.py
 .claude/skills/task-packet/SKILL.md
 .codex/prompt-stack.json
 .codex/skills/diagnosing-bugs/SKILL.md
@@ -29,4 +35,7 @@
 .codex/skills/onboard/SKILL.md
 .codex/skills/phone-install/SKILL.md
 .codex/skills/product-grill/SKILL.md
+.codex/skills/review-setup/SKILL.md
+.codex/skills/review-setup/scripts/review-profile.defaults.json
+.codex/skills/review-setup/scripts/review-profile.py
 .codex/skills/task-packet/SKILL.md

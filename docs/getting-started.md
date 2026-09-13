@@ -243,12 +243,35 @@ Use `--ref` deliberately. A branch such as `main` opts into development content;
 
 Each selected harness receives its own review workflow and supporting references. Link the installed documents from your repository agent instructions. For a Claude consumer, for example:
 
-```markdown
+````markdown
+## Review profile
+
+Local review launchers and the automatic review chain read each reviewer's model,
+effort, and the engine order from a per-user profile outside every repository
+(`~/.config/activeloom/review-profile.json`, or under `XDG_CONFIG_HOME`). Nothing is
+defaulted silently: until you confirm a profile, the launchers refuse to start.
+
+Create it by running the `review-setup` skill in your agent, which shows the
+recommended settings and which engine CLIs are installed before writing anything,
+or from the CLI:
+
+```bash
+node cli/bin/activeloom.js review-config defaults
+node cli/bin/activeloom.js review-config init --accept-defaults claude.effort=high
+node cli/bin/activeloom.js review-config set --repo example/project order.lean=codex,claude
+node cli/bin/activeloom.js review-config show --repo example/project
+```
+````
+
+Repository overrides layer over your own settings. A running review chain keeps
+the settings it started with; a change applies to the next run.
+
 ## AI review workflow
 
 See [`.claude/REVIEW_WORKFLOW.md`](.claude/REVIEW_WORKFLOW.md) — canonical for the lean/deep chains.
 See [`.claude/MODEL_NOTES.md`](.claude/MODEL_NOTES.md) before editing anything under `.claude/skills/` or `.claude/agents/`.
-```
+
+````
 
 Add these **after** the first sync lands, so the links resolve.
 
@@ -263,7 +286,7 @@ git clone https://github.com/loomantix/activeloom.git
 cd activeloom
 ./scripts/install-skills.sh --dry-run
 ./scripts/install-skills.sh
-```
+````
 
 ## Troubleshooting
 

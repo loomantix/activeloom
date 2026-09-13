@@ -52,9 +52,23 @@ These are alternative plans, not consecutive commands for the same active run.
 - `--author` is the actual author engine, not necessarily the first reviewer.
   Existing roster membership must match; reconcile changes explicitly first.
 
-The runner uses the existing Claude/Agy launchers without overriding their model,
-effort or permission flags. The new Codex one-pass launcher retains configured
-model/provider choices and uses ephemeral noninteractive execution. Its unattended
+## Reviewer settings
+
+Reviewer model and effort come from the user's review profile, which the
+`review-setup` skill writes through `review-profile.py`. During its first preflight
+the runner resolves each selected engine once, records the settings in the
+checkpoint, passes them to every launch of that engine, and names them in each
+pass attestation. A missing or invalid profile blocks the run before anything is
+posted. Profile edits apply to the next run; resuming keeps the pinned settings.
+Launchers validate the values against each CLI's accepted effort levels and keep
+their permission, output and timeout flags fixed. `inherit` omits the model flag
+so the engine CLI's own configured model applies.
+
+`review-profile.py order --tier <lean|deep> --repo <owner/repo>` prints the user's
+preferred engine order for `--cycle` when the user has not named a plan.
+
+The Codex one-pass launcher uses ephemeral noninteractive execution; its provider
+remains the Codex CLI configuration. Its unattended
 permissions match the existing agent-loop use case; a dedicated worktree is not
 a security sandbox. See the repository's [OpenAI documentation setup](../../docs/openai-docs.md)
 for current official documentation sources.
@@ -82,7 +96,7 @@ Agy launcher's existing trusted ActiveLoom commit. Its first installation needs
 network access to the canonical public upstream. Review prompts address those
 files directly instead of depending on mutable development trees or global
 skill symlinks. Consumer instructions and review addenda still come from the
-review worktree; model and provider choices retain the launcher defaults.
+review worktree; model and effort are the run's pinned profile settings.
 
 If an installation is damaged, add `--repair-installation` to the printed resume
 command. The runner preserves the old directory and builds a replacement at

@@ -553,9 +553,12 @@ def test_codex_launcher_pins_boundary_without_changing_model(
 
     launcher = tmp_path / "run-codex-review.py"
     shutil.copyfile(SCRIPTS / launcher.name, launcher)
-    shutil.copyfile(
-        SCRIPTS / "review-launch-state.py", tmp_path / "review-launch-state.py"
-    )
+    for name in (
+        "review-launch-state.py",
+        "review-profile.py",
+        "review-profile.defaults.json",
+    ):
+        shutil.copyfile(SCRIPTS / name, tmp_path / name)
     (tmp_path / "local-review-handoff.py").write_text("print('{}')\n")
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -602,6 +605,8 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
             "PATH": str(bindir) + os.pathsep + os.environ["PATH"],
             "CAPTURE": str(capture),
             "STALE": "1" if stale else "0",
+            "ACTIVELOOM_REVIEW_MODEL": "inherit",
+            "ACTIVELOOM_REVIEW_EFFORT": "high",
         },
         capture_output=True,
         text=True,
@@ -613,7 +618,8 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         assert result.returncode == 0, result.stderr
         argv = json.loads(capture.read_text())
         assert argv[:2] == ["exec", "--ephemeral"]
-        assert "--model" not in argv and "--ignore-user-config" not in argv
+        assert "-m" not in argv and "--ignore-user-config" not in argv
+        assert argv[argv.index('model_reasoning_effort="high"') - 1] == "-c"
         assert "one Codex review pass" in argv[-1]
         assert (
             f"review pass on PR #1 in example/repo, round 1, pinned base {BASE}, "
@@ -630,9 +636,12 @@ def test_codex_launcher_records_execution_and_forwards_run_id(
 
     launcher = tmp_path / "run-codex-review.py"
     shutil.copyfile(SCRIPTS / launcher.name, launcher)
-    shutil.copyfile(
-        SCRIPTS / "review-launch-state.py", tmp_path / "review-launch-state.py"
-    )
+    for name in (
+        "review-launch-state.py",
+        "review-profile.py",
+        "review-profile.defaults.json",
+    ):
+        shutil.copyfile(SCRIPTS / name, tmp_path / name)
     handoff = tmp_path / "handoff.json"
     (tmp_path / "local-review-handoff.py").write_text(
         "import json, os, sys\n"
@@ -678,6 +687,8 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(pathlib.Path(os.environ["AC
             "ACTIVELOOM_LAUNCH_STATE": str(tmp_path / "launch.json"),
             "ACTIVELOOM_ATTEMPT_ID": "attempt-1",
             "ACTIVELOOM_RUN_ID": "f" * 64,
+            "ACTIVELOOM_REVIEW_MODEL": "example-model",
+            "ACTIVELOOM_REVIEW_EFFORT": "max",
         },
         capture_output=True,
         text=True,
@@ -691,6 +702,8 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(pathlib.Path(os.environ["AC
     assert observed["review_started"] is None
     argv = json.loads(handoff.read_text())
     assert argv[0] == "authorize-pass"
+    # The reviewer launch itself is captured by a sibling test; here the
+    # pinned settings must at least resolve without a profile on disk.
     assert argv[argv.index("--run-id") + 1] == "f" * 64
 
 
@@ -1134,6 +1147,14 @@ def test_installation_repair_preserves_dirty_bytes_and_the_original_pin(
         "head": revision,
         "installation_revision": revision,
         "config": {"plan": "codex"},
+        "review_settings": {
+            "codex": {
+                "engine": "codex",
+                "model": "inherit",
+                "effort": "high",
+                "source": "user profile",
+            }
+        },
     }
     runner.prepare_installation()
     installed = directory / "installation/native/.codex/REVIEW_WORKFLOW.md"
@@ -1335,3 +1356,70 @@ def test_missing_selected_harness_has_recovery_diagnostic(
         module.Blocked, match=r"\.claude.*--resume --repair-installation"
     ):
         runner.prepare_installation()
+
+
+def test_review_settings_are_pinned_once_and_named_in_the_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    module = load("review-chain-runner")
+    directory = tmp_path / "checkpoint"
+    (directory / "control").mkdir(parents=True)
+    for name in ("review-profile.py", "review-profile.defaults.json"):
+        shutil.copyfile(SCRIPTS / name, directory / "control" / name)
+    profile = tmp_path / "review-profile.json"
+    defaults = json.loads((SCRIPTS / "review-profile.defaults.json").read_text())
+    document = {
+        "schema_version": 1,
+        "defaults_version": defaults["defaults_version"],
+        "confirmed_at": "2026-01-01T00:00:00Z",
+        "engines": defaults["engines"],
+        "order": defaults["order"],
+        "repos": {"example/repo": {"engines": {"claude": {"effort": "high"}}}},
+    }
+    profile.write_text(json.dumps(document))
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_PROFILE", str(profile))
+    # A caller cannot pre-seed the pin through its own environment.
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_MODEL", "sonnet")
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_EFFORT", "low")
+    runner = module.Runner(SimpleNamespace(repo="example/repo"), directory)
+
+    assert runner.settings_line("claude") == (
+        "Reviewer settings: not recorded by this run.\n"
+    )
+    pinned = runner.review_settings("claude")
+    assert pinned == {
+        "engine": "claude",
+        "model": "opus",
+        "effort": "high",
+        "source": "repository override",
+    }
+    assert json.loads((directory / "state.json").read_text())["review_settings"] == {
+        "claude": pinned
+    }
+
+    document["repos"]["example/repo"]["engines"]["claude"]["effort"] = "max"
+    profile.write_text(json.dumps(document))
+    assert runner.review_settings("claude") == pinned
+    assert runner.settings_line("claude") == (
+        "Reviewer settings: model opus, effort high (repository override).\n"
+    )
+
+
+def test_missing_review_profile_blocks_before_any_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    module = load("review-chain-runner")
+    directory = tmp_path / "checkpoint"
+    (directory / "control").mkdir(parents=True)
+    shutil.copyfile(
+        SCRIPTS / "review-profile.py", directory / "control/review-profile.py"
+    )
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_PROFILE", str(tmp_path / "absent.json"))
+    runner = module.Runner(SimpleNamespace(repo="example/repo"), directory)
+    with pytest.raises(module.Blocked, match="review-setup"):
+        runner.review_settings("codex")
+    assert not (directory / "state.json").exists()

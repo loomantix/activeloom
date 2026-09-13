@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "defaults_version": "2026.09.13",
+  "engines": {
+    "claude": { "model": "opus", "effort": "medium" },
+    "codex": { "model": "inherit", "effort": "high" },
+    "gemini": { "model": "gemini-3.7-flash-high", "effort": "high" }
+  },
+  "order": {
+    "lean": ["claude", "codex"],
+    "deep": ["claude", "codex", "gemini"]
+  },
+  "notes": {
+    "claude": "Review accuracy holds at medium effort on the current Opus generation; raise it for a demanding change.",
+    "codex": "inherit uses the model configured for the Codex CLI; set an explicit model to pin it.",
+    "gemini": "The Antigravity CLI accepts low, medium or high effort."
+  }
+}
