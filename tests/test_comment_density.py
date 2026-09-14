@@ -219,6 +219,38 @@ def test_meaningful_token_and_line_boundaries_are_preserved(
     assert fingerprint(cd, before, ext) != fingerprint(cd, after, ext)
 
 
+@pytest.mark.parametrize(
+    ("before", "after", "ext"),
+    [
+        ("a(); // eslint-disable-line\nb();", "a();\n// eslint-disable-line\nb();", ".ts"),
+        ("x := 1 //nolint\ny := 2", "x := 1\n//nolint\ny := 2", ".go"),
+        ("x = /* @__PURE__ */ f();", "x = f();", ".js"),
+        ("/// ```\n/// assert_eq!(f(), 1);\n/// ```\nfn f() -> i32 { 1 }", "fn f() -> i32 { 1 }", ".rs"),
+        ("//! Crate docs.\nfn f() {}", "fn f() {}", ".rs"),
+        (
+            "func ExampleF() {\n\tprintln(1)\n\t// Output:\n\t// 1\n}",
+            "func ExampleF() {\n\tprintln(1)\n\t// Output:\n}",
+            ".go",
+        ),
+        ("//export Foo\nfunc Foo() {}", "func Foo() {}", ".go"),
+        ('var p = @"C:\\dir\\"; var q = "x // y"; F();', 'var p = @"C:\\dir\\"; var q = "x // y"; G();', ".cs"),
+        ('val p = """C:\\"""; val q = "x // y"; f()', 'val p = """C:\\"""; val q = "x // y"; g()', ".kt"),
+    ],
+)
+def test_directive_placement_and_compiled_comments_are_preserved(
+    cd: ModuleType, before: str, after: str, ext: str
+) -> None:
+    assert fingerprint(cd, before, ext) != fingerprint(cd, after, ext)
+
+
+def test_prose_beside_interpolation_and_doc_free_rust_stays_removable(cd: ModuleType) -> None:
+    assert fingerprint(cd, "// helper\nfn f() {}\n", ".rs") == fingerprint(cd, "fn f() {}\n", ".rs")
+    assert fingerprint(cd, 'val a = "${x}" // note\n', ".kt") == fingerprint(cd, 'val a = "${x}"\n', ".kt")
+    assert fingerprint(cd, 'var a = $"{{x}} {y}"; // note\n', ".cs") == fingerprint(
+        cd, 'var a = $"{{x}} {y}";\n', ".cs"
+    )
+
+
 def test_python_directive_scope_and_type_comments_are_preserved(cd: ModuleType) -> None:
     before = "a = f()  # type: ignore\nb = g()\n"
     moved = "a = f()\nb = g()  # type: ignore\n"
@@ -240,6 +272,10 @@ def test_python_directive_scope_and_type_comments_are_preserved(cd: ModuleType) 
         ("export default <div>hello // text</div>;", ".js"),
         ("const x = <Δ>hello // text</Δ>;", ".tsx"),
         ("if (ok) /[//]text/.test(x);", ".js"),
+        ('val u = "${b ?: "http://a"}"; f()', ".kt"),
+        ('let u = "\\(b ?? "http://a")"; f()', ".swift"),
+        ('var u = $"{b ?? "http://a"}"; F();', ".cs"),
+        ('// #include <stdio.h>\nimport "C"', ".go"),
     ],
 )
 def test_unsupported_lexical_contexts_are_marked_approximate(
@@ -529,6 +565,15 @@ def test_verify_fails_on_code_changes_and_new_files(
     assert [f["status"] for f in files] == ["changed", "added"]
     assert "f(1)" in files[0]["divergence"]["before"]
     assert "f(2)" in files[0]["divergence"]["after"]
+
+
+def test_verify_fails_on_added_files_alone(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo / "c.ts").write_text("export const c = 1;\n")
+    code, report = _verify(cd, capsys, "a.ts", "c.ts")
+    assert code == 1
+    assert report["statuses"] == {"added": 1, "unchanged": 1}
 
 
 def test_verify_rejects_unknown_revisions(

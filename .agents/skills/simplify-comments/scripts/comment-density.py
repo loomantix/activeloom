@@ -10,9 +10,11 @@ Verify (--verify-against REF) compares each file's code fingerprint with the
 same path at a git revision. The fingerprint removes non-directive comments
 and safe layout differences (for Python, docstrings and `pass` in the AST), retaining
 the text and position of directive comments such as `@ts-expect-error` or
-`# type: ignore`, whose removal changes what tools do. Exit status 1 means code
-changed or the comparison could not certify every selected file. JSX and
-ambiguous JavaScript regex contexts are audit-only approximations.
+`# type: ignore`, and of compiled comments such as Rust doc comments and Go
+example output. Exit status 1 means code changed or the comparison could not
+certify every selected file. JSX, ambiguous JavaScript regex contexts, cgo
+preambles, and quotes inside Kotlin, Swift, or C# interpolation are audit-only
+approximations.
 
 Standard library only.
 """
@@ -134,7 +136,7 @@ _DIRECTIVE_START = re.compile(
     r"@ts-(?:expect-error|ignore|nocheck|check)"
     r"|eslint-(?:disable|enable|env)|eslint\s+[\w@/-]+\s*:"
     r"|prettier-ignore|biome-ignore|oxlint-|deno-lint-ignore"
-    r"|(?:istanbul|c8|v8) ignore|__(?:PURE|NO_SIDE_EFFECTS|INLINE|NOINLINE|KEY)__"
+    r"|(?:istanbul|c8|v8) ignore|@?__(?:PURE|NO_SIDE_EFFECTS|INLINE|NOINLINE|KEY)__"
     r"|webpack[A-Z]|@vite-ignore|<reference\b|<amd-|go:[a-z]|\+build\b"
     r"|nolint|lint:(?:file-)?ignore|NOLINT|sourceMappingURL=|SAFETY:"
     r"|swiftlint:|ktlint-disable"
@@ -173,6 +175,12 @@ _RUST_RAW_STRING = re.compile(r'b?r(#*)"')
 _RUST_CHAR = re.compile(r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|.)|[^\\'\n])'")
 _OPERATOR_CHARS = frozenset("+-*/%&|^!~<>=?:.")
 _JS_RESTRICTED_NEWLINE = frozenset({"return", "throw", "break", "continue", "yield", "async"})
+# Comments the toolchain compiles or runs: Rust doc comments become `#[doc]`
+# attributes and doctests, and Go example output is the test's assertion.
+_RUST_DOC_COMMENT = re.compile(r"//[/!](?!/)|/\*[*!](?![*/])")
+_GO_EXECUTABLE_COMMENT = re.compile(r"//(?:export|extern|line) |/\*line ")
+_GO_EXAMPLE_OUTPUT = re.compile(r"(?://|/\*)\s*(?i:(?:unordered\s+)?output:)")
+_GO_CGO_IMPORT = re.compile(r'^[ \t]*import[ \t]+"C"', re.MULTILINE)
 
 
 @dataclass
@@ -231,12 +239,16 @@ class _CFamilyScanner:
         self.pending_newline = False
         self.last_sig = ""
         self.word = ""
+        self.go_output = False
         # Open parens as (token index, directly follows `return`/`throw`), and
         # the (open, close) indices of such a pair awaiting its next token.
         self.parens: list[tuple[int, bool]] = []
         self.unwrap: tuple[int, int] | None = None
 
     def scan(self) -> Scan:
+        if self.dialect.name == "go" and _GO_CGO_IMPORT.search(self.text):
+            # The comment block above `import "C"` is compiled as C.
+            self.approximate = True
         self._code(0, interpolation=False)
         if self.text and not self.text.endswith("\n"):
             self._end_line()
@@ -311,6 +323,7 @@ class _CFamilyScanner:
                 self.unwrap = (opening, len(tokens) - 1)
         self.pending_space = False
         self.line_code = True
+        self.go_output = False
         self.last_sig = ch
 
     def _emit_literal(self, text: str) -> None:
@@ -319,6 +332,7 @@ class _CFamilyScanner:
         self.unwrap = None
         self.pending_space = False
         self.line_code = True
+        self.go_output = False
 
     def _after_value(self) -> None:
         self.last_sig = ")"
@@ -352,7 +366,8 @@ class _CFamilyScanner:
             elif ch == "/" and nxt == "*":
                 i = self._block_comment(i)
             elif d.triple_quotes and text.startswith('"""', i):
-                i = self._literal(i, '"""', '"""', escapes=True, multiline=True)
+                raw_block = d.name in ("kotlin", "csharp")
+                i = self._literal(i, '"""', '"""', escapes=not raw_block, multiline=True, hole=self._string_hole(i))
             elif (
                 d.rust_literals
                 and ch in "rb"
@@ -361,7 +376,8 @@ class _CFamilyScanner:
             ):
                 i = self._literal(i, raw.group(0), '"' + raw.group(1), escapes=False, multiline=True)
             elif ch == '"':
-                i = self._literal(i, '"', '"', escapes=True, multiline=d.rust_literals)
+                verbatim = d.name == "csharp" and "@" in self._string_prefix(i)
+                i = self._literal(i, '"', '"', escapes=not verbatim, multiline=d.rust_literals, hole=self._string_hole(i))
             elif ch == "'" and d.rust_literals:
                 char = _RUST_CHAR.match(text, i)
                 if char:
@@ -398,7 +414,9 @@ class _CFamilyScanner:
                 i += 1
         return i
 
-    def _literal(self, i: int, opener: str, closer: str, *, escapes: bool, multiline: bool) -> int:
+    def _literal(
+        self, i: int, opener: str, closer: str, *, escapes: bool, multiline: bool, hole: str = ""
+    ) -> int:
         text = self.text
         n = len(text)
         self._emit_literal(opener)
@@ -409,6 +427,14 @@ class _CFamilyScanner:
                 self._after_value()
                 return i + len(closer)
             ch = text[i]
+            if hole and text.startswith(hole, i):
+                if hole == "{" and text.startswith("{{", i):
+                    self._emit_literal("{{")
+                    i += 2
+                    continue
+                if self._hole_has_quote(i + len(hole), ")" if hole == "\\(" else "}"):
+                    # Finding where the string ends would need a nested lexer.
+                    self.approximate = True
             if ch == "\n":
                 if not multiline:
                     self.approximate = True
@@ -428,6 +454,40 @@ class _CFamilyScanner:
                 i += 1
         self.approximate = True
         return i
+
+    def _string_prefix(self, i: int) -> str:
+        start = i
+        while start and self.text[start - 1] in "$@#":
+            start -= 1
+        return self.text[start:i]
+
+    def _string_hole(self, i: int) -> str:
+        """The interpolation opener of the string at `i`, or "" when it has none."""
+        prefix, name = self._string_prefix(i), self.dialect.name
+        if (name == "swift" and "#" in prefix) or (name == "csharp" and "$$" in prefix):
+            # Raw delimiters change both the closing quote and the interpolation syntax.
+            self.approximate = True
+        if name == "kotlin":
+            return "${"
+        if name == "swift":
+            return "\\("
+        return "{" if name == "csharp" and "$" in prefix else ""
+
+    def _hole_has_quote(self, i: int, close: str) -> bool:
+        text = self.text
+        opener = "(" if close == ")" else "{"
+        depth = 1
+        for j in range(i, len(text)):
+            ch = text[j]
+            if ch == '"':
+                return True
+            if ch == opener:
+                depth += 1
+            elif ch == close:
+                depth -= 1
+                if not depth:
+                    return False
+        return False
 
     def _template(self, i: int) -> int:
         text = self.text
@@ -499,7 +559,7 @@ class _CFamilyScanner:
         end = self.text.find("\n", i)
         if end < 0:
             end = len(self.text)
-        self._comment(self.text[i:end])
+        self._comment(self.text[i:end], inline=self.line_code)
         return end
 
     def _block_comment(self, i: int) -> int:
@@ -526,20 +586,34 @@ class _CFamilyScanner:
                     depth -= 1
                     end = close + 2
         raw = text[i:end]
+        inline = self.line_code
         if "\n" in raw:
             self.pending_newline = True
         self.line_comment = True
         for _ in range(raw.count("\n")):
             self._end_line()
             self.line_comment = True
-        self._comment(raw)
+        self._comment(raw, inline=inline)
         return end
 
-    def _comment(self, raw: str) -> None:
+    def _comment(self, raw: str, *, inline: bool) -> None:
         self.line_comment = True
-        for directive in _directive_lines(raw):
-            self.tokens.append(f"«{directive}»")
+        placement = "inline" if inline else "next"
+        for retained in self._retained(raw):
+            self.tokens.append(f"«{placement}:{retained}»")
         self.pending_space = True
+
+    def _retained(self, raw: str) -> list[str]:
+        """Comment text the fingerprint keeps: directives and compiled comments."""
+        name = self.dialect.name
+        if name == "rust" and _RUST_DOC_COMMENT.match(raw):
+            return [raw.rstrip()]
+        if name == "go":
+            if _GO_EXAMPLE_OUTPUT.match(raw):
+                self.go_output = True
+            if self.go_output or _GO_EXECUTABLE_COMMENT.match(raw):
+                return [raw.rstrip()]
+        return _directive_lines(raw)
 
 
 _PY_LAYOUT = frozenset(
