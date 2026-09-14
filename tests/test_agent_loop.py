@@ -90,7 +90,11 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write_executable(
         ready,
         "#!/usr/bin/env python3\n"
-        "import os\n"
+        "import os, pathlib, sys\n"
+        "state = os.environ.get('AGENT_STATE_DIR')\n"
+        "if state:\n"
+        "    with (pathlib.Path(state) / 'ready-args.log').open('a') as handle:\n"
+        "        handle.write(' '.join(sys.argv[1:]) + '\\n')\n"
         "print(os.environ.get('AGENT_READY_JSON', '[]'))\n",
     )
     (repo / "agent-loop-instructions.md").write_text(
@@ -190,8 +194,10 @@ elif args[:2] == ['pr', 'view']:
     if '--json number' in joined:
         print('1')
     elif args[-2:] == ['--jq', '.baseRefOid']:
+        base_name_file = state / 'pr-base-branch'
+        base_name = base_name_file.read_text() if base_name_file.exists() else 'main'
         base_head = subprocess.run(
-            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + base_name],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
         base_oid_file = state / 'pr-base-oid'
@@ -204,8 +210,10 @@ elif args[:2] == ['pr', 'view']:
             ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
+        base_name_file = state / 'pr-base-branch'
+        base_name = base_name_file.read_text() if base_name_file.exists() else 'main'
         base_head = subprocess.run(
-            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + base_name],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
         # A file overrides the env var so a hook can move the base mid-run.
@@ -220,7 +228,7 @@ elif args[:2] == ['pr', 'view']:
             ),
             os.environ.get('AGENT_PR_HEAD_REF_NAME', branch),
             os.environ.get('AGENT_PR_HEAD_OID', remote_head),
-            os.environ.get('AGENT_PR_BASE_REF_NAME', 'main'),
+            os.environ.get('AGENT_PR_BASE_REF_NAME', base_name),
             os.environ.get('AGENT_PR_BASE_OID', base_head),
         ]))
     elif 'headRefOid' in joined:
@@ -247,6 +255,7 @@ elif args[:2] == ['pr', 'create']:
         ['git', 'branch', '--show-current'], check=True, capture_output=True, text=True
     ).stdout.strip()
     (state / 'pr-branch').write_text(branch)
+    (state / 'pr-base-branch').write_text(args[args.index('--base') + 1] if '--base' in args else 'main')
     print('https://example.invalid/pr/1')
 elif args[:2] == ['pr', 'edit']:
     if os.environ.get('AGENT_PR_EDIT_FAIL'):
@@ -949,6 +958,123 @@ def test_stop_mode_is_the_default_and_does_not_park(
     batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
     assert [row["status"] for row in batch["issues"]] == ["active", "pending"]
+
+
+_PER_ISSUE_WORKER = (
+    "printf 'worker\\n' >> \"$EVENT_LOG\"; "
+    'printf "%s\\n" "$AGENT_LOOP_ISSUE_ID" > "result-$AGENT_LOOP_ISSUE_ID.txt"; '
+    'git add "result-$AGENT_LOOP_ISSUE_ID.txt"; git commit -m "fix: issue $AGENT_LOOP_ISSUE_ID"'
+)
+
+
+def test_batch_stack_builds_a_dependent_issue_on_its_unmerged_predecessor(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The dependent used to start from the base without its predecessor's
+    # change, so the two PRs conflicted and the dependent was reviewed against
+    # code that would not exist once the predecessor merged.
+    result = _run(
+        consumer,
+        ["--issues", "60,61", "--iterations", "2"],
+        issues=[_issue(60), _issue(61, "Depends on #60")],
+        config=_config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="batch-stack"),
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["finalized", "finalized"]
+    assert batch["issues"][1]["stackedOn"] == 60
+    parent = json.loads(Path(batch["issues"][0]["childRunState"]).read_text(encoding="utf-8"))
+    child = json.loads(Path(batch["issues"][1]["childRunState"]).read_text(encoding="utf-8"))
+    # Built from the predecessor's reviewed head, with its branch as the PR base.
+    assert child["baseBranch"] == parent["branch"]
+    assert child["baseSha"] == parent["headSha"]
+    creates = [line for line in (consumer[3] / "gh.log").read_text(encoding="utf-8").splitlines()
+               if line.startswith("pr create")]
+    assert "--base main" in creates[0]
+    assert f"--base {parent['branch']}" in creates[1]
+    # Review and publication are scoped to the dependent's own commits.
+    child_log = Path(str(child["logDir"]))
+    codex_result = json.loads((child_log / "codex-review-round-1.result.json").read_text(encoding="utf-8"))
+    assert codex_result["baseSha"] == parent["headSha"]
+    changed = _run_git(
+        "diff", "--name-only", f"{parent['headSha']}..{child['headSha']}", cwd=consumer[0]
+    ).stdout.split()
+    assert changed == ["result-61.txt"]
+    assert _run_git("merge-base", "--is-ancestor", str(parent["headSha"]), str(child["headSha"]), cwd=consumer[0])
+    assert "--ignore-blocker 60" in (consumer[3] / "ready-args.log").read_text(encoding="utf-8")
+    assert f"Stacked PR: after {parent['branch']} merges, retarget it" in result.stdout
+    body = (child_log / "pr-body-final.md").read_text(encoding="utf-8")
+    assert f"Stacked on `{parent['branch']}`" in body
+
+
+def test_merged_to_base_gate_still_holds_a_dependent_batch_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "62,63", "--iterations", "2"],
+        issues=[_issue(62), _issue(63, "Depends on #62")],
+        config=_config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="merged-to-base"),
+        timeout=180,
+    )
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "Ordered batch stopped at dependency-blocked issue #63" in result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["finalized", "pending"]
+    assert "--ignore-blocker" not in (consumer[3] / "ready-args.log").read_text(encoding="utf-8")
+
+
+def test_batch_stack_parks_an_issue_whose_dependency_bailed(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 64 ]; then '
+        "printf 'agent-bail: spec-gap\\n' > \"$AGENT_LOOP_HANDOFF_FILE\"; exit 0; fi; "
+        + _PER_ISSUE_WORKER
+    )
+    result = _run(
+        consumer,
+        ["--issues", "64,65", "--iterations", "2"],
+        issues=[_issue(64), _issue(65, "Depends on #64")],
+        config=_config_v3(
+            tmp_path, worker_hook=worker, dependency_gate="batch-stack",
+            batch_on_issue_failure="park",
+        ),
+        timeout=120,
+    )
+    assert result.returncode == 3, result.stderr + result.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["bailed", "parked"]
+    assert batch["issues"][1]["stopCategory"] == "blocked-by-dependency"
+    assert not (consumer[3] / "claimed-65").exists()
+    assert not any((tmp_path / "worktrees").glob("*-issue-65-*"))
+
+
+@pytest.mark.parametrize(
+    ("body", "warns"),
+    [
+        ("Queued after #66 (same component).", True),
+        ("Depends on #66\nQueued after #66 (same component).", False),
+        ("Touches the same component as #660.", False),
+    ],
+)
+def test_batch_preflight_warns_on_a_prose_only_dependency(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, body: str, warns: bool
+) -> None:
+    bail_all = "printf 'agent-bail: spec-gap\\n' > \"$AGENT_LOOP_HANDOFF_FILE\"; exit 0"
+    result = _run(
+        consumer,
+        ["--issues", "66,67", "--iterations", "2"],
+        issues=[_issue(66), _issue(67, body)],
+        config=_config_v3(tmp_path, worker_hook=bail_all),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert ("Issue #67 mentions earlier batch issue #66 without 'Depends on #66'" in result.stderr) == warns
 
 
 def test_batch_iteration_cap_pauses_with_durable_cursor(

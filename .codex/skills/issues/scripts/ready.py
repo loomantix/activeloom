@@ -365,6 +365,14 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="ignore only PR N when computing addressed issues (wrapper re-attestation)",
     )
+    parser.add_argument(
+        "--ignore-blocker",
+        action="append",
+        type=int,
+        default=[],
+        metavar="N",
+        help="do not treat open issue N as a blocker (a caller building on N's unmerged branch)",
+    )
     return parser.parse_args()
 
 
@@ -392,6 +400,7 @@ def main() -> int:
         exclude_pr_numbers=set(args.exclude_addressed_by_pr)
     )
 
+    ignored_blockers = set(args.ignore_blocker)
     ready: list[dict[str, Any]] = []
     for issue in issues:
         if args.unassigned and issue.get("assignees"):
@@ -399,7 +408,7 @@ def main() -> int:
         labels = label_names(issue)
         if is_hard_excluded(labels):
             continue
-        blockers = parse_blockers(issue.get("body"))
+        blockers = parse_blockers(issue.get("body")) - ignored_blockers
         if blockers & open_nums:
             continue
         if issue["number"] in addressed:

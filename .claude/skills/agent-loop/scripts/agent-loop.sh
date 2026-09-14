@@ -342,6 +342,20 @@ validate_ref_component "$BASE_BRANCH" "base branch"
 validate_ref_component "$BRANCH_PREFIX/example" "branch prefix"
 BASE_REMOTE_REF="refs/remotes/origin/$BASE_BRANCH"
 BASE_FETCH_REFSPEC="+refs/heads/$BASE_BRANCH:$BASE_REMOTE_REF"
+# The branch the current issue's PR targets, and so its review base. An issue
+# stacked on an unmerged predecessor in the same batch targets that
+# predecessor's branch; every other issue targets the integration branch.
+ISSUE_BASE_BRANCH="$BASE_BRANCH"
+ISSUE_BASE_REMOTE_REF="$BASE_REMOTE_REF"
+ISSUE_BASE_FETCH_REFSPEC="$BASE_FETCH_REFSPEC"
+set_issue_base_branch() {
+    ISSUE_BASE_BRANCH="$1"
+    ISSUE_BASE_REMOTE_REF="refs/remotes/origin/$1"
+    ISSUE_BASE_FETCH_REFSPEC="+refs/heads/$1:$ISSUE_BASE_REMOTE_REF"
+}
+STACK_PARENT_ISSUE=""
+STACK_PARENT_BRANCH=""
+STACK_PARENT_HEAD=""
 
 for value in "$WORKER_RETRIES" "$WORKER_TIMEOUT_SECONDS" "$HOOK_TIMEOUT_SECONDS" \
              "$REVIEW_MAX_ROUNDS" "$REVIEW_TIMEOUT_SECONDS" "$RETRY_DELAY_SECONDS" \
@@ -359,7 +373,7 @@ if [ -n "$WORKER_EFFORT" ] && ! [[ "$WORKER_EFFORT" =~ ^[A-Za-z0-9_-]+$ ]]; then
     exit 1
 fi
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
-case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
+case "$DEPENDENCY_GATE" in ready|merged-to-base|batch-stack) ;; *) echo "dependency_gate must be ready, merged-to-base, or batch-stack" >&2; exit 1 ;; esac
 case "$BATCH_ON_ISSUE_FAILURE" in stop|park) ;; *) echo "batch_on_issue_failure must be stop or park" >&2; exit 1 ;; esac
 
 for cmd in git gh jq node python3 timeout flock realpath; do
@@ -444,7 +458,10 @@ require_origin_identity() {
 
 fetch_base() {
     require_origin_identity || return 1
-    git fetch origin "$BASE_FETCH_REFSPEC" --quiet
+    git fetch origin "$BASE_FETCH_REFSPEC" --quiet || return 1
+    if [ "$ISSUE_BASE_FETCH_REFSPEC" != "$BASE_FETCH_REFSPEC" ]; then
+        git fetch origin "$ISSUE_BASE_FETCH_REFSPEC" --quiet
+    fi
 }
 
 if [ "$DRY_RUN" = false ]; then
@@ -546,10 +563,16 @@ print(path.resolve(strict=True))
         echo "run state repository does not match $GH_REPO" >&2
         exit 1
     }
-    [ "$(jq -r '.baseBranch' <<<"$RESUME_STATE_JSON")" = "$BASE_BRANCH" ] || {
-        echo "run state base branch does not match $BASE_BRANCH" >&2
-        exit 1
-    }
+    resume_base_branch="$(jq -r '.baseBranch' <<<"$RESUME_STATE_JSON")"
+    if [ "$resume_base_branch" != "$BASE_BRANCH" ]; then
+        # A stacked issue targets its predecessor's agent-loop issue branch.
+        case "$resume_base_branch" in
+            "$BRANCH_PREFIX"/issue-*) validate_ref_component "$resume_base_branch" "stacked base branch" ;;
+            *) echo "run state base branch does not match $BASE_BRANCH" >&2; exit 1 ;;
+        esac
+        set_issue_base_branch "$resume_base_branch"
+        fetch_base || { echo "could not fetch the stacked base branch $resume_base_branch" >&2; exit 1; }
+    fi
     resume_worktree="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
     recorded_log_dir="$(jq -r '.logDir' <<<"$RESUME_STATE_JSON")"
     [ "$recorded_log_dir" = "$resume_log_dir" ] || {
@@ -721,6 +744,21 @@ issue_is_selectable() {
     [ "$INCLUDE_ASSIGNED" = true ] && [ "$mine" = true ] && [ "$count" -eq 1 ]
 }
 
+READY_IGNORE_ARGS=()
+
+# Under batch-stack, a finalized earlier batch issue is still open until its PR
+# merges, so the ready queue would hold back every issue that declares it as a
+# dependency. The stack gate owns those dependencies instead.
+refresh_ready_ignore_args() {
+    local batch_json number
+    READY_IGNORE_ARGS=()
+    [ "$DEPENDENCY_GATE" = batch-stack ] && [ -n "$BATCH_STATE_FILE" ] || return 0
+    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || return 1
+    while IFS= read -r number; do
+        [ -n "$number" ] && READY_IGNORE_ARGS+=(--ignore-blocker "$number")
+    done < <(jq -r '.issues[] | select(.status == "finalized") | .issue' <<<"$batch_json")
+}
+
 ready_queue_numbers() {
     jq -r '
         if type == "array" and all(.[];
@@ -749,7 +787,8 @@ select_next_issue() {
         # An allowlist is a scope ceiling, not an eligibility bypass. Resolve the
         # same hard excludes, open blockers, and addressed-PR checks as the normal
         # ready queue, while retaining assigned-but-ready rows for --resume.
-        allowlist_ready_json="$("$ISSUES_READY" --agent --limit 1000 --json)" || return 2
+        refresh_ready_ignore_args || return 2
+        allowlist_ready_json="$("$ISSUES_READY" --agent --limit 1000 --json "${READY_IGNORE_ARGS[@]}")" || return 2
         ready_queue_numbers <<< "$allowlist_ready_json" >/dev/null || {
             echo "could not validate ready-queue data" >&2
             return 2
@@ -893,6 +932,18 @@ check_dependencies() {
     while IFS=$'\t' read -r kind number; do
         [ -n "$number" ] || continue
         found=true
+        # Agent-loop names issue branches issue-<N>-<run>, so a stacked issue's
+        # own PR base says which dependency it was built on. This holds on
+        # resume too, where the batch that decided the stack may be absent.
+        if [ "$DEPENDENCY_GATE" = batch-stack ] && [ "$kind" = issue ] && \
+           [ "$ISSUE_BASE_BRANCH" != "$BASE_BRANCH" ]; then
+            case "$ISSUE_BASE_BRANCH" in
+                "$BRANCH_PREFIX/issue-$number-"*)
+                    echo "   Dependency issue #$number: stacked on its unmerged branch $ISSUE_BASE_BRANCH"
+                    continue
+                    ;;
+            esac
+        fi
         dependency_status=0
         if [ "$kind" = pr ]; then
             pr_merged_to_base "$number" || dependency_status=$?
@@ -916,7 +967,8 @@ check_dependencies() {
 
 ready_queue_contains_issue() {
     local number="$1" excluded_pr="${2:-}" ready_json status=0
-    local -a ready_command=("$ISSUES_READY" --agent --limit 1000 --json)
+    refresh_ready_ignore_args || return 2
+    local -a ready_command=("$ISSUES_READY" --agent --limit 1000 --json "${READY_IGNORE_ARGS[@]}")
     if [ -n "$excluded_pr" ]; then
         ready_command+=(--exclude-addressed-by-pr "$excluded_pr")
     fi
@@ -938,6 +990,86 @@ ready_queue_contains_issue() {
             return 2
             ;;
     esac
+}
+
+# Under batch-stack, decide what the selected batch issue builds on. A declared
+# `Depends on #N` naming an earlier entry of this batch that is finalized but
+# not merged makes that entry's reviewed head the start point and its branch
+# the PR base. Returns 1 when a dependency is parked or bailed in this batch,
+# and 2 for anything the gate cannot decide safely.
+plan_batch_stack() {
+    local body="$1" refs kind number batch_json current position status child
+    local child_json merged_status
+    STACK_PARENT_ISSUE=""
+    STACK_PARENT_BRANCH=""
+    STACK_PARENT_HEAD=""
+    refs="$(dependency_refs "$body")" || return 2
+    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || return 2
+    current="$(jq -r --argjson n "$SELECTED_ID" '.allowlist | index($n) // empty' <<<"$batch_json")"
+    [ -n "$current" ] || return 2
+    while IFS=$'\t' read -r kind number; do
+        [ "$kind" = issue ] && [ -n "$number" ] || continue
+        position="$(jq -r --argjson n "$number" '.allowlist | index($n) // empty' <<<"$batch_json")"
+        [ -n "$position" ] || continue
+        if [ "$position" -ge "$current" ]; then
+            echo "issue #$SELECTED_ID declares a dependency on #$number, which is not earlier in this batch; reorder the batch" >&2
+            return 2
+        fi
+        status="$(jq -r --argjson p "$position" '.issues[$p].status' <<<"$batch_json")"
+        case "$status" in
+            finalized) ;;
+            parked|bailed)
+                echo "   Dependency issue #$number is $status in this batch; issue #$SELECTED_ID cannot build on it"
+                return 1
+                ;;
+            *)
+                echo "dependency issue #$number has batch status $status" >&2
+                return 2
+                ;;
+        esac
+        merged_status=0
+        issue_dependency_merged "$number" || merged_status=$?
+        case "$merged_status" in
+            0) continue ;;
+            1) ;;
+            *) echo "could not verify dependency issue #$number" >&2; return 2 ;;
+        esac
+        if [ -n "$STACK_PARENT_ISSUE" ]; then
+            echo "issue #$SELECTED_ID depends on more than one unmerged batch issue (#$STACK_PARENT_ISSUE and #$number); a stack has one parent" >&2
+            return 2
+        fi
+        child="$(jq -r --argjson p "$position" '.issues[$p].childRunState // empty' <<<"$batch_json")"
+        [ -n "$child" ] || return 2
+        child_json="$(python3 "$RUN_STATE_HELPER" show --file "$child")" || return 2
+        [ "$(jq -r '.phase' <<<"$child_json")" = finalized ] || {
+            echo "dependency issue #$number has no finalized review checkpoint" >&2
+            return 2
+        }
+        STACK_PARENT_ISSUE="$number"
+        STACK_PARENT_BRANCH="$(jq -r '.branch' <<<"$child_json")"
+        STACK_PARENT_HEAD="$(jq -r '.headSha' <<<"$child_json")"
+    done <<< "$refs"
+}
+
+# A batch issue whose body mentions an earlier batch issue without declaring
+# the dependency is ordered after it only in time: it starts from the base and
+# can conflict with, or be reviewed against code missing, its predecessor.
+warn_prose_batch_dependencies() {
+    local -a batch_issues
+    local index earlier json body declared
+    IFS=',' read -r -a batch_issues <<< "$ISSUE_ALLOWLIST"
+    for index in "${!batch_issues[@]}"; do
+        [ "$index" -gt 0 ] || continue
+        json="$(issue_json "${batch_issues[$index]}")" || continue
+        body="$(jq -r '.body // ""' <<<"$json")"
+        declared="$(dependency_refs "$body" | awk -F '\t' '$1 == "issue" { print $2 }')"
+        for earlier in "${batch_issues[@]:0:$index}"; do
+            if grep -Eq "(^|[^0-9A-Za-z_])#$earlier([^0-9]|$)" <<<"$body" && \
+               ! grep -qx "$earlier" <<<"$declared"; then
+                echo -e "${YELLOW}⚠${NC}  Issue #${batch_issues[$index]} mentions earlier batch issue #$earlier without 'Depends on #$earlier'; it will start from origin/$BASE_BRANCH, not from #$earlier's work" >&2
+            fi
+        done
+    done
 }
 
 rollback_new_claim() {
@@ -1035,7 +1167,7 @@ verify_issue_for_publication() {
     esac
 
     ready_queue_contains_issue "$number" "$captured_pr" || readiness_status=$?
-    if [ "$readiness_status" -eq 0 ] && [ "$DEPENDENCY_GATE" = merged-to-base ]; then
+    if [ "$readiness_status" -eq 0 ] && [ "$DEPENDENCY_GATE" != ready ]; then
         check_dependencies "$SELECTED_BODY" || readiness_status=$?
     fi
     case "$readiness_status" in
@@ -1371,7 +1503,7 @@ run_validation() {
         return 1
     fi
     before_sha="$(git rev-parse HEAD)" || return 1
-    base_sha="$(git rev-parse "$BASE_REMOTE_REF")" || return 1
+    base_sha="$(git rev-parse "$ISSUE_BASE_REMOTE_REF")" || return 1
     # A validation hook is a function of the head and of the base it is diffed
     # against (area-scoped gates diff HEAD against origin/<base>). A converged
     # round reached the same head three times — after an "Already up to date"
@@ -2130,7 +2262,7 @@ attest_pr_state() {
     IFS=$'\t' read -r state draft head_branch head_sha base_branch base_sha <<< "$row"
     if [ "$state" != OPEN ] || [ "$draft" != "$expected_draft" ] || \
        [ "$head_branch" != "$AGENT_LOOP_BRANCH" ] || \
-       [ "$base_branch" != "$BASE_BRANCH" ] || \
+       [ "$base_branch" != "$ISSUE_BASE_BRANCH" ] || \
        { [ -n "$expected_sha" ] && [ "$head_sha" != "$expected_sha" ]; }; then
         echo "PR identity, state, head, or base branch changed $phase" >&2
         return 1
@@ -2481,7 +2613,7 @@ open_draft_pr() {
         echo "Closes #$number"
     } > "$body_file"
     title="$(draft_pr_title "$number" "$publication_base_sha" "$publication_sha")"
-    pr_url="$(gh pr create --draft --base "$BASE_BRANCH" --head "$branch" \
+    pr_url="$(gh pr create --draft --base "$ISSUE_BASE_BRANCH" --head "$branch" \
         --title "$title" --body-file "$body_file")" || {
         echo "could not create draft PR after publishing remote branch $branch" >&2
         return 1
@@ -2522,7 +2654,7 @@ finalize_pr() {
         echo "## Summary"
         echo
         echo "Configured Codex and Claude review hooks reported no material fixes in a complete round after"
-        echo "$REVIEW_ROUNDS_USED round(s) against fresh \`origin/$BASE_BRANCH\`."
+        echo "$REVIEW_ROUNDS_USED round(s) against fresh \`origin/$ISSUE_BASE_BRANCH\`."
         echo
         echo "## Test plan"
         echo
@@ -2531,6 +2663,10 @@ finalize_pr() {
         echo "- [x] every local-review thread contains a disposition reply and is resolved"
         echo "- [x] fresh-base integration and publication-diff inspection"
         echo "- [x] configured non-mutating validation hook passed on reviewed head \`$final_sha\` against base \`$REVIEWED_BASE_SHA\`; it is the gating run after every review pass"
+        if [ "$ISSUE_BASE_BRANCH" != "$BASE_BRANCH" ]; then
+            echo
+            echo "Stacked on \`$ISSUE_BASE_BRANCH\`. Retarget this PR to \`$BASE_BRANCH\` after that branch merges."
+        fi
         echo
         echo "Closes #$AGENT_LOOP_ISSUE_ID"
     } > "$body_file"
@@ -2712,7 +2848,7 @@ resume_review_run() {
     export AGENT_LOOP_ISSUE_ID="$SELECTED_ID"
     export AGENT_LOOP_ISSUE_TITLE="$SELECTED_TITLE"
     export AGENT_LOOP_ISSUE_BODY="$SELECTED_BODY"
-    export AGENT_LOOP_BASE_BRANCH="$BASE_BRANCH"
+    export AGENT_LOOP_BASE_BRANCH="$ISSUE_BASE_BRANCH"
     export AGENT_LOOP_BRANCH
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"
     export AGENT_LOOP_LOG_DIR
@@ -2722,7 +2858,7 @@ resume_review_run() {
     AGENT_LOOP_PR_URL="$(jq -r '.prUrl' <<<"$RESUME_STATE_JSON")" || return 1
     export AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL
     export AGENT_LOOP_PR_HEAD_SHA="$current_head"
-    export AGENT_LOOP_REVIEW_BASE="$BASE_REMOTE_REF"
+    export AGENT_LOOP_REVIEW_BASE="$ISSUE_BASE_REMOTE_REF"
     REVIEW_ROUNDS_USED=0
     REVIEWED_BASE_SHA=""
     CONVERGED_CODEX_OUTCOME_FILE=""
@@ -2862,7 +2998,7 @@ resume_review_run() {
             ready_finalization=false
         fi
         fetch_base || return 1
-        latest_base="$(git rev-parse "$BASE_REMOTE_REF")" || return 1
+        latest_base="$(git rev-parse "$ISSUE_BASE_REMOTE_REF")" || return 1
         git merge-base --is-ancestor "$checkpoint_base" "$latest_base" || {
             recovery_message "PR base moved non-fast-forward since the recovery checkpoint."
             return 1
@@ -3233,9 +3369,14 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             exit 1
         }
         child_json="$(python3 "$RUN_STATE_HELPER" show --file "$child_state")" || exit 1
+        child_base_branch="$(jq -r '.baseBranch' <<<"$child_json")"
+        case "$child_base_branch" in
+            "$BASE_BRANCH"|"$BRANCH_PREFIX"/issue-*) child_base_ok=true ;;
+            *) child_base_ok=false ;;
+        esac
         [ "$(jq -r '.issue' <<<"$child_json")" = "$batch_issue" ] && \
         [ "$(jq -r '.repo' <<<"$child_json")" = "$GH_REPO" ] && \
-        [ "$(jq -r '.baseBranch' <<<"$child_json")" = "$BASE_BRANCH" ] || {
+        [ "$child_base_ok" = true ] || {
             recovery_message "Batch issue #$batch_issue does not match its child review checkpoint."
             exit 1
         }
@@ -3274,6 +3415,7 @@ elif [[ "$ISSUE_ALLOWLIST" == *,* ]] && [ "$DRY_RUN" = false ] && \
         --issues "$ISSUE_ALLOWLIST" >/dev/null || exit 1
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     echo "   Batch recovery state: $BATCH_STATE_FILE"
+    warn_prose_batch_dependencies
 fi
 
 echo -e "${CYAN}→${NC} agent-loop repository: $PROJECT_DIR"
@@ -3319,6 +3461,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     PROCESSED_ISSUES+=("$SELECTED_ID")
     ITERATION=$((ITERATION + 1))
+    set_issue_base_branch "$BASE_BRANCH"
+    STACK_PARENT_ISSUE=""
     branch="$BRANCH_PREFIX/issue-$SELECTED_ID-$RUN_TAG"
     safe_repo="${REPO_NAME//[^A-Za-z0-9._-]/-}"
     ACTIVE_WORKTREE="$WORKTREE_ROOT/$safe_repo-issue-$SELECTED_ID-$RUN_TAG"
@@ -3326,13 +3470,29 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     echo -e "${CYAN}▶${NC} Issue #$SELECTED_ID ($ITERATION/$MAX_ITERATIONS)"
     dependency_status=0
-    check_dependencies "$SELECTED_BODY" || dependency_status=$?
+    if [ "$DEPENDENCY_GATE" = batch-stack ] && [ -n "$BATCH_STATE_FILE" ]; then
+        plan_batch_stack "$SELECTED_BODY" || dependency_status=$?
+        if [ "$dependency_status" -eq 0 ] && [ -n "$STACK_PARENT_ISSUE" ]; then
+            set_issue_base_branch "$STACK_PARENT_BRANCH"
+            echo "   Stack: building on issue #$STACK_PARENT_ISSUE at ${STACK_PARENT_HEAD:0:12}; PR base $STACK_PARENT_BRANCH"
+        fi
+    fi
+    if [ "$dependency_status" -eq 0 ]; then
+        check_dependencies "$SELECTED_BODY" || dependency_status=$?
+    fi
     if [ "$dependency_status" -ne 0 ]; then
         if [ "$dependency_status" -eq 1 ]; then
             echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID blocked by dependency gate"
             ACTIVE_WORKTREE=""
+            if [ -n "$BATCH_STATE_FILE" ] && [ "$BATCH_ON_ISSUE_FAILURE" = park ] && [ "$DRY_RUN" = false ]; then
+                python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+                    --issue "$SELECTED_ID" --expected-status pending --status parked \
+                    --stop-category blocked-by-dependency >/dev/null || exit 1
+                echo -e "${YELLOW}⏸${NC} Issue #$SELECTED_ID parked as blocked-by-dependency; it was not started"
+                continue
+            fi
             if [ -n "$BATCH_STATE_FILE" ]; then
-                recovery_message "Ordered batch stopped at dependency-blocked issue #$SELECTED_ID."
+                recovery_message "Ordered batch stopped at dependency-blocked issue #$SELECTED_ID." dependency-blocked
                 print_batch_bail_command "$SELECTED_ID" pending
                 exit 1
             fi
@@ -3345,7 +3505,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     echo "   Worktree: $ACTIVE_WORKTREE"
     echo "   Branch: $branch"
     echo "   Setup hook: ${SETUP_HOOK:-<none>}"
-    echo "   Publication: open draft PR before review; PR base $BASE_BRANCH"
+    echo "   Publication: open draft PR before review; PR base $ISSUE_BASE_BRANCH"
     echo "   Review order: configured Codex hook -> configured Claude hook -> repeat only after material fixes"
 
     if [ "$DRY_RUN" = true ]; then
@@ -3390,7 +3550,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     refreshed_status=0
     ready_queue_contains_issue "$SELECTED_ID" || refreshed_status=$?
-    if [ "$refreshed_status" -eq 0 ] && [ "$DEPENDENCY_GATE" = merged-to-base ]; then
+    if [ "$refreshed_status" -eq 0 ] && [ "$DEPENDENCY_GATE" != ready ]; then
         check_dependencies "$SELECTED_BODY" || refreshed_status=$?
     fi
     if [ "$refreshed_status" -ne 0 ]; then
@@ -3422,7 +3582,27 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would
     # otherwise target the integration branch and bypass local review.
-    git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "$BASE_REMOTE_REF"
+    worktree_start_ref="$BASE_REMOTE_REF"
+    if [ -n "$STACK_PARENT_ISSUE" ]; then
+        fetch_base || {
+            recovery_message "Could not fetch stack parent branch $ISSUE_BASE_BRANCH for issue #$SELECTED_ID."
+            exit 1
+        }
+        git merge-base --is-ancestor "$STACK_PARENT_HEAD" "$ISSUE_BASE_REMOTE_REF" || {
+            recovery_message "Stack parent branch $ISSUE_BASE_BRANCH no longer contains issue #$STACK_PARENT_ISSUE's reviewed head." dependency-blocked
+            exit 1
+        }
+        worktree_start_ref="$STACK_PARENT_HEAD"
+    fi
+    git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "$worktree_start_ref"
+    if [ -n "$STACK_PARENT_ISSUE" ]; then
+        python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+            --issue "$SELECTED_ID" --expected-status active --status active \
+            --stacked-on "$STACK_PARENT_ISSUE" >/dev/null || {
+            recovery_message "Could not record the stack for issue #$SELECTED_ID in batch state."
+            exit 1
+        }
+    fi
     cd "$ACTIVE_WORKTREE"
 
     export AGENT_LOOP_ISSUE_ID="$SELECTED_ID"
@@ -3430,7 +3610,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     # over the API. Hand the title and body to it directly instead.
     export AGENT_LOOP_ISSUE_TITLE="$SELECTED_TITLE"
     export AGENT_LOOP_ISSUE_BODY="$SELECTED_BODY"
-    export AGENT_LOOP_BASE_BRANCH="$BASE_BRANCH"
+    export AGENT_LOOP_BASE_BRANCH="$ISSUE_BASE_BRANCH"
     export AGENT_LOOP_BRANCH="$branch"
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"
     export AGENT_LOOP_LOG_DIR
@@ -3460,7 +3640,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     echo -e "${BLUE}▸${NC} Initial fresh-base integration"
     fetch_base
-    initial_base_sha="$(git rev-parse "$BASE_REMOTE_REF")"
+    initial_base_sha="$(git rev-parse "$ISSUE_BASE_REMOTE_REF")"
     if ! git merge --no-edit "$initial_base_sha"; then
         git merge --abort >/dev/null 2>&1 || true
         recovery_message "Initial fresh-base merge conflicted; original commits were preserved."
@@ -3493,7 +3673,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         REVIEW_DEADLINE_EPOCH=$(( $(date +%s) + REVIEW_TIMEOUT_SECONDS ))
         python3 "$RUN_STATE_HELPER" create --file "$AGENT_LOOP_RUN_STATE_FILE" \
             --run-id "$RUN_TAG-issue-$SELECTED_ID" --repo "$GH_REPO" \
-            --issue "$SELECTED_ID" --base-branch "$BASE_BRANCH" \
+            --issue "$SELECTED_ID" --base-branch "$ISSUE_BASE_BRANCH" \
             --issue-title-sha256 "$(printf '%s' "$SELECTED_TITLE" | sha256_text)" \
             --issue-body-sha256 "$(printf '%s' "$SELECTED_BODY" | sha256_text)" \
             --branch "$branch" --worktree "$ACTIVE_WORKTREE" \
@@ -3520,7 +3700,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         echo "   Review recovery state: $AGENT_LOOP_RUN_STATE_FILE"
     fi
 
-    export AGENT_LOOP_REVIEW_BASE="$BASE_REMOTE_REF"
+    export AGENT_LOOP_REVIEW_BASE="$ISSUE_BASE_REMOTE_REF"
     REVIEW_ROUNDS_USED=0
     REVIEWED_BASE_SHA=""
     CONVERGED_CODEX_OUTCOME_FILE=""
@@ -3573,6 +3753,9 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     }
     ACTIVE_WORKTREE=""
     echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID complete; local branch retained at $branch"
+    if [ "$ISSUE_BASE_BRANCH" != "$BASE_BRANCH" ]; then
+        echo "   Stacked PR: after $ISSUE_BASE_BRANCH merges, retarget it with: gh api -X PATCH repos/$GH_REPO/pulls/$AGENT_LOOP_PR_NUMBER -f base=$BASE_BRANCH"
+    fi
 done
 
 if [ -n "$BATCH_STATE_FILE" ]; then
