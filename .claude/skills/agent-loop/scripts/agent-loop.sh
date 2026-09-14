@@ -38,6 +38,7 @@ INHERITED_EVENTS_FILE="${AGENT_LOOP_EVENTS_FILE:-}"
 unset AGENT_LOOP_EVENTS_FILE
 
 MAX_ITERATIONS=10
+ITERATION=0
 ISSUE_ALLOWLIST=""
 INCLUDE_ASSIGNED=false
 RESUME_RUN_FILE=""
@@ -3420,6 +3421,7 @@ finish_batch_with_parked_entries() {
 # and the failure then stops the batch as before.
 park_failed_batch_issue_and_continue() {
     local batch_json cursor count issue child category reason remaining
+    local -a resume_args
     [ -n "$BATCH_STATE_FILE" ] && [ "$BATCH_ON_ISSUE_FAILURE" = park ] && [ -f "$BATCH_STATE_FILE" ] || return 0
     batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE" 2>/dev/null)" || return 0
     cursor="$(jq -r '.cursor' <<<"$batch_json")"
@@ -3469,7 +3471,14 @@ park_failed_batch_issue_and_continue() {
         exit 3
     fi
     echo "   Continuing the batch with the next issue"
-    exec "$SCRIPT_DIR/agent-loop.sh" --resume-batch "$BATCH_STATE_FILE" --iterations "$remaining"
+    resume_args=(--resume-batch "$BATCH_STATE_FILE" --iterations "$remaining")
+    if [ "$INCLUDE_ASSIGNED" = true ]; then
+        resume_args+=(--include-assigned)
+    fi
+    # Hooks see the current issue's base, which may be a stack parent. The
+    # continuation must keep the batch's integration base and selection policy.
+    export AGENT_LOOP_BASE_BRANCH="$BASE_BRANCH"
+    exec "$SCRIPT_DIR/agent-loop.sh" "${resume_args[@]}"
 }
 
 # The first declared issue dependency that is a parked entry of this batch.
@@ -3591,7 +3600,6 @@ echo "     Claude review hook: $CLAUDE_REVIEW_HOOK"
 echo "     Codex review hook: $CODEX_REVIEW_HOOK"
 echo "     convergence cap: $REVIEW_MAX_ROUNDS round(s)"
 
-ITERATION=0
 while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     select_status=0
     select_next_issue || select_status=$?

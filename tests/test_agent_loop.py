@@ -927,6 +927,84 @@ def test_park_mode_parks_a_resumable_failure_and_its_dependent_then_finishes_the
     assert Path(child_state["worktree"]).exists()
 
 
+def test_parking_a_stacked_issue_continues_on_the_integration_base(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "60,61,62", "--iterations", "3"],
+        issues=[_issue(60), _issue(61, "Depends on #60"), _issue(62)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=_PER_ISSUE_WORKER,
+            claude_review_hook=_ends_early_for(61),
+            dependency_gate="batch-stack",
+            batch_on_issue_failure="park",
+        ),
+        extra_env={"AGENT_READY_BLOCKERS": json.dumps({"61": [60]})},
+        timeout=180,
+    )
+    assert result.returncode == 3, result.stderr + result.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["finalized", "parked", "finalized"]
+    independent = json.loads(
+        Path(batch["issues"][2]["childRunState"]).read_text(encoding="utf-8")
+    )
+    assert independent["baseBranch"] == "main"
+    assert "stackedOn" not in batch["issues"][2]
+
+
+def test_failed_resumed_batch_child_can_be_parked_before_starting_the_next_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    options = {
+        "worker_hook": _PER_ISSUE_WORKER,
+        "claude_review_hook": _ends_early_for(80),
+    }
+    first = _run(
+        consumer,
+        ["--issues", "80,81", "--iterations", "2"],
+        issues=[_issue(80), _issue(81)],
+        config=_config_v3(tmp_path, **options),
+        timeout=120,
+    )
+    assert first.returncode == 1, first.stderr + first.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    resumed = _run(
+        consumer,
+        ["--resume-batch", str(batch_file), "--iterations", "2"],
+        issues=[_issue(80, assigned=True), _issue(81)],
+        config=_config_v3(tmp_path, **options, batch_on_issue_failure="park"),
+        timeout=120,
+    )
+    assert resumed.returncode == 3, resumed.stderr + resumed.stdout
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["parked", "finalized"]
+
+
+@pytest.mark.parametrize("selection_flag", ["--include-assigned", "--resume"])
+def test_parking_preserves_assigned_issue_selection(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, selection_flag: str
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "90,91", "--iterations", "2", selection_flag],
+        issues=[_issue(90), _issue(91, assigned=True)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=_PER_ISSUE_WORKER,
+            claude_review_hook=_ends_early_for(90),
+            batch_on_issue_failure="park",
+        ),
+        timeout=120,
+    )
+    assert result.returncode == 3, result.stderr + result.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["parked", "finalized"]
+
+
 def test_park_mode_still_stops_on_an_uncertain_push(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
