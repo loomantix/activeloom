@@ -153,6 +153,17 @@ that is marked ready — a hook that damaged the worktree environment without
 committing is still caught there. A changed pass, a real base integration, or a
 base that moved since the last validation runs the hook as before.
 
+### The validation hook is the gating run
+
+Under agent-loop, the wrapper's validation hook is the gating suite for every
+review pass: it runs on the exact head after each pass, and a red run stops the
+pass before convergence. Review hooks therefore need only focused checks for
+their own fixes. Each run, skip, or failure appends a line to
+`validation.jsonl` in the run's log directory with the label, head, base,
+outcome (`passed`, `failed`, or `reused` with the label it reused), and the
+SHA-256 of the configured `validation_hook`. The ready PR body names the
+reviewed head and base the final gate passed on.
+
 ### Launcher headroom
 
 Hooks that shell out to a _launcher_ which enforces its own bound read that

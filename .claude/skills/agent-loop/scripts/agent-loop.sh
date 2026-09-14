@@ -1257,9 +1257,30 @@ require_clean_committed_tree() {
     fi
 }
 
+# The validation hook is the gating run for every review pass under
+# agent-loop: engines run focused checks for their fixes, and the wrapper
+# validates the exact head after each pass and before marking ready. Record
+# which command ran on which head so that claim is checkable afterwards. The
+# command is named by its config key and digest, not copied, because hook
+# strings are consumer configuration.
+record_validation_evidence() {
+    local label="$1" head_sha="$2" base_sha="$3" outcome="$4" status="${5:-}"
+    local reused_from="${6:-}" command_sha256
+    [ -n "${AGENT_LOOP_LOG_DIR:-}" ] && [ -d "$AGENT_LOOP_LOG_DIR" ] || return 0
+    command_sha256="$(printf '%s' "$VALIDATION_HOOK" | sha256_text)" || return 0
+    jq -cn --arg label "$label" --arg head "$head_sha" --arg base "$base_sha" \
+        --arg outcome "$outcome" --arg status "$status" --arg reused "$reused_from" \
+        --arg digest "$command_sha256" --argjson epoch "$(date +%s)" \
+        '{label: $label, command: "validation_hook", commandSha256: $digest,
+          head: $head, base: $base, outcome: $outcome, epoch: $epoch}
+         + (if $status != "" then {exit: ($status | tonumber)} else {} end)
+         + (if $reused != "" then {reusedFrom: $reused} else {} end)' \
+        >> "$AGENT_LOOP_LOG_DIR/validation.jsonl" 2>/dev/null || true
+}
+
 run_validation() {
     local label="$1" budgeted="${2:-false}" gate="${3:-}" before_sha after_sha status base_sha
-    local timeout_seconds="$HOOK_TIMEOUT_SECONDS"
+    local timeout_seconds="$HOOK_TIMEOUT_SECONDS" hook_status=0
     if ! require_issue_branch_head; then
         echo "$label validation did not start on the issue branch" >&2
         return 1
@@ -1278,6 +1299,7 @@ run_validation() {
        [ "$base_sha" = "$LAST_VALIDATED_BASE" ]; then
         echo -e "${GREEN}✓${NC} $label validation skipped: head ${before_sha:0:9} on base ${base_sha:0:9} already passed $LAST_VALIDATED_LABEL validation"
         record_phase_event skipped "$label validation"
+        record_validation_evidence "$label" "$before_sha" "$base_sha" reused "" "$LAST_VALIDATED_LABEL"
         return 0
     fi
     if [ "$budgeted" = true ]; then
@@ -1285,17 +1307,24 @@ run_validation() {
         timeout_seconds="$REVIEW_PASS_TIMEOUT_SECONDS"
     fi
     run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$timeout_seconds" \
-        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" || return 1
+        "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" || hook_status=$?
+    if [ "$hook_status" -ne 0 ]; then
+        record_validation_evidence "$label" "$before_sha" "$base_sha" failed "$hook_status"
+        return 1
+    fi
     status="$(git status --porcelain)" || return 1
     after_sha="$(git rev-parse HEAD)" || return 1
     if [ -n "$status" ] || [ "$after_sha" != "$before_sha" ]; then
         echo "$label validation mutated the worktree or HEAD; validation hooks must be non-mutating" >&2
+        record_validation_evidence "$label" "$before_sha" "$base_sha" failed
         return 1
     fi
     if ! require_issue_branch_head; then
         echo "$label validation moved HEAD away from the issue branch" >&2
+        record_validation_evidence "$label" "$before_sha" "$base_sha" failed
         return 1
     fi
+    record_validation_evidence "$label" "$after_sha" "$base_sha" passed 0
     LAST_VALIDATED_HEAD="$after_sha"
     LAST_VALIDATED_BASE="$base_sha"
     LAST_VALIDATED_LABEL="$label"
@@ -2410,7 +2439,7 @@ finalize_pr() {
         echo "- [x] configured Codex and Claude hooks reported no material fixes in a complete round ($REVIEW_ROUNDS_USED round(s))"
         echo "- [x] every local-review thread contains a disposition reply and is resolved"
         echo "- [x] fresh-base integration and publication-diff inspection"
-        echo "- [x] configured non-mutating local validation hook"
+        echo "- [x] configured non-mutating validation hook passed on reviewed head \`$final_sha\` against base \`$REVIEWED_BASE_SHA\`; it is the gating run after every review pass"
         echo
         echo "Closes #$AGENT_LOOP_ISSUE_ID"
     } > "$body_file"

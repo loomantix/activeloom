@@ -1412,6 +1412,66 @@ def test_unchanged_head_is_validated_once_then_only_at_the_final_gate(
     assert "final-reviewed-head validation skipped" not in result.stdout
 
 
+def test_wrapper_validation_is_recorded_as_the_gating_run_for_the_reviewed_head(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Under agent-loop the engines run focused checks and the wrapper's
+    # validation hook is the gating run. Its evidence must name the command
+    # and the exact head it ran on, including the head that is marked ready.
+    result = _run(
+        consumer,
+        ["--issues", "23"],
+        issues=[_issue(23)],
+        config=_config_v3(tmp_path),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    log_dir = next((tmp_path / "logs").glob("*-issue-23-*"))
+    records = [
+        json.loads(line)
+        for line in (log_dir / "validation.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    final_head = json.loads((log_dir / "run-state.json").read_text(encoding="utf-8"))["headSha"]
+    by_label = {record["label"]: record for record in records}
+    assert by_label["final-reviewed-head"]["head"] == final_head
+    assert by_label["final-reviewed-head"]["outcome"] == "passed"
+    assert by_label["codex-review-round-1"]["outcome"] == "reused"
+    assert by_label["codex-review-round-1"]["head"] == final_head
+    assert all(record["command"] == "validation_hook" for record in records)
+    assert len({record["commandSha256"] for record in records}) == 1
+    body = (log_dir / "pr-body-final.md").read_text(encoding="utf-8")
+    assert f"validation hook passed on reviewed head `{final_head}`" in body
+
+
+def test_red_post_pass_validation_blocks_convergence(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    validation = (
+        'if [ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1.result.json" ]; then exit 71; fi'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "24"],
+        issues=[_issue(24)],
+        config=_config_v3(
+            tmp_path,
+            validation_hook=validation,
+            codex_review_hook=_minor_committed_v3_hook("codex"),
+        ),
+        timeout=90,
+    )
+    assert result.returncode != 0
+    assert "Validation after the configured Codex review hook failed in review round 1" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    log_dir = next((tmp_path / "logs").glob("*-issue-24-*"))
+    records = [
+        json.loads(line)
+        for line in (log_dir / "validation.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[-1]["label"] == "codex-review-round-1"
+    assert (records[-1]["outcome"], records[-1]["exit"]) == ("failed", 71)
+
+
 def _minor_committed_v3_hook(engine: str) -> str:
     # A changed pass with complete ledger evidence: one finding, fixed in a
     # committed cleanup, classified minor so the round still converges.
