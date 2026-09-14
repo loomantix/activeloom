@@ -24,7 +24,7 @@
 #                  A rotation on one of these is normally a rename or an
 #                  argument change, and should read as one in the diff.
 
-6a803458acd032b7304b57d4a2d3934dd767905fb951cbb60ed970fe6f3e8abd  .claude/skills/agent-loop/scripts/agent-loop.sh  LAUNCH: agent-loop.sh default-worker Claude CLI command builder (--print --permission-mode bypassPermissions, optional --model)
+47c03a030e38cca1ac18775740e916531853ab715987ff87fb87309cef3e1652  .claude/skills/agent-loop/scripts/agent-loop.sh  LAUNCH: agent-loop.sh default-worker Claude CLI command builder (--print --permission-mode bypassPermissions, optional --model from worker_model, optional --effort from worker_effort)
 cebfc921c46baa4f2ce923413f9a44bec130f6d9f53b2b73a2aee92ebe036556  .claude/skills/critique/scripts/run-agy-review.sh  Record the execution boundary before the unchanged bounded reviewer invocation.
 
 # --- Gemini harness root (.agents) ------------------------------------------

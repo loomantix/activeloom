@@ -68,6 +68,7 @@ with the issue worktree as the current directory.
 | `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                                                                                                                                |
 | `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                                                                                                |
 | `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                                                                 |
+| `worker_effort`                                  | `--effort` for the default worker. Empty means the CLI or environment default (the doctor warns); when `claude_effort_policy` is set the two must match.                                                    |
 | `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                  |
 | `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                      |
 | `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                        |
@@ -153,7 +154,9 @@ Consumers wanting a structured result on timeout must have the hook honor
 ## Default Worker and the Invocation Lock
 
 When `worker_hook` is unset, the wrapper runs the Claude CLI in
-`--permission-mode bypassPermissions --print` mode against the issue prompt.
+`--permission-mode bypassPermissions --print` mode against the issue prompt,
+adding `--model` from `worker_model` and `--effort` from `worker_effort` when
+they are set.
 That is the only `claude` invocation in the script, and it is bracketed by
 `# claude-cli-invocations:start` / `:end` markers. The upstream CI gate
 `.claude/lint-claude-cli-invocations.py` hashes the locked region and refuses
@@ -172,7 +175,7 @@ out here.
 
 | Aspect         | Where the model is chosen                | Effort control                                                        |
 | -------------- | ---------------------------------------- | --------------------------------------------------------------------- |
-| Default worker | `worker_model` / `worker_fallback_model` | none — the default worker invocation takes a model only               |
+| Default worker | `worker_model` / `worker_fallback_model` | `worker_effort`, validated against `claude_effort_policy` when both set |
 | Codex review   | inside `codex_review_hook`               | inside the same command                                               |
 | Claude review  | inside `claude_review_hook`              | inside the same command, and validated against `claude_effort_policy` |
 
@@ -195,9 +198,11 @@ open pipe from whatever launched the wrapper produces no output and no result
 until the pass times out, which is indistinguishable from a slow review from
 outside. A hook that genuinely needs input must supply it inside the command.
 
-`claude_effort_policy` constrains only `claude_review_hook`, and only when
-`config_doctor = true` — the doctor is what enforces it, so the key is inert
-without it. It does not apply to the worker, which has no effort control.
+`claude_effort_policy` constrains `claude_review_hook` and, when the default
+worker is in use, `worker_effort` — both only when `config_doctor = true`, since
+the doctor is what enforces it and the key is inert without it. An empty
+`worker_effort` is not neutral either: the worker then runs at whatever the CLI
+or the launching environment defaults to, and nothing records which.
 
 `worker_model` and `worker_fallback_model` configure the **default** worker
 only. When `worker_hook` is set the wrapper runs that hook verbatim and both

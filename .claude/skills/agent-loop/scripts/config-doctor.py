@@ -155,6 +155,22 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         rf"(?:^|\s)--effort(?:=|\s+){re.escape(claude_effort)}(?:\s|$)", hooks["claude"]
     ):
         raise DoctorError(f"claude_review_hook must use literal --effort {claude_effort}")
+    # The default worker is the Claude CLI, so its effort is the same policy
+    # decision as the Claude review hook's. A worker_hook pins its own.
+    worker_effort = values.get("worker_effort", "")
+    if worker_effort and not re.fullmatch(r"[A-Za-z0-9_-]+", worker_effort):
+        raise DoctorError("worker_effort must be a single flag value")
+    if not values.get("worker_hook", ""):
+        if claude_effort and worker_effort and worker_effort != claude_effort:
+            raise DoctorError(
+                f"worker_effort ({worker_effort}) must match claude_effort_policy ({claude_effort}) "
+                "for the default worker"
+            )
+        if not worker_effort:
+            _warn(
+                "worker_effort is empty; the default worker's effort comes from the CLI or "
+                "environment default at launch and is not recorded anywhere"
+            )
 
 
 def main() -> int:

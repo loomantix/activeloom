@@ -159,6 +159,7 @@ CODEX_REVIEW_HOOK=""
 WORKER_HOOK=""
 WORKER_MODEL=""
 WORKER_FALLBACK_MODEL=""
+WORKER_EFFORT=""
 WORKER_RETRIES=1
 WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
@@ -194,6 +195,7 @@ assign_config() {
         worker_hook) WORKER_HOOK="$value" ;;
         worker_model) WORKER_MODEL="$value" ;;
         worker_fallback_model) WORKER_FALLBACK_MODEL="$value" ;;
+        worker_effort) WORKER_EFFORT="$value" ;;
         worker_retries) WORKER_RETRIES="$value" ;;
         worker_timeout_seconds) WORKER_TIMEOUT_SECONDS="$value" ;;
         hook_timeout_seconds) HOOK_TIMEOUT_SECONDS="$value" ;;
@@ -345,6 +347,10 @@ done
 [ "$REVIEW_MAX_ROUNDS" -le 4 ] || { echo "review_max_rounds cannot exceed the Deep review cap of 4" >&2; exit 1; }
 [ "$REVIEW_TIMEOUT_SECONDS" -gt 0 ] || { echo "review_timeout_seconds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
+if [ -n "$WORKER_EFFORT" ] && ! [[ "$WORKER_EFFORT" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "worker_effort must be a single flag value: $WORKER_EFFORT" >&2
+    exit 1
+fi
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
@@ -1136,7 +1142,7 @@ run_bounded_hook() {
 }
 
 worker_command() {
-    local model="$1" claude_command model_arg
+    local model="$1" claude_command model_arg effort_arg
     if [ -n "$WORKER_HOOK" ]; then
         printf '%s' "$WORKER_HOOK"
         return
@@ -1147,6 +1153,10 @@ worker_command() {
     if [ -n "$model" ]; then
         printf -v model_arg '%q' "$model"
         rendered_command+=" --model $model_arg"
+    fi
+    if [ -n "$WORKER_EFFORT" ]; then
+        printf -v effort_arg '%q' "$WORKER_EFFORT"
+        rendered_command+=" --effort $effort_arg"
     fi
     rendered_command+=" \"\$AGENT_LOOP_PROMPT\""
     printf '%s' "$rendered_command"

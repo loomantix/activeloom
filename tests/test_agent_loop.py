@@ -1860,6 +1860,60 @@ git commit -m 'fix: fallback worker'
     assert "--model fallback" in models
 
 
+def test_worker_effort_is_passed_to_the_default_worker(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Before worker_effort existed the default worker's effort came from
+    # whatever CLAUDE_CODE_EFFORT_LEVEL the operator exported at launch, which
+    # was easy to forget and invisible afterwards.
+    claude = consumer[2] / "claude"
+    _write_executable(
+        claude,
+        """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$AGENT_STATE_DIR/worker-args.log"
+printf 'done\\n' > result.txt
+git add result.txt
+git commit -m 'fix: effort worker'
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "15"],
+        issues=[_issue(15)],
+        config=_config(
+            tmp_path, worker_hook="", worker_model="primary", worker_effort="medium"
+        ),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    args = (consumer[3] / "worker-args.log").read_text(encoding="utf-8")
+    assert "--model primary --effort medium" in args
+
+    (consumer[3] / "worker-args.log").unlink()
+    result = _run(
+        consumer,
+        ["--issues", "16"],
+        issues=[_issue(16)],
+        config=_config(tmp_path, worker_hook="", worker_model="primary"),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    args = (consumer[3] / "worker-args.log").read_text(encoding="utf-8")
+    assert "--effort" not in args
+
+
+def test_worker_effort_must_be_a_single_flag_value(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "17"],
+        issues=[_issue(17)],
+        config=_config(tmp_path, worker_hook="", worker_effort="medium --foo"),
+    )
+    assert result.returncode != 0
+    assert "worker_effort must be a single flag value" in result.stderr
+    assert not (consumer[3] / "claimed-17").exists()
+
+
 def test_timeout_retries_only_an_unchanged_worktree(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
