@@ -1776,7 +1776,7 @@ run_review_pass() {
     }
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         [ "$(cat "$review_push_state_file")" = "$after_sha" ] || {
-            recovery_message "$engine review push checkpoint did not match its final head in round $round."
+            recovery_message "$engine review push checkpoint did not match its final head in round $round." push-checkpoint-mismatch
             return 1
         }
     fi
@@ -2586,6 +2586,64 @@ finalize_pr() {
     echo -e "${GREEN}✓${NC} Review converged; PR ready: $AGENT_LOOP_PR_URL ($final_sha)"
 }
 
+# Recover commits a review pass made locally but never published: the pass
+# was killed between its commit and its push, so the remote branch and the PR
+# still sit at the checkpoint while the worktree is ahead. Returns 1 when the
+# worktree is not in that shape, so the ordinary resume checks decide. Returns
+# 2 when it is in that shape but cannot be recovered safely. On success the
+# stranded commits are kept on a rescue ref that is never deleted
+# automatically, and the worktree is reset to the checkpoint so the
+# interrupted pass can be replayed.
+recover_stranded_review_commits() {
+    local state_head="$1" current_head="$2" engine="$3" round="$4"
+    local remote_row remote_sha pr_row pr_state pr_draft pr_branch pr_head
+    local ledger_file bodies_file stranded_sha run_id ref existing
+    [ "$current_head" != "$state_head" ] || return 1
+    git merge-base --is-ancestor "$state_head" "$current_head" || return 1
+    remote_row="$(git ls-remote --exit-code --heads origin "refs/heads/$AGENT_LOOP_BRANCH")" || return 1
+    remote_sha="${remote_row%%[[:space:]]*}"
+    [ "$remote_sha" = "$state_head" ] || return 1
+    pr_row="$(gh pr view "$AGENT_LOOP_PR_NUMBER" \
+        --json state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid \
+        --jq '[.state,(.isDraft|tostring),.headRefName,.headRefOid,.baseRefName,.baseRefOid] | @tsv')" || return 1
+    IFS=$'\t' read -r pr_state pr_draft pr_branch pr_head _ <<< "$pr_row"
+    if [ "$pr_state" != OPEN ] || [ "$pr_draft" != true ] || \
+       [ "$pr_branch" != "$AGENT_LOOP_BRANCH" ] || [ "$pr_head" != "$state_head" ]; then
+        return 1
+    fi
+    # A stranded commit that any finding, disposition, or PR comment refers to
+    # means the pass published evidence for it. Replaying the pass would then
+    # contradict the ledger, so that shape stops. An abbreviated SHA counts:
+    # a false match only refuses, never recovers.
+    ledger_file="$(fetch_local_review_threads)" || return 2
+    bodies_file="$AGENT_LOOP_LOG_DIR/stranded-review-evidence.txt"
+    fetch_review_attestation_bodies "$bodies_file" || return 2
+    while IFS= read -r stranded_sha; do
+        [ -n "$stranded_sha" ] || continue
+        if grep -Eq "(^|[^0-9a-f])${stranded_sha:0:7}" "$ledger_file" "$bodies_file"; then
+            echo "review ledger or PR comments refer to stranded commit $stranded_sha" >&2
+            return 2
+        fi
+    done < <(git rev-list "$state_head..$current_head")
+    run_id="$(jq -r '.runId' <<<"$RESUME_STATE_JSON")" || return 2
+    ref="refs/agent-loop/rescue/$run_id/$engine-r$round"
+    git check-ref-format "$ref" || {
+        echo "rescue ref name is invalid: $ref" >&2
+        return 2
+    }
+    existing="$(git rev-parse --verify --quiet "$ref" 2>/dev/null || true)"
+    if [ -n "$existing" ] && [ "$existing" != "$current_head" ]; then
+        echo "rescue ref $ref already holds another commit" >&2
+        return 2
+    fi
+    git update-ref "$ref" "$current_head" || return 2
+    git reset --hard --quiet "$state_head" || return 2
+    STRANDED_RESCUE_REF="$ref"
+    echo "   recovered: stranded-review-commits -> $ref (${current_head:0:12}); reset to checkpoint ${state_head:0:12}"
+}
+
+STRANDED_RESCUE_REF=""
+
 resume_review_run() {
     local issue_json_value state_head state_phase state_round current_head branch_status
     local resume_boundary_status=0 checkpoint_base latest_base attestation_status
@@ -2717,6 +2775,22 @@ resume_review_run() {
         fi
         echo -e "${GREEN}✓${NC} Re-attested finalized issue #$SELECTED_ID; local branch retained at $AGENT_LOOP_BRANCH"
         return 0
+    fi
+    if [ "$state_phase" = reviewing ] && [ "$current_head" != "$state_head" ]; then
+        local stranded_status=0
+        recover_stranded_review_commits "$state_head" "$current_head" \
+            "$state_review_engine" "$state_round" || stranded_status=$?
+        case "$stranded_status" in
+            0)
+                current_head="$state_head"
+                export AGENT_LOOP_PR_HEAD_SHA="$current_head"
+                ;;
+            1) ;;
+            *)
+                recovery_message "Stranded review commits ahead of the recovery checkpoint could not be recovered safely." uncertain-mutation
+                return 1
+                ;;
+        esac
     fi
     if [ "$state_phase" = reviewing ] && [ "$state_review_engine" = codex ] && \
        [ "$current_head" = "$state_head" ]; then
@@ -2938,12 +3012,15 @@ resume_review_run() {
         echo "   Finalized worktree preserved for parent batch checkpointing: $ACTIVE_WORKTREE"
     fi
     echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID recovery complete; local branch retained at $AGENT_LOOP_BRANCH"
+    if [ -n "$STRANDED_RESCUE_REF" ]; then
+        echo "   Rescued review commits kept at $STRANDED_RESCUE_REF ($(git rev-parse --short=12 "$STRANDED_RESCUE_REF"))"
+    fi
 }
 
 # Stop categories that leave a draft PR resumable with --resume-run when the
 # wrapper-observed state agrees. Everything else, and any doubt about a push,
 # PR, or ledger mutation, still stops the batch.
-PARKABLE_STOP_CATEGORIES="no-result/hook-ended-early validation-red hook-timeout review-cap-exhausted budget-exhausted"
+PARKABLE_STOP_CATEGORIES="no-result/hook-ended-early validation-red hook-timeout review-cap-exhausted budget-exhausted push-checkpoint-mismatch"
 
 # Prints why a failed batch issue cannot be parked and returns 1, or returns 0
 # when its checkpoint, worktree, remote branch, and draft PR agree. Nothing a
@@ -2951,7 +3028,7 @@ PARKABLE_STOP_CATEGORIES="no-result/hook-ended-early validation-red hook-timeout
 batch_issue_parkability() {
     local state_file="$1" category="$2" state_json phase worktree branch checkpoint
     local round engine log_dir pr worktree_status local_head remote_row remote_sha
-    local pr_row pr_state pr_draft pr_branch pr_head result_file push_state
+    local pr_row pr_state pr_draft pr_branch pr_head result_file push_state stranded=false
     case " $PARKABLE_STOP_CATEGORIES " in
         *" $category "*) ;;
         *) echo "stop category '${category:-uncategorized}' is not safely resumable"; return 1 ;;
@@ -3006,11 +3083,23 @@ batch_issue_parkability() {
         echo "its PR is not an open draft on the issue branch"
         return 1
     fi
-    if [ "$local_head" != "$remote_sha" ] || [ "$remote_sha" != "$pr_head" ]; then
-        echo "its local, remote, and PR heads differ"
+    if [ "$remote_sha" != "$pr_head" ]; then
+        echo "its remote and PR heads differ"
         return 1
     fi
-    if [ "$local_head" != "$checkpoint" ]; then
+    if [ "$local_head" != "$remote_sha" ]; then
+        # Commits a pass made locally but never published, on a remote and PR
+        # still at the checkpoint, are the shape --resume-run recovers onto a
+        # rescue ref. Resume checks the ledger before touching them.
+        if [ "$phase" = reviewing ] && [ "$remote_sha" = "$checkpoint" ] && \
+           git -C "$worktree" merge-base --is-ancestor "$checkpoint" "$local_head" 2>/dev/null; then
+            stranded=true
+        else
+            echo "its local, remote, and PR heads differ"
+            return 1
+        fi
+    fi
+    if [ "$stranded" = false ] && [ "$local_head" != "$checkpoint" ]; then
         # The head moved past the checkpoint. That is resumable only when the
         # pass that moved it finished and wrote a result naming both ends.
         result_file="$log_dir/$engine-review-round-$round.result.json"

@@ -341,6 +341,18 @@ per-issue statuses, and child run-state paths. Recovery advances only after the
 current issue is safely finalized or explicitly bailed; uncertain push, PR, or
 ledger mutation stops the batch.
 
+A pass can be killed after it commits a fix but before its push lands. The
+worktree is then ahead of a remote branch and PR head that still sit at the
+checkpoint. Resume recovers that shape instead of refusing, but only when all
+of these hold: the phase is `reviewing`, the worktree is clean and on the issue
+branch, and the local head descends from the checkpoint. No review thread or PR
+comment may mention a stranded commit. The wrapper keeps the stranded commits
+on `refs/agent-loop/rescue/<run-id>/<engine>-r<round>`, which it never deletes
+and which outlives the worktree. It resets to the checkpoint and replays the
+interrupted pass under the same-round rules below, then lists the ref when the
+run completes. Any other divergence still stops, such as a remote ahead of the
+checkpoint or ledger evidence for a stranded commit.
+
 Resuming a run interrupted in the Claude leg of any round, with that round's
 Codex result on disk and the head unchanged, re-verifies the Codex evidence and
 runs only the Claude leg of the same round; it does not consume a round. If the

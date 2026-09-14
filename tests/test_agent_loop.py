@@ -898,7 +898,7 @@ def test_park_mode_parks_a_resumable_failure_and_its_dependent_then_finishes_the
     assert batch["issues"][0]["stopCategory"] == "no-result/hook-ended-early"
     assert batch["issues"][1]["stopCategory"] == "blocked-by-parked"
     child = batch["issues"][0]["childRunState"]
-    assert f"#50 parked (no-result/hook-ended-early): '" in output
+    assert "#50 parked (no-result/hook-ended-early): '" in output
     assert f"--resume-run '{child}'" in output
     assert "#51 parked (blocked-by-parked)" in output
     assert not (consumer[3] / "claimed-51").exists()
@@ -1409,6 +1409,124 @@ def test_interrupted_claude_leg_restarts_at_codex_when_the_base_advanced(
     comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
     assert "local-review-pass:v3 engine=codex round=2" in comments
     assert "local-review-pass:v3 engine=claude round=2" in comments
+
+
+_STRANDING_CLAUDE_HOOK = (
+    # First run: commit a fix and stop before publishing it, as a pass killed
+    # mid-push does. Later runs review cleanly.
+    'if [ -e "$AGENT_STATE_DIR/strand-claude" ]; then '
+    "printf 'fix\\n' > stranded-fix.txt; git add stranded-fix.txt; "
+    "git commit -m 'test: stranded fix'; exit 0; fi; "
+    + _clean_v3_hook("claude")
+)
+
+
+def _strand_a_claude_commit(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, issue: int
+) -> tuple[Path, dict[str, object], str, str]:
+    (consumer[3] / "strand-claude").touch()
+    config = _config_v3(tmp_path, claude_review_hook=_STRANDING_CLAUDE_HOOK)
+    first = _run(consumer, ["--issues", str(issue)], issues=[_issue(issue)], config=config, timeout=60)
+    assert first.returncode != 0
+    assert "push checkpoint did not match its final head" in first.stderr
+    (consumer[3] / "strand-claude").unlink()
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    stranded = _run_git("rev-parse", "HEAD", cwd=Path(str(state["worktree"]))).stdout.strip()
+    assert stranded != state["headSha"]
+    return state_file, state, stranded, config
+
+
+def test_resume_keeps_stranded_review_commits_on_a_rescue_ref_and_replays_the_pass(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    state_file, state, stranded, config = _strand_a_claude_commit(consumer, tmp_path, 98)
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(98, assigned=True)],
+        config=config,
+        timeout=90,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "recovered: stranded-review-commits -> refs/agent-loop/rescue/" in resumed.stdout
+    assert "resuming its remaining leg in the same round" in resumed.stdout
+    ref = f"refs/agent-loop/rescue/{state['runId']}/claude-r1"
+    # The worktree was removed after publication; the ref lives in the shared
+    # repository and still holds the stranded commit.
+    assert not Path(str(state["worktree"])).exists()
+    assert _run_git("rev-parse", ref, cwd=consumer[0]).stdout.strip() == stranded
+    assert f"Rescued review commits kept at {ref}" in resumed.stdout
+    final = json.loads(state_file.read_text(encoding="utf-8"))
+    assert final["phase"] == "finalized"
+    assert final["headSha"] == state["headSha"]
+
+
+@pytest.mark.parametrize("divergence", ["remote-ahead", "ledger-names-stranded-commit"])
+def test_resume_refuses_stranded_commits_it_cannot_prove_unpublished(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, divergence: str
+) -> None:
+    state_file, state, stranded, config = _strand_a_claude_commit(consumer, tmp_path, 99)
+    if divergence == "remote-ahead":
+        clone = tmp_path / "branch-clone"
+        _run_git("clone", "--branch", str(state["branch"]), str(consumer[1]), str(clone))
+        _run_git("config", "user.name", "Test", cwd=clone)
+        _run_git("config", "user.email", "test@example.invalid", cwd=clone)
+        _run_git("config", "commit.gpgsign", "false", cwd=clone)
+        (clone / "elsewhere.txt").write_text("elsewhere\n", encoding="utf-8")
+        _run_git("add", "elsewhere.txt", cwd=clone)
+        _run_git("commit", "-m", "chore: pushed elsewhere", cwd=clone)
+        _run_git("push", "origin", f"HEAD:refs/heads/{state['branch']}", cwd=clone)
+        expected = "Draft PR state does not match the recovery checkpoint"
+    else:
+        threads = [{
+            "id": "THREAD-STRANDED",
+            "isResolved": True,
+            "repository": {"nameWithOwner": "fixture/consumer"},
+            "pullRequest": {"number": 1},
+            "comments": {
+                "nodes": [{"body": f"Fixed in `{stranded[:9]}`.", "databaseId": 5}],
+                "pageInfo": {"hasNextPage": False},
+            },
+        }]
+        (consumer[3] / "review-threads.json").write_text(json.dumps(threads), encoding="utf-8")
+        expected = "could not be recovered safely"
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(99, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert resumed.returncode != 0
+    assert expected in resumed.stderr
+    worktree = Path(str(state["worktree"]))
+    assert _run_git("rev-parse", "HEAD", cwd=worktree).stdout.strip() == stranded
+    refs = _run_git("for-each-ref", "refs/agent-loop/rescue", cwd=consumer[0]).stdout
+    assert refs == ""
+
+
+def test_park_mode_parks_a_stranded_review_commit(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    claude = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 57 ]; then '
+        "printf 'fix\\n' > stranded-fix.txt; git add stranded-fix.txt; "
+        "git commit -m 'test: stranded fix'; exit 0; fi; "
+        + _clean_v3_hook("claude")
+    )
+    result = _run(
+        consumer,
+        ["--issues", "57,58", "--iterations", "2"],
+        issues=[_issue(57), _issue(58)],
+        config=_config_v3(tmp_path, claude_review_hook=claude, batch_on_issue_failure="park"),
+        timeout=180,
+    )
+    assert result.returncode == 3, result.stdout + result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["parked", "finalized"]
+    assert batch["issues"][0]["stopCategory"] == "push-checkpoint-mismatch"
 
 
 def test_run_records_wrapper_pid_and_phase_timing(
