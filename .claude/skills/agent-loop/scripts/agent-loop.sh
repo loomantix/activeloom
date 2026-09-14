@@ -647,7 +647,7 @@ emit_batch_end() {
 }
 
 recovery_message() {
-    local reason="$1" category="${2:-}" resume_command="" hook_phase="" hook_tail="[]"
+    local reason="$1" category="${2:-}" resume_command="" batch_resume_command="" hook_phase="" hook_tail="[]"
     RECOVERY_EMITTED=true
     case " $STOP_CATEGORIES " in
         *" $category "*) ;;
@@ -675,8 +675,9 @@ recovery_message() {
         echo "Resume review with: $resume_command" >&2
     fi
     if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
-        [ -n "$resume_command" ] || resume_command="'$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
-        echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
+        batch_resume_command="'$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+        [ -n "$resume_command" ] || resume_command="$batch_resume_command"
+        echo "Resume batch with: $batch_resume_command" >&2
     fi
     # A stop that follows a hook carries that hook's last output, bounded the
     # way the console tail is. Other stops would only repeat an unrelated log.
@@ -1938,18 +1939,18 @@ run_review_pass() {
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
     hook_log="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log"
+    # Standalone reviewer launchers read their own per-pass bound from this
+    # variable, clamped to the ceiling they enforce. Keep it strictly below the
+    # bound `run_bounded_hook` applies below: that clock starts first and also
+    # covers the launcher's own preflight, so an equal value guarantees the
+    # wrapper kills the CLI before the CLI can time out and write a result.
+    review_pass_launcher_seconds=$((REVIEW_PASS_TIMEOUT_SECONDS - REVIEW_PASS_LAUNCHER_MARGIN_SECONDS))
+    if [ "$review_pass_launcher_seconds" -gt 3600 ]; then
+        review_pass_launcher_seconds=3600
+    fi
+    export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$review_pass_launcher_seconds"
     hook_attempt=1
     while :; do
-        # Standalone reviewer launchers read their own per-pass bound from this
-        # variable, clamped to the ceiling they enforce. Keep it strictly below the
-        # bound `run_bounded_hook` applies below: that clock starts first and also
-        # covers the launcher's own preflight, so an equal value guarantees the
-        # wrapper kills the CLI before the CLI can time out and write a result.
-        review_pass_launcher_seconds=$((REVIEW_PASS_TIMEOUT_SECONDS - REVIEW_PASS_LAUNCHER_MARGIN_SECONDS))
-        if [ "$review_pass_launcher_seconds" -gt 3600 ]; then
-            review_pass_launcher_seconds=3600
-        fi
-        export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$review_pass_launcher_seconds"
         hook_status=0
         run_bounded_hook "$hook_description (round $round)" "$hook" \
             "$REVIEW_PASS_TIMEOUT_SECONDS" "$hook_log" true || hook_status=$?

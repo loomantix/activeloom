@@ -21,6 +21,7 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
 BATCH_STATUSES = {"pending", "active", "finalized", "bailed", "parked"}
+TERMINAL_BATCH_STATUSES = frozenset({"finalized", "bailed", "parked"})
 BATCH_ROW_REQUIRED = {"issue", "status", "childRunState"}
 BATCH_ROW_OPTIONAL = {"classification", "stopCategory", "stackedOn"}
 CLASSIFICATION_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")
@@ -268,7 +269,7 @@ def _validate_batch(value: dict[str, Any]) -> None:
         child = row["childRunState"]
         if child is not None and (not isinstance(child, str) or not Path(child).is_absolute()):
             _fail("batch child run-state path must be absolute or null")
-        if index < cursor and row["status"] not in {"finalized", "bailed", "parked"}:
+        if index < cursor and row["status"] not in TERMINAL_BATCH_STATUSES:
             _fail("completed batch entries must be finalized, bailed, or parked")
         if index > cursor and row["status"] != "pending":
             _fail("future batch entries must remain pending")
@@ -439,7 +440,7 @@ def _batch_update(args: argparse.Namespace) -> None:
             row["classification"] = args.classification
         if args.child_run_state is not None:
             row["childRunState"] = str(Path(args.child_run_state).resolve())
-        if args.status in {"finalized", "bailed", "parked"}:
+        if args.status in TERMINAL_BATCH_STATUSES:
             if args.status == "finalized" and row["childRunState"] is None:
                 _fail("finalized batch issue requires a child run-state path")
             if not parked_entry:
