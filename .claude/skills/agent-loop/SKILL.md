@@ -309,6 +309,28 @@ per-issue statuses, and child run-state paths. Recovery advances only after the
 current issue is safely finalized or explicitly bailed; uncertain push, PR, or
 ledger mutation stops the batch.
 
+## Liveness and Timing
+
+The run's log directory carries two files for anything watching from outside:
+
+- `wrapper.pid` — the wrapper's PID, written when the directory is created and
+  again on `--resume-run`. Test it with `kill -0`, never with `pgrep -f`: a
+  `pgrep -f` pattern also matches the shell running the monitor, so a
+  "wrapper gone" check built on it can never fire.
+- `phases.jsonl` — one JSON line per phase event: `start` and `end` for every
+  bounded hook and validation (epoch, duration in seconds, exit status), and
+  `skipped` for a validation reused on an unchanged head. Phase durations no
+  longer have to be reconstructed from log file mtimes.
+
+Two things that look like liveness signals are not. **Review log size:** both
+`codex exec` and `claude --print` buffer their output, so a review log sits at
+0 bytes for the whole pass and then jumps; use the newest file time in the log
+directory, the reviewer's CPU time, or `phases.jsonl` instead. **An agent
+session's background task:** multi-hour runs launched as a background task of
+an interactive agent session have been killed by that session's memory guard
+with tens of gigabytes free. Launch long runs detached — `tmux`, `systemd-run`,
+or an equivalent — with stdin closed.
+
 ## Migration From the Collection-Branch Loop
 
 The previous loop pushed every iteration to a shared collection branch and

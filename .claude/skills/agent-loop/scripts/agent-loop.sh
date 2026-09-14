@@ -1053,12 +1053,37 @@ require_issue_branch_head() {
     [ "$head_sha" = "$branch_sha" ]
 }
 
+# Per-phase timing for anything watching from outside. One JSON line per event
+# in the run's log directory: a monitor can tell a long pass from a stalled one
+# by the start epoch, and durations no longer have to be reconstructed from log
+# mtimes. Best effort — recording never fails the phase it describes.
+record_phase_event() {
+    local event="$1" phase="$2" seconds="${3:-}" status="${4:-}"
+    [ -n "${AGENT_LOOP_LOG_DIR:-}" ] && [ -d "$AGENT_LOOP_LOG_DIR" ] || return 0
+    jq -cn --arg event "$event" --arg phase "$phase" --argjson epoch "$(date +%s)" \
+        --arg seconds "$seconds" --arg status "$status" \
+        '{event: $event, phase: $phase, epoch: $epoch}
+         + (if $seconds != "" then {seconds: ($seconds | tonumber)} else {} end)
+         + (if $status != "" then {exit: ($status | tonumber)} else {} end)' \
+        >> "$AGENT_LOOP_LOG_DIR/phases.jsonl" 2>/dev/null || true
+}
+
+# The wrapper's own PID, so a monitor can test it with `kill -0` instead of
+# matching command lines: a `pgrep -f` pattern also matches the shell running
+# the monitor, so a "wrapper gone" check built on it can never fire.
+write_wrapper_pid() {
+    [ -n "${AGENT_LOOP_LOG_DIR:-}" ] && [ -d "$AGENT_LOOP_LOG_DIR" ] || return 0
+    printf '%s\n' "$$" > "$AGENT_LOOP_LOG_DIR/wrapper.pid" 2>/dev/null || true
+}
+
 run_bounded_hook() {
     local phase="$1" hook_command="$2" timeout_seconds="$3" log_file="$4"
     local allow_review_mutations="${5:-false}"
-    local max_bytes=$((LOG_MAX_KB * 1024)) status=0
+    local max_bytes=$((LOG_MAX_KB * 1024)) status=0 started
     local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
     echo -e "${BLUE}▸${NC} $phase"
+    started="$(date +%s)"
+    record_phase_event start "$phase"
     # Bound the captured log to its trailing LOG_MAX_KB with `tail -c`, NOT with a
     # process-wide `ulimit -f`: that rlimit is inherited by the worker and every hook
     # and would SIGXFSZ-kill (and truncate) any repo file they legitimately write
@@ -1137,6 +1162,7 @@ run_bounded_hook() {
         echo "hook changed origin fetch/push identity" >>"$log_file"
         status=1
     fi
+    record_phase_event end "$phase" "$(( $(date +%s) - started ))" "$status"
     if [ "$status" -ne 0 ]; then
         echo -e "${RED}✗${NC} $phase failed (exit $status); bounded tail follows:" >&2
         tail -n "$OUTPUT_MAX_LINES" "$log_file" >&2 || true
@@ -1243,6 +1269,7 @@ run_validation() {
     if [ "$gate" != final ] && [ "$before_sha" = "$LAST_VALIDATED_HEAD" ] && \
        [ "$base_sha" = "$LAST_VALIDATED_BASE" ]; then
         echo -e "${GREEN}✓${NC} $label validation skipped: head ${before_sha:0:9} on base ${base_sha:0:9} already passed $LAST_VALIDATED_LABEL validation"
+        record_phase_event skipped "$label validation"
         return 0
     fi
     if [ "$budgeted" = true ]; then
@@ -2386,6 +2413,7 @@ resume_review_run() {
         recovery_message "Recorded recovery log directory is unavailable or unsafe."
         return 1
     fi
+    write_wrapper_pid
     branch_status="$(git -C "$ACTIVE_WORKTREE" status --porcelain)" || return 1
     [ -z "$branch_status" ] || {
         recovery_message "Recorded recovery worktree is dirty."
@@ -2865,6 +2893,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         continue
     fi
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
+    write_wrapper_pid
     LAST_VALIDATED_HEAD=""
     LAST_VALIDATED_BASE=""
     LAST_VALIDATED_LABEL=""

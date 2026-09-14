@@ -501,20 +501,12 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
     return _config(tmp_path, **values)
 
 
-def _run(
+def _environment(
     fixture: tuple[Path, Path, Path, Path],
-    args: list[str],
-    *,
     issues: list[dict[str, object]],
-    config: str,
     extra_env: dict[str, str] | None = None,
-    timeout: int = 30,
-    stdin: int | None = None,
-) -> subprocess.CompletedProcess[str]:
+) -> dict[str, str]:
     repo, _, bin_dir, state_dir = fixture
-    (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(
-        config, encoding="utf-8"
-    )
     # Hooks run under `bash -lc`, a login shell that re-sources profile files. On
     # a developer box those dotfiles prepend real tool paths (e.g. a genuine
     # `claude` in ~/.local/bin), shadowing the stubs this suite installs in
@@ -544,6 +536,24 @@ def _run(
     )
     if extra_env:
         env.update(extra_env)
+    return env
+
+
+def _run(
+    fixture: tuple[Path, Path, Path, Path],
+    args: list[str],
+    *,
+    issues: list[dict[str, object]],
+    config: str,
+    extra_env: dict[str, str] | None = None,
+    timeout: int = 30,
+    stdin: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    repo = fixture[0]
+    (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(
+        config, encoding="utf-8"
+    )
+    env = _environment(fixture, issues, extra_env)
     return subprocess.run(
         [str(repo / ".claude/skills/agent-loop/scripts/agent-loop.sh"), *args],
         cwd=repo,
@@ -1138,6 +1148,43 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     assert events.count("codex\n") == 1
     assert events.count("claude\n") == 1
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+
+
+def test_run_records_wrapper_pid_and_phase_timing(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Every duration in the first consumer reports had to be reconstructed from
+    # log mtimes, and the only liveness check available from outside was a
+    # `pgrep -f` that matched the monitor's own shell.
+    repo = consumer[0]
+    (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(
+        _config_v3(tmp_path), encoding="utf-8"
+    )
+    proc = subprocess.Popen(
+        [str(repo / ".claude/skills/agent-loop/scripts/agent-loop.sh"), "--issues", "22"],
+        cwd=repo,
+        env=_environment(consumer, [_issue(22)]),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout, stderr = proc.communicate(timeout=90)
+    assert proc.returncode == 0, stderr + stdout
+    log_dir = next((tmp_path / "logs").glob("*-issue-22-*"))
+    assert (log_dir / "wrapper.pid").read_text(encoding="utf-8").strip() == str(proc.pid)
+    events = [
+        json.loads(line)
+        for line in (log_dir / "phases.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    phases = [(event["event"], event["phase"]) for event in events]
+    assert phases.index(("start", "worker attempt 1")) < phases.index(("end", "worker attempt 1"))
+    assert ("end", "worker validation") in phases
+    assert ("skipped", "initial-fresh-base validation") in phases
+    assert ("end", "final-reviewed-head validation") in phases
+    ends = [event for event in events if event["event"] == "end"]
+    assert ends and all(
+        event["exit"] == 0 and event["seconds"] >= 0 and event["epoch"] > 0 for event in ends
+    )
 
 
 def test_draft_pr_title_is_the_worker_commit_subject(
