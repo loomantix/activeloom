@@ -107,6 +107,13 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         raise DoctorError("worker prompt must require a local commit and forbid push")
     if "AGENT_LOOP_ISSUE_TITLE" not in instructions or "AGENT_LOOP_ISSUE_BODY" not in instructions:
         raise DoctorError("worker instructions must describe wrapper-provided issue context")
+    if "AGENT_LOOP_HANDOFF_FILE" not in prompt + "\n" + instructions:
+        # The wrapper recognizes a bail by the handoff file. A worker told to
+        # write its handoff anywhere else is reported as producing no commit.
+        _warn(
+            "worker prompt and instructions do not name AGENT_LOOP_HANDOFF_FILE; a worker bail "
+            "that writes its handoff elsewhere is reported as 'produced no local commit'"
+        )
 
     hooks = {
         "codex": values.get("codex_review_hook", ""),

@@ -21,6 +21,9 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
 BATCH_STATUSES = {"pending", "active", "finalized", "bailed"}
+BATCH_ROW_REQUIRED = {"issue", "status", "childRunState"}
+BATCH_ROW_OPTIONAL = {"classification"}
+CLASSIFICATION_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")
 
 
 class StateError(RuntimeError):
@@ -233,10 +236,20 @@ def _validate_batch(value: dict[str, Any]) -> None:
     if not isinstance(rows, list) or len(rows) != len(allowlist):
         _fail("batch issue statuses do not match the allowlist")
     for index, row in enumerate(rows):
-        if not isinstance(row, dict) or set(row) != {"issue", "status", "childRunState"}:
+        if (
+            not isinstance(row, dict)
+            or not BATCH_ROW_REQUIRED <= set(row)
+            or set(row) - BATCH_ROW_REQUIRED - BATCH_ROW_OPTIONAL
+        ):
             _fail("batch issue status has an invalid shape")
         if row["issue"] != allowlist[index] or row["status"] not in BATCH_STATUSES:
             _fail("batch issue status does not match the ordered allowlist")
+        if "classification" in row and (
+            row["status"] != "bailed"
+            or not isinstance(row["classification"], str)
+            or not CLASSIFICATION_RE.fullmatch(row["classification"])
+        ):
+            _fail("only a bailed batch issue may carry a bail classification")
         child = row["childRunState"]
         if child is not None and (not isinstance(child, str) or not Path(child).is_absolute()):
             _fail("batch child run-state path must be absolute or null")
@@ -387,6 +400,10 @@ def _batch_update(args: argparse.Namespace) -> None:
         if args.status not in allowed_transitions.get(args.expected_status, set()):
             _fail("batch issue has an invalid status transition")
         row["status"] = args.status
+        if args.classification is not None:
+            if args.status != "bailed":
+                _fail("a bail classification applies only to a bailed batch issue")
+            row["classification"] = args.classification
         if args.child_run_state is not None:
             row["childRunState"] = str(Path(args.child_run_state).resolve())
         if args.status in {"finalized", "bailed"}:
@@ -454,6 +471,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     batch_update.add_argument("--status", required=True, choices=sorted(BATCH_STATUSES))
     batch_update.add_argument("--child-run-state")
+    batch_update.add_argument("--classification")
     batch_update.set_defaults(handler=_batch_update)
     batch_show = commands.add_parser("batch-show")
     batch_show.add_argument("--file", required=True)

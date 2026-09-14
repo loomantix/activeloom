@@ -182,6 +182,41 @@ def test_batch_pending_issue_can_be_explicitly_bailed(tmp_path: Path) -> None:
     assert value["issues"][0]["status"] == "bailed"
 
 
+def test_batch_bail_records_its_classification_only_on_a_bailed_entry(
+    tmp_path: Path,
+) -> None:
+    batch = tmp_path / "batch.json"
+    created = _run(
+        "batch-create", "--file", str(batch), "--run-id", "run-1",
+        "--repo", "example/repository", "--base-branch", "main", "--issues", "7,8",
+    )
+    assert created.returncode == 0, created.stderr
+    rejected = _run(
+        "batch-update", "--file", str(batch), "--issue", "7",
+        "--expected-status", "pending", "--status", "active",
+        "--classification", "spec-gap",
+    )
+    assert rejected.returncode != 0
+    assert "applies only to a bailed batch issue" in rejected.stderr
+    bailed = _run(
+        "batch-update", "--file", str(batch), "--issue", "7",
+        "--expected-status", "pending", "--status", "bailed",
+        "--classification", "spec-gap",
+    )
+    assert bailed.returncode == 0, bailed.stderr
+    value = json.loads(batch.read_text(encoding="utf-8"))
+    assert value["cursor"] == 1
+    assert value["issues"][0] == {
+        "issue": 7, "status": "bailed", "childRunState": None, "classification": "spec-gap",
+    }
+
+    value["issues"][1]["classification"] = "spec-gap"
+    batch.write_text(json.dumps(value), encoding="utf-8")
+    shown = _run("batch-show", "--file", str(batch))
+    assert shown.returncode != 0
+    assert "only a bailed batch issue may carry a bail classification" in shown.stderr
+
+
 def test_batch_expected_status_is_atomic_across_concurrent_updates(
     tmp_path: Path,
 ) -> None:

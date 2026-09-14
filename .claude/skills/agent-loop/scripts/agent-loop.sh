@@ -30,7 +30,7 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_PR_HEAD_SHA AGENT_LOOP_REVIEW_CONTRACT_VERSION \
     AGENT_LOOP_ORIGIN_FETCH_URLS AGENT_LOOP_ORIGIN_PUSH_URLS \
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
-    AGENT_LOOP_REVIEW_PUSH_STATE_FILE \
+    AGENT_LOOP_REVIEW_PUSH_STATE_FILE AGENT_LOOP_HANDOFF_FILE \
     LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
 
 MAX_ITERATIONS=10
@@ -1202,14 +1202,43 @@ worker_command() {
     # claude-cli-invocations:end
 }
 
+WORKER_BAILED=false
+WORKER_BAIL_CLASSIFICATION=""
+
+# The first `agent-bail: <category>` in a worker handoff, or empty.
+worker_handoff_classification() {
+    grep -Eo 'agent-bail:[[:space:]]*[a-z][a-z0-9-]{0,63}' "$1" 2>/dev/null | head -n 1 | \
+        sed -E 's/^agent-bail:[[:space:]]*//' || true
+}
+
 run_worker() {
     local start_sha="$1" attempt=0 model="$WORKER_MODEL" status log command retry
+    WORKER_BAILED=false
+    WORKER_BAIL_CLASSIFICATION=""
     while [ "$attempt" -le "$WORKER_RETRIES" ]; do
         attempt=$((attempt + 1))
         log="$AGENT_LOOP_LOG_DIR/worker-attempt-$attempt.log"
         command="$(worker_command "$model")"
         status=0
         run_bounded_hook "worker attempt $attempt" "$command" "$WORKER_TIMEOUT_SECONDS" "$log" || status=$?
+        # The handoff file, not the exit status, says the worker bailed: a
+        # worker can write a correct handoff and still exit 0, and a nonzero
+        # exit with a handoff is a bail rather than a crash worth retrying. A
+        # handoff alongside changed or committed work is ambiguous and stops.
+        if [ -e "$AGENT_LOOP_HANDOFF_FILE" ] || [ -L "$AGENT_LOOP_HANDOFF_FILE" ]; then
+            if [ ! -f "$AGENT_LOOP_HANDOFF_FILE" ] || [ -L "$AGENT_LOOP_HANDOFF_FILE" ]; then
+                recovery_message "Worker handoff is not a regular file: $AGENT_LOOP_HANDOFF_FILE" worker-ambiguous-bail
+                return 1
+            fi
+            if worktree_has_work "$start_sha"; then
+                recovery_message "Worker wrote an operator handoff and also changed or committed work (exit $status); the bail is ambiguous. Handoff: $AGENT_LOOP_HANDOFF_FILE" worker-ambiguous-bail
+                return 1
+            fi
+            WORKER_BAILED=true
+            WORKER_BAIL_CLASSIFICATION="$(worker_handoff_classification "$AGENT_LOOP_HANDOFF_FILE")"
+            echo -e "${YELLOW}○${NC} Worker bailed (exit $status): agent-bail: ${WORKER_BAIL_CLASSIFICATION:-unclassified}"
+            return 0
+        fi
         [ "$status" -eq 0 ] && return 0
 
         if worktree_has_work "$start_sha"; then
@@ -1231,6 +1260,43 @@ run_worker() {
         echo -e "${YELLOW}›${NC} Retrying worker after bounded capacity/timeout failure (model: ${model:-default})"
         [ "$RETRY_DELAY_SECONDS" -gt 0 ] && sleep "$RETRY_DELAY_SECONDS"
     done
+}
+
+# A worker bail with no commit: release a claim this run added, record the
+# batch entry, and drop the unused worktree and branch. Label and comment
+# changes the handoff requests stay operator actions.
+handle_worker_bail() {
+    local number="$1" branch_name="$2" start_sha="$3"
+    local classification="$WORKER_BAIL_CLASSIFICATION"
+    local -a update
+    echo "   Operator handoff: $AGENT_LOOP_HANDOFF_FILE"
+    head -n "$OUTPUT_MAX_LINES" "$AGENT_LOOP_HANDOFF_FILE" | sed 's/^/   | /' || true
+    echo "   The wrapper made no label or comment changes; apply the handoff's requests by hand."
+    cd "$PROJECT_DIR"
+    if [ "$SELECTED_ASSIGNED" = false ] && ! rollback_new_claim "$number"; then
+        recovery_message "Worker bailed on issue #$number but its claim could not be released."
+        return 1
+    fi
+    if [ -n "$BATCH_STATE_FILE" ]; then
+        update=(python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE"
+            --issue "$number" --expected-status active --status bailed)
+        if [ -n "$classification" ]; then
+            update+=(--classification "$classification")
+        fi
+        "${update[@]}" >/dev/null || {
+            recovery_message "Worker bailed on issue #$number but its batch entry could not be marked bailed."
+            return 1
+        }
+    fi
+    if git worktree remove "$ACTIVE_WORKTREE"; then
+        if [ "$(git rev-parse "refs/heads/$branch_name")" = "$start_sha" ]; then
+            git branch -D "$branch_name" >/dev/null || true
+        fi
+    else
+        echo "warning: bailed issue worktree cleanup failed and was preserved: $ACTIVE_WORKTREE" >&2
+    fi
+    ACTIVE_WORKTREE=""
+    echo -e "${YELLOW}○${NC} Issue #$number bailed (agent-bail: ${classification:-unclassified}); continuing"
 }
 
 require_clean_committed_tree() {
@@ -3060,6 +3126,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     export AGENT_LOOP_WORKTREE="$ACTIVE_WORKTREE"
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
+    export AGENT_LOOP_HANDOFF_FILE="$AGENT_LOOP_LOG_DIR/operator-handoff.md"
     start_sha="$(git rev-parse HEAD)"
     if [ -n "$SETUP_HOOK" ]; then
         run_bounded_hook "isolated dependency bootstrap" "$SETUP_HOOK" "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/setup.log" || {
@@ -3074,6 +3141,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
 
     run_worker "$start_sha" || exit 1
+    if [ "$WORKER_BAILED" = true ]; then
+        handle_worker_bail "$SELECTED_ID" "$branch" "$start_sha" || exit 1
+        continue
+    fi
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
     run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }

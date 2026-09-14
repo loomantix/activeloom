@@ -319,7 +319,16 @@ semantics.
 
 ## Failure and Recovery
 
-On any non-zero worker exit, inspect whether the worktree is dirty or contains
+A worker bails by writing its classification and operator handoff to
+`$AGENT_LOOP_HANDOFF_FILE` (`operator-handoff.md` in the run's log directory)
+and making no commit. The file is authoritative, whatever the exit status: the
+wrapper prints the `agent-bail:` classification and the handoff path, releases a
+claim it added, removes the unused worktree and branch, records a batch entry as
+`bailed` with that classification, and continues with the next issue. It makes
+no label or comment changes; those stay operator actions from the handoff. A
+handoff alongside changed or committed work is an ambiguous bail and stops.
+
+On any other non-zero worker exit, inspect whether the worktree is dirty or contains
 new commits. Preserve all changed or committed work and stop with recovery
 commands. Retry capacity/timeouts only when the worktree is unchanged. Review,
 setup, integration, and validation failures also preserve the worktree. Never

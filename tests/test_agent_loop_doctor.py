@@ -142,6 +142,27 @@ def test_doctor_rejects_worker_instructions_that_require_masked_gh(
     assert "require masked gh" in result.stderr
 
 
+def test_doctor_warns_when_the_worker_is_not_told_where_to_write_its_handoff(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+    assert "AGENT_LOOP_HANDOFF_FILE" not in result.stderr
+
+    for path in (
+        project / ".claude/skills/agent-loop/prompt.txt",
+        project / "agent-loop-instructions.md",
+    ):
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("AGENT_LOOP_HANDOFF_FILE", "a local file"),
+            encoding="utf-8",
+        )
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+    assert "do not name AGENT_LOOP_HANDOFF_FILE" in result.stderr
+
+
 def test_doctor_rejects_incompatible_review_push_protocol(tmp_path: Path) -> None:
     project = _project(tmp_path)
     review_push = project / ".claude/skills/agent-loop/scripts/review-push.sh"

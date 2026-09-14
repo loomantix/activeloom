@@ -146,7 +146,10 @@ commit_, before exiting:
      transient infra).
    - _(plus any repo-specific sensitive-path category your `RUBRIC.md` §3
      defines.)_
-2. **Write a local operator handoff** that requests adding the selected
+2. **Write the operator handoff to `$AGENT_LOOP_HANDOFF_FILE`**. The wrapper
+   treats that file as authoritative: when it exists and you made no commit,
+   the run is a bail whatever your exit status, so never write it after
+   committing work. Include the `agent-bail: <category>` line, and request adding the selected
    `agent-bail:` label and `agent: refined`, removing `dev: agent`, and posting
    the reason on the issue. (Removing `dev: agent` stops the loop re-picking it
    and is itself a high-signal RCA trigger.)

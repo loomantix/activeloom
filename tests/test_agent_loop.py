@@ -2341,6 +2341,71 @@ def test_worker_effort_must_be_a_single_flag_value(
     assert not (consumer[3] / "claimed-17").exists()
 
 
+_HANDOFF = (
+    "printf 'Classification: agent-bail: spec-gap (bucket A)\\n"
+    "Requested labels: add agent-bail: spec-gap, remove dev: agent\\n' "
+    '> "$AGENT_LOOP_HANDOFF_FILE"'
+)
+
+
+@pytest.mark.parametrize("exit_status", [0, 3])
+def test_worker_handoff_is_a_bail_whatever_the_exit_status(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, exit_status: int
+) -> None:
+    worker = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 40 ]; then '
+        f"{_HANDOFF}; exit {exit_status}; fi; "
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf done > result.txt; "
+        "git add result.txt; git commit -m 'fix: worker'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "40,41", "--iterations", "2"],
+        issues=[_issue(40), _issue(41)],
+        config=_config_v3(tmp_path, worker_hook=worker),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "agent-bail: spec-gap" in result.stdout
+    assert "produced no local commit" not in result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["bailed", "finalized"]
+    assert batch["issues"][0]["classification"] == "spec-gap"
+    log_dir = next((tmp_path / "logs").glob("*-issue-40-*"))
+    assert (log_dir / "worker-attempt-1.log").exists()
+    assert not (log_dir / "worker-attempt-2.log").exists()
+    assert str(log_dir / "operator-handoff.md") in result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    issue_40 = [line for line in gh_log.splitlines() if line.startswith("issue edit 40")]
+    assert issue_40 == ["issue edit 40 --add-assignee @me", "issue edit 40 --remove-assignee @me"]
+    assert "--add-label" not in gh_log and "--remove-label" not in gh_log
+    assert "issue comment" not in gh_log
+    assert not any((tmp_path / "worktrees").glob("*-issue-40-*"))
+
+
+def test_worker_handoff_with_committed_work_is_an_ambiguous_bail(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker = (
+        "printf done > result.txt; git add result.txt; git commit -m 'fix: worker'; "
+        f"{_HANDOFF}"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "42,43", "--iterations", "2"],
+        issues=[_issue(42), _issue(43)],
+        config=_config_v3(tmp_path, worker_hook=worker),
+        timeout=60,
+    )
+    assert result.returncode != 0
+    assert "the bail is ambiguous" in result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["active", "pending"]
+    assert any((tmp_path / "worktrees").glob("*-issue-42-*"))
+
+
 def test_timeout_retries_only_an_unchanged_worktree(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
