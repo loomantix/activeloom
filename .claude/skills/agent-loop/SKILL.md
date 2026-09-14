@@ -210,6 +210,12 @@ open pipe from whatever launched the wrapper produces no output and no result
 until the pass times out, which is indistinguishable from a slow review from
 outside. A hook that genuinely needs input must supply it inside the command.
 
+The wrapper also exports `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` for every hook
+and the default worker, overriding an inherited value. A one-shot Claude CLI
+that moves a long command, such as a test suite, to the background can end its
+turn with that command still running: it exits 0 and writes no result. The
+doctor warns when a hook sets the variable to anything else or unsets it.
+
 `claude_effort_policy` constrains `claude_review_hook` and, when the default
 worker is in use, `worker_effort` — both only when `config_doctor = true`, since
 the doctor is what enforces it and the key is inert without it. An empty

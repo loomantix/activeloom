@@ -1147,6 +1147,13 @@ run_bounded_hook() {
         export AGENT_LOOP_HOOK_COMMAND="$hook_command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
+        # A one-shot Claude CLI may end its turn while a command it moved to
+        # the background is still running. It then exits 0 with no result, and
+        # the wrapper cannot tell that from a review that wrote nothing. Force
+        # foreground tool execution for every hook and the default worker,
+        # overriding an inherited 0: nothing the wrapper runs may outlive its
+        # own turn. Foreground subagents can still run concurrently.
+        export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
         # Never hand a hook the wrapper's own stdin. `codex exec` reads stdin
         # to EOF when it is not a TTY, so a hook that inherits an open pipe from
         # the launcher (a session runner, `time`, a monitor) does nothing until

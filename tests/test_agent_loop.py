@@ -1969,6 +1969,48 @@ def test_hooks_and_default_worker_do_not_inherit_the_wrapper_stdin(
     assert result.returncode == 0, result.stderr + result.stdout
 
 
+@pytest.mark.parametrize("inherited", [None, "0", "1"])
+def test_hooks_and_default_worker_run_background_tasks_in_the_foreground(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    inherited: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A one-shot Claude CLI that moves a long command to the background can
+    # end its turn with it still running and exit 0 with no result. The
+    # wrapper forces foreground execution for every hook, even over an
+    # inherited 0.
+    record = 'printf "%s\\n" "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-unset}" >> "$AGENT_STATE_DIR/background.log"; '
+    claude = consumer[2] / "claude"
+    _write_executable(
+        claude,
+        "#!/usr/bin/env bash\n"
+        + record
+        + "printf 'done\\n' > result.txt\ngit add result.txt\ngit commit -m 'fix: worker'\n",
+    )
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", raising=False)
+    extra_env = {} if inherited is None else {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": inherited}
+    result = _run(
+        consumer,
+        ["--issues", "19"],
+        issues=[_issue(19)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook="",
+            validation_hook=record + "true",
+            codex_review_hook=record + _clean_v3_hook("codex"),
+            claude_review_hook=record + _clean_v3_hook("claude"),
+        ),
+        extra_env=extra_env,
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    values = (consumer[3] / "background.log").read_text(encoding="utf-8").split()
+    # worker, worker validation, codex, claude, final validation
+    assert len(values) >= 5
+    assert set(values) == {"1"}
+
+
 def test_capacity_failure_uses_fallback_model(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

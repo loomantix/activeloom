@@ -209,6 +209,33 @@ def test_doctor_warns_when_a_codex_exec_hook_leaves_stdin_open(tmp_path: Path) -
     assert "codex exec" not in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("override", "warns"),
+    [
+        ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=0 claude", True),
+        ("env -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS claude", True),
+        (": && unset CLAUDE_CODE_DISABLE_BACKGROUND_TASKS && claude", True),
+        ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude", False),
+    ],
+)
+def test_doctor_warns_when_a_hook_overrides_foreground_tasks(
+    tmp_path: Path, override: str, warns: bool
+) -> None:
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "claude_review_hook = claude", f"claude_review_hook = {override}"
+        ),
+        encoding="utf-8",
+    )
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+    assert (
+        "claude_review_hook overrides CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" in result.stderr
+    ) == warns
+
+
 def test_doctor_ties_worker_effort_to_the_claude_effort_policy(tmp_path: Path) -> None:
     project = _project(tmp_path)
     config = project / ".claude/skills/agent-loop/agent-loop.config"
