@@ -188,7 +188,8 @@ function validateCommandArgs(opts, argv) {
   if (!allowed) return null;
 
   if (opts.command === 'review-config') {
-    argv = argv.slice(0, argv.indexOf('review-config'));
+    // Parsing preserves every token after the command as a positional.
+    argv = argv.slice(0, argv.length - opts.positionals.length - 1);
   } else if (opts.command !== 'add' && opts.positionals.length > 0) {
     return `${opts.command} does not accept operands: ${opts.positionals.join(', ')}`;
   }

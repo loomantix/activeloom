@@ -21,9 +21,11 @@ Before starting a run, read it with
 `python3 -I .codex/skills/critique/scripts/review-profile.py show --repo <owner/repo>`.
 When it reports `"configured": false`, run `review-setup` with the user first;
 never start a run on settings the user has not confirmed. Unless the user names a
-plan, pass the tier's order from `review-profile.py order --tier <lean|deep> --repo <owner/repo>`
-as the `--cycle`. The runner pins each engine's settings when the run starts, so a
-profile change applies to the next run, not the one in progress.
+plan, read the tier's order from `review-profile.py order --tier <lean|deep> --repo <owner/repo>`.
+Use `--chain` for a one-engine order and `--cycle --until-converged` for two or
+three engines. A one-engine chain reports plan completion; it cannot establish
+independent convergence. The runner pins each engine's settings when the run
+starts, so a profile change applies to the next run, not the one in progress.
 
 In Claude Code, start the runner with the Bash tool's `run_in_background` and
 wait for its completion notification instead of polling: a chain outlasts any

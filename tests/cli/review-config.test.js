@@ -11,6 +11,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const { parseArgs, validateCommandArgs } = require(
@@ -46,6 +47,51 @@ test('options that review-config cannot apply are still rejected', () => {
   const argv = ['--sync', 'review-config', 'show'];
   const opts = parseArgs(argv);
   assert.match(validateCommandArgs(opts, argv), /does not accept --sync/);
+});
+
+test('option values matching review-config do not hide global options', () => {
+  for (const flag of ['--python', '--ref', '--upstream-dir']) {
+    const argv = [
+      flag,
+      'review-config',
+      '--dry-run',
+      'review-config',
+      'set',
+      'codex.effort=low',
+    ];
+    const opts = parseArgs(argv);
+    assert.match(validateCommandArgs(opts, argv), /does not accept --dry-run/);
+  }
+});
+
+test('a rejected dry-run cannot create a review profile', () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-dry-run-'));
+  const profile = path.join(scratch, 'profile.json');
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(REPO_ROOT, 'cli', 'bin', 'activeloom.js'),
+        '--upstream-dir',
+        REPO_ROOT,
+        '--ref',
+        'review-config',
+        '--dry-run',
+        'review-config',
+        'init',
+        '--accept-defaults',
+      ],
+      {
+        env: { ...process.env, ACTIVELOOM_REVIEW_PROFILE: profile },
+        encoding: 'utf8',
+      },
+    );
+    assert.strictEqual(result.status, 2);
+    assert.match(result.stderr, /does not accept --dry-run/);
+    assert.strictEqual(fs.existsSync(profile), false);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test('the helper receives the arguments and its exit status is returned', () => {
