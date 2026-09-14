@@ -32,6 +32,10 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
     AGENT_LOOP_REVIEW_PUSH_STATE_FILE AGENT_LOOP_HANDOFF_FILE \
     LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
+# A batch parent hands its event stream to the child run it resumes. It is
+# honoured only for such a child and only under log_root.
+INHERITED_EVENTS_FILE="${AGENT_LOOP_EVENTS_FILE:-}"
+unset AGENT_LOOP_EVENTS_FILE
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -492,6 +496,9 @@ AGENT_LOOP_RUN_STATE_FILE=""
 AGENT_LOOP_RUN_LOCK_FD=""
 AGENT_LOOP_BATCH_LOCK_FD="${AGENT_LOOP_BATCH_LOCK_FD:-}"
 RESUME_STATE_JSON=""
+EVENTS_FILE=""
+LAST_HOOK_LOG=""
+LAST_HOOK_PHASE=""
 
 acquire_run_lock() {
     local log_dir="$1"
@@ -545,6 +552,10 @@ print(path.resolve(strict=True))
     resume_log_dir="$(dirname "$RESUME_RUN_FILE")"
     case "$resume_log_dir" in "$LOG_ROOT"/*) ;; *) echo "run state log directory is outside configured log_root" >&2; exit 1 ;; esac
     acquire_run_lock "$resume_log_dir" || exit 1
+    if [ -n "$INHERITED_EVENTS_FILE" ] && [ -n "${AGENT_LOOP_BATCH_PARENT_STATE_FILE:-}" ]; then
+        case "$INHERITED_EVENTS_FILE" in "$LOG_ROOT"/*) EVENTS_FILE="$INHERITED_EVENTS_FILE" ;; esac
+    fi
+    [ -n "$EVENTS_FILE" ] || EVENTS_FILE="$resume_log_dir/events.jsonl"
     RESUME_STATE_JSON="$(python3 "$RUN_STATE_HELPER" show --file "$RESUME_RUN_FILE")" || exit 1
     recorded_review_max_rounds="$(jq -r '.reviewMaxRounds // empty' <<<"$RESUME_STATE_JSON")"
     if [ -n "$recorded_review_max_rounds" ] && [ "$REVIEW_MAX_ROUNDS" -gt "$recorded_review_max_rounds" ]; then
@@ -590,12 +601,53 @@ fi
 LAST_STOP_CATEGORY=""
 INTERRUPTED=false
 
+# Every stop names one of these. tests/test_agent_loop.py holds each
+# recovery_message call site to this list.
+STOP_CATEGORIES="no-result/hook-ended-early invalid-result review-blocked ledger-evidence push-checkpoint-mismatch heads-misaligned worktree-state validation-red hook-failed hook-timeout budget-exhausted review-cap-exhausted worker-ambiguous-bail worker-no-commit worker-failed setup-failed merge-conflict publication-diff base-diverged dependency-blocked issue-changed checkpoint-failed uncertain-mutation child-resume-failed batch-incomplete interrupted internal-error"
+
+# Append one supervision event. The stream is the supported way to watch a
+# batch; console glyph lines are for people and may change. Recording is best
+# effort and never fails the step it describes.
+emit_event() {
+    local event="$1" payload
+    shift
+    [ -n "$EVENTS_FILE" ] && [ -d "$(dirname -- "$EVENTS_FILE")" ] || return 0
+    payload="$(jq -cn --arg event "$event" --arg runTag "$RUN_TAG" \
+        --argjson epoch "$(date +%s)" "$@" \
+        '$ARGS.named + {event: $event, runTag: $runTag, epoch: $epoch}' 2>/dev/null)" || return 0
+    python3 "$RUN_STATE_HELPER" event-append --file "$EVENTS_FILE" --json "$payload" \
+        >/dev/null 2>&1 || echo "warning: could not record the $event event" >&2
+}
+
+# The last non-empty lines of a log, bounded in count and width and stripped of
+# control characters. Console tails and event tails use the same bounds.
+bounded_log_tail() {
+    local log_file="$1"
+    [ -n "$log_file" ] && [ -f "$log_file" ] || return 0
+    grep -v '^[[:space:]]*$' "$log_file" 2>/dev/null | tail -n "$OUTPUT_MAX_LINES" | \
+        cut -c1-400 | tr -d '\000-\010\013-\037\177' || true
+}
+
+emit_batch_end() {
+    local rc="$1" batch_json
+    [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ] && [ -n "$EVENTS_FILE" ] || return 0
+    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE" 2>/dev/null)" || return 0
+    emit_event batch_end --argjson exit "$rc" \
+        --argjson finalized "$(jq -c '[.issues[] | select(.status == "finalized") | .issue]' <<<"$batch_json")" \
+        --argjson bailed "$(jq -c '[.issues[] | select(.status == "bailed") | .issue]' <<<"$batch_json")" \
+        --argjson parked "$(jq -c '[.issues[] | select(.status == "parked") | .issue]' <<<"$batch_json")"
+}
+
 recovery_message() {
-    local reason="$1" category="${2:-}"
+    local reason="$1" category="${2:-}" resume_command="" hook_phase="" hook_tail="[]"
     RECOVERY_EMITTED=true
+    case " $STOP_CATEGORIES " in
+        *" $category "*) ;;
+        *) category=internal-error ;;
+    esac
     LAST_STOP_CATEGORY="$category"
     echo -e "${RED}✗${NC} $reason" >&2
-    [ -z "$category" ] || echo "Stop category: $category" >&2
+    echo "Stop category: $category" >&2
     # The parent of a resumed batch child reads the child's stop category
     # from here; it cannot see the child's shell variables.
     if [ -n "${AGENT_LOOP_LOG_DIR:-}" ] && [ -d "$AGENT_LOOP_LOG_DIR" ] && [ ! -L "$AGENT_LOOP_LOG_DIR" ]; then
@@ -611,11 +663,27 @@ recovery_message() {
         echo "If issue #${SELECTED_ID:-?} was claimed, unassign it before it is re-selected." >&2
     fi
     if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
-        echo "Resume review with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
+        resume_command="'$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'"
+        echo "Resume review with: $resume_command" >&2
     fi
     if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
+        [ -n "$resume_command" ] || resume_command="'$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
         echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
     fi
+    # A stop that follows a hook carries that hook's last output, bounded the
+    # way the console tail is. Other stops would only repeat an unrelated log.
+    case "$category" in
+        hook-failed|hook-timeout|no-result/hook-ended-early|invalid-result|review-blocked|validation-red|worker-*|setup-failed|push-checkpoint-mismatch)
+            if [ -n "$LAST_HOOK_LOG" ] && [ -f "$LAST_HOOK_LOG" ]; then
+                hook_phase="$LAST_HOOK_PHASE"
+                hook_tail="$(bounded_log_tail "$LAST_HOOK_LOG" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '[]')"
+            fi
+            ;;
+    esac
+    emit_event stop --argjson issue "${SELECTED_ID:-null}" --arg category "$category" \
+        --arg message "$reason" --argjson resumable "$([ -n "$resume_command" ] && echo true || echo false)" \
+        --arg resumeCommand "$resume_command" --arg hookPhase "$hook_phase" \
+        --argjson hookTail "${hook_tail:-[]}"
 }
 
 print_batch_bail_command() {
@@ -646,7 +714,7 @@ update_run_state() {
 
 on_interrupt() {
     INTERRUPTED=true
-    recovery_message "Interrupted; no cleanup was attempted."
+    recovery_message "Interrupted; no cleanup was attempted." interrupted
     exit 130
 }
 
@@ -657,7 +725,7 @@ on_exit() {
     # in the worktree, with no recovery guidance. recovery_message sets the flag, so
     # the explicit `recovery_message; exit 1` sites never double-report.
     if [ "$rc" -ne 0 ] && [ "$RECOVERY_EMITTED" = false ] && [ -n "$ACTIVE_WORKTREE" ]; then
-        recovery_message "agent-loop aborted (exit $rc) with issue #${SELECTED_ID:-unknown} claimed."
+        recovery_message "agent-loop aborted (exit $rc) with issue #${SELECTED_ID:-unknown} claimed." internal-error
     fi
     # Every stop path ends here, including errexit aborts, so this is the one
     # place a failed batch issue can be parked. An interrupt is never parked.
@@ -665,6 +733,7 @@ on_exit() {
        declare -F park_failed_batch_issue_and_continue >/dev/null; then
         park_failed_batch_issue_and_continue
     fi
+    emit_batch_end "$rc"
 }
 trap on_interrupt INT TERM
 trap on_exit EXIT
@@ -1211,6 +1280,14 @@ require_issue_branch_head() {
 # mtimes. Best effort — recording never fails the phase it describes.
 record_phase_event() {
     local event="$1" phase="$2" seconds="${3:-}" status="${4:-}"
+    case "$event" in
+        start) emit_event phase_start --argjson issue "${SELECTED_ID:-null}" --arg phase "$phase" ;;
+        end)
+            emit_event phase_end --argjson issue "${SELECTED_ID:-null}" --arg phase "$phase" \
+                --argjson seconds "${seconds:-0}" --argjson exit "${status:-0}"
+            ;;
+        skipped) emit_event phase_skipped --argjson issue "${SELECTED_ID:-null}" --arg phase "$phase" ;;
+    esac
     [ -n "${AGENT_LOOP_LOG_DIR:-}" ] && [ -d "$AGENT_LOOP_LOG_DIR" ] || return 0
     jq -cn --arg event "$event" --arg phase "$phase" --argjson epoch "$(date +%s)" \
         --arg seconds "$seconds" --arg status "$status" \
@@ -1234,6 +1311,8 @@ run_bounded_hook() {
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0 started
     local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
     echo -e "${BLUE}▸${NC} $phase"
+    LAST_HOOK_LOG="$log_file"
+    LAST_HOOK_PHASE="$phase"
     started="$(date +%s)"
     record_phase_event start "$phase"
     # Bound the captured log to its trailing LOG_MAX_KB with `tail -c`, NOT with a
@@ -1393,7 +1472,7 @@ run_worker() {
         [ "$status" -eq 0 ] && return 0
 
         if worktree_has_work "$start_sha"; then
-            recovery_message "Worker exited $status after changing or committing work."
+            recovery_message "Worker exited $status after changing or committing work." worker-failed
             return "$status"
         fi
 
@@ -1405,7 +1484,7 @@ run_worker() {
             [ -n "$WORKER_FALLBACK_MODEL" ] && model="$WORKER_FALLBACK_MODEL"
         fi
         if [ "$retry" != true ] || [ "$attempt" -gt "$WORKER_RETRIES" ]; then
-            recovery_message "Worker exited $status without recoverable retry conditions."
+            recovery_message "Worker exited $status without recoverable retry conditions." worker-failed
             return "$status"
         fi
         echo -e "${YELLOW}›${NC} Retrying worker after bounded capacity/timeout failure (model: ${model:-default})"
@@ -1425,7 +1504,7 @@ handle_worker_bail() {
     echo "   The wrapper made no label or comment changes; apply the handoff's requests by hand."
     cd "$PROJECT_DIR"
     if [ "$SELECTED_ASSIGNED" = false ] && ! rollback_new_claim "$number"; then
-        recovery_message "Worker bailed on issue #$number but its claim could not be released."
+        recovery_message "Worker bailed on issue #$number but its claim could not be released." uncertain-mutation
         return 1
     fi
     if [ -n "$BATCH_STATE_FILE" ]; then
@@ -1435,7 +1514,7 @@ handle_worker_bail() {
             update+=(--classification "$classification")
         fi
         "${update[@]}" >/dev/null || {
-            recovery_message "Worker bailed on issue #$number but its batch entry could not be marked bailed."
+            recovery_message "Worker bailed on issue #$number but its batch entry could not be marked bailed." uncertain-mutation
             return 1
         }
     fi
@@ -1447,29 +1526,31 @@ handle_worker_bail() {
         echo "warning: bailed issue worktree cleanup failed and was preserved: $ACTIVE_WORKTREE" >&2
     fi
     ACTIVE_WORKTREE=""
+    emit_event bail --argjson issue "$number" --arg classification "$classification" \
+        --arg handoffPath "$AGENT_LOOP_HANDOFF_FILE"
     echo -e "${YELLOW}○${NC} Issue #$number bailed (agent-bail: ${classification:-unclassified}); continuing"
 }
 
 require_clean_committed_tree() {
     local phase="$1" start_sha="$2" status
     status="$(git status --porcelain)" || {
-        recovery_message "Could not inspect Git status after $phase."
+        recovery_message "Could not inspect Git status after $phase." internal-error
         return 1
     }
     if [ -n "$status" ]; then
-        recovery_message "$phase left a dirty worktree."
+        recovery_message "$phase left a dirty worktree." worktree-state
         return 1
     fi
     if ! require_issue_branch_head; then
-        recovery_message "$phase moved HEAD away from the issue branch."
+        recovery_message "$phase moved HEAD away from the issue branch." worktree-state
         return 1
     fi
     if [ "$(git rev-parse HEAD)" = "$start_sha" ]; then
-        recovery_message "$phase produced no local commit."
+        recovery_message "$phase produced no local commit." worker-no-commit
         return 1
     fi
     if ! git merge-base --is-ancestor "$start_sha" HEAD; then
-        recovery_message "$phase rewrote or dropped the starting history."
+        recovery_message "$phase rewrote or dropped the starting history." worktree-state
         return 1
     fi
 }
@@ -1553,7 +1634,7 @@ classify_review_result() {
 
     if [ "$before_sha" = "$after_sha" ]; then
         if [ -e "$outcome_file" ] || [ -L "$outcome_file" ]; then
-            recovery_message "$engine review wrote a fix classification without committing a fix."
+            recovery_message "$engine review wrote a fix classification without committing a fix." ledger-evidence
             return 1
         fi
         REVIEW_FIX_CLASSIFICATION=clean
@@ -1567,7 +1648,7 @@ classify_review_result() {
         return 0
     fi
     if [ ! -f "$outcome_file" ] || [ -L "$outcome_file" ] || [ ! -r "$outcome_file" ]; then
-        recovery_message "$engine review outcome must be a readable regular file."
+        recovery_message "$engine review outcome must be a readable regular file." ledger-evidence
         return 1
     fi
     classification="$(python3 -c '
@@ -1581,7 +1662,7 @@ if data not in values:
     raise SystemExit(2)
 sys.stdout.write(values[data])
 ' "$outcome_file")" || {
-        recovery_message "$engine review outcome must be exactly 'minor' or 'material'."
+        recovery_message "$engine review outcome must be exactly 'minor' or 'material'." ledger-evidence
         return 1
     }
     REVIEW_FIX_CLASSIFICATION="$classification"
@@ -1612,11 +1693,11 @@ require_review_outcome_signature() {
     local engine="$1" outcome_file="$2" expected_signature="$3" phase="$4"
     local actual_signature
     actual_signature="$(review_outcome_signature "$outcome_file")" || {
-        recovery_message "Could not re-read $engine review outcome $phase."
+        recovery_message "Could not re-read $engine review outcome $phase." ledger-evidence
         return 1
     }
     if [ "$actual_signature" != "$expected_signature" ]; then
-        recovery_message "$engine review outcome file changed $phase."
+        recovery_message "$engine review outcome file changed $phase." ledger-evidence
         return 1
     fi
 }
@@ -1627,7 +1708,7 @@ verify_v3_result_attestation() {
     local marker bodies_file allowed_heads_file historical_comment_ids_file
     case "$expected_signature" in
         file:*) result_hash="${expected_signature#file:}" ;;
-        *) recovery_message "$engine converged review result is missing."; return 1 ;;
+        *) recovery_message "$engine converged review result is missing." ledger-evidence; return 1 ;;
     esac
     before_sha="$(jq -r '.beforeSha' "$outcome_file")" || return 1
     after_sha="$(jq -r '.afterSha' "$outcome_file")" || return 1
@@ -1635,7 +1716,7 @@ verify_v3_result_attestation() {
         --engine "$slug" --round "$REVIEW_ROUNDS_USED" --base "$REVIEWED_BASE_SHA" \
         --before "$before_sha" --head "$after_sha" \
         --result-file "$outcome_file" >/dev/null || {
-        recovery_message "$engine converged review result is no longer schema-valid."
+        recovery_message "$engine converged review result is no longer schema-valid." ledger-evidence
         return 1
     }
     result_status="$(jq -r '.status' "$outcome_file")" || return 1
@@ -1644,7 +1725,7 @@ verify_v3_result_attestation() {
     verify_v3_committed_pass_evidence "$slug" "$REVIEW_ROUNDS_USED" \
         "$before_sha" "$after_sha" "$outcome_file" "$allowed_heads_file" \
         "$REVIEWED_BASE_SHA" "$historical_comment_ids_file" || {
-        recovery_message "$engine converged review result no longer has matching ledger evidence."
+        recovery_message "$engine converged review result no longer has matching ledger evidence." ledger-evidence
         return 1
     }
     if [ "$result_status" = clean ]; then
@@ -1657,7 +1738,7 @@ verify_v3_result_attestation() {
     bodies_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$REVIEW_ROUNDS_USED-attestations.txt"
     fetch_review_attestation_bodies "$bodies_file" || return 1
     grep -Fqx -- "$marker" "$bodies_file" || {
-        recovery_message "$engine converged review result lacks its exact authenticated PR attestation."
+        recovery_message "$engine converged review result lacks its exact authenticated PR attestation." ledger-evidence
         return 1
     }
 }
@@ -1665,7 +1746,7 @@ verify_v3_result_attestation() {
 verify_converged_review_outcomes() {
     if [ -z "${CONVERGED_CODEX_OUTCOME_FILE:-}" ] || \
        [ -z "${CONVERGED_CLAUDE_OUTCOME_FILE:-}" ]; then
-        recovery_message "Converged review outcome attestations are missing."
+        recovery_message "Converged review outcome attestations are missing." ledger-evidence
         return 1
     fi
     require_review_outcome_signature Codex "$CONVERGED_CODEX_OUTCOME_FILE" \
@@ -1688,7 +1769,7 @@ recover_v3_review_pass() {
     outcome_signature="$(review_outcome_signature "$outcome_file")" || return 1
     case "$outcome_signature" in
         file:*) ;;
-        *) recovery_message "$engine interrupted review result is incomplete."; return 1 ;;
+        *) recovery_message "$engine interrupted review result is incomplete." ledger-evidence; return 1 ;;
     esac
     REVIEW_ROUNDS_USED="$round"
     REVIEWED_BASE_SHA="$base_sha"
@@ -1707,22 +1788,20 @@ recover_v3_review_pass() {
     attest_review_head "after recovered $engine review validation in round $round" \
         "$base_sha" || boundary_status=$?
     if [ "$boundary_status" -ne 0 ]; then
-        recovery_message "PR head attestation failed after recovered $engine review validation in round $round."
+        recovery_message "PR head attestation failed after recovered $engine review validation in round $round." heads-misaligned
         return 1
     fi
     REVIEW_PASS_CLASSIFICATION="$classification"
     REVIEW_PASS_OUTCOME_FILE="$outcome_file"
     REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
+    emit_pass_result "$slug" "$round" "$classification" "$outcome_file"
 }
 
 # The last non-empty lines of a hook log, bounded like every other failure
 # tail. A review CLI prints its final message last, which is usually the only
 # place the reason a pass ended early is visible.
 print_hook_log_tail() {
-    local log_file="$1"
-    [ -f "$log_file" ] || return 0
-    grep -v '^[[:space:]]*$' "$log_file" 2>/dev/null | tail -n "$OUTPUT_MAX_LINES" | \
-        sed 's/^/   | /' >&2 || true
+    bounded_log_tail "$1" | sed 's/^/   | /' >&2 || true
 }
 
 # Thread identity, resolution, and comments, in a stable order. Comparing two
@@ -1753,6 +1832,19 @@ review_pass_left_no_trace() {
     bodies_file="${pre_bodies_file%.txt}-after.txt"
     fetch_review_attestation_bodies "$bodies_file" || return 1
     cmp -s "$bodies_file" "$pre_bodies_file"
+}
+
+emit_pass_result() {
+    local slug="$1" round="$2" classification="$3" outcome_file="$4"
+    local status="" before="" after=""
+    if [ -f "$outcome_file" ] && [ ! -L "$outcome_file" ]; then
+        status="$(jq -r '.status // empty' "$outcome_file" 2>/dev/null || true)"
+        before="$(jq -r '.beforeSha // empty' "$outcome_file" 2>/dev/null || true)"
+        after="$(jq -r '.afterSha // empty' "$outcome_file" 2>/dev/null || true)"
+    fi
+    emit_event pass_result --argjson issue "${SELECTED_ID:-null}" --argjson round "$round" \
+        --arg engine "$slug" --arg status "${status:-$classification}" \
+        --arg classification "$classification" --arg before "$before" --arg after "$after"
 }
 
 run_review_pass() {
@@ -1790,32 +1882,32 @@ run_review_pass() {
     if [ "$boundary_status" -eq 2 ]; then
         return 2
     elif [ "$boundary_status" -ne 0 ]; then
-        recovery_message "PR head attestation failed before $engine review round $round."
+        recovery_message "PR head attestation failed before $engine review round $round." heads-misaligned
         return 1
     fi
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         pre_pass_threads_file="$(fetch_local_review_threads)" || {
-            recovery_message "Could not snapshot review history before $engine round $round."
+            recovery_message "Could not snapshot review history before $engine round $round." internal-error
             return 1
         }
         historical_comment_ids_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-historical-comment-ids.json"
         jq '[.[].data.repository.pullRequest.reviewThreads.nodes[].comments.nodes[].databaseId | select(type == "number")] | unique | sort' \
             "$pre_pass_threads_file" > "$historical_comment_ids_file" || {
-            recovery_message "Could not pin review history before $engine round $round."
+            recovery_message "Could not pin review history before $engine round $round." internal-error
             return 1
         }
         historical_comment_ids_signature="$(review_outcome_signature "$historical_comment_ids_file")" || {
-            recovery_message "Could not seal review history before $engine round $round."
+            recovery_message "Could not seal review history before $engine round $round." internal-error
             return 1
         }
         export AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE="$historical_comment_ids_file"
         review_push_state_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-push-state"
         printf '%s\n' "$before_sha" > "$review_push_state_file" || {
-            recovery_message "Could not initialize the $engine review push checkpoint."
+            recovery_message "Could not initialize the $engine review push checkpoint." internal-error
             return 1
         }
         chmod 600 "$review_push_state_file" || {
-            recovery_message "Could not secure the $engine review push checkpoint."
+            recovery_message "Could not secure the $engine review push checkpoint." internal-error
             return 1
         }
         export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
@@ -1825,12 +1917,12 @@ run_review_pass() {
         # keep a normalized copy of its shape.
         pre_pass_ledger_shape_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-pre-pass-ledger.json"
         review_ledger_shape "$pre_pass_threads_file" > "$pre_pass_ledger_shape_file" || {
-            recovery_message "Could not snapshot the review ledger shape before $engine round $round."
+            recovery_message "Could not snapshot the review ledger shape before $engine round $round." internal-error
             return 1
         }
         pre_pass_bodies_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-pre-pass-bodies.txt"
         fetch_review_attestation_bodies "$pre_pass_bodies_file" || {
-            recovery_message "Could not snapshot PR comments before $engine round $round."
+            recovery_message "Could not snapshot PR comments before $engine round $round." internal-error
             return 1
         }
     else
@@ -1873,9 +1965,11 @@ run_review_pass() {
             echo -e "${YELLOW}›${NC} retry: hook-ended-without-result ($engine, round $round); the pass changed nothing"
             print_hook_log_tail "$hook_log"
             record_phase_event retry "$hook_description (round $round)"
+            emit_event retry --argjson issue "${SELECTED_ID:-null}" --argjson round "$round" \
+                --arg engine "$slug" --arg reason hook-ended-without-result
             cp -- "$hook_log" "${hook_log%.log}-attempt-1.log" 2>/dev/null || true
             printf '%s\n' "$before_sha" > "$review_push_state_file" || {
-                recovery_message "Could not reset the $engine review push checkpoint for its retry."
+                recovery_message "Could not reset the $engine review push checkpoint for its retry." internal-error
                 return 1
             }
             prepare_review_pass_budget || return 1
@@ -1890,20 +1984,20 @@ run_review_pass() {
             "after review round $round" || return 1
     fi
     status="$(git status --porcelain)" || {
-        recovery_message "Could not inspect Git status after the $hook_description in round $round."
+        recovery_message "Could not inspect Git status after the $hook_description in round $round." internal-error
         return 1
     }
     [ -z "$status" ] || {
-        recovery_message "$review_description left uncommitted findings/fixes in review round $round."
+        recovery_message "$review_description left uncommitted findings/fixes in review round $round." worktree-state
         return 1
     }
     require_issue_branch_head || {
-        recovery_message "$review_description moved HEAD away from the issue branch in review round $round."
+        recovery_message "$review_description moved HEAD away from the issue branch in review round $round." worktree-state
         return 1
     }
     after_sha="$(git rev-parse HEAD)"
     git merge-base --is-ancestor "$before_sha" "$after_sha" || {
-        recovery_message "$review_description rewrote or dropped previously reviewed commits in round $round."
+        recovery_message "$review_description rewrote or dropped previously reviewed commits in round $round." worktree-state
         return 1
     }
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
@@ -1922,7 +2016,7 @@ run_review_pass() {
                 recovery_message "$engine review did not produce a valid contract v3 result in round $round." \
                     no-result/hook-ended-early
             else
-                recovery_message "$engine review did not produce a valid contract v3 result in round $round."
+                recovery_message "$engine review did not produce a valid contract v3 result in round $round." invalid-result
             fi
             return 1
         }
@@ -1930,7 +2024,7 @@ run_review_pass() {
         result_hash="$(jq -r '.resultSha256' <<<"$result_json")"
         if [ "$result_status" = blocked ]; then
             blocker="$(jq -r '.blocker' <<<"$result_json")"
-            recovery_message "$engine review blocked in round $round: $blocker"
+            recovery_message "$engine review blocked in round $round: $blocker" review-blocked
             return 1
         fi
     fi
@@ -1940,7 +2034,7 @@ run_review_pass() {
     if [ "$boundary_status" -eq 2 ]; then
         return 2
     elif [ "$boundary_status" -ne 0 ]; then
-        recovery_message "$review_description did not leave local, remote, and PR heads aligned in round $round."
+        recovery_message "$review_description did not leave local, remote, and PR heads aligned in round $round." heads-misaligned
         return 1
     fi
     export AGENT_LOOP_PR_HEAD_SHA="$after_sha"
@@ -1949,20 +2043,20 @@ run_review_pass() {
         allowed_heads_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-heads.json"
         write_review_transition_heads "$before_sha" "$after_sha" \
             "$allowed_heads_file" || {
-            recovery_message "$engine review transition could not be pinned in round $round."
+            recovery_message "$engine review transition could not be pinned in round $round." ledger-evidence
             return 1
         }
         if [ "$classification" != clean ]; then
             verify_v3_committed_pass_evidence "$slug" "$round" "$before_sha" \
                 "$after_sha" "$result_file" "$allowed_heads_file" || {
-                recovery_message "$engine review result lacks matching resolved v3 finding dispositions in round $round."
+                recovery_message "$engine review result lacks matching resolved v3 finding dispositions in round $round." ledger-evidence
                 return 1
             }
         fi
         attest_v3_review_result "$slug" "$round" "$AGENT_LOOP_REVIEW_BASE_SHA" \
             "$before_sha" "$after_sha" "$result_file" "$result_hash" \
             "$allowed_heads_file" || {
-            recovery_message "$engine review result attestation failed in round $round."
+            recovery_message "$engine review result attestation failed in round $round." ledger-evidence
             return 1
         }
         outcome_file="$result_file"
@@ -1971,16 +2065,16 @@ run_review_pass() {
         classification="$REVIEW_FIX_CLASSIFICATION"
         if [ "$classification" = clean ]; then
             verify_clean_pass_attestation "$slug" "$round" "$before_sha" || {
-                recovery_message "$engine review did not publish the required clean-pass attestation in round $round."
+                recovery_message "$engine review did not publish the required clean-pass attestation in round $round." ledger-evidence
                 return 1
             }
         else
             verify_review_completion_attestation "$slug" "$round" "$before_sha" "$after_sha" || {
-                recovery_message "$engine review committed but posted no final-lane completion attestation in round $round."
+                recovery_message "$engine review committed but posted no final-lane completion attestation in round $round." ledger-evidence
                 return 1
             }
             verify_committed_pass_evidence "$slug" "$round" "$after_sha" || {
-                recovery_message "$engine review committed without a resolved same-round finding and structured fix disposition in round $round."
+                recovery_message "$engine review committed without a resolved same-round finding and structured fix disposition in round $round." ledger-evidence
                 return 1
             }
         fi
@@ -1991,7 +2085,7 @@ run_review_pass() {
             "$outcome_signature" "after attestation in round $round" || return 1
     else
         outcome_signature="$(review_outcome_signature "$outcome_file")" || {
-            recovery_message "Could not snapshot $engine review outcome in round $round."
+            recovery_message "Could not snapshot $engine review outcome in round $round." ledger-evidence
             return 1
         }
     fi
@@ -2007,13 +2101,14 @@ run_review_pass() {
     if [ "$boundary_status" -eq 2 ]; then
         return 2
     elif [ "$boundary_status" -ne 0 ]; then
-        recovery_message "PR head attestation failed after $engine review validation in round $round."
+        recovery_message "PR head attestation failed after $engine review validation in round $round." heads-misaligned
         return 1
     fi
 
     REVIEW_PASS_CLASSIFICATION="$classification"
     REVIEW_PASS_OUTCOME_FILE="$outcome_file"
     REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
+    emit_pass_result "$slug" "$round" "$classification" "$outcome_file"
 }
 
 require_fast_forward_base_advance() {
@@ -2021,7 +2116,7 @@ require_fast_forward_base_advance() {
     fetch_base || return 1
     latest_base="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" || return 1
     if ! git merge-base --is-ancestor "$reviewed_base" "$latest_base"; then
-        recovery_message "Base branch moved non-fast-forward $phase."
+        recovery_message "Base branch moved non-fast-forward $phase." base-diverged
         return 1
     fi
 }
@@ -2076,11 +2171,11 @@ run_review_convergence() {
             echo -e "${BLUE}▸${NC} Integrating fresh base before review round $round"
             if ! git merge --no-edit "$round_base_sha"; then
                 git merge --abort >/dev/null 2>&1 || true
-                recovery_message "Fresh-base merge conflicted before review round $round."
+                recovery_message "Fresh-base merge conflicted before review round $round." merge-conflict
                 return 1
             fi
             inspect_publication_diff "$round_base_sha" || {
-                recovery_message "Publication diff inspection failed before review round $round."
+                recovery_message "Publication diff inspection failed before review round $round." publication-diff
                 return 1
             }
             run_validation "fresh-base-round-$round" true || {
@@ -2089,13 +2184,13 @@ run_review_convergence() {
             }
             push_review_head "after fresh-base integration for round $round" \
                 "$round_base_sha" || {
-                recovery_message "Could not publish fresh-base integration before review round $round."
+                recovery_message "Could not publish fresh-base integration before review round $round." uncertain-mutation
                 return 1
             }
         fi
         if [ "$resume_engine" = claude ]; then
             recover_v3_review_pass Codex codex "$round" "$round_base_sha" || {
-                recovery_message "Could not recover the completed Codex leg for final-round continuation."
+                recovery_message "Could not recover the completed Codex leg for final-round continuation." ledger-evidence
                 return 1
             }
             echo "   Recovered authenticated Codex evidence; resuming the interrupted Claude leg"
@@ -2103,7 +2198,7 @@ run_review_convergence() {
         else
             update_run_state reviewing "$round" "$round_base_sha" "$(git rev-parse HEAD)" \
                 "" "" codex || {
-                recovery_message "Could not checkpoint review round $round."
+                recovery_message "Could not checkpoint review round $round." checkpoint-failed
                 return 1
             }
             pass_status=0
@@ -2119,7 +2214,7 @@ run_review_convergence() {
                 update_run_state reviewing "$round" \
                     "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
                     "" "" codex || {
-                    recovery_message "Could not checkpoint the next review round."
+                    recovery_message "Could not checkpoint the next review round." checkpoint-failed
                     return 1
                 }
                 continue
@@ -2132,7 +2227,7 @@ run_review_convergence() {
         codex_outcome_signature="$REVIEW_PASS_OUTCOME_SIGNATURE"
         update_run_state reviewing "$round" "$round_base_sha" \
             "$(git rev-parse HEAD)" "" "" claude || {
-            recovery_message "Could not checkpoint the Claude leg after Codex completed round $round."
+            recovery_message "Could not checkpoint the Claude leg after Codex completed round $round." checkpoint-failed
             return 1
         }
 
@@ -2148,7 +2243,7 @@ run_review_convergence() {
             update_run_state reviewing "$round" \
                 "$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")" "$(git rev-parse HEAD)" \
                 "" "" codex || {
-                recovery_message "Could not checkpoint the next review round."
+                recovery_message "Could not checkpoint the next review round." checkpoint-failed
                 return 1
             }
             continue
@@ -2167,7 +2262,7 @@ run_review_convergence() {
         fetch_base
         latest_base_sha="$(git rev-parse "$AGENT_LOOP_REVIEW_BASE")"
         if ! git merge-base --is-ancestor "$round_base_sha" "$latest_base_sha"; then
-            recovery_message "Base branch moved non-fast-forward during review round $round."
+            recovery_message "Base branch moved non-fast-forward during review round $round." base-diverged
             return 1
         fi
 
@@ -2175,7 +2270,7 @@ run_review_convergence() {
            [ "$claude_classification" != material ] && \
            [ "$latest_base_sha" = "$round_base_sha" ]; then
             verify_local_review_threads || {
-                recovery_message "Local review threads are incomplete after review round $round."
+                recovery_message "Local review threads are incomplete after review round $round." ledger-evidence
                 return 1
             }
             REVIEWED_BASE_SHA="$AGENT_LOOP_REVIEW_BASE_SHA"
@@ -2187,7 +2282,7 @@ run_review_convergence() {
                 "$(git rev-parse HEAD)" \
                 "${codex_outcome_signature#file:}" \
                 "${claude_outcome_signature#file:}" || {
-                recovery_message "Could not checkpoint converged review state."
+                recovery_message "Could not checkpoint converged review state." checkpoint-failed
                 return 1
             }
             unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_ENGINE AGENT_LOOP_REVIEW_ROUND \
@@ -2206,7 +2301,7 @@ run_review_convergence() {
         round=$((round + 1))
         update_run_state reviewing "$round" "$latest_base_sha" \
             "$(git rev-parse HEAD)" "" "" codex || {
-            recovery_message "Could not checkpoint the next review round."
+            recovery_message "Could not checkpoint the next review round." checkpoint-failed
             return 1
         }
     done
@@ -2671,7 +2766,7 @@ finalize_pr() {
         echo "Closes #$AGENT_LOOP_ISSUE_ID"
     } > "$body_file"
     gh pr edit "$AGENT_LOOP_PR_NUMBER" --body-file "$body_file" || {
-        recovery_message "Could not update the PR body; remote PR mutation state is uncertain."
+        recovery_message "Could not update the PR body; remote PR mutation state is uncertain." uncertain-mutation
         return 1
     }
     attest_review_head "immediately before marking ready" "$REVIEWED_BASE_SHA" || return 1
@@ -2679,7 +2774,7 @@ finalize_pr() {
     verify_converged_review_outcomes || return 1
     update_run_state finalizing "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
         "$final_sha" || {
-        recovery_message "Could not checkpoint the finalizing review state."
+        recovery_message "Could not checkpoint the finalizing review state." checkpoint-failed
         return 1
     }
     if ! gh pr ready "$AGENT_LOOP_PR_NUMBER"; then
@@ -2714,11 +2809,12 @@ finalize_pr() {
             "finalized run-state checkpoint failed" || return 1
         update_run_state finalizing "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
             "$final_sha" || {
-            recovery_message "Could not restore a resumable finalizing checkpoint after rollback."
+            recovery_message "Could not restore a resumable finalizing checkpoint after rollback." checkpoint-failed
             return 1
         }
         return 1
     fi
+    emit_event pr_ready --argjson issue "$AGENT_LOOP_ISSUE_ID" --argjson pr "$AGENT_LOOP_PR_NUMBER" --arg head "$final_sha"
     echo -e "${GREEN}✓${NC} Review converged; PR ready: $AGENT_LOOP_PR_URL ($final_sha)"
 }
 
@@ -2775,6 +2871,7 @@ recover_stranded_review_commits() {
     git update-ref "$ref" "$current_head" || return 2
     git reset --hard --quiet "$state_head" || return 2
     STRANDED_RESCUE_REF="$ref"
+    emit_event recovered --argjson issue "${SELECTED_ID:-null}" --arg kind stranded-review-commits --arg ref "$ref"
     echo "   recovered: stranded-review-commits -> $ref (${current_head:0:12}); reset to checkpoint ${state_head:0:12}"
 }
 
@@ -2789,13 +2886,16 @@ resume_review_run() {
     local resume_same_round=false
     local finalizing_head_drift=false
     SELECTED_ID="$(jq -r '.issue' <<<"$RESUME_STATE_JSON")"
+    echo -e "${CYAN}▶${NC} Issue #$SELECTED_ID (resumed, round $(jq -r '.round' <<<"$RESUME_STATE_JSON"))"
+    emit_event issue_start --argjson issue "$SELECTED_ID" --argjson resumed true \
+        --argjson round "$(jq -r '.round' <<<"$RESUME_STATE_JSON")" --arg runState "$AGENT_LOOP_RUN_STATE_FILE"
     issue_json_value="$(issue_json "$SELECTED_ID")" || {
-        recovery_message "Could not reload issue #$SELECTED_ID for review recovery."
+        recovery_message "Could not reload issue #$SELECTED_ID for review recovery." issue-changed
         return 1
     }
     INCLUDE_ASSIGNED=true
     issue_is_selectable "$SELECTED_ID" "$issue_json_value" || {
-        recovery_message "Issue #$SELECTED_ID is no longer open, agent-labeled, and assigned only to the current user."
+        recovery_message "Issue #$SELECTED_ID is no longer open, agent-labeled, and assigned only to the current user." issue-changed
         return 1
     }
     set_selected_issue_context "$issue_json_value" || return 1
@@ -2803,7 +2903,7 @@ resume_review_run() {
     issue_body_sha256="$(printf '%s' "$SELECTED_BODY" | sha256_text)" || return 1
     if [ "$issue_title_sha256" != "$(jq -r '.issueTitleSha256' <<<"$RESUME_STATE_JSON")" ] || \
        [ "$issue_body_sha256" != "$(jq -r '.issueBodySha256' <<<"$RESUME_STATE_JSON")" ]; then
-        recovery_message "Issue title or body changed since the review checkpoint."
+        recovery_message "Issue title or body changed since the review checkpoint." issue-changed
         return 1
     fi
     SELECTED_ASSIGNED=true
@@ -2818,31 +2918,31 @@ resume_review_run() {
     state_round="$(jq -r '.round' <<<"$RESUME_STATE_JSON")"
     state_review_engine="$(jq -r '.reviewEngine // empty' <<<"$RESUME_STATE_JSON")"
     if [ ! -d "$ACTIVE_WORKTREE" ] || [ -L "$ACTIVE_WORKTREE" ]; then
-        recovery_message "Recorded recovery worktree is unavailable or unsafe."
+        recovery_message "Recorded recovery worktree is unavailable or unsafe." worktree-state
         return 1
     fi
     if [ ! -d "$AGENT_LOOP_LOG_DIR" ] || [ -L "$AGENT_LOOP_LOG_DIR" ]; then
-        recovery_message "Recorded recovery log directory is unavailable or unsafe."
+        recovery_message "Recorded recovery log directory is unavailable or unsafe." worktree-state
         return 1
     fi
     write_wrapper_pid
     branch_status="$(git -C "$ACTIVE_WORKTREE" status --porcelain)" || return 1
     [ -z "$branch_status" ] || {
-        recovery_message "Recorded recovery worktree is dirty."
+        recovery_message "Recorded recovery worktree is dirty." worktree-state
         return 1
     }
     [ "$(git -C "$ACTIVE_WORKTREE" branch --show-current)" = "$AGENT_LOOP_BRANCH" ] || {
-        recovery_message "Recorded recovery worktree is not on its issue branch."
+        recovery_message "Recorded recovery worktree is not on its issue branch." worktree-state
         return 1
     }
     current_head="$(git -C "$ACTIVE_WORKTREE" rev-parse HEAD)" || return 1
     git -C "$ACTIVE_WORKTREE" merge-base --is-ancestor "$state_head" "$current_head" || {
-        recovery_message "Recovery worktree no longer contains its checkpointed head."
+        recovery_message "Recovery worktree no longer contains its checkpointed head." worktree-state
         return 1
     }
     cd "$ACTIVE_WORKTREE"
     require_origin_identity || {
-        recovery_message "Recovery worktree origin identity does not match the run."
+        recovery_message "Recovery worktree origin identity does not match the run." worktree-state
         return 1
     }
     export AGENT_LOOP_ISSUE_ID="$SELECTED_ID"
@@ -2869,7 +2969,7 @@ resume_review_run() {
     checkpoint_base="$(jq -r '.baseSha' <<<"$RESUME_STATE_JSON")"
     if [ "$state_phase" = finalized ]; then
         [ "$current_head" = "$state_head" ] || {
-            recovery_message "Finalized recovery worktree head no longer matches its exact checkpoint."
+            recovery_message "Finalized recovery worktree head no longer matches its exact checkpoint." heads-misaligned
             return 1
         }
         REVIEW_ROUNDS_USED="$state_round"
@@ -2880,26 +2980,26 @@ resume_review_run() {
         CONVERGED_CLAUDE_OUTCOME_SIGNATURE="file:$(jq -r '.claudeResultSha256' <<<"$RESUME_STATE_JSON")"
         attest_ready_pr_head "$state_head" "$checkpoint_base" \
             "before finalized batch recovery" || {
-            recovery_message "Finalized PR no longer matches its exact ready checkpoint."
+            recovery_message "Finalized PR no longer matches its exact ready checkpoint." heads-misaligned
             return 1
         }
         verify_converged_review_outcomes || return 1
         verify_local_review_threads || return 1
         verify_issue_for_publication "$SELECTED_ID" "$AGENT_LOOP_PR_NUMBER" || {
-            recovery_message "Issue requirements or readiness changed after the finalized checkpoint."
+            recovery_message "Issue requirements or readiness changed after the finalized checkpoint." issue-changed
             return 1
         }
         inspect_publication_diff "$checkpoint_base" || {
-            recovery_message "Finalized reviewed diff inspection failed during batch recovery."
+            recovery_message "Finalized reviewed diff inspection failed during batch recovery." publication-diff
             return 1
         }
         run_validation "finalized-batch-recovery" false final || {
-            recovery_message "Finalized reviewed-head validation failed during batch recovery."
+            recovery_message "Finalized reviewed-head validation failed during batch recovery." validation-red
             return 1
         }
         attest_ready_pr_head "$state_head" "$checkpoint_base" \
             "after finalized batch recovery validation" || {
-            recovery_message "Finalized PR changed during batch recovery validation."
+            recovery_message "Finalized PR changed during batch recovery validation." heads-misaligned
             return 1
         }
         cd "$PROJECT_DIR"
@@ -2936,7 +3036,7 @@ resume_review_run() {
         if [ "$attestation_status" -eq 0 ]; then
             restart_after_interrupted_pass=true
         elif [ "$attestation_status" -ne 1 ]; then
-            recovery_message "Could not reconcile the interrupted Codex pass attestation."
+            recovery_message "Could not reconcile the interrupted Codex pass attestation." ledger-evidence
             return 1
         fi
     fi
@@ -2968,13 +3068,13 @@ resume_review_run() {
     fi
     if [ "$state_phase" = finalizing ]; then
         pr_draft_state="$(gh pr view "$AGENT_LOOP_PR_NUMBER" --json isDraft --jq '.isDraft')" || {
-            recovery_message "Could not inspect the finalizing PR state."
+            recovery_message "Could not inspect the finalizing PR state." uncertain-mutation
             return 1
         }
         case "$pr_draft_state" in
             true) ;;
             false) ready_finalization=true ;;
-            *) recovery_message "Finalizing PR draft state is invalid."; return 1 ;;
+            *) recovery_message "Finalizing PR draft state is invalid." uncertain-mutation; return 1 ;;
         esac
         if [ "$current_head" != "$state_head" ]; then
             finalizing_head_drift=true
@@ -3000,7 +3100,7 @@ resume_review_run() {
         fetch_base || return 1
         latest_base="$(git rev-parse "$ISSUE_BASE_REMOTE_REF")" || return 1
         git merge-base --is-ancestor "$checkpoint_base" "$latest_base" || {
-            recovery_message "PR base moved non-fast-forward since the recovery checkpoint."
+            recovery_message "PR base moved non-fast-forward since the recovery checkpoint." base-diverged
             return 1
         }
         if [ "$state_phase" = converged ] || [ "$state_phase" = finalizing ]; then
@@ -3019,7 +3119,7 @@ resume_review_run() {
         state_phase=reviewing
         update_run_state reviewing "$state_round" "$latest_base" "$current_head" \
             "" "" codex || {
-            recovery_message "Could not checkpoint the resumed review round."
+            recovery_message "Could not checkpoint the resumed review round." checkpoint-failed
             return 1
         }
         echo "   Base advanced since the checkpoint; the resumed round will integrate and review it."
@@ -3029,7 +3129,7 @@ resume_review_run() {
                 "ready PR boundary changed during finalization recovery" || return 1
             ready_finalization=false
         fi
-        recovery_message "Draft PR state does not match the recovery checkpoint."
+        recovery_message "Draft PR state does not match the recovery checkpoint." heads-misaligned
         return 1
     fi
     if [ "$finalizing_head_drift" = true ] && [ "$state_phase" = finalizing ]; then
@@ -3037,7 +3137,7 @@ resume_review_run() {
         state_phase=reviewing
         update_run_state reviewing "$state_round" "$checkpoint_base" "$current_head" \
             "" "" codex || {
-            recovery_message "Could not checkpoint review restart after finalizing head drift."
+            recovery_message "Could not checkpoint review restart after finalizing head drift." checkpoint-failed
             return 1
         }
         echo "   PR head moved since finalization; the resumed round will review the new draft head."
@@ -3046,7 +3146,7 @@ resume_review_run() {
         state_phase=reviewing
         update_run_state reviewing "$state_round" "$checkpoint_base" "$current_head" \
             "" "" codex || {
-            recovery_message "Could not checkpoint review restart after converged head drift."
+            recovery_message "Could not checkpoint review restart after converged head drift." checkpoint-failed
             return 1
         }
         echo "   PR head moved since convergence; the resumed round will review the new draft head."
@@ -3076,7 +3176,7 @@ resume_review_run() {
             restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
                 "recovered final diff inspection failed" || return 1
         fi
-        recovery_message "Final reviewed diff inspection failed during recovery."
+        recovery_message "Final reviewed diff inspection failed during recovery." publication-diff
         return 1
     }
     run_validation "final-reviewed-head" false final || {
@@ -3092,12 +3192,12 @@ resume_review_run() {
             "after recovered reviewed-head validation" || {
             restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
                 "ready reviewed-head attestation failed during recovery" || return 1
-            recovery_message "Ready reviewed-head attestation failed during recovery."
+            recovery_message "Ready reviewed-head attestation failed during recovery." heads-misaligned
             return 1
         }
     else
         attest_review_head "after recovered reviewed-head validation" "$REVIEWED_BASE_SHA" || {
-            recovery_message "Final reviewed-head attestation failed during recovery."
+            recovery_message "Final reviewed-head attestation failed during recovery." heads-misaligned
             return 1
         }
     fi
@@ -3120,7 +3220,7 @@ resume_review_run() {
             restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
                 "issue readiness changed during recovered finalization" || return 1
         fi
-        recovery_message "Issue requirements or readiness changed before recovered publication."
+        recovery_message "Issue requirements or readiness changed before recovered publication." issue-changed
         return 1
     }
     if [ "$ready_finalization" = true ]; then
@@ -3130,12 +3230,13 @@ resume_review_run() {
                 "recovered finalized checkpoint failed" || return 1
             update_run_state finalizing "$REVIEW_ROUNDS_USED" "$REVIEWED_BASE_SHA" \
                 "$(git rev-parse HEAD)" || {
-                recovery_message "Could not restore a resumable finalizing checkpoint after recovered rollback."
+                recovery_message "Could not restore a resumable finalizing checkpoint after recovered rollback." checkpoint-failed
                 return 1
             }
-            recovery_message "Could not complete the recovered finalized checkpoint."
+            recovery_message "Could not complete the recovered finalized checkpoint." checkpoint-failed
             return 1
         }
+        emit_event pr_ready --argjson issue "$SELECTED_ID" --argjson pr "$AGENT_LOOP_PR_NUMBER" --arg head "$(git rev-parse HEAD)"
         echo -e "${GREEN}✓${NC} Recovered ready PR finalization: $AGENT_LOOP_PR_URL ($(git rev-parse HEAD))"
     else
         finalize_pr
@@ -3306,6 +3407,8 @@ park_failed_batch_issue_and_continue() {
         echo "could not record batch issue #$issue as parked" >&2
         return 0
     }
+    emit_event parked --argjson issue "$issue" --arg category "$category" \
+        --arg resumeCommand "'$SCRIPT_DIR/agent-loop.sh' --resume-run '$child'"
     echo -e "${YELLOW}⏸${NC} Parked batch issue #$issue ($category); resume it later with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$child'"
     remaining=$((MAX_ITERATIONS - ITERATION))
     if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then
@@ -3319,9 +3422,15 @@ park_failed_batch_issue_and_continue() {
     cd "$PROJECT_DIR" || exit 1
     if [ "$remaining" -le 0 ]; then
         batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
-        echo -e "${YELLOW}⏸${NC} Ordered batch paused at the $MAX_ITERATIONS-issue iteration cap with parked issue(s):"
-        print_parked_batch_entries "$batch_json"
-        echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+        emit_batch_end 3
+        if [ "$(jq -r '.cursor' <<<"$batch_json")" -ge "$(jq -r '.issues | length' <<<"$batch_json")" ]; then
+            echo -e "${YELLOW}⏸${NC} Ordered batch reached its end with parked issue(s):"
+            print_parked_batch_entries "$batch_json"
+        else
+            echo -e "${YELLOW}⏸${NC} Ordered batch paused at the $MAX_ITERATIONS-issue iteration cap with parked issue(s):"
+            print_parked_batch_entries "$batch_json"
+            echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+        fi
         exit 3
     fi
     echo "   Continuing the batch with the next issue"
@@ -3355,6 +3464,9 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
     case "$BATCH_STATE_FILE" in "$LOG_ROOT"/*) ;; *) echo "batch state is outside configured log_root" >&2; exit 1 ;; esac
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+    EVENTS_FILE="${BATCH_STATE_FILE%.json}-events.jsonl"
+    emit_event batch_start --argjson issues "$(jq -c '.allowlist' <<<"$batch_json")" \
+        --arg configSha256 "$( [ -f "$CONFIG_FILE" ] && sha256_text < "$CONFIG_FILE" || true)" --argjson resumed true
     [ "$(jq -r '.repo' <<<"$batch_json")" = "$GH_REPO" ] || { echo "batch state repository mismatch" >&2; exit 1; }
     [ "$(jq -r '.baseBranch' <<<"$batch_json")" = "$BASE_BRANCH" ] || { echo "batch state base branch mismatch" >&2; exit 1; }
     batch_cursor="$(jq -r '.cursor' <<<"$batch_json")"
@@ -3364,7 +3476,7 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
         batch_issue="$(jq -r --argjson cursor "$batch_cursor" '.issues[$cursor].issue' <<<"$batch_json")"
         child_state="$(jq -r --argjson cursor "$batch_cursor" '.issues[$cursor].childRunState // empty' <<<"$batch_json")"
         [ -n "$child_state" ] || {
-            recovery_message "Batch issue #$batch_issue is active without a child review checkpoint; inspect its worktree, remote branch, PR, and ledger before explicitly bailing it."
+            recovery_message "Batch issue #$batch_issue is active without a child review checkpoint; inspect its worktree, remote branch, PR, and ledger before explicitly bailing it." uncertain-mutation
             echo "Explicit bail command: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$batch_issue' --expected-status active --status bailed" >&2
             exit 1
         }
@@ -3377,12 +3489,12 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
         [ "$(jq -r '.issue' <<<"$child_json")" = "$batch_issue" ] && \
         [ "$(jq -r '.repo' <<<"$child_json")" = "$GH_REPO" ] && \
         [ "$child_base_ok" = true ] || {
-            recovery_message "Batch issue #$batch_issue does not match its child review checkpoint."
+            recovery_message "Batch issue #$batch_issue does not match its child review checkpoint." checkpoint-failed
             exit 1
         }
         child_worktree="$(jq -r '.worktree' <<<"$child_json")"
         rm -f -- "$(dirname -- "$child_state")/last-stop"
-        AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" \
+        AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" AGENT_LOOP_EVENTS_FILE="$EVENTS_FILE" \
             "$SCRIPT_DIR/agent-loop.sh" --resume-run "$child_state" || {
             recovery_message "Current batch issue #$batch_issue did not resume to a safely finalized state." child-resume-failed
             exit 1
@@ -3415,7 +3527,17 @@ elif [[ "$ISSUE_ALLOWLIST" == *,* ]] && [ "$DRY_RUN" = false ] && \
         --issues "$ISSUE_ALLOWLIST" >/dev/null || exit 1
     acquire_batch_lock "$BATCH_STATE_FILE" || exit 1
     echo "   Batch recovery state: $BATCH_STATE_FILE"
+    EVENTS_FILE="${BATCH_STATE_FILE%.json}-events.jsonl"
+    emit_event batch_start --argjson issues "[$ISSUE_ALLOWLIST]" \
+        --arg configSha256 "$( [ -f "$CONFIG_FILE" ] && sha256_text < "$CONFIG_FILE" || true)" --argjson resumed false
+    echo "   Batch events: $EVENTS_FILE"
     warn_prose_batch_dependencies
+fi
+
+if [ -z "$EVENTS_FILE" ] && [ "$DRY_RUN" = false ] && [ ! -L "$LOG_ROOT" ]; then
+    mkdir -p "$LOG_ROOT"
+    chmod 700 "$LOG_ROOT"
+    EVENTS_FILE="$LOG_ROOT/${REPO_NAME//[^A-Za-z0-9._-]/-}-run-$RUN_TAG-events.jsonl"
 fi
 
 echo -e "${CYAN}→${NC} agent-loop repository: $PROJECT_DIR"
@@ -3453,6 +3575,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
                 --issue "$SELECTED_ID" --expected-status pending --status parked \
                 --stop-category blocked-by-parked >/dev/null || exit 1
+            emit_event parked --argjson issue "$SELECTED_ID" --arg category blocked-by-parked --arg resumeCommand ""
             echo -e "${YELLOW}⏸${NC} Issue #$SELECTED_ID depends on parked issue #$parked_dependency; parked as blocked-by-parked"
             PROCESSED_ISSUES+=("$SELECTED_ID")
             continue
@@ -3469,6 +3592,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     proposed_log_dir="$LOG_ROOT/$safe_repo-issue-$SELECTED_ID-$RUN_TAG"
 
     echo -e "${CYAN}▶${NC} Issue #$SELECTED_ID ($ITERATION/$MAX_ITERATIONS)"
+    emit_event issue_start --argjson issue "$SELECTED_ID" --argjson index "$ITERATION" --argjson resumed false
     dependency_status=0
     if [ "$DEPENDENCY_GATE" = batch-stack ] && [ -n "$BATCH_STATE_FILE" ]; then
         plan_batch_stack "$SELECTED_BODY" || dependency_status=$?
@@ -3488,6 +3612,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
                 python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
                     --issue "$SELECTED_ID" --expected-status pending --status parked \
                     --stop-category blocked-by-dependency >/dev/null || exit 1
+                emit_event parked --argjson issue "$SELECTED_ID" --arg category blocked-by-dependency --arg resumeCommand ""
                 echo -e "${YELLOW}⏸${NC} Issue #$SELECTED_ID parked as blocked-by-dependency; it was not started"
                 continue
             fi
@@ -3538,7 +3663,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     claim_issue "$SELECTED_ID" || claim_status=$?
     if [ "$claim_status" -ne 0 ]; then
         if [ -n "$BATCH_STATE_FILE" ]; then
-            recovery_message "Batch claim for issue #$SELECTED_ID did not complete safely."
+            recovery_message "Batch claim for issue #$SELECTED_ID did not complete safely." uncertain-mutation
             exit 1
         fi
         echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID could not be claimed; skipping"
@@ -3567,7 +3692,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         rmdir "$proposed_log_dir" 2>/dev/null || true
         ACTIVE_WORKTREE=""
         if [ -n "$BATCH_STATE_FILE" ]; then
-            recovery_message "Batch issue #$SELECTED_ID lost eligibility after claim verification; explicitly bail it before continuing."
+            recovery_message "Batch issue #$SELECTED_ID lost eligibility after claim verification; explicitly bail it before continuing." issue-changed
             print_batch_bail_command "$SELECTED_ID" active
             exit 1
         fi
@@ -3585,7 +3710,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     worktree_start_ref="$BASE_REMOTE_REF"
     if [ -n "$STACK_PARENT_ISSUE" ]; then
         fetch_base || {
-            recovery_message "Could not fetch stack parent branch $ISSUE_BASE_BRANCH for issue #$SELECTED_ID."
+            recovery_message "Could not fetch stack parent branch $ISSUE_BASE_BRANCH for issue #$SELECTED_ID." dependency-blocked
             exit 1
         }
         git merge-base --is-ancestor "$STACK_PARENT_HEAD" "$ISSUE_BASE_REMOTE_REF" || {
@@ -3599,7 +3724,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
             --issue "$SELECTED_ID" --expected-status active --status active \
             --stacked-on "$STACK_PARENT_ISSUE" >/dev/null || {
-            recovery_message "Could not record the stack for issue #$SELECTED_ID in batch state."
+            recovery_message "Could not record the stack for issue #$SELECTED_ID in batch state." checkpoint-failed
             exit 1
         }
     fi
@@ -3619,14 +3744,14 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     start_sha="$(git rev-parse HEAD)"
     if [ -n "$SETUP_HOOK" ]; then
         run_bounded_hook "isolated dependency bootstrap" "$SETUP_HOOK" "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/setup.log" || {
-            recovery_message "Setup hook failed."
+            recovery_message "Setup hook failed." setup-failed
             exit 1
         }
-        setup_status="$(git status --porcelain)" || { recovery_message "Could not inspect Git status after setup."; exit 1; }
-        [ -z "$setup_status" ] || { recovery_message "Setup hook left Git-visible worktree changes."; exit 1; }
-        require_issue_branch_head || { recovery_message "Setup hook moved HEAD away from the issue branch."; exit 1; }
-        setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup."; exit 1; }
-        [ "$setup_after_sha" = "$start_sha" ] || { recovery_message "Setup hook changed HEAD; setup hooks must not commit."; exit 1; }
+        setup_status="$(git status --porcelain)" || { recovery_message "Could not inspect Git status after setup." setup-failed; exit 1; }
+        [ -z "$setup_status" ] || { recovery_message "Setup hook left Git-visible worktree changes." setup-failed; exit 1; }
+        require_issue_branch_head || { recovery_message "Setup hook moved HEAD away from the issue branch." setup-failed; exit 1; }
+        setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup." setup-failed; exit 1; }
+        [ "$setup_after_sha" = "$start_sha" ] || { recovery_message "Setup hook changed HEAD; setup hooks must not commit." setup-failed; exit 1; }
     fi
 
     run_worker "$start_sha" || exit 1
@@ -3636,33 +3761,33 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
     require_clean_committed_tree "Worker" "$start_sha" || exit 1
-    run_validation "worker" || { recovery_message "Worker validation failed."; exit 1; }
+    run_validation "worker" || { recovery_message "Worker validation failed." validation-red; exit 1; }
 
     echo -e "${BLUE}▸${NC} Initial fresh-base integration"
     fetch_base
     initial_base_sha="$(git rev-parse "$ISSUE_BASE_REMOTE_REF")"
     if ! git merge --no-edit "$initial_base_sha"; then
         git merge --abort >/dev/null 2>&1 || true
-        recovery_message "Initial fresh-base merge conflicted; original commits were preserved."
+        recovery_message "Initial fresh-base merge conflicted; original commits were preserved." merge-conflict
         exit 1
     fi
     inspect_publication_diff "$initial_base_sha" || {
-        recovery_message "Initial publication diff inspection failed."
+        recovery_message "Initial publication diff inspection failed." publication-diff
         exit 1
     }
     run_validation "initial-fresh-base" || {
-        recovery_message "Initial fresh-base validation failed."
+        recovery_message "Initial fresh-base validation failed." validation-red
         exit 1
     }
 
     publication_readiness_status=0
     verify_issue_for_publication "$SELECTED_ID" || publication_readiness_status=$?
     if [ "$publication_readiness_status" -ne 0 ]; then
-        recovery_message "Issue requirements or readiness changed before draft PR creation; completed work was preserved and the claim was retained."
+        recovery_message "Issue requirements or readiness changed before draft PR creation; completed work was preserved and the claim was retained." issue-changed
         exit 1
     fi
     if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-        recovery_message "Remote branch existed before draft PR creation."
+        recovery_message "Remote branch existed before draft PR creation." heads-misaligned
         exit 1
     fi
     initial_pr_sha="$(git rev-parse HEAD)"
@@ -3682,18 +3807,18 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             --head-sha "$initial_pr_sha" \
             --review-deadline-epoch "$REVIEW_DEADLINE_EPOCH" \
             --review-max-rounds "$REVIEW_MAX_ROUNDS" >/dev/null || {
-            recovery_message "Could not create the private review run-state checkpoint."
+            recovery_message "Could not create the private review run-state checkpoint." checkpoint-failed
             exit 1
         }
         acquire_run_lock "$AGENT_LOOP_LOG_DIR" || {
-            recovery_message "Could not acquire the private review run lock."
+            recovery_message "Could not acquire the private review run lock." checkpoint-failed
             exit 1
         }
         if [ -n "$BATCH_STATE_FILE" ]; then
             python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
                 --issue "$SELECTED_ID" --expected-status active --status active \
                 --child-run-state "$AGENT_LOOP_RUN_STATE_FILE" >/dev/null || {
-                recovery_message "Could not attach the child review checkpoint to batch state."
+                recovery_message "Could not attach the child review checkpoint to batch state." checkpoint-failed
                 exit 1
             }
         fi
@@ -3713,7 +3838,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     run_review_convergence 1
 
     inspect_publication_diff "$REVIEWED_BASE_SHA" || {
-        recovery_message "Final reviewed diff inspection failed."
+        recovery_message "Final reviewed diff inspection failed." publication-diff
         exit 1
     }
     run_validation "final-reviewed-head" false final || {
@@ -3721,7 +3846,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         exit 1
     }
     attest_review_head "after final reviewed-head validation" "$REVIEWED_BASE_SHA" || {
-        recovery_message "Final reviewed-head attestation failed."
+        recovery_message "Final reviewed-head attestation failed." heads-misaligned
         exit 1
     }
     verify_converged_review_outcomes || exit 1
@@ -3730,21 +3855,21 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     publication_readiness_status=0
     verify_issue_for_publication "$SELECTED_ID" "$AGENT_LOOP_PR_NUMBER" || publication_readiness_status=$?
     if [ "$publication_readiness_status" -ne 0 ]; then
-        recovery_message "Issue requirements or readiness changed before publication; completed work was preserved and the claim was retained."
+        recovery_message "Issue requirements or readiness changed before publication; completed work was preserved and the claim was retained." issue-changed
         exit 1
     fi
     finalize_pr
 
     cd "$PROJECT_DIR"
     if [ "${AGENT_INTERRUPT_AFTER_CHILD_FINALIZED:-0}" = 1 ]; then
-        recovery_message "Synthetic interruption after child finalization checkpoint."
+        recovery_message "Synthetic interruption after child finalization checkpoint." interrupted
         exit 92
     fi
     if [ -n "$BATCH_STATE_FILE" ]; then
         python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
             --issue "$SELECTED_ID" --expected-status active \
             --status finalized >/dev/null || {
-            recovery_message "Issue finalized but the batch cursor could not be checkpointed; the worktree was preserved."
+            recovery_message "Issue finalized but the batch cursor could not be checkpointed; the worktree was preserved." checkpoint-failed
             exit 1
         }
     fi
@@ -3769,7 +3894,7 @@ if [ -n "$BATCH_STATE_FILE" ]; then
             echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
             exit 0
         fi
-        recovery_message "Ordered batch stopped before every issue reached a finalized, bailed, or parked state."
+        recovery_message "Ordered batch stopped before every issue reached a finalized, bailed, or parked state." batch-incomplete
         exit 1
     fi
     finish_batch_with_parked_entries "$batch_json"

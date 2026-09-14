@@ -25,6 +25,7 @@ BATCH_ROW_REQUIRED = {"issue", "status", "childRunState"}
 BATCH_ROW_OPTIONAL = {"classification", "stopCategory", "stackedOn"}
 CLASSIFICATION_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")
 STOP_CATEGORY_RE = re.compile(r"[a-z][a-z0-9-]{0,31}(?:/[a-z][a-z0-9-]{0,31})?")
+EVENT_TYPE_RE = re.compile(r"[a-z][a-z_]{0,31}")
 
 
 class StateError(RuntimeError):
@@ -455,6 +456,42 @@ def _batch_show(args: argparse.Namespace) -> None:
     print(json.dumps(value, sort_keys=True))
 
 
+def _event_append(args: argparse.Namespace) -> None:
+    """Append one supervision event as a JSON line and fsync it."""
+    try:
+        value = json.loads(args.json)
+    except json.JSONDecodeError as error:
+        raise StateError("event must be a JSON object") from error
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("event"), str)
+        or not EVENT_TYPE_RE.fullmatch(value["event"])
+    ):
+        _fail("event must be a JSON object with an event type")
+    path = Path(args.file)
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        _fail("event stream directory must be a real directory")
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_mode & 0o077
+        ):
+            _fail("event stream must be an owner-controlled private regular file")
+        line = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        written = 0
+        while written < len(line):
+            written += os.write(descriptor, line[written:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-version", action="version", version=str(STATE_VERSION))
@@ -512,6 +549,10 @@ def _parser() -> argparse.ArgumentParser:
     batch_show = commands.add_parser("batch-show")
     batch_show.add_argument("--file", required=True)
     batch_show.set_defaults(handler=_batch_show)
+    event_append = commands.add_parser("event-append")
+    event_append.add_argument("--file", required=True)
+    event_append.add_argument("--json", required=True)
+    event_append.set_defaults(handler=_event_append)
     return parser
 
 

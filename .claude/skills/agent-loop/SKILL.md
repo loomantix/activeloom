@@ -416,6 +416,61 @@ The run's log directory carries two files for anything watching from outside:
   `skipped` for a validation reused on an unchanged head. Phase durations no
   longer have to be reconstructed from log file mtimes.
 
+### Event stream
+
+Structured events are the supported way to supervise a run. The glyph lines on
+the console are for people and may change. Each event is one JSON object per
+line, appended with `fsync`, carrying `event`, `epoch`, and `runTag`:
+
+- an ordered batch writes `<batch-state>-events.jsonl` beside its batch state
+  file, including the events of every child run it resumes;
+- any other run writes `<log_root>/<repo>-run-<run-tag>-events.jsonl`;
+- a standalone `--resume-run` appends to `events.jsonl` in the run's log
+  directory.
+
+| Event                                       | Fields                                                                                |
+| ------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `batch_start`                               | `issues`, `configSha256`, `resumed`                                                   |
+| `batch_end`                                 | `exit`, `finalized`, `bailed`, `parked`                                               |
+| `issue_start`                               | `issue`, `index` or `round`, `resumed`, `runState`                                    |
+| `phase_start`, `phase_end`, `phase_skipped` | `issue`, `phase`, and on `phase_end` `seconds` and `exit`                             |
+| `pass_result`                               | `issue`, `round`, `engine`, `status`, `classification`, `before`, `after`             |
+| `retry`                                     | `issue`, `round`, `engine`, `reason`                                                  |
+| `stop`                                      | `issue`, `category`, `message`, `resumable`, `resumeCommand`, `hookPhase`, `hookTail` |
+| `parked`                                    | `issue`, `category`, `resumeCommand`                                                  |
+| `bail`                                      | `issue`, `classification`, `handoffPath`                                              |
+| `recovered`                                 | `issue`, `kind`, `ref`                                                                |
+| `pr_ready`                                  | `issue`, `pr`, `head`                                                                 |
+
+Every stop names a category from a fixed list: `no-result/hook-ended-early`,
+`invalid-result`, `review-blocked`, `ledger-evidence`,
+`push-checkpoint-mismatch`, `heads-misaligned`, `worktree-state`,
+`validation-red`, `hook-failed`, `hook-timeout`, `budget-exhausted`,
+`review-cap-exhausted`, `worker-ambiguous-bail`, `worker-no-commit`,
+`worker-failed`, `setup-failed`, `merge-conflict`, `publication-diff`,
+`base-diverged`, `dependency-blocked`, `issue-changed`, `checkpoint-failed`,
+`uncertain-mutation`, `child-resume-failed`, `batch-incomplete`,
+`interrupted`, or `internal-error`. A stop that follows a hook carries that
+hook's phase and last output. The output is bounded like the console tail, to
+`output_max_lines` lines of at most 400 characters with control characters
+removed. Events never copy issue titles, bodies, or findings. A resumed run
+prints `▶ Issue #N (resumed, round R)`.
+
+One `jq` pass turns a batch stream into a per-issue table:
+
+```bash
+jq -rs '[.[] | select(.issue != null)] | group_by(.issue)[] as $e
+  | ($e | map(.event)) as $t
+  | [($e[0].issue | tostring),
+     (if ($t | index("pr_ready")) then "finalized" elif ($t | index("bail")) then "bailed"
+      elif ($t | index("parked")) then "parked" else "stopped" end),
+     ([$e[] | select(.event == "pass_result") | .round] | max // 0 | tostring),
+     ([$e[] | select(.event == "phase_end") | .seconds] | add // 0 | tostring),
+     ([$e[] | select(.event == "stop") | .category] | last // ""),
+     ([$e[] | select(.event == "parked") | .resumeCommand] | last // "")] | @tsv' \
+  <batch-state>-events.jsonl
+```
+
 Two things that look like liveness signals are not. **Review log size:** both
 `codex exec` and `claude --print` buffer their output, so a review log sits at
 0 bytes for the whole pass and then jumps; use the newest file time in the log

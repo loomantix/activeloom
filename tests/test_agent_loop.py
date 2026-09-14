@@ -1077,6 +1077,164 @@ def test_batch_preflight_warns_on_a_prose_only_dependency(
     assert ("Issue #67 mentions earlier batch issue #66 without 'Depends on #66'" in result.stderr) == warns
 
 
+def test_every_recovery_message_names_a_known_stop_category() -> None:
+    # A stop without a category leaves a supervisor guessing from glyph lines.
+    text = AGENT_LOOP.read_text(encoding="utf-8")
+    declared = re.search(r'^STOP_CATEGORIES="([^"]+)"', text, re.M)
+    assert declared is not None
+    categories = set(declared.group(1).split())
+    lines = text.splitlines()
+    calls = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if (
+            "recovery_message " not in line
+            or stripped.startswith("#")
+            or stripped.startswith("recovery_message()")
+        ):
+            continue
+        match = re.search(r'recovery_message "((?:[^"\\]|\\.)*)"(.*)$', line)
+        assert match is not None, f"line {index + 1} passes a non-literal reason: {stripped}"
+        rest = match.group(2)
+        if rest.strip() == "\\":
+            rest = " " + lines[index + 1].strip()
+        category = re.match(r"\s+([a-z][a-z0-9/-]*)", rest)
+        assert category is not None and category.group(1) in categories, (
+            f"line {index + 1} has no known stop category: {stripped}"
+        )
+        calls += 1
+    assert calls > 100
+
+
+_SUPERVISION_TABLE_JQ = r"""
+[.[] | select(.issue != null)] | group_by(.issue)[] as $events
+| ($events | map(.event)) as $types
+| [ ($events[0].issue | tostring),
+    (if ($types | index("pr_ready")) then "finalized"
+     elif ($types | index("bail")) then "bailed"
+     elif ($types | index("parked")) then "parked"
+     else "stopped" end),
+    ([$events[] | select(.event == "pass_result") | .round] | max // 0 | tostring),
+    ([$events[] | select(.event == "phase_end") | .seconds] | add // 0 | tostring),
+    ([$events[] | select(.event == "stop") | .category] | last // ""),
+    ([$events[] | select(.event == "parked") | .resumeCommand] | last // "")
+  ] | @tsv
+"""
+
+_EVENT_KEYS = {
+    "event", "runTag", "epoch", "issue", "index", "resumed", "round", "runState",
+    "phase", "seconds", "exit", "engine", "status", "classification", "before",
+    "after", "reason", "category", "message", "resumable", "resumeCommand",
+    "hookPhase", "hookTail", "kind", "ref", "pr", "head", "handoffPath",
+    "issues", "configSha256", "finalized", "bailed", "parked",
+}
+
+
+def test_batch_event_stream_builds_a_per_issue_supervision_table(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 71 ]; then '
+        "printf 'agent-bail: spec-gap\\n' > \"$AGENT_LOOP_HANDOFF_FILE\"; exit 0; fi; "
+        + _PER_ISSUE_WORKER
+    )
+    result = _run(
+        consumer,
+        ["--issues", "72,70,71", "--iterations", "3"],
+        issues=[_issue(72), _issue(70), _issue(71)],
+        config=_config_v3(
+            tmp_path, worker_hook=worker, claude_review_hook=_ends_early_for(72),
+            batch_on_issue_failure="park",
+        ),
+        timeout=300,
+    )
+    assert result.returncode == 3, result.stdout + result.stderr
+    events_file = next((tmp_path / "logs").glob("*-batch-*-events.jsonl"))
+    table = subprocess.run(
+        ["jq", "-rs", _SUPERVISION_TABLE_JQ, str(events_file)],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    rows = {row[0]: row for row in (line.split("\t") for line in table.splitlines())}
+    assert rows["70"][1:3] == ["finalized", "1"] and int(rows["70"][3]) >= 0 and rows["70"][4] == ""
+    assert rows["71"][1] == "bailed"
+    assert rows["72"][1] == "parked"
+    assert rows["72"][4] == "no-result/hook-ended-early"
+    assert "--resume-run" in rows["72"][5]
+    events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    starts = [event for event in events if event["event"] == "batch_start"]
+    assert starts[0]["issues"] == [72, 70, 71] and starts[0]["resumed"] is False
+    assert any(event["resumed"] for event in starts[1:])
+    end = [event for event in events if event["event"] == "batch_end"][-1]
+    assert (end["exit"], end["finalized"], end["bailed"], end["parked"]) == (3, [70], [71], [72])
+    assert {"retry", "pass_result", "pr_ready", "bail", "parked", "stop"} <= {
+        event["event"] for event in events
+    }
+
+
+def test_stop_events_bound_hook_output_and_carry_no_issue_text(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    noisy = (
+        "for i in $(seq 1 60); do echo \"progress line $i\"; done; "
+        "printf 'x%.0s' $(seq 1 900); echo; exit 0"
+    )
+    issue = _issue(74, "BODY-SENTINEL private requirement")
+    issue["title"] = "TITLE-SENTINEL"
+    result = _run(
+        consumer,
+        ["--issues", "74"],
+        issues=[issue],
+        config=_config_v3(tmp_path, claude_review_hook=noisy, output_max_lines=10),
+        timeout=90,
+    )
+    assert result.returncode != 0
+    events_file = next((tmp_path / "logs").glob("*-run-*-events.jsonl"))
+    text = events_file.read_text(encoding="utf-8")
+    assert "SENTINEL" not in text
+    events = [json.loads(line) for line in text.splitlines()]
+    assert all(set(event) <= _EVENT_KEYS for event in events), [
+        sorted(set(event) - _EVENT_KEYS) for event in events
+    ]
+    stop = [event for event in events if event["event"] == "stop"][-1]
+    assert stop["category"] == "no-result/hook-ended-early"
+    assert stop["resumable"] is True and "--resume-run" in stop["resumeCommand"]
+    assert 0 < len(stop["hookTail"]) <= 10
+    assert all(len(line) <= 400 for line in stop["hookTail"])
+    assert stop["hookPhase"].startswith("configured Claude review hook")
+
+
+def test_resumed_run_names_its_issue_and_emits_a_resumed_start(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
+    )
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook)
+    first = _run(consumer, ["--issues", "75"], issues=[_issue(75)], config=config, timeout=60)
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(75, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "Issue #75 (resumed, round 1)" in resumed.stdout
+    events = [
+        json.loads(line)
+        for line in (state_file.parent / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    start = next(event for event in events if event["event"] == "issue_start")
+    assert (start["issue"], start["resumed"], start["round"]) == (75, True, 1)
+    assert any(event["event"] == "pr_ready" and event["issue"] == 75 for event in events)
+
+
 def test_batch_iteration_cap_pauses_with_durable_cursor(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
