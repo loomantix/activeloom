@@ -48,6 +48,14 @@ command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; 
 claude_review_cli="${CLAUDE_REVIEW_CLI:-claude}"
 command -v "$claude_review_cli" >/dev/null 2>&1 || { echo "claude is required" >&2; exit 1; }
 
+# Model and effort come from the user's review profile, or from the settings a
+# review-chain run pinned when it started. Resolving here fails a preflight
+# fast; the launch region below resolves again under its hash.
+launch_state preflight review_profile
+# claude-cli-invocations:start
+python3 -I "$script_dir/review-profile.py" launch-args --engine claude --repo "$repo" >/dev/null
+# claude-cli-invocations:end
+
 launch_state preflight pr_boundary
 current_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 actor="$(gh api user --jq .login)"
@@ -101,7 +109,7 @@ including resolved threads and prior attestations. Post verified findings inline
 before edits, then validate, push, reply, resolve, and publish the normal review
 result. This invocation owns exactly one Claude pass: do not invoke Codex,
 Gemini, another reviewer, or any review launcher. Return control to the calling
-Codex session when the Claude pass is complete."
+session when the Claude pass is complete."
 if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
     prompt="Read ${ACTIVELOOM_REVIEW_SURFACE}/skills/deepcritique/SKILL.md and follow it for this pass.
 Use absolute paths under ${ACTIVELOOM_REVIEW_SURFACE} for its skills, references and helpers.
@@ -117,10 +125,18 @@ export AGENT_LOOP_REVIEW_ENGINE="claude"
 export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
 
 # claude-cli-invocations:start
+review_settings="$(python3 -I "$script_dir/review-profile.py" launch-args --engine claude --repo "$repo")"
+review_model="${review_settings%%$'\n'*}"
+review_effort="${review_settings#*$'\n'}"
+# Claude gives this variable precedence over --effort, including inherited values.
+export CLAUDE_CODE_EFFORT_LEVEL="$review_effort"
+model_args=()
+[ "$review_model" = inherit ] || model_args=(--model "$review_model")
 launch_state execution
 exec timeout --signal=TERM --kill-after=30s "${review_timeout_seconds}s" \
     "$claude_review_cli" \
-    --effort low \
+    "${model_args[@]}" \
+    --effort "$review_effort" \
     --permission-mode bypassPermissions \
     --no-session-persistence \
     --print \

@@ -15,6 +15,23 @@ The Codex control surface must be installed even when another engine starts
 the command. If it is absent, report the missing installation; do not substitute
 a raw reviewer CLI or silently fall back to a conversational auto loop.
 
+Reviewer model, effort, and engine order come from the user's review profile, a
+file outside every repository that the `review-setup` skill creates and edits.
+Before starting a run, read it with
+`python3 -I .codex/skills/critique/scripts/review-profile.py show --repo <owner/repo>`.
+When it reports `"configured": false`, run `review-setup` with the user first;
+never start a run on settings the user has not confirmed. Unless the user names a
+plan, read the tier's order from `review-profile.py order --tier <lean|deep> --repo <owner/repo>`.
+Use `--chain` for a one-engine order and `--cycle --until-converged` for two or
+three engines. A one-engine chain reports plan completion; it cannot establish
+independent convergence. The runner pins each engine's settings when the run
+starts, so a profile change applies to the next run, not the one in progress.
+
+In Claude Code, start the runner with the Bash tool's `run_in_background` and
+wait for its completion notification instead of polling: a chain outlasts any
+foreground command timeout. When it returns, read the exit status and final JSON
+line and act on the outcome table in the runner usage.
+
 Each worker owns one pass only. The runner owns launch order, result verification,
 attestation, and bounded progression. Existing handoff sessions and the separate
 issue-implementation `agent-loop` keep their own contracts. An active legacy run
@@ -428,12 +445,15 @@ top-level request for auto mode makes the current session the controller; a
 launcher's request for exactly one pass takes precedence inside its child.
 The child returns its result, and the parent schedules remaining reviewers.
 
-This Claude surface ships the `gemini` launcher below. It does not ship a
-mutating Codex review launcher: `codex-review` is a read-only second opinion,
-not a substitute for a declared Codex relay pass. When a requested roster
-includes an engine without a tested launcher, report that capability gap at
-preflight and offer the exact session handoff. Preserve the roster and mode;
-do not silently substitute Gemini, use a raw CLI, or claim full auto support.
+A top-level auto request starts the deterministic runner under
+[Automatic chain execution](#automatic-chain-execution). The runner launches
+Claude, Codex, and Gemini passes through their tested launchers, so a roster
+naming any of them is supported wherever the Codex control surface is
+installed. `codex-review` stays a read-only second opinion and never stands in
+for a declared Codex relay pass. When the control surface, the review profile,
+or a roster engine's CLI is missing, report that gap at preflight and offer the
+exact session handoff or `review-setup`. Preserve the roster and mode; do not
+silently substitute an engine or use a raw CLI.
 
 The fresh-context gate applies to a session performing review, not merely
 coordinating it. An authoring session may prepare the run and invoke a supported
@@ -444,8 +464,9 @@ in-process override under the context rule.
 
 Auto mode is available for the `gemini` reviewer, launched through
 [`skills/critique/scripts/run-agy-review.sh`](skills/critique/scripts/run-agy-review.sh).
-The launcher pins `gemini-3.7-flash-high`, literal `--effort high`, accept-edits
-mode, unattended permissions, and structured JSON output. A pass defaults to a
+The launcher takes its model and effort from the review profile (recommended:
+`gemini-3.7-flash-high` at `high`) and pins accept-edits mode, unattended
+permissions, and structured JSON output. A pass defaults to a
 30-minute bound through `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the
 hard 3600-second ceiling are rejected. Under agent-loop the wrapper sets that
 variable itself, to the smallest of what remains of the run's

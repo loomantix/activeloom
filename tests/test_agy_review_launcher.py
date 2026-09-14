@@ -44,8 +44,10 @@ def _trusted_environment(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     fake_git = bin_dir / "git"
+    # These stdlib-only stand-ins do not need site or subprocess coverage setup.
+    # The real review helpers still run with their normal instrumentation.
     fake_git.write_text(
-        "#!/usr/bin/env python3\n"
+        "#!/usr/bin/env -S python3 -S\n"
         "import os, pathlib, sys\n"
         "args = sys.argv[1:]\n"
         f"local_head = {local_head!r}\n"
@@ -96,7 +98,7 @@ def _trusted_environment(
     fake_git.chmod(0o755)
     fake_gh = bin_dir / "gh"
     fake_gh.write_text(
-        "#!/usr/bin/env python3\n"
+        "#!/usr/bin/env -S python3 -S\n"
         "import sys\n"
         "args = sys.argv[1:]\n"
         f"current_repo = {current_repo!r}\n"
@@ -115,7 +117,13 @@ def _trusted_environment(
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
-    return {**{k: v for k, v in os.environ.items() if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))}, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    return {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))},
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        # The settings a review-chain run pins; profile-file resolution has its own tests.
+        "ACTIVELOOM_REVIEW_MODEL": "gemini-3.7-flash-high",
+        "ACTIVELOOM_REVIEW_EFFORT": "high",
+    }
 
 
 def _surface_files(surface: Path, *, ledger_version: str = LEDGER_VERSION) -> dict[Path, str]:
@@ -625,7 +633,8 @@ def test_both_launchers_require_the_canonical_activeloom_surface(
     launcher = scripts / "run-agy-review.sh"
     launcher.write_bytes((ROOT / harness / "skills/critique/scripts/run-agy-review.sh").read_bytes())
     launcher.chmod(0o755)
-    (scripts / "review-launch-state.py").write_bytes((ROOT / ".codex/skills/critique/scripts/review-launch-state.py").read_bytes())
+    for name in ("review-launch-state.py", "review-profile.py", "review-profile.defaults.json"):
+        (scripts / name).write_bytes((ROOT / ".codex/skills/critique/scripts" / name).read_bytes())
     (scripts / "review-ledger.version").write_text(LEDGER_VERSION, encoding="utf-8")
     (scripts / "local-review-handoff.py").write_text(
         '"""Run admission is outside this surface-provenance test."""\n', encoding="utf-8"
@@ -766,6 +775,36 @@ def _long_running_agy(tmp_path: Path) -> tuple[Path, Path]:
     return fake_agy, surface
 
 
+def _await_child_pid(process: subprocess.Popen[str], child_pid_file: Path) -> int:
+    # Instrumented fixture commands can take longer than ten seconds to finish
+    # preflight on a busy host. Signal assertions begin once the child is ready.
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        try:
+            pid_text = child_pid_file.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            pid_text = ""
+        if pid_text:
+            return int(pid_text)
+        if process.poll() is not None:
+            raise AssertionError(
+                f"launcher exited before review child startup: {process.returncode}"
+            )
+        time.sleep(0.05)
+    raise AssertionError("review child did not start within 30 seconds")
+
+
+def _stop_launcher(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate(timeout=15)
+
+
 @pytest.mark.parametrize(
     ("forwarded_signal", "expected_returncode"),
     [(signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129)],
@@ -796,19 +835,17 @@ def test_launcher_forwards_termination_to_the_running_review(
         # keep the forwarding assertion deterministic across runners.
         preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_DFL),
     )
-    for _ in range(200):
-        if child_pid_file.exists():
-            break
-        time.sleep(0.05)
-    assert child_pid_file.exists()
-    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    try:
+        child_pid = _await_child_pid(process, child_pid_file)
 
-    os.kill(process.pid, forwarded_signal)
-    stdout, stderr = process.communicate(timeout=15)
+        os.kill(process.pid, forwarded_signal)
+        stdout, stderr = process.communicate(timeout=15)
 
-    assert process.returncode == expected_returncode, (stdout, stderr)
-    assert not completed_marker.exists()
-    _await_reaped(child_pid)
+        assert process.returncode == expected_returncode, (stdout, stderr)
+        assert not completed_marker.exists()
+        _await_reaped(child_pid)
+    finally:
+        _stop_launcher(process)
 
 
 def test_launcher_escalates_to_sigkill_when_child_ignores_signal(tmp_path: Path) -> None:
@@ -845,19 +882,17 @@ def test_launcher_escalates_to_sigkill_when_child_ignores_signal(tmp_path: Path)
         stderr=subprocess.PIPE,
         text=True,
     )
-    for _ in range(200):
-        if child_pid_file.exists():
-            break
-        time.sleep(0.05)
-    assert child_pid_file.exists()
-    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    try:
+        child_pid = _await_child_pid(process, child_pid_file)
 
-    os.kill(process.pid, signal.SIGTERM)
-    stdout, stderr = process.communicate(timeout=15)
+        os.kill(process.pid, signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=15)
 
-    assert process.returncode == 143, (stdout, stderr)
-    assert not completed_marker.exists()
-    _await_reaped(child_pid)
+        assert process.returncode == 143, (stdout, stderr)
+        assert not completed_marker.exists()
+        _await_reaped(child_pid)
+    finally:
+        _stop_launcher(process)
 
 
 def test_launcher_survives_an_inherited_ignored_sighup(tmp_path: Path) -> None:
@@ -1024,7 +1059,8 @@ def test_race_coverage_fails_when_the_jobs_table_fallback_is_removed(tmp_path: P
     (mutant_dir / "review-ledger.version").write_text(
         LEDGER_VERSION_FILE.read_text(encoding="utf-8"), encoding="utf-8"
     )
-    (mutant_dir / "review-launch-state.py").write_bytes((ROOT / ".claude/skills/critique/scripts/review-launch-state.py").read_bytes())
+    for name in ("review-launch-state.py", "review-profile.py", "review-profile.defaults.json"):
+        (mutant_dir / name).write_bytes((ROOT / ".claude/skills/critique/scripts" / name).read_bytes())
     mutated = mutant_dir / "run-agy-review.sh"
     source = LAUNCHER.read_text(encoding="utf-8")
     fallback = (
@@ -1094,7 +1130,7 @@ def test_review_workflow_documents_the_auto_relay_contract() -> None:
     deepcritique = (ROOT / ".claude/skills/deepcritique/SKILL.md").read_text(encoding="utf-8")
     assert "run-agy-review.sh" in workflow
     assert "gemini-3.7-flash-high" in workflow
-    assert "literal `--effort high`" in workflow
+    assert "takes its model and effort from the review profile" in workflow
     assert "verify-coverage" in workflow
     assert "run-agy-review.sh" in deepcritique
     assert "verify-coverage" in deepcritique
@@ -1132,3 +1168,57 @@ def test_managed_installation_preflight_ignores_global_skill_links(
         assert evidence["failure_reason"] == "dirty_surface"
         assert str(surface.parent) in result.stderr
         assert ".agents/skills/critique/SKILL.md" in result.stderr
+
+
+def test_launcher_takes_model_and_effort_from_the_user_profile(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _surface = _fake_agy(tmp_path)
+    profile = tmp_path / "review-profile.json"
+    defaults = json.loads(
+        (ROOT / "prompts/skills/review-setup/scripts/review-profile.defaults.json").read_text()
+    )
+    engines = defaults["engines"]
+    engines["gemini"] = {"model": "gemini-example", "effort": "medium"}
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "defaults_version": defaults["defaults_version"],
+                "confirmed_at": "2026-01-01T00:00:00Z",
+                "engines": engines,
+                "order": defaults["order"],
+            }
+        )
+    )
+    environment = _trusted_environment(tmp_path)
+    for name in ("ACTIVELOOM_REVIEW_MODEL", "ACTIVELOOM_REVIEW_EFFORT"):
+        environment.pop(name)
+    environment.update(
+        AGY_ARGV_FILE=str(argv_file),
+        AGY_REVIEW_CLI=str(fake_agy),
+        ACTIVELOOM_REVIEW_PROFILE=str(profile),
+    )
+
+    _run(environment, check=True)
+
+    argv = json.loads(argv_file.read_text(encoding="utf-8"))["argv"]
+    assert argv[:4] == ["--model", "gemini-example", "--effort", "medium"]
+
+
+def test_launcher_refuses_to_start_without_a_review_profile(tmp_path: Path) -> None:
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _surface = _fake_agy(tmp_path)
+    environment = _trusted_environment(tmp_path)
+    for name in ("ACTIVELOOM_REVIEW_MODEL", "ACTIVELOOM_REVIEW_EFFORT"):
+        environment.pop(name)
+    environment.update(
+        AGY_ARGV_FILE=str(argv_file),
+        AGY_REVIEW_CLI=str(fake_agy),
+        ACTIVELOOM_REVIEW_PROFILE=str(tmp_path / "absent.json"),
+    )
+
+    result = _run(environment)
+
+    assert result.returncode != 0
+    assert "review-setup" in result.stderr
+    assert not argv_file.exists()

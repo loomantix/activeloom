@@ -19,6 +19,317 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / ".codex/skills/critique/scripts"
 HEAD = "a" * 40
 BASE = "b" * 40
+CAPACITY = "Selected model is at capacity. Please try a different model."
+
+
+@pytest.fixture
+def capacity_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    module = harness.module
+    original_environment = harness.runner.environment
+    original_managed = module.managed
+    controls = SimpleNamespace(
+        failures=1, cleanup_denied=False, exit_code=1, side_effect=None
+    )
+    launches: list[dict[str, str | None]] = []
+
+    def environment(self: Any, engine: str) -> dict[str, str]:
+        env = original_environment(self, engine)
+        settings = self.state.setdefault("review_settings", {})
+        settings.setdefault(
+            "codex",
+            {
+                "engine": "codex",
+                "model": "gpt-6-astra",
+                "effort": "max",
+                "source": "user profile",
+                "fallback": {"model": "gpt-5.6-sol", "effort": "medium"},
+            },
+        )
+        if engine == "codex":
+            selected = self.selected_settings(engine)
+            env.update(
+                ACTIVELOOM_REVIEW_MODEL=selected["model"],
+                ACTIVELOOM_REVIEW_EFFORT=selected["effort"],
+            )
+        return dict(env)
+
+    def managed(
+        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+    ) -> None:
+        if (
+            "AGENT_LOOP_REVIEW_RESULT_FILE" in env
+            and env["AGENT_LOOP_REVIEW_ENGINE"] == "codex"
+        ):
+            launches.append(
+                {
+                    "model": env.get("ACTIVELOOM_REVIEW_MODEL"),
+                    "effort": env.get("ACTIVELOOM_REVIEW_EFFORT"),
+                }
+            )
+            if controls.failures:
+                controls.failures -= 1
+                module.save(
+                    Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+                    {
+                        "version": 1,
+                        "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                        "phase": "execution",
+                        "review_started": None,
+                    },
+                )
+                log.write_text(
+                    json.dumps({"type": "turn.failed", "error": {"message": CAPACITY}})
+                    + "\n"
+                )
+                if controls.side_effect:
+                    controls.side_effect(log.parent)
+                if controls.cleanup_denied:
+                    raise module.Blocked("process-group cleanup denied")
+                raise module.ProcessFailure("capacity failure", controls.exit_code)
+        original_managed(argv, log, env, timeout)
+
+    monkeypatch.setattr(harness.runner, "environment", environment)
+    monkeypatch.setattr(module, "managed", managed)
+    return SimpleNamespace(harness=harness, controls=controls, launches=launches)
+
+
+@pytest.mark.parametrize(
+    "events,expected",
+    [
+        ([{"type": "error", "message": CAPACITY}], True),
+        ([{"type": "turn.failed", "error": {"message": CAPACITY}}], True),
+        (
+            [
+                {
+                    "type": "item.completed",
+                    "item": {"type": "command_execution", "output": CAPACITY},
+                }
+            ],
+            False,
+        ),
+        ([{"type": "error", "message": CAPACITY}, {"type": "turn.completed"}], False),
+        ([{"type": "error", "message": "Authentication failed"}], False),
+        ([{"type": "error", "message": CAPACITY}, {"type": "item.started"}], False),
+        ([{"type": "error", "message": "Rate limit exceeded"}], False),
+        (
+            [
+                {"type": "error", "message": CAPACITY},
+                {"type": "turn.failed", "error": {"message": "Network disconnected"}},
+            ],
+            False,
+        ),
+    ],
+)
+def test_capacity_recognition_uses_only_terminal_json_events(
+    tmp_path: Path, events: list[dict[str, Any]], expected: bool
+) -> None:
+    log = tmp_path / "worker.log"
+    log.write_text(
+        "ERROR: " + CAPACITY + "\n" + "\n".join(json.dumps(event) for event in events)
+    )
+    assert load("review-chain-runner").capacity_rejected(log) is expected
+
+
+def test_capacity_fallback_preserves_run_budget_and_uses_medium(
+    capacity_harness: Any,
+) -> None:
+    h = capacity_harness.harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert capacity_harness.launches == [
+        {"model": "gpt-6-astra", "effort": "max"},
+        {"model": "gpt-5.6-sol", "effort": "medium"},
+        {"model": "gpt-5.6-sol", "effort": "medium"},
+    ]
+    assert len(runner.state["completed"]) == 4
+    assert len(runner.state["attempts"]) == 5
+    failed, fallback = runner.state["attempts"][:2]
+    assert failed["phase"] == "capacity_failed"
+    assert failed["round"] == fallback["round"] == 1
+    assert (h.directory / failed["folder"] / "worker.log").is_file()
+    assert fallback["settings"] == {"model": "gpt-5.6-sol", "effort": "medium"}
+    assert (
+        "model gpt-5.6-sol, effort medium (capacity fallback)"
+        in runner.settings_line("codex")
+    )
+
+
+def test_fallback_capacity_exhaustion_never_loops(capacity_harness: Any) -> None:
+    h = capacity_harness.harness
+    capacity_harness.controls.failures = 2
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="fallback is also at capacity"):
+        runner.run()
+    assert len(capacity_harness.launches) == 2
+    assert runner.state["completed"] == []
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="fallback is also at capacity"):
+        h.runner(h.args, h.directory).run()
+    assert len(capacity_harness.launches) == 2
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "cleanup",
+        "timeout",
+        "result",
+        "threads",
+        "comments",
+        "head",
+        "missing-fallback",
+        "log",
+    ],
+)
+def test_unsafe_capacity_failures_cannot_launch_fallback(
+    capacity_harness: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    h = capacity_harness.harness
+    controls = capacity_harness.controls
+    runner = h.runner(h.args, h.directory)
+    if case == "cleanup":
+        controls.cleanup_denied = True
+    elif case == "timeout":
+        controls.exit_code = 124
+    elif case == "result":
+        controls.side_effect = lambda folder: (folder / "result.json").write_text("{}")
+    elif case in ("threads", "comments"):
+        original = getattr(h.runner, case)
+
+        def mutate(folder: Path) -> None:
+            monkeypatch.setattr(
+                runner, case, lambda path: h.module.save(path, ["changed"])
+            )
+
+        controls.side_effect = mutate
+        assert original
+    elif case == "head":
+        controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, "boundary", lambda: "f" * 40
+        )
+    elif case == "missing-fallback":
+        controls.side_effect = lambda folder: runner.state["review_settings"][
+            "codex"
+        ].pop("fallback")
+    else:
+        recover = runner.recover_capacity
+
+        def tamper(pending: dict[str, Any]) -> None:
+            (h.directory / pending["folder"] / "worker.log").write_text("changed")
+            recover(pending)
+
+        monkeypatch.setattr(runner, "recover_capacity", tamper)
+    with pytest.raises(h.module.Blocked):
+        runner.run()
+    assert len(capacity_harness.launches) == 1
+    assert runner.state["completed"] == []
+
+
+def test_capacity_fallback_resumes_an_interrupted_preparation(
+    capacity_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = capacity_harness.harness
+    runner = h.runner(h.args, h.directory)
+    original = h.module.save
+    interrupted = False
+
+    def save(path: Path, value: Any) -> None:
+        nonlocal interrupted
+        if path.name.startswith("recovery-") and not interrupted:
+            interrupted = True
+            raise OSError("injected fallback snapshot interruption")
+        original(path, value)
+
+    monkeypatch.setattr(h.module, "save", save)
+    with pytest.raises(OSError, match="injected fallback"):
+        runner.run()
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    assert resumed.run() == "converged"
+    assert len(capacity_harness.launches) == 3
+    assert len(resumed.state["attempts"]) == 5
+
+
+@pytest.mark.parametrize("evidence", ["comments", "threads", "result", "log", "unchanged"])
+def test_prepared_capacity_retry_rechecks_evidence_before_launch(
+    capacity_harness: Any, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    h = capacity_harness.harness
+    runner = h.runner(h.args, h.directory)
+    recover = runner.recover_capacity
+
+    def interrupt(pending: dict[str, Any]) -> None:
+        recover(pending)
+        raise OSError("interrupted after fallback preparation")
+
+    monkeypatch.setattr(runner, "recover_capacity", interrupt)
+    with pytest.raises(OSError, match="after fallback preparation"):
+        runner.run()
+    before = h.module.read(h.directory / "state.json")
+    assert before["pending"]["phase"] == "prepared"
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    if evidence in ("comments", "threads"):
+        monkeypatch.setattr(
+            resumed, evidence, lambda path: h.module.save(path, ["changed"])
+        )
+    elif evidence in ("result", "log"):
+        origin = h.directory / before["attempts"][0]["folder"]
+        name = "result.json" if evidence == "result" else "worker.log"
+        (origin / name).write_text("{}")
+    if evidence == "unchanged":
+        assert resumed.run() == "converged"
+        assert resumed.state["run_id"] == before["run_id"]
+    else:
+        with pytest.raises(h.module.Blocked, match="evidence changed"):
+            resumed.run()
+        assert len(capacity_harness.launches) == 1
+        assert resumed.state["completed"] == []
+
+
+@pytest.mark.parametrize("recovery", ["capacity", "preflight"])
+@pytest.mark.parametrize("cut", ["stage", "publish"])
+def test_recovery_snapshot_survives_process_termination(
+    capacity_harness: Any, monkeypatch: pytest.MonkeyPatch, recovery: str, cut: str
+) -> None:
+    h = capacity_harness.harness
+    if recovery == "preflight":
+        capacity_harness.controls.failures = 0
+        h.controls.preflight = True
+        with pytest.raises(h.module.Blocked):
+            h.runner(h.args, h.directory).run()
+        h.args.resume = h.args.recover_preflight = True
+        h.controls.preflight = False
+    replace = h.module.os.replace
+
+    def terminate(source: Any, target: Any) -> None:
+        path = Path(target)
+        if (
+            cut == "stage" and path.name.startswith("recovery-")
+            or cut == "publish" and path.name.startswith("before-")
+            and (path.parent.name == "fallback" or path.parent.name.startswith("retry-"))
+        ):
+            os._exit(91)
+        replace(source, target)
+
+    monkeypatch.setattr(h.module.os, "replace", terminate)
+    child = os.fork()
+    if child == 0:
+        # A real exit bypasses save()'s finally block, unlike an injected error.
+        try:
+            h.runner(h.args, h.directory).run()
+        finally:
+            os._exit(92)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    monkeypatch.setattr(h.module.os, "replace", replace)
+    before = h.module.read(h.directory / "state.json")
+    capacity_harness.controls.failures = 0
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    assert resumed.run() == "converged"
+    assert resumed.state["run_id"] == before["run_id"]
+    assert len(resumed.state["attempts"]) == 5
 
 
 def load(name: str) -> ModuleType:
@@ -167,6 +478,9 @@ sys.exit(int(sys.argv[2]))
         def threads(self, path: Path) -> list[int]:
             module.save(path, [])
             return []
+
+        def comments(self, path: Path) -> None:
+            module.save(path, [])
 
         def helper(self, name: str, *parts: str) -> dict[str, Any]:
             operation = parts[0]
@@ -553,9 +867,12 @@ def test_codex_launcher_pins_boundary_without_changing_model(
 
     launcher = tmp_path / "run-codex-review.py"
     shutil.copyfile(SCRIPTS / launcher.name, launcher)
-    shutil.copyfile(
-        SCRIPTS / "review-launch-state.py", tmp_path / "review-launch-state.py"
-    )
+    for name in (
+        "review-launch-state.py",
+        "review-profile.py",
+        "review-profile.defaults.json",
+    ):
+        shutil.copyfile(SCRIPTS / name, tmp_path / name)
     (tmp_path / "local-review-handoff.py").write_text("print('{}')\n")
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -602,6 +919,8 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
             "PATH": str(bindir) + os.pathsep + os.environ["PATH"],
             "CAPTURE": str(capture),
             "STALE": "1" if stale else "0",
+            "ACTIVELOOM_REVIEW_MODEL": "inherit",
+            "ACTIVELOOM_REVIEW_EFFORT": "high",
         },
         capture_output=True,
         text=True,
@@ -613,7 +932,9 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         assert result.returncode == 0, result.stderr
         argv = json.loads(capture.read_text())
         assert argv[:2] == ["exec", "--ephemeral"]
-        assert "--model" not in argv and "--ignore-user-config" not in argv
+        assert "--json" in argv
+        assert "-m" not in argv and "--ignore-user-config" not in argv
+        assert argv[argv.index('model_reasoning_effort="high"') - 1] == "-c"
         assert "one Codex review pass" in argv[-1]
         assert (
             f"review pass on PR #1 in example/repo, round 1, pinned base {BASE}, "
@@ -630,9 +951,12 @@ def test_codex_launcher_records_execution_and_forwards_run_id(
 
     launcher = tmp_path / "run-codex-review.py"
     shutil.copyfile(SCRIPTS / launcher.name, launcher)
-    shutil.copyfile(
-        SCRIPTS / "review-launch-state.py", tmp_path / "review-launch-state.py"
-    )
+    for name in (
+        "review-launch-state.py",
+        "review-profile.py",
+        "review-profile.defaults.json",
+    ):
+        shutil.copyfile(SCRIPTS / name, tmp_path / name)
     handoff = tmp_path / "handoff.json"
     (tmp_path / "local-review-handoff.py").write_text(
         "import json, os, sys\n"
@@ -678,6 +1002,8 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(pathlib.Path(os.environ["AC
             "ACTIVELOOM_LAUNCH_STATE": str(tmp_path / "launch.json"),
             "ACTIVELOOM_ATTEMPT_ID": "attempt-1",
             "ACTIVELOOM_RUN_ID": "f" * 64,
+            "ACTIVELOOM_REVIEW_MODEL": "example-model",
+            "ACTIVELOOM_REVIEW_EFFORT": "max",
         },
         capture_output=True,
         text=True,
@@ -691,6 +1017,8 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(pathlib.Path(os.environ["AC
     assert observed["review_started"] is None
     argv = json.loads(handoff.read_text())
     assert argv[0] == "authorize-pass"
+    # The reviewer launch itself is captured by a sibling test; here the
+    # pinned settings must at least resolve without a profile on disk.
     assert argv[argv.index("--run-id") + 1] == "f" * 64
 
 
@@ -1134,6 +1462,14 @@ def test_installation_repair_preserves_dirty_bytes_and_the_original_pin(
         "head": revision,
         "installation_revision": revision,
         "config": {"plan": "codex"},
+        "review_settings": {
+            "codex": {
+                "engine": "codex",
+                "model": "inherit",
+                "effort": "high",
+                "source": "user profile",
+            }
+        },
     }
     runner.prepare_installation()
     installed = directory / "installation/native/.codex/REVIEW_WORKFLOW.md"
@@ -1335,3 +1671,109 @@ def test_missing_selected_harness_has_recovery_diagnostic(
         module.Blocked, match=r"\.claude.*--resume --repair-installation"
     ):
         runner.prepare_installation()
+
+
+def test_review_settings_are_pinned_once_and_named_in_the_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    module = load("review-chain-runner")
+    directory = tmp_path / "checkpoint"
+    (directory / "control").mkdir(parents=True)
+    for name in ("review-profile.py", "review-profile.defaults.json"):
+        shutil.copyfile(SCRIPTS / name, directory / "control" / name)
+    profile = tmp_path / "review-profile.json"
+    defaults = json.loads((SCRIPTS / "review-profile.defaults.json").read_text())
+    document = {
+        "schema_version": 1,
+        "defaults_version": defaults["defaults_version"],
+        "confirmed_at": "2026-01-01T00:00:00Z",
+        "engines": defaults["engines"],
+        "order": defaults["order"],
+        "repos": {"example/repo": {"engines": {"claude": {"effort": "high"}}}},
+    }
+    profile.write_text(json.dumps(document))
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_PROFILE", str(profile))
+    # A caller cannot pre-seed the pin through its own environment.
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_MODEL", "sonnet")
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_EFFORT", "low")
+    runner = module.Runner(SimpleNamespace(repo="example/repo"), directory)
+
+    assert runner.settings_line("claude") == (
+        "Reviewer settings: not recorded by this run.\n"
+    )
+    pinned = runner.review_settings("claude")
+    assert pinned == {
+        "engine": "claude",
+        "model": "opus",
+        "effort": "high",
+        "source": "repository override",
+    }
+    assert json.loads((directory / "state.json").read_text())["review_settings"] == {
+        "claude": pinned
+    }
+
+    document["repos"]["example/repo"]["engines"]["claude"]["effort"] = "max"
+    profile.write_text(json.dumps(document))
+    assert runner.review_settings("claude") == pinned
+    assert runner.settings_line("claude") == (
+        "Reviewer settings: model opus, effort high (repository override).\n"
+    )
+
+
+def test_missing_review_profile_blocks_before_any_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    module = load("review-chain-runner")
+    directory = tmp_path / "checkpoint"
+    (directory / "control").mkdir(parents=True)
+    shutil.copyfile(
+        SCRIPTS / "review-profile.py", directory / "control/review-profile.py"
+    )
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_PROFILE", str(tmp_path / "absent.json"))
+    runner = module.Runner(SimpleNamespace(repo="example/repo"), directory)
+    with pytest.raises(module.Blocked, match="review-setup"):
+        runner.review_settings("codex")
+    assert not (directory / "state.json").exists()
+
+
+def test_worker_environment_exports_the_selected_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-chain-runner")
+    directory = tmp_path / "checkpoint"
+    directory.mkdir()
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_MODEL", "stale-model")
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_EFFORT", "low")
+    runner = module.Runner(SimpleNamespace(repo="example/repo"), directory)
+    runner.state.update(
+        installation={"manifest_sha256": "c" * 64},
+        review_settings={
+            "codex": {
+                "engine": "codex",
+                "model": "gpt-6-astra",
+                "effort": "max",
+                "source": "user profile",
+                "fallback": {"model": "gpt-5.6-sol", "effort": "medium"},
+            },
+            "claude": {
+                "engine": "claude",
+                "model": "opus",
+                "effort": "medium",
+                "source": "user profile",
+            },
+        },
+    )
+
+    def pinned(engine: str) -> tuple[str | None, str | None]:
+        env = runner.environment(engine)
+        return env.get("ACTIVELOOM_REVIEW_MODEL"), env.get("ACTIVELOOM_REVIEW_EFFORT")
+
+    assert pinned("codex") == ("gpt-6-astra", "max")
+    assert pinned("claude") == ("opus", "medium")
+    runner.state["fallback_engines"] = ["codex"]
+    assert pinned("codex") == ("gpt-5.6-sol", "medium")
+    assert pinned("claude") == ("opus", "medium")

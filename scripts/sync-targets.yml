@@ -165,6 +165,18 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      # Launchers and the review-chain runner resolve reviewer settings
+      # through this byte copy of the review-setup helper, kept beside them.
+      - source: .claude/skills/critique/scripts/review-profile.py
+        destination: .claude/skills/critique/scripts/review-profile.py
+        substitutions: []
+        mode: '0644'
+
+      - source: .claude/skills/critique/scripts/review-profile.defaults.json
+        destination: .claude/skills/critique/scripts/review-profile.defaults.json
+        substitutions: []
+        mode: '0644'
+
       - source: .claude/skills/critique/scripts/run-agy-review.sh
         destination: .claude/skills/critique/scripts/run-agy-review.sh
         substitutions: []
@@ -248,6 +260,22 @@ harnesses:
       - source: .claude/skills/onboard/SKILL.md
         destination: .claude/skills/onboard/SKILL.md
         substitutions: []
+
+      # review-setup — per-user review profile: model, effort and engine
+      # order for local reviewers. The helper is the profile's only writer.
+      - source: .claude/skills/review-setup/SKILL.md
+        destination: .claude/skills/review-setup/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/review-setup/scripts/review-profile.py
+        destination: .claude/skills/review-setup/scripts/review-profile.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .claude/skills/review-setup/scripts/review-profile.defaults.json
+        destination: .claude/skills/review-setup/scripts/review-profile.defaults.json
+        substitutions: []
+        mode: '0644'
 
       - source: .claude/skills/phone-install/SKILL.md
         destination: .claude/skills/phone-install/SKILL.md
@@ -593,6 +621,18 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      # Launchers and the review-chain runner resolve reviewer settings
+      # through this byte copy of the review-setup helper, kept beside them.
+      - source: .codex/skills/critique/scripts/review-profile.py
+        destination: .codex/skills/critique/scripts/review-profile.py
+        substitutions: []
+        mode: '0644'
+
+      - source: .codex/skills/critique/scripts/review-profile.defaults.json
+        destination: .codex/skills/critique/scripts/review-profile.defaults.json
+        substitutions: []
+        mode: '0644'
+
       - source: .codex/skills/critique/scripts/run-claude-review.sh
         destination: .codex/skills/critique/scripts/run-claude-review.sh
         substitutions: []
@@ -684,6 +724,22 @@ harnesses:
       - source: .codex/skills/onboard/SKILL.md
         destination: .codex/skills/onboard/SKILL.md
         substitutions: []
+
+      # review-setup — per-user review profile: model, effort and engine
+      # order for local reviewers. The helper is the profile's only writer.
+      - source: .codex/skills/review-setup/SKILL.md
+        destination: .codex/skills/review-setup/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/review-setup/scripts/review-profile.py
+        destination: .codex/skills/review-setup/scripts/review-profile.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .codex/skills/review-setup/scripts/review-profile.defaults.json
+        destination: .codex/skills/review-setup/scripts/review-profile.defaults.json
+        substitutions: []
+        mode: '0644'
 
       - source: .codex/skills/phone-install/SKILL.md
         destination: .codex/skills/phone-install/SKILL.md
@@ -1048,6 +1104,22 @@ harnesses:
       - source: .agents/skills/onboard/SKILL.md
         destination: .agents/skills/onboard/SKILL.md
         substitutions: []
+
+      # review-setup — per-user review profile: model, effort and engine
+      # order for local reviewers. The helper is the profile's only writer.
+      - source: .agents/skills/review-setup/SKILL.md
+        destination: .agents/skills/review-setup/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/review-setup/scripts/review-profile.py
+        destination: .agents/skills/review-setup/scripts/review-profile.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .agents/skills/review-setup/scripts/review-profile.defaults.json
+        destination: .agents/skills/review-setup/scripts/review-profile.defaults.json
+        substitutions: []
+        mode: '0644'
 
       - source: .agents/skills/phone-install/SKILL.md
         destination: .agents/skills/phone-install/SKILL.md
