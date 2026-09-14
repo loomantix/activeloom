@@ -249,6 +249,17 @@ harnesses:
         destination: .claude/skills/diagnosing-bugs/SKILL.md
         substitutions: []
 
+      # simplify-comments — comment-density audit and a comment-only editorial
+      # pass. The helper is executed from the skill, so it ships executable.
+      - source: .claude/skills/simplify-comments/SKILL.md
+        destination: .claude/skills/simplify-comments/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/simplify-comments/scripts/comment-density.py
+        destination: .claude/skills/simplify-comments/scripts/comment-density.py
+        substitutions: []
+        mode: '0755'
+
       - source: .claude/skills/task-packet/SKILL.md
         destination: .claude/skills/task-packet/SKILL.md
         substitutions: []
@@ -756,6 +767,17 @@ harnesses:
         destination: .codex/skills/diagnosing-bugs/SKILL.md
         substitutions: []
 
+      # simplify-comments — comment-density audit and a comment-only editorial
+      # pass. The helper is executed from the skill, so it ships executable.
+      - source: .codex/skills/simplify-comments/SKILL.md
+        destination: .codex/skills/simplify-comments/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/simplify-comments/scripts/comment-density.py
+        destination: .codex/skills/simplify-comments/scripts/comment-density.py
+        substitutions: []
+        mode: '0755'
+
       - source: .codex/skills/task-packet/SKILL.md
         destination: .codex/skills/task-packet/SKILL.md
         substitutions: []
@@ -1132,6 +1154,17 @@ harnesses:
       - source: .agents/skills/diagnosing-bugs/SKILL.md
         destination: .agents/skills/diagnosing-bugs/SKILL.md
         substitutions: []
+
+      # simplify-comments — comment-density audit and a comment-only editorial
+      # pass. The helper is executed from the skill, so it ships executable.
+      - source: .agents/skills/simplify-comments/SKILL.md
+        destination: .agents/skills/simplify-comments/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/simplify-comments/scripts/comment-density.py
+        destination: .agents/skills/simplify-comments/scripts/comment-density.py
+        substitutions: []
+        mode: '0755'
 
       - source: .agents/skills/task-packet/SKILL.md
         destination: .agents/skills/task-packet/SKILL.md

@@ -10,6 +10,8 @@
 .agents/skills/review-setup/SKILL.md
 .agents/skills/review-setup/scripts/review-profile.defaults.json
 .agents/skills/review-setup/scripts/review-profile.py
+.agents/skills/simplify-comments/SKILL.md
+.agents/skills/simplify-comments/scripts/comment-density.py
 .agents/skills/task-packet/SKILL.md
 .claude/prompt-stack.json
 .claude/skills/diagnosing-bugs/SKILL.md
@@ -24,6 +26,8 @@
 .claude/skills/review-setup/SKILL.md
 .claude/skills/review-setup/scripts/review-profile.defaults.json
 .claude/skills/review-setup/scripts/review-profile.py
+.claude/skills/simplify-comments/SKILL.md
+.claude/skills/simplify-comments/scripts/comment-density.py
 .claude/skills/task-packet/SKILL.md
 .codex/prompt-stack.json
 .codex/skills/diagnosing-bugs/SKILL.md
@@ -38,4 +42,6 @@
 .codex/skills/review-setup/SKILL.md
 .codex/skills/review-setup/scripts/review-profile.defaults.json
 .codex/skills/review-setup/scripts/review-profile.py
+.codex/skills/simplify-comments/SKILL.md
+.codex/skills/simplify-comments/scripts/comment-density.py
 .codex/skills/task-packet/SKILL.md
