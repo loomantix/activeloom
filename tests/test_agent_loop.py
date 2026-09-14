@@ -1235,6 +1235,35 @@ def test_resumed_run_names_its_issue_and_emits_a_resumed_start(
     assert any(event["event"] == "pr_ready" and event["issue"] == 75 for event in events)
 
 
+def test_event_stream_refuses_to_follow_a_symlink(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
+    )
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook)
+    first = _run(consumer, ["--issues", "76"], issues=[_issue(76)], config=config, timeout=60)
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+    target = tmp_path / "elsewhere.jsonl"
+    target.write_text("", encoding="utf-8")
+    (state_file.parent / "events.jsonl").symlink_to(target)
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(76, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "event stream is not a private regular file" in resumed.stderr
+    assert target.read_text(encoding="utf-8") == ""
+
+
 def test_batch_iteration_cap_pauses_with_durable_cursor(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -3217,11 +3246,16 @@ def test_persistent_logs_are_owner_only(
         config=_config(tmp_path),
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    log_dirs = list((tmp_path / "logs").iterdir())
+    entries = list((tmp_path / "logs").iterdir())
+    log_dirs = [entry for entry in entries if entry.is_dir()]
     assert len(log_dirs) == 1
     assert stat.S_IMODE(log_dirs[0].stat().st_mode) == 0o700
     for log_file in log_dirs[0].iterdir():
         assert stat.S_IMODE(log_file.stat().st_mode) & 0o077 == 0
+    # The run's event stream sits beside the issue log directory.
+    streams = [entry for entry in entries if not entry.is_dir()]
+    assert [entry.name.endswith("-events.jsonl") for entry in streams] == [True]
+    assert stat.S_IMODE(streams[0].stat().st_mode) == 0o600
 
 
 def test_untracked_leftover_does_not_abort_batch_after_publish(

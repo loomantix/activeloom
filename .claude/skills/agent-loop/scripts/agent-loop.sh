@@ -606,8 +606,10 @@ INTERRUPTED=false
 STOP_CATEGORIES="no-result/hook-ended-early invalid-result review-blocked ledger-evidence push-checkpoint-mismatch heads-misaligned worktree-state validation-red hook-failed hook-timeout budget-exhausted review-cap-exhausted worker-ambiguous-bail worker-no-commit worker-failed setup-failed merge-conflict publication-diff base-diverged dependency-blocked issue-changed checkpoint-failed uncertain-mutation child-resume-failed batch-incomplete interrupted internal-error"
 
 # Append one supervision event. The stream is the supported way to watch a
-# batch; console glyph lines are for people and may change. Recording is best
-# effort and never fails the step it describes.
+# batch; console glyph lines are for people and may change. Each line is
+# flushed to disk before the step continues. Appending stays in the shell: a
+# run emits dozens of events, and an interpreter per event added seconds per
+# issue. Recording is best effort and never fails the step it describes.
 emit_event() {
     local event="$1" payload
     shift
@@ -615,8 +617,14 @@ emit_event() {
     payload="$(jq -cn --arg event "$event" --arg runTag "$RUN_TAG" \
         --argjson epoch "$(date +%s)" "$@" \
         '$ARGS.named + {event: $event, runTag: $runTag, epoch: $epoch}' 2>/dev/null)" || return 0
-    python3 "$RUN_STATE_HELPER" event-append --file "$EVENTS_FILE" --json "$payload" \
-        >/dev/null 2>&1 || echo "warning: could not record the $event event" >&2
+    if [ -L "$EVENTS_FILE" ] || { [ -e "$EVENTS_FILE" ] && { [ ! -f "$EVENTS_FILE" ] || [ ! -O "$EVENTS_FILE" ]; }; }; then
+        echo "warning: event stream is not a private regular file; not recording $event" >&2
+        return 0
+    fi
+    if ! (umask 077; printf '%s\n' "$payload" >> "$EVENTS_FILE") 2>/dev/null || \
+       ! chmod 600 "$EVENTS_FILE" 2>/dev/null || ! sync -d -- "$EVENTS_FILE" 2>/dev/null; then
+        echo "warning: could not record the $event event" >&2
+    fi
 }
 
 # The last non-empty lines of a log, bounded in count and width and stripped of

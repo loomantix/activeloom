@@ -297,28 +297,6 @@ def test_batch_records_a_stack_only_on_an_earlier_issue(tmp_path: Path) -> None:
     assert value["issues"][1]["stackedOn"] == 7
 
 
-def test_event_append_writes_private_json_lines_and_rejects_bad_input(
-    tmp_path: Path,
-) -> None:
-    events = tmp_path / "events.jsonl"
-    for payload in ('{"event":"issue_start","issue":7}', '{"event":"stop","issue":7}'):
-        appended = _run("event-append", "--file", str(events), "--json", payload)
-        assert appended.returncode == 0, appended.stderr
-    assert stat.S_IMODE(events.stat().st_mode) == 0o600
-    lines = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
-    assert [line["event"] for line in lines] == ["issue_start", "stop"]
-
-    for payload in ("[]", '{"issue":7}', '{"event":"Not A Type"}', "{"):
-        rejected = _run("event-append", "--file", str(events), "--json", payload)
-        assert rejected.returncode != 0
-    link = tmp_path / "linked.jsonl"
-    link.symlink_to(events)
-    assert _run("event-append", "--file", str(link), "--json", '{"event":"stop"}').returncode != 0
-    events.chmod(0o644)
-    assert _run("event-append", "--file", str(events), "--json", '{"event":"stop"}').returncode != 0
-    assert len(events.read_text(encoding="utf-8").splitlines()) == 2
-
-
 def test_batch_expected_status_is_atomic_across_concurrent_updates(
     tmp_path: Path,
 ) -> None:
