@@ -1359,8 +1359,9 @@ def test_migration_preserves_the_v1_snapshot_and_budget(
 @pytest.mark.parametrize(
     "corruption", ["log", "log-proof", "controller", "result", "head"]
 )
+@pytest.mark.parametrize("diagnostic", ["dirty", "moved"])
 def test_legacy_reconciliation_rejects_uncertain_evidence(
-    harness: Any, monkeypatch: pytest.MonkeyPatch, corruption: str
+    harness: Any, monkeypatch: pytest.MonkeyPatch, corruption: str, diagnostic: str
 ) -> None:
     runner = harness.runner(harness.args, harness.directory)
     runner.initialize()
@@ -1374,6 +1375,17 @@ def test_legacy_reconciliation_rejects_uncertain_evidence(
     folder = harness.directory / "pass-3"
     folder.mkdir()
     (folder / "worker.log").write_text("agy relay surface checkout must be clean\n")
+    if diagnostic == "moved":
+        (folder / "worker.log").write_text(
+            "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
+        )
+        log = harness.directory / "original-controller.log"
+        log.write_text(
+            f"Starting gemini pass 1 at {HEAD}\n"
+            "review-chain blocked: bash exited 128; inspect worker.log; "
+            f"checkpoint: {harness.directory}\n"
+        )
+        harness.args.legacy_controller_log = [str(log), harness.module.digest(log)]
     for name in ("historical.json", "before-threads.json"):
         harness.module.save(folder / name, [])
     backup = harness.directory / "state-v1.json"
@@ -1405,6 +1417,254 @@ def test_legacy_reconciliation_rejects_uncertain_evidence(
     with pytest.raises(harness.module.Blocked):
         runner.reconcile_legacy_preflight(pending, proof)
     assert not runner.state["attempts"]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing",
+        "hash",
+        "exit",
+        "cleanup",
+        "engine",
+        "round",
+        "head",
+        "checkpoint",
+        "extra-output",
+        "review-output",
+        "symlink",
+        "ordinary-git-error",
+    ],
+)
+def test_legacy_git_failure_requires_terminal_controller_evidence(
+    harness: Any, corruption: str
+) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+    pending = {"engine": "gemini", "round": 2, "before": HEAD}
+    worker = harness.directory / "worker.log"
+    worker.write_text(
+        "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
+    )
+    controller_log = harness.directory / "original-controller.log"
+    terminal = (
+        f"Starting gemini pass 2 at {HEAD}\n"
+        "review-chain blocked: bash exited 128; inspect worker.log; "
+        f"checkpoint: {harness.directory}\n"
+    )
+    changes = {
+        "exit": ("bash exited 128", "bash exited 1"),
+        "cleanup": ("bash exited 128", "process-group cleanup denied"),
+        "engine": ("Starting gemini", "Starting claude"),
+        "round": ("pass 2", "pass 3"),
+        "head": (HEAD, BASE),
+        "checkpoint": (str(harness.directory), str(harness.directory / "other")),
+    }
+    if corruption in changes:
+        terminal = terminal.replace(*changes[corruption])
+    if corruption == "extra-output":
+        terminal += "Starting another reviewer\n"
+    if corruption == "review-output":
+        worker.write_text(worker.read_text() + "agy review failed (exit 128)\n")
+    if corruption == "ordinary-git-error":
+        worker.write_text("fatal: not a git repository: /missing/unrelated.git\n")
+    controller_log.write_text(terminal)
+    if corruption != "missing":
+        harness.args.legacy_controller_log = [
+            str(controller_log),
+            harness.module.digest(controller_log),
+        ]
+    if corruption == "hash":
+        controller_log.write_text(terminal + "changed\n")
+    if corruption == "symlink":
+        target = controller_log.with_suffix(".original")
+        controller_log.rename(target)
+        controller_log.symlink_to(target)
+    with pytest.raises(harness.module.Blocked):
+        runner.legacy_failure(pending, worker)
+
+
+@pytest.fixture
+def moved_worktree_failure(tmp_path: Path) -> bytes:
+    """Capture Git's real failure after a primary clone moves, then repair it."""
+    primary = tmp_path / "primary"
+    linked = tmp_path / "linked"
+    moved = tmp_path / "moved"
+
+    def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                *args,
+            ],
+            capture_output=True,
+            check=True,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+
+    git("init", str(primary))
+    git("-C", str(primary), "commit", "--allow-empty", "-m", "synthetic surface")
+    git("-C", str(primary), "worktree", "add", "--detach", str(linked))
+    head = git("-C", str(linked), "rev-parse", "HEAD").stdout
+    primary.rename(moved)
+    broken = subprocess.run(
+        ["git", "-C", str(linked), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    assert broken.returncode == 128
+    assert broken.stderr.startswith(b"fatal: not a git repository: ")
+    git("-C", str(moved), "worktree", "repair", str(linked))
+    assert git("-C", str(linked), "rev-parse", "HEAD").stdout == head
+    assert git("-C", str(linked), "status", "--porcelain").stdout == b""
+    return broken.stderr
+
+
+def test_legacy_moved_worktree_recovery_keeps_completed_passes(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, moved_worktree_failure: bytes
+) -> None:
+    harness.args.chain = "claude,codex,gemini"
+    original = harness.runner.launch
+
+    def legacy_failure(self: Any, pending: dict[str, Any]) -> None:
+        if pending["engine"] != "gemini":
+            original(self, pending)
+            return
+        pending["phase"] = "launching"
+        folder = self.directory / pending["folder"]
+        # v1 recorded only these files before executing its launcher.
+        (folder / "before-comments.json").unlink()
+        pending.pop("before_comments_sha256")
+        (folder / "worker.log").write_bytes(moved_worktree_failure)
+        self.state["version"] = 1
+        self.state.pop("attempts")
+        self.persist()
+        raise harness.module.Blocked("bash exited 128; inspect worker.log")
+
+    monkeypatch.setattr(harness.runner, "launch", legacy_failure)
+    with pytest.raises(harness.module.Blocked, match="bash exited 128"):
+        harness.runner(harness.args, harness.directory).run()
+    prior = harness.module.read(harness.directory / "state.json")
+    assert harness.launches == ["claude", "codex"]
+    folder = harness.directory / prior["pending"]["folder"]
+    history = (folder / "historical.json").read_bytes()
+    threads = (folder / "before-threads.json").read_bytes()
+    controller_log = harness.directory / "original-controller.log"
+    controller_log.write_text(
+        f"Starting gemini pass 1 at {HEAD}\n"
+        "review-chain blocked: bash exited 128; inspect worker.log; "
+        f"checkpoint: {harness.directory}\n"
+    )
+    original_command = harness.module.command
+
+    def command(argv: list[str]) -> str:
+        if argv[:1] == ["git"] and "-C" in argv:
+            if "--show-toplevel" in argv:
+                return str(ROOT)
+            return "" if "status" in argv else HEAD
+        return str(original_command(argv))
+
+    monkeypatch.setattr(harness.module, "command", command)
+    monkeypatch.setattr(
+        harness.module, "LEGACY_PREFLIGHT_HASHES", prior["control_hashes"]
+    )
+    monkeypatch.setattr(harness.runner, "launch", original)
+    harness.args.resume = harness.args.recover_preflight = True
+    harness.args.migrate_controller = HEAD
+    harness.args.reconcile_legacy_preflight = harness.module.digest(
+        folder / "worker.log"
+    )
+    harness.args.legacy_controller_log = [
+        str(controller_log),
+        harness.module.digest(controller_log),
+    ]
+    resumed = harness.runner(harness.args, harness.directory)
+    assert resumed.run() == "converged"
+    assert harness.module.read(harness.directory / "state-v1.json") == prior
+    for key in ("run_id", "config", "base", "start_head"):
+        assert resumed.state[key] == prior[key]
+    assert resumed.state["completed"][:2] == prior["completed"]
+    assert harness.launches == ["claude", "codex", "gemini"]
+    failed, retry = resumed.state["attempts"]
+    assert failed["phase"] == "preflight_failed"
+    assert failed["exit_status"] == 128
+    assert failed["review_started"] is False
+    assert failed["failure_reason"] == "surface_provenance"
+    assert failed["round"] == retry["round"] == 1
+    assert failed["legacy_controller_log_sha256"] == harness.module.digest(
+        controller_log
+    )
+    assert (folder / "worker.log").read_bytes() == moved_worktree_failure
+    assert (folder / "historical.json").read_bytes() == history
+    assert (folder / "before-threads.json").read_bytes() == threads
+
+
+def test_managed_gemini_installation_survives_upstream_clone_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-chain-runner")
+    upstream = tmp_path / "upstream"
+    subprocess.run(["git", "init", str(upstream)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(upstream),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "synthetic trusted pin",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    pin = subprocess.check_output(
+        ["git", "-C", str(upstream), "rev-parse", "HEAD"], text=True
+    ).strip()
+    directory = tmp_path / "checkpoint"
+    control = directory / "control"
+    control.mkdir(parents=True)
+    (directory / "installation").mkdir()
+    (control / "run-agy-review.sh").write_text(f'agy_surface_sha="{pin}"\n')
+    runner = module.Runner(SimpleNamespace(repo="example/repo"), directory)
+    runner.state = {
+        "installation": {"manifest_sha256": "d" * 64},
+        "review_settings": {"gemini": {"model": "test-model", "effort": "high"}},
+    }
+    original = module.command
+    fetches = []
+
+    def command(argv: list[str]) -> str:
+        if "fetch" in argv:
+            fetches.append(list(argv))
+            # Serve the trusted bytes from a local synthetic repository. Keep
+            # the installed origin canonical, without using the network.
+            argv = [str(upstream) if part == "origin" else part for part in argv]
+        return str(original(argv))
+
+    monkeypatch.setattr(module, "command", command)
+    environment = runner.environment("gemini")
+    checkout = directory / "installation/agy"
+    assert (checkout / ".git").is_dir()
+    assert original(["git", "-C", str(checkout), "remote", "get-url", "origin"]) == (
+        "https://github.com/loomantix/activeloom.git"
+    )
+    upstream.rename(tmp_path / "moved-upstream")
+    assert runner.environment("gemini") == environment
+    assert original(["git", "-C", str(checkout), "rev-parse", "HEAD"]) == pin
+    assert original(["git", "-C", str(checkout), "status", "--porcelain"]) == ""
+    assert len(fetches) == 1
 
 
 def test_installation_repair_preserves_dirty_bytes_and_the_original_pin(
@@ -1556,8 +1816,9 @@ def test_recovery_resumes_after_retry_directory_checkpoint_interruption(
 
 
 @pytest.mark.parametrize("cut", ["snapshot", "checkpoint"])
+@pytest.mark.parametrize("diagnostic", ["dirty", "moved"])
 def test_legacy_reconciliation_resumes_after_evidence_write(
-    harness: Any, monkeypatch: pytest.MonkeyPatch, cut: str
+    harness: Any, monkeypatch: pytest.MonkeyPatch, cut: str, diagnostic: str
 ) -> None:
     runner = harness.runner(harness.args, harness.directory)
     runner.initialize()
@@ -1572,6 +1833,17 @@ def test_legacy_reconciliation_resumes_after_evidence_write(
     folder = harness.directory / "pass-3"
     folder.mkdir()
     (folder / "worker.log").write_text("agy relay surface checkout must be clean\n")
+    if diagnostic == "moved":
+        (folder / "worker.log").write_text(
+            "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
+        )
+        log = harness.directory / "original-controller.log"
+        log.write_text(
+            f"Starting gemini pass 1 at {HEAD}\n"
+            "review-chain blocked: bash exited 128; inspect worker.log; "
+            f"checkpoint: {harness.directory}\n"
+        )
+        harness.args.legacy_controller_log = [str(log), harness.module.digest(log)]
     for name in ("historical.json", "before-threads.json"):
         harness.module.save(folder / name, [])
     backup = harness.directory / "state-v1.json"
@@ -1612,6 +1884,10 @@ def test_legacy_reconciliation_resumes_after_evidence_write(
     evidence = (folder / "launch.json").read_bytes() if cut == "checkpoint" else None
     monkeypatch.setattr(harness.module.os, "replace", original_replace)
     resumed = harness.runner(harness.args, harness.directory)
+    if diagnostic == "moved":
+        recovery = resumed.recovery_command()
+        assert "--legacy-controller-log" in recovery
+        assert harness.args.legacy_controller_log[1] in recovery
     resumed.reconcile_legacy_preflight(resumed.state["pending"], proof)
     assert resumed.state["pending"]["phase"] == "preflight_failed"
     assert len(resumed.state["attempts"]) == 1
