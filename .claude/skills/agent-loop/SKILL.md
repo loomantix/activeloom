@@ -60,7 +60,7 @@ with the issue worktree as the current directory.
 | `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                                                                                                  |
 | `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                                                                                                    |
 | `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility.                                                                                                  |
-| `config_doctor`                                  | Run the non-mutating compatibility preflight before issue selection or claim, including that each review hook's CLI resolves on `PATH`.                                                                     |
+| `config_doctor`                                  | Run the non-mutating compatibility preflight before issue selection or claim, including that each review hook's CLI resolves on `PATH`.                                                                      |
 | `claude_effort_policy`                           | Optional literal Claude effort policy enforced by the doctor.                                                                                                                                                |
 | `review_max_rounds`                              | Codex→Claude round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the draft PR.                                                                                                |
 | `review_timeout_seconds`                         | Positive wall-clock budget for one issue's review, persisted across resume. Default `7200`; each review pass and its validation is capped at the smaller of the remaining budget and `hook_timeout_seconds`. |
@@ -68,7 +68,7 @@ with the issue worktree as the current directory.
 | `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                                                                                                                                |
 | `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                                                                                                |
 | `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                                                                 |
-| `worker_effort`                                  | `--effort` for the default worker. Empty means the CLI or environment default (the doctor warns); when `claude_effort_policy` is set the two must match.                                                    |
+| `worker_effort`                                  | `--effort` for the default worker. Empty means the CLI or environment default (the doctor warns); when `claude_effort_policy` is set the two must match.                                                     |
 | `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                  |
 | `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                      |
 | `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                        |
@@ -185,11 +185,11 @@ The loop runs three model-backed aspects, and they are configured in two
 different places. This is the most common onboarding question, so it is spelled
 out here.
 
-| Aspect         | Where the model is chosen                | Effort control                                                        |
-| -------------- | ---------------------------------------- | --------------------------------------------------------------------- |
+| Aspect         | Where the model is chosen                | Effort control                                                          |
+| -------------- | ---------------------------------------- | ----------------------------------------------------------------------- |
 | Default worker | `worker_model` / `worker_fallback_model` | `worker_effort`, validated against `claude_effort_policy` when both set |
-| Codex review   | inside `codex_review_hook`               | inside the same command                                               |
-| Claude review  | inside `claude_review_hook`              | inside the same command, and validated against `claude_effort_policy` |
+| Codex review   | inside `codex_review_hook`               | inside the same command                                                 |
+| Claude review  | inside `claude_review_hook`              | inside the same command, and validated against `claude_effort_policy`   |
 
 A review hook is a literal shell command, so reviewer model and effort are
 ordinary flags on that command rather than dedicated config keys. These
