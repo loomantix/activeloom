@@ -259,12 +259,21 @@ or from the CLI:
 node cli/bin/activeloom.js review-config defaults
 node cli/bin/activeloom.js review-config init --accept-defaults claude.effort=high
 node cli/bin/activeloom.js review-config set --repo example/project order.lean=codex,claude
+node cli/bin/activeloom.js review-config set codex.fallback.model=gpt-5.6-sol codex.fallback.effort=medium
 node cli/bin/activeloom.js review-config show --repo example/project
 ```
 ````
 
 Repository overrides layer over your own settings. A running review chain keeps
 the settings it started with; a change applies to the next run.
+
+The optional Codex fallback pairs an explicit model with its own effort level.
+It is disabled by default. The automatic runner switches once after a recognized
+capacity rejection when the worktree, PR head, and review evidence are unchanged;
+it preserves the failed attempt and remaining round budget. It uses that fallback
+for the remaining Codex passes and names the actual settings in each attestation.
+Use `review-config set codex.fallback=none` to disable it. Standalone launchers
+and other engines do not retry.
 
 ## AI review workflow
 

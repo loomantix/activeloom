@@ -60,6 +60,30 @@ class ProcessFailure(Blocked):
         self.exit_status = exit_status
 
 
+def capacity_rejected(log: Path) -> bool:
+    """Read terminal Codex JSON events, never command output or plain diagnostics."""
+    if log.is_symlink() or not log.is_file():
+        return False
+    rejected = False
+    with log.open(errors="replace") as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except (ValueError, UnicodeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            kind = event.get("type")
+            if kind in ("error", "turn.failed"):
+                error = event.get("error") if kind == "turn.failed" else event
+                rejected = isinstance(error, dict) and error.get("message") == (
+                    "Selected model is at capacity. Please try a different model."
+                )
+            else:
+                rejected = False
+    return rejected
+
+
 def digest(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         raise Blocked(f"expected a regular file: {path.name}")
@@ -300,6 +324,28 @@ class Runner:
                 ids.extend(c["databaseId"] for c in thread["comments"]["nodes"])
         save(path, pages)
         return ids
+
+    def comments(self, path: Path) -> None:
+        pages = json.loads(
+            command(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{self.args.repo}/issues/{self.args.pr}/comments",
+                    "--paginate",
+                    "--slurp",
+                ]
+            )
+        )
+        save(
+            path,
+            [
+                {"id": c["id"], "body": c["body"], "author": c["user"]["login"]}
+                for page in pages
+                for c in page
+                if not c["body"].lstrip().startswith("<!-- local-review-telemetry:")
+            ],
+        )
 
     def dco(self, head: str) -> None:
         if not self.state["config"]["require_dco"]:
@@ -570,7 +616,7 @@ class Runner:
             ],
             GH_REPO=self.args.repo,
         )
-        settings = self.review_settings(engine)
+        settings = self.selected_settings(engine)
         env.update(
             ACTIVELOOM_REVIEW_MODEL=settings["model"],
             ACTIVELOOM_REVIEW_EFFORT=settings["effort"],
@@ -629,7 +675,7 @@ class Runner:
             )
         return env
 
-    def review_settings(self, engine: str) -> dict[str, str]:
+    def review_settings(self, engine: str) -> dict[str, Any]:
         """Pin an engine's profile settings once; profile edits apply to the next run."""
         pinned = self.state.setdefault("review_settings", {})
         if engine not in pinned:
@@ -663,6 +709,15 @@ class Runner:
             pinned[engine] = json.loads(result.stdout)
             self.persist()
         return dict(pinned[engine])
+
+    def selected_settings(self, engine: str) -> dict[str, Any]:
+        settings = self.review_settings(engine)
+        if engine in self.state.get("fallback_engines", []):
+            fallback = settings.get("fallback")
+            if not isinstance(fallback, dict):
+                raise Blocked("pinned fallback settings are missing")
+            return {**fallback, "engine": engine, "source": "capacity fallback"}
+        return settings
 
     def launcher_command(self, engine: str, head: str, number: int) -> list[str]:
         return [
@@ -726,6 +781,10 @@ class Runner:
             "exit_status": None,
             "failure_reason": None,
             "phase": "launching",
+            "settings": {
+                "model": env.get("ACTIVELOOM_REVIEW_MODEL"),
+                "effort": env.get("ACTIVELOOM_REVIEW_EFFORT"),
+            },
         }
         self.state.setdefault("attempts", []).append(attempt)
         pending.update(phase="launching", attempt_id=attempt["attempt_id"])
@@ -795,10 +854,110 @@ class Runner:
                         pending["phase"] = "preflight_failed"
                     elif evidence.get("phase") == "execution":
                         attempt["phase"] = pending["phase"] = "execution_failed"
+                        if (
+                            pending["engine"] == "codex"
+                            and isinstance(caught, ProcessFailure)
+                            and caught.exit_status == 1
+                            and capacity_rejected(folder / "worker.log")
+                        ):
+                            attempt.update(
+                                review_started=True,
+                                phase="capacity_failed",
+                                failure_reason="model_capacity",
+                                log_sha256=digest(folder / "worker.log"),
+                            )
+                            pending["phase"] = "capacity_failed"
         finally:
             self.persist()
-        if error:
+        if error and pending["phase"] != "capacity_failed":
             raise error
+
+    def recover_capacity(self, pending: dict[str, Any]) -> None:
+        """Switch once to a pinned fallback without changing run, round or history."""
+        self.verify_control()
+        engine = pending["engine"]
+        settings = self.review_settings(engine)
+        if engine != "codex" or not settings.get("fallback"):
+            raise Blocked(
+                "model is at capacity; no Codex fallback was pinned for this run"
+            )
+        recovery = pending.get("capacity_recovery")
+        if engine in self.state.get("fallback_engines", []) and not recovery:
+            raise Blocked("configured fallback is also at capacity; no further retry")
+        if (
+            self.boundary() != pending["before"]
+            or self.state["head"] != pending["before"]
+        ):
+            raise Blocked("capacity fallback requires the unchanged review head")
+        decision = self.decision(pending["before"])
+        if (
+            decision.get("passes") != self.state["completed"]
+            or decision.get("status") != "next"
+            or (decision.get("engine"), decision.get("round"))
+            != (engine, pending["round"])
+        ):
+            raise Blocked("capacity fallback cannot change the owed pass or budget")
+        folder = self.directory / pending["folder"]
+        attempt = self.state["attempts"][-1]
+        if (
+            attempt.get("attempt_id") != pending.get("attempt_id")
+            or attempt.get("phase") != "capacity_failed"
+            or type(attempt.get("exit_status")) is not int
+            or attempt["exit_status"] != 1
+            or attempt.get("review_started") is not True
+            or digest(folder / "launch.json") != attempt.get("launch_sha256")
+            or digest(folder / "worker.log") != attempt.get("log_sha256")
+            or not capacity_rejected(folder / "worker.log")
+            or (folder / "result.json").exists()
+            or (folder / "result.json").is_symlink()
+            or digest(folder / "historical.json") != pending["historical_sha256"]
+        ):
+            raise Blocked(
+                "capacity failure evidence changed or a reviewer result exists"
+            )
+        for name, capture in (("threads", self.threads), ("comments", self.comments)):
+            before = folder / f"before-{name}.json"
+            if digest(before) != pending.get(f"before_{name}_sha256"):
+                raise Blocked("pre-pass review evidence changed")
+            current = folder / f"capacity-{name}.json"
+            capture(current)
+            if digest(current) != digest(before):
+                raise Blocked(
+                    "review evidence changed; capacity fallback requires reconciliation"
+                )
+        retry = folder / "fallback"
+        if recovery is None:
+            if retry.exists() or retry.is_symlink():
+                raise Blocked("unexpected capacity fallback directory")
+            pending["capacity_recovery"] = {"attempt_id": attempt["attempt_id"]}
+            self.persist()
+        elif recovery.get("attempt_id") != attempt["attempt_id"]:
+            raise Blocked("capacity fallback transaction changed")
+        if retry.is_symlink():
+            raise Blocked("capacity fallback directory cannot be a symlink")
+        retry.mkdir(mode=0o700, exist_ok=True)
+        names = {"historical.json", "before-threads.json", "before-comments.json"}
+        if any(
+            p.name not in names or p.is_symlink() or not p.is_file()
+            for p in retry.iterdir()
+        ):
+            raise Blocked("unexpected capacity fallback evidence")
+        for name in names:
+            target = retry / name
+            if target.exists():
+                if digest(target) != digest(folder / name):
+                    raise Blocked("capacity fallback snapshot changed")
+            else:
+                save(target, read(folder / name))
+        self.state.setdefault("fallback_engines", []).append(engine)
+        pending.update(folder=str(retry.relative_to(self.directory)), phase="prepared")
+        pending.pop("capacity_recovery")
+        self.persist()
+        fallback = settings["fallback"]
+        print(
+            f"Capacity fallback: {engine} model {fallback['model']}, effort {fallback['effort']}",
+            flush=True,
+        )
 
     def recover_preflight(self, pending: dict[str, Any]) -> None:
         if not getattr(self.args, "recover_preflight", False):
@@ -849,7 +1008,7 @@ class Runner:
             raise Blocked("recovery transaction identity changed")
         retry.mkdir(mode=0o700, exist_ok=True)
         if any(
-            p.name not in ("historical.json", "history.pending")
+            p.name not in ("historical.json", "history.pending", "before-threads.json", "before-comments.json")
             or p.is_symlink()
             or not p.is_file()
             for p in retry.iterdir()
@@ -867,6 +1026,17 @@ class Runner:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, history)
+        for name in ("threads", "comments"):
+            source = folder / f"before-{name}.json"
+            if f"before_{name}_sha256" in pending:
+                if digest(source) != pending[f"before_{name}_sha256"]:
+                    raise Blocked("pre-pass review snapshot changed")
+                target = retry / source.name
+                if target.exists():
+                    if digest(target) != digest(source):
+                        raise Blocked("retry review snapshot changed")
+                else:
+                    save(target, read(source))
         pending["folder"] = str(retry.relative_to(self.directory))
         pending["phase"] = "prepared"
         pending.pop("recovery")
@@ -1123,6 +1293,8 @@ class Runner:
         settings = self.state.get("review_settings", {}).get(engine)
         if not settings:
             return "Reviewer settings: not recorded by this run.\n"
+        if engine in self.state.get("fallback_engines", []):
+            settings = {**settings["fallback"], "source": "capacity fallback"}
         return (
             f"Reviewer settings: model {settings['model']}, "
             f"effort {settings['effort']} ({settings['source']}).\n"
@@ -1235,6 +1407,8 @@ class Runner:
                     self.reconcile_legacy_preflight(pending, legacy_proof)
                 if pending["phase"] == "preflight_failed":
                     self.recover_preflight(pending)
+                elif pending["phase"] == "capacity_failed":
+                    self.recover_capacity(pending)
                 elif pending["phase"] == "prepared":
                     self.launch(pending)
                 else:
@@ -1286,7 +1460,12 @@ class Runner:
                 raise Blocked("pass directory cannot be a symlink")
             folder.mkdir(mode=0o700, exist_ok=True)
             if any(
-                p.name not in ("before-threads.json", "historical.json")
+                p.name
+                not in (
+                    "before-threads.json",
+                    "before-comments.json",
+                    "historical.json",
+                )
                 or p.is_symlink()
                 or not p.is_file()
                 for p in folder.iterdir()
@@ -1295,6 +1474,7 @@ class Runner:
                     "unexpected uncheckpointed pass evidence; reconcile before launch"
                 )
             ids = self.threads(folder / "before-threads.json")
+            self.comments(folder / "before-comments.json")
             save(folder / "historical.json", ids)
             pending = {
                 "engine": engine,
@@ -1306,6 +1486,8 @@ class Runner:
                 # relaunch it.
                 "phase": "prepared",
                 "historical_sha256": digest(folder / "historical.json"),
+                "before_threads_sha256": digest(folder / "before-threads.json"),
+                "before_comments_sha256": digest(folder / "before-comments.json"),
             }
             self.state["pending"] = pending
             self.persist()

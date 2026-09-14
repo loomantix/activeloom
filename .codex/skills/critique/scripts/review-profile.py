@@ -76,18 +76,29 @@ def validate_engine_settings(
         _fail(f"unknown engine {engine!r}; expected one of {', '.join(ENGINES)}")
     if not isinstance(settings, dict):
         _fail(f"{engine}: settings must be an object")
-    allowed = {"model", "effort"}
+    allowed = (
+        {"model", "effort", "fallback"} if engine == "codex" else {"model", "effort"}
+    )
     unknown = set(settings) - allowed
     if unknown:
         _fail(f"{engine}: unknown keys {sorted(unknown)}")
-    if not partial and set(settings) != allowed:
+    if not partial and not {"model", "effort"} <= set(settings):
         _fail(f"{engine}: model and effort are both required")
+    fallback = settings.get("fallback")
+    if fallback is not None:
+        if not isinstance(fallback, dict) or set(fallback) != {"model", "effort"}:
+            _fail(f"{engine}: fallback requires both model and effort")
+        validate_engine_settings(engine, fallback)
+        if fallback["model"] == INHERIT:
+            _fail(f"{engine}: fallback requires an explicit model")
     if "model" in settings:
         model = settings["model"]
         if not isinstance(model, str) or not MODEL_RE.fullmatch(model):
             _fail(f"{engine}: invalid model identifier {model!r}")
         if model == INHERIT and engine not in INHERIT_ENGINES:
-            _fail(f"{engine}: an explicit model is required; {INHERIT!r} is not supported")
+            _fail(
+                f"{engine}: an explicit model is required; {INHERIT!r} is not supported"
+            )
     if "effort" in settings:
         effort = settings["effort"]
         if effort not in EFFORTS[engine]:
@@ -112,7 +123,13 @@ def validate_order(tier: str, order: Any) -> None:
 def validate_profile(document: Any) -> dict[str, Any]:
     if not isinstance(document, dict):
         _fail("profile must be a JSON object")
-    required = {"schema_version", "defaults_version", "confirmed_at", "engines", "order"}
+    required = {
+        "schema_version",
+        "defaults_version",
+        "confirmed_at",
+        "engines",
+        "order",
+    }
     unknown = set(document) - required - {"repos"}
     if unknown:
         _fail(f"profile has unknown keys {sorted(unknown)}")
@@ -215,17 +232,21 @@ def now() -> str:
 
 
 def effective(document: dict[str, Any], repo: str | None) -> dict[str, Any]:
-    engines = {engine: dict(settings) for engine, settings in document["engines"].items()}
+    engines = {
+        engine: dict(settings) for engine, settings in document["engines"].items()
+    }
     order = {tier: list(value) for tier, value in document["order"].items()}
     override = document.get("repos", {}).get(repo) if repo else None
     if override:
         for engine, settings in override.get("engines", {}).items():
             engines[engine].update(settings)
-        order.update({tier: list(value) for tier, value in override.get("order", {}).items()})
+        order.update(
+            {tier: list(value) for tier, value in override.get("order", {}).items()}
+        )
     return {"engines": engines, "order": order, "repo_override": bool(override)}
 
 
-def resolve(engine: str, repo: str | None) -> dict[str, str]:
+def resolve(engine: str, repo: str | None) -> dict[str, Any]:
     if engine not in ENGINES:
         _fail(f"unknown engine {engine!r}")
     pinned_model = os.environ.get(PIN_MODEL)
@@ -261,6 +282,13 @@ def apply_assignments(target: dict[str, Any], assignments: list[str]) -> None:
         elif section in ENGINES and field in ("model", "effort"):
             validate_engine_settings(section, {field: value}, partial=True)
             target.setdefault("engines", {}).setdefault(section, {})[field] = value
+        elif section == "codex" and field == "fallback" and value == "none":
+            target.setdefault("engines", {}).setdefault(section, {})[field] = None
+        elif section == "codex" and field in ("fallback.model", "fallback.effort"):
+            settings = target.setdefault("engines", {}).setdefault(section, {})
+            if settings.get("fallback") is None:
+                settings["fallback"] = {}
+            settings["fallback"][field.split(".")[1]] = value
         else:
             _fail(f"unknown setting {section}.{field}")
 
@@ -332,7 +360,9 @@ def command_unset(args: argparse.Namespace) -> None:
         del repos[args.repo]
     for key in args.keys:
         section, dot, field = key.partition(".")
-        container = repos[args.repo].get("order" if section == "order" else "engines", {})
+        container = repos[args.repo].get(
+            "order" if section == "order" else "engines", {}
+        )
         if section == "order" and field in container:
             del container[field]
         elif section in container and field in container[section]:
@@ -409,7 +439,9 @@ def parser() -> argparse.ArgumentParser:
 
 HANDLERS = {
     "path": lambda args: print(profile_path()),
-    "defaults": lambda args: print(json.dumps(load_defaults(), indent=2, sort_keys=True)),
+    "defaults": lambda args: print(
+        json.dumps(load_defaults(), indent=2, sort_keys=True)
+    ),
     "detect": command_detect,
     "show": command_show,
     "init": command_init,

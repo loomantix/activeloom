@@ -54,7 +54,9 @@ def test_every_shipped_copy_matches_the_single_source(copy: Path) -> None:
         assert (copy / name).read_bytes() == (SOURCE / name).read_bytes()
 
 
-def test_recommended_defaults_are_a_valid_profile(capsys: pytest.CaptureFixture[str]) -> None:
+def test_recommended_defaults_are_a_valid_profile(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     status, out, _ = run(capsys, "defaults")
     assert status == 0
     defaults = json.loads(out)
@@ -113,8 +115,69 @@ def test_init_refuses_to_overwrite_without_replace(
     before = profile.read_bytes()
     assert run(capsys, "init", "--accept-defaults", "codex.effort=max")[0] == 1
     assert profile.read_bytes() == before
-    assert run(capsys, "init", "--accept-defaults", "--replace", "codex.effort=max")[0] == 0
+    assert (
+        run(capsys, "init", "--accept-defaults", "--replace", "codex.effort=max")[0]
+        == 0
+    )
     assert json.loads(profile.read_text())["engines"]["codex"]["effort"] == "max"
+
+
+def test_capacity_fallback_is_optional_atomic_and_overridable(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(capsys, "init", "--accept-defaults")[0] == 0
+    assert "fallback" not in json.loads(run(capsys, "resolve", "--engine", "codex")[1])
+    assert run(capsys, "set", "codex.fallback.model=gpt-5.6-sol")[0] == 2
+    assert "fallback" not in json.loads(profile.read_text())["engines"]["codex"]
+    assert (
+        run(
+            capsys,
+            "set",
+            "codex.fallback.model=gpt-5.6-sol",
+            "codex.fallback.effort=medium",
+        )[0]
+        == 0
+    )
+    settings = json.loads(run(capsys, "resolve", "--engine", "codex")[1])
+    assert settings["fallback"] == {"model": "gpt-5.6-sol", "effort": "medium"}
+    assert (
+        run(capsys, "set", "--repo", "example/project", "codex.fallback=none")[0] == 0
+    )
+    assert (
+        json.loads(
+            run(capsys, "resolve", "--engine", "codex", "--repo", "example/project")[1]
+        )["fallback"]
+        is None
+    )
+    assert run(capsys, "unset", "--repo", "example/project", "codex.fallback")[0] == 0
+    assert (
+        json.loads(
+            run(capsys, "resolve", "--engine", "codex", "--repo", "example/project")[1]
+        )["fallback"]
+        == settings["fallback"]
+    )
+    assert run(capsys, "set", "codex.fallback=none")[0] == 0
+    assert (
+        json.loads(run(capsys, "resolve", "--engine", "codex")[1])["fallback"] is None
+    )
+
+
+@pytest.mark.parametrize(
+    "assignments",
+    [
+        ["codex.fallback.model=inherit", "codex.fallback.effort=medium"],
+        ["codex.fallback.model=--unsafe", "codex.fallback.effort=medium"],
+        ["codex.fallback.model=gpt-5.6-sol", "codex.fallback.effort=extreme"],
+        ["claude.fallback.model=sonnet", "claude.fallback.effort=medium"],
+    ],
+)
+def test_invalid_fallback_does_not_change_profile(
+    profile: Path, capsys: pytest.CaptureFixture[str], assignments: list[str]
+) -> None:
+    run(capsys, "init", "--accept-defaults")
+    before = profile.read_bytes()
+    assert run(capsys, "set", *assignments)[0] == 2
+    assert profile.read_bytes() == before
 
 
 def test_init_from_file_validates_the_whole_document(
@@ -189,9 +252,9 @@ def test_repository_overrides_layer_over_user_settings(
         "effort": "high",
         "source": "repository override",
     }
-    assert run(capsys, "order", "--tier", "lean", "--repo", "example/project")[1].strip() == (
-        "codex,gemini"
-    )
+    assert run(capsys, "order", "--tier", "lean", "--repo", "example/project")[
+        1
+    ].strip() == ("codex,gemini")
 
     assert run(capsys, "unset", "--repo", "example/project", "codex.model")[0] == 0
     assert "repos" in json.loads(profile.read_text())
@@ -244,7 +307,9 @@ def test_profile_location_follows_xdg_and_rejects_relative_override(
 ) -> None:
     monkeypatch.delenv("ACTIVELOOM_REVIEW_PROFILE", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert run(capsys, "path")[1].strip() == str(tmp_path / "activeloom/review-profile.json")
+    assert run(capsys, "path")[1].strip() == str(
+        tmp_path / "activeloom/review-profile.json"
+    )
     monkeypatch.setenv("ACTIVELOOM_REVIEW_PROFILE", "relative.json")
     assert run(capsys, "path")[0] == 2
 

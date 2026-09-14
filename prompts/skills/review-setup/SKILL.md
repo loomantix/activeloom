@@ -29,11 +29,15 @@ Show the current values with `show` (add `--repo OWNER/REPO` for a repository-sp
 | --------------------------------------- | --------------------------------------------------- |
 | "use sonnet for Claude reviews"         | `set claude.model=sonnet`                           |
 | "run Codex reviews at max effort"       | `set codex.effort=max`                              |
+| "fall back to Sol at medium"           | `set codex.fallback.model=gpt-5.6-sol codex.fallback.effort=medium` |
+| "disable the Codex fallback"           | `set codex.fallback=none` |
 | "deep reviews go Codex, then Claude"    | `set order.deep=codex,claude`                       |
 | "in this repo, add Gemini to lean runs" | `set --repo OWNER/REPO order.lean=claude,codex,gemini` |
 | "drop this repo's Codex model override" | `unset --repo OWNER/REPO codex.model`               |
 
 `unset --repo OWNER/REPO` with no keys removes that repository's whole override. The change is complete when `show` (with the same `--repo`) prints the new value.
+
+Codex's optional fallback is a complete, explicit model-and-effort pair. No fallback is enabled by default. Set both values together; a repository override replaces the whole pair. The automatic runner switches once after a recognized capacity rejection only when code and review evidence are unchanged, then keeps that fallback for the remaining Codex passes. It preserves the failed attempt and round budget and reports the actual model and effort. Standalone launchers do not retry. Other engines' fallbacks are not supported.
 
 ## Newer recommendations
 

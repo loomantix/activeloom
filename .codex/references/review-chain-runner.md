@@ -67,6 +67,24 @@ so the engine CLI's own configured model applies.
 `review-profile.py order --tier <lean|deep> --repo <owner/repo>` prints the user's
 preferred engine order for `--cycle` when the user has not named a plan.
 
+Codex can pin an optional capacity fallback alongside its primary model:
+
+```bash
+python3 -I .codex/skills/review-setup/scripts/review-profile.py set \
+  codex.fallback.model=gpt-5.6-sol codex.fallback.effort=medium
+```
+
+No fallback is enabled by default. Set `codex.fallback=none` to disable it.
+The runner recognizes the terminal model-capacity rejection from Codex JSON events.
+After a confirmed exit with completed process-group cleanup, it verifies the
+unchanged local/remote/PR head, clean worktree, unchanged comments and review
+threads, missing result, and identical owed pass. It then switches once to the
+pinned fallback for the remainder of the run. The failed attempt and snapshots
+remain in the checkpoint; the retry uses the same round and remaining budget.
+Attestations name the fallback model and effort. A second capacity rejection,
+changed evidence, unknown failure, authentication error, or timeout blocks.
+Standalone launchers and other engines do not retry.
+
 The Codex one-pass launcher uses ephemeral noninteractive execution; its provider
 remains the Codex CLI configuration. Its unattended
 permissions match the existing agent-loop use case; a dedicated worktree is not
@@ -147,7 +165,8 @@ process-group cleanup; a preflight marker alone cannot authorize a retry.
 Recovery rechecks the live head and ledger, preserves the run ID,
 round, completed passes, original comment snapshots and attempt history, and
 launches only the owed pass. The retry has its own directory. It consumes the
-same remaining run budget. A missing/blocked result after execution, unknown
+same remaining run budget. Outside the configured Codex capacity fallback above,
+a missing/blocked result after execution, unknown
 exit, interrupted reviewer, changed head or changed evidence still requires
 reconciliation; none is silently retried or converted into passing evidence.
 

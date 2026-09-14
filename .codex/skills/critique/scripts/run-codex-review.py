@@ -168,6 +168,9 @@ def main() -> int:
             else ""
         )
         + "Resolve the recorded tier; use critique for Lean. Read prior non-telemetry ledger evidence. "
+        f"This pass's confirmed reviewer settings are model {model}, effort {effort}. "
+        "Use the same model and effort for any delegated Codex review lanes; "
+        "inherit means keep the current session model. "
         "Post verified findings inline before edits; validate, commit with repository-required sign-off, "
         "push normally, reply and resolve. When AGENT_LOOP_REVIEW_RESULT_FILE is set, write the "
         "canonical result there and return without attesting; the runner owns attestation. "
@@ -190,6 +193,7 @@ def main() -> int:
             cli,
             "exec",
             "--ephemeral",
+            "--json",
             "--sandbox",
             "danger-full-access",
             "-c",

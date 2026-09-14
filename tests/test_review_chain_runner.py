@@ -19,6 +19,235 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / ".codex/skills/critique/scripts"
 HEAD = "a" * 40
 BASE = "b" * 40
+CAPACITY = "Selected model is at capacity. Please try a different model."
+
+
+@pytest.fixture
+def capacity_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    module = harness.module
+    original_environment = harness.runner.environment
+    original_managed = module.managed
+    controls = SimpleNamespace(
+        failures=1, cleanup_denied=False, exit_code=1, side_effect=None
+    )
+    launches: list[dict[str, str | None]] = []
+
+    def environment(self: Any, engine: str) -> dict[str, str]:
+        env = original_environment(self, engine)
+        settings = self.state.setdefault("review_settings", {})
+        settings.setdefault(
+            "codex",
+            {
+                "engine": "codex",
+                "model": "gpt-6-astra",
+                "effort": "max",
+                "source": "user profile",
+                "fallback": {"model": "gpt-5.6-sol", "effort": "medium"},
+            },
+        )
+        if engine == "codex":
+            selected = self.selected_settings(engine)
+            env.update(
+                ACTIVELOOM_REVIEW_MODEL=selected["model"],
+                ACTIVELOOM_REVIEW_EFFORT=selected["effort"],
+            )
+        return dict(env)
+
+    def managed(
+        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+    ) -> None:
+        if (
+            "AGENT_LOOP_REVIEW_RESULT_FILE" in env
+            and env["AGENT_LOOP_REVIEW_ENGINE"] == "codex"
+        ):
+            launches.append(
+                {
+                    "model": env.get("ACTIVELOOM_REVIEW_MODEL"),
+                    "effort": env.get("ACTIVELOOM_REVIEW_EFFORT"),
+                }
+            )
+            if controls.failures:
+                controls.failures -= 1
+                module.save(
+                    Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+                    {
+                        "version": 1,
+                        "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                        "phase": "execution",
+                        "review_started": None,
+                    },
+                )
+                log.write_text(
+                    json.dumps({"type": "turn.failed", "error": {"message": CAPACITY}})
+                    + "\n"
+                )
+                if controls.side_effect:
+                    controls.side_effect(log.parent)
+                if controls.cleanup_denied:
+                    raise module.Blocked("process-group cleanup denied")
+                raise module.ProcessFailure("capacity failure", controls.exit_code)
+        original_managed(argv, log, env, timeout)
+
+    monkeypatch.setattr(harness.runner, "environment", environment)
+    monkeypatch.setattr(module, "managed", managed)
+    return SimpleNamespace(harness=harness, controls=controls, launches=launches)
+
+
+@pytest.mark.parametrize(
+    "events,expected",
+    [
+        ([{"type": "error", "message": CAPACITY}], True),
+        ([{"type": "turn.failed", "error": {"message": CAPACITY}}], True),
+        (
+            [
+                {
+                    "type": "item.completed",
+                    "item": {"type": "command_execution", "output": CAPACITY},
+                }
+            ],
+            False,
+        ),
+        ([{"type": "error", "message": CAPACITY}, {"type": "turn.completed"}], False),
+        ([{"type": "error", "message": "Authentication failed"}], False),
+        ([{"type": "error", "message": CAPACITY}, {"type": "item.started"}], False),
+        ([{"type": "error", "message": "Rate limit exceeded"}], False),
+        (
+            [
+                {"type": "error", "message": CAPACITY},
+                {"type": "turn.failed", "error": {"message": "Network disconnected"}},
+            ],
+            False,
+        ),
+    ],
+)
+def test_capacity_recognition_uses_only_terminal_json_events(
+    tmp_path: Path, events: list[dict[str, Any]], expected: bool
+) -> None:
+    log = tmp_path / "worker.log"
+    log.write_text(
+        "ERROR: " + CAPACITY + "\n" + "\n".join(json.dumps(event) for event in events)
+    )
+    assert load("review-chain-runner").capacity_rejected(log) is expected
+
+
+def test_capacity_fallback_preserves_run_budget_and_uses_medium(
+    capacity_harness: Any,
+) -> None:
+    h = capacity_harness.harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert capacity_harness.launches == [
+        {"model": "gpt-6-astra", "effort": "max"},
+        {"model": "gpt-5.6-sol", "effort": "medium"},
+        {"model": "gpt-5.6-sol", "effort": "medium"},
+    ]
+    assert len(runner.state["completed"]) == 4
+    assert len(runner.state["attempts"]) == 5
+    failed, fallback = runner.state["attempts"][:2]
+    assert failed["phase"] == "capacity_failed"
+    assert failed["round"] == fallback["round"] == 1
+    assert (h.directory / failed["folder"] / "worker.log").is_file()
+    assert fallback["settings"] == {"model": "gpt-5.6-sol", "effort": "medium"}
+    assert (
+        "model gpt-5.6-sol, effort medium (capacity fallback)"
+        in runner.settings_line("codex")
+    )
+
+
+def test_fallback_capacity_exhaustion_never_loops(capacity_harness: Any) -> None:
+    h = capacity_harness.harness
+    capacity_harness.controls.failures = 2
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="fallback is also at capacity"):
+        runner.run()
+    assert len(capacity_harness.launches) == 2
+    assert runner.state["completed"] == []
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="fallback is also at capacity"):
+        h.runner(h.args, h.directory).run()
+    assert len(capacity_harness.launches) == 2
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "cleanup",
+        "timeout",
+        "result",
+        "threads",
+        "comments",
+        "head",
+        "missing-fallback",
+        "log",
+    ],
+)
+def test_unsafe_capacity_failures_cannot_launch_fallback(
+    capacity_harness: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    h = capacity_harness.harness
+    controls = capacity_harness.controls
+    runner = h.runner(h.args, h.directory)
+    if case == "cleanup":
+        controls.cleanup_denied = True
+    elif case == "timeout":
+        controls.exit_code = 124
+    elif case == "result":
+        controls.side_effect = lambda folder: (folder / "result.json").write_text("{}")
+    elif case in ("threads", "comments"):
+        original = getattr(h.runner, case)
+
+        def mutate(folder: Path) -> None:
+            monkeypatch.setattr(
+                runner, case, lambda path: h.module.save(path, ["changed"])
+            )
+
+        controls.side_effect = mutate
+        assert original
+    elif case == "head":
+        controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, "boundary", lambda: "f" * 40
+        )
+    elif case == "missing-fallback":
+        controls.side_effect = lambda folder: runner.state["review_settings"][
+            "codex"
+        ].pop("fallback")
+    else:
+        recover = runner.recover_capacity
+
+        def tamper(pending: dict[str, Any]) -> None:
+            (h.directory / pending["folder"] / "worker.log").write_text("changed")
+            recover(pending)
+
+        monkeypatch.setattr(runner, "recover_capacity", tamper)
+    with pytest.raises(h.module.Blocked):
+        runner.run()
+    assert len(capacity_harness.launches) == 1
+    assert runner.state["completed"] == []
+
+
+def test_capacity_fallback_resumes_an_interrupted_preparation(
+    capacity_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = capacity_harness.harness
+    runner = h.runner(h.args, h.directory)
+    original = h.module.save
+    interrupted = False
+
+    def save(path: Path, value: Any) -> None:
+        nonlocal interrupted
+        if path.parent.name == "fallback" and not interrupted:
+            interrupted = True
+            raise OSError("injected fallback snapshot interruption")
+        original(path, value)
+
+    monkeypatch.setattr(h.module, "save", save)
+    with pytest.raises(OSError, match="injected fallback"):
+        runner.run()
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    assert resumed.run() == "converged"
+    assert len(capacity_harness.launches) == 3
+    assert len(resumed.state["attempts"]) == 5
 
 
 def load(name: str) -> ModuleType:
@@ -167,6 +396,9 @@ sys.exit(int(sys.argv[2]))
         def threads(self, path: Path) -> list[int]:
             module.save(path, [])
             return []
+
+        def comments(self, path: Path) -> None:
+            module.save(path, [])
 
         def helper(self, name: str, *parts: str) -> dict[str, Any]:
             operation = parts[0]
@@ -618,6 +850,7 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         assert result.returncode == 0, result.stderr
         argv = json.loads(capture.read_text())
         assert argv[:2] == ["exec", "--ephemeral"]
+        assert "--json" in argv
         assert "-m" not in argv and "--ignore-user-config" not in argv
         assert argv[argv.index('model_reasoning_effort="high"') - 1] == "-c"
         assert "one Codex review pass" in argv[-1]
