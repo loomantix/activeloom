@@ -12,9 +12,9 @@ and safe layout differences (for Python, docstrings and `pass` in the AST), reta
 the text and position of directive comments such as `@ts-expect-error` or
 `# type: ignore`, and of compiled comments such as Rust doc comments and Go
 example output. Exit status 1 means code changed or the comparison could not
-certify every selected file. JSX, ambiguous JavaScript regex contexts, cgo
-preambles, and quotes inside Kotlin, Swift, or C# interpolation are audit-only
-approximations.
+certify every selected file. JSX, ambiguous JavaScript regex contexts, Unicode
+line separators in JavaScript, Java Unicode escapes, cgo preambles, and quotes
+inside Kotlin, Swift, or C# interpolation are audit-only approximations.
 
 Standard library only.
 """
@@ -134,7 +134,7 @@ GENERATED_HEADER_CHARS = 600
 # verification even though no code token moved.
 _DIRECTIVE_START = re.compile(
     r"@ts-(?:expect-error|ignore|nocheck|check)"
-    r"|eslint-(?:disable|enable|env)|eslint\s+[\w@/-]+\s*:"
+    r"|eslint-(?:disable|enable|env)|eslint(?:\s+[\w@/-]+\s*:|$)"
     r"|prettier-ignore|biome-ignore|oxlint-|deno-lint-ignore"
     r"|(?:istanbul|c8|v8) ignore|@?__(?:PURE|NO_SIDE_EFFECTS|INLINE|NOINLINE|KEY)__"
     r"|webpack[A-Z]|@vite-ignore|<reference\b|<amd-|go:[a-z]|\+build\b"
@@ -180,7 +180,7 @@ _JS_RESTRICTED_NEWLINE = frozenset({"return", "throw", "break", "continue", "yie
 _RUST_DOC_COMMENT = re.compile(r"//[/!](?!/)|/\*[*!](?![*/])")
 _GO_EXECUTABLE_COMMENT = re.compile(r"//(?:export|extern|line) |/\*line ")
 _GO_EXAMPLE_OUTPUT = re.compile(r"(?://|/\*)\s*(?i:(?:unordered\s+)?output:)")
-_GO_CGO_IMPORT = re.compile(r'^[ \t]*import[ \t]+"C"', re.MULTILINE)
+_JAVA_UNICODE_ESCAPE = re.compile(r"\\u+[0-9a-fA-F]{4}")
 
 
 @dataclass
@@ -198,10 +198,12 @@ def _directive_lines(raw: str) -> list[str]:
     """Directive text with comment decoration removed, preserving its values."""
     if raw.startswith("/*!"):
         return [raw]
-    found = []
+    found: list[str] = []
     for line in raw.split("\n"):
         text = line.strip().lstrip("/*!#").rstrip("*/").strip()
-        if text and (_DIRECTIVE_START.match(text) or _DIRECTIVE_TAG.search(text)):
+        # Once a directive starts, later lines can continue its value. Keeping
+        # the remaining payload is safer than guessing where prose resumes.
+        if text and (found or _DIRECTIVE_START.match(text) or _DIRECTIVE_TAG.search(text)):
             found.append(text)
     return found
 
@@ -240,14 +242,18 @@ class _CFamilyScanner:
         self.last_sig = ""
         self.word = ""
         self.go_output = False
+        self.go_import_group = False
         # Open parens as (token index, directly follows `return`/`throw`), and
         # the (open, close) indices of such a pair awaiting its next token.
         self.parens: list[tuple[int, bool]] = []
         self.unwrap: tuple[int, int] | None = None
 
     def scan(self) -> Scan:
-        if self.dialect.name == "go" and _GO_CGO_IMPORT.search(self.text):
-            # The comment block above `import "C"` is compiled as C.
+        if self.dialect.name == "java" and _JAVA_UNICODE_ESCAPE.search(self.text):
+            # Java expands Unicode escapes before recognizing comments.
+            self.approximate = True
+        if self.javascript and any(ch in self.text for ch in "\u2028\u2029"):
+            # These terminate comments and affect ASI, but the lexer models LF.
             self.approximate = True
         self._code(0, interpolation=False)
         if self.text and not self.text.endswith("\n"):
@@ -291,6 +297,11 @@ class _CFamilyScanner:
 
     def _emit_code(self, ch: str) -> None:
         tokens = self.tokens
+        if self.dialect.name == "go":
+            if ch == "(" and self.word == "import":
+                self.go_import_group = True
+            elif ch == ")":
+                self.go_import_group = False
         unwrap, self.unwrap = self.unwrap, None
         if unwrap and ch in ";}":
             opening, closing = unwrap
@@ -419,6 +430,14 @@ class _CFamilyScanner:
     ) -> int:
         text = self.text
         n = len(text)
+        if (
+            self.dialect.name == "go"
+            and (self.word == "import" or self.go_import_group)
+            and text.startswith('"C"', i)
+        ):
+            # The import spec's attached comment is compiled as C, including
+            # when the spec belongs to a grouped import declaration.
+            self.approximate = True
         self._emit_literal(opener)
         i += len(opener)
         while i < n:

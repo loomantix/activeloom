@@ -276,6 +276,15 @@ def test_python_directive_scope_and_type_comments_are_preserved(cd: ModuleType) 
         ('let u = "\\(b ?? "http://a")"; f()', ".swift"),
         ('var u = $"{b ?? "http://a"}"; F();', ".cs"),
         ('// #include <stdio.h>\nimport "C"', ".go"),
+        ('import (\n// #define VALUE 1\n"C"\n)', ".go"),
+        ('import ("fmt"; /* ) */ "C")', ".go"),
+        ('import /* preamble */ "C"', ".go"),
+        (r'// prose\u000a System.out.println(1);', ".java"),
+        (r'// prose\uuuu000d System.out.println(1);', ".java"),
+        ("// prose\u2028console.log(1);", ".js"),
+        ("// prose\u2029console.log(1);", ".ts"),
+        ("function f(){return /* prose\u2028*/ 1;}", ".js"),
+        ("function f(){return\u2029 1;}", ".ts"),
     ],
 )
 def test_unsupported_lexical_contexts_are_marked_approximate(
@@ -286,6 +295,12 @@ def test_unsupported_lexical_contexts_are_marked_approximate(
 
 def test_removing_a_comment_between_words_is_a_code_change(cd: ModuleType) -> None:
     assert fingerprint(cd, "a/**/b\n", ".ts") != fingerprint(cd, "ab\n", ".ts")
+
+
+def test_ordinary_go_imports_remain_verifiable(cd: ModuleType) -> None:
+    before = 'package main\nimport (\n// Standard library.\n"fmt"\n)\nfunc main() { fmt.Println("C") }\n'
+    after = before.replace("// Standard library.\n", "")
+    assert fingerprint(cd, before, ".go") == fingerprint(cd, after, ".go")
 
 
 def test_formatter_unwrapping_a_return_expression_keeps_the_fingerprint(cd: ModuleType) -> None:
@@ -348,6 +363,13 @@ def test_condensing_prose_around_a_tag_keeps_the_fingerprint(cd: ModuleType) -> 
         export function foo() {}
     """
     assert fingerprint(cd, before, ".ts") == fingerprint(cd, after, ".ts")
+
+
+def test_multiline_directive_keeps_payload_and_allows_preceding_prose_removal(cd: ModuleType) -> None:
+    before = '/**\n * History.\n * @type {{\n * enabled: boolean\n * }}\n */\nlet options;\n'
+    after = before.replace(" * History.\n", "")
+    assert fingerprint(cd, before, ".js") == fingerprint(cd, after, ".js")
+    assert fingerprint(cd, before, ".js") != fingerprint(cd, after.replace("boolean", "string"), ".js")
 
 
 @pytest.mark.parametrize(
@@ -614,6 +636,52 @@ def test_verify_rejects_changed_jsx_text(
     code, report = _verify(cd, capsys, "view.tsx")
     assert code != 0
     assert report["statuses"] == {"error": 1}
+
+
+@pytest.mark.parametrize(
+    ("name", "before", "after", "status"),
+    [
+        (
+            "types.js",
+            '/** @type {{\n * enabled: boolean\n * }} */\nlet options = {enabled: true};\n',
+            '/** @type {{\n * enabled: string\n * }} */\nlet options = {enabled: true};\n',
+            "changed",
+        ),
+        (
+            "rules.js",
+            '/* eslint\n no-alert: "error"\n*/\nalert(1);\n',
+            '/* eslint\n no-alert: "off"\n*/\nalert(1);\n',
+            "changed",
+        ),
+        (
+            "cgo.go",
+            'package main\nimport (\n// #define VALUE 1\n"C"\n)\nfunc main() { println(C.VALUE) }\n',
+            'package main\nimport (\n// #define VALUE 2\n"C"\n)\nfunc main() { println(C.VALUE) }\n',
+            "error",
+        ),
+        (
+            "Probe.java",
+            r'class Probe { public static void main(String[] args) { // note\u000a System.out.println(1);'
+            + "\n}}\n",
+            r'class Probe { public static void main(String[] args) { // note\u000a System.out.println(2);'
+            + "\n}}\n",
+            "error",
+        ),
+        ("separator.js", "// note\u2028console.log(1);\n", "// note\u2028console.log(2);\n", "error"),
+        ("separator.ts", "// note\u2029console.log(1);\n", "// note\u2029console.log(2);\n", "error"),
+    ],
+)
+def test_verify_rejects_multiline_directive_and_unsupported_lexical_changes(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str], name: str, before: str, after: str, status: str
+) -> None:
+    path = repo / name
+    path.write_text(before)
+    _git(repo, "add", name)
+    _git(repo, "commit", "-qm", "lexical baseline")
+    path.write_text(after)
+    code, report = _verify(cd, capsys, "a.ts", name)
+    assert code == 1
+    assert report["statuses"] == {"unchanged": 1, status: 1}
 
 
 def test_verify_rejects_unreadable_selected_file(
