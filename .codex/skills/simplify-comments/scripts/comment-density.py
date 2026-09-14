@@ -136,7 +136,7 @@ _DIRECTIVE_START = re.compile(
     r"@ts-(?:expect-error|ignore|nocheck|check)"
     r"|eslint-(?:disable|enable|env)|eslint(?:\s+[\w@/-]+\s*:|$)"
     r"|prettier-ignore|biome-ignore|oxlint-|deno-lint-ignore"
-    r"|(?:istanbul|c8|v8) ignore|@?__(?:PURE|NO_SIDE_EFFECTS|INLINE|NOINLINE|KEY)__"
+    r"|(?:istanbul|c8|v8) ignore|[@#]?__(?:PURE|NO_SIDE_EFFECTS|INLINE|NOINLINE|KEY)__"
     r"|webpack[A-Z]|@vite-ignore|<reference\b|<amd-|go:[a-z]|\+build\b"
     r"|nolint|lint:(?:file-)?ignore|NOLINT|sourceMappingURL=|SAFETY:"
     r"|swiftlint:|ktlint-disable"
@@ -171,7 +171,7 @@ _REGEX_PREFIX_KEYWORDS = frozenset(
     }
 )
 _REGEX_AFTER = frozenset("(,=:[!&|?{};+-*%>~^")
-_RUST_RAW_STRING = re.compile(r'b?r(#*)"')
+_RUST_RAW_STRING = re.compile(r'[bc]?r(#*)"')
 _RUST_CHAR = re.compile(r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|.)|[^\\'\n])'")
 _OPERATOR_CHARS = frozenset("+-*/%&|^!~<>=?:.")
 _JS_RESTRICTED_NEWLINE = frozenset({"return", "throw", "break", "continue", "yield", "async"})
@@ -378,10 +378,13 @@ class _CFamilyScanner:
                 i = self._block_comment(i)
             elif d.triple_quotes and text.startswith('"""', i):
                 raw_block = d.name in ("kotlin", "csharp")
+                if raw_block and text.startswith('""""', i):
+                    # A longer quote run changes where the raw string closes.
+                    self.approximate = True
                 i = self._literal(i, '"""', '"""', escapes=not raw_block, multiline=True, hole=self._string_hole(i))
             elif (
                 d.rust_literals
-                and ch in "rb"
+                and ch in "rbc"
                 and not (i and _is_word(text[i - 1]))
                 and (raw := _RUST_RAW_STRING.match(text, i))
             ):
@@ -409,10 +412,13 @@ class _CFamilyScanner:
             else:
                 if self.javascript and (
                     (ch == "<" and (d.jsx or (self._regex_allowed() and re.match(r"[A-Za-z_$/>!]", nxt))))
-                    or (ch == "/" and self.last_sig in (")", "}"))
+                    or (ch == "/" and self.last_sig in (")", "}", "<"))
                 ):
                     # JSX text and regex-vs-division after a control-flow block
-                    # need a parser. Never certify the incomplete token stream.
+                    # or `<` need a parser. Never certify the incomplete token stream.
+                    self.approximate = True
+                if d.name == "swift" and ch == "#" and nxt == "/":
+                    # Extended regex literals are not lexed.
                     self.approximate = True
                 if interpolation:
                     if ch == "{":
@@ -442,6 +448,8 @@ class _CFamilyScanner:
         i += len(opener)
         while i < n:
             if text.startswith(closer, i):
+                if closer == '"""' and text.startswith('""""', i):
+                    self.approximate = True
                 self._emit_literal(closer)
                 self._after_value()
                 return i + len(closer)
@@ -451,7 +459,7 @@ class _CFamilyScanner:
                     self._emit_literal("{{")
                     i += 2
                     continue
-                if self._hole_has_quote(i + len(hole), ")" if hole == "\\(" else "}"):
+                if self._hole_is_ambiguous(i + len(hole), ")" if hole == "\\(" else "}"):
                     # Finding where the string ends would need a nested lexer.
                     self.approximate = True
             if ch == "\n":
@@ -492,13 +500,14 @@ class _CFamilyScanner:
             return "\\("
         return "{" if name == "csharp" and "$" in prefix else ""
 
-    def _hole_has_quote(self, i: int, close: str) -> bool:
+    def _hole_is_ambiguous(self, i: int, close: str) -> bool:
+        """Whether the hole holds a string, char literal, or comment that can hide its end."""
         text = self.text
         opener = "(" if close == ")" else "{"
         depth = 1
         for j in range(i, len(text)):
             ch = text[j]
-            if ch == '"':
+            if ch in "\"'/":
                 return True
             if ch == opener:
                 depth += 1
@@ -1079,7 +1088,8 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
     results = [verify_source(source, args.verify_against) for source in sources]
     statuses = Counter(r["status"] for r in results)
     failed = sum(count for status, count in statuses.items() if status != "unchanged")
-    unverified = sum(skipped[reason] for reason in ("unsupported", "binary", "unreadable", "symlink", "encoding"))
+    # Filters that shape an audit leave a file uncompared, so any skip fails verification.
+    unverified = sum(skipped.values())
     if args.json:
         report = {
             "schema_version": SCHEMA_VERSION,
@@ -1095,7 +1105,7 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
         summary = ", ".join(f"{count} {status}" for status, count in sorted(statuses.items()))
         print(f"Verified {len(results)} files against {args.verify_against}: {summary or 'none'}.")
         if unverified or not results:
-            print(f"Verification incomplete: {unverified} unreadable/unsupported inputs; {len(results)} files checked.")
+            print(f"Verification incomplete: {unverified} skipped inputs; {len(results)} files checked.")
         for r in results:
             metrics = ""
             if "before" in r:

@@ -225,6 +225,7 @@ def test_meaningful_token_and_line_boundaries_are_preserved(
         ("a(); // eslint-disable-line\nb();", "a();\n// eslint-disable-line\nb();", ".ts"),
         ("x := 1 //nolint\ny := 2", "x := 1\n//nolint\ny := 2", ".go"),
         ("x = /* @__PURE__ */ f();", "x = f();", ".js"),
+        ("x = /* #__PURE__ */ f();", "x = f();", ".js"),
         ("/// ```\n/// assert_eq!(f(), 1);\n/// ```\nfn f() -> i32 { 1 }", "fn f() -> i32 { 1 }", ".rs"),
         ("//! Crate docs.\nfn f() {}", "fn f() {}", ".rs"),
         (
@@ -235,6 +236,7 @@ def test_meaningful_token_and_line_boundaries_are_preserved(
         ("//export Foo\nfunc Foo() {}", "func Foo() {}", ".go"),
         ('var p = @"C:\\dir\\"; var q = "x // y"; F();', 'var p = @"C:\\dir\\"; var q = "x // y"; G();', ".cs"),
         ('val p = """C:\\"""; val q = "x // y"; f()', 'val p = """C:\\"""; val q = "x // y"; g()', ".kt"),
+        ('let x = cr#"x"// "#; f();', 'let x = cr#"x"// "#;', ".rs"),
     ],
 )
 def test_directive_placement_and_compiled_comments_are_preserved(
@@ -285,6 +287,22 @@ def test_python_directive_scope_and_type_comments_are_preserved(cd: ModuleType) 
         ("// prose\u2029console.log(1);", ".ts"),
         ("function f(){return /* prose\u2028*/ 1;}", ".js"),
         ("function f(){return\u2029 1;}", ".ts"),
+        ("const ok = n < /\\/*/.exec(s).length;", ".ts"),
+        ("val s = \"${ f('}') + \"//\" }\"; f()", ".kt"),
+        ('val s = "${ x /* } */ + "//" }"; f()', ".kt"),
+        ('let s = "\\( x /* ) */ + "//" )"; f()', ".swift"),
+        ("var s = $\"{ F('}') + \"//\" }\"; F();", ".cs"),
+        ('var s = """" a """ // """"; F();', ".cs"),
+        ('val s = """x"""" + "//"; f()', ".kt"),
+        ("let r = #/x/*/#\nf()", ".swift"),
+        ('let u = #"a // b"#; f()', ".swift"),
+        ('var u = $$"""{{x}} // b"""; F();', ".cs"),
+        ("/* open\nx();", ".ts"),
+        ("/* open /* nested */\nx();", ".rs"),
+        ("x = `abc", ".ts"),
+        ("x = /abc", ".ts"),
+        ('x = "abc\nf();', ".java"),
+        ("x = = 1\n", ".py"),
     ],
 )
 def test_unsupported_lexical_contexts_are_marked_approximate(
@@ -682,6 +700,41 @@ def test_verify_rejects_multiline_directive_and_unsupported_lexical_changes(
     code, report = _verify(cd, capsys, "a.ts", name)
     assert code == 1
     assert report["statuses"] == {"unchanged": 1, status: 1}
+
+
+def test_verify_rejects_an_approximate_baseline_alone(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = r"class P { void m() { // note\u000a System.out.println(1);" + "\n}}\n"
+    after = "class P { void m() {\n}}\n"
+    java = cd.LANGUAGES[".java"]
+    assert cd.scan_text(before, java).fingerprint == cd.scan_text(after, java).fingerprint
+    (repo / "Probe.java").write_text(before)
+    _git(repo, "add", "Probe.java")
+    _git(repo, "commit", "-qm", "approximate baseline")
+    (repo / "Probe.java").write_text(after)
+    code, report = _verify(cd, capsys, "a.ts", "Probe.java")
+    assert code == 1
+    assert report["statuses"] == {"error": 1, "unchanged": 1}
+
+
+def test_verify_rejects_files_filtered_out_of_a_directory(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo / "src").mkdir()
+    header = "// This file is not auto-generated; edit freely.\n"
+    (repo / "src/b.ts").write_text(header + "export const b = f(1);\n")
+    (repo / "src/c.ts").write_text("export const c = 1;\n")
+    _git(repo, "add", "src")
+    _git(repo, "commit", "-qm", "directory baseline")
+    (repo / "src/b.ts").write_text(header + "export const b = f(2);\n")
+    code, report = _verify(cd, capsys, "src")
+    assert code == 1
+    assert report["statuses"] == {"unchanged": 1}
+    assert report["skipped"] == {"generated": 1}
+    code, report = _verify(cd, capsys, "--exclude", "b.ts", "src")
+    assert code == 1
+    assert report["skipped"] == {"excluded": 1}
 
 
 def test_verify_rejects_unreadable_selected_file(

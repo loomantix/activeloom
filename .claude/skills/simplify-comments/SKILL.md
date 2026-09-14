@@ -89,11 +89,11 @@ The reference pilot applied this taxonomy to two large production modules: 4,918
 ## Phase 4 — Validate and ship
 
 1. Run the formatter, then confirm `git diff --name-status origin/<default-branch>` lists only modified (`M`) files.
-2. Run `comment-density.py --verify-against origin/<default-branch> <changed files>`. It compares code fingerprints (for Python, the AST without docstrings), preserving directive values (including continuation lines) and placement, Rust doc comments, Go example output, token boundaries, and significant line breaks. It tolerates limited JavaScript formatter reflow; other dialects retain code line breaks and punctuation conservatively. It must exit 0 for every selected file. Read the diff for any `changed` result and restore the rejected edit; skipped inputs or unsupported syntax are failures, never evidence of unchanged code.
+2. Run `comment-density.py --verify-against origin/<default-branch> <changed files>`. It compares code fingerprints (for Python, the AST without docstrings), preserving directive values (including continuation lines) and placement, Rust doc comments, Go example output, token boundaries, and significant line breaks. It tolerates limited JavaScript formatter reflow; other dialects retain code line breaks and punctuation conservatively. It must exit 0 for every selected file. Read the diff for any `changed` result and restore the rejected edit; skipped inputs or unsupported syntax are failures, never evidence of unchanged code. Exit 0 covers code and the directive and compiled-comment forms above only; it does not check legal text, docstrings that frameworks read (such as CLI help), or tool annotations the helper does not recognize, so confirm in the diff that every Preserve item survived.
 3. Run every gate named in Phase 2. A failure usually means a directive or a required doc was removed; restore it and rerun.
 4. Commit as `refactor(comments): condense comments in <scope>`, push with `git push -u origin HEAD`, and open a draft pull request. Keep the body under 250 words: the before/after table from `--verify-against … --json` (lines and density per file), the gates run with their results, and the contradictions listed in Phase 3. Then follow the repository's review workflow.
 
-The change is done when verification exits 0, every gate passes on the pushed commit, and the draft pull request carries the metrics.
+The change is done when verification exits 0, the diff keeps every Preserve item, every gate passes on the pushed commit, and the draft pull request carries the metrics.
 
 ## Scope
 
