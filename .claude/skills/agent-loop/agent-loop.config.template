@@ -109,6 +109,13 @@ retry_delay_seconds = 15
 # requires dependency PR merge commits to be present in origin/<base>.
 dependency_gate = ready
 
+# What an ordered batch (`--issues N,N,...`) does when one issue fails. `stop`
+# halts the batch there. `park` records a failure the wrapper can verify is
+# safely resumable (clean worktree, equal local/remote/PR heads, a resumable
+# stop category) as parked, continues with the next issue, skips issues that
+# depend on a parked one, and exits 3 at the end listing the resume commands.
+batch_on_issue_failure = stop
+
 branch_prefix = agent-loop
 worktree_root = /tmp/agent-loop-worktrees
 log_root = /tmp/agent-loop-logs

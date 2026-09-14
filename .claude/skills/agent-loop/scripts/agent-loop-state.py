@@ -20,10 +20,11 @@ STATE_VERSION = 1
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
-BATCH_STATUSES = {"pending", "active", "finalized", "bailed"}
+BATCH_STATUSES = {"pending", "active", "finalized", "bailed", "parked"}
 BATCH_ROW_REQUIRED = {"issue", "status", "childRunState"}
-BATCH_ROW_OPTIONAL = {"classification"}
+BATCH_ROW_OPTIONAL = {"classification", "stopCategory"}
 CLASSIFICATION_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")
+STOP_CATEGORY_RE = re.compile(r"[a-z][a-z0-9-]{0,31}(?:/[a-z][a-z0-9-]{0,31})?")
 
 
 class StateError(RuntimeError):
@@ -250,11 +251,17 @@ def _validate_batch(value: dict[str, Any]) -> None:
             or not CLASSIFICATION_RE.fullmatch(row["classification"])
         ):
             _fail("only a bailed batch issue may carry a bail classification")
+        if row["status"] == "parked":
+            category = row.get("stopCategory")
+            if not isinstance(category, str) or not STOP_CATEGORY_RE.fullmatch(category):
+                _fail("a parked batch issue requires a stop category")
+        elif "stopCategory" in row:
+            _fail("only a parked batch issue may carry a stop category")
         child = row["childRunState"]
         if child is not None and (not isinstance(child, str) or not Path(child).is_absolute()):
             _fail("batch child run-state path must be absolute or null")
-        if index < cursor and row["status"] not in {"finalized", "bailed"}:
-            _fail("completed batch entries must be finalized or bailed")
+        if index < cursor and row["status"] not in {"finalized", "bailed", "parked"}:
+            _fail("completed batch entries must be finalized, bailed, or parked")
         if index > cursor and row["status"] != "pending":
             _fail("future batch entries must remain pending")
     if cursor < len(rows) and rows[cursor]["status"] not in {"pending", "active"}:
@@ -385,31 +392,48 @@ def _batch_update(args: argparse.Namespace) -> None:
     with _batch_lock(path):
         value = _read_batch(path)
         cursor = value["cursor"]
-        if cursor >= len(value["issues"]) or value["issues"][cursor]["issue"] != args.issue:
-            _fail("batch update may target only the current cursor issue")
-        row = value["issues"][cursor]
+        index = next(
+            (position for position, entry in enumerate(value["issues"]) if entry["issue"] == args.issue),
+            None,
+        )
+        # A parked entry sits behind the cursor. It can still be closed out
+        # once an operator resumes it, without moving the cursor.
+        parked_entry = (
+            index is not None and index < cursor and value["issues"][index]["status"] == "parked"
+        )
+        if index is None or (index != cursor and not parked_entry):
+            _fail("batch update may target only the current cursor issue or a parked issue")
+        row = value["issues"][index]
         if row["status"] != args.expected_status:
             _fail(
                 "batch update status changed: "
                 f"expected {args.expected_status}, found {row['status']}"
             )
         allowed_transitions = {
-            "pending": {"active", "bailed"},
-            "active": {"active", "finalized", "bailed"},
+            "pending": {"active", "bailed", "parked"},
+            "active": {"active", "finalized", "bailed", "parked"},
+            "parked": {"finalized", "bailed"},
         }
         if args.status not in allowed_transitions.get(args.expected_status, set()):
             _fail("batch issue has an invalid status transition")
         row["status"] = args.status
+        if args.status != "parked":
+            row.pop("stopCategory", None)
+        if args.stop_category is not None:
+            if args.status != "parked":
+                _fail("a stop category applies only to a parked batch issue")
+            row["stopCategory"] = args.stop_category
         if args.classification is not None:
             if args.status != "bailed":
                 _fail("a bail classification applies only to a bailed batch issue")
             row["classification"] = args.classification
         if args.child_run_state is not None:
             row["childRunState"] = str(Path(args.child_run_state).resolve())
-        if args.status in {"finalized", "bailed"}:
+        if args.status in {"finalized", "bailed", "parked"}:
             if args.status == "finalized" and row["childRunState"] is None:
                 _fail("finalized batch issue requires a child run-state path")
-            value["cursor"] = cursor + 1
+            if not parked_entry:
+                value["cursor"] = cursor + 1
         _atomic_write_batch(path, value)
     print(json.dumps(value, sort_keys=True))
 
@@ -472,6 +496,7 @@ def _parser() -> argparse.ArgumentParser:
     batch_update.add_argument("--status", required=True, choices=sorted(BATCH_STATUSES))
     batch_update.add_argument("--child-run-state")
     batch_update.add_argument("--classification")
+    batch_update.add_argument("--stop-category")
     batch_update.set_defaults(handler=_batch_update)
     batch_show = commands.add_parser("batch-show")
     batch_show.add_argument("--file", required=True)

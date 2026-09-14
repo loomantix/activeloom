@@ -869,6 +869,88 @@ def test_batch_resume_rejects_a_child_checkpoint_for_another_issue(
     assert preserved["issues"][0]["status"] == "active"
 
 
+def _ends_early_for(issue: int) -> str:
+    return (
+        f'if [ "$AGENT_LOOP_ISSUE_ID" = {issue} ]; then echo "suite still running"; exit 0; fi; '
+        + _clean_v3_hook("claude")
+    )
+
+
+def test_park_mode_parks_a_resumable_failure_and_its_dependent_then_finishes_the_lane(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # One issue whose Claude pass keeps ending without a result used to halt
+    # the lane with every later issue unstarted.
+    result = _run(
+        consumer,
+        ["--issues", "50,51,52", "--iterations", "3"],
+        issues=[_issue(50), _issue(51, "Depends on #50"), _issue(52)],
+        config=_config_v3(
+            tmp_path, claude_review_hook=_ends_early_for(50), batch_on_issue_failure="park"
+        ),
+        timeout=300,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 3, output
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["parked", "parked", "finalized"]
+    assert batch["issues"][0]["stopCategory"] == "no-result/hook-ended-early"
+    assert batch["issues"][1]["stopCategory"] == "blocked-by-parked"
+    child = batch["issues"][0]["childRunState"]
+    assert f"#50 parked (no-result/hook-ended-early): '" in output
+    assert f"--resume-run '{child}'" in output
+    assert "#51 parked (blocked-by-parked)" in output
+    assert not (consumer[3] / "claimed-51").exists()
+    child_state = json.loads(Path(child).read_text(encoding="utf-8"))
+    assert Path(child_state["worktree"]).exists()
+
+
+def test_park_mode_still_stops_on_an_uncertain_push(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The pass pushed a commit and then ended without a result: the remote no
+    # longer matches the checkpoint and no result explains the move.
+    claude = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 53 ]; then '
+        "printf 'fix\\n' > early-fix.txt; git add early-fix.txt; "
+        "git commit -m 'fix: early'; \"$AGENT_LOOP_REVIEW_PUSH_HELPER\"; exit 0; fi; "
+        + _clean_v3_hook("claude")
+    )
+    result = _run(
+        consumer,
+        ["--issues", "53,54", "--iterations", "2"],
+        issues=[_issue(53), _issue(54)],
+        config=_config_v3(tmp_path, claude_review_hook=claude, batch_on_issue_failure="park"),
+        timeout=120,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (
+        "Batch issue #53 was not parked: its head moved past the checkpoint without a matching review result"
+        in result.stderr
+    )
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["active", "pending"]
+
+
+def test_stop_mode_is_the_default_and_does_not_park(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "55,56", "--iterations", "2"],
+        issues=[_issue(55), _issue(56)],
+        config=_config_v3(tmp_path, claude_review_hook=_ends_early_for(55)),
+        timeout=120,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "parked" not in (result.stdout + result.stderr).lower()
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["active", "pending"]
+
+
 def test_batch_iteration_cap_pauses_with_durable_cursor(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

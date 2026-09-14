@@ -217,6 +217,59 @@ def test_batch_bail_records_its_classification_only_on_a_bailed_entry(
     assert "only a bailed batch issue may carry a bail classification" in shown.stderr
 
 
+def test_batch_parks_an_entry_behind_the_cursor_and_closes_it_out_later(
+    tmp_path: Path,
+) -> None:
+    batch = tmp_path / "batch.json"
+    child = tmp_path / "logs/child/run-state.json"
+
+    def update(*args: str) -> subprocess.CompletedProcess[str]:
+        return _run("batch-update", "--file", str(batch), *args)
+
+    created = _run(
+        "batch-create", "--file", str(batch), "--run-id", "run-1",
+        "--repo", "example/repository", "--base-branch", "main", "--issues", "7,8,9",
+    )
+    assert created.returncode == 0, created.stderr
+    assert update("--issue", "7", "--expected-status", "pending", "--status", "active",
+                  "--child-run-state", str(child)).returncode == 0
+
+    missing = update("--issue", "7", "--expected-status", "active", "--status", "parked")
+    assert missing.returncode != 0
+    assert "requires a stop category" in missing.stderr
+    parked = update("--issue", "7", "--expected-status", "active", "--status", "parked",
+                    "--stop-category", "no-result/hook-ended-early")
+    assert parked.returncode == 0, parked.stderr
+    value = json.loads(batch.read_text(encoding="utf-8"))
+    assert value["cursor"] == 1
+    assert value["issues"][0]["stopCategory"] == "no-result/hook-ended-early"
+
+    # A dependent of the parked entry is parked straight from pending.
+    blocked = update("--issue", "8", "--expected-status", "pending", "--status", "parked",
+                     "--stop-category", "blocked-by-parked")
+    assert blocked.returncode == 0, blocked.stderr
+    wrong = update("--issue", "7", "--expected-status", "parked", "--status", "active")
+    assert wrong.returncode != 0
+    assert "invalid status transition" in wrong.stderr
+    closed = update("--issue", "7", "--expected-status", "parked", "--status", "finalized")
+    assert closed.returncode == 0, closed.stderr
+    value = json.loads(batch.read_text(encoding="utf-8"))
+    assert value["cursor"] == 2
+    assert value["issues"][0] == {
+        "issue": 7, "status": "finalized", "childRunState": str(child.resolve()),
+    }
+    skipped = update("--issue", "9", "--expected-status", "pending", "--status", "active")
+    assert skipped.returncode == 0, skipped.stderr
+    ahead = update("--issue", "9", "--expected-status", "active", "--status", "finalized")
+    assert ahead.returncode != 0
+
+    value["issues"][1]["status"] = "bailed"
+    batch.write_text(json.dumps(value), encoding="utf-8")
+    shown = _run("batch-show", "--file", str(batch))
+    assert shown.returncode != 0
+    assert "only a parked batch issue may carry a stop category" in shown.stderr
+
+
 def test_batch_expected_status_is_atomic_across_concurrent_updates(
     tmp_path: Path,
 ) -> None:

@@ -183,6 +183,7 @@ LAST_VALIDATED_LABEL=""
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
 DEPENDENCY_GATE=ready
+BATCH_ON_ISSUE_FAILURE=stop
 BRANCH_PREFIX=agent-loop
 WORKTREE_ROOT="${TMPDIR:-/tmp}/agent-loop-worktrees"
 LOG_ROOT="${TMPDIR:-/tmp}/agent-loop-logs"
@@ -212,6 +213,7 @@ assign_config() {
         retry_on_timeout) RETRY_ON_TIMEOUT="$value" ;;
         retry_delay_seconds) RETRY_DELAY_SECONDS="$value" ;;
         dependency_gate) DEPENDENCY_GATE="$value" ;;
+        batch_on_issue_failure) BATCH_ON_ISSUE_FAILURE="$value" ;;
         branch_prefix) BRANCH_PREFIX="$value" ;;
         worktree_root) WORKTREE_ROOT="$value" ;;
         log_root) LOG_ROOT="$value" ;;
@@ -358,6 +360,7 @@ if [ -n "$WORKER_EFFORT" ] && ! [[ "$WORKER_EFFORT" =~ ^[A-Za-z0-9_-]+$ ]]; then
 fi
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
+case "$BATCH_ON_ISSUE_FAILURE" in stop|park) ;; *) echo "batch_on_issue_failure must be stop or park" >&2; exit 1 ;; esac
 
 for cmd in git gh jq node python3 timeout flock realpath; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
@@ -561,11 +564,20 @@ print(path.resolve(strict=True))
     esac
 fi
 
+LAST_STOP_CATEGORY=""
+INTERRUPTED=false
+
 recovery_message() {
     local reason="$1" category="${2:-}"
     RECOVERY_EMITTED=true
+    LAST_STOP_CATEGORY="$category"
     echo -e "${RED}✗${NC} $reason" >&2
     [ -z "$category" ] || echo "Stop category: $category" >&2
+    # The parent of a resumed batch child reads the child's stop category
+    # from here; it cannot see the child's shell variables.
+    if [ -n "${AGENT_LOOP_LOG_DIR:-}" ] && [ -d "$AGENT_LOOP_LOG_DIR" ] && [ ! -L "$AGENT_LOOP_LOG_DIR" ]; then
+        printf '%s\n' "$category" > "$AGENT_LOOP_LOG_DIR/last-stop" 2>/dev/null || true
+    fi
     if [ -n "$ACTIVE_WORKTREE" ] && [ -e "$ACTIVE_WORKTREE/.git" ]; then
         echo "Worktree preserved: $ACTIVE_WORKTREE" >&2
         echo "Inspect with: git -C '$ACTIVE_WORKTREE' status --short --branch" >&2
@@ -610,6 +622,7 @@ update_run_state() {
 }
 
 on_interrupt() {
+    INTERRUPTED=true
     recovery_message "Interrupted; no cleanup was attempted."
     exit 130
 }
@@ -622,6 +635,12 @@ on_exit() {
     # the explicit `recovery_message; exit 1` sites never double-report.
     if [ "$rc" -ne 0 ] && [ "$RECOVERY_EMITTED" = false ] && [ -n "$ACTIVE_WORKTREE" ]; then
         recovery_message "agent-loop aborted (exit $rc) with issue #${SELECTED_ID:-unknown} claimed."
+    fi
+    # Every stop path ends here, including errexit aborts, so this is the one
+    # place a failed batch issue can be parked. An interrupt is never parked.
+    if [ "$rc" -ne 0 ] && [ "$INTERRUPTED" = false ] && \
+       declare -F park_failed_batch_issue_and_continue >/dev/null; then
+        park_failed_batch_issue_and_continue
     fi
 }
 trap on_interrupt INT TERM
@@ -1548,7 +1567,7 @@ recover_v3_review_pass() {
     classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' \
         "$outcome_file")" || return 1
     run_validation "$slug-review-round-$round" true || {
-        recovery_message "Validation after recovered $engine review failed in review round $round."
+        recovery_message "Validation after recovered $engine review failed in review round $round." validation-red
         return 1
     }
     require_review_outcome_signature "$engine" "$outcome_file" \
@@ -1615,6 +1634,7 @@ run_review_pass() {
     local boundary_status
     local review_pass_launcher_seconds
     local hook_log hook_attempt pre_pass_ledger_shape_file="" pre_pass_bodies_file=""
+    local hook_status
 
     prepare_review_pass_budget || return 1
 
@@ -1698,11 +1718,16 @@ run_review_pass() {
             review_pass_launcher_seconds=3600
         fi
         export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$review_pass_launcher_seconds"
+        hook_status=0
         run_bounded_hook "$hook_description (round $round)" "$hook" \
-            "$REVIEW_PASS_TIMEOUT_SECONDS" "$hook_log" true || {
-            recovery_message "$hook_failure_description failed in review round $round."
+            "$REVIEW_PASS_TIMEOUT_SECONDS" "$hook_log" true || hook_status=$?
+        if [ "$hook_status" -eq 124 ] || [ "$hook_status" -eq 137 ]; then
+            recovery_message "$hook_failure_description failed in review round $round: it timed out (exit $hook_status)." hook-timeout
             return 1
-        }
+        elif [ "$hook_status" -ne 0 ]; then
+            recovery_message "$hook_failure_description failed in review round $round." hook-failed
+            return 1
+        fi
         # A hook that exits 0 without a result usually ended its turn with a
         # command still running. Retry it once, in the same round, only when
         # the wrapper can see that the pass changed nothing: no commit, no
@@ -1839,7 +1864,7 @@ run_review_pass() {
         }
     fi
     run_validation "$slug-review-round-$round" true || {
-        recovery_message "Validation after $validation_description failed in review round $round."
+        recovery_message "Validation after $validation_description failed in review round $round." validation-red
         return 1
     }
     require_review_outcome_signature "$engine" "$outcome_file" \
@@ -1881,7 +1906,7 @@ prepare_review_pass_budget() {
     # kill is reported as a hook or validation failure rather than as the clock
     # expiry it is. Stopping here keeps the cause legible.
     if [ "$remaining" -lt "$REVIEW_PASS_MIN_SECONDS" ]; then
-        recovery_message "Local review exhausted its configured whole-run time budget."
+        recovery_message "Local review exhausted its configured whole-run time budget." budget-exhausted
         return 1
     fi
     REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
@@ -1927,7 +1952,7 @@ run_review_convergence() {
                 return 1
             }
             run_validation "fresh-base-round-$round" true || {
-                recovery_message "Fresh-base validation failed before review round $round."
+                recovery_message "Fresh-base validation failed before review round $round." validation-red
                 return 1
             }
             push_review_head "after fresh-base integration for round $round" \
@@ -2058,7 +2083,7 @@ run_review_convergence() {
         AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_OUTCOME_FILE \
         AGENT_LOOP_REVIEW_RESULT_FILE AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
         AGENT_LOOP_REVIEW_PUSH_STATE_FILE LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
-    recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)."
+    recovery_message "Configured review hooks did not converge within $REVIEW_MAX_ROUNDS round(s)." review-cap-exhausted
     return 1
 }
 
@@ -2849,7 +2874,7 @@ resume_review_run() {
             restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
                 "recovered final validation failed" || return 1
         fi
-        recovery_message "Final reviewed-head validation failed during recovery."
+        recovery_message "Final reviewed-head validation failed during recovery." validation-red
         return 1
     }
     if [ "$ready_finalization" = true ]; then
@@ -2915,6 +2940,184 @@ resume_review_run() {
     echo -e "${GREEN}✓${NC} Issue #$SELECTED_ID recovery complete; local branch retained at $AGENT_LOOP_BRANCH"
 }
 
+# Stop categories that leave a draft PR resumable with --resume-run when the
+# wrapper-observed state agrees. Everything else, and any doubt about a push,
+# PR, or ledger mutation, still stops the batch.
+PARKABLE_STOP_CATEGORIES="no-result/hook-ended-early validation-red hook-timeout review-cap-exhausted budget-exhausted"
+
+# Prints why a failed batch issue cannot be parked and returns 1, or returns 0
+# when its checkpoint, worktree, remote branch, and draft PR agree. Nothing a
+# hook reported is trusted here.
+batch_issue_parkability() {
+    local state_file="$1" category="$2" state_json phase worktree branch checkpoint
+    local round engine log_dir pr worktree_status local_head remote_row remote_sha
+    local pr_row pr_state pr_draft pr_branch pr_head result_file push_state
+    case " $PARKABLE_STOP_CATEGORIES " in
+        *" $category "*) ;;
+        *) echo "stop category '${category:-uncategorized}' is not safely resumable"; return 1 ;;
+    esac
+    if [ -z "$state_file" ] || [ ! -f "$state_file" ]; then
+        echo "it has no review checkpoint"
+        return 1
+    fi
+    state_json="$(python3 "$RUN_STATE_HELPER" show --file "$state_file" 2>/dev/null)" || {
+        echo "its review checkpoint is invalid"
+        return 1
+    }
+    phase="$(jq -r '.phase' <<<"$state_json")"
+    case "$phase" in
+        reviewing|converged) ;;
+        *) echo "its checkpoint phase '$phase' is not a draft review state"; return 1 ;;
+    esac
+    worktree="$(jq -r '.worktree' <<<"$state_json")"
+    branch="$(jq -r '.branch' <<<"$state_json")"
+    checkpoint="$(jq -r '.headSha' <<<"$state_json")"
+    round="$(jq -r '.round' <<<"$state_json")"
+    engine="$(jq -r '.reviewEngine // empty' <<<"$state_json")"
+    log_dir="$(jq -r '.logDir' <<<"$state_json")"
+    pr="$(jq -r '.prNumber' <<<"$state_json")"
+    if [ ! -d "$worktree" ] || [ -L "$worktree" ]; then
+        echo "its worktree is unavailable"
+        return 1
+    fi
+    worktree_status="$(git -C "$worktree" status --porcelain 2>/dev/null)" || {
+        echo "its worktree status could not be read"
+        return 1
+    }
+    [ -z "$worktree_status" ] || { echo "its worktree is dirty"; return 1; }
+    [ "$(git -C "$worktree" symbolic-ref --quiet --short HEAD 2>/dev/null)" = "$branch" ] || {
+        echo "its worktree is not on the issue branch"
+        return 1
+    }
+    local_head="$(git -C "$worktree" rev-parse HEAD)" || return 1
+    remote_row="$(git -C "$PROJECT_DIR" ls-remote --exit-code --heads origin "refs/heads/$branch" 2>/dev/null)" || {
+        echo "its remote branch could not be read"
+        return 1
+    }
+    remote_sha="${remote_row%%[[:space:]]*}"
+    pr_row="$(gh pr view "$pr" \
+        --json state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid \
+        --jq '[.state,(.isDraft|tostring),.headRefName,.headRefOid,.baseRefName,.baseRefOid] | @tsv' 2>/dev/null)" || {
+        echo "its PR could not be read"
+        return 1
+    }
+    IFS=$'\t' read -r pr_state pr_draft pr_branch pr_head _ <<< "$pr_row"
+    if [ "$pr_state" != OPEN ] || [ "$pr_draft" != true ] || [ "$pr_branch" != "$branch" ]; then
+        echo "its PR is not an open draft on the issue branch"
+        return 1
+    fi
+    if [ "$local_head" != "$remote_sha" ] || [ "$remote_sha" != "$pr_head" ]; then
+        echo "its local, remote, and PR heads differ"
+        return 1
+    fi
+    if [ "$local_head" != "$checkpoint" ]; then
+        # The head moved past the checkpoint. That is resumable only when the
+        # pass that moved it finished and wrote a result naming both ends.
+        result_file="$log_dir/$engine-review-round-$round.result.json"
+        if [ -z "$engine" ] || [ ! -f "$result_file" ] || [ -L "$result_file" ] || \
+           [ "$(jq -r '.beforeSha // empty' "$result_file" 2>/dev/null)" != "$checkpoint" ] || \
+           [ "$(jq -r '.afterSha // empty' "$result_file" 2>/dev/null)" != "$local_head" ]; then
+            echo "its head moved past the checkpoint without a matching review result"
+            return 1
+        fi
+    fi
+    if [ -n "$engine" ]; then
+        push_state="$log_dir/$engine-review-round-$round-push-state"
+        if [ -e "$push_state" ] && [ "$(cat "$push_state" 2>/dev/null)" != "$remote_sha" ]; then
+            echo "its review push checkpoint does not match the remote head"
+            return 1
+        fi
+    fi
+}
+
+print_parked_batch_entries() {
+    local batch_json="$1" issue category child
+    while IFS=$'\t' read -r issue category child; do
+        [ -n "$issue" ] || continue
+        if [ -n "$child" ]; then
+            echo "   #$issue parked ($category): '$SCRIPT_DIR/agent-loop.sh' --resume-run '$child'"
+            echo "     then: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$issue' --expected-status parked --status finalized"
+        else
+            echo "   #$issue parked ($category): resume the issue it depends on first, then run this issue on its own"
+        fi
+    done < <(jq -r '.issues[] | select(.status == "parked") | [.issue, .stopCategory, (.childRunState // "")] | @tsv' <<<"$batch_json")
+}
+
+# A finished batch with parked entries did not finish every issue.
+finish_batch_with_parked_entries() {
+    local batch_json="$1" parked_count
+    parked_count="$(jq '[.issues[] | select(.status == "parked")] | length' <<<"$batch_json")"
+    [ "$parked_count" -gt 0 ] || return 0
+    echo -e "${YELLOW}⏸${NC} Ordered batch reached its end with $parked_count parked issue(s):"
+    print_parked_batch_entries "$batch_json"
+    exit 3
+}
+
+# Under batch_on_issue_failure = park, record a safely resumable failure as
+# parked and continue the batch in a fresh process, so no lane idles behind
+# one stuck issue. Returns without parking whenever the state is uncertain,
+# and the failure then stops the batch as before.
+park_failed_batch_issue_and_continue() {
+    local batch_json cursor count issue child category reason remaining
+    [ -n "$BATCH_STATE_FILE" ] && [ "$BATCH_ON_ISSUE_FAILURE" = park ] && [ -f "$BATCH_STATE_FILE" ] || return 0
+    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE" 2>/dev/null)" || return 0
+    cursor="$(jq -r '.cursor' <<<"$batch_json")"
+    count="$(jq -r '.issues | length' <<<"$batch_json")"
+    [ "$cursor" -lt "$count" ] || return 0
+    [ "$(jq -r --argjson cursor "$cursor" '.issues[$cursor].status' <<<"$batch_json")" = active ] || return 0
+    issue="$(jq -r --argjson cursor "$cursor" '.issues[$cursor].issue' <<<"$batch_json")"
+    child="$(jq -r --argjson cursor "$cursor" '.issues[$cursor].childRunState // empty' <<<"$batch_json")"
+    category="$LAST_STOP_CATEGORY"
+    if [ -z "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -n "$child" ]; then
+        category="$(head -n 1 "$(dirname -- "$child")/last-stop" 2>/dev/null || true)"
+    fi
+    if ! reason="$(batch_issue_parkability "$child" "$category")"; then
+        echo -e "${YELLOW}○${NC} Batch issue #$issue was not parked: $reason" >&2
+        return 0
+    fi
+    python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+        --issue "$issue" --expected-status active --status parked \
+        --stop-category "$category" >/dev/null || {
+        echo "could not record batch issue #$issue as parked" >&2
+        return 0
+    }
+    echo -e "${YELLOW}⏸${NC} Parked batch issue #$issue ($category); resume it later with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$child'"
+    remaining=$((MAX_ITERATIONS - ITERATION))
+    if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then
+        exec {AGENT_LOOP_RUN_LOCK_FD}<&-
+    fi
+    if [ -n "$AGENT_LOOP_BATCH_LOCK_FD" ]; then
+        exec {AGENT_LOOP_BATCH_LOCK_FD}<&-
+    fi
+    unset AGENT_LOOP_BATCH_LOCK_FD
+    trap - EXIT INT TERM
+    cd "$PROJECT_DIR" || exit 1
+    if [ "$remaining" -le 0 ]; then
+        batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || exit 1
+        echo -e "${YELLOW}⏸${NC} Ordered batch paused at the $MAX_ITERATIONS-issue iteration cap with parked issue(s):"
+        print_parked_batch_entries "$batch_json"
+        echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+        exit 3
+    fi
+    echo "   Continuing the batch with the next issue"
+    exec "$SCRIPT_DIR/agent-loop.sh" --resume-batch "$BATCH_STATE_FILE" --iterations "$remaining"
+}
+
+# The first declared issue dependency that is a parked entry of this batch.
+batch_parked_dependency() {
+    local body="$1" batch_json refs kind number
+    batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || return 1
+    refs="$(dependency_refs "$body")" || return 1
+    while IFS=$'\t' read -r kind number; do
+        [ "$kind" = issue ] && [ -n "$number" ] || continue
+        if jq -e --argjson number "$number" \
+            'any(.issues[]; .issue == $number and .status == "parked")' <<<"$batch_json" >/dev/null; then
+            printf '%s' "$number"
+            return 0
+        fi
+    done <<< "$refs"
+}
+
 if [ -n "$RESUME_RUN_FILE" ]; then
     echo -e "${CYAN}→${NC} resuming agent-loop review from $AGENT_LOOP_RUN_STATE_FILE"
     resume_review_run
@@ -2948,9 +3151,10 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
             exit 1
         }
         child_worktree="$(jq -r '.worktree' <<<"$child_json")"
+        rm -f -- "$(dirname -- "$child_state")/last-stop"
         AGENT_LOOP_BATCH_PARENT_STATE_FILE="$BATCH_STATE_FILE" \
             "$SCRIPT_DIR/agent-loop.sh" --resume-run "$child_state" || {
-            recovery_message "Current batch issue #$batch_issue did not resume to a safely finalized state."
+            recovery_message "Current batch issue #$batch_issue did not resume to a safely finalized state." child-resume-failed
             exit 1
         }
         python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
@@ -2964,6 +3168,7 @@ if [ -n "$RESUME_BATCH_FILE" ]; then
     fi
     ISSUE_ALLOWLIST="$(jq -r --argjson cursor "$batch_cursor" '.allowlist[$cursor:] | map(tostring) | join(",")' <<<"$batch_json")"
     if [ -z "$ISSUE_ALLOWLIST" ]; then
+        finish_batch_with_parked_entries "$batch_json"
         echo -e "${GREEN}■${NC} agent-loop batch already complete"
         exit 0
     fi
@@ -3007,6 +3212,21 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         exit 1
     fi
     [ "$select_status" -eq 0 ] || break
+
+    if [ -n "$BATCH_STATE_FILE" ] && [ "$BATCH_ON_ISSUE_FAILURE" = park ]; then
+        parked_dependency="$(batch_parked_dependency "$SELECTED_BODY")" || {
+            echo "could not check batch dependencies for issue #$SELECTED_ID" >&2
+            exit 1
+        }
+        if [ -n "$parked_dependency" ]; then
+            python3 "$RUN_STATE_HELPER" batch-update --file "$BATCH_STATE_FILE" \
+                --issue "$SELECTED_ID" --expected-status pending --status parked \
+                --stop-category blocked-by-parked >/dev/null || exit 1
+            echo -e "${YELLOW}⏸${NC} Issue #$SELECTED_ID depends on parked issue #$parked_dependency; parked as blocked-by-parked"
+            PROCESSED_ISSUES+=("$SELECTED_ID")
+            continue
+        fi
+    fi
 
     PROCESSED_ISSUES+=("$SELECTED_ID")
     ITERATION=$((ITERATION + 1))
@@ -3228,7 +3448,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         exit 1
     }
     run_validation "final-reviewed-head" false final || {
-        recovery_message "Final reviewed-head validation failed."
+        recovery_message "Final reviewed-head validation failed." validation-red
         exit 1
     }
     attest_review_head "after final reviewed-head validation" "$REVIEWED_BASE_SHA" || {
@@ -3273,12 +3493,14 @@ if [ -n "$BATCH_STATE_FILE" ]; then
     if [ "$batch_cursor" -lt "$batch_count" ]; then
         if [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
             echo -e "${YELLOW}○${NC} Ordered batch paused cleanly at the $MAX_ITERATIONS-issue iteration cap."
+            print_parked_batch_entries "$batch_json"
             echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
             exit 0
         fi
-        recovery_message "Ordered batch stopped before every issue reached a finalized or explicitly bailed state."
+        recovery_message "Ordered batch stopped before every issue reached a finalized, bailed, or parked state."
         exit 1
     fi
+    finish_batch_with_parked_entries "$batch_json"
 fi
 
 if [ "$ITERATION" -eq 0 ]; then

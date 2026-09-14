@@ -73,6 +73,7 @@ with the issue worktree as the current directory.
 | `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                      |
 | `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                        |
 | `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                                                                                        |
+| `batch_on_issue_failure`                         | `stop` (default) or `park`. See "Parking a failed batch issue".                                                                                                                                              |
 | `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                                                                  |
 | `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                                                             |
 
@@ -345,6 +346,32 @@ Codex result on disk and the head unchanged, re-verifies the Codex evidence and
 runs only the Claude leg of the same round; it does not consume a round. If the
 base advanced since the checkpoint, the integrated head is no longer the head
 Codex reviewed, so the resumed round starts again at Codex.
+
+### Parking a failed batch issue
+
+With `batch_on_issue_failure = park`, an ordered batch does not halt on an
+issue that failed in a state `--resume-run` can pick up. The wrapper parks the
+issue and continues with the next one. It decides from what it can observe,
+never from hook output. Every one of these must hold:
+
+- the stop category is `no-result/hook-ended-early`, `validation-red`,
+  `hook-timeout`, `review-cap-exhausted`, or `budget-exhausted`;
+- the issue has a valid review checkpoint in the `reviewing` or `converged`
+  phase;
+- the worktree is clean and on the issue branch;
+- the local head, the remote branch, and the open draft PR head are equal;
+- a head that moved past the checkpoint is explained by that pass's result
+  (its before and after SHAs);
+- the pass's push checkpoint matches the remote head.
+
+Anything else, including any doubt about a push, the PR, or the ledger, still
+stops the batch.
+
+A parked entry records its stop category and keeps its worktree. A later issue
+that declares `Depends on #N` on a parked entry is parked as
+`blocked-by-parked` without being claimed. When the batch reaches its end with
+parked entries, the wrapper lists each one with its `--resume-run` command and
+the `batch-update` that closes it out, then exits `3`.
 
 ## Liveness and Timing
 
