@@ -772,6 +772,14 @@ class Runner:
         # Build the environment first: a failure here launched nothing and must
         # leave the owed pass resumable, not an unknown "launching" attempt.
         env = self.environment(pending["engine"])
+        if origin := pending.get("capacity_origin"):
+            attempts = [
+                item for item in self.state["attempts"]
+                if item["attempt_id"] == origin
+            ]
+            if len(attempts) != 1:
+                raise Blocked("capacity fallback origin changed")
+            self.verify_capacity_evidence(pending, attempts[0])
         attempt = {
             "attempt_id": uuid.uuid4().hex,
             "engine": pending["engine"],
@@ -872,18 +880,10 @@ class Runner:
         if error and pending["phase"] != "capacity_failed":
             raise error
 
-    def recover_capacity(self, pending: dict[str, Any]) -> None:
-        """Switch once to a pinned fallback without changing run, round or history."""
-        self.verify_control()
-        engine = pending["engine"]
-        settings = self.review_settings(engine)
-        if engine != "codex" or not settings.get("fallback"):
-            raise Blocked(
-                "model is at capacity; no Codex fallback was pinned for this run"
-            )
-        recovery = pending.get("capacity_recovery")
-        if engine in self.state.get("fallback_engines", []) and not recovery:
-            raise Blocked("configured fallback is also at capacity; no further retry")
+    def verify_capacity_evidence(
+        self, pending: dict[str, Any], attempt: dict[str, Any]
+    ) -> None:
+        """Verify the original failure both during recovery and at the retry launch."""
         if (
             self.boundary() != pending["before"]
             or self.state["head"] != pending["before"]
@@ -894,13 +894,13 @@ class Runner:
             decision.get("passes") != self.state["completed"]
             or decision.get("status") != "next"
             or (decision.get("engine"), decision.get("round"))
-            != (engine, pending["round"])
+            != (pending["engine"], pending["round"])
         ):
             raise Blocked("capacity fallback cannot change the owed pass or budget")
-        folder = self.directory / pending["folder"]
-        attempt = self.state["attempts"][-1]
+        folder = self.directory / attempt["folder"]
         if (
-            attempt.get("attempt_id") != pending.get("attempt_id")
+            attempt.get("engine") != pending["engine"]
+            or attempt.get("round") != pending["round"]
             or attempt.get("phase") != "capacity_failed"
             or type(attempt.get("exit_status")) is not int
             or attempt["exit_status"] != 1
@@ -925,6 +925,33 @@ class Runner:
                 raise Blocked(
                     "review evidence changed; capacity fallback requires reconciliation"
                 )
+
+    def copy_recovery_snapshot(
+        self, source: Path, target: Path, attempt_id: str
+    ) -> None:
+        # A killed save can leave a temporary file. Keep it outside the evidence
+        # directory so that the recorded recovery transaction remains resumable.
+        staged = self.directory / f"recovery-{attempt_id}-{target.name}"
+        save(staged, read(source))
+        os.replace(staged, target)
+
+    def recover_capacity(self, pending: dict[str, Any]) -> None:
+        """Switch once to a pinned fallback without changing run, round or history."""
+        self.verify_control()
+        engine = pending["engine"]
+        settings = self.review_settings(engine)
+        if engine != "codex" or not settings.get("fallback"):
+            raise Blocked(
+                "model is at capacity; no Codex fallback was pinned for this run"
+            )
+        recovery = pending.get("capacity_recovery")
+        if engine in self.state.get("fallback_engines", []) and not recovery:
+            raise Blocked("configured fallback is also at capacity; no further retry")
+        folder = self.directory / pending["folder"]
+        attempt = self.state["attempts"][-1]
+        if attempt.get("attempt_id") != pending.get("attempt_id"):
+            raise Blocked("capacity fallback transaction changed")
+        self.verify_capacity_evidence(pending, attempt)
         retry = folder / "fallback"
         if recovery is None:
             if retry.exists() or retry.is_symlink():
@@ -948,9 +975,14 @@ class Runner:
                 if digest(target) != digest(folder / name):
                     raise Blocked("capacity fallback snapshot changed")
             else:
-                save(target, read(folder / name))
+                self.copy_recovery_snapshot(
+                    folder / name, target, attempt["attempt_id"]
+                )
         self.state.setdefault("fallback_engines", []).append(engine)
-        pending.update(folder=str(retry.relative_to(self.directory)), phase="prepared")
+        pending.update(
+            folder=str(retry.relative_to(self.directory)), phase="prepared",
+            capacity_origin=attempt["attempt_id"],
+        )
         pending.pop("capacity_recovery")
         self.persist()
         fallback = settings["fallback"]
@@ -1036,7 +1068,7 @@ class Runner:
                     if digest(target) != digest(source):
                         raise Blocked("retry review snapshot changed")
                 else:
-                    save(target, read(source))
+                    self.copy_recovery_snapshot(source, target, attempt["attempt_id"])
         pending["folder"] = str(retry.relative_to(self.directory))
         pending["phase"] = "prepared"
         pending.pop("recovery")

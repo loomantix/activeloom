@@ -128,6 +128,8 @@ export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
 review_settings="$(python3 -I "$script_dir/review-profile.py" launch-args --engine claude --repo "$repo")"
 review_model="${review_settings%%$'\n'*}"
 review_effort="${review_settings#*$'\n'}"
+# Claude gives this variable precedence over --effort, including inherited values.
+export CLAUDE_CODE_EFFORT_LEVEL="$review_effort"
 model_args=()
 [ "$review_model" = inherit ] || model_args=(--model "$review_model")
 launch_state execution

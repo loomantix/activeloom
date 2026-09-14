@@ -79,6 +79,7 @@ def _invoke(
             "import json, os, pathlib, sys\n"
             "pathlib.Path(os.environ['PROBE_RESULT']).write_text(json.dumps({\n"
             "    'background': os.environ.get('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'),\n"
+            "    'effort': os.environ.get('CLAUDE_CODE_EFFORT_LEVEL'),\n"
             "    'argv': sys.argv[1:],\n"
             "}))\n"
         ),
@@ -151,6 +152,23 @@ def test_launcher_omits_the_model_flag_for_an_inherited_model(tmp_path: Path) ->
     argv = json.loads((tmp_path / "invocation.json").read_text())["argv"]
     assert "--model" not in argv
     assert argv[:2] == ["--effort", "xhigh"]
+
+
+@pytest.mark.parametrize("inherited", ["low", "max", "auto"])
+@pytest.mark.parametrize("pinned", [False, True])
+def test_profile_effort_overrides_inherited_claude_effort(
+    tmp_path: Path, inherited: str, pinned: bool
+) -> None:
+    _write_profile(tmp_path / "review-profile.json", model="opus", effort="medium")
+    extra = {"CLAUDE_CODE_EFFORT_LEVEL": inherited}
+    if pinned:
+        extra.update(ACTIVELOOM_REVIEW_MODEL="opus", ACTIVELOOM_REVIEW_EFFORT="high")
+    _invoke(tmp_path, extra)
+    invocation = json.loads((tmp_path / "invocation.json").read_text())
+    expected = "high" if pinned else "medium"
+    assert invocation["effort"] == expected
+    argv = invocation["argv"]
+    assert argv[argv.index("--effort") + 1] == expected
 
 
 def test_run_pinned_settings_override_the_profile(tmp_path: Path) -> None:

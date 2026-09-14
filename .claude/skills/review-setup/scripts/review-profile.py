@@ -69,6 +69,12 @@ def _fail(message: str, status: int = EXIT_INVALID) -> NoReturn:
     raise ProfileError(message, status)
 
 
+def repository_key(repo: str) -> str:
+    if not REPO_RE.fullmatch(repo):
+        _fail(f"invalid repository {repo!r}; expected OWNER/REPO")
+    return repo.lower()
+
+
 def validate_engine_settings(
     engine: str, settings: Any, *, partial: bool = False
 ) -> None:
@@ -154,9 +160,11 @@ def validate_profile(document: Any) -> dict[str, Any]:
     repos = document.get("repos", {})
     if not isinstance(repos, dict):
         _fail("profile repos must be an object")
+    normalized_repos = {}
     for repo, override in repos.items():
-        if not REPO_RE.fullmatch(repo):
-            _fail(f"repos: invalid repository {repo!r}; expected OWNER/REPO")
+        key = repository_key(repo)
+        if key in normalized_repos:
+            _fail(f"repos: duplicate repository {repo!r} ignoring case")
         if not isinstance(override, dict) or not override:
             _fail(f"repos.{repo}: override must be a nonempty object")
         if set(override) - {"engines", "order"}:
@@ -165,6 +173,9 @@ def validate_profile(document: Any) -> dict[str, Any]:
             validate_engine_settings(engine, settings, partial=True)
         for tier, engines_in_order in override.get("order", {}).items():
             validate_order(tier, engines_in_order)
+        normalized_repos[key] = override
+    if "repos" in document:
+        return {**document, "repos": normalized_repos}
     return document
 
 
@@ -207,7 +218,7 @@ def require_profile() -> dict[str, Any]:
 
 
 def save_profile(document: dict[str, Any]) -> Path:
-    validate_profile(document)
+    document = validate_profile(document)
     path = profile_path()
     if path.is_symlink() or path.parent.is_symlink():
         _fail(f"review profile path cannot be a symlink: {path}")
@@ -236,7 +247,11 @@ def effective(document: dict[str, Any], repo: str | None) -> dict[str, Any]:
         engine: dict(settings) for engine, settings in document["engines"].items()
     }
     order = {tier: list(value) for tier, value in document["order"].items()}
-    override = document.get("repos", {}).get(repo) if repo else None
+    override = (
+        document.get("repos", {}).get(repository_key(repo))
+        if repo is not None
+        else None
+    )
     if override:
         for engine, settings in override.get("engines", {}).items():
             engines[engine].update(settings)
@@ -339,10 +354,9 @@ def command_init(args: argparse.Namespace) -> None:
 
 def command_set(args: argparse.Namespace) -> None:
     document = require_profile()
-    if args.repo:
-        if not REPO_RE.fullmatch(args.repo):
-            _fail(f"invalid repository {args.repo!r}; expected OWNER/REPO")
-        override = document.setdefault("repos", {}).setdefault(args.repo, {})
+    if args.repo is not None:
+        repo = repository_key(args.repo)
+        override = document.setdefault("repos", {}).setdefault(repo, {})
         apply_assignments(override, args.assignments)
     else:
         apply_assignments(document, args.assignments)
@@ -354,13 +368,14 @@ def command_set(args: argparse.Namespace) -> None:
 def command_unset(args: argparse.Namespace) -> None:
     document = require_profile()
     repos = document.get("repos", {})
-    if args.repo not in repos:
+    repo = repository_key(args.repo)
+    if repo not in repos:
         _fail(f"no override for {args.repo}", EXIT_REFUSED)
     if not args.keys:
-        del repos[args.repo]
+        del repos[repo]
     for key in args.keys:
         section, dot, field = key.partition(".")
-        container = repos[args.repo].get(
+        container = repos[repo].get(
             "order" if section == "order" else "engines", {}
         )
         if section == "order" and field in container:
@@ -371,13 +386,13 @@ def command_unset(args: argparse.Namespace) -> None:
                 del container[section]
         else:
             _fail(f"{args.repo} has no override for {key}", EXIT_REFUSED)
-    if args.repo in repos:
-        override = repos[args.repo]
+    if repo in repos:
+        override = repos[repo]
         for name in ("engines", "order"):
             if name in override and not override[name]:
                 del override[name]
         if not override:
-            del repos[args.repo]
+            del repos[repo]
     if not repos:
         document.pop("repos", None)
     document["confirmed_at"] = now()

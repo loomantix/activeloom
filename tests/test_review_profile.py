@@ -263,6 +263,53 @@ def test_repository_overrides_layer_over_user_settings(
     assert run(capsys, "unset", "--repo", "example/project")[0] == 1
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_repository_override_identity_is_case_insensitive(
+    profile: Path, capsys: pytest.CaptureFixture[str], legacy: bool
+) -> None:
+    assert run(capsys, "init", "--accept-defaults")[0] == 0
+    assert run(
+        capsys, "set", "--repo", "Example/Project", "codex.model=example-model",
+        "order.lean=codex,gemini",
+    )[0] == 0
+    document = json.loads(profile.read_text())
+    assert list(document["repos"]) == ["example/project"]
+    if legacy:
+        document["repos"]["Example/Project"] = document["repos"].pop("example/project")
+        profile.write_text(json.dumps(document))
+    resolved = json.loads(
+        run(capsys, "resolve", "--engine", "codex", "--repo", "EXAMPLE/PROJECT")[1]
+    )
+    assert resolved["model"] == "example-model"
+    assert resolved["source"] == "repository override"
+    assert run(capsys, "order", "--tier", "lean", "--repo", "example/PROJECT")[
+        1
+    ].strip() == "codex,gemini"
+    assert run(capsys, "set", "--repo", "EXAMPLE/project", "codex.effort=max")[0] == 0
+    assert list(json.loads(profile.read_text())["repos"]) == ["example/project"]
+    assert run(capsys, "unset", "--repo", "EXAMPLE/project", "codex.model")[0] == 0
+    assert run(capsys, "unset", "--repo", "example/PROJECT")[0] == 0
+    assert "repos" not in json.loads(profile.read_text())
+
+
+def test_import_rejects_duplicate_repository_case_variants(
+    tmp_path: Path, profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(capsys, "init", "--accept-defaults")[0] == 0
+    before = profile.read_bytes()
+    document = json.loads(before)
+    document["repos"] = {
+        "Example/Project": {"engines": {"codex": {"effort": "low"}}},
+        "example/project": {"engines": {"codex": {"effort": "max"}}},
+    }
+    source = tmp_path / "duplicate-repos.json"
+    source.write_text(json.dumps(document))
+    status, _, error = run(capsys, "init", "--replace", "--from-file", str(source))
+    assert status == 2
+    assert "duplicate repository" in error
+    assert profile.read_bytes() == before
+
+
 def test_run_pinned_settings_take_precedence_and_are_validated(
     profile: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

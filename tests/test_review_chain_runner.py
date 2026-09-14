@@ -235,7 +235,7 @@ def test_capacity_fallback_resumes_an_interrupted_preparation(
 
     def save(path: Path, value: Any) -> None:
         nonlocal interrupted
-        if path.parent.name == "fallback" and not interrupted:
+        if path.name.startswith("recovery-") and not interrupted:
             interrupted = True
             raise OSError("injected fallback snapshot interruption")
         original(path, value)
@@ -247,6 +247,88 @@ def test_capacity_fallback_resumes_an_interrupted_preparation(
     resumed = h.runner(h.args, h.directory)
     assert resumed.run() == "converged"
     assert len(capacity_harness.launches) == 3
+    assert len(resumed.state["attempts"]) == 5
+
+
+@pytest.mark.parametrize("evidence", ["comments", "threads", "result", "log", "unchanged"])
+def test_prepared_capacity_retry_rechecks_evidence_before_launch(
+    capacity_harness: Any, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    h = capacity_harness.harness
+    runner = h.runner(h.args, h.directory)
+    recover = runner.recover_capacity
+
+    def interrupt(pending: dict[str, Any]) -> None:
+        recover(pending)
+        raise OSError("interrupted after fallback preparation")
+
+    monkeypatch.setattr(runner, "recover_capacity", interrupt)
+    with pytest.raises(OSError, match="after fallback preparation"):
+        runner.run()
+    before = h.module.read(h.directory / "state.json")
+    assert before["pending"]["phase"] == "prepared"
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    if evidence in ("comments", "threads"):
+        monkeypatch.setattr(
+            resumed, evidence, lambda path: h.module.save(path, ["changed"])
+        )
+    elif evidence in ("result", "log"):
+        origin = h.directory / before["attempts"][0]["folder"]
+        name = "result.json" if evidence == "result" else "worker.log"
+        (origin / name).write_text("{}")
+    if evidence == "unchanged":
+        assert resumed.run() == "converged"
+        assert resumed.state["run_id"] == before["run_id"]
+    else:
+        with pytest.raises(h.module.Blocked, match="evidence changed"):
+            resumed.run()
+        assert len(capacity_harness.launches) == 1
+        assert resumed.state["completed"] == []
+
+
+@pytest.mark.parametrize("recovery", ["capacity", "preflight"])
+@pytest.mark.parametrize("cut", ["stage", "publish"])
+def test_recovery_snapshot_survives_process_termination(
+    capacity_harness: Any, monkeypatch: pytest.MonkeyPatch, recovery: str, cut: str
+) -> None:
+    h = capacity_harness.harness
+    if recovery == "preflight":
+        capacity_harness.controls.failures = 0
+        h.controls.preflight = True
+        with pytest.raises(h.module.Blocked):
+            h.runner(h.args, h.directory).run()
+        h.args.resume = h.args.recover_preflight = True
+        h.controls.preflight = False
+    replace = h.module.os.replace
+
+    def terminate(source: Any, target: Any) -> None:
+        path = Path(target)
+        if (
+            cut == "stage" and path.name.startswith("recovery-")
+            or cut == "publish" and path.name.startswith("before-")
+            and (path.parent.name == "fallback" or path.parent.name.startswith("retry-"))
+        ):
+            os._exit(91)
+        replace(source, target)
+
+    monkeypatch.setattr(h.module.os, "replace", terminate)
+    child = os.fork()
+    if child == 0:
+        # A real exit bypasses save()'s finally block, unlike an injected error.
+        try:
+            h.runner(h.args, h.directory).run()
+        finally:
+            os._exit(92)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    monkeypatch.setattr(h.module.os, "replace", replace)
+    before = h.module.read(h.directory / "state.json")
+    capacity_harness.controls.failures = 0
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    assert resumed.run() == "converged"
+    assert resumed.state["run_id"] == before["run_id"]
     assert len(resumed.state["attempts"]) == 5
 
 
