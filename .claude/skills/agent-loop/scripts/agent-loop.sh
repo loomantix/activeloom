@@ -562,9 +562,10 @@ print(path.resolve(strict=True))
 fi
 
 recovery_message() {
-    local reason="$1"
+    local reason="$1" category="${2:-}"
     RECOVERY_EMITTED=true
     echo -e "${RED}✗${NC} $reason" >&2
+    [ -z "$category" ] || echo "Stop category: $category" >&2
     if [ -n "$ACTIVE_WORKTREE" ] && [ -e "$ACTIVE_WORKTREE/.git" ]; then
         echo "Worktree preserved: $ACTIVE_WORKTREE" >&2
         echo "Inspect with: git -C '$ACTIVE_WORKTREE' status --short --branch" >&2
@@ -1468,6 +1469,46 @@ recover_v3_review_pass() {
     REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
 }
 
+# The last non-empty lines of a hook log, bounded like every other failure
+# tail. A review CLI prints its final message last, which is usually the only
+# place the reason a pass ended early is visible.
+print_hook_log_tail() {
+    local log_file="$1"
+    [ -f "$log_file" ] || return 0
+    grep -v '^[[:space:]]*$' "$log_file" 2>/dev/null | tail -n "$OUTPUT_MAX_LINES" | \
+        sed 's/^/   | /' >&2 || true
+}
+
+# Thread identity, resolution, and comments, in a stable order. Comparing two
+# of these shows whether a hook posted, replied to, or resolved anything.
+review_ledger_shape() {
+    jq -S '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+        | {id, isResolved, comments: [.comments.nodes[] | {databaseId, body}]}]
+        | sort_by(.id, (.comments | map(.databaseId)))' "$1"
+}
+
+# Whether a review pass that produced no result left any trace the wrapper can
+# observe: a dirty tree, a commit, a moved push checkpoint, a remote or PR head
+# that differs from the pre-pass head, or any ledger thread or PR comment that
+# was not there before. Only a pass with no trace is safe to run again.
+review_pass_left_no_trace() {
+    local before_sha="$1" pre_ledger_shape_file="$2" pre_bodies_file="$3"
+    local push_state_file="$4" status ledger_file bodies_file
+    status="$(git status --porcelain)" || return 1
+    [ -z "$status" ] || return 1
+    require_issue_branch_head || return 1
+    [ "$(git rev-parse HEAD)" = "$before_sha" ] || return 1
+    [ -f "$push_state_file" ] && [ ! -L "$push_state_file" ] || return 1
+    [ "$(cat "$push_state_file")" = "$before_sha" ] || return 1
+    attest_review_head "while checking a pass without a result" \
+        "$AGENT_LOOP_REVIEW_BASE_SHA" 2>/dev/null || return 1
+    ledger_file="$(fetch_local_review_threads)" || return 1
+    review_ledger_shape "$ledger_file" | cmp -s - "$pre_ledger_shape_file" || return 1
+    bodies_file="${pre_bodies_file%.txt}-after.txt"
+    fetch_review_attestation_bodies "$bodies_file" || return 1
+    cmp -s "$bodies_file" "$pre_bodies_file"
+}
+
 run_review_pass() {
     local engine="$1" slug="$2" hook="$3" round="$4"
     local hook_description="$5" hook_failure_description="$6"
@@ -1478,6 +1519,7 @@ run_review_pass() {
     local historical_comment_ids_signature
     local boundary_status
     local review_pass_launcher_seconds
+    local hook_log hook_attempt pre_pass_ledger_shape_file="" pre_pass_bodies_file=""
 
     prepare_review_pass_budget || return 1
 
@@ -1530,25 +1572,66 @@ run_review_pass() {
             return 1
         }
         export AGENT_LOOP_REVIEW_PUSH_STATE_FILE="$review_push_state_file"
+        # What the PR looked like before the hook ran, so a pass that ends
+        # without a result can be shown to have changed nothing before it is
+        # retried. The thread fetch file is reused by every later fetch, so
+        # keep a normalized copy of its shape.
+        pre_pass_ledger_shape_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-pre-pass-ledger.json"
+        review_ledger_shape "$pre_pass_threads_file" > "$pre_pass_ledger_shape_file" || {
+            recovery_message "Could not snapshot the review ledger shape before $engine round $round."
+            return 1
+        }
+        pre_pass_bodies_file="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round-pre-pass-bodies.txt"
+        fetch_review_attestation_bodies "$pre_pass_bodies_file" || {
+            recovery_message "Could not snapshot PR comments before $engine round $round."
+            return 1
+        }
     else
         unset AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
-    # Standalone reviewer launchers read their own per-pass bound from this
-    # variable, clamped to the ceiling they enforce. Keep it strictly below the
-    # bound `run_bounded_hook` applies below: that clock starts first and also
-    # covers the launcher's own preflight, so an equal value guarantees the
-    # wrapper kills the CLI before the CLI can time out and write a result.
-    review_pass_launcher_seconds=$((REVIEW_PASS_TIMEOUT_SECONDS - REVIEW_PASS_LAUNCHER_MARGIN_SECONDS))
-    if [ "$review_pass_launcher_seconds" -gt 3600 ]; then
-        review_pass_launcher_seconds=3600
-    fi
-    export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$review_pass_launcher_seconds"
-    run_bounded_hook "$hook_description (round $round)" "$hook" \
-        "$REVIEW_PASS_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log" true || {
-        recovery_message "$hook_failure_description failed in review round $round."
-        return 1
-    }
+    hook_log="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log"
+    hook_attempt=1
+    while :; do
+        # Standalone reviewer launchers read their own per-pass bound from this
+        # variable, clamped to the ceiling they enforce. Keep it strictly below the
+        # bound `run_bounded_hook` applies below: that clock starts first and also
+        # covers the launcher's own preflight, so an equal value guarantees the
+        # wrapper kills the CLI before the CLI can time out and write a result.
+        review_pass_launcher_seconds=$((REVIEW_PASS_TIMEOUT_SECONDS - REVIEW_PASS_LAUNCHER_MARGIN_SECONDS))
+        if [ "$review_pass_launcher_seconds" -gt 3600 ]; then
+            review_pass_launcher_seconds=3600
+        fi
+        export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$review_pass_launcher_seconds"
+        run_bounded_hook "$hook_description (round $round)" "$hook" \
+            "$REVIEW_PASS_TIMEOUT_SECONDS" "$hook_log" true || {
+            recovery_message "$hook_failure_description failed in review round $round."
+            return 1
+        }
+        # A hook that exits 0 without a result usually ended its turn with a
+        # command still running. Retry it once, in the same round, only when
+        # the wrapper can see that the pass changed nothing: no commit, no
+        # push, no ledger thread or PR comment. Anything else stops as before,
+        # because a second pass on top of partial mutations is not the pass the
+        # ledger recorded.
+        if [ "$REVIEW_CONTRACT_VERSION" = 3 ] && [ "$hook_attempt" -eq 1 ] && \
+           [ ! -e "$result_file" ] && [ ! -L "$result_file" ] && \
+           review_pass_left_no_trace "$before_sha" "$pre_pass_ledger_shape_file" \
+               "$pre_pass_bodies_file" "$review_push_state_file"; then
+            echo -e "${YELLOW}›${NC} retry: hook-ended-without-result ($engine, round $round); the pass changed nothing"
+            print_hook_log_tail "$hook_log"
+            record_phase_event retry "$hook_description (round $round)"
+            cp -- "$hook_log" "${hook_log%.log}-attempt-1.log" 2>/dev/null || true
+            printf '%s\n' "$before_sha" > "$review_push_state_file" || {
+                recovery_message "Could not reset the $engine review push checkpoint for its retry."
+                return 1
+            }
+            prepare_review_pass_budget || return 1
+            hook_attempt=2
+            continue
+        fi
+        break
+    done
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         require_review_outcome_signature "$engine pre-pass history" \
             "$historical_comment_ids_file" "$historical_comment_ids_signature" \
@@ -1581,7 +1664,14 @@ run_review_pass() {
         result_json="$(node "$REVIEW_LEDGER" validate-result \
             --engine "$slug" --round "$round" --base "$AGENT_LOOP_REVIEW_BASE_SHA" \
             --before "$before_sha" --head "$after_sha" --result-file "$result_file")" || {
-            recovery_message "$engine review did not produce a valid contract v3 result in round $round."
+            if [ ! -e "$result_file" ] && [ ! -L "$result_file" ]; then
+                echo "$engine review hook exited 0 without writing a result; its log ends:" >&2
+                print_hook_log_tail "$hook_log"
+                recovery_message "$engine review did not produce a valid contract v3 result in round $round." \
+                    no-result/hook-ended-early
+            else
+                recovery_message "$engine review did not produce a valid contract v3 result in round $round."
+            fi
             return 1
         }
         result_status="$(jq -r '.status' <<<"$result_json")"

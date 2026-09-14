@@ -91,7 +91,12 @@ blocked hook instead uses `review-ledger.js write-blocked-result` with an
 owner-only blocker file and must not claim a clean or changed pass. The wrapper validates its exact
 SHAs and finding fingerprints, verifies resolved v3 dispositions, and owns the
 canonical pass/completion attestation. A missing, invalid, or blocked result
-stops even when the hook exits zero. Validation hooks
+stops even when the hook exits zero, with one exception: a hook that exits zero
+without writing any result, and left no commit, push, ledger thread, or PR
+comment behind, is retried once in the same round (`retry:
+hook-ended-without-result`). The retry draws on the same review budget. A
+second empty pass, or an empty pass that changed anything, stops with the
+category `no-result/hook-ended-early` and the tail of the hook log. Validation hooks
 must leave a clean tree; work they write but do not commit is not in the
 reviewed head and would be discarded with the worktree.
 

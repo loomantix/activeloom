@@ -621,6 +621,97 @@ def test_v3_missing_structured_result_is_not_treated_as_clean(
     assert not comments.exists()
 
 
+def _counting_hook(engine: str, body: str) -> str:
+    return f"printf '{engine}-attempt\\n' >> \"$EVENT_LOG\"; {body}"
+
+
+def test_review_hook_that_ends_without_a_result_is_retried_once_in_place(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The first Claude attempt ends its turn without writing a result and
+    # without touching the PR. Retrying it costs one pass; restarting the round
+    # would re-run Codex against an unchanged head.
+    claude = _counting_hook(
+        "claude",
+        'if [ ! -e "$AGENT_STATE_DIR/claude-ended-early" ]; then '
+        'touch "$AGENT_STATE_DIR/claude-ended-early"; exit 0; fi; '
+        + _clean_v3_hook("claude"),
+    )
+    result = _run(
+        consumer,
+        ["--issues", "33"],
+        issues=[_issue(33)],
+        config=_config_v3(tmp_path, claude_review_hook=claude),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "retry: hook-ended-without-result" in result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex\n") == 1
+    assert events.count("claude-attempt\n") == 2
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=claude round=1" in comments
+    assert "round=2" not in comments
+    log_dir = next((tmp_path / "logs").glob("*-issue-33-*"))
+    phases = [
+        json.loads(line)
+        for line in (log_dir / "phases.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(event["event"] == "retry" for event in phases)
+
+
+def test_review_hook_that_ends_without_a_result_twice_stops_categorized(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "34"],
+        issues=[_issue(34)],
+        config=_config_v3(
+            tmp_path,
+            claude_review_hook=_counting_hook("claude", "echo 'suite still running'; exit 0"),
+        ),
+        timeout=90,
+    )
+    assert result.returncode != 0
+    assert "valid contract v3 result" in result.stderr
+    assert "Stop category: no-result/hook-ended-early" in result.stderr
+    assert "suite still running" in result.stderr
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex\n") == 1
+    assert events.count("claude-attempt\n") == 2
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+@pytest.mark.parametrize("trace", ["push", "finding"])
+def test_review_hook_that_mutated_before_ending_without_a_result_is_not_retried(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, trace: str
+) -> None:
+    if trace == "push":
+        body = (
+            "printf 'fix\\n' > early-fix.txt; git add early-fix.txt; "
+            "git commit -m 'fix: early'; \"$AGENT_LOOP_REVIEW_PUSH_HELPER\"; exit 0"
+        )
+    else:
+        body = (
+            "jq -n '[{id:\"THREAD-EARLY\",isResolved:false,"
+            "repository:{nameWithOwner:\"fixture/consumer\"},pullRequest:{number:1},"
+            "comments:{nodes:[{body:\"Finding.\",databaseId:77,author:{login:\"tester\"}}],"
+            "pageInfo:{hasNextPage:false}}}]' > \"$AGENT_STATE_DIR/review-threads.json\"; exit 0"
+        )
+    result = _run(
+        consumer,
+        ["--issues", "35"],
+        issues=[_issue(35)],
+        config=_config_v3(tmp_path, claude_review_hook=_counting_hook("claude", body)),
+        timeout=90,
+    )
+    assert result.returncode != 0
+    assert "retry: hook-ended-without-result" not in result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("claude-attempt\n") == 1
+
+
 def test_v3_clean_results_attest_and_converge(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
