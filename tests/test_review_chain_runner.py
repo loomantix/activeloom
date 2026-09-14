@@ -401,6 +401,8 @@ def harness(
         fail_attest=False,
         fail_check=False,
         preflight=False,
+        finalization_failure=False,
+        fail_recovery=False,
     )
     monkeypatch.setattr(
         module, "command", lambda argv: BASE if argv[0] == "git" else "test-actor"
@@ -451,6 +453,22 @@ sys.exit(int(sys.argv[2]))
                 env,
                 10,
             )
+            if controls.finalization_failure:
+                result_path = Path(env["AGENT_LOOP_REVIEW_RESULT_FILE"])
+                candidate = module.read(result_path)
+                module.save(
+                    result_path,
+                    {
+                        **candidate,
+                        "status": "blocked",
+                        "finalLaneComplete": False,
+                        "blocker": "Synthetic finalization failure",
+                    },
+                )
+                module.save(
+                    Path(str(result_path) + ".recovery.json"),
+                    {"candidate": candidate, "blocked": module.digest(result_path)},
+                )
         elif controls.fail_check:
             raise module.Blocked("synthetic gate failure")
         else:
@@ -508,6 +526,23 @@ sys.exit(int(sys.argv[2]))
                     check=True,
                 )
                 return dict(json.loads(result.stdout))
+            if operation == "recover-result":
+                if controls.fail_recovery:
+                    raise module.Blocked("synthetic finalization verification failure")
+                result_path = Path(options["--result-file"])
+                receipt_path = Path(str(result_path) + ".recovery.json")
+                assert (
+                    module.digest(receipt_path) == options["--expected-recovery-sha256"]
+                )
+                receipt = module.read(receipt_path)
+                current = module.read(result_path)
+                if (
+                    current != receipt["candidate"]
+                    and module.digest(result_path) != receipt["blocked"]
+                ):
+                    raise module.Blocked("saved result changed")
+                module.save(result_path, receipt["candidate"])
+                return {"verified": True}
             if operation == "attest":
                 marker = (
                     f"<!-- local-review-pass:v3 engine={options['--engine']} round={options['--round']} "
@@ -539,6 +574,73 @@ def test_one_invocation_runs_all_fixed_steps(harness: Any) -> None:
     assert runner.run() == "converged"
     assert harness.launches == ["codex", "claude", "codex", "claude"]
     assert len(runner.state["completed"]) == 4
+
+
+def test_completed_result_recovery_keeps_the_run_and_owed_pass(harness: Any) -> None:
+    harness.controls.finalization_failure = True
+    harness.controls.fail_recovery = True
+    with pytest.raises(harness.module.Blocked, match="finalization verification"):
+        harness.runner(harness.args, harness.directory).run()
+    original = harness.module.read(harness.directory / "state.json")
+    assert original["pending"]["phase"] == "returned"
+    assert original["pending"]["result_recovery_sha256"]
+    assert original["completed"] == []
+    assert harness.launches == ["codex"]
+    harness.controls.fail_recovery = False
+    harness.controls.finalization_failure = False
+    harness.args.resume = True
+    resumed = harness.runner(harness.args, harness.directory)
+    assert resumed.run() == "converged"
+    assert resumed.state["run_id"] == original["run_id"]
+    assert harness.launches == ["codex", "claude", "codex", "claude"]
+    assert len(resumed.state["attempts"]) == 4
+
+
+@pytest.mark.parametrize(
+    "changed", ["receipt", "snapshot", "result", "late-receipt", "unknown-exit"]
+)
+def test_completed_result_recovery_rejects_unbound_evidence(
+    harness: Any, changed: str
+) -> None:
+    harness.controls.finalization_failure = True
+    harness.controls.fail_recovery = True
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    pending = state["pending"]
+    folder = harness.directory / pending["folder"]
+    if changed in ("receipt", "snapshot", "result"):
+        name = {
+            "receipt": "result.json.recovery.json",
+            "snapshot": "historical.json",
+            "result": "result.json",
+        }[changed]
+        path = folder / name
+        path.write_text(path.read_text() + "\n")
+    elif changed == "late-receipt":
+        pending.pop("result_recovery_sha256")
+    else:
+        pending["phase"] = "launching"
+    harness.module.save(harness.directory / "state.json", state)
+    harness.controls.fail_recovery = False
+    harness.args.resume = True
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    assert harness.launches == ["codex"]
+    assert not harness.events
+
+
+def test_completed_result_recovery_replays_after_attestation_interruption(harness: Any) -> None:
+    harness.controls.finalization_failure = True
+    harness.controls.fail_attest = True
+    with pytest.raises(harness.module.Blocked, match="after remote attestation"):
+        harness.runner(harness.args, harness.directory).run()
+    harness.controls.finalization_failure = False
+    harness.args.resume = True
+    resumed = harness.runner(harness.args, harness.directory)
+    assert resumed.run() == "converged"
+    assert harness.launches == ["codex", "claude", "codex", "claude"]
+    assert len(resumed.state["completed"]) == 4
 
 
 def test_cycle_stops_on_verified_convergence(harness: Any) -> None:

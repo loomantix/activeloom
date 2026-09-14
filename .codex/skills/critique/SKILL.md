@@ -302,7 +302,10 @@ role references needed for the selected lenses.
     structured result at `$AGENT_LOOP_REVIEW_RESULT_FILE` when set. The outer
     wrapper validates it and owns the pass/completion attestation. Inside
     agent-loop, omit thread and transition files so the helper fetches and
-    derives them. For a blocked pass, call `write-blocked-result` with an
+    derives them. If finalization preserves `<result-file>.recovery.json`, keep
+    it and the helper-written blocked result for the outer controller; report
+    the failure without overwriting either file. For unfinished review work,
+    call `write-blocked-result` with an
     owner-only blocker file. Outside agent-loop, create the complete
     review-thread export and ordered
     forward-only before-to-after head list as private temporary files, use

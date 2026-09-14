@@ -169,6 +169,9 @@ refactor finding set, and that original before SHA. A changed result without at
 least one fixed finding fails closed. Do not emit `clean` for a cleanup-moved enclosing hook.
 For a blocked pass, put the safe blocker in an owner-only
 regular file and call `write-blocked-result`.
+If the helper already saved `<result-file>.recovery.json` for a completed
+candidate, preserve it and its blocked result for controller finalization
+recovery instead of overwriting the blocker.
 
 ## Phase 3: Auto-mode relay
 

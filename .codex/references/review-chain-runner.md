@@ -159,7 +159,16 @@ the more precise `plan-complete` reason. Neither grants extra passes.
 The runner never marks ready or merges, even on success. It reports the evidence
 to the caller, who follows the repository's finalization policy.
 
-`--resume` can rerun a failed validation command and reconcile an attestation
+When a completed review fails final result verification, the ledger helper can
+preserve a blocked result and `<result-file>.recovery.json`. The runner pins that
+sidecar's digest at a successful worker return. It invokes `recover-result` to
+recheck the original identity, blocked bytes, pre-pass snapshot and live ledger,
+then continues ordinary validation and attestation in the same pending pass.
+No reviewer is relaunched and the run ID, round and budget stay unchanged.
+This requires a helper that implements `recover-result`; update the published
+bundle through its normal verified distribution path, never patch it locally.
+
+`--resume` can retry this finalization, rerun a failed validation command and reconcile an attestation
 posted before a checkpoint write, without relaunching the worker. Each launch
 attempt records its execution boundary, known exit status, and structured
 failure reason. A crash between the boundary write and process creation remains
@@ -173,7 +182,7 @@ Recovery rechecks the live head and ledger, preserves the run ID,
 round, completed passes, original comment snapshots and attempt history, and
 launches only the owed pass. The retry has its own directory. It consumes the
 same remaining run budget. Outside the configured Codex capacity fallback above,
-a missing/blocked result after execution, unknown
+a missing result, a blocked result without a sealed completed candidate, unknown
 exit, interrupted reviewer, changed head or changed evidence still requires
 reconciliation; none is silently retried or converted into passing evidence.
 
