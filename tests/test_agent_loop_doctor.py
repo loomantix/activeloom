@@ -59,8 +59,8 @@ def _run(
     # for the wrong reason.
     bin_dir = project.parent / "bin"
     bin_dir.mkdir(exist_ok=True)
-    for name in bin_dir.iterdir():
-        name.unlink()
+    for existing in bin_dir.iterdir():
+        existing.unlink()
     for command in ("bash", "env", "node", "python3"):
         executable = shutil.which(command)
         assert executable is not None
