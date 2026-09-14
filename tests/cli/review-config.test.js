@@ -109,10 +109,15 @@ test('the real helper refuses to resolve settings before setup', () => {
       upstreamDir: REPO_ROOT,
       python: 'python3',
       helperArgs: ['resolve', '--engine', 'claude'],
-      spawn: (file, args) =>
-        require('node:child_process').spawnSync(file, args, {
+      spawn: (file, args) => {
+        const env = { ...process.env };
+        delete env.ACTIVELOOM_REVIEW_MODEL;
+        delete env.ACTIVELOOM_REVIEW_EFFORT;
+        return require('node:child_process').spawnSync(file, args, {
           encoding: 'utf8',
-        }),
+          env,
+        });
+      },
     });
     assert.strictEqual(status, 3);
   } finally {
