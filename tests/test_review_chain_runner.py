@@ -1738,3 +1738,42 @@ def test_missing_review_profile_blocks_before_any_launch(
     with pytest.raises(module.Blocked, match="review-setup"):
         runner.review_settings("codex")
     assert not (directory / "state.json").exists()
+
+
+def test_worker_environment_exports_the_selected_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-chain-runner")
+    directory = tmp_path / "checkpoint"
+    directory.mkdir()
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_MODEL", "stale-model")
+    monkeypatch.setenv("ACTIVELOOM_REVIEW_EFFORT", "low")
+    runner = module.Runner(SimpleNamespace(repo="example/repo"), directory)
+    runner.state.update(
+        installation={"manifest_sha256": "c" * 64},
+        review_settings={
+            "codex": {
+                "engine": "codex",
+                "model": "gpt-6-astra",
+                "effort": "max",
+                "source": "user profile",
+                "fallback": {"model": "gpt-5.6-sol", "effort": "medium"},
+            },
+            "claude": {
+                "engine": "claude",
+                "model": "opus",
+                "effort": "medium",
+                "source": "user profile",
+            },
+        },
+    )
+
+    def pinned(engine: str) -> tuple[str | None, str | None]:
+        env = runner.environment(engine)
+        return env.get("ACTIVELOOM_REVIEW_MODEL"), env.get("ACTIVELOOM_REVIEW_EFFORT")
+
+    assert pinned("codex") == ("gpt-6-astra", "max")
+    assert pinned("claude") == ("opus", "medium")
+    runner.state["fallback_engines"] = ["codex"]
+    assert pinned("codex") == ("gpt-5.6-sol", "medium")
+    assert pinned("claude") == ("opus", "medium")

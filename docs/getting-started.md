@@ -256,13 +256,12 @@ recommended settings and which engine CLIs are installed before writing anything
 or from the CLI:
 
 ```bash
-node cli/bin/activeloom.js review-config defaults
-node cli/bin/activeloom.js review-config init --accept-defaults claude.effort=high
-node cli/bin/activeloom.js review-config set --repo example/project order.lean=codex,claude
-node cli/bin/activeloom.js review-config set codex.fallback.model=gpt-5.6-sol codex.fallback.effort=medium
-node cli/bin/activeloom.js review-config show --repo example/project
+activeloom review-config defaults
+activeloom review-config init --accept-defaults claude.effort=high
+activeloom review-config set --repo example/project order.lean=codex,claude
+activeloom review-config set codex.fallback.model=gpt-5.6-sol codex.fallback.effort=medium
+activeloom review-config show --repo example/project
 ```
-````
 
 Repository overrides layer over your own settings. A running review chain keeps
 the settings it started with; a change applies to the next run.
@@ -279,7 +278,6 @@ and other engines do not retry.
 
 See [`.claude/REVIEW_WORKFLOW.md`](.claude/REVIEW_WORKFLOW.md) — canonical for the lean/deep chains.
 See [`.claude/MODEL_NOTES.md`](.claude/MODEL_NOTES.md) before editing anything under `.claude/skills/` or `.claude/agents/`.
-
 ````
 
 Add these **after** the first sync lands, so the links resolve.
@@ -295,7 +293,7 @@ git clone https://github.com/loomantix/activeloom.git
 cd activeloom
 ./scripts/install-skills.sh --dry-run
 ./scripts/install-skills.sh
-````
+```
 
 ## Troubleshooting
 
