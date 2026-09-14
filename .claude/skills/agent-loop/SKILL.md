@@ -266,7 +266,9 @@ wrong engine identity and corrupt the ledger's roster, so it is not a workaround
 3. Create a unique worktree and branch from `origin/<base>`.
 4. Run the isolated setup hook.
 5. Run the worker and require a clean local commit.
-6. Fetch and merge the base, inspect the diff, validate, push, and open a draft PR.
+6. Fetch and merge the base, inspect the diff, validate, push, and open a draft PR
+   titled with the worker's first commit subject (so a merge-commit consumer gets
+   a conventional merge subject), falling back to `agent-loop: resolve #N`.
 7. Run a Codex pass and then a Claude pass against the PR ledger. Each hook
    comments before fixes, publishes committed fixes only through the wrapper-owned
    safe-push helper, posts structured fix and final-lane

@@ -1140,6 +1140,31 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
 
+def test_draft_pr_title_is_the_worker_commit_subject(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Consumers that merge with merge commits get the PR title as the merge
+    # subject; the generic "agent-loop: resolve #N" landed in history where a
+    # conventional subject was expected. The fixture worker commits
+    # "fix: worker", and a control character in a subject must not reach gh.
+    worker = (
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf done > result.txt; "
+        "git add result.txt; git commit -m \"$(printf 'feat(demo): add\\tresult\\x01 file')\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "21"],
+        issues=[_issue(21)],
+        config=_config_v3(tmp_path, worker_hook=worker),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    create = next(line for line in gh_log.splitlines() if line.startswith("pr create"))
+    assert "--title feat(demo): addresult file --body-file" in create
+    assert "agent-loop: resolve" not in create
+
+
 def test_unchanged_head_is_validated_once_then_only_at_the_final_gate(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

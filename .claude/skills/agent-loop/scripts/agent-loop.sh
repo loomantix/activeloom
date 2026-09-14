@@ -2183,9 +2183,30 @@ close_unattested_pr() {
     fi
 }
 
+# The subject of the worker's first commit, sanitised for use as a PR title.
+# Consumers that merge with merge commits get the PR title as the merge
+# subject, so the generic "agent-loop: resolve #N" ended up in history where a
+# conventional subject was expected. Falls back to the generic title when the
+# range holds no non-merge commit or the subject is empty after sanitising.
+draft_pr_title() {
+    local number="$1" base_sha="$2" head_sha="$3" first_commit subject
+    first_commit="$(git rev-list --reverse --no-merges "$base_sha..$head_sha" | sed -n '1p')" || first_commit=""
+    subject=""
+    if [ -n "$first_commit" ]; then
+        subject="$(git log -1 --format=%s "$first_commit" | tr -d '\000-\037\177' | cut -c1-200)" || subject=""
+    fi
+    subject="${subject#"${subject%%[![:space:]]*}"}"
+    subject="${subject%"${subject##*[![:space:]]}"}"
+    if [ -n "$subject" ]; then
+        printf '%s' "$subject"
+    else
+        printf 'agent-loop: resolve #%s' "$number"
+    fi
+}
+
 open_draft_pr() {
     local number="$1" branch="$2" publication_sha="$3" publication_base_sha="$4"
-    local body_file pr_url pr_number
+    local body_file pr_url pr_number title
     require_origin_identity || {
         echo "origin identity changed before draft PR publication" >&2
         return 1
@@ -2215,8 +2236,9 @@ open_draft_pr() {
         echo
         echo "Closes #$number"
     } > "$body_file"
+    title="$(draft_pr_title "$number" "$publication_base_sha" "$publication_sha")"
     pr_url="$(gh pr create --draft --base "$BASE_BRANCH" --head "$branch" \
-        --title "agent-loop: resolve #$number" --body-file "$body_file")" || {
+        --title "$title" --body-file "$body_file")" || {
         echo "could not create draft PR after publishing remote branch $branch" >&2
         return 1
     }
