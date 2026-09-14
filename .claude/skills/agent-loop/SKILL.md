@@ -136,6 +136,18 @@ consequences are easy to miss:
   logs the remaining budget and the applied bound before each pass so the two
   can be told apart.
 
+### Validation is not repeated on an unchanged head
+
+The validation hook is treated as a function of the head and of the base it is
+diffed against. Once a `(head, base)` pair has passed, the wrapper does not run
+the hook on it again: the initial base integration that reports "Already up to
+date", a clean pass that committed nothing, and a resumed leg at an already
+validated head all print `validation skipped` instead of spending budget. The
+exception is the final reviewed-head gate, which always runs on the exact head
+that is marked ready — a hook that damaged the worktree environment without
+committing is still caught there. A changed pass, a real base integration, or a
+base that moved since the last validation runs the hook as before.
+
 ### Launcher headroom
 
 Hooks that shell out to a _launcher_ which enforces its own bound read that

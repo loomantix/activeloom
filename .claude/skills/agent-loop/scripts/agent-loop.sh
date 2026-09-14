@@ -175,6 +175,11 @@ REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
 # a structured result. The floor keeps that subtraction positive.
 REVIEW_PASS_MIN_SECONDS=120
 REVIEW_PASS_LAUNCHER_MARGIN_SECONDS=60
+# The last (head, base) pair the validation hook passed on. The same pair is
+# not validated again until the final gate; see run_validation.
+LAST_VALIDATED_HEAD=""
+LAST_VALIDATED_BASE=""
+LAST_VALIDATED_LABEL=""
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
 DEPENDENCY_GATE=ready
@@ -1219,13 +1224,27 @@ require_clean_committed_tree() {
 }
 
 run_validation() {
-    local label="$1" budgeted="${2:-false}" before_sha after_sha status
+    local label="$1" budgeted="${2:-false}" gate="${3:-}" before_sha after_sha status base_sha
     local timeout_seconds="$HOOK_TIMEOUT_SECONDS"
     if ! require_issue_branch_head; then
         echo "$label validation did not start on the issue branch" >&2
         return 1
     fi
     before_sha="$(git rev-parse HEAD)" || return 1
+    base_sha="$(git rev-parse "$BASE_REMOTE_REF")" || return 1
+    # A validation hook is a function of the head and of the base it is diffed
+    # against (area-scoped gates diff HEAD against origin/<base>). A converged
+    # round reached the same head three times — after an "Already up to date"
+    # base integration, after a clean pass that committed nothing, and at the
+    # final head — and paid for the hook each time. A pair the hook already
+    # passed is skipped, except at the final gate: that one always runs on the
+    # exact head that is marked ready, so a hook that damaged the worktree
+    # environment without committing anything is still caught before ready.
+    if [ "$gate" != final ] && [ "$before_sha" = "$LAST_VALIDATED_HEAD" ] && \
+       [ "$base_sha" = "$LAST_VALIDATED_BASE" ]; then
+        echo -e "${GREEN}✓${NC} $label validation skipped: head ${before_sha:0:9} on base ${base_sha:0:9} already passed $LAST_VALIDATED_LABEL validation"
+        return 0
+    fi
     if [ "$budgeted" = true ]; then
         prepare_review_pass_budget || return 1
         timeout_seconds="$REVIEW_PASS_TIMEOUT_SECONDS"
@@ -1242,6 +1261,9 @@ run_validation() {
         echo "$label validation moved HEAD away from the issue branch" >&2
         return 1
     fi
+    LAST_VALIDATED_HEAD="$after_sha"
+    LAST_VALIDATED_BASE="$base_sha"
+    LAST_VALIDATED_LABEL="$label"
 }
 
 classify_review_result() {
@@ -2327,6 +2349,9 @@ resume_review_run() {
     AGENT_LOOP_BRANCH="$(jq -r '.branch' <<<"$RESUME_STATE_JSON")"
     ACTIVE_WORKTREE="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
     AGENT_LOOP_LOG_DIR="$(jq -r '.logDir' <<<"$RESUME_STATE_JSON")"
+    LAST_VALIDATED_HEAD=""
+    LAST_VALIDATED_BASE=""
+    LAST_VALIDATED_LABEL=""
     state_head="$(jq -r '.headSha' <<<"$RESUME_STATE_JSON")"
     state_phase="$(jq -r '.phase' <<<"$RESUME_STATE_JSON")"
     state_round="$(jq -r '.round' <<<"$RESUME_STATE_JSON")"
@@ -2406,7 +2431,7 @@ resume_review_run() {
             recovery_message "Finalized reviewed diff inspection failed during batch recovery."
             return 1
         }
-        run_validation "finalized-batch-recovery" || {
+        run_validation "finalized-batch-recovery" false final || {
             recovery_message "Finalized reviewed-head validation failed during batch recovery."
             return 1
         }
@@ -2556,7 +2581,7 @@ resume_review_run() {
         recovery_message "Final reviewed diff inspection failed during recovery."
         return 1
     }
-    run_validation "final-reviewed-head" || {
+    run_validation "final-reviewed-head" false final || {
         if [ "$ready_finalization" = true ]; then
             restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
                 "recovered final validation failed" || return 1
@@ -2818,6 +2843,9 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         continue
     fi
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
+    LAST_VALIDATED_HEAD=""
+    LAST_VALIDATED_BASE=""
+    LAST_VALIDATED_LABEL=""
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would
     # otherwise target the integration branch and bypass local review.
@@ -2930,7 +2958,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         recovery_message "Final reviewed diff inspection failed."
         exit 1
     }
-    run_validation "final-reviewed-head" || {
+    run_validation "final-reviewed-head" false final || {
         recovery_message "Final reviewed-head validation failed."
         exit 1
     }
