@@ -1111,9 +1111,14 @@ run_bounded_hook() {
         export AGENT_LOOP_HOOK_COMMAND="$hook_command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
+        # Never hand a hook the wrapper's own stdin. `codex exec` reads stdin
+        # to EOF when it is not a TTY, so a hook that inherits an open pipe from
+        # the launcher (a session runner, `time`, a monitor) does nothing until
+        # the pass times out — one such pass cost its whole per-pass bound and
+        # wrote no result. The default worker goes through here too.
         # shellcheck disable=SC2016 # expanded by the bounded login shell
         timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
-            'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
+            'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' </dev/null 2>&1 \
             | tail -c "$max_bytes"
         exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?

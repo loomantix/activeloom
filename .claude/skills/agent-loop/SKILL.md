@@ -183,9 +183,17 @@ fragments show flag placement only; a working hook must also carry
 `write-result`, or contract-v3 preflight rejects it:
 
 ```
-claude_review_hook = claude --print --effort low --model <model-id> /deepcritique ...
-codex_review_hook  = codex exec -c model_reasoning_effort=medium ... /deepcritique ...
+claude_review_hook = claude --print --effort low --model <model-id> /deepcritique ... </dev/null
+codex_review_hook  = codex exec -c model_reasoning_effort=medium ... /deepcritique ... </dev/null
 ```
+
+Every hook and the default worker run with stdin redirected from `/dev/null`;
+the wrapper does this itself, so the trailing `</dev/null` above is belt and
+braces for a hook string that is also run by hand. It matters because
+`codex exec` reads stdin to EOF when it is not a TTY: a hook that inherits an
+open pipe from whatever launched the wrapper produces no output and no result
+until the pass times out, which is indistinguishable from a slow review from
+outside. A hook that genuinely needs input must supply it inside the command.
 
 `claude_effort_policy` constrains only `claude_review_hook`, and only when
 `config_doctor = true` — the doctor is what enforces it, so the key is inert

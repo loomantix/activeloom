@@ -509,6 +509,7 @@ def _run(
     config: str,
     extra_env: dict[str, str] | None = None,
     timeout: int = 30,
+    stdin: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     repo, _, bin_dir, state_dir = fixture
     (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(
@@ -547,6 +548,7 @@ def _run(
         [str(repo / ".claude/skills/agent-loop/scripts/agent-loop.sh"), *args],
         cwd=repo,
         env=env,
+        stdin=stdin,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -1787,6 +1789,38 @@ def test_worker_failure_preserves_worktree(
     assert worktree.exists()
     if "dirty" in worker_hook:
         assert (worktree / "dirty.txt").exists()
+
+
+def test_hooks_and_default_worker_do_not_inherit_the_wrapper_stdin(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # `codex exec` reads stdin to EOF when it is not a TTY. A hook that inherits
+    # an open pipe from whatever launched the wrapper blocks until the pass
+    # times out, so the wrapper must hand every hook (and the default worker,
+    # which runs through the same bounded runner) /dev/null even when its own
+    # stdin is a pipe that never closes. The pipe here stays open for the whole
+    # run: a `read` that sees EOF at once proves the redirect, a `read` that
+    # has to wait for its timeout proves the leak.
+    worker = (
+        '[ "$(readlink /proc/self/fd/0)" = /dev/null ] || exit 71; '
+        "if read -r -t 3 line; then exit 72; else status=$?; fi; "
+        '[ "$status" -eq 1 ] || exit 73; '
+        "printf done > result.txt; git add result.txt; git commit -m 'fix: worker'"
+    )
+    validation = '[ "$(readlink /proc/self/fd/0)" = /dev/null ] || exit 74'
+    reader, writer = os.pipe()
+    try:
+        result = _run(
+            consumer,
+            ["--issues", "12"],
+            issues=[_issue(12)],
+            config=_config(tmp_path, worker_hook=worker, validation_hook=validation),
+            stdin=reader,
+        )
+    finally:
+        os.close(writer)
+        os.close(reader)
+    assert result.returncode == 0, result.stderr + result.stdout
 
 
 def test_capacity_failure_uses_fallback_model(
