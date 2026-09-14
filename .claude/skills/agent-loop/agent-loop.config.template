@@ -114,9 +114,10 @@ dependency_gate = ready
 
 # What an ordered batch (`--issues N,N,...`) does when one issue fails. `stop`
 # halts the batch there. `park` records a failure the wrapper can verify is
-# safely resumable (clean worktree, equal local/remote/PR heads, a resumable
-# stop category) as parked, continues with the next issue, skips issues that
-# depend on a parked one, and exits 3 at the end listing the resume commands.
+# safely resumable (clean worktree, local/remote/PR heads that agree with its
+# checkpoint, a resumable stop category) as parked, continues with the next
+# issue, parks issues that depend on a parked one without starting them, and
+# exits 3 listing the resume commands.
 batch_on_issue_failure = stop
 
 branch_prefix = agent-loop

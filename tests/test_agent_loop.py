@@ -95,7 +95,18 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "if state:\n"
         "    with (pathlib.Path(state) / 'ready-args.log').open('a') as handle:\n"
         "        handle.write(' '.join(sys.argv[1:]) + '\\n')\n"
-        "print(os.environ.get('AGENT_READY_JSON', '[]'))\n",
+        "raw = os.environ.get('AGENT_READY_JSON', '[]')\n"
+        # Opt-in blockers: {"<issue>": [<open blocker>, ...]}, filtered like
+        # ready.py, so a test can prove which blockers the wrapper ignores.
+        "blockers = os.environ.get('AGENT_READY_BLOCKERS')\n"
+        "if blockers:\n"
+        "    import json\n"
+        "    args = sys.argv[1:]\n"
+        "    ignored = {int(args[i + 1]) for i, arg in enumerate(args[:-1]) if arg == '--ignore-blocker'}\n"
+        "    table = json.loads(blockers)\n"
+        "    raw = json.dumps([issue for issue in json.loads(raw)\n"
+        "        if not set(table.get(str(issue['number']), [])) - ignored])\n"
+        "print(raw)\n",
     )
     (repo / "agent-loop-instructions.md").write_text(
         "# Local-only worker instructions\n", encoding="utf-8"
@@ -897,6 +908,7 @@ def test_park_mode_parks_a_resumable_failure_and_its_dependent_then_finishes_the
         config=_config_v3(
             tmp_path, claude_review_hook=_ends_early_for(50), batch_on_issue_failure="park"
         ),
+        extra_env={"AGENT_READY_BLOCKERS": json.dumps({"51": [50]})},
         timeout=300,
     )
     output = result.stdout + result.stderr
@@ -977,7 +989,14 @@ def test_batch_stack_builds_a_dependent_issue_on_its_unmerged_predecessor(
         consumer,
         ["--issues", "60,61", "--iterations", "2"],
         issues=[_issue(60), _issue(61, "Depends on #60")],
-        config=_config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="batch-stack"),
+        config=_config_v3(
+            tmp_path,
+            # The dependent's worker must see its predecessor's work.
+            worker_hook='if [ "$AGENT_LOOP_ISSUE_ID" = 61 ]; then test -f result-60.txt || exit 9; fi; '
+            + _PER_ISSUE_WORKER,
+            dependency_gate="batch-stack",
+        ),
+        extra_env={"AGENT_READY_BLOCKERS": json.dumps({"61": [60]})},
         timeout=180,
     )
     assert result.returncode == 0, result.stderr + result.stdout
@@ -1007,6 +1026,39 @@ def test_batch_stack_builds_a_dependent_issue_on_its_unmerged_predecessor(
     assert f"Stacked PR: after {parent['branch']} merges, retarget it" in result.stdout
     body = (child_log / "pr-body-final.md").read_text(encoding="utf-8")
     assert f"Stacked on `{parent['branch']}`" in body
+
+
+def test_batch_stack_resumes_an_interrupted_stacked_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The parent issue stays open until its branch merges. A resumed stacked
+    # issue has no batch state loaded and used to drop out of the ready queue.
+    config = _config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="batch-stack")
+    blockers = {"AGENT_READY_BLOCKERS": json.dumps({"69": [68]})}
+    issues = [_issue(68), _issue(69, "Depends on #68")]
+    first = _run(
+        consumer, ["--issues", "68,69", "--iterations", "1"],
+        issues=issues, config=config, extra_env=blockers, timeout=180,
+    )
+    assert first.returncode == 0, first.stderr + first.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    second = _run(
+        consumer, ["--resume-batch", str(batch_file)],
+        issues=issues, config=config,
+        extra_env={**blockers, "AGENT_INTERRUPT_AFTER_CHILD_FINALIZED": "1"}, timeout=180,
+    )
+    assert second.returncode != 0
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["finalized", "active"]
+    third = _run(
+        consumer, ["--resume-batch", str(batch_file)],
+        issues=[_issue(68), _issue(69, "Depends on #68", assigned=True)],
+        config=config, extra_env=blockers, timeout=180,
+    )
+    assert third.returncode == 0, third.stderr + third.stdout
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["finalized", "finalized"]
+    assert batch["issues"][1]["stackedOn"] == 68
 
 
 def test_merged_to_base_gate_still_holds_a_dependent_batch_issue(
@@ -1043,6 +1095,7 @@ def test_batch_stack_parks_an_issue_whose_dependency_bailed(
             tmp_path, worker_hook=worker, dependency_gate="batch-stack",
             batch_on_issue_failure="park",
         ),
+        extra_env={"AGENT_READY_BLOCKERS": json.dumps({"65": [64]})},
         timeout=120,
     )
     assert result.returncode == 3, result.stderr + result.stdout
@@ -1106,6 +1159,17 @@ def test_every_recovery_message_names_a_known_stop_category() -> None:
     assert calls > 100
 
 
+def test_parkable_stop_categories_are_known_and_resumable() -> None:
+    text = AGENT_LOOP.read_text(encoding="utf-8")
+    stop = re.search(r'^STOP_CATEGORIES="([^"]+)"', text, re.M)
+    parkable = re.search(r'^PARKABLE_STOP_CATEGORIES="([^"]+)"', text, re.M)
+    assert stop is not None and parkable is not None
+    assert set(parkable.group(1).split()) <= set(stop.group(1).split())
+    # Resume restores the round cap and the review deadline from run state,
+    # so a run parked on either would stop the same way again.
+    assert not set(parkable.group(1).split()) & {"review-cap-exhausted", "budget-exhausted"}
+
+
 _SUPERVISION_TABLE_JQ = r"""
 [.[] | select(.issue != null)] | group_by(.issue)[] as $events
 | ($events | map(.event)) as $types
@@ -1124,8 +1188,8 @@ _SUPERVISION_TABLE_JQ = r"""
 _EVENT_KEYS = {
     "event", "runTag", "epoch", "issue", "index", "resumed", "round", "runState",
     "phase", "seconds", "exit", "engine", "status", "classification", "before",
-    "after", "reason", "category", "message", "resumable", "resumeCommand",
-    "hookPhase", "hookTail", "kind", "ref", "pr", "head", "handoffPath",
+    "after", "reason", "category", "resumable", "resumeCommand",
+    "hookPhase", "hookLog", "kind", "ref", "pr", "head", "handoffPath",
     "issues", "configSha256", "finalized", "bailed", "parked",
 }
 
@@ -1171,7 +1235,7 @@ def test_batch_event_stream_builds_a_per_issue_supervision_table(
     }
 
 
-def test_stop_events_bound_hook_output_and_carry_no_issue_text(
+def test_stop_events_name_the_hook_log_and_carry_no_free_text(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     noisy = (
@@ -1191,6 +1255,7 @@ def test_stop_events_bound_hook_output_and_carry_no_issue_text(
     events_file = next((tmp_path / "logs").glob("*-run-*-events.jsonl"))
     text = events_file.read_text(encoding="utf-8")
     assert "SENTINEL" not in text
+    assert "progress line" not in text
     events = [json.loads(line) for line in text.splitlines()]
     assert all(set(event) <= _EVENT_KEYS for event in events), [
         sorted(set(event) - _EVENT_KEYS) for event in events
@@ -1198,8 +1263,7 @@ def test_stop_events_bound_hook_output_and_carry_no_issue_text(
     stop = [event for event in events if event["event"] == "stop"][-1]
     assert stop["category"] == "no-result/hook-ended-early"
     assert stop["resumable"] is True and "--resume-run" in stop["resumeCommand"]
-    assert 0 < len(stop["hookTail"]) <= 10
-    assert all(len(line) <= 400 for line in stop["hookTail"])
+    assert "progress line 60" in Path(stop["hookLog"]).read_text(encoding="utf-8")
     assert stop["hookPhase"].startswith("configured Claude review hook")
 
 

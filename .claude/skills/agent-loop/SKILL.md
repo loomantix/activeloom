@@ -92,12 +92,14 @@ blocked hook instead uses `review-ledger.js write-blocked-result` with an
 owner-only blocker file and must not claim a clean or changed pass. The wrapper validates its exact
 SHAs and finding fingerprints, verifies resolved v3 dispositions, and owns the
 canonical pass/completion attestation. A missing, invalid, or blocked result
-stops even when the hook exits zero, with one exception: a hook that exits zero
+stops even when the hook exits zero, with one exception under review contract v3: a hook that exits zero
 without writing any result, and left no commit, push, ledger thread, or PR
 comment behind, is retried once in the same round (`retry:
 hook-ended-without-result`). The retry draws on the same review budget. A
-second empty pass, or an empty pass that changed anything, stops with the
-category `no-result/hook-ended-early` and the tail of the hook log. Validation hooks
+pass that left uncommitted changes stops with `worktree-state`, and one that
+committed without a matching push checkpoint stops with
+`push-checkpoint-mismatch`. Any other pass that ends without a result,
+including the retry, stops with `no-result/hook-ended-early`. Validation hooks
 must leave a clean tree; work they write but do not commit is not in the
 reviewed head and would be discarded with the worktree.
 
@@ -327,9 +329,9 @@ the stack (`stackedOn`), and the ready PR names the branch it is stacked on.
 Retargeting the PR to the base after #A merges is left to the operator; the
 wrapper prints the command. A stack has one parent: a dependency on two
 unmerged batch entries, or on a later entry, stops. A dependency that is
-parked or bailed in the batch is never built from the base instead; the issue
-is parked as `blocked-by-dependency` under `batch_on_issue_failure = park`, and
-stops the batch otherwise. A dependency outside the batch follows
+parked or bailed in the batch is never built from the base instead. Under
+`batch_on_issue_failure = park` the issue is parked without being started, as
+`blocked-by-parked` or `blocked-by-dependency`; otherwise the batch stops. A dependency outside the batch follows
 `merged-to-base`.
 
 Every batch run warns at creation when an issue's body mentions an earlier
@@ -375,7 +377,8 @@ Resuming a run interrupted in the Claude leg of any round, with that round's
 Codex result on disk and the head unchanged, re-verifies the Codex evidence and
 runs only the Claude leg of the same round; it does not consume a round. If the
 base advanced since the checkpoint, the integrated head is no longer the head
-Codex reviewed, so the resumed round starts again at Codex.
+Codex reviewed, so the run restarts at Codex in the next round, or replays the
+final round from Codex when it is already at the cap.
 
 ### Parking a failed batch issue
 
@@ -385,11 +388,14 @@ issue and continues with the next one. It decides from what it can observe,
 never from hook output. Every one of these must hold:
 
 - the stop category is `no-result/hook-ended-early`, `validation-red`,
-  `hook-timeout`, `review-cap-exhausted`, or `budget-exhausted`;
+  `hook-timeout`, or `push-checkpoint-mismatch`. Resume restores the round cap
+  and the review deadline, so an exhausted cap or budget stops the batch;
 - the issue has a valid review checkpoint in the `reviewing` or `converged`
   phase;
 - the worktree is clean and on the issue branch;
-- the local head, the remote branch, and the open draft PR head are equal;
+- the local head, the remote branch, and the open draft PR head are equal, or
+  the local head holds stranded commits on a remote and PR still at the
+  checkpoint (the shape resume recovers onto a rescue ref);
 - a head that moved past the checkpoint is explained by that pass's result
   (its before and after SHAs);
 - the pass's push checkpoint matches the remote head.
@@ -399,9 +405,11 @@ stops the batch.
 
 A parked entry records its stop category and keeps its worktree. A later issue
 that declares `Depends on #N` on a parked entry is parked as
-`blocked-by-parked` without being claimed. When the batch reaches its end with
-parked entries, the wrapper lists each one with its `--resume-run` command and
-the `batch-update` that closes it out, then exits `3`.
+`blocked-by-parked` without being claimed. When the batch reaches its end, or
+its iteration cap, with parked entries, the wrapper lists them and exits `3`. A
+failed entry is listed with its `--resume-run` command and the `batch-update`
+that closes it out; an entry parked behind a dependency is listed with an
+instruction to resume that dependency first.
 
 ## Liveness and Timing
 
@@ -428,19 +436,19 @@ line, appended with `fsync`, carrying `event`, `epoch`, and `runTag`:
 - a standalone `--resume-run` appends to `events.jsonl` in the run's log
   directory.
 
-| Event                                       | Fields                                                                                |
-| ------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `batch_start`                               | `issues`, `configSha256`, `resumed`                                                   |
-| `batch_end`                                 | `exit`, `finalized`, `bailed`, `parked`                                               |
-| `issue_start`                               | `issue`, `index` or `round`, `resumed`, `runState`                                    |
-| `phase_start`, `phase_end`, `phase_skipped` | `issue`, `phase`, and on `phase_end` `seconds` and `exit`                             |
-| `pass_result`                               | `issue`, `round`, `engine`, `status`, `classification`, `before`, `after`             |
-| `retry`                                     | `issue`, `round`, `engine`, `reason`                                                  |
-| `stop`                                      | `issue`, `category`, `message`, `resumable`, `resumeCommand`, `hookPhase`, `hookTail` |
-| `parked`                                    | `issue`, `category`, `resumeCommand`                                                  |
-| `bail`                                      | `issue`, `classification`, `handoffPath`                                              |
-| `recovered`                                 | `issue`, `kind`, `ref`                                                                |
-| `pr_ready`                                  | `issue`, `pr`, `head`                                                                 |
+| Event                                       | Fields                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------- |
+| `batch_start`                               | `issues`, `configSha256`, `resumed`                                       |
+| `batch_end`                                 | `exit`, `finalized`, `bailed`, `parked`                                   |
+| `issue_start`                               | `issue`, `index` or `round`, `resumed`, `runState`                        |
+| `phase_start`, `phase_end`, `phase_skipped` | `issue`, `phase`, and on `phase_end` `seconds` and `exit`                 |
+| `pass_result`                               | `issue`, `round`, `engine`, `status`, `classification`, `before`, `after` |
+| `retry`                                     | `issue`, `round`, `engine`, `reason`                                      |
+| `stop`                                      | `issue`, `category`, `resumable`, `resumeCommand`, `hookPhase`, `hookLog` |
+| `parked`                                    | `issue`, `category`, `resumeCommand`                                      |
+| `bail`                                      | `issue`, `classification`, `handoffPath`                                  |
+| `recovered`                                 | `issue`, `kind`, `ref`                                                    |
+| `pr_ready`                                  | `issue`, `pr`, `head`                                                     |
 
 Every stop names a category from a fixed list: `no-result/hook-ended-early`,
 `invalid-result`, `review-blocked`, `ledger-evidence`,
@@ -451,9 +459,9 @@ Every stop names a category from a fixed list: `no-result/hook-ended-early`,
 `base-diverged`, `dependency-blocked`, `issue-changed`, `checkpoint-failed`,
 `uncertain-mutation`, `child-resume-failed`, `batch-incomplete`,
 `interrupted`, or `internal-error`. A stop that follows a hook carries that
-hook's phase and last output. The output is bounded like the console tail, to
-`output_max_lines` lines of at most 400 characters with control characters
-removed. Events never copy issue titles, bodies, or findings. A resumed run
+hook's phase and the path of its log (`hookLog`), never the output itself.
+Events carry identifiers, categories, counts, and paths: never issue titles or
+bodies, hook or model output, or findings. A resumed run
 prints `▶ Issue #N (resumed, round R)`.
 
 One `jq` pass turns a batch stream into a per-issue table:

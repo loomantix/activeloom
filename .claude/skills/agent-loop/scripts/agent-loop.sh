@@ -647,7 +647,7 @@ emit_batch_end() {
 }
 
 recovery_message() {
-    local reason="$1" category="${2:-}" resume_command="" batch_resume_command="" hook_phase="" hook_tail="[]"
+    local reason="$1" category="${2:-}" resume_command="" batch_resume_command="" hook_phase="" hook_log=""
     RECOVERY_EMITTED=true
     case " $STOP_CATEGORIES " in
         *" $category "*) ;;
@@ -679,20 +679,20 @@ recovery_message() {
         [ -n "$resume_command" ] || resume_command="$batch_resume_command"
         echo "Resume batch with: $batch_resume_command" >&2
     fi
-    # A stop that follows a hook carries that hook's last output, bounded the
-    # way the console tail is. Other stops would only repeat an unrelated log.
+    # A stop that follows a hook names that hook's log. Events carry no hook or
+    # model output; other stops would only point at an unrelated log.
     case "$category" in
         hook-failed|hook-timeout|no-result/hook-ended-early|invalid-result|review-blocked|validation-red|worker-*|setup-failed|push-checkpoint-mismatch)
             if [ -n "$LAST_HOOK_LOG" ] && [ -f "$LAST_HOOK_LOG" ]; then
                 hook_phase="$LAST_HOOK_PHASE"
-                hook_tail="$(bounded_log_tail "$LAST_HOOK_LOG" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '[]')"
+                hook_log="$LAST_HOOK_LOG"
             fi
             ;;
     esac
     emit_event stop --argjson issue "${SELECTED_ID:-null}" --arg category "$category" \
-        --arg message "$reason" --argjson resumable "$([ -n "$resume_command" ] && echo true || echo false)" \
+        --argjson resumable "$([ -n "$resume_command" ] && echo true || echo false)" \
         --arg resumeCommand "$resume_command" --arg hookPhase "$hook_phase" \
-        --argjson hookTail "${hook_tail:-[]}"
+        --arg hookLog "$hook_log"
 }
 
 print_batch_bail_command() {
@@ -828,13 +828,38 @@ READY_IGNORE_ARGS=()
 # merges, so the ready queue would hold back every issue that declares it as a
 # dependency. The stack gate owns those dependencies instead.
 refresh_ready_ignore_args() {
-    local batch_json number
+    local batch_json number issue_base="${ISSUE_BASE_BRANCH:-$BASE_BRANCH}"
     READY_IGNORE_ARGS=()
-    [ "$DEPENDENCY_GATE" = batch-stack ] && [ -n "$BATCH_STATE_FILE" ] || return 0
+    # A stacked issue's parent stays open until its branch merges. The stacked
+    # issue's own base branch names that parent, which also holds on resume,
+    # where no batch state is loaded.
+    if [ "$DEPENDENCY_GATE" = batch-stack ] && [ "$issue_base" != "$BASE_BRANCH" ]; then
+        case "$issue_base" in
+            "$BRANCH_PREFIX"/issue-*)
+                number="${issue_base#"$BRANCH_PREFIX"/issue-}"
+                number="${number%%-*}"
+                case "$number" in
+                    ''|*[!0-9]*) ;;
+                    *) READY_IGNORE_ARGS+=(--ignore-blocker "$number") ;;
+                esac
+                ;;
+        esac
+    fi
+    [ -n "$BATCH_STATE_FILE" ] || return 0
+    [ "$DEPENDENCY_GATE" = batch-stack ] || [ "$BATCH_ON_ISSUE_FAILURE" = park ] || return 0
     batch_json="$(python3 "$RUN_STATE_HELPER" batch-show --file "$BATCH_STATE_FILE")" || return 1
+    # Under batch-stack a finalized entry is a parent to build on. Under park, a
+    # parked or bailed entry stays open, and the batch must still select its
+    # dependents to park them: a parked dependency is caught for every gate, a
+    # bailed one only by a gate that re-checks dependencies.
     while IFS= read -r number; do
         [ -n "$number" ] && READY_IGNORE_ARGS+=(--ignore-blocker "$number")
-    done < <(jq -r '.issues[] | select(.status == "finalized") | .issue' <<<"$batch_json")
+    done < <(jq -r --arg gate "$DEPENDENCY_GATE" --arg mode "$BATCH_ON_ISSUE_FAILURE" '
+        .issues[]
+        | select((.status == "finalized" and $gate == "batch-stack")
+            or ($mode == "park" and (.status == "parked"
+                or (.status == "bailed" and $gate != "ready"))))
+        | .issue' <<<"$batch_json")
 }
 
 ready_queue_numbers() {
@@ -1939,18 +1964,19 @@ run_review_pass() {
             AGENT_LOOP_REVIEW_PUSH_STATE_FILE
     fi
     hook_log="$AGENT_LOOP_LOG_DIR/$slug-review-round-$round.log"
-    # Standalone reviewer launchers read their own per-pass bound from this
-    # variable, clamped to the ceiling they enforce. Keep it strictly below the
-    # bound `run_bounded_hook` applies below: that clock starts first and also
-    # covers the launcher's own preflight, so an equal value guarantees the
-    # wrapper kills the CLI before the CLI can time out and write a result.
-    review_pass_launcher_seconds=$((REVIEW_PASS_TIMEOUT_SECONDS - REVIEW_PASS_LAUNCHER_MARGIN_SECONDS))
-    if [ "$review_pass_launcher_seconds" -gt 3600 ]; then
-        review_pass_launcher_seconds=3600
-    fi
-    export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$review_pass_launcher_seconds"
     hook_attempt=1
     while :; do
+        # Recomputed per attempt: a retry re-reads the remaining budget.
+        # Standalone reviewer launchers read their own per-pass bound from this
+        # variable, clamped to the ceiling they enforce. Keep it strictly below the
+        # bound `run_bounded_hook` applies below: that clock starts first and also
+        # covers the launcher's own preflight, so an equal value guarantees the
+        # wrapper kills the CLI before the CLI can time out and write a result.
+        review_pass_launcher_seconds=$((REVIEW_PASS_TIMEOUT_SECONDS - REVIEW_PASS_LAUNCHER_MARGIN_SECONDS))
+        if [ "$review_pass_launcher_seconds" -gt 3600 ]; then
+            review_pass_launcher_seconds=3600
+        fi
+        export LOCAL_REVIEW_PASS_TIMEOUT_SECONDS="$review_pass_launcher_seconds"
         hook_status=0
         run_bounded_hook "$hook_description (round $round)" "$hook" \
             "$REVIEW_PASS_TIMEOUT_SECONDS" "$hook_log" true || hook_status=$?
@@ -3266,7 +3292,7 @@ resume_review_run() {
 # Stop categories that leave a draft PR resumable with --resume-run when the
 # wrapper-observed state agrees. Everything else, and any doubt about a push,
 # PR, or ledger mutation, still stops the batch.
-PARKABLE_STOP_CATEGORIES="no-result/hook-ended-early validation-red hook-timeout review-cap-exhausted budget-exhausted push-checkpoint-mismatch"
+PARKABLE_STOP_CATEGORIES="no-result/hook-ended-early validation-red hook-timeout push-checkpoint-mismatch"
 
 # Prints why a failed batch issue cannot be parked and returns 1, or returns 0
 # when its checkpoint, worktree, remote branch, and draft PR agree. Nothing a
@@ -3901,6 +3927,10 @@ if [ -n "$BATCH_STATE_FILE" ]; then
             echo -e "${YELLOW}○${NC} Ordered batch paused cleanly at the $MAX_ITERATIONS-issue iteration cap."
             print_parked_batch_entries "$batch_json"
             echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+            # Parked entries are unfinished work, whatever paused the batch.
+            if [ "$(jq '[.issues[] | select(.status == "parked")] | length' <<<"$batch_json")" -gt 0 ]; then
+                exit 3
+            fi
             exit 0
         fi
         recovery_message "Ordered batch stopped before every issue reached a finalized, bailed, or parked state." batch-incomplete
