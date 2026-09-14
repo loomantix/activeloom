@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,33 @@ from pathlib import Path
 
 class DoctorError(RuntimeError):
     """An incompatible consumer configuration."""
+
+
+# Words that are shell syntax or builtins rather than a program. A hook that
+# starts with one of these is composed inline and its launch surface sits
+# further in, so static resolution stops rather than guessing.
+_SHELL_WORDS = frozenset(
+    {
+        "if", "then", "for", "while", "until", "case", "{", "(", "!", ":", ".",
+        "source", "eval", "exec", "cd", "export", "set", "test", "[", "[[",
+        "command", "builtin", "time", "true", "false",
+    }
+)
+
+
+def _hook_program(hook: str) -> str | None:
+    """The first command word of a hook, or None when it cannot be resolved statically."""
+    for token in hook.split():
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
+            continue  # a leading environment assignment
+        if token in _SHELL_WORDS or not re.fullmatch(r"[A-Za-z0-9_.+-]+", token):
+            return None
+        return token
+    return None
+
+
+def _warn(message: str) -> None:
+    print(f"agent-loop config doctor: warning: {message}", file=sys.stderr)
 
 
 def _config(path: Path) -> dict[str, str]:
@@ -100,6 +128,25 @@ def doctor(project: Path, claude_effort: str | None) -> None:
             raise DoctorError(f"{engine}_review_hook must use helper-owned contract-v3 results")
         if "AGENT_LOOP_REVIEW_PUSH_HELPER" not in hook or re.search(r"\bgit\s+push\b", hook):
             raise DoctorError(f"{engine}_review_hook must use the wrapper-owned review push helper")
+        # A missing reviewer CLI used to surface only at that engine's leg,
+        # after the issue was claimed and the draft PR opened. Resolve it here,
+        # before selection or claim, where the wrapper runs this doctor.
+        program = _hook_program(hook)
+        if program is not None and shutil.which(program) is None:
+            raise DoctorError(
+                f"{engine}_review_hook invokes '{program}', which is not installed on PATH; "
+                "a run would claim the issue and open its draft PR before failing at this leg"
+            )
+    if re.search(r"\bcodex\s+exec\b", hooks["codex"]) and not re.search(
+        r"<\s*/dev/null", hooks["codex"]
+    ):
+        # The wrapper closes stdin for every hook itself. The redirect still
+        # matters for a hook string that is copied and run by hand: codex exec
+        # reads stdin to EOF when it is not a TTY and blocks on an open pipe.
+        _warn(
+            "codex_review_hook runs codex exec without '</dev/null'; the wrapper closes "
+            "stdin, but the same command run by hand with an open stdin blocks until its timeout"
+        )
     if not re.search(r"(?:^|[ /])deepcritique(?:[ $\"']|$)", hooks["codex"]):
         raise DoctorError("codex_review_hook must invoke deepcritique")
     if not re.search(r"(?:^|[ /])deepcritique(?:[ $\"']|$)", hooks["claude"]):

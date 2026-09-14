@@ -60,7 +60,7 @@ with the issue worktree as the current directory.
 | `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                                                                                                  |
 | `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                                                                                                    |
 | `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility.                                                                                                  |
-| `config_doctor`                                  | Run the non-mutating compatibility preflight before issue selection or claim.                                                                                                                                |
+| `config_doctor`                                  | Run the non-mutating compatibility preflight before issue selection or claim, including that each review hook's CLI resolves on `PATH`.                                                                     |
 | `claude_effort_policy`                           | Optional literal Claude effort policy enforced by the doctor.                                                                                                                                                |
 | `review_max_rounds`                              | Codex→Claude round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the draft PR.                                                                                                |
 | `review_timeout_seconds`                         | Positive wall-clock budget for one issue's review, persisted across resume. Default `7200`; each review pass and its validation is capped at the smaller of the remaining budget and `hook_timeout_seconds`. |
@@ -228,11 +228,13 @@ Both `claude_review_hook` and `codex_review_hook` are **required**, and the
 roster and order are hardcoded as Codex then Claude. There is no key for a third
 engine and no supported way to omit one.
 
-What preflight enforces is that both hook strings are non-empty and carry the
-contract tokens; it never checks that a reviewer CLI is installed. So a run
-missing one CLI starts, claims the issue, completes the worker pass and
-validation, pushes, opens the draft PR, and only then fails at that engine's
-leg — leaving a claimed issue and an abandoned draft behind.
+Preflight enforces that both hook strings are non-empty and carry the contract
+tokens, and the config doctor resolves each hook's first command word on `PATH`
+before selection or claim, so a run missing a reviewer CLI stops at startup
+instead of claiming the issue, opening the draft PR, and failing at that
+engine's leg. A hook whose first word is shell syntax (`if`, `:`, a variable)
+is not resolved statically; the doctor also warns when `codex exec` appears
+without `</dev/null`.
 
 This is a wrapper limitation rather than a contract one: `review-ledger.js`
 already treats `gemini` and `antigravity` as first-class engine identities, and
