@@ -119,8 +119,8 @@ review worktree; model and effort are the run's pinned profile settings.
 The managed Gemini checkout is a standalone Git repository, not a linked
 worktree of a developer's upstream clone. Moving that clone cannot invalidate
 the installation's Git metadata. For other linked worktrees, run
-[`git worktree repair`](https://git-scm.com/docs/git-worktree) after moving their
-primary clone, then verify each worktree's head and status before resuming.
+`git worktree repair` after moving their primary clone, then verify each
+worktree's head and status before resuming.
 Keep controller output as well as worker logs when pausing a legacy run.
 
 If an installation is damaged, add `--repair-installation` to the printed resume
