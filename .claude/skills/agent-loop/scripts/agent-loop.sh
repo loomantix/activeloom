@@ -2472,6 +2472,7 @@ resume_review_run() {
     local issue_title_sha256 issue_body_sha256
     local ready_finalization=false pr_draft_state state_review_engine
     local restart_after_interrupted_pass=false resume_review_engine=codex
+    local resume_same_round=false
     local finalizing_head_drift=false
     SELECTED_ID="$(jq -r '.issue' <<<"$RESUME_STATE_JSON")"
     issue_json_value="$(issue_json "$SELECTED_ID")" || {
@@ -2614,7 +2615,17 @@ resume_review_run() {
         restart_after_interrupted_pass=true
     fi
     if [ "$restart_after_interrupted_pass" = true ]; then
-        if [ "$state_round" -lt "$REVIEW_MAX_ROUNDS" ]; then
+        if [ "$state_review_engine" = claude ] && [ "$current_head" = "$state_head" ] && \
+           [ -f "$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json" ]; then
+            # The Claude checkpoint is written only after the Codex leg of this
+            # round attested and validated, and the head has not moved since.
+            # That Codex result still covers this head, so re-running Codex in
+            # a new round would re-review an unchanged head. The recovered
+            # Codex evidence is re-verified before the Claude leg starts.
+            resume_review_engine=claude
+            resume_same_round=true
+            echo "   Review round $state_round was interrupted in its Claude leg after Codex completed; resuming its remaining leg in the same round"
+        elif [ "$state_round" -lt "$REVIEW_MAX_ROUNDS" ]; then
             state_round=$((state_round + 1))
         else
             if [ -f "$AGENT_LOOP_LOG_DIR/codex-review-round-$state_round.result.json" ]; then
@@ -2664,6 +2675,16 @@ resume_review_run() {
         }
         if [ "$state_phase" = converged ] || [ "$state_phase" = finalizing ]; then
             state_round=$((state_round + 1))
+        fi
+        if [ "$resume_review_engine" = claude ]; then
+            # Integrating the advanced base moves the head the recovered Codex
+            # result covered, so that leg cannot be reused. A same-round resume
+            # below the cap takes the round it skipped; at the cap the final
+            # round is replayed from Codex without consuming another.
+            resume_review_engine=codex
+            if [ "$resume_same_round" = true ] && [ "$state_round" -lt "$REVIEW_MAX_ROUNDS" ]; then
+                state_round=$((state_round + 1))
+            fi
         fi
         state_phase=reviewing
         update_run_state reviewing "$state_round" "$latest_base" "$current_head" \

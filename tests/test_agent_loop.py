@@ -1241,6 +1241,94 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
 
+def test_interrupted_claude_leg_below_the_cap_resumes_in_the_same_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Below the round cap, resuming used to start a new round and re-run Codex
+    # against the head its round-1 result already covered.
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
+    )
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook, review_max_rounds=4)
+
+    first = _run(
+        consumer, ["--issues", "96"], issues=[_issue(96)], config=config, timeout=60
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert (state["round"], state["reviewEngine"]) == (1, "claude")
+    fail_marker.unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(96, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "resuming its remaining leg in the same round" in resumed.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex\n") == 1
+    assert events.count("claude\n") == 1
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=claude round=1" in comments
+    assert "round=2" not in comments
+    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+
+
+def test_interrupted_claude_leg_restarts_at_codex_when_the_base_advanced(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The same-round shortcut relies on the Codex result covering the head the
+    # Claude leg will read. Integrating an advanced base moves that head.
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
+    )
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook, review_max_rounds=4)
+    first = _run(
+        consumer, ["--issues", "97"], issues=[_issue(97)], config=config, timeout=60
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+
+    clone = tmp_path / "base-advance"
+    _run_git("clone", str(consumer[1]), str(clone))
+    _run_git("config", "user.name", "Test", cwd=clone)
+    _run_git("config", "user.email", "test@example.invalid", cwd=clone)
+    _run_git("config", "commit.gpgsign", "false", cwd=clone)
+    (clone / "advanced-base.txt").write_text("advanced\n", encoding="utf-8")
+    _run_git("add", "advanced-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: advance base", cwd=clone)
+    _run_git("push", "origin", "main", cwd=clone)
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(97, assigned=True)],
+        config=config,
+        timeout=90,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "Base advanced since the checkpoint" in resumed.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex\n") == 2
+    assert events.count("claude\n") == 1
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=codex round=2" in comments
+    assert "local-review-pass:v3 engine=claude round=2" in comments
+
+
 def test_run_records_wrapper_pid_and_phase_timing(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

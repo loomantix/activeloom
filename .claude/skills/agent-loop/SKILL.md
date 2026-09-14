@@ -320,6 +320,12 @@ per-issue statuses, and child run-state paths. Recovery advances only after the
 current issue is safely finalized or explicitly bailed; uncertain push, PR, or
 ledger mutation stops the batch.
 
+Resuming a run interrupted in the Claude leg of any round, with that round's
+Codex result on disk and the head unchanged, re-verifies the Codex evidence and
+runs only the Claude leg of the same round; it does not consume a round. If the
+base advanced since the checkpoint, the integrated head is no longer the head
+Codex reviewed, so the resumed round starts again at Codex.
+
 ## Liveness and Timing
 
 The run's log directory carries two files for anything watching from outside:
