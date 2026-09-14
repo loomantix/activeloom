@@ -243,12 +243,42 @@ Use `--ref` deliberately. A branch such as `main` opts into development content;
 
 Each selected harness receives its own review workflow and supporting references. Link the installed documents from your repository agent instructions. For a Claude consumer, for example:
 
-```markdown
+````markdown
+## Review profile
+
+Local review launchers and the automatic review chain read each reviewer's model,
+effort, and the engine order from a per-user profile outside every repository
+(`~/.config/activeloom/review-profile.json`, or under `XDG_CONFIG_HOME`). Nothing is
+defaulted silently: until you confirm a profile, the launchers refuse to start.
+
+Create it by running the `review-setup` skill in your agent, which shows the
+recommended settings and which engine CLIs are installed before writing anything,
+or from the CLI:
+
+```bash
+activeloom review-config defaults
+activeloom review-config init --accept-defaults claude.effort=high
+activeloom review-config set --repo example/project order.lean=codex,claude
+activeloom review-config set codex.fallback.model=gpt-5.6-sol codex.fallback.effort=medium
+activeloom review-config show --repo example/project
+```
+
+Repository overrides layer over your own settings. A running review chain keeps
+the settings it started with; a change applies to the next run.
+
+The optional Codex fallback pairs an explicit model with its own effort level.
+It is disabled by default. The automatic runner switches once after a recognized
+capacity rejection when the worktree, PR head, and review evidence are unchanged;
+it preserves the failed attempt and remaining round budget. It uses that fallback
+for the remaining Codex passes and names the actual settings in each attestation.
+Use `review-config set codex.fallback=none` to disable it. Standalone launchers
+and other engines do not retry.
+
 ## AI review workflow
 
 See [`.claude/REVIEW_WORKFLOW.md`](.claude/REVIEW_WORKFLOW.md) — canonical for the lean/deep chains.
 See [`.claude/MODEL_NOTES.md`](.claude/MODEL_NOTES.md) before editing anything under `.claude/skills/` or `.claude/agents/`.
-```
+````
 
 Add these **after** the first sync lands, so the links resolve.
 

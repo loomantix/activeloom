@@ -32,6 +32,8 @@ ${ui.bold('Usage')}
   npx activeloom add                   list the skills available
   npx activeloom detect                print what this repo looks like
   npx activeloom tiers                 explain the four tiers
+  npx activeloom review-config <cmd>   show or set your review profile
+                                       (reviewer model, effort, engine order)
 
 ${ui.bold('Options')}
   --harness <id>     claude | codex | gemini. Repeatable. Default: detected.
@@ -98,6 +100,12 @@ function parseArgs(argv) {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    // Everything after `review-config` belongs to the profile helper, which
+    // validates its own arguments; global options must precede the command.
+    if (opts.command === 'review-config') {
+      opts.positionals.push(...argv.slice(i));
+      break;
+    }
     switch (arg) {
       case '-h':
       case '--help':
@@ -171,6 +179,7 @@ const COMMAND_OPTIONS = Object.freeze({
   ]),
   detect: new Set(['--consumer-dir']),
   tiers: new Set(),
+  'review-config': new Set(['--python', '--ref', '--upstream-dir']),
 });
 
 /** Reject flags and operands that the selected command cannot apply. */
@@ -178,7 +187,10 @@ function validateCommandArgs(opts, argv) {
   const allowed = COMMAND_OPTIONS[opts.command];
   if (!allowed) return null;
 
-  if (opts.command !== 'add' && opts.positionals.length > 0) {
+  if (opts.command === 'review-config') {
+    // Parsing preserves every token after the command as a positional.
+    argv = argv.slice(0, argv.length - opts.positionals.length - 1);
+  } else if (opts.command !== 'add' && opts.positionals.length > 0) {
     return `${opts.command} does not accept operands: ${opts.positionals.join(', ')}`;
   }
 
@@ -319,6 +331,15 @@ async function main(argv) {
   }
 
   try {
+    if (opts.command === 'review-config') {
+      const { reviewConfig } = require('../lib/review-config');
+      return reviewConfig({
+        upstreamDir: upstream.dir,
+        python: opts.python,
+        helperArgs: opts.positionals,
+      });
+    }
+
     if (opts.command === 'add') {
       const { add } = require('../lib/add');
       return await add({

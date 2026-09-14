@@ -134,6 +134,8 @@ skills:
 
   phone-install:
     FM_EXTRAS: 'disable-model-invocation: true'
+  review-setup:
+    FM_EXTRAS: ''
 
 # --- prompt stack ------------------------------------------------------------
 # The review prompt files this harness's telemetry identity is computed over,

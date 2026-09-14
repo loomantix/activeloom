@@ -45,6 +45,7 @@ Names below identify skills; use the invocation supported by the current harness
 | Prepare issues for autonomous work           | `backlog-refinement`                       | Curates the queue; does not authorize implementing every open issue                                     |
 | Implement a bounded issue queue              | `agent-loop`                               | Requires an explicit issue allowlist, harness-specific worker/review setup, and its own launch contract |
 | Execute a supplied implementation packet     | `task-packet`                              | Follow the packet's acceptance criteria and action boundaries                                           |
+| Choose reviewer models, effort, and order    | `review-setup`                             | Confirm settings with the user; the helper is the profile's only writer                                 |
 | Clean up or review an existing PR            | `refactorpass`, `critique`, `deepcritique` | Read the review workflow and ledger first; resolve the tier before running                              |
 | Automate a local review relay                | `review-chain-runner.py`                   | Requires an authorized plan, clean dedicated worktree, draft PR, reviewers, and validation commands     |
 | Handle hosted review comments                | `copilot-review` or `reviewit`             | Only when the task and repository policy permit that hosted workflow                                    |
