@@ -201,6 +201,53 @@ def test_code_edits_change_the_fingerprint(cd: ModuleType) -> None:
     assert fingerprint(cd, "foo(a, b);\n", ".ts") != fingerprint(cd, "foo(a, c);\n", ".ts")
 
 
+@pytest.mark.parametrize(
+    ("before", "after", "ext"),
+    [
+        ("a + ++b;", "a++ + b;", ".js"),
+        ("a - --b;", "a-- - b;", ".ts"),
+        ("function f(){return\n1;}", "function f(){return 1;}", ".js"),
+        ("function f(){return /* note\n*/ 1;}", "function f(){return 1;}", ".js"),
+        ("a\n++b;", "a++\nb;", ".js"),
+        ("fn f(){return (1,);}", "fn f(){return 1;}", ".rs"),
+        ("x := f()\n(y)", "x := f()(y)", ".go"),
+    ],
+)
+def test_meaningful_token_and_line_boundaries_are_preserved(
+    cd: ModuleType, before: str, after: str, ext: str
+) -> None:
+    assert fingerprint(cd, before, ext) != fingerprint(cd, after, ext)
+
+
+def test_python_directive_scope_and_type_comments_are_preserved(cd: ModuleType) -> None:
+    before = "a = f()  # type: ignore\nb = g()\n"
+    moved = "a = f()\nb = g()  # type: ignore\n"
+    assert fingerprint(cd, before, ".py") != fingerprint(cd, moved, ".py")
+    assert fingerprint(cd, "# prose\n" + before, ".py") == fingerprint(cd, before, ".py")
+    assert fingerprint(cd, "a = f()  # type: int\n", ".py") != fingerprint(
+        cd, "a = f()  # type: str\n", ".py"
+    )
+    assert fingerprint(cd, "a = f()  # noqa\nb = g()\n", ".py") != fingerprint(
+        cd, "a = f()\n# noqa\nb = g()\n", ".py"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "ext"),
+    [
+        ("const x=<div>hello // text</div>;", ".tsx"),
+        ("const x=<>hello // text</>;", ".jsx"),
+        ("export default <div>hello // text</div>;", ".js"),
+        ("const x = <Δ>hello // text</Δ>;", ".tsx"),
+        ("if (ok) /[//]text/.test(x);", ".js"),
+    ],
+)
+def test_unsupported_lexical_contexts_are_marked_approximate(
+    cd: ModuleType, source: str, ext: str
+) -> None:
+    assert cd.scan_text(source, cd.LANGUAGES[ext]).approximate
+
+
 def test_removing_a_comment_between_words_is_a_code_change(cd: ModuleType) -> None:
     assert fingerprint(cd, "a/**/b\n", ".ts") != fingerprint(cd, "ab\n", ".ts")
 
@@ -265,6 +312,18 @@ def test_condensing_prose_around_a_tag_keeps_the_fingerprint(cd: ModuleType) -> 
         export function foo() {}
     """
     assert fingerprint(cd, before, ".ts") == fingerprint(cd, after, ".ts")
+
+
+@pytest.mark.parametrize(
+    "before",
+    [
+        'import(/* webpackChunkName: "a  b" */ "./a");',
+        '/** @type {"a  b"} */\nlet x;',
+        '/*! Preserve  this license. */\nlet x;',
+    ],
+)
+def test_directive_values_are_not_whitespace_normalized(cd: ModuleType, before: str) -> None:
+    assert fingerprint(cd, before, ".ts") != fingerprint(cd, before.replace("  ", " "), ".ts")
 
 
 def test_python_docstrings_comments_and_pass_are_inert(cd: ModuleType) -> None:
@@ -477,3 +536,76 @@ def test_verify_rejects_unknown_revisions(
 ) -> None:
     assert cd.main(["--verify-against", "no-such-ref", "a.ts"]) == 2
     assert "unknown git revision" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("name", "data"), [("bad.ts", b"x\0"), ("bad.rb", b"puts 1"), ("bad.ts", b"x\xff")])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_verify_rejects_unverified_inputs(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str], name: str, data: bytes, mixed: bool
+) -> None:
+    (repo / name).write_bytes(data)
+    paths = ["a.ts", name] if mixed else [name]
+    code, report = _verify(cd, capsys, *paths)
+    assert code != 0
+    assert report["skipped"]
+
+
+def test_verify_rejects_empty_selection(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo / "empty").mkdir()
+    code, report = _verify(cd, capsys, "empty")
+    assert code != 0
+    assert report["files"] == []
+
+
+def test_verify_rejects_changed_jsx_text(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo / "view.tsx").write_text("const x=<div>hello // before</div>;\n")
+    _git(repo, "add", "view.tsx")
+    _git(repo, "commit", "-qm", "jsx baseline")
+    (repo / "view.tsx").write_text("const x=<div>hello // after</div>;\n")
+    code, report = _verify(cd, capsys, "view.tsx")
+    assert code != 0
+    assert report["statuses"] == {"error": 1}
+
+
+def test_verify_rejects_unreadable_selected_file(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    read_bytes = Path.read_bytes
+
+    def unreadable(path: Path) -> bytes:
+        if path.name == "a.ts":
+            raise PermissionError("unreadable fixture")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    code, report = _verify(cd, capsys, "a.ts", "b.py")
+    assert code != 0
+    assert report["skipped"] == {"unreadable": 1}
+
+
+def test_verify_rejects_invalid_baseline_encoding(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo / "encoded.ts").write_bytes(b'const x = "\xff";\n')
+    _git(repo, "add", "encoded.ts")
+    _git(repo, "commit", "-qm", "encoded baseline")
+    (repo / "encoded.ts").write_bytes(b'const x = "\xfe";\n')
+    code, _ = _verify(cd, capsys, "encoded.ts")
+    assert code != 0
+    (repo / "encoded.ts").write_text('const x = "replacement";\n')
+    code, report = _verify(cd, capsys, "encoded.ts")
+    assert code != 0
+    assert report["statuses"] == {"error": 1}
+
+
+def test_verify_rejects_symlink_input(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo / "alias.ts").symlink_to(repo / "a.ts")
+    code, report = _verify(cd, capsys, "alias.ts")
+    assert code != 0
+    assert report["skipped"] == {"symlink": 1}

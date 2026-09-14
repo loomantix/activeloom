@@ -7,10 +7,12 @@ code is code; a line holding only comment text, or lying inside a block
 comment or docstring, is comment; anything else is blank.
 
 Verify (--verify-against REF) compares each file's code fingerprint with the
-same path at a git revision. The fingerprint is the token stream with comments
-and layout removed (for Python, the AST without docstrings or `pass`), plus
-the text of directive comments such as `@ts-expect-error` or `# type: ignore`,
-whose removal changes what tools do. Exit status 1 means code changed.
+same path at a git revision. The fingerprint removes non-directive comments
+and safe layout differences (for Python, docstrings and `pass` in the AST), retaining
+the text and position of directive comments such as `@ts-expect-error` or
+`# type: ignore`, whose removal changes what tools do. Exit status 1 means code
+changed or the comparison could not certify every selected file. JSX and
+ambiguous JavaScript regex contexts are audit-only approximations.
 
 Standard library only.
 """
@@ -30,7 +32,7 @@ import sys
 import tokenize
 from collections import Counter
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +52,7 @@ class Dialect:
     raw_backticks: bool = False
     rust_literals: bool = False
     triple_quotes: bool = False
+    jsx: bool = False
 
 
 PYTHON = "python"
@@ -64,11 +67,11 @@ CSHARP = Dialect("csharp", triple_quotes=True)
 
 LANGUAGES: dict[str, Dialect | str] = {
     ".ts": TYPESCRIPT,
-    ".tsx": TYPESCRIPT,
+    ".tsx": replace(TYPESCRIPT, jsx=True),
     ".mts": TYPESCRIPT,
     ".cts": TYPESCRIPT,
     ".js": JAVASCRIPT,
-    ".jsx": JAVASCRIPT,
+    ".jsx": replace(JAVASCRIPT, jsx=True),
     ".mjs": JAVASCRIPT,
     ".cjs": JAVASCRIPT,
     ".py": PYTHON,
@@ -135,7 +138,7 @@ _DIRECTIVE_START = re.compile(
     r"|webpack[A-Z]|@vite-ignore|<reference\b|<amd-|go:[a-z]|\+build\b"
     r"|nolint|lint:(?:file-)?ignore|NOLINT|sourceMappingURL=|SAFETY:"
     r"|swiftlint:|ktlint-disable"
-    r"|type:\s*ignore|noqa\b|pragma:|pylint:|mypy:|pyright:|ruff:"
+    r"|type:|noqa\b|pragma:|pylint:|mypy:|pyright:|ruff:"
     r"|fmt:\s*(?:off|on|skip)|isort:|nosec\b"
 )
 _DIRECTIVE_TAG = re.compile(
@@ -158,6 +161,7 @@ _REGEX_PREFIX_KEYWORDS = frozenset(
         "void",
         "throw",
         "case",
+        "default",
         "do",
         "else",
         "yield",
@@ -167,6 +171,8 @@ _REGEX_PREFIX_KEYWORDS = frozenset(
 _REGEX_AFTER = frozenset("(,=:[!&|?{};+-*%>~^")
 _RUST_RAW_STRING = re.compile(r'b?r(#*)"')
 _RUST_CHAR = re.compile(r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|.)|[^\\'\n])'")
+_OPERATOR_CHARS = frozenset("+-*/%&|^!~<>=?:.")
+_JS_RESTRICTED_NEWLINE = frozenset({"return", "throw", "break", "continue", "yield", "async"})
 
 
 @dataclass
@@ -181,14 +187,14 @@ def _is_word(ch: str) -> bool:
 
 
 def _directive_lines(raw: str) -> list[str]:
-    """Whitespace-normalized directive text found in one raw comment."""
+    """Directive text with comment decoration removed, preserving its values."""
     if raw.startswith("/*!"):
-        return [" ".join(raw.split())]
+        return [raw]
     found = []
     for line in raw.split("\n"):
         text = line.strip().lstrip("/*!#").rstrip("*/").strip()
         if text and (_DIRECTIVE_START.match(text) or _DIRECTIVE_TAG.search(text)):
-            found.append(" ".join(text.split()))
+            found.append(text)
     return found
 
 
@@ -206,21 +212,23 @@ class _CFamilyScanner:
 
     Literals are lexed only far enough to know that comment markers inside
     them are not comments; their contents enter the fingerprint verbatim.
-    Whitespace between code tokens is kept only where it separates two word
-    characters, a trailing comma before a closing bracket is dropped, and so
-    are parentheses wrapping a whole `return` or `throw` expression, so a
-    formatter reflowing lines after a comment deletion does not register as a
-    code change.
+    Keep token boundaries and potentially significant line breaks. JavaScript
+    permits a few safe layout normalizations, including trailing commas and
+    parentheses wrapping a whole `return` or `throw` expression. Other
+    dialects retain code line breaks and punctuation conservatively.
     """
 
     def __init__(self, text: str, dialect: Dialect) -> None:
         self.text = text
         self.dialect = dialect
+        self.javascript = dialect.name in {"javascript", "typescript"}
+        self.approximate = False
         self.kinds: list[str] = []
         self.tokens: list[str] = []
         self.line_code = False
         self.line_comment = False
         self.pending_space = False
+        self.pending_newline = False
         self.last_sig = ""
         self.word = ""
         # Open parens as (token index, directly follows `return`/`throw`), and
@@ -232,7 +240,7 @@ class _CFamilyScanner:
         self._code(0, interpolation=False)
         if self.text and not self.text.endswith("\n"):
             self._end_line()
-        return Scan(self.kinds, "".join(self.tokens))
+        return Scan(self.kinds, "".join(self.tokens), approximate=self.approximate)
 
     def _end_line(self) -> None:
         if self.line_code:
@@ -242,6 +250,32 @@ class _CFamilyScanner:
         else:
             self.kinds.append(BLANK)
         self.line_code = self.line_comment = False
+
+    def _emit_gap(self, ch: str) -> None:
+        if self.pending_newline and self.tokens:
+            # Outside a continuation, erasing a line break can change automatic
+            # semicolon insertion. Comments with newlines have the same effect.
+            if (
+                not self.javascript
+                or self.word in _JS_RESTRICTED_NEWLINE
+                or ch in "+-"
+                or (
+                    not self.parens
+                    and self.last_sig not in "{;,:([=+-*/%&|?!~^<>."
+                    and ch not in "})];,:.[=*/%&|?!~^<>"
+                )
+            ):
+                self.tokens.append("\n")
+        if self.pending_space and self.tokens:
+            previous = self.tokens[-1][-1:]
+            if (
+                (_is_word(previous) and _is_word(ch))
+                or (previous in _OPERATOR_CHARS and ch in _OPERATOR_CHARS)
+                or (previous.isdigit() and ch == ".")
+                or (previous == "." and ch.isdigit())
+            ):
+                self.tokens.append(" ")
+        self.pending_newline = False
 
     def _emit_code(self, ch: str) -> None:
         tokens = self.tokens
@@ -253,17 +287,17 @@ class _CFamilyScanner:
                 tokens[opening] = " "
             else:
                 del tokens[opening]
-        if self.pending_space and tokens and _is_word(tokens[-1][-1:]) and _is_word(ch):
-            tokens.append(" ")
+        self._emit_gap(ch)
         if (
-            ch in ")]}"
+            self.javascript
+            and ch in ")]}"
             and tokens
             and tokens[-1] == ","
             and (len(tokens) < 2 or tokens[-2] not in (",", "[", "(", "{"))
         ):
             tokens.pop()
         if ch == "(":
-            after_keyword = _is_word(self.last_sig) and self.word in ("return", "throw")
+            after_keyword = self.javascript and _is_word(self.last_sig) and self.word in ("return", "throw")
             self.parens.append((len(tokens), after_keyword))
         if _is_word(ch):
             joined = _is_word(self.last_sig) and not self.pending_space
@@ -280,6 +314,7 @@ class _CFamilyScanner:
         self.last_sig = ch
 
     def _emit_literal(self, text: str) -> None:
+        self._emit_gap(text[:1])
         self.tokens.append(text)
         self.unwrap = None
         self.pending_space = False
@@ -304,6 +339,7 @@ class _CFamilyScanner:
             if ch == "\n":
                 self._end_line()
                 self.pending_space = True
+                self.pending_newline = True
                 i += 1
                 continue
             if ch.isspace():
@@ -344,6 +380,13 @@ class _CFamilyScanner:
             elif ch == "/" and d.regex_literals and self._regex_allowed():
                 i = self._regex(i)
             else:
+                if self.javascript and (
+                    (ch == "<" and (d.jsx or (self._regex_allowed() and re.match(r"[A-Za-z_$/>!]", nxt))))
+                    or (ch == "/" and self.last_sig in (")", "}"))
+                ):
+                    # JSX text and regex-vs-division after a control-flow block
+                    # need a parser. Never certify the incomplete token stream.
+                    self.approximate = True
                 if interpolation:
                     if ch == "{":
                         depth += 1
@@ -368,6 +411,7 @@ class _CFamilyScanner:
             ch = text[i]
             if ch == "\n":
                 if not multiline:
+                    self.approximate = True
                     self._after_value()
                     return i
                 self._newline_in_literal()
@@ -382,6 +426,7 @@ class _CFamilyScanner:
             else:
                 self._emit_literal(ch)
                 i += 1
+        self.approximate = True
         return i
 
     def _template(self, i: int) -> int:
@@ -415,6 +460,7 @@ class _CFamilyScanner:
             else:
                 self._emit_literal(ch)
                 i += 1
+        self.approximate = True
         return i
 
     def _regex_allowed(self) -> bool:
@@ -443,7 +489,9 @@ class _CFamilyScanner:
             elif ch == "]":
                 in_class = False
             elif ch == "/" and not in_class:
-                break
+                self._after_value()
+                return i
+        self.approximate = True
         self._after_value()
         return i
 
@@ -459,12 +507,15 @@ class _CFamilyScanner:
         n = len(text)
         if not self.dialect.nested_blocks:
             close = text.find("*/", i + 2)
+            if close < 0:
+                self.approximate = True
             end = n if close < 0 else close + 2
         else:
             end, depth = i + 2, 1
             while depth:
                 close = text.find("*/", end)
                 if close < 0:
+                    self.approximate = True
                     end = n
                     break
                 opening = text.find("/*", end)
@@ -475,6 +526,8 @@ class _CFamilyScanner:
                     depth -= 1
                     end = close + 2
         raw = text[i:end]
+        if "\n" in raw:
+            self.pending_newline = True
         self.line_comment = True
         for _ in range(raw.count("\n")):
             self._end_line()
@@ -558,7 +611,7 @@ def scan_python(text: str) -> Scan:
     except (tokenize.TokenError, SyntaxError):
         return _approximate_python(lines)
     try:
-        tree: ast.Module | None = ast.parse(text)
+        tree: ast.Module | None = ast.parse(text, type_comments=True)
     except (SyntaxError, ValueError):
         tree = None
 
@@ -583,21 +636,24 @@ def scan_python(text: str) -> Scan:
 
     code: set[int] = set()
     comment: set[int] = set()
-    directives: list[str] = []
+    directives: list[tuple[int, str, str]] = []
+    code_tokens = 0
     for tok in tokens:
         start_row, end_row = tok.start[0], tok.end[0]
         if tok.type == tokenize.COMMENT:
             comment.add(start_row)
+            position = "inline" if start_row in code else "next"
             if start_row == 1 and tok.string.startswith("#!"):
-                directives.append(tok.string.strip())
+                directives.append((code_tokens, position, tok.string.strip()))
             else:
-                directives.extend(_directive_lines(tok.string))
+                directives.extend((code_tokens, position, d) for d in _directive_lines(tok.string))
         elif tok.type in _PY_LAYOUT or not tok.string.strip():
             continue
         elif tok.type == tokenize.STRING and in_docstring(tok.start, tok.end):
             comment.update(range(start_row, end_row + 1))
         else:
             code.update(range(start_row, end_row + 1))
+            code_tokens += 1
 
     kinds = []
     for number, line in enumerate(lines, start=1):
@@ -609,8 +665,11 @@ def scan_python(text: str) -> Scan:
             kinds.append(CODE if line.strip() else BLANK)
     if tree is None:
         return Scan(kinds, "", approximate=True)
+    # TypeIgnore.lineno is an AST field, not an optional location attribute.
+    # The directive token anchors above retain scope without physical lines.
+    tree.type_ignores = []
     normalized = _PythonNormalizer(keep_docstrings="__doc__" in text).visit(tree)
-    fingerprint = ast.dump(normalized) + "".join(f"«{d}»" for d in directives)
+    fingerprint = ast.dump(normalized) + json.dumps(directives, ensure_ascii=False)
     return Scan(kinds, fingerprint)
 
 
@@ -697,8 +756,11 @@ def _matches(display: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(display, p) or fnmatch.fnmatch(name, p) for p in patterns)
 
 
-def _walk(root: Path, excludes: list[str], default_excludes: bool) -> Iterator[Path]:
-    for current, dirs, files in os.walk(root):
+def _walk(root: Path, excludes: list[str], default_excludes: bool, skipped: Counter[str]) -> Iterator[Path]:
+    def unreadable(error: OSError) -> None:
+        skipped["unreadable"] += 1
+
+    for current, dirs, files in os.walk(root, onerror=unreadable):
         base = Path(current)
         dirs[:] = sorted(
             d
@@ -721,13 +783,13 @@ def iter_sources(
     """Yield readable source files; count why selected-extension files were skipped.
 
     A file named directly on the command line bypasses every filter except
-    the language check.
+    the language and readability checks. Symlinks are never followed.
     """
     seen: set[Path] = set()
     for raw in paths:
         root = Path(raw)
         explicit = root.is_file()
-        candidates = [root] if explicit else _walk(root, excludes, default_excludes)
+        candidates = [root] if explicit else _walk(root, excludes, default_excludes, skipped)
         for path in candidates:
             language = LANGUAGES.get(path.suffix.lower())
             if explicit and language is None:
@@ -737,14 +799,14 @@ def iter_sources(
                 continue
             assert language is not None
             display = display_path(path)
+            if path.is_symlink():
+                skipped["symlink"] += 1
+                continue
             if not explicit:
                 if globs and not _matches(display, globs):
                     continue
                 if _matches(display, excludes):
                     skipped["excluded"] += 1
-                    continue
-                if path.is_symlink():
-                    skipped["symlink"] += 1
                     continue
                 if default_excludes and _matches(display, list(GENERATED_NAMES)):
                     skipped["generated"] += 1
@@ -761,7 +823,11 @@ def iter_sources(
             if b"\0" in data:
                 skipped["binary"] += 1
                 continue
-            text = data.decode("utf-8", errors="replace")
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                skipped["encoding"] += 1
+                continue
             if not explicit and default_excludes:
                 if GENERATED_HEADER.search(text[:GENERATED_HEADER_CHARS]):
                     skipped["generated"] += 1
@@ -862,7 +928,10 @@ def _baseline(path: Path, ref: str) -> tuple[str | None, str | None]:
     """(text, error) for `path` at `ref`; both None when the path is absent there."""
     proc = _git(["show", f"{ref}:./{path.name}"], path.parent)
     if proc.returncode == 0:
-        return proc.stdout.decode("utf-8", errors="replace"), None
+        try:
+            return proc.stdout.decode("utf-8"), None
+        except UnicodeDecodeError:
+            return None, "baseline is not UTF-8"
     message = proc.stderr.decode("utf-8", errors="replace").strip()
     if "does not exist in" in message or "exists on disk, but not in" in message:
         return None, None
@@ -899,7 +968,7 @@ def verify_source(source: Source, ref: str) -> dict[str, Any]:
     before = scan_text(baseline, source.language)
     result.update(before=_counts(before), after=_counts(after))
     if before.approximate or after.approximate:
-        return {**result, "status": "error", "detail": "could not parse"}
+        return {**result, "status": "error", "detail": "unsupported or unparseable syntax; cannot verify"}
     if before.fingerprint == after.fingerprint:
         return {**result, "status": "unchanged"}
     return {**result, "status": "changed", "divergence": _divergence(before.fingerprint, after.fingerprint)}
@@ -917,6 +986,7 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
     results = [verify_source(source, args.verify_against) for source in sources]
     statuses = Counter(r["status"] for r in results)
     failed = sum(count for status, count in statuses.items() if status != "unchanged")
+    unverified = sum(skipped[reason] for reason in ("unsupported", "binary", "unreadable", "symlink", "encoding"))
     if args.json:
         report = {
             "schema_version": SCHEMA_VERSION,
@@ -931,6 +1001,8 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
     else:
         summary = ", ".join(f"{count} {status}" for status, count in sorted(statuses.items()))
         print(f"Verified {len(results)} files against {args.verify_against}: {summary or 'none'}.")
+        if unverified or not results:
+            print(f"Verification incomplete: {unverified} unreadable/unsupported inputs; {len(results)} files checked.")
         for r in results:
             metrics = ""
             if "before" in r:
@@ -942,7 +1014,7 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
                 print(f"             after:  …{r['divergence']['after']}…")
             if "detail" in r:
                 print(f"             {r['detail']}")
-    return 1 if failed else 0
+    return 1 if failed or unverified or not results else 0
 
 
 def _use_color(args: argparse.Namespace) -> bool:

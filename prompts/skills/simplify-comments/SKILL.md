@@ -21,7 +21,7 @@ The audit is done when the user has the totals and the ranked table. If the user
 
 1. Pick a batch a reviewer can read line by line — one to three large files, or one small directory — and confirm it with the user.
 2. Create a linked worktree on a new branch from the up-to-date default branch, `git worktree add -b refactor/simplify-comments-<slug> ~/wt/<repo>-simplify-comments-<slug> origin/<default-branch>`, and work only there.
-3. Save the baseline: `comment-density.py <batch files> --json`.
+3. Save the baseline: `comment-density.py <batch files> --json`, then run `comment-density.py --verify-against origin/<default-branch> <batch files>` before editing. Report and exclude files the helper cannot verify: approximate audit counts, including JSX and ambiguous JavaScript regex contexts, are not code-preservation evidence.
 4. Find the repository's gates in <<AGENT_DOC_CODE>> and its build manifest (`package.json`, `justfile`, `Makefile`, `pyproject.toml`): formatter, typecheck, lint including documentation lint rules, and the unit tests that cover the batch.
 
 Scope is done when the worktree exists, the baseline is saved, and every gate has a named command.
@@ -90,7 +90,7 @@ The reference pilot applied this taxonomy to two large production modules: 4,918
 ## Phase 4 — Validate and ship
 
 1. Run the formatter, then confirm `git diff --name-status origin/<default-branch>` lists only modified (`M`) files.
-2. Run `comment-density.py --verify-against origin/<default-branch> <changed files>`. It compares each file's tokens with comments and layout removed (for Python, the AST without docstrings), keeping directive comments, and must exit 0. For a file reported `changed`, read its `git diff`: layout the formatter reflowed after a deletion is acceptable; restore anything else.
+2. Run `comment-density.py --verify-against origin/<default-branch> <changed files>`. It compares code fingerprints (for Python, the AST without docstrings), preserving directive values and scope, token boundaries, and significant line breaks. It tolerates limited JavaScript formatter reflow; other dialects retain code line breaks and punctuation conservatively. It must exit 0 for every selected file. Read the diff for any `changed` result and restore the rejected edit; skipped inputs or unsupported syntax are failures, never evidence of unchanged code.
 3. Run every gate named in Phase 2. A failure usually means a directive or a required doc was removed; restore it and rerun.
 4. Commit as `refactor(comments): condense comments in <scope>`, push, and open a draft pull request. Keep the body under 250 words: the before/after table from `--verify-against … --json` (lines and density per file), the gates run with their results, and the contradictions listed in Phase 3. Then follow the repository's review workflow.
 
