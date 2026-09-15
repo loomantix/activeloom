@@ -1139,6 +1139,32 @@ def test_batch_stack_resumes_an_interrupted_stacked_issue(
     assert batch["issues"][1]["stackedOn"] == 68
 
 
+def test_batch_stack_rejects_a_parent_checkpoint_from_another_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    config = _config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="batch-stack")
+    blockers = {"AGENT_READY_BLOCKERS": json.dumps({"69": [68]})}
+    issues = [_issue(68), _issue(69, "Depends on #68")]
+    first = _run(
+        consumer, ["--issues", "68,69", "--iterations", "1"],
+        issues=issues, config=config, extra_env=blockers, timeout=180,
+    )
+    assert first.returncode == 0, first.stderr + first.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    parent_state_file = Path(batch["issues"][0]["childRunState"])
+    parent_state = json.loads(parent_state_file.read_text(encoding="utf-8"))
+    parent_state["issue"] = 67
+    parent_state_file.write_text(json.dumps(parent_state), encoding="utf-8")
+
+    resumed = _run(
+        consumer, ["--resume-batch", str(batch_file)],
+        issues=issues, config=config, extra_env=blockers, timeout=180,
+    )
+    assert resumed.returncode == 1
+    assert "dependency issue #68 has no matching finalized review checkpoint" in resumed.stderr
+
+
 def test_merged_to_base_gate_still_holds_a_dependent_batch_issue(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:

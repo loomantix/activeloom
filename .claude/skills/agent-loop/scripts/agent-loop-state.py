@@ -260,12 +260,19 @@ def _validate_batch(value: dict[str, Any]) -> None:
             _fail("only a parked batch issue may carry a stop category")
         if "stackedOn" in row:
             parent = row["stackedOn"]
+            parent_row = rows[allowlist.index(parent)] if parent in allowlist else None
             if (
                 type(parent) is not int
                 or parent not in allowlist[:index]
                 or row["status"] == "pending"
+                or parent_row is None
+                or parent_row["status"] != "finalized"
+                or parent_row["childRunState"] is None
             ):
-                _fail("a stacked batch issue must name an earlier batch issue and have started")
+                _fail(
+                    "a stacked batch issue must name an earlier batch issue, have started, "
+                    "and use a finalized parent with a child review checkpoint"
+                )
         child = row["childRunState"]
         if child is not None and (not isinstance(child, str) or not Path(child).is_absolute()):
             _fail("batch child run-state path must be absolute or null")

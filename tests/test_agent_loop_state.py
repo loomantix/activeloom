@@ -297,6 +297,48 @@ def test_batch_records_a_stack_only_on_an_earlier_issue(tmp_path: Path) -> None:
     assert value["issues"][1]["stackedOn"] == 7
 
 
+def test_batch_rejects_a_stack_on_a_non_finalized_parent(tmp_path: Path) -> None:
+    for parent_status in ("bailed", "parked"):
+        batch = tmp_path / f"batch-{parent_status}.json"
+        created = _run(
+            "batch-create", "--file", str(batch), "--run-id", "run-1",
+            "--repo", "example/repository", "--base-branch", "main", "--issues", "7,8",
+        )
+        assert created.returncode == 0, created.stderr
+        value = json.loads(batch.read_text(encoding="utf-8"))
+        value["issues"][0]["status"] = parent_status
+        value["issues"][0]["childRunState"] = str(tmp_path / "parent.json")
+        if parent_status == "bailed":
+            value["issues"][0]["classification"] = "spec-gap"
+        else:
+            value["issues"][0]["stopCategory"] = "validation-red"
+        value["issues"][1].update({"status": "active", "stackedOn": 7})
+        value["cursor"] = 1
+        batch.write_text(json.dumps(value), encoding="utf-8")
+
+        shown = _run("batch-show", "--file", str(batch))
+        assert shown.returncode != 0
+        assert "finalized parent with a child review checkpoint" in shown.stderr
+
+
+def test_batch_rejects_a_stack_on_a_parent_without_a_child_checkpoint(tmp_path: Path) -> None:
+    batch = tmp_path / "batch.json"
+    created = _run(
+        "batch-create", "--file", str(batch), "--run-id", "run-1",
+        "--repo", "example/repository", "--base-branch", "main", "--issues", "7,8",
+    )
+    assert created.returncode == 0, created.stderr
+    value = json.loads(batch.read_text(encoding="utf-8"))
+    value["issues"][0]["status"] = "finalized"
+    value["issues"][1].update({"status": "active", "stackedOn": 7})
+    value["cursor"] = 1
+    batch.write_text(json.dumps(value), encoding="utf-8")
+
+    shown = _run("batch-show", "--file", str(batch))
+    assert shown.returncode != 0
+    assert "finalized parent with a child review checkpoint" in shown.stderr
+
+
 def test_batch_expected_status_is_atomic_across_concurrent_updates(
     tmp_path: Path,
 ) -> None:

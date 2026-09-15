@@ -1145,10 +1145,13 @@ plan_batch_stack() {
         child="$(jq -r --argjson p "$position" '.issues[$p].childRunState // empty' <<<"$batch_json")"
         [ -n "$child" ] || return 2
         child_json="$(python3 "$RUN_STATE_HELPER" show --file "$child")" || return 2
-        [ "$(jq -r '.phase' <<<"$child_json")" = finalized ] || {
-            echo "dependency issue #$number has no finalized review checkpoint" >&2
+        if [ "$(jq -r '.phase' <<<"$child_json")" != finalized ] || \
+           [ "$(jq -r '.repo' <<<"$child_json")" != "$GH_REPO" ] || \
+           [ "$(jq -r '.issue' <<<"$child_json")" != "$number" ] || \
+           [[ "$(jq -r '.branch' <<<"$child_json")" != "$BRANCH_PREFIX/issue-$number-"* ]]; then
+            echo "dependency issue #$number has no matching finalized review checkpoint" >&2
             return 2
-        }
+        fi
         STACK_PARENT_ISSUE="$number"
         STACK_PARENT_BRANCH="$(jq -r '.branch' <<<"$child_json")"
         STACK_PARENT_HEAD="$(jq -r '.headSha' <<<"$child_json")"
