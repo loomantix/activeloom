@@ -73,6 +73,7 @@ with the issue worktree as the current directory.
 | `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                      |
 | `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                        |
 | `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                                                                                        |
+| `batch_on_issue_failure`                         | `stop` (default) or `park`. See "Parking a failed batch issue".                                                                                                                                              |
 | `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                                                                  |
 | `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                                                             |
 
@@ -91,7 +92,14 @@ blocked hook instead uses `review-ledger.js write-blocked-result` with an
 owner-only blocker file and must not claim a clean or changed pass. The wrapper validates its exact
 SHAs and finding fingerprints, verifies resolved v3 dispositions, and owns the
 canonical pass/completion attestation. A missing, invalid, or blocked result
-stops even when the hook exits zero. Validation hooks
+stops even when the hook exits zero, with one exception under review contract v3: a hook that exits zero
+without writing any result, and left no commit, push, ledger thread, or PR
+comment behind, is retried once in the same round (`retry:
+hook-ended-without-result`). The retry draws on the same review budget. A
+pass that left uncommitted changes stops with `worktree-state`, and one that
+committed without a matching push checkpoint stops with
+`push-checkpoint-mismatch`. Any other pass that ends without a result,
+including the retry, stops with `no-result/hook-ended-early`. Validation hooks
 must leave a clean tree; work they write but do not commit is not in the
 reviewed head and would be discarded with the worktree.
 
@@ -147,6 +155,17 @@ exception is the final reviewed-head gate, which always runs on the exact head
 that is marked ready — a hook that damaged the worktree environment without
 committing is still caught there. A changed pass, a real base integration, or a
 base that moved since the last validation runs the hook as before.
+
+### The validation hook is the gating run
+
+Under agent-loop, the wrapper's validation hook is the gating suite for every
+review pass: it runs on the exact head after each pass, and a red run stops the
+pass before convergence. Review hooks therefore need only focused checks for
+their own fixes. Each run, skip, or failure appends a line to
+`validation.jsonl` in the run's log directory with the label, head, base,
+outcome (`passed`, `failed`, or `reused` with the label it reused), and the
+SHA-256 of the configured `validation_hook`. The ready PR body names the
+reviewed head and base the final gate passed on.
 
 ### Launcher headroom
 
@@ -209,6 +228,12 @@ braces for a hook string that is also run by hand. It matters because
 open pipe from whatever launched the wrapper produces no output and no result
 until the pass times out, which is indistinguishable from a slow review from
 outside. A hook that genuinely needs input must supply it inside the command.
+
+The wrapper also exports `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` for every hook
+and the default worker, overriding an inherited value. A one-shot Claude CLI
+that moves a long command, such as a test suite, to the background can end its
+turn with that command still running: it exits 0 and writes no result. The
+doctor warns when a hook sets the variable to anything else or unsets it.
 
 `claude_effort_policy` constrains `claude_review_hook` and, when the default
 worker is in use, `worker_effort` — both only when `config_doctor = true`, since
@@ -295,9 +320,22 @@ one of its closing PRs meets the same condition. Closed issues alone do not
 pass. `dependency_gate = ready` (the default) preserves the legacy ready-queue
 semantics.
 
+Every batch run warns at creation when an issue's body mentions an earlier
+batch issue without declaring `Depends on`, since that issue starts from the
+base however the prose reads.
+
 ## Failure and Recovery
 
-On any non-zero worker exit, inspect whether the worktree is dirty or contains
+A worker bails by writing its classification and operator handoff to
+`$AGENT_LOOP_HANDOFF_FILE` (`operator-handoff.md` in the run's log directory)
+and making no commit. The file is authoritative, whatever the exit status: the
+wrapper prints the `agent-bail:` classification and the handoff path, releases a
+claim it added, removes the unused worktree and branch, records a batch entry as
+`bailed` with that classification, and continues with the next issue. It makes
+no label or comment changes; those stay operator actions from the handoff. A
+handoff alongside changed or committed work is an ambiguous bail and stops.
+
+On any other non-zero worker exit, inspect whether the worktree is dirty or contains
 new commits. Preserve all changed or committed work and stop with recovery
 commands. Retry capacity/timeouts only when the worktree is unchanged. Review,
 setup, integration, and validation failures also preserve the worktree. Never
@@ -308,6 +346,58 @@ branch. Contract-v3 allowlist batches persist their ordered issues, cursor,
 per-issue statuses, and child run-state paths. Recovery advances only after the
 current issue is safely finalized or explicitly bailed; uncertain push, PR, or
 ledger mutation stops the batch.
+
+A pass can be killed after it commits a fix but before its push lands. The
+worktree is then ahead of a remote branch and PR head that still sit at the
+checkpoint. Resume recovers that shape instead of refusing, but only when all
+of these hold: the phase is `reviewing`, the worktree is clean and on the issue
+branch, and the local head descends from the checkpoint. No review thread or PR
+comment may mention a stranded commit. The wrapper keeps the stranded commits
+on `refs/agent-loop/rescue/<run-id>/<engine>-r<round>`, which it never deletes
+and which outlives the worktree. It resets to the checkpoint and replays the
+interrupted pass under the same-round rules below, then lists the ref when the
+run completes. Any other divergence still stops, such as a remote ahead of the
+checkpoint or ledger evidence for a stranded commit.
+
+Resuming a run interrupted in the Claude leg of any round, with that round's
+Codex result on disk and the head unchanged, re-verifies the Codex evidence and
+runs only the Claude leg of the same round; it does not consume a round. If the
+base advanced since the checkpoint, the integrated head is no longer the head
+Codex reviewed, so the run restarts at Codex in the next round, or replays the
+final round from Codex when it is already at the cap.
+
+### Parking a failed batch issue
+
+With `batch_on_issue_failure = park`, an ordered batch does not halt on an
+issue that failed in a state `--resume-run` can pick up. The wrapper parks the
+issue and continues with the next one. It decides from what it can observe,
+never from hook output. Every one of these must hold:
+
+- the stop category is `no-result/hook-ended-early`, `validation-red`,
+  `hook-timeout`, or `push-checkpoint-mismatch`. Resume restores the round cap
+  and the review deadline, so an exhausted cap or budget stops the batch;
+- the issue has a valid review checkpoint in the `reviewing` or `converged`
+  phase;
+- the worktree is clean and on the issue branch;
+- the local head, the remote branch, and the open draft PR head are equal, or
+  the local head holds stranded commits on a remote and PR still at the
+  checkpoint (the shape resume recovers onto a rescue ref);
+- a head that moved past the checkpoint is explained by that pass's result
+  (its before and after SHAs);
+- the pass's push checkpoint matches the remote head.
+
+Anything else, including any doubt about a push, the PR, or the ledger, still
+stops the batch.
+
+A parked entry records its stop category and keeps its worktree. A later issue
+that declares `Depends on #N` on a parked entry is parked as
+`blocked-by-parked` without being claimed. When the batch reaches its end, or
+its iteration cap, with parked entries, the wrapper lists them and exits `3`. A
+failed entry is listed with its `--resume-run` command and the `batch-update`
+that closes it out. An entry parked behind a dependency has no run of its own:
+resolve the dependency (resuming it if it is parked in this batch), run the
+issue on its own, then close the entry with the listed `batch-update`, passing
+that run's state file as `--child-run-state`.
 
 ## Liveness and Timing
 
@@ -321,6 +411,62 @@ The run's log directory carries two files for anything watching from outside:
   bounded hook and validation (epoch, duration in seconds, exit status), and
   `skipped` for a validation reused on an unchanged head. Phase durations no
   longer have to be reconstructed from log file mtimes.
+
+### Event stream
+
+Structured events are the supported way to supervise a run. The glyph lines on
+the console are for people and may change. Each event is one JSON object per
+line, appended with `fsync`, carrying `event`, `epoch`, and `runTag`:
+
+- an ordered batch writes `<batch-state>-events.jsonl` beside its batch state
+  file, including the events of every child run it resumes;
+- any other run writes `<log_root>/<repo>-run-<run-tag>-events.jsonl`;
+- a standalone `--resume-run` appends to `events.jsonl` in the run's log
+  directory.
+
+| Event                                       | Fields                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------- |
+| `batch_start`                               | `issues`, `configSha256`, `resumed`                                       |
+| `batch_end`                                 | `exit`, `finalized`, `bailed`, `parked`                                   |
+| `issue_start`                               | `issue`, `index` or `round`, `resumed`, `runState`                        |
+| `phase_start`, `phase_end`, `phase_skipped` | `issue`, `phase`, and on `phase_end` `seconds` and `exit`                 |
+| `pass_result`                               | `issue`, `round`, `engine`, `status`, `classification`, `before`, `after` |
+| `retry`                                     | `issue`, `round`, `engine`, `reason`                                      |
+| `stop`                                      | `issue`, `category`, `resumable`, `resumeCommand`, `hookPhase`, `hookLog` |
+| `parked`                                    | `issue`, `category`, `resumeCommand`                                      |
+| `bail`                                      | `issue`, `classification`, `handoffPath`                                  |
+| `recovered`                                 | `issue`, `kind`, `ref`                                                    |
+| `pr_ready`                                  | `issue`, `pr`, `head`                                                     |
+
+Every stop names a category from a fixed list: `no-result/hook-ended-early`,
+`invalid-result`, `review-blocked`, `ledger-evidence`,
+`push-checkpoint-mismatch`, `heads-misaligned`, `worktree-state`,
+`validation-red`, `hook-failed`, `hook-timeout`, `budget-exhausted`,
+`review-cap-exhausted`, `worker-ambiguous-bail`, `worker-no-commit`,
+`worker-failed`, `setup-failed`, `merge-conflict`, `publication-diff`,
+`base-diverged`, `dependency-blocked`, `issue-changed`, `checkpoint-failed`,
+`uncertain-mutation`, `child-resume-failed`, `batch-incomplete`,
+`interrupted`, or `internal-error`. A stop that follows a hook carries that
+hook's phase and the path of its log (`hookLog`), never the output itself.
+`resumable` is true when `resumeCommand` names a command; it does not mean
+resuming is safe, which the stop category decides. Events carry identifiers, categories, counts, and paths: never issue titles or
+bodies, hook or model output, or findings. A resumed run
+prints `▶ Issue #N (resumed, round R)`.
+
+One `jq` pass turns a batch stream into a per-issue table:
+
+```bash
+jq -rs '[.[] | select(.issue != null)] | group_by(.issue)[] as $e
+  | ($e | map(.event)) as $t
+  | [($e[0].issue | tostring),
+     (if ($t | index("pr_ready")) then "finalized" elif ($t | index("bail")) then "bailed"
+      elif ($t | index("parked")) then "parked" else "stopped" end),
+     ([$e[] | select(.event == "pass_result") | .round] | max // 0 | tostring),
+     ([$e[] | select(.event == "phase_end") | .seconds] | add // 0 | tostring),
+     ([$e[] | select(.event == "stop") | .category] | last // ""),
+     ([$e[] | select(.event == "parked") | .resumeCommand] | last // "")] | @tsv' \
+  <batch-state>-events.jsonl
+```
 
 Two things that look like liveness signals are not. **Review log size:** both
 `codex exec` and `claude --print` buffer their output, so a review log sits at

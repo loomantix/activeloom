@@ -230,6 +230,7 @@ def test_main_excludes_non_actionable_issues_without_hiding_unrelated(
         limit=20,
         json=True,
         exclude_addressed_by_pr=[],
+        ignore_blocker=[],
     )
     monkeypatch.setattr(ready_mod, "parse_args", lambda: args)
     monkeypatch.setattr(ready_mod, "fetch_issues", lambda filters: issues)
@@ -242,3 +243,48 @@ def test_main_excludes_non_actionable_issues_without_hiding_unrelated(
     assert ready_mod.main() == 0
     rows = json.loads(capsys.readouterr().out)
     assert [row["number"] for row in rows] == [8, 6, 1]
+
+
+def test_main_ignores_only_the_named_open_blockers(
+    ready_mod: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A caller that builds an issue on its blocker's unmerged branch names that
+    # blocker; any other open blocker still excludes the issue.
+    def issue(number: int, body: str = "") -> dict[str, Any]:
+        return {
+            "number": number,
+            "title": f"Issue {number}",
+            "body": body,
+            "labels": [],
+            "assignees": [],
+            "url": f"https://example.invalid/issues/{number}",
+        }
+
+    issues = [
+        issue(1),
+        issue(2, "Depends on #1"),
+        issue(3, "Depends on #1\nBlocked by #4"),
+        issue(4),
+    ]
+    args = argparse.Namespace(
+        mine=False,
+        unassigned=False,
+        agent=False,
+        priority=None,
+        area=None,
+        limit=20,
+        json=True,
+        exclude_addressed_by_pr=[],
+        ignore_blocker=[1],
+    )
+    monkeypatch.setattr(ready_mod, "parse_args", lambda: args)
+    monkeypatch.setattr(ready_mod, "fetch_issues", lambda filters: issues)
+    monkeypatch.setattr(
+        ready_mod, "fetch_addressed_numbers", lambda *, exclude_pr_numbers=None: set()
+    )
+
+    assert ready_mod.main() == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert [row["number"] for row in rows] == [1, 2, 4]

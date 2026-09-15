@@ -90,8 +90,23 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write_executable(
         ready,
         "#!/usr/bin/env python3\n"
-        "import os\n"
-        "print(os.environ.get('AGENT_READY_JSON', '[]'))\n",
+        "import os, pathlib, sys\n"
+        "state = os.environ.get('AGENT_STATE_DIR')\n"
+        "if state:\n"
+        "    with (pathlib.Path(state) / 'ready-args.log').open('a') as handle:\n"
+        "        handle.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "raw = os.environ.get('AGENT_READY_JSON', '[]')\n"
+        # Opt-in blockers: {"<issue>": [<open blocker>, ...]}, filtered like
+        # ready.py, so a test can prove which blockers the wrapper ignores.
+        "blockers = os.environ.get('AGENT_READY_BLOCKERS')\n"
+        "if blockers:\n"
+        "    import json\n"
+        "    args = sys.argv[1:]\n"
+        "    ignored = {int(args[i + 1]) for i, arg in enumerate(args[:-1]) if arg == '--ignore-blocker'}\n"
+        "    table = json.loads(blockers)\n"
+        "    raw = json.dumps([issue for issue in json.loads(raw)\n"
+        "        if not set(table.get(str(issue['number']), [])) - ignored])\n"
+        "print(raw)\n",
     )
     (repo / "agent-loop-instructions.md").write_text(
         "# Local-only worker instructions\n", encoding="utf-8"
@@ -190,8 +205,10 @@ elif args[:2] == ['pr', 'view']:
     if '--json number' in joined:
         print('1')
     elif args[-2:] == ['--jq', '.baseRefOid']:
+        base_name_file = state / 'pr-base-branch'
+        base_name = base_name_file.read_text() if base_name_file.exists() else 'main'
         base_head = subprocess.run(
-            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + base_name],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
         base_oid_file = state / 'pr-base-oid'
@@ -204,8 +221,10 @@ elif args[:2] == ['pr', 'view']:
             ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
+        base_name_file = state / 'pr-base-branch'
+        base_name = base_name_file.read_text() if base_name_file.exists() else 'main'
         base_head = subprocess.run(
-            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/main'],
+            ['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + base_name],
             check=True, capture_output=True, text=True
         ).stdout.split()[0]
         # A file overrides the env var so a hook can move the base mid-run.
@@ -220,7 +239,7 @@ elif args[:2] == ['pr', 'view']:
             ),
             os.environ.get('AGENT_PR_HEAD_REF_NAME', branch),
             os.environ.get('AGENT_PR_HEAD_OID', remote_head),
-            os.environ.get('AGENT_PR_BASE_REF_NAME', 'main'),
+            os.environ.get('AGENT_PR_BASE_REF_NAME', base_name),
             os.environ.get('AGENT_PR_BASE_OID', base_head),
         ]))
     elif 'headRefOid' in joined:
@@ -247,6 +266,7 @@ elif args[:2] == ['pr', 'create']:
         ['git', 'branch', '--show-current'], check=True, capture_output=True, text=True
     ).stdout.strip()
     (state / 'pr-branch').write_text(branch)
+    (state / 'pr-base-branch').write_text(args[args.index('--base') + 1] if '--base' in args else 'main')
     print('https://example.invalid/pr/1')
 elif args[:2] == ['pr', 'edit']:
     if os.environ.get('AGENT_PR_EDIT_FAIL'):
@@ -621,6 +641,97 @@ def test_v3_missing_structured_result_is_not_treated_as_clean(
     assert not comments.exists()
 
 
+def _counting_hook(engine: str, body: str) -> str:
+    return f"printf '{engine}-attempt\\n' >> \"$EVENT_LOG\"; {body}"
+
+
+def test_review_hook_that_ends_without_a_result_is_retried_once_in_place(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The first Claude attempt ends its turn without writing a result and
+    # without touching the PR. Retrying it costs one pass; restarting the round
+    # would re-run Codex against an unchanged head.
+    claude = _counting_hook(
+        "claude",
+        'if [ ! -e "$AGENT_STATE_DIR/claude-ended-early" ]; then '
+        'touch "$AGENT_STATE_DIR/claude-ended-early"; exit 0; fi; '
+        + _clean_v3_hook("claude"),
+    )
+    result = _run(
+        consumer,
+        ["--issues", "33"],
+        issues=[_issue(33)],
+        config=_config_v3(tmp_path, claude_review_hook=claude),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "retry: hook-ended-without-result" in result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex\n") == 1
+    assert events.count("claude-attempt\n") == 2
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=claude round=1" in comments
+    assert "round=2" not in comments
+    log_dir = next((tmp_path / "logs").glob("*-issue-33-*"))
+    phases = [
+        json.loads(line)
+        for line in (log_dir / "phases.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(event["event"] == "retry" for event in phases)
+
+
+def test_review_hook_that_ends_without_a_result_twice_stops_categorized(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "34"],
+        issues=[_issue(34)],
+        config=_config_v3(
+            tmp_path,
+            claude_review_hook=_counting_hook("claude", "echo 'suite still running'; exit 0"),
+        ),
+        timeout=90,
+    )
+    assert result.returncode != 0
+    assert "valid contract v3 result" in result.stderr
+    assert "Stop category: no-result/hook-ended-early" in result.stderr
+    assert "suite still running" in result.stderr
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex\n") == 1
+    assert events.count("claude-attempt\n") == 2
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+@pytest.mark.parametrize("trace", ["push", "finding"])
+def test_review_hook_that_mutated_before_ending_without_a_result_is_not_retried(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, trace: str
+) -> None:
+    if trace == "push":
+        body = (
+            "printf 'fix\\n' > early-fix.txt; git add early-fix.txt; "
+            "git commit -m 'fix: early'; \"$AGENT_LOOP_REVIEW_PUSH_HELPER\"; exit 0"
+        )
+    else:
+        body = (
+            "jq -n '[{id:\"THREAD-EARLY\",isResolved:false,"
+            "repository:{nameWithOwner:\"fixture/consumer\"},pullRequest:{number:1},"
+            "comments:{nodes:[{body:\"Finding.\",databaseId:77,author:{login:\"tester\"}}],"
+            "pageInfo:{hasNextPage:false}}}]' > \"$AGENT_STATE_DIR/review-threads.json\"; exit 0"
+        )
+    result = _run(
+        consumer,
+        ["--issues", "35"],
+        issues=[_issue(35)],
+        config=_config_v3(tmp_path, claude_review_hook=_counting_hook("claude", body)),
+        timeout=90,
+    )
+    assert result.returncode != 0
+    assert "retry: hook-ended-without-result" not in result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("claude-attempt\n") == 1
+
+
 def test_v3_clean_results_attest_and_converge(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -776,6 +887,462 @@ def test_batch_resume_rejects_a_child_checkpoint_for_another_issue(
     preserved = json.loads(batch_file.read_text(encoding="utf-8"))
     assert preserved["cursor"] == 0
     assert preserved["issues"][0]["status"] == "active"
+
+
+def _ends_early_for(issue: int) -> str:
+    return (
+        f'if [ "$AGENT_LOOP_ISSUE_ID" = {issue} ]; then echo "suite still running"; exit 0; fi; '
+        + _clean_v3_hook("claude")
+    )
+
+
+def test_park_mode_parks_a_resumable_failure_and_its_dependent_then_finishes_the_lane(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # One issue whose Claude pass keeps ending without a result used to halt
+    # the lane with every later issue unstarted.
+    result = _run(
+        consumer,
+        ["--issues", "50,51,52", "--iterations", "3"],
+        issues=[_issue(50), _issue(51, "Depends on #50"), _issue(52)],
+        config=_config_v3(
+            tmp_path, claude_review_hook=_ends_early_for(50), batch_on_issue_failure="park"
+        ),
+        extra_env={"AGENT_READY_BLOCKERS": json.dumps({"51": [50]})},
+        timeout=300,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 3, output
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["parked", "parked", "finalized"]
+    assert batch["issues"][0]["stopCategory"] == "no-result/hook-ended-early"
+    assert batch["issues"][1]["stopCategory"] == "blocked-by-parked"
+    child = batch["issues"][0]["childRunState"]
+    assert "#50 parked (no-result/hook-ended-early): '" in output
+    assert f"--resume-run '{child}'" in output
+    assert "#51 parked (blocked-by-parked)" in output
+    assert not (consumer[3] / "claimed-51").exists()
+    child_state = json.loads(Path(child).read_text(encoding="utf-8"))
+    assert Path(child_state["worktree"]).exists()
+
+
+def test_failed_resumed_batch_child_can_be_parked_before_starting_the_next_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    options = {
+        "worker_hook": _PER_ISSUE_WORKER,
+        "claude_review_hook": _ends_early_for(80),
+    }
+    first = _run(
+        consumer,
+        ["--issues", "80,81", "--iterations", "2"],
+        issues=[_issue(80), _issue(81)],
+        config=_config_v3(tmp_path, **options),
+        timeout=120,
+    )
+    assert first.returncode == 1, first.stderr + first.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    resumed = _run(
+        consumer,
+        ["--resume-batch", str(batch_file), "--iterations", "2"],
+        issues=[_issue(80, assigned=True), _issue(81)],
+        config=_config_v3(tmp_path, **options, batch_on_issue_failure="park"),
+        timeout=120,
+    )
+    assert resumed.returncode == 3, resumed.stderr + resumed.stdout
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["parked", "finalized"]
+
+
+@pytest.mark.parametrize("selection_flag", ["--include-assigned", "--resume"])
+def test_parking_preserves_assigned_issue_selection(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, selection_flag: str
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "90,91", "--iterations", "2", selection_flag],
+        issues=[_issue(90), _issue(91, assigned=True)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook=_PER_ISSUE_WORKER,
+            claude_review_hook=_ends_early_for(90),
+            batch_on_issue_failure="park",
+        ),
+        timeout=120,
+    )
+    assert result.returncode == 3, result.stderr + result.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["parked", "finalized"]
+
+
+def test_park_mode_still_stops_on_an_uncertain_push(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The pass pushed a commit and then ended without a result: the remote no
+    # longer matches the checkpoint and no result explains the move.
+    claude = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 53 ]; then '
+        "printf 'fix\\n' > early-fix.txt; git add early-fix.txt; "
+        "git commit -m 'fix: early'; \"$AGENT_LOOP_REVIEW_PUSH_HELPER\"; exit 0; fi; "
+        + _clean_v3_hook("claude")
+    )
+    result = _run(
+        consumer,
+        ["--issues", "53,54", "--iterations", "2"],
+        issues=[_issue(53), _issue(54)],
+        config=_config_v3(tmp_path, claude_review_hook=claude, batch_on_issue_failure="park"),
+        timeout=120,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (
+        "Batch issue #53 was not parked: its head moved past the checkpoint without a matching review result"
+        in result.stderr
+    )
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["active", "pending"]
+
+
+def test_stop_mode_is_the_default_and_does_not_park(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "55,56", "--iterations", "2"],
+        issues=[_issue(55), _issue(56)],
+        config=_config_v3(tmp_path, claude_review_hook=_ends_early_for(55)),
+        timeout=120,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "parked" not in (result.stdout + result.stderr).lower()
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["active", "pending"]
+
+
+_PER_ISSUE_WORKER = (
+    "printf 'worker\\n' >> \"$EVENT_LOG\"; "
+    'printf "%s\\n" "$AGENT_LOOP_ISSUE_ID" > "result-$AGENT_LOOP_ISSUE_ID.txt"; '
+    'git add "result-$AGENT_LOOP_ISSUE_ID.txt"; git commit -m "fix: issue $AGENT_LOOP_ISSUE_ID"'
+)
+
+
+def test_merged_to_base_gate_still_holds_a_dependent_batch_issue(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "62,63", "--iterations", "2"],
+        issues=[_issue(62), _issue(63, "Depends on #62")],
+        config=_config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="merged-to-base"),
+        timeout=180,
+    )
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "Ordered batch stopped at dependency-blocked issue #63" in result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["finalized", "pending"]
+    assert "--ignore-blocker" not in (consumer[3] / "ready-args.log").read_text(encoding="utf-8")
+
+
+def test_park_mode_parks_an_issue_whose_dependency_bailed(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 64 ]; then '
+        "printf 'agent-bail: spec-gap\\n' > \"$AGENT_LOOP_HANDOFF_FILE\"; exit 0; fi; "
+        + _PER_ISSUE_WORKER
+    )
+    result = _run(
+        consumer,
+        ["--issues", "64,65", "--iterations", "2"],
+        issues=[_issue(64), _issue(65, "Depends on #64")],
+        config=_config_v3(
+            tmp_path, worker_hook=worker, dependency_gate="merged-to-base",
+            batch_on_issue_failure="park",
+        ),
+        extra_env={"AGENT_READY_BLOCKERS": json.dumps({"65": [64]})},
+        timeout=120,
+    )
+    assert result.returncode == 3, result.stderr + result.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["bailed", "parked"]
+    assert batch["issues"][1]["stopCategory"] == "blocked-by-dependency"
+    assert not (consumer[3] / "claimed-65").exists()
+    assert not any((tmp_path / "worktrees").glob("*-issue-65-*"))
+
+
+@pytest.mark.parametrize(
+    ("body", "warns"),
+    [
+        ("Queued after #66 (same component).", True),
+        ("Depends on #66\nQueued after #66 (same component).", False),
+        ("Touches the same component as #660.", False),
+    ],
+)
+def test_batch_preflight_warns_on_a_prose_only_dependency(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, body: str, warns: bool
+) -> None:
+    bail_all = "printf 'agent-bail: spec-gap\\n' > \"$AGENT_LOOP_HANDOFF_FILE\"; exit 0"
+    result = _run(
+        consumer,
+        ["--issues", "66,67", "--iterations", "2"],
+        issues=[_issue(66), _issue(67, body)],
+        config=_config_v3(tmp_path, worker_hook=bail_all),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert ("Issue #67 mentions earlier batch issue #66 without 'Depends on #66'" in result.stderr) == warns
+
+
+def test_every_recovery_message_names_a_known_stop_category() -> None:
+    # A stop without a category leaves a supervisor guessing from glyph lines.
+    text = AGENT_LOOP.read_text(encoding="utf-8")
+    declared = re.search(r'^STOP_CATEGORIES="([^"]+)"', text, re.M)
+    assert declared is not None
+    categories = set(declared.group(1).split())
+    lines = text.splitlines()
+    calls = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if (
+            "recovery_message " not in line
+            or stripped.startswith("#")
+            or stripped.startswith("recovery_message()")
+        ):
+            continue
+        match = re.search(r'recovery_message "((?:[^"\\]|\\.)*)"(.*)$', line)
+        assert match is not None, f"line {index + 1} passes a non-literal reason: {stripped}"
+        rest = match.group(2)
+        if rest.strip() == "\\":
+            rest = " " + lines[index + 1].strip()
+        category = re.match(r"\s+([a-z][a-z0-9/-]*)", rest)
+        assert category is not None and category.group(1) in categories, (
+            f"line {index + 1} has no known stop category: {stripped}"
+        )
+        calls += 1
+    assert calls > 100
+
+
+def test_parkable_stop_categories_are_known_and_resumable() -> None:
+    text = AGENT_LOOP.read_text(encoding="utf-8")
+    stop = re.search(r'^STOP_CATEGORIES="([^"]+)"', text, re.M)
+    parkable = re.search(r'^PARKABLE_STOP_CATEGORIES="([^"]+)"', text, re.M)
+    assert stop is not None and parkable is not None
+    assert set(parkable.group(1).split()) <= set(stop.group(1).split())
+    # Resume restores the round cap and the review deadline from run state,
+    # so a run parked on either would stop the same way again.
+    assert not set(parkable.group(1).split()) & {"review-cap-exhausted", "budget-exhausted"}
+
+
+_SUPERVISION_TABLE_JQ = r"""
+[.[] | select(.issue != null)] | group_by(.issue)[] as $events
+| ($events | map(.event)) as $types
+| [ ($events[0].issue | tostring),
+    (if ($types | index("pr_ready")) then "finalized"
+     elif ($types | index("bail")) then "bailed"
+     elif ($types | index("parked")) then "parked"
+     else "stopped" end),
+    ([$events[] | select(.event == "pass_result") | .round] | max // 0 | tostring),
+    ([$events[] | select(.event == "phase_end") | .seconds] | add // 0 | tostring),
+    ([$events[] | select(.event == "stop") | .category] | last // ""),
+    ([$events[] | select(.event == "parked") | .resumeCommand] | last // "")
+  ] | @tsv
+"""
+
+_EVENT_KEYS = {
+    "event", "runTag", "epoch", "issue", "index", "resumed", "round", "runState",
+    "phase", "seconds", "exit", "engine", "status", "classification", "before",
+    "after", "reason", "category", "resumable", "resumeCommand",
+    "hookPhase", "hookLog", "kind", "ref", "pr", "head", "handoffPath",
+    "issues", "configSha256", "finalized", "bailed", "parked",
+}
+
+
+def test_batch_event_stream_builds_a_per_issue_supervision_table(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 71 ]; then '
+        "printf 'agent-bail: spec-gap\\n' > \"$AGENT_LOOP_HANDOFF_FILE\"; exit 0; fi; "
+        + _PER_ISSUE_WORKER
+    )
+    result = _run(
+        consumer,
+        ["--issues", "72,70,71", "--iterations", "3"],
+        issues=[_issue(72), _issue(70), _issue(71)],
+        config=_config_v3(
+            tmp_path, worker_hook=worker, claude_review_hook=_ends_early_for(72),
+            batch_on_issue_failure="park",
+        ),
+        timeout=300,
+    )
+    assert result.returncode == 3, result.stdout + result.stderr
+    events_file = next((tmp_path / "logs").glob("*-batch-*-events.jsonl"))
+    table = subprocess.run(
+        ["jq", "-rs", _SUPERVISION_TABLE_JQ, str(events_file)],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    rows = {row[0]: row for row in (line.split("\t") for line in table.splitlines())}
+    assert rows["70"][1:3] == ["finalized", "1"] and int(rows["70"][3]) >= 0 and rows["70"][4] == ""
+    assert rows["71"][1] == "bailed"
+    assert rows["72"][1] == "parked"
+    assert rows["72"][4] == "no-result/hook-ended-early"
+    assert "--resume-run" in rows["72"][5]
+    events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    starts = [event for event in events if event["event"] == "batch_start"]
+    assert starts[0]["issues"] == [72, 70, 71] and starts[0]["resumed"] is False
+    assert any(event["resumed"] for event in starts[1:])
+    end = [event for event in events if event["event"] == "batch_end"][-1]
+    assert (end["exit"], end["finalized"], end["bailed"], end["parked"]) == (3, [70], [71], [72])
+    assert {"retry", "pass_result", "pr_ready", "bail", "parked", "stop"} <= {
+        event["event"] for event in events
+    }
+
+
+def test_stop_events_name_the_hook_log_and_carry_no_free_text(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    noisy = (
+        "for i in $(seq 1 60); do echo \"progress line $i\"; done; "
+        "printf 'x%.0s' $(seq 1 900); echo; exit 0"
+    )
+    issue = _issue(74, "BODY-SENTINEL private requirement")
+    issue["title"] = "TITLE-SENTINEL"
+    result = _run(
+        consumer,
+        ["--issues", "74"],
+        issues=[issue],
+        config=_config_v3(tmp_path, claude_review_hook=noisy, output_max_lines=10),
+        timeout=90,
+    )
+    assert result.returncode != 0
+    events_file = next((tmp_path / "logs").glob("*-run-*-events.jsonl"))
+    text = events_file.read_text(encoding="utf-8")
+    assert "SENTINEL" not in text
+    assert "progress line" not in text
+    events = [json.loads(line) for line in text.splitlines()]
+    assert all(set(event) <= _EVENT_KEYS for event in events), [
+        sorted(set(event) - _EVENT_KEYS) for event in events
+    ]
+    stop = [event for event in events if event["event"] == "stop"][-1]
+    assert stop["category"] == "no-result/hook-ended-early"
+    assert stop["resumable"] is True and "--resume-run" in stop["resumeCommand"]
+    assert "progress line 60" in Path(stop["hookLog"]).read_text(encoding="utf-8")
+    assert stop["hookPhase"].startswith("configured Claude review hook")
+
+
+def test_budget_spent_before_post_pass_validation_stops_as_budget_exhausted(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The pass commits after using most of the budget, so its validation finds
+    # less than the per-pass floor left. Resume restores that deadline, so a
+    # parkable validation-red here would park an issue that cannot resume.
+    codex = "sleep 12; " + _minor_committed_v3_hook("codex")
+    result = _run(
+        consumer,
+        ["--issues", "76"],
+        issues=[_issue(76)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook=codex,
+            review_timeout_seconds=130,
+            hook_timeout_seconds=60,
+        ),
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "Stop category: budget-exhausted" in result.stderr, result.stderr
+    assert "validation-red" not in result.stderr
+
+
+def test_a_later_issue_stop_does_not_name_the_previous_issue_run_state(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    validation = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 78 ]; then exit 1; fi; '
+        "printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "77,78", "--iterations", "2"],
+        issues=[_issue(77), _issue(78)],
+        config=_config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, validation_hook=validation),
+        timeout=180,
+    )
+    assert result.returncode != 0
+    events_file = next((tmp_path / "logs").glob("*-batch-*-events.jsonl"))
+    events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    assert [event["issue"] for event in events if event["event"] == "pr_ready"] == [77]
+    stop = [event for event in events if event["event"] == "stop"][-1]
+    assert (stop["issue"], stop["category"]) == (78, "validation-red")
+    assert "--resume-batch" in stop["resumeCommand"]
+    assert "--resume-run" not in stop["resumeCommand"]
+    assert "Resume review with" not in result.stderr
+
+
+def test_resumed_run_names_its_issue_and_emits_a_resumed_start(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
+    )
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook)
+    first = _run(consumer, ["--issues", "75"], issues=[_issue(75)], config=config, timeout=60)
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(75, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "Issue #75 (resumed, round 1)" in resumed.stdout
+    events = [
+        json.loads(line)
+        for line in (state_file.parent / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    start = next(event for event in events if event["event"] == "issue_start")
+    assert (start["issue"], start["resumed"], start["round"]) == (75, True, 1)
+    assert any(event["event"] == "pr_ready" and event["issue"] == 75 for event in events)
+
+
+def test_event_stream_refuses_to_follow_a_symlink(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
+    )
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook)
+    first = _run(consumer, ["--issues", "76"], issues=[_issue(76)], config=config, timeout=60)
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+    target = tmp_path / "elsewhere.jsonl"
+    target.write_text("", encoding="utf-8")
+    (state_file.parent / "events.jsonl").symlink_to(target)
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(76, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "event stream is not a private regular file" in resumed.stderr
+    assert target.read_text(encoding="utf-8") == ""
 
 
 def test_batch_iteration_cap_pauses_with_durable_cursor(
@@ -1150,6 +1717,212 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
 
 
+def test_interrupted_claude_leg_below_the_cap_resumes_in_the_same_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Below the round cap, resuming used to start a new round and re-run Codex
+    # against the head its round-1 result already covered.
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
+    )
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook, review_max_rounds=4)
+
+    first = _run(
+        consumer, ["--issues", "96"], issues=[_issue(96)], config=config, timeout=60
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert (state["round"], state["reviewEngine"]) == (1, "claude")
+    fail_marker.unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(96, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "resuming its remaining leg in the same round" in resumed.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex\n") == 1
+    assert events.count("claude\n") == 1
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=claude round=1" in comments
+    assert "round=2" not in comments
+    assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+
+
+def test_interrupted_claude_leg_restarts_at_codex_when_the_base_advanced(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The same-round shortcut relies on the Codex result covering the head the
+    # Claude leg will read. Integrating an advanced base moves that head.
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
+    )
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook, review_max_rounds=4)
+    first = _run(
+        consumer, ["--issues", "97"], issues=[_issue(97)], config=config, timeout=60
+    )
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+
+    clone = tmp_path / "base-advance"
+    _run_git("clone", str(consumer[1]), str(clone))
+    _run_git("config", "user.name", "Test", cwd=clone)
+    _run_git("config", "user.email", "test@example.invalid", cwd=clone)
+    _run_git("config", "commit.gpgsign", "false", cwd=clone)
+    (clone / "advanced-base.txt").write_text("advanced\n", encoding="utf-8")
+    _run_git("add", "advanced-base.txt", cwd=clone)
+    _run_git("commit", "-m", "chore: advance base", cwd=clone)
+    _run_git("push", "origin", "main", cwd=clone)
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(97, assigned=True)],
+        config=config,
+        timeout=90,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "Base advanced since the checkpoint" in resumed.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex\n") == 2
+    assert events.count("claude\n") == 1
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=codex round=2" in comments
+    assert "local-review-pass:v3 engine=claude round=2" in comments
+
+
+_STRANDING_CLAUDE_HOOK = (
+    # First run: commit a fix and stop before publishing it, as a pass killed
+    # mid-push does. Later runs review cleanly.
+    'if [ -e "$AGENT_STATE_DIR/strand-claude" ]; then '
+    "printf 'fix\\n' > stranded-fix.txt; git add stranded-fix.txt; "
+    "git commit -m 'test: stranded fix'; exit 0; fi; "
+    + _clean_v3_hook("claude")
+)
+
+
+def _strand_a_claude_commit(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, issue: int
+) -> tuple[Path, dict[str, object], str, str]:
+    (consumer[3] / "strand-claude").touch()
+    config = _config_v3(tmp_path, claude_review_hook=_STRANDING_CLAUDE_HOOK)
+    first = _run(consumer, ["--issues", str(issue)], issues=[_issue(issue)], config=config, timeout=60)
+    assert first.returncode != 0
+    assert "push checkpoint did not match its final head" in first.stderr
+    (consumer[3] / "strand-claude").unlink()
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    stranded = _run_git("rev-parse", "HEAD", cwd=Path(str(state["worktree"]))).stdout.strip()
+    assert stranded != state["headSha"]
+    return state_file, state, stranded, config
+
+
+def test_resume_keeps_stranded_review_commits_on_a_rescue_ref_and_replays_the_pass(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    state_file, state, stranded, config = _strand_a_claude_commit(consumer, tmp_path, 98)
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(98, assigned=True)],
+        config=config,
+        timeout=90,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "recovered: stranded-review-commits -> refs/agent-loop/rescue/" in resumed.stdout
+    assert "resuming its remaining leg in the same round" in resumed.stdout
+    ref = f"refs/agent-loop/rescue/{state['runId']}/claude-r1"
+    # The worktree was removed after publication; the ref lives in the shared
+    # repository and still holds the stranded commit.
+    assert not Path(str(state["worktree"])).exists()
+    assert _run_git("rev-parse", ref, cwd=consumer[0]).stdout.strip() == stranded
+    assert f"Rescued review commits kept at {ref}" in resumed.stdout
+    final = json.loads(state_file.read_text(encoding="utf-8"))
+    assert final["phase"] == "finalized"
+    assert final["headSha"] == state["headSha"]
+
+
+@pytest.mark.parametrize("divergence", ["remote-ahead", "ledger-names-stranded-commit"])
+def test_resume_refuses_stranded_commits_it_cannot_prove_unpublished(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, divergence: str
+) -> None:
+    state_file, state, stranded, config = _strand_a_claude_commit(consumer, tmp_path, 99)
+    if divergence == "remote-ahead":
+        clone = tmp_path / "branch-clone"
+        _run_git("clone", "--branch", str(state["branch"]), str(consumer[1]), str(clone))
+        _run_git("config", "user.name", "Test", cwd=clone)
+        _run_git("config", "user.email", "test@example.invalid", cwd=clone)
+        _run_git("config", "commit.gpgsign", "false", cwd=clone)
+        (clone / "elsewhere.txt").write_text("elsewhere\n", encoding="utf-8")
+        _run_git("add", "elsewhere.txt", cwd=clone)
+        _run_git("commit", "-m", "chore: pushed elsewhere", cwd=clone)
+        _run_git("push", "origin", f"HEAD:refs/heads/{state['branch']}", cwd=clone)
+        expected = "Draft PR state does not match the recovery checkpoint"
+    else:
+        threads = [{
+            "id": "THREAD-STRANDED",
+            "isResolved": True,
+            "repository": {"nameWithOwner": "fixture/consumer"},
+            "pullRequest": {"number": 1},
+            "comments": {
+                "nodes": [{"body": f"Fixed in `{stranded[:9]}`.", "databaseId": 5}],
+                "pageInfo": {"hasNextPage": False},
+            },
+        }]
+        (consumer[3] / "review-threads.json").write_text(json.dumps(threads), encoding="utf-8")
+        expected = "could not be recovered safely"
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(99, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert resumed.returncode != 0
+    assert expected in resumed.stderr
+    worktree = Path(str(state["worktree"]))
+    assert _run_git("rev-parse", "HEAD", cwd=worktree).stdout.strip() == stranded
+    refs = _run_git("for-each-ref", "refs/agent-loop/rescue", cwd=consumer[0]).stdout
+    assert refs == ""
+
+
+def test_park_mode_parks_a_stranded_review_commit(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    claude = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 57 ]; then '
+        "printf 'fix\\n' > stranded-fix.txt; git add stranded-fix.txt; "
+        "git commit -m 'test: stranded fix'; exit 0; fi; "
+        + _clean_v3_hook("claude")
+    )
+    result = _run(
+        consumer,
+        ["--issues", "57,58", "--iterations", "2"],
+        issues=[_issue(57), _issue(58)],
+        config=_config_v3(tmp_path, claude_review_hook=claude, batch_on_issue_failure="park"),
+        timeout=180,
+    )
+    assert result.returncode == 3, result.stdout + result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["parked", "finalized"]
+    assert batch["issues"][0]["stopCategory"] == "push-checkpoint-mismatch"
+
+
 def test_run_records_wrapper_pid_and_phase_timing(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1231,6 +2004,66 @@ def test_unchanged_head_is_validated_once_then_only_at_the_final_gate(
     assert events.count("validate\n") == 2
     assert result.stdout.count("validation skipped") == 3
     assert "final-reviewed-head validation skipped" not in result.stdout
+
+
+def test_wrapper_validation_is_recorded_as_the_gating_run_for_the_reviewed_head(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Under agent-loop the engines run focused checks and the wrapper's
+    # validation hook is the gating run. Its evidence must name the command
+    # and the exact head it ran on, including the head that is marked ready.
+    result = _run(
+        consumer,
+        ["--issues", "23"],
+        issues=[_issue(23)],
+        config=_config_v3(tmp_path),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    log_dir = next((tmp_path / "logs").glob("*-issue-23-*"))
+    records = [
+        json.loads(line)
+        for line in (log_dir / "validation.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    final_head = json.loads((log_dir / "run-state.json").read_text(encoding="utf-8"))["headSha"]
+    by_label = {record["label"]: record for record in records}
+    assert by_label["final-reviewed-head"]["head"] == final_head
+    assert by_label["final-reviewed-head"]["outcome"] == "passed"
+    assert by_label["codex-review-round-1"]["outcome"] == "reused"
+    assert by_label["codex-review-round-1"]["head"] == final_head
+    assert all(record["command"] == "validation_hook" for record in records)
+    assert len({record["commandSha256"] for record in records}) == 1
+    body = (log_dir / "pr-body-final.md").read_text(encoding="utf-8")
+    assert f"validation hook passed on reviewed head `{final_head}`" in body
+
+
+def test_red_post_pass_validation_blocks_convergence(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    validation = (
+        'if [ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1.result.json" ]; then exit 71; fi'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "24"],
+        issues=[_issue(24)],
+        config=_config_v3(
+            tmp_path,
+            validation_hook=validation,
+            codex_review_hook=_minor_committed_v3_hook("codex"),
+        ),
+        timeout=90,
+    )
+    assert result.returncode != 0
+    assert "Validation after the configured Codex review hook failed in review round 1" in result.stderr
+    assert not (consumer[3] / "pr-ready").exists()
+    log_dir = next((tmp_path / "logs").glob("*-issue-24-*"))
+    records = [
+        json.loads(line)
+        for line in (log_dir / "validation.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[-1]["label"] == "codex-review-round-1"
+    assert (records[-1]["outcome"], records[-1]["exit"]) == ("failed", 71)
 
 
 def _minor_committed_v3_hook(engine: str) -> str:
@@ -1969,6 +2802,48 @@ def test_hooks_and_default_worker_do_not_inherit_the_wrapper_stdin(
     assert result.returncode == 0, result.stderr + result.stdout
 
 
+@pytest.mark.parametrize("inherited", [None, "0", "1"])
+def test_hooks_and_default_worker_run_background_tasks_in_the_foreground(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    inherited: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A one-shot Claude CLI that moves a long command to the background can
+    # end its turn with it still running and exit 0 with no result. The
+    # wrapper forces foreground execution for every hook, even over an
+    # inherited 0.
+    record = 'printf "%s\\n" "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-unset}" >> "$AGENT_STATE_DIR/background.log"; '
+    claude = consumer[2] / "claude"
+    _write_executable(
+        claude,
+        "#!/usr/bin/env bash\n"
+        + record
+        + "printf 'done\\n' > result.txt\ngit add result.txt\ngit commit -m 'fix: worker'\n",
+    )
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", raising=False)
+    extra_env = {} if inherited is None else {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": inherited}
+    result = _run(
+        consumer,
+        ["--issues", "19"],
+        issues=[_issue(19)],
+        config=_config_v3(
+            tmp_path,
+            worker_hook="",
+            validation_hook=record + "true",
+            codex_review_hook=record + _clean_v3_hook("codex"),
+            claude_review_hook=record + _clean_v3_hook("claude"),
+        ),
+        extra_env=extra_env,
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    values = (consumer[3] / "background.log").read_text(encoding="utf-8").split()
+    # worker, worker validation, codex, claude, final validation
+    assert len(values) >= 5
+    assert set(values) == {"1"}
+
+
 def test_capacity_failure_uses_fallback_model(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -2058,6 +2933,71 @@ def test_worker_effort_must_be_a_single_flag_value(
     assert result.returncode != 0
     assert "worker_effort must be a single flag value" in result.stderr
     assert not (consumer[3] / "claimed-17").exists()
+
+
+_HANDOFF = (
+    "printf 'Classification: agent-bail: spec-gap (bucket A)\\n"
+    "Requested labels: add agent-bail: spec-gap, remove dev: agent\\n' "
+    '> "$AGENT_LOOP_HANDOFF_FILE"'
+)
+
+
+@pytest.mark.parametrize("exit_status", [0, 3])
+def test_worker_handoff_is_a_bail_whatever_the_exit_status(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, exit_status: int
+) -> None:
+    worker = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 40 ]; then '
+        f"{_HANDOFF}; exit {exit_status}; fi; "
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf done > result.txt; "
+        "git add result.txt; git commit -m 'fix: worker'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "40,41", "--iterations", "2"],
+        issues=[_issue(40), _issue(41)],
+        config=_config_v3(tmp_path, worker_hook=worker),
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "agent-bail: spec-gap" in result.stdout
+    assert "produced no local commit" not in result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["bailed", "finalized"]
+    assert batch["issues"][0]["classification"] == "spec-gap"
+    log_dir = next((tmp_path / "logs").glob("*-issue-40-*"))
+    assert (log_dir / "worker-attempt-1.log").exists()
+    assert not (log_dir / "worker-attempt-2.log").exists()
+    assert str(log_dir / "operator-handoff.md") in result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    issue_40 = [line for line in gh_log.splitlines() if line.startswith("issue edit 40")]
+    assert issue_40 == ["issue edit 40 --add-assignee @me", "issue edit 40 --remove-assignee @me"]
+    assert "--add-label" not in gh_log and "--remove-label" not in gh_log
+    assert "issue comment" not in gh_log
+    assert not any((tmp_path / "worktrees").glob("*-issue-40-*"))
+
+
+def test_worker_handoff_with_committed_work_is_an_ambiguous_bail(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    worker = (
+        "printf done > result.txt; git add result.txt; git commit -m 'fix: worker'; "
+        f"{_HANDOFF}"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "42,43", "--iterations", "2"],
+        issues=[_issue(42), _issue(43)],
+        config=_config_v3(tmp_path, worker_hook=worker),
+        timeout=60,
+    )
+    assert result.returncode != 0
+    assert "the bail is ambiguous" in result.stderr
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    assert [row["status"] for row in batch["issues"]] == ["active", "pending"]
+    assert any((tmp_path / "worktrees").glob("*-issue-42-*"))
 
 
 def test_timeout_retries_only_an_unchanged_worktree(
@@ -2387,11 +3327,16 @@ def test_persistent_logs_are_owner_only(
         config=_config(tmp_path),
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    log_dirs = list((tmp_path / "logs").iterdir())
+    entries = list((tmp_path / "logs").iterdir())
+    log_dirs = [entry for entry in entries if entry.is_dir()]
     assert len(log_dirs) == 1
     assert stat.S_IMODE(log_dirs[0].stat().st_mode) == 0o700
     for log_file in log_dirs[0].iterdir():
         assert stat.S_IMODE(log_file.stat().st_mode) & 0o077 == 0
+    # The run's event stream sits beside the issue log directory.
+    streams = [entry for entry in entries if not entry.is_dir()]
+    assert [entry.name.endswith("-events.jsonl") for entry in streams] == [True]
+    assert stat.S_IMODE(streams[0].stat().st_mode) == 0o600
 
 
 def test_untracked_leftover_does_not_abort_batch_after_publish(

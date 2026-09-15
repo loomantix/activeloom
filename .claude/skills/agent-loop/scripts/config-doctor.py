@@ -107,6 +107,13 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         raise DoctorError("worker prompt must require a local commit and forbid push")
     if "AGENT_LOOP_ISSUE_TITLE" not in instructions or "AGENT_LOOP_ISSUE_BODY" not in instructions:
         raise DoctorError("worker instructions must describe wrapper-provided issue context")
+    if "AGENT_LOOP_HANDOFF_FILE" not in prompt + "\n" + instructions:
+        # The wrapper recognizes a bail by the handoff file. A worker told to
+        # write its handoff anywhere else is reported as producing no commit.
+        _warn(
+            "worker prompt and instructions do not name AGENT_LOOP_HANDOFF_FILE; a worker bail "
+            "that writes its handoff elsewhere is reported as 'produced no local commit'"
+        )
 
     hooks = {
         "codex": values.get("codex_review_hook", ""),
@@ -147,6 +154,18 @@ def doctor(project: Path, claude_effort: str | None) -> None:
             "codex_review_hook runs codex exec without '</dev/null'; the wrapper closes "
             "stdin, but the same command run by hand with an open stdin blocks until its timeout"
         )
+    # The wrapper exports CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 for every hook.
+    # A hook that sets it back or unsets it lets a one-shot Claude CLI end its
+    # turn with a command still running, which exits 0 without a result.
+    for key in ("codex_review_hook", "claude_review_hook", "worker_hook", "setup_hook", "validation_hook"):
+        hook = values.get(key, "")
+        if re.search(r"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=(?!1(?:\s|;|$))", hook) or re.search(
+            r"(?:\bunset\s+|\benv\s+(?:\S+\s+)*-u\s*)CLAUDE_CODE_DISABLE_BACKGROUND_TASKS\b", hook
+        ):
+            _warn(
+                f"{key} overrides CLAUDE_CODE_DISABLE_BACKGROUND_TASKS; the wrapper sets it to 1 so a "
+                "Claude CLI cannot end its turn with a background command still running"
+            )
     if not re.search(r"(?:^|[ /])deepcritique(?:[ $\"']|$)", hooks["codex"]):
         raise DoctorError("codex_review_hook must invoke deepcritique")
     if not re.search(r"(?:^|[ /])deepcritique(?:[ $\"']|$)", hooks["claude"]):

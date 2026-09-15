@@ -142,6 +142,27 @@ def test_doctor_rejects_worker_instructions_that_require_masked_gh(
     assert "require masked gh" in result.stderr
 
 
+def test_doctor_warns_when_the_worker_is_not_told_where_to_write_its_handoff(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+    assert "AGENT_LOOP_HANDOFF_FILE" not in result.stderr
+
+    for path in (
+        project / ".claude/skills/agent-loop/prompt.txt",
+        project / "agent-loop-instructions.md",
+    ):
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("AGENT_LOOP_HANDOFF_FILE", "a local file"),
+            encoding="utf-8",
+        )
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+    assert "do not name AGENT_LOOP_HANDOFF_FILE" in result.stderr
+
+
 def test_doctor_rejects_incompatible_review_push_protocol(tmp_path: Path) -> None:
     project = _project(tmp_path)
     review_push = project / ".claude/skills/agent-loop/scripts/review-push.sh"
@@ -207,6 +228,33 @@ def test_doctor_warns_when_a_codex_exec_hook_leaves_stdin_open(tmp_path: Path) -
     result = _run(project, path_stubs=("codex", "claude"))
     assert result.returncode == 0, result.stderr
     assert "codex exec" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("override", "warns"),
+    [
+        ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=0 claude", True),
+        ("env -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS claude", True),
+        (": && unset CLAUDE_CODE_DISABLE_BACKGROUND_TASKS && claude", True),
+        ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude", False),
+    ],
+)
+def test_doctor_warns_when_a_hook_overrides_foreground_tasks(
+    tmp_path: Path, override: str, warns: bool
+) -> None:
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "claude_review_hook = claude", f"claude_review_hook = {override}"
+        ),
+        encoding="utf-8",
+    )
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+    assert (
+        "claude_review_hook overrides CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" in result.stderr
+    ) == warns
 
 
 def test_doctor_ties_worker_effort_to_the_claude_effort_policy(tmp_path: Path) -> None:

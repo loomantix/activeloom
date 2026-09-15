@@ -56,7 +56,10 @@ review_timeout_seconds = 7200
 # The wrapper runs every hook and the default worker with stdin from /dev/null
 # (`codex exec` reads stdin to EOF when it is not a TTY and would otherwise
 # block for the whole pass on an inherited pipe); the trailing redirect keeps a
-# hook safe when it is pasted and run outside the wrapper.
+# hook safe when it is pasted and run outside the wrapper. It also exports
+# CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 for every hook, so a Claude CLI cannot
+# end its turn while a command it backgrounded is still running; do not
+# override it in a hook.
 #
 # Pick per aspect, not globally: the two review passes dominate a run's wall
 # clock and the worker is a small fraction of it, so reviewer choice dominates
@@ -105,6 +108,14 @@ retry_delay_seconds = 15
 # `ready` preserves legacy open/closed dependency behavior. `merged-to-base`
 # requires dependency PR merge commits to be present in origin/<base>.
 dependency_gate = ready
+
+# What an ordered batch (`--issues N,N,...`) does when one issue fails. `stop`
+# halts the batch there. `park` records a failure the wrapper can verify is
+# safely resumable (clean worktree, local/remote/PR heads that agree with its
+# checkpoint, a resumable stop category) as parked, continues with the next
+# issue, parks issues that depend on a parked one without starting them, and
+# exits 3 listing the resume commands.
+batch_on_issue_failure = stop
 
 branch_prefix = agent-loop
 worktree_root = /tmp/agent-loop-worktrees
