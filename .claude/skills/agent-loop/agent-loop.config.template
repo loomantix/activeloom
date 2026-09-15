@@ -13,7 +13,8 @@ base_branch =
 setup_hook =
 
 # Run after the worker, after each local review, and after fresh-base merge.
-# Prefer targeted checks and avoid unbounded full-suite output.
+# This is the gating run: use the repository's declared review gate, bounded
+# and with concise output, not a narrower targeted check.
 validation_hook =
 
 # Version 3 hooks run only after the wrapper opens a draft PR. Each must read
@@ -33,6 +34,10 @@ validation_hook =
 # They must not force-push, merge, or invoke hosted AI reviewers.
 # Codex runs `deepcritique`; Claude runs `deepcritique` with the consumer's literal
 # effort policy (for example `claude --effort low /deepcritique ...`).
+# Ask review hooks for focused checks on their own fixes only. validation_hook
+# is the gating suite: the wrapper runs it on the exact head after every pass,
+# so a hook that also runs the full suite duplicates it and can end its turn
+# while that suite is still running.
 review_contract_version = 3
 config_doctor = true
 claude_effort_policy =
