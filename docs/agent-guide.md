@@ -39,6 +39,7 @@ Names below identify skills; use the invocation supported by the current harness
 | Clarify a design before code                 | `grill`                                    | An interview and design exercise; does not implement the feature                                        |
 | Validate a product problem or user value     | `product-grill`                            | Product discovery regardless of job title; can conclude don't build or gather evidence first            |
 | Investigate a reproducible bug               | `diagnosing-bugs`                          | Establish the symptom and a tight reproduction before changing code                                     |
+| Reduce comment bloat without changing code   | `simplify-comments`                        | Comments and docstrings only; the code fingerprint and repository gates must pass before the PR         |
 | Build a feature with architectural discovery | `feature-dev`                              | Requires a concrete user objective and repository context                                               |
 | Fill project-specific onboarding fields      | `onboard`                                  | Draft evidence-based values for confirmation; do not invent domain rules                                |
 | Manage issue dependencies and readiness      | `issues`                                   | Uses GitHub issue state; follow the command's read/write scope                                          |

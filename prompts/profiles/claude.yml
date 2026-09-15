@@ -136,6 +136,8 @@ skills:
     FM_EXTRAS: 'disable-model-invocation: true'
   review-setup:
     FM_EXTRAS: ''
+  simplify-comments:
+    FM_EXTRAS: ''
 
 # --- prompt stack ------------------------------------------------------------
 # The review prompt files this harness's telemetry identity is computed over,
