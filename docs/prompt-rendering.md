@@ -189,8 +189,10 @@ output of [`packages/review-ledger`](../packages/review-ledger/README.md), copie
 byte-for-byte into each root's `skills/critique/scripts/`, and CI's
 `Review-ledger package` job fails when any copy differs from a fresh build. The
 protocol document in `references/local-review-ledger.md` is vendored from the
-same package. Editing either is a prompt-stack input change like any other and
-advances `PROMPT_STACK_VERSION`.
+same package and is a prompt-stack input, so editing it advances
+`PROMPT_STACK_VERSION`. The bundle is deliberately outside the prompt stack (see
+`prompt_stack` in `prompts/profiles/claude.yml`), so a helper-only change does
+not.
 
 The review chain — `critique`, `deepcritique`, `refactorpass`, `reviewit`,
 `copilot-review`, and their siblings — is deliberately never single-sourced.

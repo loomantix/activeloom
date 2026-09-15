@@ -9,7 +9,7 @@ The review ledger uses an open draft pull request as a durable ledger of actor-o
 - **Strict Protocol Validation**: Deterministic v3 marker serialization, SHA-256 content hashing, sequential occurrence verification, and blocker resolution enforcement.
 - **Multi-Engine Support**: Unified contract for `codex`, `claude`, `gemini`, and `antigravity` reviewer engines.
 - **Declared Rosters & Coverage**: A pull request declares its author engine and zero, one, or two reviewer engines; coverage is then derived from attestations naming the exact current head.
-- **Published Protocol**: The engine-neutral contract every engine follows ships in the tarball at [`protocol/local-review-ledger.md`](./protocol/local-review-ledger.md), so each platform repository vendors one source of truth instead of maintaining its own copy.
+- **Vendored Protocol**: The engine-neutral contract every engine follows lives at [`protocol/local-review-ledger.md`](./protocol/local-review-ledger.md), and each harness root carries a byte-identical copy as `references/local-review-ledger.md` instead of maintaining its own.
 - **Standalone CLI & TypeScript API**: Self-contained vendored CLI, dual ESM/CJS distribution, and CLI executable (`review-ledger`).
 
 ## Building
@@ -27,7 +27,7 @@ pnpm test
 pnpm run build
 ```
 
-Most GitHub-backed commands require Node.js 18 or later, Git with the reviewed
+Most GitHub-backed commands require Node.js 24 or later, Git with the reviewed
 history available locally, and an authenticated [GitHub CLI](https://cli.github.com/)
 session. File-only result validation and `--protocol-version` do not use GitHub.
 
@@ -41,18 +41,26 @@ version in this package's `package.json`, so a vendored copy can always identify
 itself. Invoke it through `node` rather than executing it directly; the vendored
 files are committed with mode 0644.
 
-A change to this package is not finished until the bundle is rebuilt and copied
-into all three harness roots in the same pull request:
+A change to this package is not finished until the bundle is rebuilt and copied,
+with its version and integrity pins and the protocol document, into all three
+harness roots in the same pull request. From the repository root:
 
 ```bash
+built=packages/review-ledger/dist/review-ledger.bundle.js
+version="$(node -p 'require("./packages/review-ledger/package.json").version')"
+integrity="sha512-$(openssl dgst -sha512 -binary "$built" | base64 -w0)"
 for root in .claude .codex .agents; do
-  cp packages/review-ledger/dist/review-ledger.bundle.js "$root/skills/critique/scripts/review-ledger.js"
+  dir="$root/skills/critique/scripts"
+  cp "$built" "$dir/review-ledger.js"
+  printf '%s\n' "$version" > "$dir/review-ledger.version"
+  printf '%s\n' "$integrity" > "$dir/review-ledger.integrity"
+  cp packages/review-ledger/protocol/local-review-ledger.md "$root/references/local-review-ledger.md"
 done
 ```
 
-Also update `review-ledger.version` (this package's semver) and
-`review-ledger.integrity` (the bundle's sha512) beside each copy. CI rebuilds the
-bundle and fails when any vendored copy differs from the fresh build.
+CI rebuilds the bundle and fails when any vendored copy, pin, or protocol
+document differs. A protocol edit is a prompt-stack input change and also
+advances `PROMPT_STACK_VERSION`.
 
 The package's `.npmrc` keeps pnpm's virtual store at `../../node_modules/.pnpm`.
 esbuild records bundled module paths relative to the build directory, and that
@@ -421,7 +429,7 @@ between the two. Verify compatibility against the implementation you exchange
 records with rather than relying on this suite.
 
 1. **Execution**: replace `python3 <skill>/scripts/review-ledger.py ...` with
-   `review-ledger ...` or `npx @loomantix/review-ledger ...`. No Python runtime
+   `node <skill>/scripts/review-ledger.js ...` (the vendored bundle). No Python runtime
    is needed; the external Git and GitHub CLI prerequisites above still apply.
 2. **Fingerprints are supplied, not derived.** As in the Python, a fingerprint
    is a caller-chosen stable token for one root cause, passed as

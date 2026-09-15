@@ -76,7 +76,12 @@ jobs:
   # ---------------------------------------------------------------------------
   static-checks:
     name: Static checks
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    # `Review-ledger package` is not a required check, so this required job
+    # carries its verdict (last step). `!cancelled()` keeps this job running
+    # when that one fails: a job skipped by a failed `needs` reports as skipped,
+    # and a skipped required check does not block a merge.
+    needs: review-ledger
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -465,6 +470,16 @@ jobs:
       - name: Lint collapse opt-ins against their template sites
         if: '!cancelled()'
         run: python3 scripts/lint-collapse-sites.py
+
+      - name: Review-ledger package passed
+        if: '!cancelled()'
+        env:
+          RESULT: ${{ needs.review-ledger.result }}
+        run: |
+          [ "$RESULT" = success ] || {
+            echo "::error::Review-ledger package job result is '$RESULT'"
+            exit 1
+          }
   python-types-and-tests:
     name: Python types + tests
     if: github.event_name == 'push' || github.event.pull_request.draft == false
@@ -612,6 +627,11 @@ jobs:
             recorded="$(tr -d '[:space:]' < "$dir/review-ledger.integrity")"
             if [ "$recorded" != "$integrity" ]; then
               echo "::error file=$dir/review-ledger.integrity::records '$recorded', fresh build is '$integrity'"
+              status=1
+            fi
+            protocol="$root/references/local-review-ledger.md"
+            if ! cmp -s packages/review-ledger/protocol/local-review-ledger.md "$protocol"; then
+              echo "::error file=$protocol::differs from packages/review-ledger/protocol/local-review-ledger.md"
               status=1
             fi
           done
