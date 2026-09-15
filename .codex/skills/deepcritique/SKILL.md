@@ -8,8 +8,9 @@ description: High-fidelity PR-first Codex review chain that opens or reuses a dr
 ## Automatic chain dispatch
 
 When the user requests a full automatic chain and this is not already a
-one-pass worker invocation, read `.codex/references/review-chain-runner.md` and
-start the deterministic runner with the authorized plan, resolved tier and
+one-pass worker invocation, read `.codex/references/review-chain-runner.md`,
+confirm the user's review profile (run `review-setup` when it is not configured),
+and start the deterministic runner with the authorized plan, resolved tier and
 required gates. Do not drive the cross-engine loop from conversation. This
 skill remains the one-pass review worker; a set
 `AGENT_LOOP_REVIEW_RESULT_FILE` means write the result and return to its caller,
@@ -27,8 +28,9 @@ reviewer, invoke only:
 
 Never invoke the raw `claude` CLI directly, through a hand-composed shell
 command, or through a replacement wrapper. Never supply or override Claude's
-model, effort, permission, persistence, or output options; the tested launcher
-owns those settings and pins literal `--effort low`. Do not set
+model, effort, permission, persistence, or output options on a command line; the
+tested launcher owns those settings and reads model and effort from the user's
+review profile, which only `review-setup` changes. Do not set
 `CLAUDE_REVIEW_CLI` outside launcher tests. If the launcher is missing, rejects
 the exact-head preflight, or fails, stop and report the blocker. Do not fall
 back to a direct Claude invocation.
@@ -255,6 +257,9 @@ result after the final lane. For `clean` or `changed`, call the ledger helper's
 fetches and derives them. Use `minor` or `material` classification when the head
 moved. For `blocked`, put the safe blocker in an owner-only regular file and
 call `write-blocked-result`.
+If the helper already saved `<result-file>.recovery.json` for a completed
+candidate, preserve it and its blocked result for controller finalization
+recovery instead of overwriting the blocker.
 The outer wrapper validates the observed transition and posts the canonical
 attestation; this skill must not post a pass/completion marker itself.
 

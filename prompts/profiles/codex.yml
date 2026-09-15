@@ -88,6 +88,10 @@ skills:
 
   phone-install:
     FM_EXTRAS: ''
+  review-setup:
+    FM_EXTRAS: ''
+  simplify-comments:
+    FM_EXTRAS: ''
 
 # --- prompt stack ------------------------------------------------------------
 # See `claude.yml` for what this block is and why it lives in the profile.

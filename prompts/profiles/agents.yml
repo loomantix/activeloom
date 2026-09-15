@@ -80,6 +80,10 @@ skills:
 
   phone-install:
     FM_EXTRAS: ''
+  review-setup:
+    FM_EXTRAS: ''
+  simplify-comments:
+    FM_EXTRAS: ''
 
 # No `prompt_stack` block. This harness has no prompt-stack hasher yet, so
 # there is nothing to consume a manifest and no engine whose prompt generation

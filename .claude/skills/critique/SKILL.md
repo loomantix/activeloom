@@ -380,6 +380,10 @@ launcher â€” `.claude/skills/critique/scripts/run-agy-review.sh` for `gemini` â€
 rule before returning. A one-pass invocation leaves reviewer scheduling to its
 outer controller. Use `write-result` for `clean` or `changed`, and use
 `write-blocked-result` with an owner-only blocker file for `blocked`.
+If finalization preserves `<result-file>.recovery.json`, keep it and the
+helper-written blocked result for the outer controller; report the failure
+without overwriting either file. Use a new blocker only for unfinished review
+work.
 
 ## Boundaries
 

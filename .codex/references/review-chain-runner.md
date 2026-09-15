@@ -52,9 +52,41 @@ These are alternative plans, not consecutive commands for the same active run.
 - `--author` is the actual author engine, not necessarily the first reviewer.
   Existing roster membership must match; reconcile changes explicitly first.
 
-The runner uses the existing Claude/Agy launchers without overriding their model,
-effort or permission flags. The new Codex one-pass launcher retains configured
-model/provider choices and uses ephemeral noninteractive execution. Its unattended
+## Reviewer settings
+
+Reviewer model and effort come from the user's review profile, which the
+`review-setup` skill writes through `review-profile.py`. During its first preflight
+the runner resolves each selected engine once, records the settings in the
+checkpoint, passes them to every launch of that engine, and names them in each
+pass attestation. A missing or invalid profile blocks the run before anything is
+posted. Profile edits apply to the next run; resuming keeps the pinned settings.
+Launchers validate the values against each CLI's accepted effort levels and keep
+their permission, output and timeout flags fixed. `inherit` omits the model flag
+so the engine CLI's own configured model applies.
+
+`review-profile.py order --tier <lean|deep> --repo <owner/repo>` prints the user's
+preferred engine order for `--cycle` when the user has not named a plan.
+
+Codex can pin an optional capacity fallback alongside its primary model:
+
+```bash
+python3 -I .codex/skills/review-setup/scripts/review-profile.py set \
+  codex.fallback.model=gpt-5.6-sol codex.fallback.effort=medium
+```
+
+No fallback is enabled by default. Set `codex.fallback=none` to disable it.
+The runner recognizes the terminal model-capacity rejection from Codex JSON events.
+After a confirmed exit with completed process-group cleanup, it verifies the
+unchanged local/remote/PR head, clean worktree, unchanged comments and review
+threads, missing result, and identical owed pass. It then switches once to the
+pinned fallback for the remainder of the run. The failed attempt and snapshots
+remain in the checkpoint; the retry uses the same round and remaining budget.
+Attestations name the fallback model and effort. A second capacity rejection,
+changed evidence, unknown failure, authentication error, or timeout blocks.
+Standalone launchers and other engines do not retry.
+
+The Codex one-pass launcher uses ephemeral noninteractive execution; its provider
+remains the Codex CLI configuration. Its unattended
 permissions match the existing agent-loop use case; a dedicated worktree is not
 a security sandbox. See the repository's [OpenAI documentation setup](../../docs/openai-docs.md)
 for current official documentation sources.
@@ -82,7 +114,14 @@ Agy launcher's existing trusted ActiveLoom commit. Its first installation needs
 network access to the canonical public upstream. Review prompts address those
 files directly instead of depending on mutable development trees or global
 skill symlinks. Consumer instructions and review addenda still come from the
-review worktree; model and provider choices retain the launcher defaults.
+review worktree; model and effort are the run's pinned profile settings.
+
+The managed Gemini checkout is a standalone Git repository, not a linked
+worktree of a developer's upstream clone. Moving that clone cannot invalidate
+the installation's Git metadata. For other linked worktrees, run
+`git worktree repair` after moving their primary clone, then verify each
+worktree's head and status before resuming.
+Keep controller output as well as worker logs when pausing a legacy run.
 
 If an installation is damaged, add `--repair-installation` to the printed resume
 command. The runner preserves the old directory and builds a replacement at
@@ -120,7 +159,16 @@ the more precise `plan-complete` reason. Neither grants extra passes.
 The runner never marks ready or merges, even on success. It reports the evidence
 to the caller, who follows the repository's finalization policy.
 
-`--resume` can rerun a failed validation command and reconcile an attestation
+When a completed review fails final result verification, the ledger helper can
+preserve a blocked result and `<result-file>.recovery.json`. The runner pins that
+sidecar's digest at a successful worker return. It invokes `recover-result` to
+recheck the original identity, blocked bytes, pre-pass snapshot and live ledger,
+then continues ordinary validation and attestation in the same pending pass.
+No reviewer is relaunched and the run ID, round and budget stay unchanged.
+This requires a helper that implements `recover-result`; update the published
+bundle through its normal verified distribution path, never patch it locally.
+
+`--resume` can retry this finalization, rerun a failed validation command and reconcile an attestation
 posted before a checkpoint write, without relaunching the worker. Each launch
 attempt records its execution boundary, known exit status, and structured
 failure reason. A crash between the boundary write and process creation remains
@@ -133,7 +181,8 @@ process-group cleanup; a preflight marker alone cannot authorize a retry.
 Recovery rechecks the live head and ledger, preserves the run ID,
 round, completed passes, original comment snapshots and attempt history, and
 launches only the owed pass. The retry has its own directory. It consumes the
-same remaining run budget. A missing/blocked result after execution, unknown
+same remaining run budget. Outside the configured Codex capacity fallback above,
+a missing result, a blocked result without a sealed completed candidate, unknown
 exit, interrupted reviewer, changed head or changed evidence still requires
 reconciliation; none is silently retried or converted into passing evidence.
 
@@ -151,13 +200,35 @@ The migration validates old control hashes, saves `state-v1.json`, retains the
 old control directory, and records the new hashes and source revision. It does
 not restart or renumber the run. Future resumes use the newly printed command.
 
-For a version 1 Gemini attempt with only the supported dirty-checkout rejection,
+For a version 1 Gemini attempt with a supported preflight rejection,
 an operator can additionally supply `--recover-preflight
 --reconcile-legacy-preflight <worker-log-sha256>`. This narrow reconciliation
 requires the recognized old controller/launcher hashes, the exact pre-execution
 diagnostic, unchanged head and ledger, and no reviewer output. Inspect the log
-and old launcher before supplying its hash. All other legacy failures remain
-unknown; migration alone never grants permission to relaunch them.
+and old launcher before supplying its hash. Supported evidence is:
+
+- The sole `agy relay surface checkout must be clean` diagnostic, whose pinned
+  launcher path exits 1 before review.
+- The sole Git `fatal: not a git repository:` diagnostic naming an absolute
+  `.git/worktrees/<name>` path or Git 2.54–2.55's `(null)` target, together
+  with `--legacy-controller-log <path> <sha256>`. The original controller log must
+  end with the matching Gemini round/head announcement and the controller's
+  `bash exited 128` terminal message for this checkpoint. This also proves
+  the pinned controller completed cleanup; interrupted or denied cleanup has
+  a different terminal message. A worker Git diagnostic alone is insufficient.
+
+Reconciliation pins both log hashes and records the actual failure reason and
+exit. It preserves the failed pass and creates a separate retry directory.
+Never reconstruct missing controller output or broaden the proof to arbitrary
+exit-128 failures. All other legacy failures remain unknown; migration alone
+never grants permission to relaunch them.
+
+Before starting a new automatic run from a long-lived feature branch, verify
+that its installed controller includes all-engine preflight, managed reviewer
+installations, and structured attempt recovery. Receive updates through the
+normal reviewed upstream sync before pinning a new run. An existing v1 run
+needs the explicit migration above; updating a checkout does not replace its
+pinned controller or reset its budget.
 
 The controller never automatically starts a replacement run or replenishes a
 budget. Keep the entire checkpoint directory until recovery is complete.

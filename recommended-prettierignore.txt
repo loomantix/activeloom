@@ -78,6 +78,8 @@
 .claude/skills/review-accessibility/SKILL.md
 .claude/skills/review-accessibility/assets/axe-scan.js
 .claude/skills/reviewit/SKILL.md
+.claude/skills/simplify-comments/SKILL.md
+.claude/skills/simplify-comments/scripts/comment-density.py
 .claude/skills/task-packet/SKILL.md
 .github/copilot-instructions.md
 .github/workflows/dco.yml

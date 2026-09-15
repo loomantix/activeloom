@@ -55,7 +55,7 @@ command -v timeout >/dev/null 2>&1 || { echo "timeout is required" >&2; exit 1; 
 # Pinned loomantix/activeloom commit whose .agents tree is the only
 # relay surface this launcher will expose to unattended Agy. Bumping it
 # also requires updating AGY_SURFACE_SHA in tests/test_agy_review_launcher.py.
-agy_surface_sha="e5ebebfd1bf9270f2a2e63e77465acb64a89a1ab"
+agy_surface_sha="c4c7a1d3956b94f05b320f57b3218a596ea40c54"
 
 launch_state preflight pr_boundary
 current_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
@@ -92,6 +92,14 @@ fi
 launch_state preflight missing_tool
 agy_review_cli="${AGY_REVIEW_CLI:-agy}"
 command -v "$agy_review_cli" >/dev/null 2>&1 || { echo "agy is required" >&2; exit 1; }
+
+# Model and effort come from the user's review profile, or from the settings a
+# review-chain run pinned when it started. The launch region below resolves
+# them again under its hash.
+launch_state preflight review_profile
+agy_settings="$(python3 -I "$script_dir/review-profile.py" launch-args --engine gemini --repo "$repo")"
+agy_model="${agy_settings%%$'\n'*}"
+agy_effort="${agy_settings#*$'\n'}"
 
 temp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temp_dir"' EXIT
@@ -148,8 +156,8 @@ trap 'forward_signal HUP 129' HUP
 launch_state preflight skill_discovery
 if [ -z "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
 run_agy_managed "$skills_file" 2m \
-    --model gemini-3.7-flash-high \
-    --effort high \
+    --model "$agy_model" \
+    --effort "$agy_effort" \
     --output-format json \
     --print-timeout 90s \
     --print '/skills'
@@ -283,7 +291,7 @@ description, commits, diff, checks, and complete local-review ledger, including
 resolved threads and prior attestations. Post verified findings inline before
 edits, then validate, push, reply, resolve, and publish the normal review result.
 This invocation owns exactly one Gemini pass: do not invoke Codex, Claude,
-another reviewer, or any review launcher. Return control to the calling Codex
+another reviewer, or any review launcher. Return control to the calling
 session when the Gemini pass is complete."
 if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
     prompt="Read ${agy_surface_root}/skills/deepcritique/SKILL.md and follow it for this pass.
@@ -299,10 +307,13 @@ agy_exit=0
 # process-group guard terminates the pass and every descendant.
 # claude-cli-invocations:start
 agy_outer_timeout_seconds=$((review_timeout_seconds + 30))
+agy_settings="$(python3 -I "$script_dir/review-profile.py" launch-args --engine gemini --repo "$repo")"
+agy_model="${agy_settings%%$'\n'*}"
+agy_effort="${agy_settings#*$'\n'}"
 launch_state execution
 run_agy_managed "$result_file" "${agy_outer_timeout_seconds}s" \
-    --model gemini-3.7-flash-high \
-    --effort high \
+    --model "$agy_model" \
+    --effort "$agy_effort" \
     --mode accept-edits \
     --dangerously-skip-permissions \
     --add-dir "$agy_surface_root" \
