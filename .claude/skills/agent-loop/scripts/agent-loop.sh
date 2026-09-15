@@ -3778,8 +3778,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             recovery_message "Could not fetch stack parent branch $ISSUE_BASE_BRANCH for issue #$SELECTED_ID." dependency-blocked
             exit 1
         }
-        git merge-base --is-ancestor "$STACK_PARENT_HEAD" "$ISSUE_BASE_REMOTE_REF" || {
-            recovery_message "Stack parent branch $ISSUE_BASE_BRANCH no longer contains issue #$STACK_PARENT_ISSUE's reviewed head." dependency-blocked
+        [ "$(git rev-parse "$ISSUE_BASE_REMOTE_REF")" = "$STACK_PARENT_HEAD" ] || {
+            recovery_message "Stack parent branch $ISSUE_BASE_BRANCH no longer equals issue #$STACK_PARENT_ISSUE's reviewed head." dependency-blocked
             exit 1
         }
         worktree_start_ref="$STACK_PARENT_HEAD"

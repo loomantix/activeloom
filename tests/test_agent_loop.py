@@ -1139,6 +1139,43 @@ def test_batch_stack_resumes_an_interrupted_stacked_issue(
     assert batch["issues"][1]["stackedOn"] == 68
 
 
+def test_batch_stack_rejects_a_parent_branch_advanced_past_its_reviewed_head(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    config = _config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="batch-stack")
+    blockers = {"AGENT_READY_BLOCKERS": json.dumps({"69": [68]})}
+    issues = [_issue(68), _issue(69, "Depends on #68")]
+    first = _run(
+        consumer, ["--issues", "68,69", "--iterations", "1"],
+        issues=issues, config=config, extra_env=blockers, timeout=180,
+    )
+    assert first.returncode == 0, first.stderr + first.stdout
+    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
+    batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    parent = json.loads(Path(batch["issues"][0]["childRunState"]).read_text(encoding="utf-8"))
+
+    clone = tmp_path / "advance-parent"
+    _run_git("clone", str(consumer[1]), str(clone))
+    _run_git("config", "user.name", "Test", cwd=clone)
+    _run_git("config", "user.email", "test@example.invalid", cwd=clone)
+    _run_git("checkout", parent["branch"], cwd=clone)
+    (clone / "unreviewed-parent.txt").write_text("unreviewed\n", encoding="utf-8")
+    _run_git("add", "unreviewed-parent.txt", cwd=clone)
+    _run_git("commit", "-m", "test: advance finalized parent", cwd=clone)
+    _run_git("push", "origin", parent["branch"], cwd=clone)
+
+    resumed = _run(
+        consumer, ["--resume-batch", str(batch_file)],
+        issues=issues, config=config, extra_env=blockers, timeout=180,
+    )
+    assert resumed.returncode == 1
+    assert (
+        f"Stack parent branch {parent['branch']} no longer equals issue #68's reviewed head"
+        in resumed.stderr
+    )
+    assert not any((tmp_path / "worktrees").glob("*-issue-69-*"))
+
+
 def test_batch_stack_rejects_a_parent_checkpoint_from_another_issue(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
