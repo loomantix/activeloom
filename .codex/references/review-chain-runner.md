@@ -116,6 +116,13 @@ files directly instead of depending on mutable development trees or global
 skill symlinks. Consumer instructions and review addenda still come from the
 review worktree; model and effort are the run's pinned profile settings.
 
+The managed Gemini checkout is a standalone Git repository, not a linked
+worktree of a developer's upstream clone. Moving that clone cannot invalidate
+the installation's Git metadata. For other linked worktrees, run
+`git worktree repair` after moving their primary clone, then verify each
+worktree's head and status before resuming.
+Keep controller output as well as worker logs when pausing a legacy run.
+
 If an installation is damaged, add `--repair-installation` to the printed resume
 command. The runner preserves the old directory and builds a replacement at
 the same pins. It never cleans or discards a developer's modified checkout.
@@ -184,13 +191,35 @@ The migration validates old control hashes, saves `state-v1.json`, retains the
 old control directory, and records the new hashes and source revision. It does
 not restart or renumber the run. Future resumes use the newly printed command.
 
-For a version 1 Gemini attempt with only the supported dirty-checkout rejection,
+For a version 1 Gemini attempt with a supported preflight rejection,
 an operator can additionally supply `--recover-preflight
 --reconcile-legacy-preflight <worker-log-sha256>`. This narrow reconciliation
 requires the recognized old controller/launcher hashes, the exact pre-execution
 diagnostic, unchanged head and ledger, and no reviewer output. Inspect the log
-and old launcher before supplying its hash. All other legacy failures remain
-unknown; migration alone never grants permission to relaunch them.
+and old launcher before supplying its hash. Supported evidence is:
+
+- The sole `agy relay surface checkout must be clean` diagnostic, whose pinned
+  launcher path exits 1 before review.
+- The sole Git `fatal: not a git repository:` diagnostic naming an absolute
+  `.git/worktrees/<name>` path or Git 2.54–2.55's `(null)` target, together
+  with `--legacy-controller-log <path> <sha256>`. The original controller log must
+  end with the matching Gemini round/head announcement and the controller's
+  `bash exited 128` terminal message for this checkpoint. This also proves
+  the pinned controller completed cleanup; interrupted or denied cleanup has
+  a different terminal message. A worker Git diagnostic alone is insufficient.
+
+Reconciliation pins both log hashes and records the actual failure reason and
+exit. It preserves the failed pass and creates a separate retry directory.
+Never reconstruct missing controller output or broaden the proof to arbitrary
+exit-128 failures. All other legacy failures remain unknown; migration alone
+never grants permission to relaunch them.
+
+Before starting a new automatic run from a long-lived feature branch, verify
+that its installed controller includes all-engine preflight, managed reviewer
+installations, and structured attempt recovery. Receive updates through the
+normal reviewed upstream sync before pinning a new run. An existing v1 run
+needs the explicit migration above; updating a checkout does not replace its
+pinned controller or reset its budget.
 
 The controller never automatically starts a replacement run or replenishes a
 budget. Keep the entire checkpoint directory until recovery is complete.

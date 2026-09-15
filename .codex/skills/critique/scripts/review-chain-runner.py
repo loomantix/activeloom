@@ -42,8 +42,9 @@ CONTROL_FILES = [
     "review-profile.defaults.json",
     *LAUNCHERS.values(),
 ]
-# This v1 pair has exactly one dirty-surface diagnostic, followed by exit 1
-# before the mutating Agy invocation. No other legacy log is recovery evidence.
+# Only this inspected v1 pair supports legacy reconciliation. Git diagnostics
+# also need the controller's terminal log to distinguish exit 128 from review
+# stderr followed by an interrupted or failed invocation.
 LEGACY_PREFLIGHT_HASHES = {
     "review-chain-runner.py": "708b421366df3d04e59dabccbf1e6a9e8358b8f5b7c281f72e39b1d834d370cf",
     "run-agy-review.sh": "114657daa10c196915d351c7ebc4e8df767bf4fa92b3edbe0a577b095667cd5a",
@@ -1075,6 +1076,45 @@ class Runner:
         self.persist()
         self.launch(pending)
 
+    def legacy_failure(self, pending: dict[str, Any], log: Path) -> dict[str, Any]:
+        """Recognize only pre-execution failures proved by the pinned v1 pair."""
+        diagnostic = log.read_bytes()
+        if diagnostic == b"agy relay surface checkout must be clean\n":
+            return {"exit_status": 1, "failure_reason": "dirty_surface"}
+        if not re.fullmatch(
+            rb"fatal: not a git repository: (/[^\x00-\x1f\x7f]+/\.git/worktrees/[^/\x00-\x1f\x7f]+|\(null\))\n",
+            diagnostic,
+        ):
+            raise Blocked("legacy log does not prove a preflight-only failure")
+        proof = getattr(self.args, "legacy_controller_log", None)
+        if not proof:
+            raise Blocked(
+                "legacy Git failure requires --legacy-controller-log PATH SHA256"
+            )
+        controller_log = Path(proof[0]).absolute()
+        if digest(controller_log) != proof[1]:
+            raise Blocked("legacy controller log changed")
+        terminal = (
+            f"Starting gemini pass {pending['round']} at {pending['before']}\n"
+            "review-chain blocked: bash exited 128; inspect worker.log; "
+            f"checkpoint: {self.directory}\n"
+        ).encode()
+        if not controller_log.read_bytes().endswith(terminal):
+            raise Blocked(
+                "legacy controller log does not prove the matching exit and cleanup"
+            )
+        # In the recognized launcher the mutating invocation is followed by a
+        # Python parser, which exits 1 and adds its own diagnostic on failure.
+        # This sole Git diagnostic plus bash exit 128 therefore precedes review.
+        # The recognized runner emits its terminal message only after cleanup;
+        # denied cleanup or interruption produces a different terminal message.
+        return {
+            "exit_status": 128,
+            "failure_reason": "surface_provenance",
+            "legacy_controller_log": str(controller_log),
+            "legacy_controller_log_sha256": proof[1],
+        }
+
     def reconcile_legacy_preflight(
         self, pending: dict[str, Any], expected_log: str
     ) -> None:
@@ -1111,39 +1151,49 @@ class Runner:
         present = {p.name for p in folder.iterdir()}
         if (
             digest(log) != expected_log
-            or log.read_bytes() != b"agy relay surface checkout must be clean\n"
             or not allowed <= present
             or present - allowed - ({"launch.json"} if intent else set())
         ):
             raise Blocked("legacy log does not prove a preflight-only failure")
+        failure = self.legacy_failure(pending, log)
         if self.boundary() != pending["before"]:
             raise Blocked("legacy review head changed; reconcile it")
         if not intent:
-            intent = {"attempt_id": uuid.uuid4().hex, "log_sha256": expected_log}
+            intent = {
+                "attempt_id": uuid.uuid4().hex,
+                "log_sha256": expected_log,
+                "failure": failure,
+            }
             pending["legacy_reconciliation"] = intent
             self.persist()
         if intent["log_sha256"] != expected_log:
             raise Blocked("legacy reconciliation proof changed")
+        if (
+            intent.get("failure", {"exit_status": 1, "failure_reason": "dirty_surface"})
+            != failure
+        ):
+            raise Blocked("legacy reconciliation failure proof changed")
         attempt = {
             "attempt_id": intent["attempt_id"],
             "engine": pending["engine"],
             "round": pending["round"],
             "folder": pending["folder"],
             "review_started": False,
-            "exit_status": 1,
             "phase": "preflight_failed",
-            "failure_reason": "dirty_surface",
             "legacy_log_sha256": expected_log,
+            **failure,
         }
         evidence = {
             "version": 1,
             "attempt_id": attempt["attempt_id"],
             "phase": "preflight",
             "review_started": False,
-            "failure_reason": "dirty_surface",
+            "failure_reason": failure["failure_reason"],
             "proof": "explicit legacy reconciliation against pinned pre-execution exit",
             "legacy_log_sha256": expected_log,
         }
+        if "legacy_controller_log" in failure:
+            evidence.update(failure)
         marker = folder / "launch.json"
         if marker.exists() or marker.is_symlink():
             if read(marker) != evidence:
@@ -1202,6 +1252,15 @@ class Runner:
                     intent["log_sha256"],
                 ]
             )
+            failure = intent.get("failure", {})
+            if "legacy_controller_log" in failure:
+                argv.extend(
+                    [
+                        "--legacy-controller-log",
+                        failure["legacy_controller_log"],
+                        failure["legacy_controller_log_sha256"],
+                    ]
+                )
         return shlex.join(argv)
 
     def decision(self, head: str) -> dict[str, Any]:
@@ -1571,6 +1630,12 @@ def main(argv: list[str] | None = None) -> int:
         help="explicitly verify a supported v1 pre-execution rejection log",
     )
     parser.add_argument(
+        "--legacy-controller-log",
+        nargs=2,
+        metavar=("PATH", "SHA256"),
+        help="original v1 controller output and reviewed hash proving Git exit 128",
+    )
+    parser.add_argument(
         "--repair-installation",
         action="store_true",
         help="preserve and replace the managed installation at its existing pins",
@@ -1586,6 +1651,13 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error(
             "legacy proof requires --recover-preflight and the reviewed log SHA256"
+        )
+    if args.legacy_controller_log and (
+        not args.reconcile_legacy_preflight
+        or not re.fullmatch(r"[0-9a-f]{64}", args.legacy_controller_log[1])
+    ):
+        parser.error(
+            "legacy controller log requires legacy reconciliation and its SHA256"
         )
     if not re.fullmatch(r"[0-9a-f]{40}", args.base):
         parser.error("--base must be a pinned full commit SHA")
