@@ -13,7 +13,8 @@ base_branch =
 setup_hook =
 
 # Run after the worker, after each local review, and after fresh-base merge.
-# Prefer targeted checks and avoid unbounded full-suite output.
+# This is the gating run: use the repository's declared review gate, bounded
+# and with concise output, not a narrower targeted check.
 validation_hook =
 
 # Version 3 hooks run only after the wrapper opens a draft PR. Each must read
