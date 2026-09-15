@@ -50,8 +50,13 @@ review_timeout_seconds = 7200
 # working hook must also carry AGENT_LOOP_REVIEW_PUSH_HELPER,
 # AGENT_LOOP_REVIEW_RESULT_FILE, and write-result, or preflight rejects it.
 #
-#   claude_review_hook = claude --print --effort low --model <model-id> /deepcritique ...
-#   codex_review_hook  = codex exec -c model_reasoning_effort=medium ... /deepcritique ...
+#   claude_review_hook = claude --print --effort low --model <model-id> /deepcritique ... </dev/null
+#   codex_review_hook  = codex exec -c model_reasoning_effort=medium ... /deepcritique ... </dev/null
+#
+# The wrapper runs every hook and the default worker with stdin from /dev/null
+# (`codex exec` reads stdin to EOF when it is not a TTY and would otherwise
+# block for the whole pass on an inherited pipe); the trailing redirect keeps a
+# hook safe when it is pasted and run outside the wrapper.
 #
 # Pick per aspect, not globally: the two review passes dominate a run's wall
 # clock and the worker is a small fraction of it, so reviewer choice dominates
@@ -82,11 +87,15 @@ worker_hook =
 # releases, so the one slot that determines how much work the reviewers have to
 # do is the one slot that is not pinned.
 #
-# The default worker invocation supports a model and nothing else; there is no
-# effort control for it. Reviewer model and effort are chosen inside the review
-# hook commands above.
+# `worker_effort` is passed to the default worker as `--effort`. Leave it empty
+# and the worker runs at whatever the CLI or the launching environment defaults
+# to, which is easy to forget and invisible afterwards — the doctor warns.
+# When `claude_effort_policy` is set the doctor requires the two to match, since
+# the default worker is the same CLI the policy governs. Reviewer model and
+# effort are chosen inside the review hook commands above.
 worker_model =
 worker_fallback_model =
+worker_effort =
 worker_retries = 1
 worker_timeout_seconds = 3600
 hook_timeout_seconds = 3600

@@ -60,7 +60,7 @@ with the issue worktree as the current directory.
 | `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                                                                                                  |
 | `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                                                                                                    |
 | `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility.                                                                                                  |
-| `config_doctor`                                  | Run the non-mutating compatibility preflight before issue selection or claim.                                                                                                                                |
+| `config_doctor`                                  | Run the non-mutating compatibility preflight before issue selection or claim, including that each review hook's CLI resolves on `PATH`.                                                                      |
 | `claude_effort_policy`                           | Optional literal Claude effort policy enforced by the doctor.                                                                                                                                                |
 | `review_max_rounds`                              | Codex→Claude round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the draft PR.                                                                                                |
 | `review_timeout_seconds`                         | Positive wall-clock budget for one issue's review, persisted across resume. Default `7200`; each review pass and its validation is capped at the smaller of the remaining budget and `hook_timeout_seconds`. |
@@ -68,6 +68,7 @@ with the issue worktree as the current directory.
 | `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                                                                                                                                |
 | `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                                                                                                |
 | `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                                                                 |
+| `worker_effort`                                  | `--effort` for the default worker. Empty means the CLI or environment default (the doctor warns); when `claude_effort_policy` is set the two must match.                                                     |
 | `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                  |
 | `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                      |
 | `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                        |
@@ -135,6 +136,18 @@ consequences are easy to miss:
   logs the remaining budget and the applied bound before each pass so the two
   can be told apart.
 
+### Validation is not repeated on an unchanged head
+
+The validation hook is treated as a function of the head and of the base it is
+diffed against. Once a `(head, base)` pair has passed, the wrapper does not run
+the hook on it again: the initial base integration that reports "Already up to
+date", a clean pass that committed nothing, and a resumed leg at an already
+validated head all print `validation skipped` instead of spending budget. The
+exception is the final reviewed-head gate, which always runs on the exact head
+that is marked ready — a hook that damaged the worktree environment without
+committing is still caught there. A changed pass, a real base integration, or a
+base that moved since the last validation runs the hook as before.
+
 ### Launcher headroom
 
 Hooks that shell out to a _launcher_ which enforces its own bound read that
@@ -153,7 +166,9 @@ Consumers wanting a structured result on timeout must have the hook honor
 ## Default Worker and the Invocation Lock
 
 When `worker_hook` is unset, the wrapper runs the Claude CLI in
-`--permission-mode bypassPermissions --print` mode against the issue prompt.
+`--permission-mode bypassPermissions --print` mode against the issue prompt,
+adding `--model` from `worker_model` and `--effort` from `worker_effort` when
+they are set.
 That is the only `claude` invocation in the script, and it is bracketed by
 `# claude-cli-invocations:start` / `:end` markers. The upstream CI gate
 `.claude/lint-claude-cli-invocations.py` hashes the locked region and refuses
@@ -170,11 +185,11 @@ The loop runs three model-backed aspects, and they are configured in two
 different places. This is the most common onboarding question, so it is spelled
 out here.
 
-| Aspect         | Where the model is chosen                | Effort control                                                        |
-| -------------- | ---------------------------------------- | --------------------------------------------------------------------- |
-| Default worker | `worker_model` / `worker_fallback_model` | none — the default worker invocation takes a model only               |
-| Codex review   | inside `codex_review_hook`               | inside the same command                                               |
-| Claude review  | inside `claude_review_hook`              | inside the same command, and validated against `claude_effort_policy` |
+| Aspect         | Where the model is chosen                | Effort control                                                          |
+| -------------- | ---------------------------------------- | ----------------------------------------------------------------------- |
+| Default worker | `worker_model` / `worker_fallback_model` | `worker_effort`, validated against `claude_effort_policy` when both set |
+| Codex review   | inside `codex_review_hook`               | inside the same command                                                 |
+| Claude review  | inside `claude_review_hook`              | inside the same command, and validated against `claude_effort_policy`   |
 
 A review hook is a literal shell command, so reviewer model and effort are
 ordinary flags on that command rather than dedicated config keys. These
@@ -183,13 +198,23 @@ fragments show flag placement only; a working hook must also carry
 `write-result`, or contract-v3 preflight rejects it:
 
 ```
-claude_review_hook = claude --print --effort low --model <model-id> /deepcritique ...
-codex_review_hook  = codex exec -c model_reasoning_effort=medium ... /deepcritique ...
+claude_review_hook = claude --print --effort low --model <model-id> /deepcritique ... </dev/null
+codex_review_hook  = codex exec -c model_reasoning_effort=medium ... /deepcritique ... </dev/null
 ```
 
-`claude_effort_policy` constrains only `claude_review_hook`, and only when
-`config_doctor = true` — the doctor is what enforces it, so the key is inert
-without it. It does not apply to the worker, which has no effort control.
+Every hook and the default worker run with stdin redirected from `/dev/null`;
+the wrapper does this itself, so the trailing `</dev/null` above is belt and
+braces for a hook string that is also run by hand. It matters because
+`codex exec` reads stdin to EOF when it is not a TTY: a hook that inherits an
+open pipe from whatever launched the wrapper produces no output and no result
+until the pass times out, which is indistinguishable from a slow review from
+outside. A hook that genuinely needs input must supply it inside the command.
+
+`claude_effort_policy` constrains `claude_review_hook` and, when the default
+worker is in use, `worker_effort` — both only when `config_doctor = true`, since
+the doctor is what enforces it and the key is inert without it. An empty
+`worker_effort` is not neutral either: the worker then runs at whatever the CLI
+or the launching environment defaults to, and nothing records which.
 
 `worker_model` and `worker_fallback_model` configure the **default** worker
 only. When `worker_hook` is set the wrapper runs that hook verbatim and both
@@ -220,11 +245,13 @@ Both `claude_review_hook` and `codex_review_hook` are **required**, and the
 roster and order are hardcoded as Codex then Claude. There is no key for a third
 engine and no supported way to omit one.
 
-What preflight enforces is that both hook strings are non-empty and carry the
-contract tokens; it never checks that a reviewer CLI is installed. So a run
-missing one CLI starts, claims the issue, completes the worker pass and
-validation, pushes, opens the draft PR, and only then fails at that engine's
-leg — leaving a claimed issue and an abandoned draft behind.
+Preflight enforces that both hook strings are non-empty and carry the contract
+tokens, and the config doctor resolves each hook's first command word on `PATH`
+before selection or claim, so a run missing a reviewer CLI stops at startup
+instead of claiming the issue, opening the draft PR, and failing at that
+engine's leg. A hook whose first word is shell syntax (`if`, `:`, a variable)
+is not resolved statically; the doctor also warns when `codex exec` appears
+without `</dev/null`.
 
 This is a wrapper limitation rather than a contract one: `review-ledger.js`
 already treats `gemini` and `antigravity` as first-class engine identities, and
@@ -239,7 +266,9 @@ wrong engine identity and corrupt the ledger's roster, so it is not a workaround
 3. Create a unique worktree and branch from `origin/<base>`.
 4. Run the isolated setup hook.
 5. Run the worker and require a clean local commit.
-6. Fetch and merge the base, inspect the diff, validate, push, and open a draft PR.
+6. Fetch and merge the base, inspect the diff, validate, push, and open a draft PR
+   titled with the worker's first commit subject (so a merge-commit consumer gets
+   a conventional merge subject), falling back to `agent-loop: resolve #N`.
 7. Run a Codex pass and then a Claude pass against the PR ledger. Each hook
    comments before fixes, publishes committed fixes only through the wrapper-owned
    safe-push helper, posts structured fix and final-lane
@@ -279,6 +308,28 @@ branch. Contract-v3 allowlist batches persist their ordered issues, cursor,
 per-issue statuses, and child run-state paths. Recovery advances only after the
 current issue is safely finalized or explicitly bailed; uncertain push, PR, or
 ledger mutation stops the batch.
+
+## Liveness and Timing
+
+The run's log directory carries two files for anything watching from outside:
+
+- `wrapper.pid` — the wrapper's PID, written when the directory is created and
+  again on `--resume-run`. Test it with `kill -0`, never with `pgrep -f`: a
+  `pgrep -f` pattern also matches the shell running the monitor, so a
+  "wrapper gone" check built on it can never fire.
+- `phases.jsonl` — one JSON line per phase event: `start` and `end` for every
+  bounded hook and validation (epoch, duration in seconds, exit status), and
+  `skipped` for a validation reused on an unchanged head. Phase durations no
+  longer have to be reconstructed from log file mtimes.
+
+Two things that look like liveness signals are not. **Review log size:** both
+`codex exec` and `claude --print` buffer their output, so a review log sits at
+0 bytes for the whole pass and then jumps; use the newest file time in the log
+directory, the reviewer's CPU time, or `phases.jsonl` instead. **An agent
+session's background task:** multi-hour runs launched as a background task of
+an interactive agent session have been killed by that session's memory guard
+with tens of gigabytes free. Launch long runs detached — `tmux`, `systemd-run`,
+or an equivalent — with stdin closed.
 
 ## Migration From the Collection-Branch Loop
 

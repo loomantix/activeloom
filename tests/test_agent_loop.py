@@ -501,19 +501,12 @@ def _config_v3(tmp_path: Path, **overrides: str | int) -> str:
     return _config(tmp_path, **values)
 
 
-def _run(
+def _environment(
     fixture: tuple[Path, Path, Path, Path],
-    args: list[str],
-    *,
     issues: list[dict[str, object]],
-    config: str,
     extra_env: dict[str, str] | None = None,
-    timeout: int = 30,
-) -> subprocess.CompletedProcess[str]:
+) -> dict[str, str]:
     repo, _, bin_dir, state_dir = fixture
-    (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(
-        config, encoding="utf-8"
-    )
     # Hooks run under `bash -lc`, a login shell that re-sources profile files. On
     # a developer box those dotfiles prepend real tool paths (e.g. a genuine
     # `claude` in ~/.local/bin), shadowing the stubs this suite installs in
@@ -543,10 +536,29 @@ def _run(
     )
     if extra_env:
         env.update(extra_env)
+    return env
+
+
+def _run(
+    fixture: tuple[Path, Path, Path, Path],
+    args: list[str],
+    *,
+    issues: list[dict[str, object]],
+    config: str,
+    extra_env: dict[str, str] | None = None,
+    timeout: int = 30,
+    stdin: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    repo = fixture[0]
+    (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(
+        config, encoding="utf-8"
+    )
+    env = _environment(fixture, issues, extra_env)
     return subprocess.run(
         [str(repo / ".claude/skills/agent-loop/scripts/agent-loop.sh"), *args],
         cwd=repo,
         env=env,
+        stdin=stdin,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -1101,14 +1113,15 @@ def test_v3_final_round_changed_pass_resumes_without_reusing_identity(
 def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    fail_marker = consumer[3] / "fail-codex-review-validation"
+    fail_marker = consumer[3] / "fail-claude-review"
     fail_marker.touch()
-    validation = (
-        'if [ -e "$AGENT_STATE_DIR/fail-codex-review-validation" ] && '
-        '[ -e "$AGENT_LOOP_LOG_DIR/codex-review-round-1-validation.log" ]; '
-        "then exit 71; fi"
+    # The interruption lands in the Claude leg itself: a clean Codex pass
+    # leaves the head unchanged, so no validation runs between the two legs.
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
     )
-    config = _config_v3(tmp_path, validation_hook=validation, review_max_rounds=1)
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook, review_max_rounds=1)
 
     first = _run(
         consumer,
@@ -1135,6 +1148,141 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
     assert events.count("codex\n") == 1
     assert events.count("claude\n") == 1
     assert json.loads(state_file.read_text(encoding="utf-8"))["phase"] == "finalized"
+
+
+def test_run_records_wrapper_pid_and_phase_timing(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Every duration in the first consumer reports had to be reconstructed from
+    # log mtimes, and the only liveness check available from outside was a
+    # `pgrep -f` that matched the monitor's own shell.
+    repo = consumer[0]
+    (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(
+        _config_v3(tmp_path), encoding="utf-8"
+    )
+    proc = subprocess.Popen(
+        [str(repo / ".claude/skills/agent-loop/scripts/agent-loop.sh"), "--issues", "22"],
+        cwd=repo,
+        env=_environment(consumer, [_issue(22)]),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout, stderr = proc.communicate(timeout=90)
+    assert proc.returncode == 0, stderr + stdout
+    log_dir = next((tmp_path / "logs").glob("*-issue-22-*"))
+    assert (log_dir / "wrapper.pid").read_text(encoding="utf-8").strip() == str(proc.pid)
+    events = [
+        json.loads(line)
+        for line in (log_dir / "phases.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    phases = [(event["event"], event["phase"]) for event in events]
+    assert phases.index(("start", "worker attempt 1")) < phases.index(("end", "worker attempt 1"))
+    assert ("end", "worker validation") in phases
+    assert ("skipped", "initial-fresh-base validation") in phases
+    assert ("end", "final-reviewed-head validation") in phases
+    ends = [event for event in events if event["event"] == "end"]
+    assert ends and all(
+        event["exit"] == 0 and event["seconds"] >= 0 and event["epoch"] > 0 for event in ends
+    )
+
+
+def test_draft_pr_title_is_the_worker_commit_subject(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Consumers that merge with merge commits get the PR title as the merge
+    # subject; the generic "agent-loop: resolve #N" landed in history where a
+    # conventional subject was expected. The fixture worker commits
+    # "fix: worker", and a control character in a subject must not reach gh.
+    worker = (
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf done > result.txt; "
+        "git add result.txt; git commit -m \"$(printf 'feat(demo): add\\tresult\\x01 file')\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "21"],
+        issues=[_issue(21)],
+        config=_config_v3(tmp_path, worker_hook=worker),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    create = next(line for line in gh_log.splitlines() if line.startswith("pr create"))
+    assert "--title feat(demo): addresult file --body-file" in create
+    assert "agent-loop: resolve" not in create
+
+
+def test_unchanged_head_is_validated_once_then_only_at_the_final_gate(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # One converged run used to validate the same head three times: worker,
+    # "Already up to date" base integration, and after each clean pass, then
+    # again at the final gate. Only the worker validation and the final gate
+    # should run the hook when nothing moved.
+    result = _run(
+        consumer,
+        ["--issues", "18"],
+        issues=[_issue(18)],
+        config=_config_v3(tmp_path),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("validate\n") == 2
+    assert result.stdout.count("validation skipped") == 3
+    assert "final-reviewed-head validation skipped" not in result.stdout
+
+
+def _minor_committed_v3_hook(engine: str) -> str:
+    # A changed pass with complete ledger evidence: one finding, fixed in a
+    # committed cleanup, classified minor so the round still converges.
+    return (
+        f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
+        'before="$AGENT_LOOP_PR_HEAD_SHA"; '
+        f"printf 'minor fix\\n' > minor-fix-{engine}.txt; "
+        f"git add minor-fix-{engine}.txt; git commit -m 'fix: minor finding'; "
+        '"$AGENT_LOOP_REVIEW_PUSH_HELPER"; after=$(git rev-parse HEAD); '
+        f"printf -v finding '%s\\n%s' \"<!-- local-review:v3 engine={engine} "
+        "round=$AGENT_LOOP_REVIEW_ROUND head=$before fingerprint=minor-finding "
+        "occurrence=1 severity=minor lens=recovery "
+        "content-sha256=4be82179d3761dd716ff1e62c19138fc105495b9a66528678e0e76e253adb577 -->\" 'Finding.'; "
+        f"printf -v disposition '%s\\n%s' \"<!-- local-review-disposition:v3 "
+        f"engine={engine} round=$AGENT_LOOP_REVIEW_ROUND head=$after "
+        "fingerprint=minor-finding occurrence=1 outcome=fixed "
+        "content-sha256=13079c2612a9ead4818ab21ef90bf6b7c457916144d8cbaeeff74befa4f4cc8d -->\" 'Fixed.'; "
+        "jq -n --arg finding \"$finding\" --arg disposition \"$disposition\" "
+        "'[{id:\"THREAD-MINOR\",isResolved:true,"
+        "repository:{nameWithOwner:\"fixture/consumer\"},pullRequest:{number:1},"
+        "comments:{nodes:[{body:$finding,databaseId:1,author:{login:\"tester\"}},"
+        "{body:$disposition,databaseId:2,author:{login:\"tester\"}}],"
+        "pageInfo:{hasNextPage:false}}}]' > \"$AGENT_STATE_DIR/review-threads.json\"; "
+        "jq -n --argjson round \"$AGENT_LOOP_REVIEW_ROUND\" "
+        "--arg base \"$AGENT_LOOP_REVIEW_BASE_SHA\" --arg before \"$before\" "
+        "--arg after \"$after\" "
+        f"'{{version:3,status:\"changed\",engine:\"{engine}\",round:$round,"
+        "baseSha:$base,beforeSha:$before,afterSha:$after,classification:\"minor\","
+        "findingFingerprints:[\"minor-finding\"],finalLaneComplete:true}' "
+        '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
+    )
+
+
+def test_changed_review_head_is_revalidated(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # A pass that commits moves the head, and the new head must be validated
+    # before the next leg reads it; the clean Claude pass after it is skipped.
+    result = _run(
+        consumer,
+        ["--issues", "19"],
+        issues=[_issue(19)],
+        config=_config_v3(tmp_path, codex_review_hook=_minor_committed_v3_hook("codex")),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("validate\n") == 3
+    assert "codex-review-round-1 validation skipped" not in result.stdout
+    assert "claude-review-round-1 validation skipped" in result.stdout
 
 
 def test_v3_review_hook_cannot_self_authorize_direct_push(
@@ -1355,15 +1503,15 @@ def test_per_issue_worktrees_and_hook_order(
     assert paths[0] != paths[1]
     assert all(not Path(path).exists() for path in paths)
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
+    # Worker validation, then the two clean passes without re-validating the
+    # head they did not move, then the final gate. The "Already up to date"
+    # base integration and both clean passes reuse the worker validation.
     expected = [
         "setup",
         "worker",
         "validate",
-        "validate",
         "codex",
-        "validate",
         "claude",
-        "validate",
         "validate",
     ]
     assert events == expected * 2
@@ -1789,6 +1937,38 @@ def test_worker_failure_preserves_worktree(
         assert (worktree / "dirty.txt").exists()
 
 
+def test_hooks_and_default_worker_do_not_inherit_the_wrapper_stdin(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # `codex exec` reads stdin to EOF when it is not a TTY. A hook that inherits
+    # an open pipe from whatever launched the wrapper blocks until the pass
+    # times out, so the wrapper must hand every hook (and the default worker,
+    # which runs through the same bounded runner) /dev/null even when its own
+    # stdin is a pipe that never closes. The pipe here stays open for the whole
+    # run: a `read` that sees EOF at once proves the redirect, a `read` that
+    # has to wait for its timeout proves the leak.
+    worker = (
+        '[ "$(readlink /proc/self/fd/0)" = /dev/null ] || exit 71; '
+        "if read -r -t 3 line; then exit 72; else status=$?; fi; "
+        '[ "$status" -eq 1 ] || exit 73; '
+        "printf done > result.txt; git add result.txt; git commit -m 'fix: worker'"
+    )
+    validation = '[ "$(readlink /proc/self/fd/0)" = /dev/null ] || exit 74'
+    reader, writer = os.pipe()
+    try:
+        result = _run(
+            consumer,
+            ["--issues", "12"],
+            issues=[_issue(12)],
+            config=_config(tmp_path, worker_hook=worker, validation_hook=validation),
+            stdin=reader,
+        )
+    finally:
+        os.close(writer)
+        os.close(reader)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_capacity_failure_uses_fallback_model(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1824,6 +2004,60 @@ git commit -m 'fix: fallback worker'
     models = (consumer[3] / "models.log").read_text(encoding="utf-8")
     assert "--model primary" in models
     assert "--model fallback" in models
+
+
+def test_worker_effort_is_passed_to_the_default_worker(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Before worker_effort existed the default worker's effort came from
+    # whatever CLAUDE_CODE_EFFORT_LEVEL the operator exported at launch, which
+    # was easy to forget and invisible afterwards.
+    claude = consumer[2] / "claude"
+    _write_executable(
+        claude,
+        """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$AGENT_STATE_DIR/worker-args.log"
+printf 'done\\n' > result.txt
+git add result.txt
+git commit -m 'fix: effort worker'
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "15"],
+        issues=[_issue(15)],
+        config=_config(
+            tmp_path, worker_hook="", worker_model="primary", worker_effort="medium"
+        ),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    args = (consumer[3] / "worker-args.log").read_text(encoding="utf-8")
+    assert "--model primary --effort medium" in args
+
+    (consumer[3] / "worker-args.log").unlink()
+    result = _run(
+        consumer,
+        ["--issues", "16"],
+        issues=[_issue(16)],
+        config=_config(tmp_path, worker_hook="", worker_model="primary"),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    args = (consumer[3] / "worker-args.log").read_text(encoding="utf-8")
+    assert "--effort" not in args
+
+
+def test_worker_effort_must_be_a_single_flag_value(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "17"],
+        issues=[_issue(17)],
+        config=_config(tmp_path, worker_hook="", worker_effort="medium --foo"),
+    )
+    assert result.returncode != 0
+    assert "worker_effort must be a single flag value" in result.stderr
+    assert not (consumer[3] / "claimed-17").exists()
 
 
 def test_timeout_retries_only_an_unchanged_worktree(

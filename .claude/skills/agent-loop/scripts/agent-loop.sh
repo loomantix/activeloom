@@ -159,6 +159,7 @@ CODEX_REVIEW_HOOK=""
 WORKER_HOOK=""
 WORKER_MODEL=""
 WORKER_FALLBACK_MODEL=""
+WORKER_EFFORT=""
 WORKER_RETRIES=1
 WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
@@ -174,6 +175,11 @@ REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
 # a structured result. The floor keeps that subtraction positive.
 REVIEW_PASS_MIN_SECONDS=120
 REVIEW_PASS_LAUNCHER_MARGIN_SECONDS=60
+# The last (head, base) pair the validation hook passed on. The same pair is
+# not validated again until the final gate; see run_validation.
+LAST_VALIDATED_HEAD=""
+LAST_VALIDATED_BASE=""
+LAST_VALIDATED_LABEL=""
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
 DEPENDENCY_GATE=ready
@@ -194,6 +200,7 @@ assign_config() {
         worker_hook) WORKER_HOOK="$value" ;;
         worker_model) WORKER_MODEL="$value" ;;
         worker_fallback_model) WORKER_FALLBACK_MODEL="$value" ;;
+        worker_effort) WORKER_EFFORT="$value" ;;
         worker_retries) WORKER_RETRIES="$value" ;;
         worker_timeout_seconds) WORKER_TIMEOUT_SECONDS="$value" ;;
         hook_timeout_seconds) HOOK_TIMEOUT_SECONDS="$value" ;;
@@ -345,6 +352,10 @@ done
 [ "$REVIEW_MAX_ROUNDS" -le 4 ] || { echo "review_max_rounds cannot exceed the Deep review cap of 4" >&2; exit 1; }
 [ "$REVIEW_TIMEOUT_SECONDS" -gt 0 ] || { echo "review_timeout_seconds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
+if [ -n "$WORKER_EFFORT" ] && ! [[ "$WORKER_EFFORT" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "worker_effort must be a single flag value: $WORKER_EFFORT" >&2
+    exit 1
+fi
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
@@ -1042,12 +1053,37 @@ require_issue_branch_head() {
     [ "$head_sha" = "$branch_sha" ]
 }
 
+# Per-phase timing for anything watching from outside. One JSON line per event
+# in the run's log directory: a monitor can tell a long pass from a stalled one
+# by the start epoch, and durations no longer have to be reconstructed from log
+# mtimes. Best effort — recording never fails the phase it describes.
+record_phase_event() {
+    local event="$1" phase="$2" seconds="${3:-}" status="${4:-}"
+    [ -n "${AGENT_LOOP_LOG_DIR:-}" ] && [ -d "$AGENT_LOOP_LOG_DIR" ] || return 0
+    jq -cn --arg event "$event" --arg phase "$phase" --argjson epoch "$(date +%s)" \
+        --arg seconds "$seconds" --arg status "$status" \
+        '{event: $event, phase: $phase, epoch: $epoch}
+         + (if $seconds != "" then {seconds: ($seconds | tonumber)} else {} end)
+         + (if $status != "" then {exit: ($status | tonumber)} else {} end)' \
+        >> "$AGENT_LOOP_LOG_DIR/phases.jsonl" 2>/dev/null || true
+}
+
+# The wrapper's own PID, so a monitor can test it with `kill -0` instead of
+# matching command lines: a `pgrep -f` pattern also matches the shell running
+# the monitor, so a "wrapper gone" check built on it can never fire.
+write_wrapper_pid() {
+    [ -n "${AGENT_LOOP_LOG_DIR:-}" ] && [ -d "$AGENT_LOOP_LOG_DIR" ] || return 0
+    printf '%s\n' "$$" > "$AGENT_LOOP_LOG_DIR/wrapper.pid" 2>/dev/null || true
+}
+
 run_bounded_hook() {
     local phase="$1" hook_command="$2" timeout_seconds="$3" log_file="$4"
     local allow_review_mutations="${5:-false}"
-    local max_bytes=$((LOG_MAX_KB * 1024)) status=0
+    local max_bytes=$((LOG_MAX_KB * 1024)) status=0 started
     local guard_bin="$AGENT_LOOP_LOG_DIR/hook-command-guards"
     echo -e "${BLUE}▸${NC} $phase"
+    started="$(date +%s)"
+    record_phase_event start "$phase"
     # Bound the captured log to its trailing LOG_MAX_KB with `tail -c`, NOT with a
     # process-wide `ulimit -f`: that rlimit is inherited by the worker and every hook
     # and would SIGXFSZ-kill (and truncate) any repo file they legitimately write
@@ -1111,9 +1147,14 @@ run_bounded_hook() {
         export AGENT_LOOP_HOOK_COMMAND="$hook_command"
         export AGENT_LOOP_HOOK_GUARD_BIN="$guard_bin"
         export AGENT_LOOP_ALLOW_REVIEW_MUTATIONS="$allow_review_mutations"
+        # Never hand a hook the wrapper's own stdin. `codex exec` reads stdin
+        # to EOF when it is not a TTY, so a hook that inherits an open pipe from
+        # the launcher (a session runner, `time`, a monitor) does nothing until
+        # the pass times out — one such pass cost its whole per-pass bound and
+        # wrote no result. The default worker goes through here too.
         # shellcheck disable=SC2016 # expanded by the bounded login shell
         timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc \
-            'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' 2>&1 \
+            'unset -f git gh 2>/dev/null || true; unalias git gh 2>/dev/null || true; export PATH="$AGENT_LOOP_HOOK_GUARD_BIN:$PATH"; eval "$AGENT_LOOP_HOOK_COMMAND"' </dev/null 2>&1 \
             | tail -c "$max_bytes"
         exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?
@@ -1121,6 +1162,7 @@ run_bounded_hook() {
         echo "hook changed origin fetch/push identity" >>"$log_file"
         status=1
     fi
+    record_phase_event end "$phase" "$(( $(date +%s) - started ))" "$status"
     if [ "$status" -ne 0 ]; then
         echo -e "${RED}✗${NC} $phase failed (exit $status); bounded tail follows:" >&2
         tail -n "$OUTPUT_MAX_LINES" "$log_file" >&2 || true
@@ -1131,7 +1173,7 @@ run_bounded_hook() {
 }
 
 worker_command() {
-    local model="$1" claude_command model_arg
+    local model="$1" claude_command model_arg effort_arg
     if [ -n "$WORKER_HOOK" ]; then
         printf '%s' "$WORKER_HOOK"
         return
@@ -1142,6 +1184,10 @@ worker_command() {
     if [ -n "$model" ]; then
         printf -v model_arg '%q' "$model"
         rendered_command+=" --model $model_arg"
+    fi
+    if [ -n "$WORKER_EFFORT" ]; then
+        printf -v effort_arg '%q' "$WORKER_EFFORT"
+        rendered_command+=" --effort $effort_arg"
     fi
     rendered_command+=" \"\$AGENT_LOOP_PROMPT\""
     printf '%s' "$rendered_command"
@@ -1204,13 +1250,28 @@ require_clean_committed_tree() {
 }
 
 run_validation() {
-    local label="$1" budgeted="${2:-false}" before_sha after_sha status
+    local label="$1" budgeted="${2:-false}" gate="${3:-}" before_sha after_sha status base_sha
     local timeout_seconds="$HOOK_TIMEOUT_SECONDS"
     if ! require_issue_branch_head; then
         echo "$label validation did not start on the issue branch" >&2
         return 1
     fi
     before_sha="$(git rev-parse HEAD)" || return 1
+    base_sha="$(git rev-parse "$BASE_REMOTE_REF")" || return 1
+    # A validation hook is a function of the head and of the base it is diffed
+    # against (area-scoped gates diff HEAD against origin/<base>). A converged
+    # round reached the same head three times — after an "Already up to date"
+    # base integration, after a clean pass that committed nothing, and at the
+    # final head — and paid for the hook each time. A pair the hook already
+    # passed is skipped, except at the final gate: that one always runs on the
+    # exact head that is marked ready, so a hook that damaged the worktree
+    # environment without committing anything is still caught before ready.
+    if [ "$gate" != final ] && [ "$before_sha" = "$LAST_VALIDATED_HEAD" ] && \
+       [ "$base_sha" = "$LAST_VALIDATED_BASE" ]; then
+        echo -e "${GREEN}✓${NC} $label validation skipped: head ${before_sha:0:9} on base ${base_sha:0:9} already passed $LAST_VALIDATED_LABEL validation"
+        record_phase_event skipped "$label validation"
+        return 0
+    fi
     if [ "$budgeted" = true ]; then
         prepare_review_pass_budget || return 1
         timeout_seconds="$REVIEW_PASS_TIMEOUT_SECONDS"
@@ -1227,6 +1288,9 @@ run_validation() {
         echo "$label validation moved HEAD away from the issue branch" >&2
         return 1
     fi
+    LAST_VALIDATED_HEAD="$after_sha"
+    LAST_VALIDATED_BASE="$base_sha"
+    LAST_VALIDATED_LABEL="$label"
 }
 
 classify_review_result() {
@@ -2146,9 +2210,30 @@ close_unattested_pr() {
     fi
 }
 
+# The subject of the worker's first commit, sanitised for use as a PR title.
+# Consumers that merge with merge commits get the PR title as the merge
+# subject, so the generic "agent-loop: resolve #N" ended up in history where a
+# conventional subject was expected. Falls back to the generic title when the
+# range holds no non-merge commit or the subject is empty after sanitising.
+draft_pr_title() {
+    local number="$1" base_sha="$2" head_sha="$3" first_commit subject
+    first_commit="$(git rev-list --reverse --no-merges "$base_sha..$head_sha" | sed -n '1p')" || first_commit=""
+    subject=""
+    if [ -n "$first_commit" ]; then
+        subject="$(git log -1 --format=%s "$first_commit" | tr -d '\000-\037\177' | cut -c1-200)" || subject=""
+    fi
+    subject="${subject#"${subject%%[![:space:]]*}"}"
+    subject="${subject%"${subject##*[![:space:]]}"}"
+    if [ -n "$subject" ]; then
+        printf '%s' "$subject"
+    else
+        printf 'agent-loop: resolve #%s' "$number"
+    fi
+}
+
 open_draft_pr() {
     local number="$1" branch="$2" publication_sha="$3" publication_base_sha="$4"
-    local body_file pr_url pr_number
+    local body_file pr_url pr_number title
     require_origin_identity || {
         echo "origin identity changed before draft PR publication" >&2
         return 1
@@ -2178,8 +2263,9 @@ open_draft_pr() {
         echo
         echo "Closes #$number"
     } > "$body_file"
+    title="$(draft_pr_title "$number" "$publication_base_sha" "$publication_sha")"
     pr_url="$(gh pr create --draft --base "$BASE_BRANCH" --head "$branch" \
-        --title "agent-loop: resolve #$number" --body-file "$body_file")" || {
+        --title "$title" --body-file "$body_file")" || {
         echo "could not create draft PR after publishing remote branch $branch" >&2
         return 1
     }
@@ -2312,6 +2398,9 @@ resume_review_run() {
     AGENT_LOOP_BRANCH="$(jq -r '.branch' <<<"$RESUME_STATE_JSON")"
     ACTIVE_WORKTREE="$(jq -r '.worktree' <<<"$RESUME_STATE_JSON")"
     AGENT_LOOP_LOG_DIR="$(jq -r '.logDir' <<<"$RESUME_STATE_JSON")"
+    LAST_VALIDATED_HEAD=""
+    LAST_VALIDATED_BASE=""
+    LAST_VALIDATED_LABEL=""
     state_head="$(jq -r '.headSha' <<<"$RESUME_STATE_JSON")"
     state_phase="$(jq -r '.phase' <<<"$RESUME_STATE_JSON")"
     state_round="$(jq -r '.round' <<<"$RESUME_STATE_JSON")"
@@ -2324,6 +2413,7 @@ resume_review_run() {
         recovery_message "Recorded recovery log directory is unavailable or unsafe."
         return 1
     fi
+    write_wrapper_pid
     branch_status="$(git -C "$ACTIVE_WORKTREE" status --porcelain)" || return 1
     [ -z "$branch_status" ] || {
         recovery_message "Recorded recovery worktree is dirty."
@@ -2391,7 +2481,7 @@ resume_review_run() {
             recovery_message "Finalized reviewed diff inspection failed during batch recovery."
             return 1
         }
-        run_validation "finalized-batch-recovery" || {
+        run_validation "finalized-batch-recovery" false final || {
             recovery_message "Finalized reviewed-head validation failed during batch recovery."
             return 1
         }
@@ -2541,7 +2631,7 @@ resume_review_run() {
         recovery_message "Final reviewed diff inspection failed during recovery."
         return 1
     }
-    run_validation "final-reviewed-head" || {
+    run_validation "final-reviewed-head" false final || {
         if [ "$ready_finalization" = true ]; then
             restore_draft_after_finalization_failure "$current_head" "$REVIEWED_BASE_SHA" \
                 "recovered final validation failed" || return 1
@@ -2803,6 +2893,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         continue
     fi
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
+    write_wrapper_pid
+    LAST_VALIDATED_HEAD=""
+    LAST_VALIDATED_BASE=""
+    LAST_VALIDATED_LABEL=""
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would
     # otherwise target the integration branch and bypass local review.
@@ -2915,7 +3009,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         recovery_message "Final reviewed diff inspection failed."
         exit 1
     }
-    run_validation "final-reviewed-head" || {
+    run_validation "final-reviewed-head" false final || {
         recovery_message "Final reviewed-head validation failed."
         exit 1
     }
