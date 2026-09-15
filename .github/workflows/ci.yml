@@ -611,3 +611,56 @@ jobs:
         run: |
           test -f scripts/lint-prompt-parity.py
           python3 -m coverage report --include='scripts/lint-prompt-parity.py' --fail-under=80
+
+  # ---------------------------------------------------------------------------
+  # The review-ledger package and the bundles built from it.
+  #
+  # `packages/review-ledger` is the source of the `review-ledger.js` bundle
+  # vendored into `.claude/`, `.codex/`, and `.agents/`. It is a standalone
+  # pnpm package with its own lockfile, so this job installs nothing from the
+  # repo root and fetches no published copy of the package.
+  #
+  # Not draft-gated: the build-and-diff is what lets a ledger change and the
+  # skills that call it move in one PR, and a draft PR is where that happens.
+  # ---------------------------------------------------------------------------
+  review-ledger:
+    name: Review-ledger package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/review-ledger
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # Same pin as `static-checks`, for the reason recorded there.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install with the frozen lockfile
+        run: |
+          set -euo pipefail
+          pm="$(node -p 'require("./package.json").packageManager')"
+          npm install --global "$pm"
+          pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Test
+        run: pnpm run test
+      - name: Build
+        run: pnpm run build
+
+      # One-time cutover evidence, removed once `ledger-drift` is retired: the
+      # first build from this source must be byte-identical to the bundle in
+      # the published tarball the vendored copies were checked against.
+      - name: Build matches the published 1.5.0 bundle
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          expected='sha512-sC0P5Nd1mN/S9Q1Igx9/OA3UPO6wnDO7Zcrisj8bgh4DJEKa7OfGbKMmzh8xst8M899lNvdQuxK4Ol2iqskh8g=='
+          tarball="$(cd "$workdir" && npm pack @loomantix/review-ledger@1.5.0 \
+            --registry https://registry.npmjs.org/ --ignore-scripts --silent)"
+          actual="sha512-$(openssl dgst -sha512 -binary "$workdir/$tarball" | base64 -w0)"
+          [ "$actual" = "$expected" ] || { echo "::error::1.5.0 tarball integrity mismatch"; exit 1; }
+          tar xzf "$workdir/$tarball" -C "$workdir"
+          cmp dist/review-ledger.bundle.js "$workdir/package/dist/review-ledger.bundle.js"
+          sha256sum dist/review-ledger.bundle.js "$workdir/package/dist/review-ledger.bundle.js"

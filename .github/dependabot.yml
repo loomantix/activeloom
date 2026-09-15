@@ -26,3 +26,20 @@ updates:
       prefix: 'chore(deps)'
     labels:
       - dependencies
+
+  # The review-ledger package is built into the vendored review-ledger.js
+  # bundles. A dependency bump that changes the bundle fails CI's build-and-diff
+  # until the bundles are rebuilt and committed in the same PR.
+  - package-ecosystem: npm
+    directory: /packages/review-ledger
+    schedule:
+      interval: weekly
+    groups:
+      review-ledger:
+        applies-to: version-updates
+        patterns:
+          - '*'
+    commit-message:
+      prefix: 'chore(deps)'
+    labels:
+      - dependencies

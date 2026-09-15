@@ -1,14 +1,19 @@
 {
   "name": "@loomantix/review-ledger",
   "version": "1.5.0",
+  "private": true,
   "type": "module",
   "description": "Deterministic local-review ledger protocol, verification, and CLI for multi-engine code review relays.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/loomantix/platform-oss.git",
+    "url": "https://github.com/loomantix/activeloom.git",
     "directory": "packages/review-ledger"
   },
   "license": "Apache-2.0",
+  "packageManager": "pnpm@10.29.3",
+  "engines": {
+    "node": ">=24"
+  },
   "bin": {
     "review-ledger": "./dist/bin.js"
   },
@@ -21,36 +26,6 @@
       "default": "./src/index.ts"
     }
   },
-  "files": [
-    "dist",
-    "protocol",
-    "README.md",
-    "LICENSE",
-    "NOTICE"
-  ],
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org/",
-    "access": "public",
-    "bin": {
-      "review-ledger": "./dist/bin.js"
-    },
-    "main": "./dist/index.js",
-    "types": "./dist/index.d.ts",
-    "exports": {
-      ".": {
-        "types": "./dist/index.d.ts",
-        "import": "./dist/index.js",
-        "require": "./dist/index.cjs",
-        "default": "./dist/index.js"
-      }
-    }
-  },
-  "devDependencies": {
-    "@types/node": "catalog:",
-    "tsup": "catalog:",
-    "typescript": "catalog:",
-    "vitest": "catalog:"
-  },
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
@@ -58,5 +33,11 @@
   },
   "dependencies": {
     "@babel/parser": "7.29.3"
+  },
+  "devDependencies": {
+    "@types/node": "25.6.0",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.5"
   }
 }

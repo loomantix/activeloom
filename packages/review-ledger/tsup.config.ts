@@ -27,7 +27,7 @@ export default defineConfig([
   // Single-file, self-contained build of the CLI. Engine repos vendor this one
   // artifact verbatim and run it as `node review-ledger.js`, so it must not
   // depend on sibling chunks, source maps, or an install step. Its bytes are
-  // compared against the published tarball by the consumers' drift check —
+  // compared against a fresh build by ActiveLoom's CI —
   // keep it unminified so a reviewer can read what they are committing.
   {
     entry: { 'review-ledger.bundle': 'src/bin.ts' },

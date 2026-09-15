@@ -12,14 +12,19 @@ The review ledger uses an open draft pull request as a durable ledger of actor-o
 - **Published Protocol**: The engine-neutral contract every engine follows ships in the tarball at [`protocol/local-review-ledger.md`](./protocol/local-review-ledger.md), so each platform repository vendors one source of truth instead of maintaining its own copy.
 - **Standalone CLI & TypeScript API**: Self-contained vendored CLI, dual ESM/CJS distribution, and CLI executable (`review-ledger`).
 
-## Installation
+## Building
+
+This package is not published. It lives in ActiveLoom and exists to produce the
+vendored `review-ledger.js` bundle each harness root carries under
+`skills/critique/scripts/`. It is a standalone pnpm package with its own
+lockfile; there is no root workspace.
 
 ```bash
-# Package install
-pnpm add @loomantix/review-ledger
-
-# Or invoke directly via npx
-npx @loomantix/review-ledger --protocol-version
+cd packages/review-ledger
+pnpm install --frozen-lockfile
+pnpm run typecheck
+pnpm test
+pnpm run build
 ```
 
 Most GitHub-backed commands require Node.js 18 or later, Git with the reviewed
@@ -28,27 +33,31 @@ session. File-only result validation and `--protocol-version` do not use GitHub.
 
 ### Vendored single-file build
 
-The published tarball also ships `dist/review-ledger.bundle.js`: the whole CLI
-as one self-contained, unminified ES module with a `#!/usr/bin/env node`
-shebang. It imports no sibling chunk and needs no `node_modules`, so it can be
-copied anywhere and run as `node review-ledger.js`. It answers `--version` with
-the version it was built from, so a vendored copy can always identify itself. Invoke it through `node`
-rather than executing it directly: npm normalises non-`bin` files to mode 0644
-in the tarball, so the extracted file is not executable even though the shebang
-is present.
+The build emits `dist/review-ledger.bundle.js`: the whole CLI as one
+self-contained, unminified ES module with a `#!/usr/bin/env node` shebang. It
+imports no sibling chunk and needs no `node_modules`, so it can be copied
+anywhere and run as `node review-ledger.js`. It answers `--version` with the
+version in this package's `package.json`, so a vendored copy can always identify
+itself. Invoke it through `node` rather than executing it directly; the vendored
+files are committed with mode 0644.
 
-This is the artifact the engine repos vendor. They commit it verbatim from a
-pinned version's tarball rather than rebuilding it, so a consumer never needs an
-install step and the committed bytes can be checked against the registry:
+A change to this package is not finished until the bundle is rebuilt and copied
+into all three harness roots in the same pull request:
 
 ```bash
-npm pack @loomantix/review-ledger@<version>
-tar xzf loomantix-review-ledger-<version>.tgz
-cmp package/dist/review-ledger.bundle.js <vendored path>
+for root in .claude .codex .agents; do
+  cp packages/review-ledger/dist/review-ledger.bundle.js "$root/skills/critique/scripts/review-ledger.js"
+done
 ```
 
-Rebuilding the bundle locally is not a supported way to produce that file — only
-bytes extracted from the published tarball are comparable.
+Also update `review-ledger.version` (this package's semver) and
+`review-ledger.integrity` (the bundle's sha512) beside each copy. CI rebuilds the
+bundle and fails when any vendored copy differs from the fresh build.
+
+The package's `.npmrc` keeps pnpm's virtual store at `../../node_modules/.pnpm`.
+esbuild records bundled module paths relative to the build directory, and that
+location keeps the output byte-identical to bundles built before the package
+moved here. Do not change it without rebuilding every vendored copy.
 
 ## CLI Usage
 
