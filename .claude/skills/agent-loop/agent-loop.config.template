@@ -107,9 +107,6 @@ retry_delay_seconds = 15
 
 # `ready` preserves legacy open/closed dependency behavior. `merged-to-base`
 # requires dependency PR merge commits to be present in origin/<base>.
-# `batch-stack` applies `merged-to-base`, except that an issue declaring
-# `Depends on #N` on an earlier, finalized, unmerged entry of the same ordered
-# batch is built on that entry's branch and opens its PR against it.
 dependency_gate = ready
 
 # What an ordered batch (`--issues N,N,...`) does when one issue fails. `stop`

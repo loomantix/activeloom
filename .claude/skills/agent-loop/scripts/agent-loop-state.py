@@ -23,7 +23,7 @@ PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
 BATCH_STATUSES = {"pending", "active", "finalized", "bailed", "parked"}
 TERMINAL_BATCH_STATUSES = frozenset({"finalized", "bailed", "parked"})
 BATCH_ROW_REQUIRED = {"issue", "status", "childRunState"}
-BATCH_ROW_OPTIONAL = {"classification", "stopCategory", "stackedOn"}
+BATCH_ROW_OPTIONAL = {"classification", "stopCategory"}
 CLASSIFICATION_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")
 STOP_CATEGORY_RE = re.compile(r"[a-z][a-z0-9-]{0,31}(?:/[a-z][a-z0-9-]{0,31})?")
 
@@ -258,21 +258,6 @@ def _validate_batch(value: dict[str, Any]) -> None:
                 _fail("a parked batch issue requires a stop category")
         elif "stopCategory" in row:
             _fail("only a parked batch issue may carry a stop category")
-        if "stackedOn" in row:
-            parent = row["stackedOn"]
-            parent_row = rows[allowlist.index(parent)] if parent in allowlist else None
-            if (
-                type(parent) is not int
-                or parent not in allowlist[:index]
-                or row["status"] == "pending"
-                or parent_row is None
-                or parent_row["status"] != "finalized"
-                or parent_row["childRunState"] is None
-            ):
-                _fail(
-                    "a stacked batch issue must name an earlier batch issue, have started, "
-                    "and use a finalized parent with a child review checkpoint"
-                )
         child = row["childRunState"]
         if child is not None and (not isinstance(child, str) or not Path(child).is_absolute()):
             _fail("batch child run-state path must be absolute or null")
@@ -439,8 +424,6 @@ def _batch_update(args: argparse.Namespace) -> None:
             if args.status != "parked":
                 _fail("a stop category applies only to a parked batch issue")
             row["stopCategory"] = args.stop_category
-        if args.stacked_on is not None:
-            row["stackedOn"] = args.stacked_on
         if args.classification is not None:
             if args.status != "bailed":
                 _fail("a bail classification applies only to a bailed batch issue")
@@ -515,7 +498,6 @@ def _parser() -> argparse.ArgumentParser:
     batch_update.add_argument("--child-run-state")
     batch_update.add_argument("--classification")
     batch_update.add_argument("--stop-category")
-    batch_update.add_argument("--stacked-on", type=int)
     batch_update.set_defaults(handler=_batch_update)
     batch_show = commands.add_parser("batch-show")
     batch_show.add_argument("--file", required=True)

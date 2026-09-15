@@ -927,34 +927,6 @@ def test_park_mode_parks_a_resumable_failure_and_its_dependent_then_finishes_the
     assert Path(child_state["worktree"]).exists()
 
 
-def test_parking_a_stacked_issue_continues_on_the_integration_base(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
-) -> None:
-    result = _run(
-        consumer,
-        ["--issues", "60,61,62", "--iterations", "3"],
-        issues=[_issue(60), _issue(61, "Depends on #60"), _issue(62)],
-        config=_config_v3(
-            tmp_path,
-            worker_hook=_PER_ISSUE_WORKER,
-            claude_review_hook=_ends_early_for(61),
-            dependency_gate="batch-stack",
-            batch_on_issue_failure="park",
-        ),
-        extra_env={"AGENT_READY_BLOCKERS": json.dumps({"61": [60]})},
-        timeout=180,
-    )
-    assert result.returncode == 3, result.stderr + result.stdout
-    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
-    batch = json.loads(batch_file.read_text(encoding="utf-8"))
-    assert [row["status"] for row in batch["issues"]] == ["finalized", "parked", "finalized"]
-    independent = json.loads(
-        Path(batch["issues"][2]["childRunState"]).read_text(encoding="utf-8")
-    )
-    assert independent["baseBranch"] == "main"
-    assert "stackedOn" not in batch["issues"][2]
-
-
 def test_failed_resumed_batch_child_can_be_parked_before_starting_the_next_issue(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1057,151 +1029,6 @@ _PER_ISSUE_WORKER = (
 )
 
 
-def test_batch_stack_builds_a_dependent_issue_on_its_unmerged_predecessor(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
-) -> None:
-    # The dependent used to start from the base without its predecessor's
-    # change, so the two PRs conflicted and the dependent was reviewed against
-    # code that would not exist once the predecessor merged.
-    result = _run(
-        consumer,
-        ["--issues", "60,61", "--iterations", "2"],
-        issues=[_issue(60), _issue(61, "Depends on #60")],
-        config=_config_v3(
-            tmp_path,
-            # The dependent's worker must see its predecessor's work.
-            worker_hook='if [ "$AGENT_LOOP_ISSUE_ID" = 61 ]; then test -f result-60.txt || exit 9; fi; '
-            + _PER_ISSUE_WORKER,
-            dependency_gate="batch-stack",
-        ),
-        extra_env={"AGENT_READY_BLOCKERS": json.dumps({"61": [60]})},
-        timeout=180,
-    )
-    assert result.returncode == 0, result.stderr + result.stdout
-    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
-    batch = json.loads(batch_file.read_text(encoding="utf-8"))
-    assert [row["status"] for row in batch["issues"]] == ["finalized", "finalized"]
-    assert batch["issues"][1]["stackedOn"] == 60
-    parent = json.loads(Path(batch["issues"][0]["childRunState"]).read_text(encoding="utf-8"))
-    child = json.loads(Path(batch["issues"][1]["childRunState"]).read_text(encoding="utf-8"))
-    # Built from the predecessor's reviewed head, with its branch as the PR base.
-    assert child["baseBranch"] == parent["branch"]
-    assert child["baseSha"] == parent["headSha"]
-    creates = [line for line in (consumer[3] / "gh.log").read_text(encoding="utf-8").splitlines()
-               if line.startswith("pr create")]
-    assert "--base main" in creates[0]
-    assert f"--base {parent['branch']}" in creates[1]
-    # Review and publication are scoped to the dependent's own commits.
-    child_log = Path(str(child["logDir"]))
-    codex_result = json.loads((child_log / "codex-review-round-1.result.json").read_text(encoding="utf-8"))
-    assert codex_result["baseSha"] == parent["headSha"]
-    changed = _run_git(
-        "diff", "--name-only", f"{parent['headSha']}..{child['headSha']}", cwd=consumer[0]
-    ).stdout.split()
-    assert changed == ["result-61.txt"]
-    assert _run_git("merge-base", "--is-ancestor", str(parent["headSha"]), str(child["headSha"]), cwd=consumer[0])
-    assert "--ignore-blocker 60" in (consumer[3] / "ready-args.log").read_text(encoding="utf-8")
-    assert f"Stacked PR: after {parent['branch']} merges, retarget it" in result.stdout
-    body = (child_log / "pr-body-final.md").read_text(encoding="utf-8")
-    assert f"Stacked on `{parent['branch']}`" in body
-
-
-def test_batch_stack_resumes_an_interrupted_stacked_issue(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
-) -> None:
-    # The parent issue stays open until its branch merges. A resumed stacked
-    # issue has no batch state loaded and used to drop out of the ready queue.
-    config = _config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="batch-stack")
-    blockers = {"AGENT_READY_BLOCKERS": json.dumps({"69": [68]})}
-    issues = [_issue(68), _issue(69, "Depends on #68")]
-    first = _run(
-        consumer, ["--issues", "68,69", "--iterations", "1"],
-        issues=issues, config=config, extra_env=blockers, timeout=180,
-    )
-    assert first.returncode == 0, first.stderr + first.stdout
-    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
-    second = _run(
-        consumer, ["--resume-batch", str(batch_file)],
-        issues=issues, config=config,
-        extra_env={**blockers, "AGENT_INTERRUPT_AFTER_CHILD_FINALIZED": "1"}, timeout=180,
-    )
-    assert second.returncode != 0
-    batch = json.loads(batch_file.read_text(encoding="utf-8"))
-    assert [row["status"] for row in batch["issues"]] == ["finalized", "active"]
-    third = _run(
-        consumer, ["--resume-batch", str(batch_file)],
-        issues=[_issue(68), _issue(69, "Depends on #68", assigned=True)],
-        config=config, extra_env=blockers, timeout=180,
-    )
-    assert third.returncode == 0, third.stderr + third.stdout
-    batch = json.loads(batch_file.read_text(encoding="utf-8"))
-    assert [row["status"] for row in batch["issues"]] == ["finalized", "finalized"]
-    assert batch["issues"][1]["stackedOn"] == 68
-
-
-def test_batch_stack_rejects_a_parent_branch_advanced_past_its_reviewed_head(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
-) -> None:
-    config = _config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="batch-stack")
-    blockers = {"AGENT_READY_BLOCKERS": json.dumps({"69": [68]})}
-    issues = [_issue(68), _issue(69, "Depends on #68")]
-    first = _run(
-        consumer, ["--issues", "68,69", "--iterations", "1"],
-        issues=issues, config=config, extra_env=blockers, timeout=180,
-    )
-    assert first.returncode == 0, first.stderr + first.stdout
-    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
-    batch = json.loads(batch_file.read_text(encoding="utf-8"))
-    parent = json.loads(Path(batch["issues"][0]["childRunState"]).read_text(encoding="utf-8"))
-
-    clone = tmp_path / "advance-parent"
-    _run_git("clone", str(consumer[1]), str(clone))
-    _run_git("config", "user.name", "Test", cwd=clone)
-    _run_git("config", "user.email", "test@example.invalid", cwd=clone)
-    _run_git("checkout", parent["branch"], cwd=clone)
-    (clone / "unreviewed-parent.txt").write_text("unreviewed\n", encoding="utf-8")
-    _run_git("add", "unreviewed-parent.txt", cwd=clone)
-    _run_git("commit", "-m", "test: advance finalized parent", cwd=clone)
-    _run_git("push", "origin", parent["branch"], cwd=clone)
-
-    resumed = _run(
-        consumer, ["--resume-batch", str(batch_file)],
-        issues=issues, config=config, extra_env=blockers, timeout=180,
-    )
-    assert resumed.returncode == 1
-    assert (
-        f"Stack parent branch {parent['branch']} no longer equals issue #68's reviewed head"
-        in resumed.stderr
-    )
-    assert not any((tmp_path / "worktrees").glob("*-issue-69-*"))
-
-
-def test_batch_stack_rejects_a_parent_checkpoint_from_another_issue(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
-) -> None:
-    config = _config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="batch-stack")
-    blockers = {"AGENT_READY_BLOCKERS": json.dumps({"69": [68]})}
-    issues = [_issue(68), _issue(69, "Depends on #68")]
-    first = _run(
-        consumer, ["--issues", "68,69", "--iterations", "1"],
-        issues=issues, config=config, extra_env=blockers, timeout=180,
-    )
-    assert first.returncode == 0, first.stderr + first.stdout
-    batch_file = next((tmp_path / "logs").glob("*-batch-*.json"))
-    batch = json.loads(batch_file.read_text(encoding="utf-8"))
-    parent_state_file = Path(batch["issues"][0]["childRunState"])
-    parent_state = json.loads(parent_state_file.read_text(encoding="utf-8"))
-    parent_state["issue"] = 67
-    parent_state_file.write_text(json.dumps(parent_state), encoding="utf-8")
-
-    resumed = _run(
-        consumer, ["--resume-batch", str(batch_file)],
-        issues=issues, config=config, extra_env=blockers, timeout=180,
-    )
-    assert resumed.returncode == 1
-    assert "dependency issue #68 has no matching finalized review checkpoint" in resumed.stderr
-
-
 def test_merged_to_base_gate_still_holds_a_dependent_batch_issue(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -1220,7 +1047,7 @@ def test_merged_to_base_gate_still_holds_a_dependent_batch_issue(
     assert "--ignore-blocker" not in (consumer[3] / "ready-args.log").read_text(encoding="utf-8")
 
 
-def test_batch_stack_parks_an_issue_whose_dependency_bailed(
+def test_park_mode_parks_an_issue_whose_dependency_bailed(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     worker = (
@@ -1233,7 +1060,7 @@ def test_batch_stack_parks_an_issue_whose_dependency_bailed(
         ["--issues", "64,65", "--iterations", "2"],
         issues=[_issue(64), _issue(65, "Depends on #64")],
         config=_config_v3(
-            tmp_path, worker_hook=worker, dependency_gate="batch-stack",
+            tmp_path, worker_hook=worker, dependency_gate="merged-to-base",
             batch_on_issue_failure="park",
         ),
         extra_env={"AGENT_READY_BLOCKERS": json.dumps({"65": [64]})},
