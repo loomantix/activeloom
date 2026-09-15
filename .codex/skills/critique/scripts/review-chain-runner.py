@@ -1082,7 +1082,7 @@ class Runner:
         if diagnostic == b"agy relay surface checkout must be clean\n":
             return {"exit_status": 1, "failure_reason": "dirty_surface"}
         if not re.fullmatch(
-            rb"fatal: not a git repository: /[^\x00-\x1f\x7f]+/\.git/worktrees/[^/\x00-\x1f\x7f]+\n",
+            rb"fatal: not a git repository: (/[^\x00-\x1f\x7f]+/\.git/worktrees/[^/\x00-\x1f\x7f]+|\(null\))\n",
             diagnostic,
         ):
             raise Blocked("legacy log does not prove a preflight-only failure")

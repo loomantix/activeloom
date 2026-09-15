@@ -201,8 +201,8 @@ and old launcher before supplying its hash. Supported evidence is:
 - The sole `agy relay surface checkout must be clean` diagnostic, whose pinned
   launcher path exits 1 before review.
 - The sole Git `fatal: not a git repository:` diagnostic naming an absolute
-  `.git/worktrees/<name>` path, together with
-  `--legacy-controller-log <path> <sha256>`. The original controller log must
+  `.git/worktrees/<name>` path or Git 2.54–2.55's `(null)` target, together
+  with `--legacy-controller-log <path> <sha256>`. The original controller log must
   end with the matching Gemini round/head announcement and the controller's
   `bash exited 128` terminal message for this checkpoint. This also proves
   the pinned controller completed cleanup; interrupted or denied cleanup has

@@ -1359,7 +1359,7 @@ def test_migration_preserves_the_v1_snapshot_and_budget(
 @pytest.mark.parametrize(
     "corruption", ["log", "log-proof", "controller", "result", "head"]
 )
-@pytest.mark.parametrize("diagnostic", ["dirty", "moved"])
+@pytest.mark.parametrize("diagnostic", ["dirty", "moved", "moved-null"])
 def test_legacy_reconciliation_rejects_uncertain_evidence(
     harness: Any, monkeypatch: pytest.MonkeyPatch, corruption: str, diagnostic: str
 ) -> None:
@@ -1375,9 +1375,11 @@ def test_legacy_reconciliation_rejects_uncertain_evidence(
     folder = harness.directory / "pass-3"
     folder.mkdir()
     (folder / "worker.log").write_text("agy relay surface checkout must be clean\n")
-    if diagnostic == "moved":
+    if diagnostic in ("moved", "moved-null"):
         (folder / "worker.log").write_text(
-            "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
+            "fatal: not a git repository: (null)\n"
+            if diagnostic == "moved-null"
+            else "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
         )
         log = harness.directory / "original-controller.log"
         log.write_text(
@@ -1436,14 +1438,17 @@ def test_legacy_reconciliation_rejects_uncertain_evidence(
         "ordinary-git-error",
     ],
 )
+@pytest.mark.parametrize("diagnostic", ["reviewer", "null"])
 def test_legacy_git_failure_requires_terminal_controller_evidence(
-    harness: Any, corruption: str
+    harness: Any, corruption: str, diagnostic: str
 ) -> None:
     runner = harness.runner(harness.args, harness.directory)
     pending = {"engine": "gemini", "round": 2, "before": HEAD}
     worker = harness.directory / "worker.log"
     worker.write_text(
-        "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
+        "fatal: not a git repository: (null)\n"
+        if diagnostic == "null"
+        else "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
     )
     controller_log = harness.directory / "original-controller.log"
     terminal = (
@@ -1816,7 +1821,7 @@ def test_recovery_resumes_after_retry_directory_checkpoint_interruption(
 
 
 @pytest.mark.parametrize("cut", ["snapshot", "checkpoint"])
-@pytest.mark.parametrize("diagnostic", ["dirty", "moved"])
+@pytest.mark.parametrize("diagnostic", ["dirty", "moved", "moved-null"])
 def test_legacy_reconciliation_resumes_after_evidence_write(
     harness: Any, monkeypatch: pytest.MonkeyPatch, cut: str, diagnostic: str
 ) -> None:
@@ -1833,9 +1838,11 @@ def test_legacy_reconciliation_resumes_after_evidence_write(
     folder = harness.directory / "pass-3"
     folder.mkdir()
     (folder / "worker.log").write_text("agy relay surface checkout must be clean\n")
-    if diagnostic == "moved":
+    if diagnostic in ("moved", "moved-null"):
         (folder / "worker.log").write_text(
-            "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
+            "fatal: not a git repository: (null)\n"
+            if diagnostic == "moved-null"
+            else "fatal: not a git repository: /missing/primary/.git/worktrees/reviewer\n"
         )
         log = harness.directory / "original-controller.log"
         log.write_text(
@@ -1884,7 +1891,7 @@ def test_legacy_reconciliation_resumes_after_evidence_write(
     evidence = (folder / "launch.json").read_bytes() if cut == "checkpoint" else None
     monkeypatch.setattr(harness.module.os, "replace", original_replace)
     resumed = harness.runner(harness.args, harness.directory)
-    if diagnostic == "moved":
+    if diagnostic in ("moved", "moved-null"):
         recovery = resumed.recovery_command()
         assert "--legacy-controller-log" in recovery
         assert harness.args.legacy_controller_log[1] in recovery
