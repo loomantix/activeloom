@@ -408,8 +408,10 @@ that declares `Depends on #N` on a parked entry is parked as
 `blocked-by-parked` without being claimed. When the batch reaches its end, or
 its iteration cap, with parked entries, the wrapper lists them and exits `3`. A
 failed entry is listed with its `--resume-run` command and the `batch-update`
-that closes it out; an entry parked behind a dependency is listed with an
-instruction to resume that dependency first.
+that closes it out. An entry parked behind a dependency has no run of its own:
+resolve the dependency (resuming it if it is parked in this batch), run the
+issue on its own, then close the entry with the listed `batch-update`, passing
+that run's state file as `--child-run-state`.
 
 ## Liveness and Timing
 
@@ -460,7 +462,8 @@ Every stop names a category from a fixed list: `no-result/hook-ended-early`,
 `uncertain-mutation`, `child-resume-failed`, `batch-incomplete`,
 `interrupted`, or `internal-error`. A stop that follows a hook carries that
 hook's phase and the path of its log (`hookLog`), never the output itself.
-Events carry identifiers, categories, counts, and paths: never issue titles or
+`resumable` is true when `resumeCommand` names a command; it does not mean
+resuming is safe, which the stop category decides. Events carry identifiers, categories, counts, and paths: never issue titles or
 bodies, hook or model output, or findings. A resumed run
 prints `▶ Issue #N (resumed, round R)`.
 

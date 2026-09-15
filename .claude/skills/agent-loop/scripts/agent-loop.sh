@@ -1643,6 +1643,12 @@ run_validation() {
         "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" || hook_status=$?
     if [ "$hook_status" -ne 0 ]; then
         record_validation_evidence "$label" "$before_sha" "$base_sha" failed "$hook_status"
+        # Killed at a bound the remaining budget clamped, the clock expired; the
+        # suite did not go red. Resume restores that deadline, so say which.
+        if [ "$budgeted" = true ] && [ "$timeout_seconds" -lt "$HOOK_TIMEOUT_SECONDS" ] && \
+           { [ "$hook_status" -eq 124 ] || [ "$hook_status" -eq 137 ]; }; then
+            recovery_message "$label validation ran out of the whole-run review budget (exit $hook_status)." budget-exhausted
+        fi
         return 1
     fi
     status="$(git status --porcelain)" || return 1
@@ -1815,7 +1821,9 @@ recover_v3_review_pass() {
     classification="$(jq -r 'if .status == "clean" then "clean" else .classification end' \
         "$outcome_file")" || return 1
     run_validation "$slug-review-round-$round" true || {
-        recovery_message "Validation after recovered $engine review failed in review round $round." validation-red
+        if [ "$LAST_STOP_CATEGORY" != budget-exhausted ]; then
+            recovery_message "Validation after recovered $engine review failed in review round $round." validation-red
+        fi
         return 1
     }
     require_review_outcome_signature "$engine" "$outcome_file" \
@@ -1982,7 +1990,11 @@ run_review_pass() {
         run_bounded_hook "$hook_description (round $round)" "$hook" \
             "$REVIEW_PASS_TIMEOUT_SECONDS" "$hook_log" true || hook_status=$?
         if [ "$hook_status" -eq 124 ] || [ "$hook_status" -eq 137 ]; then
-            recovery_message "$hook_failure_description failed in review round $round: it timed out (exit $hook_status)." hook-timeout
+            if [ "$REVIEW_PASS_TIMEOUT_SECONDS" -lt "$HOOK_TIMEOUT_SECONDS" ]; then
+                recovery_message "$hook_failure_description ran out of the whole-run review budget in review round $round (exit $hook_status)." budget-exhausted
+            else
+                recovery_message "$hook_failure_description failed in review round $round: it timed out (exit $hook_status)." hook-timeout
+            fi
             return 1
         elif [ "$hook_status" -ne 0 ]; then
             recovery_message "$hook_failure_description failed in review round $round." hook-failed
@@ -2126,7 +2138,9 @@ run_review_pass() {
         }
     fi
     run_validation "$slug-review-round-$round" true || {
-        recovery_message "Validation after $validation_description failed in review round $round." validation-red
+        if [ "$LAST_STOP_CATEGORY" != budget-exhausted ]; then
+            recovery_message "Validation after $validation_description failed in review round $round." validation-red
+        fi
         return 1
     }
     require_review_outcome_signature "$engine" "$outcome_file" \
@@ -2215,7 +2229,9 @@ run_review_convergence() {
                 return 1
             }
             run_validation "fresh-base-round-$round" true || {
-                recovery_message "Fresh-base validation failed before review round $round." validation-red
+                if [ "$LAST_STOP_CATEGORY" != budget-exhausted ]; then
+                    recovery_message "Fresh-base validation failed before review round $round." validation-red
+                fi
                 return 1
             }
             push_review_head "after fresh-base integration for round $round" \
@@ -3400,7 +3416,8 @@ print_parked_batch_entries() {
             echo "   #$issue parked ($category): '$SCRIPT_DIR/agent-loop.sh' --resume-run '$child'"
             echo "     then: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$issue' --expected-status parked --status finalized"
         else
-            echo "   #$issue parked ($category): resume the issue it depends on first, then run this issue on its own"
+            echo "   #$issue parked ($category): resolve its dependency (resume it if it is parked in this batch), then run this issue on its own"
+            echo "     then: python3 '$RUN_STATE_HELPER' batch-update --file '$BATCH_STATE_FILE' --issue '$issue' --expected-status parked --status finalized --child-run-state '<run-state.json of that run>'"
         fi
     done < <(jq -r '.issues[] | select(.status == "parked") | [.issue, .stopCategory, (.childRunState // "")] | @tsv' <<<"$batch_json")
 }
@@ -3601,6 +3618,8 @@ echo "     Codex review hook: $CODEX_REVIEW_HOOK"
 echo "     convergence cap: $REVIEW_MAX_ROUNDS round(s)"
 
 while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
+    # A stop before this issue's checkpoint must not name the previous issue's.
+    AGENT_LOOP_RUN_STATE_FILE=""
     select_status=0
     select_next_issue || select_status=$?
     if [ "$select_status" -eq 2 ]; then

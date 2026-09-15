@@ -1345,6 +1345,55 @@ def test_stop_events_name_the_hook_log_and_carry_no_free_text(
     assert stop["hookPhase"].startswith("configured Claude review hook")
 
 
+def test_budget_spent_before_post_pass_validation_stops_as_budget_exhausted(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The pass commits after using most of the budget, so its validation finds
+    # less than the per-pass floor left. Resume restores that deadline, so a
+    # parkable validation-red here would park an issue that cannot resume.
+    codex = "sleep 12; " + _minor_committed_v3_hook("codex")
+    result = _run(
+        consumer,
+        ["--issues", "76"],
+        issues=[_issue(76)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook=codex,
+            review_timeout_seconds=130,
+            hook_timeout_seconds=60,
+        ),
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "Stop category: budget-exhausted" in result.stderr, result.stderr
+    assert "validation-red" not in result.stderr
+
+
+def test_a_later_issue_stop_does_not_name_the_previous_issue_run_state(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    validation = (
+        'if [ "$AGENT_LOOP_ISSUE_ID" = 78 ]; then exit 1; fi; '
+        "printf 'validate\\n' >> \"$EVENT_LOG\""
+    )
+    result = _run(
+        consumer,
+        ["--issues", "77,78", "--iterations", "2"],
+        issues=[_issue(77), _issue(78)],
+        config=_config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, validation_hook=validation),
+        timeout=180,
+    )
+    assert result.returncode != 0
+    events_file = next((tmp_path / "logs").glob("*-batch-*-events.jsonl"))
+    events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    assert [event["issue"] for event in events if event["event"] == "pr_ready"] == [77]
+    stop = [event for event in events if event["event"] == "stop"][-1]
+    assert (stop["issue"], stop["category"]) == (78, "validation-red")
+    assert "--resume-batch" in stop["resumeCommand"]
+    assert "--resume-run" not in stop["resumeCommand"]
+    assert "Resume review with" not in result.stderr
+
+
 def test_resumed_run_names_its_issue_and_emits_a_resumed_start(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
