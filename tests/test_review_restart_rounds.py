@@ -48,6 +48,11 @@ def handoff(monkeypatch: pytest.MonkeyPatch, verify_calls: VerifyCalls) -> Modul
         verify_calls.append(("history", args))
 
     monkeypatch.setattr(module, "_verify_head", record_head)
+    monkeypatch.setattr(
+        module,
+        "_scope_signals",
+        lambda *_: {"behaviour_commits": 0, "missing_patch_files": []},
+    )
     monkeypatch.setattr(module, "_verify_signed_pr_history", record_history)
     monkeypatch.setattr(
         module,

@@ -181,6 +181,19 @@ engine in a fresh terminal.
    worktree, prove their trees match, and obtain explicit approval for a
    lease-protected force-push before rewriting published history. Repositories
    whose effective target-branch rules accept unsigned commits are unchanged.
+
+   Before creating a new run, `start-run` also counts the PR's behaviour commits
+   (non-merge commits whose headline starts `feat`, `fix`, or `perf`) and its
+   changed files that GitHub returns without a patch. At six or more behaviour
+   commits, or any patchless file, it refuses until the caller records
+   `--scope-decision keep` or `--scope-decision split`. Decide whether the PR
+   bundles independent changes before round 1 is spent: an over-scoped change
+   spends its round budget on fixes whose interactions each new reviewer finds
+   again. The decision and both counts are bound into the run content as a
+   `local-review-scope:v1` marker. The checkpoint never changes the tier, a
+   reviewer's instructions, or which findings are reported, and replaying an
+   existing run is unaffected.
+
    The helper fixes the cap at two Lean rounds or four Deep rounds. A later run
    on the same PR requires the current run to be ended and a new, explicit user
    authorization passed with `--restart`; a new session alone is not a restart.

@@ -28,6 +28,11 @@ def controller(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     # Signature API behavior is covered separately; keep sequence tests offline
     # while retaining the merged reviewable-head call sites.
     monkeypatch.setattr(module, "_verify_signed_pr_history", lambda *_: None)
+    monkeypatch.setattr(
+        module,
+        "_scope_signals",
+        lambda *_: {"behaviour_commits": 0, "missing_patch_files": []},
+    )
     return module
 
 

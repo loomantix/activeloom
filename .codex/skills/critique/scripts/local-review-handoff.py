@@ -20,6 +20,11 @@ CURRENT_ACTOR: str | None = None
 ENGINES = ("codex", "claude", "gemini")
 ENGINE_LABELS = {"codex": "Codex", "claude": "Claude", "gemini": "Gemini"}
 TIER_CAPS = {"lean": 2, "deep": 4}
+# A new run on a PR with at least this many behaviour commits, or with any
+# changed file GitHub returns without a patch, needs a recorded scope decision.
+SCOPE_BEHAVIOUR_COMMIT_LIMIT = 6
+SCOPE_DECISIONS = ("keep", "split")
+BEHAVIOUR_COMMIT_RE = re.compile(r"(?:feat|fix|perf)(?:\([^)\n]*\))?!?:")
 HANDOFF_V1_RE = re.compile(
     r"^<!-- local-review-handoff:v1 "
     r"from=(?P<from_engine>codex|claude|gemini) "
@@ -487,6 +492,71 @@ def _run_end(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
     return matches[0] if matches else None
 
 
+def _scope_signals(repo: str, pr: int) -> dict[str, Any]:
+    """Count what the scope checkpoint reads: behaviour commits and patchless files.
+
+    A behaviour commit is a non-merge commit whose headline starts `feat`, `fix`,
+    or `perf`. A patchless file changed lines GitHub would not render as a patch,
+    so review findings on it cannot anchor to a line; binary files report no
+    changed lines and removed files add no behaviour, so neither counts.
+    """
+    commits = _flatten_pages(
+        _json_output(
+            ["api", "--paginate", "--slurp", f"repos/{repo}/pulls/{pr}/commits?per_page=100"]
+        ),
+        "PR-commit",
+    )
+    behaviour = 0
+    for row in commits:
+        detail = row.get("commit")
+        parents = row.get("parents")
+        message = detail.get("message") if isinstance(detail, dict) else None
+        if not isinstance(parents, list) or not isinstance(message, str):
+            _fail("GitHub returned malformed PR commits")
+        if len(parents) == 1 and BEHAVIOUR_COMMIT_RE.match(message.split("\n", 1)[0]):
+            behaviour += 1
+    files = _flatten_pages(
+        _json_output(
+            ["api", "--paginate", "--slurp", f"repos/{repo}/pulls/{pr}/files?per_page=100"]
+        ),
+        "PR-file",
+    )
+    missing: list[str] = []
+    for row in files:
+        name = row.get("filename")
+        additions = row.get("additions")
+        deletions = row.get("deletions")
+        if (
+            not isinstance(name, str)
+            or type(additions) is not int
+            or type(deletions) is not int
+        ):
+            _fail("GitHub returned malformed PR files")
+        if row.get("status") != "removed" and "patch" not in row and additions + deletions > 0:
+            missing.append(name)
+    return {"behaviour_commits": behaviour, "missing_patch_files": sorted(missing)}
+
+
+def _scope_checkpoint_fires(signals: dict[str, Any]) -> bool:
+    return (
+        cast(int, signals["behaviour_commits"]) >= SCOPE_BEHAVIOUR_COMMIT_LIMIT
+        or bool(signals["missing_patch_files"])
+    )
+
+
+def _with_scope_decision(content: str, signals: dict[str, Any], decision: str) -> str:
+    # The engine plan marker must stay first, where the run parser reads it.
+    marker = (
+        "<!-- local-review-scope:v1 "
+        f"behaviour-commits={signals['behaviour_commits']} "
+        f"missing-patch-files={len(signals['missing_patch_files'])} "
+        f"decision={decision} -->\n\n"
+    )
+    plan = re.match(r"<!-- local-review-(?:sequence|plan):v1 [^\n]* -->\n\n", content)
+    at = plan.end() if plan else 0
+    return content[:at] + marker + content[at:]
+
+
 def _start_run(args: argparse.Namespace) -> None:
     rows = _issue_comments(args.repo, args.pr)
     records = _run_records(rows)
@@ -521,6 +591,11 @@ def _start_run(args: argparse.Namespace) -> None:
             content = (
                 f"<!-- local-review-sequence:v1 engines={sequence} -->\n\n{content}"
             )
+    scope_decision = getattr(args, "scope_decision", None)
+    scope_signals: dict[str, Any] | None = None
+    if scope_decision is not None:
+        scope_signals = _scope_signals(args.repo, args.pr)
+        content = _with_scope_decision(content, scope_signals, scope_decision)
     max_rounds = TIER_CAPS[args.tier]
     previous_end = (
         None if previous is None else _run_end(rows, cast(str, previous["run_id"]))
@@ -554,6 +629,20 @@ def _start_run(args: argparse.Namespace) -> None:
         _fail("a local-review run already exists; an explicit restart is required")
     if previous is not None and previous_end is None:
         _fail("the previous local-review run must be ended before an explicit restart")
+    if scope_signals is None:
+        scope_signals = _scope_signals(args.repo, args.pr)
+        if _scope_checkpoint_fires(scope_signals):
+            files = scope_signals["missing_patch_files"]
+            shown = ", ".join(files[:5]) + (", ..." if len(files) > 5 else "")
+            _fail(
+                "scope checkpoint: this PR has "
+                f"{scope_signals['behaviour_commits']} behaviour commits "
+                f"(checkpoint at {SCOPE_BEHAVIOUR_COMMIT_LIMIT}) and "
+                f"{len(files)} changed files GitHub returns without a patch"
+                + (f" ({shown})" if files else "")
+                + "; decide whether it bundles changes that should be split, then "
+                "re-run start-run with --scope-decision keep or --scope-decision split"
+            )
     supersedes = None if previous is None else cast(int, previous["comment_id"])
     run_id = _run_digest(
         tier=args.tier,
@@ -1224,6 +1313,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     plan.add_argument(
         "--chain", help="fixed engine steps, including repeats; no early exit"
+    )
+    start.add_argument(
+        "--scope-decision",
+        choices=SCOPE_DECISIONS,
+        help="record a scope decision; required when the scope checkpoint fires",
     )
     start.set_defaults(handler=_start_run)
 
