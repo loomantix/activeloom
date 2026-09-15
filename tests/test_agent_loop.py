@@ -1220,8 +1220,9 @@ def test_merged_to_base_gate_still_holds_a_dependent_batch_issue(
     assert "--ignore-blocker" not in (consumer[3] / "ready-args.log").read_text(encoding="utf-8")
 
 
-def test_batch_stack_parks_an_issue_whose_dependency_bailed(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+@pytest.mark.parametrize("dependency_gate", ["merged-to-base", "batch-stack"])
+def test_park_mode_parks_an_issue_whose_dependency_bailed(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, dependency_gate: str
 ) -> None:
     worker = (
         'if [ "$AGENT_LOOP_ISSUE_ID" = 64 ]; then '
@@ -1233,7 +1234,7 @@ def test_batch_stack_parks_an_issue_whose_dependency_bailed(
         ["--issues", "64,65", "--iterations", "2"],
         issues=[_issue(64), _issue(65, "Depends on #64")],
         config=_config_v3(
-            tmp_path, worker_hook=worker, dependency_gate="batch-stack",
+            tmp_path, worker_hook=worker, dependency_gate=dependency_gate,
             batch_on_issue_failure="park",
         ),
         extra_env={"AGENT_READY_BLOCKERS": json.dumps({"65": [64]})},
