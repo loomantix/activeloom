@@ -79,10 +79,10 @@ harnesses:
       # The ledger is a build artifact of `packages/review-ledger`, vendored
       # verbatim and run as `node review-ledger.js`. Mode is 0644 deliberately:
       # the committed file is not executable and nothing may invoke it
-      # as `./review-ledger.js`. `review-ledger.version` records which package
-      # version these bytes came from; the `review-ledger` job in *this* repo's CI
-      # rebuilds the bundle and byte-compares it. That job is not synced, so a consumer's copy is restored
-      # by the next sync rather than verified locally.
+      # as `./review-ledger.js`. `review-ledger.version` and
+      # `review-ledger.integrity` record which package version these bytes came
+      # from; this repo's CI rebuilds and pins them. That CI job is not synced, so
+      # a consumer's copy is restored by the next sync rather than verified locally.
       - source: .claude/skills/critique/scripts/review-ledger.js
         destination: .claude/skills/critique/scripts/review-ledger.js
         substitutions: []
