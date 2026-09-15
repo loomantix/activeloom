@@ -184,6 +184,14 @@ powerful file.
 
 ## What is _not_ rendered, and the lint that watches it
 
+The vendored `review-ledger.js` helper is not a rendered prompt. It is the build
+output of [`packages/review-ledger`](../packages/review-ledger/README.md), copied
+byte-for-byte into each root's `skills/critique/scripts/`, and CI's
+`Review-ledger package` job fails when any copy differs from a fresh build. The
+protocol document in `references/local-review-ledger.md` is vendored from the
+same package. Editing either is a prompt-stack input change like any other and
+advances `PROMPT_STACK_VERSION`.
+
 The review chain — `critique`, `deepcritique`, `refactorpass`, `reviewit`,
 `copilot-review`, and their siblings — is deliberately never single-sourced.
 [`docs/decisions/0006`](decisions/0006-review-chains-never-converge.md) is the

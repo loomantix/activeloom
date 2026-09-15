@@ -52,7 +52,7 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 
 Use the [agent entry guide](docs/agent-guide.md#know-which-source-to-edit) to identify ownership. Shared rendered skills live in `prompts/skills/` with vocabulary in `prompts/profiles/`; edit those sources and regenerate rather than hand-editing outputs. Harness-specific review prompts remain separate by design. The root harness trees and `scripts/sync-targets.yml` are the unified consumer distribution surface; imported engine trees are not additional installation sources.
 
-Read [prompt rendering](docs/prompt-rendering.md) for generation, parity, and prompt-stack version rules. Vendored review-ledger files must come from their declared upstream package. Consumer-specific rules belong in consumer configuration or `.review/addendum.local.md`.
+Read [prompt rendering](docs/prompt-rendering.md) for generation, parity, and prompt-stack version rules. Vendored review-ledger files are built from [`packages/review-ledger`](packages/review-ledger/README.md): change the package source, rebuild, and commit the bundle into all three harness roots in the same PR. Consumer-specific rules belong in consumer configuration or `.review/addendum.local.md`.
 
 For public documentation changes, keep the root README, [agent entry guide](docs/agent-guide.md), [getting-started guide](docs/getting-started.md), and [CLI README](cli/README.md) consistent. Verify package availability before presenting an npm command as usable. Distinguish installer version, distribution ref, prompt-stack version, and installed consumer state.
 

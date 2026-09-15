@@ -4,10 +4,9 @@ Use an open draft pull request as the durable ledger for every local review
 pass. The ledger is part of the review contract, not optional reporting after
 the code changes.
 
-This document is the engine-neutral protocol. It is published inside
-[`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger)
-and vendored verbatim by each engine's platform repository, so all engines read
-the same contract. Anything specific to one engine — its skill names, its
+This document is the engine-neutral protocol. Its source lives in ActiveLoom's
+`packages/review-ledger` package and it is vendored verbatim into each harness
+root, so all engines read the same contract. Anything specific to one engine — its skill names, its
 vendored helper path, its lens roster — belongs in that engine's
 `REVIEW_WORKFLOW.md`, not here.
 
@@ -559,13 +558,12 @@ so `./review-ledger.js` will not run. The bundle is ESM; the sibling
 `package.json` beside it declares `"type": "module"` so it resolves the same way
 regardless of what the surrounding repository's root manifest says.
 
-The file is a build artifact of
-[`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger),
-vendored verbatim from the published tarball at the version recorded in
-`review-ledger.version`, with that tarball's sha512 in
-`review-ledger.integrity`. `node <ledger-helper> --version` reports the version
+The file is a build artifact of ActiveLoom's `packages/review-ledger` package,
+vendored verbatim at the package version recorded in `review-ledger.version`,
+with the bundle's own sha512 in `review-ledger.integrity`. `node <ledger-helper> --version` reports the version
 it was built from, so a copy can always identify itself without trusting the pin
-file beside it. Never edit or reformat it: fixes belong upstream in the package.
+file beside it. Never edit or reformat it: fixes belong in the package source, rebuilt into
+every vendored copy.
 In a consumer repository an accidental edit is silently restored by the next
 sync rather than caught locally, so treat the file as read-only and keep it out
 of any formatter.
@@ -703,10 +701,10 @@ budget, discard a finding, fabricate evidence, or invoke an unapproved reviewer.
 ### Helper version prerequisite
 
 The run-scoped attestation and `finalize` capabilities below require the
-published review-ledger 1.4 or later. They are unavailable in earlier helpers.
+review-ledger 1.4 or later. They are unavailable in earlier helpers.
 Before activating these capabilities, vendor the compatible
-published bundle and its version/integrity metadata through the normal verified
-dependency update. Never edit the vendored bundle or present unsupported recovery
+bundle and its version/integrity metadata through the normal verified
+sync update. Never edit the vendored bundle or present unsupported recovery
 as completed. With an earlier helper, preserve the original result and pre-pass snapshot; use
 the existing `validate-result` and `attest` flow only when its ordinary invariants
 accept that evidence. A cross-run identity collision must await the compatible
