@@ -790,6 +790,18 @@ at the exact final head, and state its command, configuration, gates, and SHA
 in the attestation. Actual full-suite CI at that head satisfies this requirement
 and should be reused; do not rerun a broad local suite solely to duplicate it.
 
+Under agent-loop (`AGENT_LOOP_REVIEW_CONTRACT_VERSION` is set) the wrapper's
+validation hook is the gating run, and the wrapper, which writes the canonical
+attestation, owns that evidence. It runs the hook on the exact head after every
+review pass and again before marking the pull request ready, stops the pass
+when the hook is red, records the command digest, head, base, and outcome of
+every run in the run's `validation.jsonl`, and names the final head in the
+ready pull request body. An engine inside such a pass runs focused validation
+for its fixes and does not run the unfiltered suite itself: a second run on the
+same head only duplicates the wrapper's, and a long suite left running is the
+common way a one-shot pass ends before writing its result. Standalone and
+review-chain passes keep the rule above.
+
 Two failure modes make this non-optional, and both have shipped:
 
 - **A scoped run is blind by construction.** It cannot see a sibling suite the

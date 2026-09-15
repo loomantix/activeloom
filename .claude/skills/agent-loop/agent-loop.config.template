@@ -33,6 +33,10 @@ validation_hook =
 # They must not force-push, merge, or invoke hosted AI reviewers.
 # Codex runs `deepcritique`; Claude runs `deepcritique` with the consumer's literal
 # effort policy (for example `claude --effort low /deepcritique ...`).
+# Ask review hooks for focused checks on their own fixes only. validation_hook
+# is the gating suite: the wrapper runs it on the exact head after every pass,
+# so a hook that also runs the full suite duplicates it and can end its turn
+# while that suite is still running.
 review_contract_version = 3
 config_doctor = true
 claude_effort_policy =
