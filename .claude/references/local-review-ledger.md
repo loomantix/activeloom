@@ -842,7 +842,28 @@ The wrapper snapshots and seals the pre-pass review-comment IDs and exports the
 owner-only file to the helper. A pseudo-v3 marker absent from that snapshot is
 current-pass data and fails closed instead of becoming historical evidence.
 
-For a blocked pass, put one short public-safe blocker in an owner-only regular
+If final verification of a completed candidate fails, `write-result` preserves
+an owner-only `<result-file>.recovery.json` sidecar and writes a canonical blocked
+result. Preserve both files and report the helper failure; do not overwrite that
+blocked result with another blocker merely to describe the same finalization
+failure. The sidecar binds the candidate to the original blocked bytes, actor,
+repository, PR, and pre-pass snapshot. It does not count as a review attestation.
+
+A controller that recorded a successful worker return may pin the sidecar's
+SHA-256 at that boundary and retry `recover-result` with the original
+`write-result` identity arguments and `--expected-recovery-sha256 <pinned-digest>`.
+Omit `--classification`: recovery reads it from the saved candidate. Reuse the
+original pre-pass snapshot. Recovery rechecks the live head, Git transition,
+complete disposition set, and range classification before writing a clean or
+changed result. Then run the ordinary validation and attestation steps. It
+neither launches a reviewer nor starts a run or spends another round.
+
+Missing candidates, unknown worker exits, changed snapshots, altered blocked
+results, and unresolved review work require explicit reconciliation; they cannot
+be promoted by this recovery path. Identical replay after an interrupted result
+write is supported, and the sidecar retains the original blocked evidence.
+
+For a blocked pass with unfinished review work, put one short public-safe blocker in an owner-only regular
 file and call `write-blocked-result` instead of constructing JSON:
 
 ```bash
