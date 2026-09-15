@@ -43,9 +43,22 @@ def test_both_critique_surfaces_skip_the_unfiltered_run_only_under_agent_loop() 
         assert "write the result only after every command you started has finished" in text, path
 
 
+def _template_text(root: str) -> str:
+    template = (ROOT / root / "skills/agent-loop/agent-loop.config.template").read_text(encoding="utf-8")
+    return " ".join(" ".join(line.lstrip("#") for line in template.splitlines()).split())
+
+
 def test_config_template_does_not_ask_review_hooks_for_a_gating_run() -> None:
-    template = (ROOT / ".claude/skills/agent-loop/agent-loop.config.template").read_text(encoding="utf-8")
-    text = " ".join(" ".join(line.lstrip("#") for line in template.splitlines()).split())
+    text = _template_text(".claude")
     assert "Ask review hooks for focused checks on their own fixes only" in text
     assert "validation_hook is the gating suite" in text
     assert "critical tier" not in text
+
+
+def test_every_config_template_makes_validation_hook_the_gating_run() -> None:
+    # Every wrapper exports the contract version, so the ledger's agent-loop
+    # exception applies to each root's consumers.
+    for root in (".claude", ".codex", ".agents"):
+        text = _template_text(root)
+        assert "This is the gating run: use the repository's declared review gate" in text, root
+        assert "Prefer targeted checks" not in text, root
