@@ -829,6 +829,13 @@ class Runner:
             )
             attempt.update(exit_status=0, review_started=True, phase="returned")
             pending["phase"] = "returned"
+            # Bind completed-result recovery to the observed worker return.
+            # A sidecar introduced later, or an unknown exit, is not proof of a
+            # completed pass and must not authorize automatic finalization.
+            recovery = folder / "result.json.recovery.json"
+            pending["result_recovery_sha256"] = (
+                digest(recovery) if recovery.exists() else None
+            )
         except (
             Blocked,
             OSError,
@@ -1295,14 +1302,34 @@ class Runner:
             str(result_path),
         ]
         result = self.helper("ledger", "validate-result", *fields)
-        if result["status"] == "blocked":
-            raise Blocked(
-                "reviewer reported blocked; inspect saved result and recover the owed pass"
-            )
         # A late failure after result creation must not be silently accepted.
         if pending["phase"] != "returned":
             raise Blocked(
                 "worker exit is unknown; reconcile before accepting its saved result"
+            )
+        recovery_sha256 = pending.get("result_recovery_sha256")
+        if recovery_sha256:
+            recovery = folder / "result.json.recovery.json"
+            if digest(recovery) != recovery_sha256:
+                raise Blocked("completed result recovery evidence changed")
+            self.helper(
+                "ledger",
+                "recover-result",
+                "--repo",
+                self.args.repo,
+                "--pr",
+                str(self.args.pr),
+                *fields,
+                "--expected-recovery-sha256",
+                recovery_sha256,
+                "--historical-comment-ids-file",
+                str(folder / "historical.json"),
+            )
+            result = self.helper("ledger", "validate-result", *fields)
+        if result["status"] == "blocked":
+            raise Blocked(
+                "reviewer reported blocked without recoverable completed evidence; "
+                "inspect saved result and recover the owed pass"
             )
         self.dco(head)
         if not (folder / "validated.json").exists():

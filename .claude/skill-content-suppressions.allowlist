@@ -50,3 +50,18 @@ aaeaf3ba081d352d0cdac34e8da9371f2277df76ea30564b694989dfb8308d3a  .codex/skills/
 # --- genuine exception: a real outbound network call ---
 393f6080a8cc70f68526a012612470927dee55b1da301afc51dd1ac5a0181807  .agents/skills/ship-staging/SKILL.md  raw-network-tool  Outbound only, and nothing it returns is executed. POSTs the deploy-notification payload the skill built at /tmp/ship-staging-<pr>-payload.json to the team's Google Chat space via the incoming webhook in $GCHAT_WEBHOOK_URL. The response is read for an HTTP status and a `spaces/<id>/messages/<id>` message id. `gh` cannot reach a Google Chat webhook, which is why the rule's normal answer does not apply.
 393f6080a8cc70f68526a012612470927dee55b1da301afc51dd1ac5a0181807  .codex/skills/ship-staging/SKILL.md  raw-network-tool  Google Chat webhook POST. Byte-identical to the .agents copy; listed separately because a suppression is bound to a path.
+
+# --- category error: bundled JS template literal interpolation read as shell deref ---
+# @babel/parser bundled in review-ledger.js formats AST/parser error messages
+# containing `${token}`. This is a JavaScript template literal inside the vendored
+# bundle, not a shell environment variable dereference.
+5fa4277139ae9fac1d7dc83de41d7812a9c98ce9b2dc324a263295cb2389c909  .agents/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+5fa4277139ae9fac1d7dc83de41d7812a9c98ce9b2dc324a263295cb2389c909  .claude/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+5fa4277139ae9fac1d7dc83de41d7812a9c98ce9b2dc324a263295cb2389c909  .codex/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+d8820626846608072995c005df565368eebec88677a708892984e0b70d5965aa  .agents/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+d8820626846608072995c005df565368eebec88677a708892984e0b70d5965aa  .claude/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+d8820626846608072995c005df565368eebec88677a708892984e0b70d5965aa  .codex/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+292cf686e863ab9d7818d8be8582d29fa90864d101a502a11df6d6e6840cf609  .agents/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+292cf686e863ab9d7818d8be8582d29fa90864d101a502a11df6d6e6840cf609  .claude/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+292cf686e863ab9d7818d8be8582d29fa90864d101a502a11df6d6e6840cf609  .codex/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+

@@ -143,6 +143,9 @@ result after the final lane. For `clean` or `changed`, call the ledger helper's
 fetches and derives them. Use `minor` or `material` classification when the head
 moved. For `blocked`, put the safe blocker in an owner-only regular file and
 call `write-blocked-result`.
+If the helper already saved `<result-file>.recovery.json` for a completed
+candidate, preserve it and its blocked result for controller finalization
+recovery instead of overwriting the blocker.
 The outer wrapper validates the observed transition and posts the canonical
 attestation; this skill must not post a pass/completion marker itself.
 
