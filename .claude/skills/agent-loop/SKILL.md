@@ -72,7 +72,7 @@ with the issue worktree as the current directory.
 | `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                  |
 | `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                      |
 | `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                        |
-| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                                                                                        |
+| `dependency_gate`                                | `ready` (legacy), `merged-to-base`, or `batch-stack`.                                                                                                                                                        |
 | `batch_on_issue_failure`                         | `stop` (default) or `park`. See "Parking a failed batch issue".                                                                                                                                              |
 | `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                                                                  |
 | `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                                                             |
@@ -319,6 +319,20 @@ ancestor of the current `origin/<base>`. An issue dependency passes only when
 one of its closing PRs meets the same condition. Closed issues alone do not
 pass. `dependency_gate = ready` (the default) preserves the legacy ready-queue
 semantics.
+
+`dependency_gate = batch-stack` is for ordered batches, where order alone is
+only a timing constraint. An issue that declares `Depends on #A` on an earlier
+batch entry that is finalized but not merged is built on that entry: its
+worktree starts at #A's reviewed head, its draft PR targets #A's branch, and
+review and the publication diff cover only its own commits. The batch records
+the stack (`stackedOn`), and the ready PR names the branch it is stacked on.
+Retargeting the PR to the base after #A merges is left to the operator; the
+wrapper prints the command. A stack has one parent: a dependency on two
+unmerged batch entries, or on a later entry, stops. A dependency that is
+parked or bailed in the batch is never built from the base instead. Under
+`batch_on_issue_failure = park` the issue is parked without being started, as
+`blocked-by-parked` or `blocked-by-dependency`; otherwise the batch stops. A dependency outside the batch follows
+`merged-to-base`.
 
 Every batch run warns at creation when an issue's body mentions an earlier
 batch issue without declaring `Depends on`, since that issue starts from the
