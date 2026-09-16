@@ -392,10 +392,26 @@ class Runner:
             "require_dco": self.args.require_dco
             or Path(".github/workflows/dco.yml").is_file(),
         }
+        # Added only when set, so a checkpoint written before the flag existed
+        # still resumes with the same arguments.
+        scope_decision = getattr(self.args, "scope_decision", None)
+        if scope_decision:
+            config["scope_decision"] = scope_decision
         if self.state:
             if self.state.get("version") not in (1, 2):
                 raise Blocked("unsupported checkpoint version")
-            if not self.args.resume or self.state["config"] != config:
+            adopt_scope = bool(
+                self.args.resume
+                and self.state.get("run_id") is None
+                and scope_decision
+                and "scope_decision" not in self.state["config"]
+            )
+            # Compare in memory: a resume this method goes on to reject must
+            # not leave an adopted decision behind in the checkpoint.
+            recorded = dict(self.state["config"])
+            if adopt_scope:
+                recorded["scope_decision"] = scope_decision
+            if not self.args.resume or recorded != config:
                 raise Blocked(
                     "checkpoint exists; use --resume with the same plan, tier, and gates"
                 )
@@ -413,6 +429,9 @@ class Runner:
                     "with the original arguments plus --resume --migrate-controller "
                     "<that checkout's HEAD sha>"
                 )
+            if adopt_scope:
+                self.state["config"]["scope_decision"] = scope_decision
+                self.persist()
             return
         if self.args.resume:
             raise Blocked("no checkpoint to resume")
@@ -1333,6 +1352,8 @@ class Runner:
             argv.append("--require-dco")
         for check in config["checks"]:
             argv.extend(["--check", check])
+        if config.get("scope_decision"):
+            argv.extend(["--scope-decision", config["scope_decision"]])
         if (self.state.get("pending") or {}).get("phase") == "preflight_failed":
             argv.append("--recover-preflight")
         intent = (self.state.get("pending") or {}).get("legacy_reconciliation")
@@ -1541,6 +1562,11 @@ class Runner:
                 config["plan"],
                 "--authorization-file",
                 str(self.directory / "authorization.txt"),
+                *(
+                    ["--scope-decision", config["scope_decision"]]
+                    if config.get("scope_decision")
+                    else []
+                ),
             )
             self.state["run_id"] = started["run_id"]
             self.persist()
@@ -1727,6 +1753,11 @@ def main(argv: list[str] | None = None) -> int:
         help="public-safe scope and tier rationale",
     )
     parser.add_argument("--require-dco", action="store_true")
+    parser.add_argument(
+        "--scope-decision",
+        choices=("keep", "split"),
+        help="scope decision forwarded to start-run when its scope checkpoint fires",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--recover-preflight",

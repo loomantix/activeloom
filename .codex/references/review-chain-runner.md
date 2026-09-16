@@ -51,6 +51,9 @@ These are alternative plans, not consecutive commands for the same active run.
   approved adapters; arbitrary commands cannot acquire review-attestation roles.
 - `--author` is the actual author engine, not necessarily the first reviewer.
   Existing roster membership must match; reconcile changes explicitly first.
+- `--scope-decision keep|split` records the decision `start-run` requires when
+  its scope checkpoint fires (see REVIEW_WORKFLOW.md). It becomes part of the
+  saved plan, so pass the same value with `--resume`.
 
 ## Reviewer settings
 
