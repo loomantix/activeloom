@@ -1,17 +1,9 @@
 'use strict';
 
 /**
- * The onboarding ladder, defined once.
+ * The onboarding ladder, ordered by credential cost.
  *
- * Every tier is strictly the previous tier plus exactly one thing, and the
- * axis is credential cost — not feature richness. That ordering is the whole
- * point: a reader can stop at the first tier whose price they are willing to
- * pay, and nothing above it is a prerequisite for anything below it.
- *
- * This module is the single definition. `docs/getting-started.md`, `README.md`,
- * and the CLI's own `tiers` output all describe the same ladder, and
- * `tests/cli/tiers-docs.test.js` fails when the docs and this file disagree —
- * so a tier renamed here cannot quietly leave stale prose behind.
+ * Each tier adds exactly one requirement to the previous tier.
  */
 
 /**
@@ -64,32 +56,18 @@ const TIERS = Object.freeze([
 ]);
 
 /**
- * The tier the docs point a reader at.
- *
- * Deliberately not named `DEFAULT_TIER`: bare `npx activeloom init` resolves to
- * Tier 1, and a constant claiming otherwise made the docs and `resolveTier`
- * disagree with nothing to catch it. `tests/cli/tiers-docs.test.js` reads this
- * value, asserts the prose against it, and separately asserts that bare `init`
- * does *not* resolve to it — so the constant, the docs, and `resolveTier` are
- * pinned to one meaning.
+ * Recommended tier highlighted in documentation. Bare `init` defaults to Tier 1.
  */
 const RECOMMENDED_TIER = 2;
 
 /**
  * Resolve the tier a set of parsed flags selects.
  *
- * Kept separate from the flag parser so the mapping is testable on its own and
- * stated in exactly one place — the CLI prints the resolved tier back to the
- * user, and a drift between "what we did" and "what we said we did" is the
- * failure mode worth ruling out by construction.
- *
  * @param {{sync?: boolean, app?: boolean}} flags
  * @returns {Tier}
  */
 function resolveTier(flags) {
-  // `--app` implies `--sync`: an App identity with nothing to sign is not a
-  // coherent request, and silently accepting it would produce a tier-1 tree
-  // while the user believed they had asked for signed automation.
+  // `--app` implies `--sync`: signing requires a scheduled sync workflow.
   if (flags.app) return TIERS[3];
   if (flags.sync) return TIERS[2];
   return TIERS[1];

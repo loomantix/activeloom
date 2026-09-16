@@ -3,19 +3,7 @@
 /**
  * Tier 0 — `npx activeloom add <skill>`.
  *
- * Installs skills into the user's own agent config directory. No repository, no
- * account, no key, nothing committed. This is the tier the acceptance criterion
- * is about ("a working review skill in under two minutes"), and every choice
- * here defends it: no YAML, no Python, no substitution engine, no config file,
- * and one network round trip.
- *
- * It can afford to be this simple because of a property of the manifest rather
- * than an assumption about it: skills are verbatim sync targets — the only two
- * targets carrying `<<KEY>>` substitutions are `.claude/settings.json` and
- * `.github/copilot-instructions.md`, neither of which is a skill.
- * `assertNoPlaceholders` turns that property into an enforced precondition, so
- * a future skill that starts needing substitution fails loudly here instead of
- * installing a prompt with a literal `<<KEY>>` in front of a model.
+ * Installs skills directly into user agent configuration directories.
  */
 
 const fs = require('node:fs');
@@ -47,12 +35,7 @@ function listSkills(upstreamDir, harnessRoot) {
 }
 
 /**
- * Walk every file under `dir`, depth-first.
- *
- * `withFileTypes` gives `lstat`-based entries, so a symlink is neither
- * `isDirectory()` nor `isFile()` and is skipped by both branches below. That is
- * the property this walk relies on, and `copyTree` relies on the same one; no
- * shipped skill contains a symlink, so nothing is lost by dropping them.
+ * Walk every file under `dir`, depth-first, ignoring symlinks.
  *
  * @param {string} dir
  * @returns {string[]} absolute file paths
@@ -69,19 +52,14 @@ function walkFiles(dir) {
 }
 
 /**
- * Refuse to install a tree containing an unsubstituted placeholder.
- *
- * Installing one would put a literal `<<KEY>>` in front of a model, which reads
- * as an instruction it cannot satisfy. Failing here is recoverable; shipping a
- * corrupted prompt is not, and it would stay invisible until a review went wrong.
+ * Verify that a skill tree contains no unsubstituted placeholder tokens.
  *
  * @param {string} dir
  * @param {string} label
  */
 function assertNoPlaceholders(dir, label) {
   for (const full of walkFiles(dir)) {
-    // Read as UTF-8 and test: a binary file yields replacement characters
-    // rather than a false match, and skills are text by construction.
+    // Skills are text by construction.
     if (PLACEHOLDER.test(fs.readFileSync(full, 'utf8'))) {
       throw new Error(
         `${label} contains an unsubstituted placeholder (${full}). ` +
@@ -94,12 +72,6 @@ function assertNoPlaceholders(dir, label) {
 /**
  * Pick the harnesses to install into.
  *
- * Explicit `--harness` wins. Otherwise every harness this machine shows
- * evidence of, because a config directory or an installed CLI is evidence the
- * user actually runs it. With no evidence at all we install for Claude Code and
- * say so — a first-time user has no config directory yet, and refusing to act
- * would fail the two-minute criterion at the first step.
- *
  * @param {ReturnType<import('./detect').detect>} facts
  * @param {string[]} requested
  * @returns {{ids: string[], reason: string}}
@@ -111,16 +83,7 @@ function chooseHarnesses(facts, requested) {
 }
 
 /**
- * Copy a skill directory, preserving the executable bit.
- *
- * Modes matter: `issues/scripts/ready.py` is a `0755` sync target invoked
- * directly, so a copy that flattened permissions would install a skill that
- * silently cannot run its own helper.
- *
- * The `isDirectory()`/`isFile()` pair is load-bearing here, not incidental
- * tidiness: `withFileTypes` reports a symlink as neither, so a link planted in
- * a malformed upstream tree is dropped rather than followed out of the
- * destination. This is the copy, so this is where that guarantee matters.
+ * Copy a skill directory, preserving permissions and skipping symlinks.
  *
  * @param {string} src
  * @param {string} dest
@@ -214,11 +177,7 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
 
   let installed = 0;
   let skipped = 0;
-  // Availability is a property of the requested name across the selected
-  // harness set. The harnesses intentionally ship different inventories, so a
-  // skill absent from Codex but installed for Claude is still a successful
-  // request. Per-harness warnings remain useful, but they cannot determine the
-  // process exit status.
+  // Track skills found across any selected harness.
   const found = new Set();
 
   for (const id of chosen.ids) {
@@ -321,8 +280,6 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
     );
   }
   // Fail only when a requested name exists in none of the selected harnesses.
-  // A script that pipes this into `&&` still sees a typo, while a valid skill
-  // installed into any requested or detected harness remains successful.
   return skills.some((name) => !found.has(name)) ? 1 : 0;
 }
 
