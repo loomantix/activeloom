@@ -24,3 +24,8 @@ venv/
 .coverage*
 coverage/
 htmlcov/
+
+# packages/review-ledger install and build output. The vendored bundles are
+# committed under the harness roots; the package's own dist/ never is.
+node_modules/
+packages/review-ledger/dist/

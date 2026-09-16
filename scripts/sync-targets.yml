@@ -76,14 +76,13 @@ harnesses:
         destination: .claude/skills/critique/SKILL.md
         substitutions: []
 
-      # The ledger is a build artifact of `@loomantix/review-ledger`, vendored
-      # verbatim from the published tarball and run as `node review-ledger.js`.
-      # Mode is 0644 deliberately: npm normalises non-`bin` files to 0644 in the
-      # tarball, so the committed file is not executable and nothing may invoke it
-      # as `./review-ledger.js`. `review-ledger.version` records which published
-      # version these bytes came from; the `ledger-drift` job in *this* repo's CI
-      # pins them to it. That job is not synced, so a consumer's copy is restored
-      # by the next sync rather than verified locally.
+      # The ledger is a build artifact of `packages/review-ledger`, vendored
+      # verbatim and run as `node review-ledger.js`. Mode is 0644 deliberately:
+      # the committed file is not executable and nothing may invoke it
+      # as `./review-ledger.js`. `review-ledger.version` and
+      # `review-ledger.integrity` record which package version these bytes came
+      # from; this repo's CI rebuilds and pins them. That CI job is not synced, so
+      # a consumer's copy is restored by the next sync rather than verified locally.
       - source: .claude/skills/critique/scripts/review-ledger.js
         destination: .claude/skills/critique/scripts/review-ledger.js
         substitutions: []
@@ -558,16 +557,15 @@ harnesses:
         destination: .codex/skills/critique/SKILL.md
         substitutions: []
 
-      # The ledger is a build artifact of `@loomantix/review-ledger`, vendored
-      # verbatim from the published tarball and run as `node review-ledger.js`.
-      # Mode is 0644 deliberately: npm normalises non-`bin` files to 0644 in the
-      # tarball, so the committed file is not executable and nothing may invoke it
+      # The ledger is a build artifact of `packages/review-ledger`, vendored
+      # verbatim and run as `node review-ledger.js`. Mode is 0644 deliberately:
+      # the committed file is not executable and nothing may invoke it
       # as `./review-ledger.js`. The sibling `package.json` declaring
       # `"type": "module"` must sync with it — the bundle is ESM under a `.js`
       # name, so without it Node resolves the module type from the CONSUMER's root
       # manifest and a `"type": "commonjs"` repository fails with a SyntaxError.
       # `review-ledger.version` and `review-ledger.integrity` record which
-      # published tarball these bytes came from; `codex-platform` CI pins them.
+      # package version these bytes came from; this repo's CI rebuilds and pins them.
       - source: .codex/skills/critique/scripts/review-ledger.js
         destination: .codex/skills/critique/scripts/review-ledger.js
         substitutions: []
@@ -1021,16 +1019,15 @@ harnesses:
         destination: .agents/skills/critique/SKILL.md
         substitutions: []
 
-      # The ledger is a build artifact of `@loomantix/review-ledger`, vendored
-      # verbatim from the published tarball and run as `node review-ledger.js`.
-      # Mode is 0644 deliberately: npm normalises non-`bin` files to 0644 in the
-      # tarball, so the committed file is not executable and nothing may invoke it
+      # The ledger is a build artifact of `packages/review-ledger`, vendored
+      # verbatim and run as `node review-ledger.js`. Mode is 0644 deliberately:
+      # the committed file is not executable and nothing may invoke it
       # as `./review-ledger.js`. The sibling `package.json` declaring
       # `"type": "module"` must sync with it — the bundle is ESM under a `.js`
       # name, so without it Node resolves the module type from the CONSUMER's root
       # manifest and a `"type": "commonjs"` repository fails with a SyntaxError.
       # `review-ledger.version` and `review-ledger.integrity` record which
-      # published tarball these bytes came from; `gemini-platform` CI pins them.
+      # package version these bytes came from; this repo's CI rebuilds and pins them.
       - source: .agents/skills/critique/scripts/review-ledger.js
         destination: .agents/skills/critique/scripts/review-ledger.js
         substitutions: []

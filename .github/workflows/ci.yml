@@ -76,7 +76,12 @@ jobs:
   # ---------------------------------------------------------------------------
   static-checks:
     name: Static checks
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    # `Review-ledger package` is not a required check, so this required job
+    # carries its verdict (last step). `!cancelled()` keeps this job running
+    # when that one fails: a job skipped by a failed `needs` reports as skipped,
+    # and a skipped required check does not block a merge.
+    needs: review-ledger
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -149,65 +154,6 @@ jobs:
         if: '!cancelled()'
         run: npx --yes prettier@3.8.3 --check .
 
-      # --- was job `ledger-drift` (Vendored review-ledger matches its published tarball) ---
-      - name: Byte-compare against the pinned published version
-        if: '!cancelled()'
-        run: |
-          set -euo pipefail
-          scripts_dir=.claude/skills/critique/scripts
-          version="$(tr -d '[:space:]' < "$scripts_dir/review-ledger.version")"
-          [ -n "$version" ] || { echo "::error::review-ledger.version is empty"; exit 1; }
-          expected_integrity="$(tr -d '[:space:]' < "$scripts_dir/review-ledger.integrity")"
-          [ -n "$expected_integrity" ] || { echo "::error::review-ledger.integrity is empty"; exit 1; }
-          workdir="$(mktemp -d)"
-          # Run from a temp dir and pin the registry explicitly: a repo-root
-          # `.npmrc` must not be able to redirect `@loomantix` to another host.
-          # `--silent` still prints the tarball name npm chose, so use that
-          # rather than re-deriving npm's scope-to-dash naming by hand.
-          tarball="$(cd "$workdir" && npm pack "@loomantix/review-ledger@$version" \
-            --registry https://registry.npmjs.org/ --ignore-scripts --silent)"
-          # A bare version is a mutable name. Bind the bytes we fetched to the
-          # sha512 recorded at vendoring time, so an unpublish/republish or a
-          # tampered registry response fails closed instead of redefining what
-          # "matches its published tarball" means.
-          actual_integrity="sha512-$(openssl dgst -sha512 -binary "$workdir/$tarball" | base64 -w0)"
-          if [ "$actual_integrity" != "$expected_integrity" ]; then
-            echo "::error::@loomantix/review-ledger@$version tarball integrity mismatch"
-            echo "  expected: $expected_integrity"
-            echo "  actual:   $actual_integrity"
-            exit 1
-          fi
-          # The package is published by the upstream OIDC pipeline with SLSA
-          # provenance. `npm audit signatures` needs an installed tree, so
-          # verify in a separate dir; together with the hash compare above this
-          # binds the bytes we vendored to a registry record that is both
-          # signed and attested, rather than to a mutable version string.
-          auditdir="$(mktemp -d)"
-          (
-            cd "$auditdir"
-            npm init -y >/dev/null 2>&1
-            npm install "@loomantix/review-ledger@$version" \
-              --registry https://registry.npmjs.org/ \
-              --ignore-scripts --no-audit --no-fund --silent
-            npm audit signatures
-          ) || {
-            echo "::error::signature/provenance verification failed for @loomantix/review-ledger@$version"
-            exit 1
-          }
-          tar xzf "$workdir/$tarball" -C "$workdir"
-          published="$workdir/package/dist/review-ledger.bundle.js"
-          test -f "$published" || {
-            echo "::error::published tarball has no dist/review-ledger.bundle.js — package layout changed"
-            exit 1
-          }
-          if ! cmp -s "$published" "$scripts_dir/review-ledger.js"; then
-            echo "::error::$scripts_dir/review-ledger.js does not match @loomantix/review-ledger@$version"
-            echo "Re-vendor it verbatim; never edit or locally rebuild the bundle:"
-            echo "  npm pack @loomantix/review-ledger@$version"
-            echo "  tar xzf loomantix-review-ledger-$version.tgz"
-            echo "  cp package/dist/review-ledger.bundle.js $scripts_dir/review-ledger.js"
-            exit 1
-          fi
       - name: Vendored ledger speaks review contract v3
         if: '!cancelled()'
         run: |
@@ -223,8 +169,8 @@ jobs:
 
       - name: Vendored ledger self-identifies as the pinned version
         if: '!cancelled()'
-        # The byte-compare above proves the file came from the tarball the pin
-        # names. This proves the artifact agrees about which version that is:
+        # The `review-ledger` job proves these bytes are a fresh build of the
+        # package. This proves the artifact agrees about which version that is:
         # `--version` is injected into the bundle at build time, so a build
         # whose injection silently degraded (`0.0.0-dev`) would otherwise sit
         # here indistinguishable from a good one, and every downstream consumer
@@ -334,8 +280,8 @@ jobs:
       # against their source, or be hand-edited in the root instead of the
       # source. This is the gate that makes either one fail: it re-renders from
       # `prompts/` and byte-compares against what is committed, and prints a
-      # diff per drifted file. Same shape as the `ledger-drift` check above,
-      # which byte-compares vendored bytes against their published tarball.
+      # diff per drifted file. Same shape as the `review-ledger` job's
+      # build-and-diff, which byte-compares vendored bundles against a fresh build.
       #
       # It needs the pinned Node from this job's `setup-node`: the renderer
       # normalizes its Markdown with the same pinned Prettier as
@@ -524,6 +470,16 @@ jobs:
       - name: Lint collapse opt-ins against their template sites
         if: '!cancelled()'
         run: python3 scripts/lint-collapse-sites.py
+
+      - name: Review-ledger package passed
+        if: '!cancelled()'
+        env:
+          RESULT: ${{ needs.review-ledger.result }}
+        run: |
+          [ "$RESULT" = success ] || {
+            echo "::error::Review-ledger package job result is '$RESULT'"
+            exit 1
+          }
   python-types-and-tests:
     name: Python types + tests
     if: github.event_name == 'push' || github.event.pull_request.draft == false
@@ -541,7 +497,7 @@ jobs:
           cache-dependency-path: pyproject.toml
       # The suite shells out to the vendored `review-ledger.js` bundle a few
       # hundred times per run, so this job needs a pinned Node exactly like
-      # `format`, `ledger-drift`, `accessibility-asset`, and `render-check`.
+      # `format`, `accessibility-asset`, and `render-check`.
       # Same pin as `static-checks` above, for the reason recorded there.
       - uses: actions/setup-node@v7
         with:
@@ -611,3 +567,75 @@ jobs:
         run: |
           test -f scripts/lint-prompt-parity.py
           python3 -m coverage report --include='scripts/lint-prompt-parity.py' --fail-under=80
+
+  # ---------------------------------------------------------------------------
+  # The review-ledger package and the bundles built from it.
+  #
+  # `packages/review-ledger` is the source of the `review-ledger.js` bundle
+  # vendored into `.claude/`, `.codex/`, and `.agents/`. It is a standalone
+  # pnpm package with its own lockfile, so this job installs nothing from the
+  # repo root and fetches no published copy of the package.
+  #
+  # Not draft-gated: the build-and-diff is what lets a ledger change and the
+  # skills that call it move in one PR, and a draft PR is where that happens.
+  # ---------------------------------------------------------------------------
+  review-ledger:
+    name: Review-ledger package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/review-ledger
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # Same pin as `static-checks`, for the reason recorded there.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install with the frozen lockfile
+        run: |
+          set -euo pipefail
+          pm="$(node -p 'require("./package.json").packageManager')"
+          npm install --global "$pm"
+          pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Test
+        run: pnpm run test
+      - name: Build
+        run: pnpm run build
+
+      - name: Vendored review-ledger.js matches a fresh build
+        working-directory: .
+        run: |
+          set -euo pipefail
+          built=packages/review-ledger/dist/review-ledger.bundle.js
+          version="$(node -p 'require("./packages/review-ledger/package.json").version')"
+          integrity="sha512-$(openssl dgst -sha512 -binary "$built" | base64 -w0)"
+          status=0
+          for root in .claude .codex .agents; do
+            dir="$root/skills/critique/scripts"
+            if ! cmp -s "$built" "$dir/review-ledger.js"; then
+              echo "::error file=$dir/review-ledger.js::differs from a fresh build of packages/review-ledger"
+              status=1
+            fi
+            pinned="$(tr -d '[:space:]' < "$dir/review-ledger.version")"
+            if [ "$pinned" != "$version" ]; then
+              echo "::error file=$dir/review-ledger.version::pins '$pinned', package is '$version'"
+              status=1
+            fi
+            recorded="$(tr -d '[:space:]' < "$dir/review-ledger.integrity")"
+            if [ "$recorded" != "$integrity" ]; then
+              echo "::error file=$dir/review-ledger.integrity::records '$recorded', fresh build is '$integrity'"
+              status=1
+            fi
+            protocol="$root/references/local-review-ledger.md"
+            if ! cmp -s packages/review-ledger/protocol/local-review-ledger.md "$protocol"; then
+              echo "::error file=$protocol::differs from packages/review-ledger/protocol/local-review-ledger.md"
+              status=1
+            fi
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "Rebuild and re-vendor: see packages/review-ledger/README.md"
+          fi
+          exit "$status"

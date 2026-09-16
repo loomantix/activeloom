@@ -92,14 +92,14 @@ The installer contains code, not the prompt payload. By default it downloads thi
 
 `sync-v1` is the frozen compatibility route for older consumers. See [migration guidance](docs/sync.md#migrating-from-the-pre-sync-v2-config-files) before changing an existing setup.
 
-| If you need to change…                             | The owner is…                                                                           |
-| -------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| A generated skill                                  | `prompts/skills/` and `prompts/profiles/`; regenerate the harness outputs               |
-| A harness-specific review prompt                   | The corresponding harness source; follow its authoring notes and parity rules           |
-| Which files consumers receive                      | `scripts/sync-targets.yml`                                                              |
-| A repository's stack, rules, or selected harnesses | Its `.activeloom-config.yml`                                                            |
-| Repository-specific review lessons                 | Its consumer-owned `.review/addendum.local.md`                                          |
-| A vendored ledger contract or helper               | The upstream package identified by its version/integrity files; do not patch the bundle |
+| If you need to change…                             | The owner is…                                                                      |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| A generated skill                                  | `prompts/skills/` and `prompts/profiles/`; regenerate the harness outputs          |
+| A harness-specific review prompt                   | The corresponding harness source; follow its authoring notes and parity rules      |
+| Which files consumers receive                      | `scripts/sync-targets.yml`                                                         |
+| A repository's stack, rules, or selected harnesses | Its `.activeloom-config.yml`                                                       |
+| Repository-specific review lessons                 | Its consumer-owned `.review/addendum.local.md`                                     |
+| A vendored ledger contract or helper               | `packages/review-ledger`, rebuilt into every harness root; do not patch the bundle |
 
 Managed consumer files are overwritten on sync. Files marked `create_if_missing` are bootstrapped once and remain consumer-owned. See [sync ownership](docs/sync.md), [prompt rendering](docs/prompt-rendering.md), and the [review learning loop](docs/review-learning-loop.md).
 

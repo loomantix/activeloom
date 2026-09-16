@@ -48,13 +48,12 @@ resolved as well as unresolved threads before reviewing the current head.
 
 Load [the local review ledger](references/local-review-ledger.md) before running
 `refactorpass`, `critique`, `deepcritique`, `pr-critique`, or local review hooks.
-That file is the engine-neutral protocol published by the
-[`@loomantix/review-ledger`](https://www.npmjs.com/package/@loomantix/review-ledger)
-project and vendored verbatim into every engine repository, so all engines read
-the same contract. The helper bundle beside it is vendored from that package's
-published tarball and pinned by `review-ledger.version` and
-`review-ledger.integrity`; CI byte-compares the bundle, not this document, so a
-protocol edit must land upstream rather than here. Where the protocol writes
+That file is the engine-neutral protocol from ActiveLoom's
+`packages/review-ledger` package, vendored verbatim into every harness root so
+all engines read the same contract. The helper bundle beside it is built from
+that package and pinned by `review-ledger.version` and `review-ledger.integrity`;
+ActiveLoom CI rebuilds the bundle and fails when a vendored copy differs, so a
+helper change belongs in the package source rather than here. Where the protocol writes
 `<ledger-helper>`, this engine's path is:
 
 ```text

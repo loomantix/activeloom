@@ -15,8 +15,8 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
-# Vendored build artifacts of @loomantix/review-ledger — their bytes must
-# match the published tarball exactly, so Prettier must never touch them.
+# Vendored build artifacts of packages/review-ledger — their bytes must
+# match a fresh build exactly, so Prettier must never touch them.
 # One per harness prompt root; the subtree imports brought the codex and
 # gemini copies in alongside the native claude one.
 .claude/skills/critique/scripts/review-ledger.js
