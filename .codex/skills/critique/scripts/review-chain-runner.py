@@ -926,7 +926,7 @@ class Runner:
                     digest(recovery) if recovery.exists() else None
                 ),
             }
-        except Blocked:
+        except (Blocked, OSError):
             return None
 
     def recover_cleanup(self, pending: dict[str, Any]) -> None:
