@@ -1,3 +1,4 @@
+.agents/references/local-review-ledger.md
 .agents/skills/diagnosing-bugs/SKILL.md
 .agents/skills/feature-dev/SKILL.md
 .agents/skills/grill/SKILL.md
@@ -14,6 +15,7 @@
 .agents/skills/simplify-comments/scripts/comment-density.py
 .agents/skills/task-packet/SKILL.md
 .claude/prompt-stack.json
+.claude/references/local-review-ledger.md
 .claude/skills/diagnosing-bugs/SKILL.md
 .claude/skills/feature-dev/SKILL.md
 .claude/skills/grill/SKILL.md
@@ -30,6 +32,7 @@
 .claude/skills/simplify-comments/scripts/comment-density.py
 .claude/skills/task-packet/SKILL.md
 .codex/prompt-stack.json
+.codex/references/local-review-ledger.md
 .codex/skills/diagnosing-bugs/SKILL.md
 .codex/skills/feature-dev/SKILL.md
 .codex/skills/grill/SKILL.md

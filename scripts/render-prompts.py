@@ -7,6 +7,14 @@ nothing else. The rendered outputs (`.claude/skills/<skill>/…`,
 harness root sees the real prompt rather than a template, and consumers keep
 receiving the harness-specific distribution artifacts they select.
 
+A second, smaller class of output is rendered here too: the *vendored
+documents* in `VENDORED_DOCUMENTS`, copied byte-for-byte from a single source
+elsewhere in the repository into the same relative path under every harness
+root. They carry no vocabulary and take no substitution — the point is that all
+three roots hold the same bytes as the source — but they are generated files
+with one writer, so the same `--check` that catches a hand-edited skill catches
+a hand-edited copy.
+
 **Zero conditionals.** The substitution engine has no branching construct and
 none is planned: a skill whose text must differ structurally between harnesses
 is per-harness by definition and stays unrendered, tracked instead by a
@@ -107,6 +115,35 @@ SUPPORTED_PROFILE_ROOTS = frozenset({".agents", ".claude", ".codex"})
 # This keeps retirement possible without letting the deletion manifest promote
 # an unrelated hand-authored skill into the renderer's ownership domain.
 RETIRED_SKILLS: frozenset[str] = frozenset()
+
+# Documents that are single-sourced somewhere else in the repository and
+# vendored, verbatim, into the same relative path under every harness root.
+# Keys are repo-root-relative sources; values are the path below each root.
+#
+# These are not skills and not templates. The ledger protocol is the
+# engine-neutral contract `packages/review-ledger` implements, so the package is
+# the only place it can be authored without the document and the code that
+# enforces it drifting apart. Before this, each root's copy was updated by hand
+# from the package and nothing in the render gate compared them.
+#
+# Deliberately *not* substituted and deliberately not Prettier-formatted here.
+# Both would let a rendered copy differ from the source it is vendored from,
+# which is the one property every reader of these files relies on. The source
+# is covered by the repo-wide `Prettier --check` like any other Markdown, so an
+# unformatted source fails there rather than being silently reformatted into
+# three copies that no longer match it.
+VENDORED_DOCUMENTS: dict[str, str] = {
+    "packages/review-ledger/protocol/local-review-ledger.md": (
+        "references/local-review-ledger.md"
+    ),
+}
+
+# The `RETIRED_SKILLS` counterpart: a root-relative destination removed from
+# `VENDORED_DOCUMENTS` must be named here for the one render that deletes its
+# copies, then dropped once the generated-path inventory is clean. Without it a
+# dropped entry leaves three orphans the inventory still names and the ownership
+# domain no longer admits, which is a render that cannot be made to pass.
+RETIRED_DOCUMENTS: frozenset[str] = frozenset()
 
 # Build artifacts that appear *inside* the source tree and must never be
 # rendered into a harness root. `prompts/skills/issues/scripts/*.py` are real
@@ -485,7 +522,7 @@ def rendered_roster() -> list[str]:
 def render_tree(
     engine: ModuleType, profiles: list[Profile], destination: Path, version: str
 ) -> list[Path]:
-    """Render every skill for every profile under `destination`.
+    """Render every skill, and every vendored document, under `destination`.
 
     Returns the written paths, relative to `destination`.
     """
@@ -503,8 +540,89 @@ def render_tree(
                 # synced with `mode: '0755'` and are executed from the skill.
                 shutil.copymode(source, target)
                 written.append(target.relative_to(destination))
+    written.extend(render_documents(profiles, destination))
     written.extend(write_stack_manifests(profiles, destination, version))
     return written
+
+
+def render_documents(profiles: list[Profile], destination: Path) -> list[Path]:
+    """Copy each `VENDORED_DOCUMENTS` source into every profile root, verbatim.
+
+    One read per source, one write per root, no substitution: every copy is the
+    source's bytes. That is what makes "the harness copy is the package's
+    protocol document" a fact about the render rather than a claim in a README,
+    and it is why a document does not go through `_render_file` — a placeholder
+    that resolved differently per profile would be three documents wearing one
+    name.
+    """
+    written: list[Path] = []
+    for source_relative, root_relative in sorted(VENDORED_DOCUMENTS.items()):
+        source = _document_source(source_relative, root_relative)
+        raw = source.read_bytes()
+        for profile in profiles:
+            relative = Path(profile.root) / root_relative
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+            shutil.copymode(source, target)
+            written.append(relative)
+    return written
+
+
+def _document_source(source_relative: str, root_relative: str) -> Path:
+    """Resolve one vendored document source after rejecting a malformed entry.
+
+    `VENDORED_DOCUMENTS` is a checked-in constant rather than user input, but it
+    names both a file to read and a path to write under three roots, so a typo
+    is validated here instead of being discovered as a confusing write.
+    """
+    source_path = Path(source_relative)
+    root_path = Path(root_relative)
+    for label, candidate in (("source", source_path), ("destination", root_path)):
+        if (
+            not candidate.parts
+            or candidate.is_absolute()
+            or ".." in candidate.parts
+            or candidate.as_posix() != str(candidate)
+        ):
+            raise ValueError(
+                f"vendored document {label} must be a plain relative path: "
+                f"{candidate.as_posix()!r}"
+            )
+    if root_path.parts[0] == "skills":
+        # The skill directories are wholly owned by the skill render and swept
+        # for anything it did not emit, so a document landing in one would be
+        # written and then reported as unowned by the same run.
+        raise ValueError(
+            f"vendored document destination must not sit inside a rendered "
+            f"skill directory: {root_relative!r}"
+        )
+    source = REPO_ROOT / source_path
+    current = REPO_ROOT
+    for part in source_path.parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(
+                f"vendored document sources must not contain symlinks: {current}"
+            )
+    if not source.is_file():
+        raise ValueError(f"vendored document source does not exist: {source}")
+    return source
+
+
+def vendored_document_destinations() -> frozenset[str]:
+    """Every repo-relative path the vendored-document render may write.
+
+    Derived from the supported roots rather than the loaded profiles, matching
+    how `_validate_generated_path` admits `<root>/prompt-stack.json`: the
+    ownership domain is a property of this repository's harness set, so a path
+    stays removable after the profile that produced it is deleted.
+    """
+    return frozenset(
+        f"{root}/{relative}"
+        for root in SUPPORTED_PROFILE_ROOTS
+        for relative in set(VENDORED_DOCUMENTS.values()) | set(RETIRED_DOCUMENTS)
+    )
 
 
 def write_stack_manifests(
@@ -637,6 +755,13 @@ def _validate_generated_path(path: Path) -> None:
         and path.parts[0] in SUPPORTED_PROFILE_ROOTS
         and path.parts[1] == STACK_MANIFEST_NAME
     ):
+        return
+    # Vendored documents are the other generated files outside a skill
+    # directory. They are admitted by exact path — the full `<root>/<relative>`
+    # set `VENDORED_DOCUMENTS` produces — so the domain widens by the named
+    # files and not by the directories that contain them. `references/` holds
+    # hand-authored prompts in two roots and must not become renderer-owned.
+    if path.as_posix() in vendored_document_destinations():
         return
     if (
         len(path.parts) < 4
@@ -884,7 +1009,16 @@ def _delimiter_residue(text: str) -> list[str]:
 
 def format_markdown(destination: Path, written: list[Path]) -> None:
     """Run Prettier over the rendered Markdown, in place."""
-    targets = [str(destination / p) for p in written if p.suffix in FORMATTED_SUFFIXES]
+    # Vendored documents are excluded: they are byte-for-byte copies of a
+    # source this repo already Prettier-checks in place, and formatting them
+    # here is the one way a copy could stop matching the file it is vendored
+    # from without anything failing.
+    vendored = vendored_document_destinations()
+    targets = [
+        str(destination / p)
+        for p in written
+        if p.suffix in FORMATTED_SUFFIXES and p.as_posix() not in vendored
+    ]
     if not targets:
         return
     try:
@@ -1009,8 +1143,9 @@ def _report_drift(
     if manifest_drift:
         sys.stderr.write(f"  differs:   {MANIFEST_PATH.relative_to(REPO_ROOT)}\n")
     sys.stderr.write(
-        "\nThe harness roots are generated from `prompts/`. Edit the source in "
-        "`prompts/skills/` (or the value in `prompts/profiles/`), then run:\n"
+        "\nThe harness roots are generated. Edit the source in `prompts/skills/` "
+        "(or the value in `prompts/profiles/`, or the vendored document source "
+        "named in `VENDORED_DOCUMENTS`), then run:\n"
         "  python3 scripts/render-prompts.py\n"
     )
     if unowned:

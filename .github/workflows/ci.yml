@@ -605,6 +605,10 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      # The bundle only. `references/local-review-ledger.md` used to be compared
+      # here too; it is now a render output, so the `Rendered prompt roots are
+      # current` step owns it and `render-prompts.py` can also *fix* a drifted
+      # copy, which a `cmp` in this job never could.
       - name: Vendored review-ledger.js matches a fresh build
         working-directory: .
         run: |
@@ -627,11 +631,6 @@ jobs:
             recorded="$(tr -d '[:space:]' < "$dir/review-ledger.integrity")"
             if [ "$recorded" != "$integrity" ]; then
               echo "::error file=$dir/review-ledger.integrity::records '$recorded', fresh build is '$integrity'"
-              status=1
-            fi
-            protocol="$root/references/local-review-ledger.md"
-            if ! cmp -s packages/review-ledger/protocol/local-review-ledger.md "$protocol"; then
-              echo "::error file=$protocol::differs from packages/review-ledger/protocol/local-review-ledger.md"
               status=1
             fi
           done

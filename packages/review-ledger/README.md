@@ -9,7 +9,7 @@ The review ledger uses an open draft pull request as a durable ledger of actor-o
 - **Strict Protocol Validation**: Deterministic v3 marker serialization, SHA-256 content hashing, sequential occurrence verification, and blocker resolution enforcement.
 - **Multi-Engine Support**: Unified contract for `codex`, `claude`, `gemini`, and `antigravity` reviewer engines.
 - **Declared Rosters & Coverage**: A pull request declares its author engine and zero, one, or two reviewer engines; coverage is then derived from attestations naming the exact current head.
-- **Vendored Protocol**: The engine-neutral contract every engine follows lives at [`protocol/local-review-ledger.md`](./protocol/local-review-ledger.md), and each harness root carries a byte-identical copy as `references/local-review-ledger.md` instead of maintaining its own.
+- **Vendored Protocol**: The engine-neutral contract every engine follows lives at [`protocol/local-review-ledger.md`](./protocol/local-review-ledger.md). Each harness root's `references/local-review-ledger.md` is rendered from it by `scripts/render-prompts.py`, so the copies cannot drift from this file.
 - **Standalone CLI & TypeScript API**: Self-contained vendored CLI, dual ESM/CJS distribution, and CLI executable (`review-ledger`).
 
 ## Building
@@ -42,8 +42,8 @@ itself. Invoke it through `node` rather than executing it directly; the vendored
 files are committed with mode 0644.
 
 A change to this package is not finished until the bundle is rebuilt and copied,
-with its version and integrity pins and the protocol document, into all three
-harness roots in the same pull request. From the repository root:
+with its version and integrity pins, into all three harness roots in the same
+pull request. From the repository root:
 
 ```bash
 built=packages/review-ledger/dist/review-ledger.bundle.js
@@ -54,13 +54,22 @@ for root in .claude .codex .agents; do
   cp "$built" "$dir/review-ledger.js"
   printf '%s\n' "$version" > "$dir/review-ledger.version"
   printf '%s\n' "$integrity" > "$dir/review-ledger.integrity"
-  cp packages/review-ledger/protocol/local-review-ledger.md "$root/references/local-review-ledger.md"
 done
 ```
 
-CI rebuilds the bundle and fails when any vendored copy, pin, or protocol
-document differs. A protocol edit is a prompt-stack input change and also
-advances `PROMPT_STACK_VERSION`.
+CI rebuilds the bundle and fails when any vendored copy or pin differs.
+
+`protocol/local-review-ledger.md` is **not** in that loop. It is a render
+source: `scripts/render-prompts.py` writes it into every harness root's
+`references/`, so an edit here is published with
+
+```bash
+python3 scripts/render-prompts.py
+```
+
+and `--check` fails the build on a stale or hand-edited copy. A protocol edit is
+also a prompt-stack input change, so it advances `PROMPT_STACK_VERSION`. See
+[`docs/prompt-rendering.md`](../../docs/prompt-rendering.md).
 
 The package's `.npmrc` keeps pnpm's virtual store at `../../node_modules/.pnpm`.
 esbuild records bundled module paths relative to the build directory, and that
