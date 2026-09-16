@@ -515,7 +515,7 @@ jobs:
                   f.write("skip=false\n")
               sys.exit(0)
           files = [line.strip() for line in raw.splitlines() if line.strip()]
-          ignore = re.compile(r"^(?:docs/|imports/|\.claude/prompt-stack\.json|\.codex/prompt-stack\.json|PROMPT_STACK_VERSION|\.prettierignore|\.prettierrc|\.gitignore|recommended-prettierignore\.txt|[^/]+\.md)$")
+          ignore = re.compile(r"^(?:docs/.+|imports/.+|\.claude/prompt-stack\.json|\.codex/prompt-stack\.json|PROMPT_STACK_VERSION|\.prettierignore|\.prettierrc|\.gitignore|recommended-prettierignore\.txt|[^/]+\.md)$")
           if all(ignore.match(f) for f in files):
               print("PR only touches docs, imports, or prompt stack version manifests — skipping Python tests.")
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
