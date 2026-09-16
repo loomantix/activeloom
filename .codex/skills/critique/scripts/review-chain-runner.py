@@ -61,6 +61,16 @@ class ProcessFailure(Blocked):
         self.exit_status = exit_status
 
 
+class CleanupBlocked(Blocked):
+    def __init__(
+        self, message: str, group: int, exit_status: int | None, completed: bool
+    ):
+        super().__init__(message)
+        self.group = group
+        self.exit_status = exit_status
+        self.completed = completed
+
+
 def capacity_rejected(log: Path) -> bool:
     """Read terminal Codex JSON events, never command output or plain diagnostics."""
     if log.is_symlink() or not log.is_file():
@@ -168,10 +178,13 @@ def managed(
                         cause = f"; worker failure: {type(pending).__name__}"
                     else:
                         cause = ""
-                    raise Blocked(
+                    raise CleanupBlocked(
                         f"{Path(argv[0]).name} {exit_state}; process-group cleanup "
                         f"denied for {child.pid}; reconcile surviving processes "
-                        f"before resuming{cause}"
+                        f"before resuming{cause}",
+                        child.pid,
+                        child.returncode,
+                        pending is None and child.returncode == 0,
                     ) from error
 
             try:
@@ -883,10 +896,71 @@ class Runner:
                                 log_sha256=digest(folder / "worker.log"),
                             )
                             pending["phase"] = "capacity_failed"
+            if isinstance(caught, CleanupBlocked):
+                attempt.update(
+                    failure_reason="cleanup_denied",
+                    process_group=caught.group,
+                )
+                if caught.completed:
+                    # Seal the completed output before allowing a later resume
+                    # to separate a successful exit from unfinished cleanup.
+                    attempt.update(review_started=True, phase="cleanup_blocked")
+                    pending.update(
+                        phase="cleanup_blocked",
+                        cleanup_result_sha256=digest(folder / "result.json"),
+                        cleanup_log_sha256=digest(folder / "worker.log"),
+                    )
+                    recovery = folder / "result.json.recovery.json"
+                    pending["result_recovery_sha256"] = (
+                        digest(recovery) if recovery.exists() else None
+                    )
         finally:
             self.persist()
         if error and pending["phase"] != "capacity_failed":
             raise error
+
+    def recover_cleanup(self, pending: dict[str, Any]) -> None:
+        attempts = [
+            item for item in self.state["attempts"]
+            if item["attempt_id"] == pending["attempt_id"]
+        ]
+        if len(attempts) != 1:
+            raise Blocked("cleanup recovery attempt changed")
+        attempt = attempts[0]
+        if (
+            attempt.get("phase") != "cleanup_blocked"
+            or attempt.get("exit_status") != 0
+            or attempt.get("review_started") is not True
+            or attempt.get("failure_reason") != "cleanup_denied"
+            or (attempt["engine"], attempt["round"], attempt["folder"])
+            != (pending["engine"], pending["round"], pending["folder"])
+        ):
+            raise Blocked("cleanup recovery requires a recorded successful worker exit")
+        group = attempt.get("process_group")
+        if type(group) is not int or group <= 0:
+            raise Blocked("cleanup recovery process group is unavailable")
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError as error:
+            raise Blocked("cleanup recovery cannot inspect the process group") from error
+        else:
+            raise Blocked("cleanup recovery process group still exists")
+        folder = self.directory / pending["folder"]
+        recovery = folder / "result.json.recovery.json"
+        if (
+            digest(folder / "result.json") != pending.get("cleanup_result_sha256")
+            or digest(folder / "worker.log") != pending.get("cleanup_log_sha256")
+            or (digest(recovery) if recovery.exists() else None)
+            != pending.get("result_recovery_sha256")
+        ):
+            raise Blocked("completed worker evidence changed after cleanup failure")
+        # Ordinary completion still verifies head, result, ledger and gates.
+        # No worker is relaunched and no pass or budget is added here.
+        attempt["phase"] = pending["phase"] = "returned"
+        attempt["cleanup_reconciled"] = True
+        self.persist()
 
     def verify_capacity_evidence(
         self, pending: dict[str, Any], attempt: dict[str, Any]
@@ -1527,6 +1601,8 @@ class Runner:
                     self.recover_preflight(pending)
                 elif pending["phase"] == "capacity_failed":
                     self.recover_capacity(pending)
+                elif pending["phase"] == "cleanup_blocked":
+                    self.recover_cleanup(pending)
                 elif pending["phase"] == "prepared":
                     self.launch(pending)
                 else:

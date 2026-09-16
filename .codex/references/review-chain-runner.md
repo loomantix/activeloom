@@ -191,6 +191,19 @@ can resume the same transaction. Each launch rechecks the saved run and owed
 pass; the launcher's `authorize-pass --run-id` check also rejects a replacement
 run at the same head and round.
 
+If a worker exits successfully but process-group cleanup is denied, the runner
+preserves the observed exit separately from cleanup and seals the completed
+result, worker log, and any result-recovery receipt. It still stops immediately.
+Once the group has disappeared, `--resume` uses a read-only group probe and
+checks the sealed evidence before continuing normal result, head, ledger, and
+validation checks. It does not send further signals, relaunch the worker, or
+spend another pass. A surviving group, denied probe, changed evidence, missing
+result, failed exit, or interruption cannot use this recovery path.
+
+Older checkpoints that recorded the exit as unknown lack this evidence and
+remain blocked. A success message in a worker log does not replace a recorded
+process exit; do not edit the checkpoint to mark it returned.
+
 ### Migrate an existing checkpoint
 
 Version 1 checkpoints require an explicit adoption step. Validate the new

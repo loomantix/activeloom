@@ -871,6 +871,100 @@ def test_chain_advances_after_cleanup_denial_for_absent_group(
     assert probes
 
 
+def test_completed_worker_resumes_after_cleanup_group_disappears(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_killpg = os.killpg
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "synthetic cleanup denial")
+
+    monkeypatch.setattr(harness.module.os, "killpg", denied)
+    with pytest.raises(harness.module.Blocked, match="process-group cleanup denied"):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    assert harness.launches == ["codex"]
+    assert state["completed"] == []
+    assert state["attempts"][0]["exit_status"] == 0
+    monkeypatch.setattr(harness.module.os, "killpg", real_killpg)
+    harness.args.resume = True
+    resumed = harness.runner(harness.args, harness.directory)
+    assert resumed.run() == "converged"
+    assert resumed.state["run_id"] == state["run_id"]
+    assert harness.launches == ["codex", "claude", "codex", "claude"]
+    assert len(resumed.state["attempts"]) == 4
+
+
+@pytest.mark.parametrize(
+    "obstacle",
+    ["live", "denied", "result", "log", "late-receipt", "exit", "identity", "head"],
+)
+def test_cleanup_recovery_requires_absence_and_unchanged_completed_evidence(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, obstacle: str
+) -> None:
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "synthetic cleanup denial")
+
+    monkeypatch.setattr(harness.module.os, "killpg", denied)
+    with pytest.raises(harness.module.Blocked, match="process-group cleanup denied"):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    folder = harness.directory / state["pending"]["folder"]
+    if obstacle in ("result", "log"):
+        path = folder / ("result.json" if obstacle == "result" else "worker.log")
+        path.write_text(path.read_text() + "\n")
+    elif obstacle == "late-receipt":
+        (folder / "result.json.recovery.json").write_text("{}")
+    elif obstacle == "exit":
+        state["attempts"][0]["exit_status"] = None
+    elif obstacle == "identity":
+        state["attempts"][0]["engine"] = "claude"
+    harness.module.save(harness.directory / "state.json", state)
+
+    def probe(pid: int, sig: int) -> None:
+        assert sig == 0, "recovery must not send another cleanup signal"
+        if obstacle == "denied":
+            raise PermissionError(1, "synthetic denied probe")
+        if obstacle != "live":
+            raise ProcessLookupError(3, "synthetic absent group")
+
+    monkeypatch.setattr(harness.module.os, "killpg", probe)
+    harness.args.resume = True
+    resumed = harness.runner(harness.args, harness.directory)
+    if obstacle == "head":
+        monkeypatch.setattr(resumed, "boundary", lambda: "c" * 40)
+    with pytest.raises((harness.module.Blocked, subprocess.CalledProcessError)):
+        resumed.run()
+    assert harness.launches == ["codex"]
+    assert not harness.events
+
+
+@pytest.mark.parametrize("exit_code,missing", [(7, False), (0, True)])
+def test_cleanup_denial_does_not_make_an_incomplete_review_resumable(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, exit_code: int, missing: bool
+) -> None:
+    real_killpg = os.killpg
+    harness.controls.exit_code = exit_code
+    harness.controls.missing = missing
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "synthetic cleanup denial")
+
+    monkeypatch.setattr(harness.module.os, "killpg", denied)
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    assert state["attempts"][0]["exit_status"] == exit_code
+    monkeypatch.setattr(harness.module.os, "killpg", real_killpg)
+    harness.controls.exit_code = 0
+    harness.controls.missing = False
+    harness.args.resume = True
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    assert harness.launches == ["codex"]
+    assert not harness.events
+
+
 @pytest.mark.parametrize("probe_denied", [False, True])
 def test_managed_cleanup_denial_blocks_when_group_absence_is_unproven(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_denied: bool
