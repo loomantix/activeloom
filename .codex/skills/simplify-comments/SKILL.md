@@ -31,6 +31,7 @@ Read each file whole before editing it. Classify every comment and docstring aga
 
 - A comment mixing history with an invariant keeps the invariant, stated in the present tense, and loses the history.
 - When a comment might be protecting a compliance or security rule, keep it and condense the wording. History is the only thing deleted on sight.
+- If a detailed lesson learned was captured in a comment due to a product bug report or incident, summarize the invariant or reasoning into a single present-tense sentence rather than completely removing it.
 - A comment that contradicts the code is a finding, not an edit: leave it and list it for the PR body.
 - After a deletion, fix any neighbouring comment that pointed at it ("see above", "as noted").
 
@@ -40,18 +41,19 @@ The pass is done when every comment in the batch has been classified and every c
 
 ### Delete
 
-| Category                              | Recognize by                                                                                                       |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Tracker citations                     | `#2528`, `org/repo#12`, `ABC-123` keys, pull-request links. Keep the rest of the sentence when it carries meaning. |
-| Incident and bug-hunt narratives      | Past outages, what was once observed, dated recaps, `@see` links into incident or postmortem archives.             |
-| Review receipts and assistant residue | `(Copilot review on PR #2724)`, `(Gemini finding #3)`, "as requested", "updated to", changelog-style notes.        |
-| Decorative banners                    | `// ─── 401 Circuit Breaker ───`, `# ===== Helpers =====`.                                                         |
-| Restated code                         | `// increment counter` above `counter++`, `@param id - the id`, a summary that repeats the function name.          |
-| Commented-out code                    | Disabled code blocks; history keeps them.                                                                          |
+| Category                              | Recognize by                                                                                                                                                                                                                            |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tracker citations                     | `#2528`, `org/repo#12`, `ABC-123` keys, pull-request links. Keep the rest of the sentence when it carries meaning.                                                                                                                      |
+| Incident and bug-hunt narratives      | Past outages, what was once observed, dated recaps, `@see` links into incident or postmortem archives. (If a comment captures a valuable lesson learned, condense to the invariant under Condense below rather than deleting entirely.) |
+| Review receipts and assistant residue | `(Copilot review on PR #2724)`, `(Gemini finding #3)`, "as requested", "updated to", changelog-style notes.                                                                                                                             |
+| Decorative banners                    | `// ─── 401 Circuit Breaker ───`, `# ===== Helpers =====`.                                                                                                                                                                              |
+| Restated code                         | `// increment counter` above `counter++`, `@param id - the id`, a summary that repeats the function name.                                                                                                                               |
+| Commented-out code                    | Disabled code blocks; history keeps them.                                                                                                                                                                                               |
 
 ### Condense to one or two sentences
 
 - **Concurrency, ordering, and retries** — races, lock order, idempotency, backoff ladders. State the invariant and why it holds, not the bug that revealed it.
+- **Bug-report and incident lessons** — a comment capturing a hard-won lesson learned from a bug report or incident is condensed to a single present-tense sentence stating the invariant or reasoning, rather than deleted entirely.
 - **Workarounds** — what is worked around and when it can go. A link to the third-party bug a workaround waits on stays.
 - **Internal helpers** — a doc block on non-exported code becomes one line, or goes entirely when it restates the code.
 
