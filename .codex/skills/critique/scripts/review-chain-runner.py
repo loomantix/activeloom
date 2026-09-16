@@ -387,6 +387,14 @@ class Runner:
         if self.state:
             if self.state.get("version") not in (1, 2):
                 raise Blocked("unsupported checkpoint version")
+            if (
+                self.args.resume
+                and self.state.get("run_id") is None
+                and scope_decision
+                and "scope_decision" not in self.state["config"]
+            ):
+                self.state["config"]["scope_decision"] = scope_decision
+                self.persist()
             if not self.args.resume or self.state["config"] != config:
                 raise Blocked(
                     "checkpoint exists; use --resume with the same plan, tier, and gates"

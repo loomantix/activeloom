@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -145,21 +146,88 @@ def test_an_active_run_replays_without_reading_scope(
     controller._start_run(args)
 
 
+def test_an_active_run_with_scope_decision_replays_without_reading_scope(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    posted = start(
+        controller,
+        monkeypatch,
+        tmp_path,
+        signals(commits=10),
+        "--scope-decision",
+        "keep",
+    )
+
+    def unreachable(*_: Any) -> dict[str, Any]:
+        raise AssertionError("a replay must not recount scope")
+
+    monkeypatch.setattr(controller, "_issue_comments", lambda *_: posted)
+    monkeypatch.setattr(controller, "_run_end", lambda *_: None)
+    monkeypatch.setattr(controller, "_scope_signals", unreachable)
+
+    # Replaying with matching decision succeeds without recounting scope
+    args_keep = SimpleNamespace(
+        repo="example/repo",
+        pr=1,
+        head=HEAD,
+        base=BASE,
+        tier="deep",
+        restart=False,
+        authorization_file=str(tmp_path / "authorization.txt"),
+        scope_decision="keep",
+    )
+    controller._start_run(args_keep)
+
+    # Replaying without decision also adopts the recorded decision and succeeds
+    args_none = SimpleNamespace(
+        repo="example/repo",
+        pr=1,
+        head=HEAD,
+        base=BASE,
+        tier="deep",
+        restart=False,
+        authorization_file=str(tmp_path / "authorization.txt"),
+    )
+    controller._start_run(args_none)
+
+    # Replaying with conflicting decision fails
+    args_split = SimpleNamespace(
+        repo="example/repo",
+        pr=1,
+        head=HEAD,
+        base=BASE,
+        tier="deep",
+        restart=False,
+        authorization_file=str(tmp_path / "authorization.txt"),
+        scope_decision="split",
+    )
+    with pytest.raises(controller.HandoffError, match="scope decision mismatch on replay"):
+        controller._start_run(args_split)
+
+
 def test_signals_count_behaviour_commits_and_patchless_files(
     controller: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def commit(message: str, parents: int = 1) -> dict[str, Any]:
         return {"commit": {"message": message}, "parents": [{}] * parents}
 
-    def changed(name: str, *, patch: bool, lines: int = 3, status: str = "modified") -> dict[str, Any]:
+    def changed(
+        name: str,
+        *,
+        patch: bool | None = False,
+        lines: int = 3,
+        status: str = "modified",
+    ) -> dict[str, Any]:
         row: dict[str, Any] = {
             "filename": name,
             "status": status,
             "additions": lines,
             "deletions": 0,
         }
-        if patch:
+        if patch is True:
             row["patch"] = "@@"
+        elif patch is None:
+            row["patch"] = None
         return row
 
     pages = {
@@ -177,6 +245,7 @@ def test_signals_count_behaviour_commits_and_patchless_files(
         "files": [
             [
                 changed("scripts/large.sh", patch=False),
+                changed("scripts/null_patch.sh", patch=None),
                 changed("scripts/small.sh", patch=True),
                 changed("assets/logo.png", patch=False, lines=0),
                 changed("scripts/gone.sh", patch=False, status="removed"),
@@ -190,5 +259,99 @@ def test_signals_count_behaviour_commits_and_patchless_files(
     monkeypatch.setattr(controller, "_json_output", output)
     assert controller._scope_signals("example/repo", 1) == {
         "behaviour_commits": 3,
-        "missing_patch_files": ["scripts/large.sh"],
+        "missing_patch_files": ["scripts/large.sh", "scripts/null_patch.sh"],
     }
+
+
+def test_runner_resumes_unstarted_run_with_scope_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner_path = (
+        Path(__file__).resolve().parents[1]
+        / ".codex/skills/critique/scripts/review-chain-runner.py"
+    )
+    spec = importlib.util.spec_from_file_location("runner_module", runner_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    auth = worktree / "authorization.txt"
+    auth.write_text("Authorization text.")
+    review_dir = tmp_path / "review-state"
+    control_dir = review_dir / "control"
+    control_dir.mkdir(parents=True)
+    for name in module.CONTROL_FILES:
+        (control_dir / name).write_text("")
+    (control_dir / "review-chain-runner.py").write_text(runner_path.read_text())
+
+    config = {
+        "repo": "example/repo",
+        "pr": 1,
+        "worktree": str(worktree),
+        "tier": "lean",
+        "author": "claude",
+        "trigger": None,
+        "mode": "cycle",
+        "plan": "gemini,claude",
+        "checks": [],
+        "base_argument": BASE,
+        "require_dco": False,
+    }
+    state = {
+        "version": 2,
+        "config": config,
+        "run_id": None,
+        "base": BASE,
+        "head": HEAD,
+        "start_head": HEAD,
+        "status": "prepared",
+        "actor": "actor",
+        "control_hashes": {n: module.digest(control_dir / n) for n in module.CONTROL_FILES},
+    }
+    (review_dir / "state.json").write_text(module.json.dumps(state))
+
+    args_resume = SimpleNamespace(
+        repo="example/repo",
+        pr=1,
+        tier="lean",
+        author="claude",
+        trigger=None,
+        chain=None,
+        cycle="gemini,claude",
+        check=[],
+        base=BASE,
+        require_dco=False,
+        authorization_file=str(auth),
+        resume=True,
+        scope_decision="keep",
+        migrate_controller=None,
+    )
+
+    def fake_command(cmd: list[str]) -> str:
+        if cmd == ["git", "rev-parse", "HEAD"] or "ls-remote" in cmd:
+            return HEAD
+        if "view" in cmd and "pr" in cmd:
+            return json.dumps({
+                "headRefOid": HEAD,
+                "headRefName": "feat/test",
+                "state": "OPEN",
+                "isDraft": True,
+                "headRepository": {"nameWithOwner": "example/repo"},
+                "author": {"login": "actor"},
+            })
+        if "api" in cmd and "user" in cmd:
+            return "actor"
+        if "repo" in cmd and "view" in cmd:
+            return "example/repo"
+        if len(cmd) > 2 and "comments" in cmd[2]:
+            return "[]"
+        return ""
+
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr(module, "command", fake_command)
+    resumed = module.Runner(args_resume, review_dir)
+    resumed.initialize()
+
+    assert resumed.state["config"].get("scope_decision") == "keep"

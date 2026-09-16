@@ -532,7 +532,7 @@ def _scope_signals(repo: str, pr: int) -> dict[str, Any]:
             or type(deletions) is not int
         ):
             _fail("GitHub returned malformed PR files")
-        if row.get("status") != "removed" and "patch" not in row and additions + deletions > 0:
+        if row.get("status") != "removed" and not row.get("patch") and additions + deletions > 0:
             missing.append(name)
     return {"behaviour_commits": behaviour, "missing_patch_files": sorted(missing)}
 
@@ -592,10 +592,6 @@ def _start_run(args: argparse.Namespace) -> None:
                 f"<!-- local-review-sequence:v1 engines={sequence} -->\n\n{content}"
             )
     scope_decision = getattr(args, "scope_decision", None)
-    scope_signals: dict[str, Any] | None = None
-    if scope_decision is not None:
-        scope_signals = _scope_signals(args.repo, args.pr)
-        content = _with_scope_decision(content, scope_signals, scope_decision)
     max_rounds = TIER_CAPS[args.tier]
     previous_end = (
         None if previous is None else _run_end(rows, cast(str, previous["run_id"]))
@@ -607,24 +603,48 @@ def _start_run(args: argparse.Namespace) -> None:
         and previous["tier"] == args.tier
         and previous["base"] == args.base
         and previous["start_head"] == args.head
-        and previous["content"] == content
     ):
-        _verify_reviewable_head(args.repo, args.pr, args.head)
-        print(
-            json.dumps(
-                {
-                    "comment_id": previous["comment_id"],
-                    "first_round": 1,
-                    "max_rounds": max_rounds,
-                    "replayed": True,
-                    "run_id": previous["run_id"],
-                    "tier": args.tier,
-                    "verified": True,
-                },
-                sort_keys=True,
-            )
+        replay_content = content
+        scope_match = re.search(
+            r"<!-- local-review-scope:v1 [^\n]*decision=(?P<decision>keep|split) -->\n\n",
+            previous["content"],
         )
-        return
+        if scope_match:
+            recorded = scope_match.group("decision")
+            if scope_decision is not None and scope_decision != recorded:
+                _fail(
+                    f"scope decision mismatch on replay: run recorded decision={recorded}"
+                )
+            plan = re.match(
+                r"<!-- local-review-(?:sequence|plan):v1 [^\n]* -->\n\n",
+                replay_content,
+            )
+            at = plan.end() if plan else 0
+            replay_content = (
+                replay_content[:at] + scope_match.group(0) + replay_content[at:]
+            )
+        if previous["content"] == replay_content:
+            _verify_reviewable_head(args.repo, args.pr, args.head)
+            print(
+                json.dumps(
+                    {
+                        "comment_id": previous["comment_id"],
+                        "first_round": 1,
+                        "max_rounds": max_rounds,
+                        "replayed": True,
+                        "run_id": previous["run_id"],
+                        "tier": args.tier,
+                        "verified": True,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return
+
+    scope_signals: dict[str, Any] | None = None
+    if scope_decision is not None:
+        scope_signals = _scope_signals(args.repo, args.pr)
+        content = _with_scope_decision(content, scope_signals, scope_decision)
     if previous is not None and not args.restart:
         _fail("a local-review run already exists; an explicit restart is required")
     if previous is not None and previous_end is None:
