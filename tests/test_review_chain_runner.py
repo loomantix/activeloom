@@ -896,11 +896,20 @@ def test_completed_worker_resumes_after_cleanup_group_disappears(
 
 
 @pytest.mark.parametrize(
-    "obstacle",
-    ["live", "denied", "result", "log", "late-receipt", "exit", "identity", "head"],
+    "obstacle,refusal",
+    [
+        ("live", "process group still exists"),
+        ("denied", "cannot inspect the process group"),
+        ("result", "evidence changed after cleanup failure"),
+        ("log", "evidence changed after cleanup failure"),
+        ("late-receipt", "evidence changed after cleanup failure"),
+        ("exit", "requires a recorded successful worker exit"),
+        ("exit-false", "requires a recorded successful worker exit"),
+        ("identity", "requires a recorded successful worker exit"),
+    ],
 )
 def test_cleanup_recovery_requires_absence_and_unchanged_completed_evidence(
-    harness: Any, monkeypatch: pytest.MonkeyPatch, obstacle: str
+    harness: Any, monkeypatch: pytest.MonkeyPatch, obstacle: str, refusal: str
 ) -> None:
     def denied(pid: int, sig: int) -> None:
         raise PermissionError(1, "synthetic cleanup denial")
@@ -917,6 +926,8 @@ def test_cleanup_recovery_requires_absence_and_unchanged_completed_evidence(
         (folder / "result.json.recovery.json").write_text("{}")
     elif obstacle == "exit":
         state["attempts"][0]["exit_status"] = None
+    elif obstacle == "exit-false":
+        state["attempts"][0]["exit_status"] = False
     elif obstacle == "identity":
         state["attempts"][0]["engine"] = "claude"
     harness.module.save(harness.directory / "state.json", state)
@@ -931,12 +942,16 @@ def test_cleanup_recovery_requires_absence_and_unchanged_completed_evidence(
     monkeypatch.setattr(harness.module.os, "killpg", probe)
     harness.args.resume = True
     resumed = harness.runner(harness.args, harness.directory)
-    if obstacle == "head":
-        monkeypatch.setattr(resumed, "boundary", lambda: "c" * 40)
-    with pytest.raises((harness.module.Blocked, subprocess.CalledProcessError)):
+    with pytest.raises(harness.module.Blocked, match=refusal):
         resumed.run()
     assert harness.launches == ["codex"]
     assert not harness.events
+    # The refusal must come from the recovery guard, leaving the sealed attempt
+    # exactly as it was rather than from some later stage after a promotion.
+    blocked = harness.module.read(harness.directory / "state.json")
+    assert blocked["pending"]["phase"] == "cleanup_blocked"
+    assert blocked["attempts"][0]["phase"] == "cleanup_blocked"
+    assert "cleanup_reconciled" not in blocked["attempts"][0]
 
 
 @pytest.mark.parametrize("exit_code,missing", [(7, False), (0, True)])
@@ -951,10 +966,15 @@ def test_cleanup_denial_does_not_make_an_incomplete_review_resumable(
         raise PermissionError(1, "synthetic cleanup denial")
 
     monkeypatch.setattr(harness.module.os, "killpg", denied)
-    with pytest.raises(harness.module.Blocked):
+    with pytest.raises(harness.module.Blocked, match="process-group cleanup denied"):
         harness.runner(harness.args, harness.directory).run()
     state = harness.module.read(harness.directory / "state.json")
     assert state["attempts"][0]["exit_status"] == exit_code
+    # Unsealable output never half-seals the attempt, and never displaces the
+    # cleanup denial the operator has to act on.
+    assert state["attempts"][0]["phase"] != "cleanup_blocked"
+    assert state["pending"]["phase"] != "cleanup_blocked"
+    assert "cleanup_result_sha256" not in state["pending"]
     monkeypatch.setattr(harness.module.os, "killpg", real_killpg)
     harness.controls.exit_code = 0
     harness.controls.missing = False

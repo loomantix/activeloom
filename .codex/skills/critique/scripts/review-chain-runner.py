@@ -901,23 +901,33 @@ class Runner:
                     failure_reason="cleanup_denied",
                     process_group=caught.group,
                 )
-                if caught.completed:
-                    # Seal the completed output before allowing a later resume
-                    # to separate a successful exit from unfinished cleanup.
+                # Seal the completed output before allowing a later resume
+                # to separate a successful exit from unfinished cleanup.
+                # Digest everything first: a half-sealed attempt would disagree
+                # with its pending phase, and raising here would replace the
+                # cleanup denial the operator has to act on.
+                seal = self.seal_completed(folder) if caught.completed else None
+                if seal is not None:
                     attempt.update(review_started=True, phase="cleanup_blocked")
-                    pending.update(
-                        phase="cleanup_blocked",
-                        cleanup_result_sha256=digest(folder / "result.json"),
-                        cleanup_log_sha256=digest(folder / "worker.log"),
-                    )
-                    recovery = folder / "result.json.recovery.json"
-                    pending["result_recovery_sha256"] = (
-                        digest(recovery) if recovery.exists() else None
-                    )
+                    pending.update(phase="cleanup_blocked", **seal)
         finally:
             self.persist()
         if error and pending["phase"] != "capacity_failed":
             raise error
+
+    def seal_completed(self, folder: Path) -> dict[str, Any] | None:
+        """Digest a completed worker's output, or None when it cannot be sealed."""
+        recovery = folder / "result.json.recovery.json"
+        try:
+            return {
+                "cleanup_result_sha256": digest(folder / "result.json"),
+                "cleanup_log_sha256": digest(folder / "worker.log"),
+                "result_recovery_sha256": (
+                    digest(recovery) if recovery.exists() else None
+                ),
+            }
+        except Blocked:
+            return None
 
     def recover_cleanup(self, pending: dict[str, Any]) -> None:
         attempts = [
@@ -929,7 +939,8 @@ class Runner:
         attempt = attempts[0]
         if (
             attempt.get("phase") != "cleanup_blocked"
-            or attempt.get("exit_status") != 0
+            or type(attempt.get("exit_status")) is not int
+            or attempt["exit_status"] != 0
             or attempt.get("review_started") is not True
             or attempt.get("failure_reason") != "cleanup_denied"
             or (attempt["engine"], attempt["round"], attempt["folder"])
