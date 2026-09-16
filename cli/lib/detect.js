@@ -1,17 +1,9 @@
 'use strict';
 
 /**
- * Deterministic environment detection. No model in the loop.
+ * Deterministic environment detection via file tests, PATH lookups, and git/gh queries.
  *
- * Everything here is a file test, a PATH lookup, or a `git`/`gh` invocation
- * whose output is parsed structurally. That constraint is deliberate: `init`
- * writes files into someone's repository, and a wrong-but-plausible guess from
- * a model is far more expensive to notice than a blank we asked about. The
- * agent-side `onboard` skill is where judgement belongs — it drafts the prose
- * fields for a human to confirm, and it is never in this path.
- *
- * Every field is either a verified fact or `null`. Nothing is inferred from
- * something else being present.
+ * Fields return verified facts or null without heuristic inference.
  */
 
 const fs = require('node:fs');
@@ -19,14 +11,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 /**
- * Harnesses this CLI knows how to install, in manifest declaration order.
- *
- * `id` is the name a consumer config's `harnesses:` list uses and `root` is the
- * prompt directory it owns — the two differ for gemini (`gemini` / `.agents`),
- * which is exactly the kind of detail a second copy gets wrong. This table has
- * to exist statically because `add` reads it before any upstream tree has been
- * fetched, so `tests/cli/harness-table.test.js` asserts it against
- * `scripts/sync-targets.yml` and fails the build if the two ever disagree.
+ * Harnesses supported by the CLI, in manifest declaration order.
  */
 const HARNESSES = Object.freeze([
   Object.freeze({
@@ -53,9 +38,7 @@ const HARNESSES = Object.freeze([
 ]);
 
 /**
- * Run a command and return trimmed stdout, or `null` if it fails for any
- * reason. Detection is advisory by construction, so a missing tool, a
- * non-zero exit, and a timeout are all the same answer: we do not know.
+ * Run a command and return trimmed stdout, or null on error or empty output.
  *
  * @param {string} file
  * @param {readonly string[]} args
@@ -78,11 +61,7 @@ function tryExec(file, args, cwd) {
 }
 
 /**
- * Is `name` an executable on PATH?
- *
- * `command -v` rather than `which`: `which` is not installed everywhere and
- * reports differently across platforms, while `command -v` is POSIX shell
- * builtin behaviour. On Windows we fall back to `where`.
+ * Check whether an executable exists on PATH.
  *
  * @param {string} name
  * @returns {boolean}
@@ -111,13 +90,7 @@ function isFile(p) {
 }
 
 /**
- * Which harnesses does this machine and this repo show evidence of?
- *
- * Two independent signals, reported separately rather than merged. A repo that
- * already carries `.codex/` wants codex synced even if this particular
- * developer has no codex CLI installed, and a developer with the claude CLI
- * does not thereby make claude the right choice for a repo the whole team
- * shares. Merging them would silently pick a side; the caller decides.
+ * Detect harness signals present in the repository and on the local machine.
  *
  * @param {string} repoDir
  * @param {string} homeDir
@@ -136,12 +109,7 @@ function detectHarnesses(repoDir, homeDir) {
 }
 
 /**
- * Package manager, from the lockfile actually present.
- *
- * Lockfile rather than a `packageManager` field: the lockfile is what the repo
- * demonstrably uses, whereas the field is a declaration that may be aspirational
- * or stale. Order matters only for the pathological repo carrying two, where
- * the more specific tool wins over npm's default.
+ * Detect package manager from present lockfiles.
  *
  * @param {string} repoDir
  * @returns {string | null}
@@ -188,12 +156,7 @@ function detectEcosystems(repoDir) {
 }
 
 /**
- * Test and lint entry points, read from `package.json` scripts.
- *
- * Only what is declared: a repo whose tests run via a bare `pytest` with no
- * script wrapper reports `null` here, and `onboard` asks. Guessing `pytest`
- * from the presence of a `tests/` directory is exactly the plausible-but-wrong
- * answer this module refuses to produce.
+ * Detect test, lint, and format script entry points from package.json.
  *
  * @param {string} repoDir
  * @returns {{test: string | null, lint: string | null, format: string | null}}
@@ -220,19 +183,13 @@ function detectScripts(repoDir) {
       format: pick('format', 'format:check', 'prettier'),
     };
   } catch {
-    // A malformed package.json is the repo's problem to fix, not a reason to
-    // abort onboarding — report unknown and carry on.
+    // Ignore malformed package.json.
     return empty;
   }
 }
 
 /**
- * Git and GitHub facts.
- *
- * `owner/repo` is parsed from the `origin` remote and normalised across the
- * SSH and HTTPS forms. A repo with no origin, or an origin that is not GitHub,
- * yields `null` — which is what downgrades tiers 2 and 3 out of reach, since
- * both write a GitHub Actions workflow.
+ * Detect git and GitHub repository facts from origin remote and HEAD.
  *
  * @param {string} repoDir
  */
@@ -252,9 +209,7 @@ function detectGit(repoDir) {
   const remote = tryExec('git', ['remote', 'get-url', 'origin'], repoDir);
   let slug = null;
   if (remote) {
-    // Both forms in one pattern, anchored at the host so a path component
-    // that merely contains "github.com" cannot match. The `.git` suffix is
-    // optional because both forms appear in the wild without it.
+    // Match SSH or HTTPS origin URLs for github.com repositories.
     const m =
       /^(?:git@github\.com:|(?:ssh|https?):\/\/(?:[^@/]*@)?github\.com\/)([^/]+)\/(.+?)(?:\.git)?$/.exec(
         remote,
@@ -262,8 +217,7 @@ function detectGit(repoDir) {
     if (m) slug = `${m[1]}/${m[2]}`;
   }
 
-  // The remote's HEAD, not the local branch: sync PRs target a branch of the
-  // *repository*, and the local checkout may be sitting on anything.
+  // Use remote HEAD rather than local branch for repository default.
   const originHead = tryExec(
     'git',
     ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'],
@@ -283,7 +237,7 @@ function detectGit(repoDir) {
 }
 
 /**
- * Collect every fact the CLI can establish without asking or guessing.
+ * Collect environment facts without interactive prompts or heuristics.
  *
  * @param {object} [options]
  * @param {string} [options.repoDir] Directory to inspect. Defaults to cwd.
@@ -314,13 +268,6 @@ function detect(options = {}) {
 
 /**
  * Pick the harnesses a command should act on.
- *
- * One resolver rather than one per command: `add` and `init` differ only in
- * whether repo evidence outranks machine evidence and in how they phrase the
- * no-evidence default. The `--harness` validation, the known-id set, and the
- * fall back to Claude Code are the same decision in both, and a second copy of
- * them drifts silently — the error text and the default harness would have to
- * be changed in two files.
  *
  * @param {{harnesses: ReturnType<typeof detectHarnesses>}} facts
  * @param {readonly string[]} requested  ids passed with `--harness`
