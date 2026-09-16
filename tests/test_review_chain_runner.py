@@ -442,33 +442,37 @@ sys.exit(int(sys.argv[2]))
                 log.write_text("synthetic preflight rejection\n")
                 raise module.ProcessFailure("synthetic preflight failure", 1)
             launches.append(env["AGENT_LOOP_REVIEW_ENGINE"])
-            real_managed(
-                [
-                    sys.executable,
-                    str(worker),
-                    "missing" if controls.missing else controls.outcome,
-                    str(controls.exit_code),
-                ],
-                log,
-                env,
-                10,
-            )
-            if controls.finalization_failure:
-                result_path = Path(env["AGENT_LOOP_REVIEW_RESULT_FILE"])
-                candidate = module.read(result_path)
-                module.save(
-                    result_path,
-                    {
-                        **candidate,
-                        "status": "blocked",
-                        "finalLaneComplete": False,
-                        "blocker": "Synthetic finalization failure",
-                    },
+            result_path = Path(env["AGENT_LOOP_REVIEW_RESULT_FILE"])
+            try:
+                real_managed(
+                    [
+                        sys.executable,
+                        str(worker),
+                        "missing" if controls.missing else controls.outcome,
+                        str(controls.exit_code),
+                    ],
+                    log,
+                    env,
+                    10,
                 )
-                module.save(
-                    Path(str(result_path) + ".recovery.json"),
-                    {"candidate": candidate, "blocked": module.digest(result_path)},
-                )
+            finally:
+                # The real sidecar is written by the worker before it exits, so
+                # it must survive a cleanup failure raised on the way out.
+                if controls.finalization_failure and result_path.is_file():
+                    candidate = module.read(result_path)
+                    module.save(
+                        result_path,
+                        {
+                            **candidate,
+                            "status": "blocked",
+                            "finalLaneComplete": False,
+                            "blocker": "Synthetic finalization failure",
+                        },
+                    )
+                    module.save(
+                        Path(str(result_path) + ".recovery.json"),
+                        {"candidate": candidate, "blocked": module.digest(result_path)},
+                    )
         elif controls.fail_check:
             raise module.Blocked("synthetic gate failure")
         else:
@@ -869,6 +873,214 @@ def test_chain_advances_after_cleanup_denial_for_absent_group(
     assert harness.runner(harness.args, harness.directory).run() == "converged"
     assert harness.launches == ["codex", "claude", "codex", "claude"]
     assert probes
+
+
+def test_completed_worker_resumes_after_cleanup_group_disappears(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_killpg = os.killpg
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "synthetic cleanup denial")
+
+    monkeypatch.setattr(harness.module.os, "killpg", denied)
+    with pytest.raises(harness.module.Blocked, match="process-group cleanup denied"):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    assert harness.launches == ["codex"]
+    assert state["completed"] == []
+    assert state["attempts"][0]["exit_status"] == 0
+    stale = state["attempts"][0]["process_group"]
+
+    # The resumed chain launches real workers, so only the reaped group is
+    # stubbed; probing its recycled pid for real would depend on the host.
+    def probe(pid: int, sig: int) -> None:
+        if pid == stale:
+            assert sig == 0, "recovery must not send another cleanup signal"
+            raise ProcessLookupError(3, "synthetic absent group")
+        real_killpg(pid, sig)
+
+    monkeypatch.setattr(harness.module.os, "killpg", probe)
+    harness.args.resume = True
+    resumed = harness.runner(harness.args, harness.directory)
+    assert resumed.run() == "converged"
+    assert resumed.state["run_id"] == state["run_id"]
+    assert harness.launches == ["codex", "claude", "codex", "claude"]
+    assert len(resumed.state["attempts"]) == 4
+
+
+@pytest.mark.parametrize(
+    "obstacle,refusal",
+    [
+        ("live", "process group still exists"),
+        ("denied", "cannot inspect the process group"),
+        ("result", "evidence changed after cleanup failure"),
+        ("log", "evidence changed after cleanup failure"),
+        ("late-receipt", "evidence changed after cleanup failure"),
+        ("exit", "requires a recorded successful worker exit"),
+        ("exit-false", "requires a recorded successful worker exit"),
+        ("identity", "requires a recorded successful worker exit"),
+        ("duplicate", "cleanup recovery attempt changed"),
+        ("group-missing", "process group is unavailable"),
+        ("group-bool", "process group is unavailable"),
+    ],
+)
+def test_cleanup_recovery_requires_absence_and_unchanged_completed_evidence(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, obstacle: str, refusal: str
+) -> None:
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "synthetic cleanup denial")
+
+    monkeypatch.setattr(harness.module.os, "killpg", denied)
+    with pytest.raises(harness.module.Blocked, match="process-group cleanup denied"):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    folder = harness.directory / state["pending"]["folder"]
+    if obstacle in ("result", "log"):
+        path = folder / ("result.json" if obstacle == "result" else "worker.log")
+        path.write_text(path.read_text() + "\n")
+    elif obstacle == "late-receipt":
+        (folder / "result.json.recovery.json").write_text("{}")
+    elif obstacle == "exit":
+        state["attempts"][0]["exit_status"] = None
+    elif obstacle == "exit-false":
+        state["attempts"][0]["exit_status"] = False
+    elif obstacle == "identity":
+        state["attempts"][0]["engine"] = "claude"
+    elif obstacle == "duplicate":
+        state["attempts"].append(dict(state["attempts"][0]))
+    elif obstacle == "group-missing":
+        state["attempts"][0].pop("process_group")
+    elif obstacle == "group-bool":
+        state["attempts"][0]["process_group"] = True
+    harness.module.save(harness.directory / "state.json", state)
+
+    def probe(pid: int, sig: int) -> None:
+        assert sig == 0, "recovery must not send another cleanup signal"
+        if obstacle == "denied":
+            raise PermissionError(1, "synthetic denied probe")
+        if obstacle != "live":
+            raise ProcessLookupError(3, "synthetic absent group")
+
+    monkeypatch.setattr(harness.module.os, "killpg", probe)
+    harness.args.resume = True
+    resumed = harness.runner(harness.args, harness.directory)
+    with pytest.raises(harness.module.Blocked, match=refusal):
+        resumed.run()
+    assert harness.launches == ["codex"]
+    assert not harness.events
+    # The refusal must come from the recovery guard, leaving the sealed attempt
+    # exactly as it was rather than from some later stage after a promotion.
+    blocked = harness.module.read(harness.directory / "state.json")
+    assert blocked["pending"]["phase"] == "cleanup_blocked"
+    assert blocked["attempts"][0]["phase"] == "cleanup_blocked"
+    assert "cleanup_reconciled" not in blocked["attempts"][0]
+
+
+def test_cleanup_denial_survives_an_unreadable_completed_output(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_digest = harness.module.digest
+
+    def unreadable(path: Path) -> str:
+        if path.name == "result.json":
+            raise OSError(13, "synthetic unreadable result")
+        return str(real_digest(path))
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "synthetic cleanup denial")
+
+    monkeypatch.setattr(harness.module.os, "killpg", denied)
+    monkeypatch.setattr(harness.module, "digest", unreadable)
+    # An I/O error while sealing must not displace the cleanup denial or leave
+    # the attempt half-sealed; only Blocked being caught would let it through.
+    with pytest.raises(harness.module.Blocked, match="process-group cleanup denied"):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    assert state["attempts"][0]["exit_status"] == 0
+    assert state["attempts"][0]["phase"] != "cleanup_blocked"
+    assert state["pending"]["phase"] != "cleanup_blocked"
+    assert "cleanup_result_sha256" not in state["pending"]
+    assert harness.launches == ["codex"]
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_cleanup_denial_seals_the_finalization_receipt(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, tamper: bool
+) -> None:
+    real_killpg = os.killpg
+    harness.controls.finalization_failure = True
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "synthetic cleanup denial")
+
+    monkeypatch.setattr(harness.module.os, "killpg", denied)
+    with pytest.raises(harness.module.Blocked, match="process-group cleanup denied"):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    pending = state["pending"]
+    folder = harness.directory / pending["folder"]
+    receipt = folder / "result.json.recovery.json"
+    # The seal must bind the receipt observed at the worker's exit, not a
+    # sidecar that appears while the group is being reconciled.
+    assert pending["phase"] == "cleanup_blocked"
+    assert pending["result_recovery_sha256"] == harness.module.digest(receipt)
+    if tamper:
+        receipt.write_text(receipt.read_text() + "\n")
+    stale = state["attempts"][0]["process_group"]
+
+    def probe(pid: int, sig: int) -> None:
+        if pid == stale:
+            assert sig == 0, "recovery must not send another cleanup signal"
+            raise ProcessLookupError(3, "synthetic absent group")
+        real_killpg(pid, sig)
+
+    monkeypatch.setattr(harness.module.os, "killpg", probe)
+    harness.controls.finalization_failure = False
+    harness.args.resume = True
+    resumed = harness.runner(harness.args, harness.directory)
+    if tamper:
+        with pytest.raises(
+            harness.module.Blocked, match="evidence changed after cleanup failure"
+        ):
+            resumed.run()
+        assert harness.launches == ["codex"]
+        assert not harness.events
+        return
+    assert resumed.run() == "converged"
+    assert resumed.state["run_id"] == state["run_id"]
+    assert harness.launches == ["codex", "claude", "codex", "claude"]
+
+
+@pytest.mark.parametrize("exit_code,missing", [(7, False), (0, True)])
+def test_cleanup_denial_does_not_make_an_incomplete_review_resumable(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, exit_code: int, missing: bool
+) -> None:
+    real_killpg = os.killpg
+    harness.controls.exit_code = exit_code
+    harness.controls.missing = missing
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError(1, "synthetic cleanup denial")
+
+    monkeypatch.setattr(harness.module.os, "killpg", denied)
+    with pytest.raises(harness.module.Blocked, match="process-group cleanup denied"):
+        harness.runner(harness.args, harness.directory).run()
+    state = harness.module.read(harness.directory / "state.json")
+    assert state["attempts"][0]["exit_status"] == exit_code
+    # Unsealable output never half-seals the attempt, and never displaces the
+    # cleanup denial the operator has to act on.
+    assert state["attempts"][0]["phase"] != "cleanup_blocked"
+    assert state["pending"]["phase"] != "cleanup_blocked"
+    assert "cleanup_result_sha256" not in state["pending"]
+    monkeypatch.setattr(harness.module.os, "killpg", real_killpg)
+    harness.controls.exit_code = 0
+    harness.controls.missing = False
+    harness.args.resume = True
+    with pytest.raises(harness.module.Blocked):
+        harness.runner(harness.args, harness.directory).run()
+    assert harness.launches == ["codex"]
+    assert not harness.events
 
 
 @pytest.mark.parametrize("probe_denied", [False, True])
