@@ -170,7 +170,7 @@ newline and no comments or blank lines. The renderer is its only writer, and
 `--check` compares it against a fresh render, so it cannot silently go stale.
 
 Every entry is inside the renderer's ownership domain, which is what makes the
-file safe to act on. Two shapes appear in it:
+file safe to act on. Three shapes appear in it:
 
 | Shape                          | Source                                                           |
 | ------------------------------ | ---------------------------------------------------------------- |

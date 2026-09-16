@@ -578,17 +578,26 @@ def _document_source(source_relative: str, root_relative: str) -> Path:
     """
     source_path = Path(source_relative)
     root_path = Path(root_relative)
-    for label, candidate in (("source", source_path), ("destination", root_path)):
+    for label, raw, candidate in (
+        ("source", source_relative, source_path),
+        ("destination", root_relative, root_path),
+    ):
         if (
             not candidate.parts
+            or raw.startswith("~")
             or candidate.is_absolute()
             or ".." in candidate.parts
-            or candidate.as_posix() != str(candidate)
+            or candidate.as_posix() != raw
         ):
             raise ValueError(
                 f"vendored document {label} must be a plain relative path: "
-                f"{candidate.as_posix()!r}"
+                f"{raw!r}"
             )
+    if root_path.as_posix() == STACK_MANIFEST_NAME:
+        raise ValueError(
+            f"vendored document destination must not collide with "
+            f"{STACK_MANIFEST_NAME!r}: {root_relative!r}"
+        )
     if root_path.parts[0] == "skills":
         # The skill directories are wholly owned by the skill render and swept
         # for anything it did not emit, so a document landing in one would be

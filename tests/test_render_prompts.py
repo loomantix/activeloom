@@ -1475,13 +1475,48 @@ def test_a_vendored_document_source_must_not_be_a_symlink(
 
 @pytest.mark.parametrize(
     "root_relative",
-    ["/etc/passwd", "../outside.md", "references/../../escape.md"],
+    [
+        "/etc/passwd",
+        "../outside.md",
+        "references/../../escape.md",
+        "./references/escape.md",
+        "references//escape.md",
+        "~escape.md",
+    ],
 )
 def test_a_vendored_document_destination_must_stay_relative(
     cli: Harness, monkeypatch: pytest.MonkeyPatch, root_relative: str
 ) -> None:
     monkeypatch.setattr(cli._rp, "VENDORED_DOCUMENTS", {DOC_SOURCE: root_relative})
     with pytest.raises(ValueError, match="plain relative path"):
+        cli._rp.main([])
+
+
+@pytest.mark.parametrize(
+    "source_relative",
+    [
+        "/etc/passwd",
+        "../outside.md",
+        "./packages/demo/protocol/contract.md",
+        "packages//demo/protocol/contract.md",
+        "~outside.md",
+    ],
+)
+def test_a_vendored_document_source_must_stay_relative(
+    cli: Harness, monkeypatch: pytest.MonkeyPatch, source_relative: str
+) -> None:
+    monkeypatch.setattr(cli._rp, "VENDORED_DOCUMENTS", {source_relative: DOC_RELATIVE})
+    with pytest.raises(ValueError, match="plain relative path"):
+        cli._rp.main([])
+
+
+def test_a_vendored_document_destination_must_not_collide_with_stack_manifest(
+    cli: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        cli._rp, "VENDORED_DOCUMENTS", {DOC_SOURCE: cli._rp.STACK_MANIFEST_NAME}
+    )
+    with pytest.raises(ValueError, match="must not collide with"):
         cli._rp.main([])
 
 
