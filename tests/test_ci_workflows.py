@@ -227,5 +227,5 @@ def test_pytest_run_pins_coverage_and_names_the_branch_config() -> None:
         s for s in steps if s.get("run", "").startswith("python3 -m pytest")
     )
     assert "--cov-config=pyproject.toml" in pytest_step["run"]
-    assert "-n 2" in pytest_step["run"]
+    assert "-n 4" in pytest_step["run"]
     assert "--dist worksteal" in pytest_step["run"]
