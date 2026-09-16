@@ -387,15 +387,18 @@ class Runner:
         if self.state:
             if self.state.get("version") not in (1, 2):
                 raise Blocked("unsupported checkpoint version")
-            if (
+            adopt_scope = bool(
                 self.args.resume
                 and self.state.get("run_id") is None
                 and scope_decision
                 and "scope_decision" not in self.state["config"]
-            ):
-                self.state["config"]["scope_decision"] = scope_decision
-                self.persist()
-            if not self.args.resume or self.state["config"] != config:
+            )
+            # Compare in memory: a resume this method goes on to reject must
+            # not leave an adopted decision behind in the checkpoint.
+            recorded = dict(self.state["config"])
+            if adopt_scope:
+                recorded["scope_decision"] = scope_decision
+            if not self.args.resume or recorded != config:
                 raise Blocked(
                     "checkpoint exists; use --resume with the same plan, tier, and gates"
                 )
@@ -413,6 +416,9 @@ class Runner:
                     "with the original arguments plus --resume --migrate-controller "
                     "<that checkout's HEAD sha>"
                 )
+            if adopt_scope:
+                self.state["config"]["scope_decision"] = scope_decision
+                self.persist()
             return
         if self.args.resume:
             raise Blocked("no checkpoint to resume")

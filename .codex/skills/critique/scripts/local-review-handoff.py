@@ -499,13 +499,31 @@ def _scope_signals(repo: str, pr: int) -> dict[str, Any]:
     or `perf`. A patchless file changed lines GitHub would not render as a patch,
     so review findings on it cannot anchor to a line; binary files report no
     changed lines and removed files add no behaviour, so neither counts.
+
+    Both collections are capped by GitHub — 250 commits and 3000 files — and a
+    capped response is indistinguishable from a complete one, so each count is
+    checked against the total the PR itself reports. Truncation is unknown
+    scope, not zero scope, and the largest changesets are the ones that reach
+    the caps.
     """
+    pull = _json_output(["api", f"repos/{repo}/pulls/{pr}"])
+    if not isinstance(pull, dict):
+        _fail("GitHub returned malformed pull-request metadata")
+    commit_total = pull.get("commits")
+    file_total = pull.get("changed_files")
+    if not isinstance(commit_total, int) or not isinstance(file_total, int):
+        _fail("GitHub returned an invalid PR commit or changed-file count")
     commits = _flatten_pages(
         _json_output(
             ["api", "--paginate", "--slurp", f"repos/{repo}/pulls/{pr}/commits?per_page=100"]
         ),
         "PR-commit",
     )
+    if len(commits) < commit_total:
+        _fail(
+            "could not read the whole PR for the scope checkpoint: GitHub reported "
+            f"{commit_total} commits but returned {len(commits)}"
+        )
     behaviour = 0
     for row in commits:
         detail = row.get("commit")
@@ -521,6 +539,11 @@ def _scope_signals(repo: str, pr: int) -> dict[str, Any]:
         ),
         "PR-file",
     )
+    if len(files) < file_total:
+        _fail(
+            "could not read the whole PR for the scope checkpoint: GitHub reported "
+            f"{file_total} changed files but returned {len(files)}"
+        )
     missing: list[str] = []
     for row in files:
         name = row.get("filename")

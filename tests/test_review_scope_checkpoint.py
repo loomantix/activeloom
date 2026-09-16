@@ -253,14 +253,33 @@ def test_signals_count_behaviour_commits_and_patchless_files(
         ],
     }
 
+    totals = {"commits": 7, "changed_files": 5}
+
     def output(args: list[str], payload: Any = None) -> Any:
-        return pages["commits" if "/commits?" in args[-1] else "files"]
+        if "/commits?" in args[-1]:
+            return pages["commits"]
+        if "/files?" in args[-1]:
+            return pages["files"]
+        return totals
 
     monkeypatch.setattr(controller, "_json_output", output)
     assert controller._scope_signals("example/repo", 1) == {
         "behaviour_commits": 3,
         "missing_patch_files": ["scripts/large.sh", "scripts/null_patch.sh"],
     }
+
+    # GitHub caps these collections at 250 commits and 3000 files and gives a
+    # capped response no marker of its own, so a short read must fail closed
+    # rather than report the scope it could not see.
+    totals["commits"] = 8
+    with pytest.raises(controller.HandoffError, match="8 commits but returned 7"):
+        controller._scope_signals("example/repo", 1)
+    totals["commits"] = 7
+    totals["changed_files"] = 6
+    with pytest.raises(
+        controller.HandoffError, match="6 changed files but returned 5"
+    ):
+        controller._scope_signals("example/repo", 1)
 
 
 def test_runner_resumes_unstarted_run_with_scope_decision(
@@ -351,7 +370,19 @@ def test_runner_resumes_unstarted_run_with_scope_decision(
 
     monkeypatch.chdir(worktree)
     monkeypatch.setattr(module, "command", fake_command)
+
+    # A resume the config check goes on to reject must leave the checkpoint
+    # alone; otherwise the corrected re-run mismatches on a decision that was
+    # never accepted.
+    args_rejected = SimpleNamespace(**{**vars(args_resume), "tier": "deep"})
+    with pytest.raises(module.Blocked, match="checkpoint exists"):
+        module.Runner(args_rejected, review_dir).initialize()
+    saved = json.loads((review_dir / "state.json").read_text())
+    assert "scope_decision" not in saved["config"]
+
     resumed = module.Runner(args_resume, review_dir)
     resumed.initialize()
 
     assert resumed.state["config"].get("scope_decision") == "keep"
+    persisted = json.loads((review_dir / "state.json").read_text())
+    assert persisted["config"]["scope_decision"] == "keep"
