@@ -1523,7 +1523,7 @@ def test_a_vendored_document_destination_must_not_collide_with_stack_manifest(
 def test_a_vendored_document_may_not_land_in_a_rendered_skill_directory(
     cli: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The skill sweep would emit it and then report it as unowned in one run."""
+    """A skill directory belongs to the skill render; a document could collide there."""
     monkeypatch.setattr(
         cli._rp, "VENDORED_DOCUMENTS", {DOC_SOURCE: "skills/demo/contract.md"}
     )

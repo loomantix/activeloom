@@ -599,9 +599,9 @@ def _document_source(source_relative: str, root_relative: str) -> Path:
             f"{STACK_MANIFEST_NAME!r}: {root_relative!r}"
         )
     if root_path.parts[0] == "skills":
-        # The skill directories are wholly owned by the skill render and swept
-        # for anything it did not emit, so a document landing in one would be
-        # written and then reported as unowned by the same run.
+        # A rendered skill directory is wholly owned by the skill render, so a
+        # document there could collide with a file that skill emits; a
+        # hand-authored skill directory is not the renderer's to write into.
         raise ValueError(
             f"vendored document destination must not sit inside a rendered "
             f"skill directory: {root_relative!r}"

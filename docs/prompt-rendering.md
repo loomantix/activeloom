@@ -73,9 +73,8 @@ to the path it is copied to under **every** harness root. One entry today:
 The ledger protocol is the engine-neutral contract that
 [`packages/review-ledger`](../packages/review-ledger/README.md) implements, so
 the package is the only place it can be authored without the document and the
-code enforcing it drifting apart. Each root's copy used to be updated by hand
-and nothing compared them; now a hand-edit to a copy fails `--check` like any
-other generated file, and a write-mode render restores it.
+code enforcing it drifting apart. A hand-edit to a copy fails `--check` like
+any other generated file, and a write-mode render restores it.
 
 Two deliberate differences from a rendered skill:
 
@@ -96,8 +95,9 @@ domain no longer admits, which is a render that cannot be made to pass.
 Only the exact paths the table produces are renderer-owned. `references/`
 itself is not: it holds hand-authored prompts in two roots, and a destination
 directory is never swept the way a rendered skill directory is. A destination
-inside `skills/` is rejected for the mirror-image reason — the skill sweep would
-write the file and then report it as unowned.
+inside `skills/` is rejected too: a rendered skill directory is wholly owned by
+the skill render, so a document there could collide with a file that skill
+emits, and a hand-authored skill directory is not the renderer's to write into.
 
 ## The prompt stack manifest
 
