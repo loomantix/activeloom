@@ -1,31 +1,17 @@
-/**
- * A review engine that may own ledger records.
- */
+/** A review engine that may own ledger records. */
 export type SupportedEngine = 'codex' | 'claude' | 'gemini' | 'antigravity';
-/**
- * How serious a finding is.
- */
+/** Severity level of a finding. */
 export type SupportedSeverity = 'blocking' | 'major' | 'minor' | 'nit';
-/**
- * How a finding was closed.
- */
+/** How a finding was closed. */
 export type SupportedOutcome = 'fixed' | 'dismissed' | 'deferred';
-/**
- * The overall outcome of a review round.
- */
+/** The overall outcome of a review round. */
 export type SupportedStatus = 'clean' | 'changed' | 'blocked';
-/**
- * Whether a changed round counts as a material change.
- */
+/** Whether a changed round counts as a material change. */
 export type SupportedClassification = 'minor' | 'material';
-/**
- * Which side of the diff an anchor refers to.
- */
+/** Which side of the diff an anchor refers to. */
 export type SupportedSide = 'RIGHT' | 'LEFT';
 
-/**
- * A finding as callers describe it, before it becomes a ledger record.
- */
+/** A finding before it becomes a ledger record. */
 export interface ReviewFinding {
   path: string;
   line?: number | undefined;
@@ -45,9 +31,7 @@ export interface ReviewFinding {
   bodyFile?: string | undefined;
 }
 
-/**
- * The fields parsed out of a v3 finding marker.
- */
+/** Fields parsed from a v3 finding marker. */
 export interface FindingV3Match {
   engine: SupportedEngine;
   round: number;
@@ -59,9 +43,7 @@ export interface FindingV3Match {
   contentSha: string;
 }
 
-/**
- * The fields parsed out of a v3 disposition marker.
- */
+/** Fields parsed from a v3 disposition marker. */
 export interface DispositionV3Match {
   engine: SupportedEngine;
   round: number;
@@ -72,9 +54,7 @@ export interface DispositionV3Match {
   contentSha: string;
 }
 
-/**
- * The fields parsed out of a legacy v1 finding marker.
- */
+/** Fields parsed from a legacy v1 finding marker. */
 export interface FindingV1Match {
   engine: SupportedEngine;
   round: number;
@@ -82,9 +62,7 @@ export interface FindingV1Match {
   fingerprint: string;
 }
 
-/**
- * The fields parsed out of a legacy v1 disposition marker.
- */
+/** Fields parsed from a legacy v1 disposition marker. */
 export interface DispositionV1Match {
   engine: SupportedEngine;
   round: number;
@@ -93,17 +71,13 @@ export interface DispositionV1Match {
   outcome: SupportedOutcome;
 }
 
-/**
- * The fields parsed out of a historical pseudo-v3 marker.
- */
+/** Fields parsed from a historical pseudo-v3 marker. */
 export interface PseudoV3Match {
   fingerprint: string;
   outcome?: 'deferred' | undefined;
 }
 
-/**
- * The serialised outcome of one review round.
- */
+/** Serialized outcome of one review round. */
 export interface LedgerResult {
   version: number;
   status: SupportedStatus;
@@ -120,9 +94,7 @@ export interface LedgerResult {
   verified?: boolean | undefined;
 }
 
-/**
- * The identity every result-producing command shares.
- */
+/** Common identity shared by result-producing commands. */
 export interface BaseResultParams {
   head: string;
   engine: SupportedEngine;
@@ -132,9 +104,7 @@ export interface BaseResultParams {
   resultFile: string;
 }
 
-/**
- * Parameters for `writeResult`.
- */
+/** Parameters for `writeResult`. */
 export interface WriteResultParams extends BaseResultParams {
   repo: string;
   pr: number;
@@ -152,24 +122,18 @@ export interface RecoverResultParams extends Omit<
   expectedRecoverySha256: string;
 }
 
-/**
- * Parameters for `writeBlockedResult`.
- */
+/** Parameters for `writeBlockedResult`. */
 export interface WriteBlockedParams extends BaseResultParams {
   blockerFile?: string | undefined;
   blocker?: string | undefined;
 }
 
-/**
- * Parameters for `validateResult`.
- */
+/** Parameters for `validateResult`. */
 export interface ValidateResultParams extends BaseResultParams {
   resultHead?: string | undefined;
 }
 
-/**
- * Parameters for `preflightAnchor`.
- */
+/** Parameters for `preflightAnchor`. */
 export interface PreflightAnchorParams {
   repo: string;
   pr: number;
@@ -180,18 +144,14 @@ export interface PreflightAnchorParams {
   side?: SupportedSide | undefined;
 }
 
-/**
- * The result of `preflightAnchor`.
- */
+/** Result of `preflightAnchor`. */
 export interface PreflightAnchorResult {
   anchor: string;
   path: string;
   verified: true;
 }
 
-/**
- * Parameters for `postFinding`.
- */
+/** Parameters for `postFinding`. */
 export interface PostFindingParams {
   repo: string;
   pr: number;
@@ -211,18 +171,14 @@ export interface PostFindingParams {
   lens?: string | undefined;
 }
 
-/**
- * The result of `postFinding`.
- */
+/** Result of `postFinding`. */
 export interface PostFindingResult {
   comment_id: number;
   verified: true;
   replayed?: boolean | undefined;
 }
 
-/**
- * Parameters for `reopenOccurrence`.
- */
+/** Parameters for `reopenOccurrence`. */
 export interface ReopenOccurrenceParams {
   repo: string;
   pr: number;
@@ -239,9 +195,7 @@ export interface ReopenOccurrenceParams {
   content?: string | undefined;
 }
 
-/**
- * The result of `reopenOccurrence`.
- */
+/** Result of `reopenOccurrence`. */
 export interface ReopenOccurrenceResult {
   comment_id: number;
   replayed: boolean;
@@ -250,9 +204,7 @@ export interface ReopenOccurrenceResult {
   verified: true;
 }
 
-/**
- * Parameters for `dispose`.
- */
+/** Parameters for `dispose`. */
 export interface DisposeParams {
   repo: string;
   pr: number;
@@ -268,9 +220,7 @@ export interface DisposeParams {
   content?: string | undefined;
 }
 
-/**
- * The result of `dispose`.
- */
+/** Result of `dispose`. */
 export interface DisposeResult {
   comment_id: number;
   replayed: boolean;
@@ -279,9 +229,7 @@ export interface DisposeResult {
   verified: true;
 }
 
-/**
- * Parameters for `reply`.
- */
+/** Parameters for `reply`. */
 export interface ReplyParams {
   repo: string;
   pr: number;
@@ -296,9 +244,7 @@ export interface ReplyParams {
   outcome?: SupportedOutcome | undefined;
 }
 
-/**
- * Parameters for `postPrComment`.
- */
+/** Parameters for `postPrComment`. */
 export interface PostPrCommentParams {
   repo: string;
   pr: number;
@@ -307,9 +253,7 @@ export interface PostPrCommentParams {
   body?: string | undefined;
 }
 
-/**
- * Parameters for `attest`.
- */
+/** Parameters for `attest`. */
 export interface AttestParams extends BaseResultParams {
   repo: string;
   pr: number;
@@ -323,18 +267,13 @@ export interface AttestParams extends BaseResultParams {
   content?: string | undefined;
 }
 
-/**
- * Parameters for `finalize`: `attest` without the identity and digest fields,
- * which are derived from the saved result instead.
- */
+/** Parameters for `finalize`: `attest` with fields derived from saved result. */
 export type FinalizeParams = Omit<
   AttestParams,
   'head' | 'engine' | 'round' | 'base' | 'before' | 'expectedResultSha256'
 >;
 
-/**
- * The result of `attest`.
- */
+/** Result of `attest`. */
 export interface AttestResult {
   comment_id: number;
   replayed: boolean;
@@ -342,9 +281,7 @@ export interface AttestResult {
   verified: true;
 }
 
-/**
- * Parameters for `resolve`.
- */
+/** Parameters for `resolve`. */
 export interface ResolveParams {
   repo: string;
   pr: number;
@@ -352,17 +289,13 @@ export interface ResolveParams {
   threadId: string;
 }
 
-/**
- * The result of `resolve`.
- */
+/** Result of `resolve`. */
 export interface ResolveResult {
   thread_id: string;
   resolved: true;
 }
 
-/**
- * Parameters for `reconcile`.
- */
+/** Parameters for `reconcile`. */
 export interface ReconcileParams {
   repo: string;
   pr: number;
@@ -370,9 +303,7 @@ export interface ReconcileParams {
   fingerprint: string;
 }
 
-/**
- * The result of `reconcile`.
- */
+/** Result of `reconcile`. */
 export interface ReconcileResult {
   findings: Array<Record<string, unknown>>;
   dispositions: Array<Record<string, unknown>>;
@@ -385,20 +316,13 @@ export interface ReconcileResult {
     | 'dispose'
     | 'reopen-occurrence'
     | 'post-finding';
-  /**
-   * The review thread holding occurrence 1, when the ledger is valid and
-   * exactly one root comment identifies it. `null` when the fingerprint has no
-   * occurrence-1 comment to anchor to, which is what an unposted finding looks
-   * like.
-   */
+  /** Review thread for occurrence 1, or null if unposted or ambiguous. */
   threadId: string | null;
   threadResolved: boolean | null;
   verified: true;
 }
 
-/**
- * Parameters for `verifyLedger`.
- */
+/** Parameters for `verifyLedger`. */
 export interface VerifyLedgerParams {
   repo: string;
   pr: number;
@@ -416,34 +340,26 @@ export interface VerifyLedgerParams {
   expectedThreadsSha256?: string | undefined;
 }
 
-/**
- * The result of `verifyLedger`.
- */
+/** Result of `verifyLedger`. */
 export interface VerifyLedgerResult {
   actor: string;
   dispositions: number;
   verified: true;
 }
 
-/**
- * The report returned by `threadResolution`.
- */
+/** Report returned by `threadResolution`. */
 export interface ThreadResolutionReport {
   verified: boolean;
   threadsVerified: number;
   resultStatus: SupportedStatus | null;
 }
 
-/**
- * The author identity GitHub returns on a comment.
- */
+/** Author identity returned by GitHub on a comment. */
 export interface GitHubCommentAuthor {
   login: string;
 }
 
-/**
- * One comment inside a review thread.
- */
+/** Comment inside a review thread. */
 export interface GitHubReviewCommentNode extends Record<string, unknown> {
   databaseId?: number | undefined;
   id?: number | undefined;
@@ -456,9 +372,7 @@ export interface GitHubReviewCommentNode extends Record<string, unknown> {
   commit_id?: string | undefined;
 }
 
-/**
- * One review thread, with its PR scope and full comment list.
- */
+/** Review thread with PR scope and full comment list. */
 export interface GitHubReviewThreadNode {
   id: string;
   isResolved: boolean;
@@ -470,9 +384,7 @@ export interface GitHubReviewThreadNode {
   };
 }
 
-/**
- * The seam all GitHub and git access flows through.
- */
+/** Seam through which GitHub and git access flows. */
 export interface GitHubRunner {
   runGh(args: string[], payload?: unknown): string;
   currentActor?(): string;
@@ -483,25 +395,13 @@ export interface GitHubRunner {
   isAncestor?(ancestor: string, descendant: string): boolean;
 }
 
-/**
- * How many distinct non-author engines reviewed the exact head.
- *
- * `solo` is permitted but must be declared; `cross` is the recommended floor;
- * `full` is two or more independent non-author engines.
- */
+/** Distinct non-author engines reviewing head: solo, cross (recommended), or full. */
 export type CoverageTier = 'solo' | 'cross' | 'full';
 
 /** Which roster grammar a parsed marker was written in. */
 export type RosterVersion = 1 | 2;
 
-/**
- * A parsed roster marker, at either protocol version.
- *
- * `head` and `supersedes` are `null` for a v1 marker, whose grammar carries
- * neither. A v1 roster is therefore bound to no commit and supersedes nothing,
- * which is why it is read as advisory rather than as evidence a reader can gate
- * on.
- */
+/** A parsed roster marker across protocol versions. */
 export interface RosterMatch {
   version: RosterVersion;
   author: SupportedEngine;
@@ -515,13 +415,7 @@ export interface RosterMatch {
 /** @deprecated Use {@link RosterMatch}. */
 export type RosterV1Match = RosterMatch;
 
-/**
- * The effective roster declared on a pull request, or its declared absence.
- *
- * `chain` lists the comment ids of the supersession chain, oldest first, so a
- * narrowed roster is visible as an ordered replacement rather than appearing as
- * the only declaration ever made.
- */
+/** Effective roster declared on a pull request, or its declared absence. */
 export interface RosterReport {
   present: boolean;
   version: RosterVersion | null;
@@ -533,9 +427,7 @@ export interface RosterReport {
   chain: number[];
 }
 
-/**
- * Parameters for `postRoster`.
- */
+/** Parameters for `postRoster`. */
 export interface PostRosterParams {
   repo: string;
   pr: number;
@@ -547,9 +439,7 @@ export interface PostRosterParams {
   content: string;
 }
 
-/**
- * The result of `postRoster`.
- */
+/** Result of `postRoster`. */
 export interface PostRosterResult {
   comment_id: number;
   author: SupportedEngine;
@@ -564,18 +454,14 @@ export interface PostRosterResult {
   verified: true;
 }
 
-/**
- * One actor-owned attestation naming the exact head under examination.
- */
+/** Actor-owned attestation naming the exact head under examination. */
 export interface AttestationAtHead {
   engine: SupportedEngine;
   round: number;
   status: 'clean' | 'changed';
 }
 
-/**
- * Parameters for `coverage` and `verifyCoverage`.
- */
+/** Parameters for `coverage` and `verifyCoverage`. */
 export interface CoverageParams {
   repo: string;
   pr: number;
@@ -584,9 +470,7 @@ export interface CoverageParams {
   actor?: string | undefined;
 }
 
-/**
- * The result of `coverage`.
- */
+/** Result of `coverage`. */
 export interface CoverageResult {
   head: string;
   rosterPresent: boolean;
@@ -605,14 +489,7 @@ export interface CoverageResult {
   tier: CoverageTier;
   /** A roster declaring no reviewers is present, whatever its version or head. */
   soloDeclared: boolean;
-  /**
-   * The solo declaration is one this reader can stand behind: v2 grammar, so
-   * the declaration is inside its own digest, and named at this exact head.
-   *
-   * A solo relay with a recorded reason is a legitimate outcome, not a degraded
-   * one. This flag is about whether the ledger's record of that choice is
-   * trustworthy, never about whether the choice was a good one.
-   */
+  /** Whether the solo declaration is verified under v2 grammar at this head. */
   soloAcknowledged: boolean;
   roundComplete: boolean;
   verified: true;
@@ -623,13 +500,7 @@ export type ChangesetClass = 'app' | 'test' | 'docsConfig' | 'generated';
 
 /** Options that tune path classification for a repository. */
 export interface ClassifyOptions {
-  /**
-   * Path prefixes and exact paths whose contents are prompt surface.
-   *
-   * Defaults to the engine prompt directories the protocol names. A repository
-   * that keeps its prompts elsewhere passes its own; the rule is about the role
-   * of the file, not about a directory name.
-   */
+  /** Path prefixes and exact paths treated as prompt surfaces. */
   promptSurfaces?: readonly string[] | undefined;
 }
 
@@ -696,26 +567,14 @@ export type TelemetryStance = 'adversarial' | 'convergence';
 /** How the pass ended, including the two outcomes that spend without finding. */
 export type TelemetryStatus = 'clean' | 'changed' | 'blocked' | 'skipped';
 
-/**
- * Where the token counts came from, and therefore how far they can be trusted.
- *
- * `session-log-delta` and `stream-json` are measured. `unscoped-session` is
- * measured but over-counts, so it is an upper bound. `unavailable` means no
- * data at all — never zero.
- */
+/** Source and confidence of token measurements. */
 export type TelemetryTokenSource =
   | 'session-log-delta'
   | 'stream-json'
   | 'unscoped-session'
   | 'unavailable';
 
-/**
- * Token counts for one exact model id.
- *
- * Every count is nullable and null means unmeasured. Gemini has no cache-write
- * bucket at all, so a zero there would report perfect cache behaviour for a
- * provider that never reported any.
- */
+/** Token counts for one model id; null indicates unmeasured buckets. */
 export interface TelemetryTokenBucket {
   model: string;
   effort: string | null;
@@ -724,12 +583,7 @@ export interface TelemetryTokenBucket {
   cacheRead: number | null;
   cacheWrite: number | null;
   reasoning: number | null;
-  /**
-   * Provider-specific integer buckets that do not map onto the canonical five.
-   *
-   * An open key space of integers carries no leak risk, which is what keeps it
-   * inside the no-free-form-text rule.
-   */
+  /** Provider-specific integer buckets not mapped to canonical buckets. */
   providerBuckets: Record<string, number>;
 }
 
@@ -755,12 +609,7 @@ export interface TelemetryOutcomeCounts {
 export interface TelemetryFindings {
   posted: number;
   bySeverityAndOutcome: Record<SupportedSeverity, TelemetryOutcomeCounts>;
-  /**
-   * New defects whose cause is code the review chain itself introduced.
-   *
-   * Distinct from a recurrence, which is an unfixed defect still present.
-   * Averaging the two together would hide the expensive one.
-   */
+  /** New defects introduced by the review chain itself. */
   chainInducedRegressions: number;
 }
 
@@ -797,11 +646,8 @@ export interface TelemetryFindingsInput {
 }
 
 /**
- * One review pass, measured.
- *
- * Structured identifiers and integers only: no finding titles or summaries.
- * Token validation is syntactic, so callers must still supply public-safe,
- * non-sensitive model, lane, version, and idempotency identifiers.
+ * One review pass, measured. Structured identifiers and counts only;
+ * callers must supply public-safe, non-sensitive identifiers.
  */
 export interface TelemetryRecord {
   version: 1;
@@ -868,13 +714,7 @@ export interface BuildTelemetryParams {
   findings?: TelemetryFindingsInput | undefined;
 }
 
-/**
- * Where an emitted record goes.
- *
- * The pull request comment is the reference implementation, not the contract.
- * Welding emission to `gh` would discard the schema and the classification for
- * anyone on another forge, and would foreclose git notes as a second sink.
- */
+/** Sink destination for emitted telemetry records. */
 export interface TelemetrySink {
   /** Stable identifier for the sink, echoed in the emission result. */
   name: string;
