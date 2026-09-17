@@ -26,13 +26,7 @@ import type {
 
 let defaultActor: string | null = null;
 
-/**
- * Describe a failed subprocess.
- *
- * `ENOBUFS` arrives with an empty stderr — the child was killed for exceeding
- * the output ceiling, not for anything it reported — so reporting the usual
- * "no diagnostic returned" would name the wrong cause.
- */
+/** Describe a failed subprocess, handling buffer overflow errors. */
 export function execFailureDetail(error: unknown): string {
   const execError = error as { stderr?: string; code?: string };
   if (execError.code === 'ENOBUFS') {
@@ -41,9 +35,7 @@ export function execFailureDetail(error: unknown): string {
   return execError.stderr?.trim() || 'no diagnostic returned';
 }
 
-/**
- * Default runner: shells out to `gh` and `git`.
- */
+/** Default runner: shells out to `gh` and `git`. */
 export class DefaultGitHubRunner implements GitHubRunner {
   private actorOverride: string | null = null;
   private cachedActor: string | null = null;
@@ -83,14 +75,7 @@ export class DefaultGitHubRunner implements GitHubRunner {
     return this.cachedActor;
   }
 
-  /**
-   * Resolve the actor bypassing the cache.
-   *
-   * An explicit pin outranks the session, so an `actorOverride` is returned
-   * without a lookup. That is deliberate, and it means a runner constructed
-   * with an actor performs no live check at all — seeding an actor disables
-   * rotation detection.
-   */
+  /** Resolve the actor bypassing the cache. */
   liveActor(): string {
     if (this.actorOverride !== null) {
       return this.actorOverride;
@@ -148,7 +133,6 @@ export class DefaultGitHubRunner implements GitHubRunner {
       );
       return true;
     } catch (error: unknown) {
-      // git exits 1 for "not an ancestor" and >1 for a real failure.
       const execError = error as { status?: number };
       if (execError.status === 1) {
         return false;
@@ -160,50 +144,34 @@ export class DefaultGitHubRunner implements GitHubRunner {
 
 let activeRunner: GitHubRunner = new DefaultGitHubRunner();
 
-/**
- * Return the runner all GitHub and git access flows through.
- */
+/** Return the runner all GitHub and git access flows through. */
 export function getGitHubRunner(): GitHubRunner {
   return activeRunner;
 }
 
-/**
- * Replace the active runner. Test seam.
- */
+/** Replace the active runner. Test seam. */
 export function setGitHubRunner(runner: GitHubRunner): void {
   activeRunner = runner;
 }
 
-/**
- * Restore the default runner and clear any cached actor.
- */
+/** Restore the default runner and clear any cached actor. */
 export function resetGitHubRunner(actor?: string): void {
   defaultActor = actor ?? null;
   activeRunner = new DefaultGitHubRunner(actor);
 }
 
-/**
- * Invoke `gh` through the active runner, optionally with a JSON body.
- */
+/** Invoke `gh` through the active runner, optionally with a JSON body. */
 export function runGh(args: string[], payload?: unknown): string {
   return activeRunner.runGh(args, payload);
 }
 
-/**
- * Invoke `gh` and parse its stdout as JSON.
- */
+/** Invoke `gh` and parse its stdout as JSON. */
 export function jsonOutput<T = unknown>(args: string[], payload?: unknown): T {
   const raw = runGh(args, payload);
   return parseJsonOrFail<T>(raw, 'GitHub returned invalid JSON');
 }
 
-/**
- * Report whether `after` is strictly ahead of `before` with `before` as merge base.
- *
- * This is the protocol's forward-only transition predicate. It has exactly one
- * implementation so the two call sites — the exported transition verifiers and
- * the allowed-heads chain check — cannot drift apart.
- */
+/** Report whether `after` is strictly ahead of `before` with `before` as merge base. */
 export function compareIsForward(
   repo: string,
   before: string,
@@ -228,14 +196,7 @@ export function compareIsForward(
   );
 }
 
-/**
- * Parse a `gh api user` response and require a non-empty string `login`.
- *
- * Reading `--jq .login` instead would accept the literal `null` jq prints for a
- * missing field. A wrong-but-non-empty actor is the dangerous case: it matches
- * no comment, so every actor-owned collection empties and every "for all
- * threads" rule passes vacuously.
- */
+/** Parse a `gh api user` response and require a non-empty string `login`. */
 function resolveLoginOrFail(raw: string): string {
   const response = parseJsonOrFail<Record<string, unknown>>(
     raw,
@@ -255,9 +216,7 @@ function resolveLoginOrFail(raw: string): string {
   return login;
 }
 
-/**
- * Resolve the authenticated GitHub login, honouring the actor pin.
- */
+/** Resolve the authenticated GitHub login, honouring the actor pin. */
 export function currentActor(): string {
   let login: string;
   if (activeRunner.currentActor) {
@@ -275,9 +234,6 @@ function assertActorPins(login: string, expected?: string): string {
   if (!login) {
     fail('GitHub returned an empty authenticated user');
   }
-  // A present-but-empty pin is a failed resolution in the caller's wrapper, not
-  // a request to run unpinned. Validate it like the caller pin so it cannot
-  // fail open.
   const rawEnvironmentActor = process.env[EXPECTED_ACTOR_ENV];
   if (rawEnvironmentActor !== undefined) {
     const environmentActor = requireToken(rawEnvironmentActor, 'actor');
@@ -295,29 +251,12 @@ function assertActorPins(login: string, expected?: string): string {
   return login;
 }
 
-/**
- * Resolve the live authenticated actor and assert it is the one the caller expected.
- *
- * `expected` is an assertion, never an override: comment ownership is the root
- * of the protocol's trust, so it is always resolved from the authenticated
- * GitHub session and a caller-supplied value can only narrow it, never set it.
- */
+/** Resolve the live authenticated actor and assert it matches any expected pin. */
 export function assertActor(expected?: string | undefined): string {
   return assertActorPins(currentActor(), expected);
 }
 
-/**
- * Re-resolve the authenticated actor without consulting the runner cache.
- *
- * A runner that caches identity must supply `liveActor` to be usable here. It
- * is refused rather than silently downgraded to `currentActor`: falling back to
- * the cache would make every re-pin compare one memoized value against itself,
- * so the rotation check would pass vacuously with no diagnostic.
- *
- * An explicit actor pin short-circuits the live lookup by design — see
- * `DefaultGitHubRunner.liveActor`. Seeding an actor therefore disables rotation
- * detection for that runner.
- */
+/** Re-resolve the authenticated actor without consulting the runner cache. */
 export function assertLiveActor(expected?: string | undefined): string {
   if (!activeRunner.liveActor && activeRunner.currentActor) {
     fail('GitHub runner cannot re-resolve the live authenticated actor');
@@ -328,10 +267,7 @@ export function assertLiveActor(expected?: string | undefined): string {
   return assertActorPins(actor, expected);
 }
 
-/**
- * Seed the actor cache. Test seam only — callers must not use this to choose
- * whose comments count as actor-owned.
- */
+/** Seed the actor cache. Test seam only. */
 export function setCurrentActor(actor: string | null): void {
   defaultActor = actor ? requireToken(actor, 'actor') : null;
   if (activeRunner instanceof DefaultGitHubRunner) {
@@ -339,13 +275,7 @@ export function setCurrentActor(actor: string | null): void {
   }
 }
 
-/**
- * Keep only the rows authored by the authenticated actor.
- *
- * `options.actor` is an assertion, never an override: it is re-resolved live
- * and must equal the authenticated login, so a caller can narrow which identity
- * counts as actor-owned but can never choose one.
- */
+/** Filter rows to only those authored by the authenticated actor. */
 export function authenticatedRows<T extends Record<string, unknown>>(
   rows: T[],
   options?: { graphql?: boolean; actor?: string },
@@ -366,9 +296,7 @@ export function authenticatedRows<T extends Record<string, unknown>>(
   });
 }
 
-/**
- * Assert the PR's live head is the commit the caller is acting on.
- */
+/** Assert the PR's live head is the commit the caller is acting on. */
 export function verifyHead(
   repo: string,
   pr: number,
@@ -392,9 +320,7 @@ export function verifyHead(
   }
 }
 
-/**
- * Run a local git command through the active runner.
- */
+/** Run a local git command through the active runner. */
 export function runGit(args: string[]): string {
   const runner = getGitHubRunner();
   if (!runner.runGit) {
@@ -403,9 +329,7 @@ export function runGit(args: string[]): string {
   return runner.runGit(args);
 }
 
-/**
- * Report whether `ancestor` is an ancestor of `descendant` in the local clone.
- */
+/** Report whether `ancestor` is an ancestor of `descendant` in the local clone. */
 export function isAncestor(ancestor: string, descendant: string): boolean {
   const runner = getGitHubRunner();
   if (!runner.isAncestor) {
@@ -414,10 +338,7 @@ export function isAncestor(ancestor: string, descendant: string): boolean {
   return runner.isAncestor(ancestor, descendant);
 }
 
-/**
- * Bind the pinned review base to the target branch lineage and local history.
- * A target branch fast-forward does not change what this exact-head pass read.
- */
+/** Bind the pinned review base to the target branch lineage and local history. */
 export function verifyReviewBase(
   repo: string,
   pr: number,
@@ -453,8 +374,6 @@ export function verifyReviewBase(
     descendant = isAncestor(base, prBase);
   } catch (error) {
     if (!(error instanceof LedgerError)) throw error;
-    // An unfetched target branch is the common cause of a failed ancestry
-    // check; a genuine lineage break is reported below without that hint.
     fail(
       `could not verify PR base ${prBase} against the pinned base ${base}: ${error.message}; fetch the target branch before retrying`,
     );
@@ -565,13 +484,8 @@ export function getIssueComments(
   if (expectedActor === undefined) {
     return authenticatedRows(getAllIssueComments(repo, pr));
   }
-  // Pin the authenticated identity before fetching replay candidates. If the
-  // credential backing `gh` changes between subprocesses, a caller must never
-  // adopt comments fetched under one identity as history owned by another.
   const actor = assertLiveActor(expectedActor);
   const rows = getAllIssueComments(repo, pr);
-  // `authenticatedRows` re-pins the same actor after the fetch subprocess, so
-  // the whole read is bracketed by live identity checks.
   return authenticatedRows(rows, { actor });
 }
 
@@ -652,15 +566,7 @@ function verifyOwnedComment(
   }
 }
 
-/**
- * Find a prior attestation for this engine and round in the current run.
- *
- * Attestation identity is `(run, engine, round)`, not the full marker: a second
- * attestation naming a different head, classification, fingerprint set or
- * result digest is a contradiction to reject, not a new record to append.
- * `runs` must be the run chain read from the same `rows`, so a caller that
- * already parsed it does not pay for a second parse of every run marker.
- */
+/** Find a prior attestation for this engine and round in the current run. */
 export function findMatchingAttestation(
   rows: Array<Record<string, unknown>>,
   runs: ReviewRun[],
@@ -1007,15 +913,11 @@ mutation($threadId: ID!) {
   return false;
 }
 
-/**
- * Validate a paginated review-thread response and flatten it to threads.
- */
+/** Validate a paginated review-thread response and flatten it to threads. */
 export function parseReviewThreadPages(
   pages: unknown,
   options?: { requireFullComments?: boolean },
 ): GitHubReviewThreadNode[] {
-  // Callers that read markers need every comment; a caller that only reads a
-  // thread's first comment must opt out explicitly rather than by omission.
   const requireFullComments = options?.requireFullComments ?? true;
   if (!Array.isArray(pages)) {
     fail('GitHub review-thread response has an unexpected shape');
@@ -1051,9 +953,6 @@ export function parseReviewThreadPages(
     ) {
       fail('GitHub review-thread nodes have an unexpected shape');
     }
-    // Every page but the last must declare a further page, and the last must
-    // declare none: that is what proves the capture is the complete thread set
-    // rather than a truncated prefix of it.
     const expectedMore = pageIndex < pages.length - 1;
     if (connection.pageInfo.hasNextPage !== expectedMore) {
       fail('GitHub review-thread pagination is incomplete');
@@ -1085,13 +984,7 @@ export function parseReviewThreadPages(
   return threads;
 }
 
-/**
- * Load a review-thread snapshot from disk, refusing any snapshot that is not
- * sealed by a SHA-256 digest supplied out of band.
- *
- * A snapshot is offline evidence: without the seal, anything that reads one is
- * trusting a file the caller could have written itself.
- */
+/** Load a review-thread snapshot from disk, requiring a sealed SHA-256 digest. */
 export function loadReviewThreads(
   pathValue: string,
   expectedDigest?: string | undefined,
@@ -1119,9 +1012,7 @@ export function loadReviewThreads(
   return parseReviewThreadPages(pages);
 }
 
-/**
- * Assert every thread belongs to the requested repository and pull request.
- */
+/** Assert every thread belongs to the requested repository and pull request. */
 export function assertThreadScope(
   threads: GitHubReviewThreadNode[],
   repo: string,
@@ -1143,10 +1034,7 @@ export function assertThreadScope(
   }
 }
 
-/**
- * Resolve review threads either live from GitHub or from a sealed snapshot,
- * then assert they are all scoped to the requested PR.
- */
+/** Resolve review threads live or from snapshot, asserting PR scope. */
 export function reviewThreads(
   repo: string,
   pr: number,
@@ -1161,9 +1049,7 @@ export function reviewThreads(
   return threads;
 }
 
-/**
- * Fetch every review thread on a PR, with its PR scope attached.
- */
+/** Fetch every review thread on a PR, with its PR scope attached. */
 export function fetchReviewThreads(
   repo: string,
   pr: number,
@@ -1173,8 +1059,6 @@ export function fetchReviewThreads(
     fail('--repo must be OWNER/REPO');
   }
   const [owner, name] = parts;
-  // repository/pullRequest are selected per thread so the caller can prove each
-  // thread belongs to the PR under review, not just that GitHub returned it.
   const query = `
 query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
   repository(owner:$owner, name:$name) {
@@ -1215,22 +1099,7 @@ query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
   return parseReviewThreadPages(pages);
 }
 
-/**
- * Find the review thread whose first comment is `rootCommentId`.
- *
- * `reviewThreads` refuses any thread whose comment history is truncated,
- * because a marker sitting past the first page would be invisible in `nodes`
- * and the thread would be silently treated as marker-free. That rule is right
- * for verification, which has to read every marker on the PR — but it makes an
- * unrelated 100-comment discussion able to break recovery on a PR whose ledger
- * is perfectly intact.
- *
- * Recovery does not need any thread's full history. The protocol pins the
- * occurrence-1 finding as the *first* comment in its thread, so asking for
- * exactly that comment answers the question completely, and no thread's later
- * pages can change the answer. Thread-level pagination is still proven
- * complete, and PR scope is still asserted per thread.
- */
+/** Find the review thread whose first comment is `rootCommentId`. */
 export function findRootThread(
   repo: string,
   pr: number,

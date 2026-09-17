@@ -48,24 +48,12 @@ import type {
   TelemetryPassType,
 } from './types.js';
 
-/**
- * Report whether a comment body is a telemetry record of any version.
- *
- * The check is on the shared prefix rather than on a known marker, so a record
- * type added later is excluded from reviewer context by default instead of
- * leaking into it until a reader is taught to filter it.
- */
+/** Report whether a comment body is a telemetry record of any version. */
 export function isTelemetryComment(body: string): boolean {
   return body.includes(TELEMETRY_MARKER_PREFIX);
 }
 
-/**
- * Drop telemetry records from a set of comment rows.
- *
- * A pass must never read prior telemetry. Visible history and a readable trend
- * are what turn a cost measurement into a target to optimise toward, and an
- * agent optimising its own measured cost stops optimising the review.
- */
+/** Drop telemetry records from a set of comment rows. */
 export function excludeTelemetryComments<T extends { body?: unknown }>(
   rows: readonly T[],
 ): T[] {
@@ -95,15 +83,7 @@ function requireCount(value: unknown, field: string): number {
   return value;
 }
 
-/**
- * Read a count that is allowed to be absent, where absent means unmeasured.
- *
- * `null` and `0` are different answers and this is the boundary that keeps them
- * apart. `undefined` is rejected rather than coerced: `JSON.stringify` drops an
- * undefined value entirely, so accepting one here would let a missing
- * measurement serialise into a record that simply lacks the field, which the
- * next reader would have no way to tell from a zero.
- */
+/** Read a count that is allowed to be null (unmeasured). */
 function requireNullableCount(value: unknown, field: string): number | null {
   if (value === null) {
     return null;
@@ -338,18 +318,7 @@ export function validateFindings(value: unknown): TelemetryFindings {
   };
 }
 
-/**
- * Derive the key aggregation dedupes on.
- *
- * A retried or replayed marker must not double-count, and a metric that
- * silently double-counts on a network retry fails in the direction of looking
- * more expensive than it was.
- *
- * `passType` is part of the identity because a refactor pass that changed
- * nothing leaves the head where it was, so the same engine's next review round
- * at that head would otherwise collide with it and one of the two records would
- * be dropped as a replay.
- */
+/** Derive the idempotency key for telemetry deduplication. */
 export function telemetryIdempotencyKey(fields: {
   repo: string;
   pr: number;
@@ -380,16 +349,7 @@ export function telemetryIdempotencyKey(fields: {
   return fieldsForKey.join(':');
 }
 
-/**
- * Validate an unknown value as a telemetry record.
- *
- * Unknown top-level keys are preserved rather than rejected. The payload is
- * versioned JSON precisely so a field added later is additive: a reader that
- * fails closed on an unrecognised key would force a package release and a
- * fleet-wide re-vendor for every new field, which is the rigidity this record
- * exists to avoid. Writers do not rely on that tolerance — they go through
- * `buildTelemetryRecord`, which only ever emits known fields.
- */
+/** Validate an unknown value as a telemetry record. */
 export function validateTelemetryRecord(value: unknown): TelemetryRecord {
   const source = requireObject(value, 'record');
 
@@ -468,10 +428,6 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
   if (new Set(models).size !== models.length) {
     fail('telemetry tokens must carry one bucket per model and effort');
   }
-  // An engine that reported nothing must not serialise as zero tokens. A zero
-  // would make that engine look free and skew every fleet average in its
-  // favour — the kind of defect that survives because the dashboard still
-  // looks plausible.
   if (tokenSource === 'unavailable' && tokens.length > 0) {
     fail('telemetry tokenSource unavailable cannot carry token buckets');
   }
@@ -491,9 +447,6 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
     : undefined;
 
   const changeset = validateChangeset(source['changeset']);
-  // A skip still burns tokens reading and classifying the pull request, so it
-  // is recorded; what it cannot have is reviewable work, since that is what
-  // made it a skip.
   if (status === 'skipped' && changeset.reviewSignificantFiles > 0) {
     fail('a skipped pass cannot carry review-significant files');
   }
@@ -550,9 +503,6 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
     changeset,
     findings: validateFindings(source['findings']),
   };
-  // The cast is over the unknown-keyed carrier, not over the contract: every
-  // field the interface declares has just been checked above, and the extras
-  // that survive are the forward-compatible ones a newer writer added.
   return validated as unknown as TelemetryRecord;
 }
 
@@ -602,18 +552,7 @@ function findingsFrom(
   });
 }
 
-/**
- * Assemble a validated telemetry record from already-computed numbers.
- *
- * Every measurement arrives as an argument. This helper never reads a session
- * transcript, a home directory, or any other ambient state: a package vendored
- * into every consumer that read transcripts would be a materially different
- * trust proposition, since those transcripts hold every file read and command
- * run. Each engine extracts its own usage and passes it in.
- *
- * Finding counts default to zero because a pass genuinely posts zero findings;
- * token counts never default, because an unmeasured bucket is not a zero.
- */
+/** Assemble a validated telemetry record from computed metrics. */
 export function buildTelemetryRecord(
   params: BuildTelemetryParams,
 ): TelemetryRecord {
@@ -692,14 +631,7 @@ function knownTelemetryRecord(value: unknown): TelemetryRecord {
   };
 }
 
-/**
- * Render a record as the comment body that carries it.
- *
- * The payload travels as JSON in a fenced block rather than as inline marker
- * attributes. Regex-parsed attributes would need a parser release and a fleet
- * re-vendor for every new field; JSON additions are additive and an older
- * reader ignores what it does not know.
- */
+/** Render a record as the comment body that carries it. */
 export function buildTelemetryBody(record: TelemetryRecord): string {
   const safeRecord = knownTelemetryRecord(record);
   return [
@@ -711,13 +643,7 @@ export function buildTelemetryBody(record: TelemetryRecord): string {
   ].join('\n');
 }
 
-/**
- * Parse the telemetry record out of a comment body, or return null.
- *
- * A direct parse of a body carrying a telemetry marker fails rather than
- * reading as absent. Sinks may skip malformed replay candidates so an older
- * bad record cannot prevent a new pass from emitting valid telemetry.
- */
+/** Parse the telemetry record out of a comment body, or return null. */
 export function matchTelemetry(body: string): TelemetryRecord | null {
   if (!isTelemetryComment(body)) {
     return null;
@@ -779,29 +705,12 @@ function replayFingerprint(record: TelemetryRecord): string {
   });
 }
 
-/**
- * Describe a thrown value without assuming it is shaped like an `Error`.
- *
- * A cast to `{ message?: string }` throws a `TypeError` on a thrown `null`,
- * which would destroy the error being reported from inside its own catch.
- */
+/** Describe a thrown value without assuming it is an Error instance. */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * The reference sink: one new comment per pass on the pull request.
- *
- * The pull request is the emission point because it is the only store this
- * protocol can assume. Requiring an external service to record a data point
- * would put an account, an API key, and a push path in front of adoption;
- * external sinks are consumers of these markers, never dependencies for
- * writing them.
- *
- * One comment per pass rather than one edited comment per engine keeps the
- * immutable history readable. Malformed replay candidates are ignored so they
- * cannot poison later emission.
- */
+/** PR comment sink: one comment per review pass. */
 export function prCommentSink(target: {
   repo: string;
   pr: number;
@@ -848,10 +757,6 @@ export function prCommentSink(target: {
         try {
           deleteIssueComment(target.repo, target.pr, commentId);
         } catch (rollbackError) {
-          // This is the one branch that leaves GitHub durably mutated, so the
-          // message must name the residue and why verification failed. The
-          // cause chain alone is not enough: `emitTelemetry` reports
-          // `error.message` and never walks it.
           throw new LedgerError(
             `telemetry verification failed and rollback could not be verified: ` +
               `${errorMessage(rollbackError)}; ` +
@@ -867,14 +772,7 @@ export function prCommentSink(target: {
   };
 }
 
-/**
- * Emit a record through a sink, reporting failure instead of raising it.
- *
- * A telemetry write that fails is logged and skipped. It must never block or
- * fail a review that found real defects, which is also why this record is a
- * separate marker rather than an extension of the attestation whose body is
- * byte-verified and hash-checked.
- */
+/** Emit a record through a sink, reporting failure instead of raising it. */
 export function emitTelemetry(params: {
   record: TelemetryRecord;
   sink: TelemetrySink;

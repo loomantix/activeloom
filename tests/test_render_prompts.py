@@ -27,9 +27,7 @@ def _write_profile(directory: Path, name: str, body: str) -> Path:
     return path
 
 
-# --------------------------------------------------------------------------
 # Profile parsing
-# --------------------------------------------------------------------------
 
 
 def test_profile_reads_root_and_values(
@@ -53,10 +51,8 @@ def test_profile_layers_per_skill_values_over_profile_values(
         "skills:\n  issues:\n    FM_EXTRAS: 'per-skill'\n",
     )
     profile = render_prompts.Profile(path)
-    # Per-skill wins for the skill that declares it...
     assert profile.values_for("issues")["FM_EXTRAS"] == "per-skill"
     assert profile.values_for("issues")["INVOKE"] == "/"
-    # ...and the profile-wide value still applies to a skill that does not.
     assert profile.values_for("grill")["FM_EXTRAS"] == "profile-wide"
 
 
@@ -131,9 +127,7 @@ def test_load_profiles_rejects_an_empty_profiles_directory(
         render_prompts.load_profiles()
 
 
-# --------------------------------------------------------------------------
 # Roster discovery
-# --------------------------------------------------------------------------
 
 
 def test_roster_is_derived_from_the_source_directory(
@@ -158,9 +152,7 @@ def test_roster_is_empty_when_the_source_tree_is_absent(
     assert render_prompts.rendered_roster() == []
 
 
-# --------------------------------------------------------------------------
 # Rendering
-# --------------------------------------------------------------------------
 
 
 ONE_SKILL = {
@@ -202,9 +194,7 @@ class Harness:
         self.version_path = root / "PROMPT_STACK_VERSION"
         self.version_path.write_text("1.2.3\n", encoding="utf-8")
         monkeypatch.setattr(render_prompts, "VERSION_PATH", self.version_path)
-        # The real map names a file in the real repo, which this fake root does
-        # not have. Tests that want a vendored document declare one with
-        # `vendor_document`; every other test renders skills only.
+        # Tests that need vendored documents declare them via vendor_document.
         monkeypatch.setattr(render_prompts, "VENDORED_DOCUMENTS", {})
 
     def vendor_document(self, source: str, root_relative: str, text: str) -> Path:
@@ -390,17 +380,13 @@ def test_render_rejects_a_symlinked_source_file(
         one_skill.render()
 
 
-# --------------------------------------------------------------------------
 # Drift reporting
-# --------------------------------------------------------------------------
 
 
 def test_check_reports_a_missing_committed_file(
     one_skill: Harness, capsys: pytest.CaptureFixture[str]
 ) -> None:
     out, written = one_skill.render()
-    # `_report_drift` compares the staging tree against REPO_ROOT, which the
-    # harness pointed at the temp dir — nothing has been copied there yet.
     assert one_skill.report_drift(out, written) == 1
     assert "missing:" in capsys.readouterr().err
 
@@ -456,9 +442,7 @@ def test_check_reports_a_mode_only_change(one_skill: Harness) -> None:
     assert one_skill.report_drift(out, written) == 1
 
 
-# --------------------------------------------------------------------------
 # Placeholder-residue guard
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -466,10 +450,7 @@ def test_check_reports_a_mode_only_change(one_skill: Harness) -> None:
     [
         "<<KEY>>",
         "<<FM_EXTRAS>>",
-        # The real mangling this guard was added for: Prettier paired the
-        # underscores inside `<<REVIEW_CHAIN_POINTER>>` with a neighbouring
-        # `_emphasis_` span and rewrote the key, so it matched the engine's
-        # `<<KEY>>` pattern no longer and substituted nothing.
+        # Mangled placeholder variations.
         "<<REVIEW*CHAIN_POINTER>>",
         r"<<REVIEW\_CHAIN_POINTER>>",
     ],
@@ -483,8 +464,6 @@ def test_residue_guard_matches_placeholder_shaped_tokens(
 @pytest.mark.parametrize(
     "text",
     [
-        # `issues/SKILL.md` is a rendered skill and contains a heredoc. If the
-        # guard matched these it would fail every render of the roster.
         "cat > /tmp/issue-body.md << 'BODY'\nsomething >> elsewhere\n",
         "python3 - <<'PY'\nprint(1 >> 2)\n",
         'read -r a <<<"$PR_JSON" >> log\n',
@@ -510,9 +489,7 @@ def test_render_fails_when_a_placeholder_survives_mangled(harness: Harness) -> N
         harness.render()
 
 
-# --------------------------------------------------------------------------
 # Markdown formatting
-# --------------------------------------------------------------------------
 
 
 def test_format_markdown_is_a_noop_with_no_markdown_to_format(
@@ -559,9 +536,7 @@ def test_format_markdown_explains_a_missing_npx(
         render_prompts.format_markdown(tmp_path, [Path("a/x.md")])
 
 
-# --------------------------------------------------------------------------
 # CLI
-# --------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -658,20 +633,18 @@ def test_render_skips_bytecode_left_in_the_source_tree(one_skill: Harness) -> No
     assert not (out / ".claude/skills/demo/scripts/loose.pyc").exists()
 
 
-# --------------------------------------------------------------------------
-# Ownership domain: what the manifest may authorize, and what a root may be
-# --------------------------------------------------------------------------
+# Ownership domain
 
 
 @pytest.mark.parametrize(
     "line",
     [
-        "prompts/skills/demo/SKILL.md",  # the renderer's own source tree
-        "docs/skills/decisions/0006-x.md",  # an unrelated repo directory
+        "prompts/skills/demo/SKILL.md",
+        "docs/skills/decisions/0006-x.md",
         ".git/skills/a/b",
-        ".vscode/skills/demo/config.json",  # arbitrary dotted root
-        ".claude/skills/critique/SKILL.md",  # hand-authored skill in a valid root
-        "vendor/skills/a/b",  # undotted, never a profile root
+        ".vscode/skills/demo/config.json",
+        ".claude/skills/critique/SKILL.md",
+        "vendor/skills/a/b",
     ],
 )
 def test_load_manifest_rejects_a_path_outside_every_profile_root(
@@ -749,9 +722,7 @@ def test_load_profiles_rejects_a_root_nested_in_another_root(
         render_prompts.load_profiles()
 
 
-# --------------------------------------------------------------------------
 # Fail-closed: null values and undecodable sources
-# --------------------------------------------------------------------------
 
 
 def test_a_null_profile_value_fails_closed(one_skill: Harness) -> None:
@@ -832,9 +803,7 @@ def test_an_undecodable_binary_asset_still_passes_through(one_skill: Harness) ->
     ).read_bytes() == b"\x89PNG\r\n\x1a\n\xff\xfe"
 
 
-# --------------------------------------------------------------------------
 # Prompt-stack manifest and version
-# --------------------------------------------------------------------------
 
 
 STACK_PROFILES = {
@@ -875,8 +844,6 @@ def test_declared_stack_is_emitted_as_a_manifest(stacked: Harness) -> None:
         "root": ".claude",
         "files": [".claude/REVIEW_WORKFLOW.md"],
     }
-    # Two-space JSON with a trailing newline, which is what the repo's pinned
-    # Prettier produces for a file inside a harness root it checks.
     assert manifest.read_text(encoding="utf-8").endswith("}\n")
 
 
@@ -917,11 +884,7 @@ def test_manifest_files_are_sorted_not_declaration_ordered(harness: Harness) -> 
 def test_a_declared_stack_file_that_does_not_exist_fails_the_render(
     stacked: Harness,
 ) -> None:
-    """The whole point of moving the list here: a rename fails loudly.
-
-    Left undetected it reads downstream as an absent file, which moves every
-    digest at once and says nothing about why.
-    """
+    """A declared stack file that does not exist fails the render."""
     (stacked.root / ".claude/REVIEW_WORKFLOW.md").unlink()
     out, written = stacked.render()
     with pytest.raises(ValueError, match="names a file that does not exist"):
@@ -1154,7 +1117,6 @@ def test_a_base_branch_bump_after_the_fork_is_not_a_regression(
     assert stacked._rp.main([]) == 0
     _committed_repo(stacked)
 
-    # The PR forks here, edits a declared prompt, and bumps correctly.
     _git(stacked.root, "checkout", "-q", "-b", "feature")
     (stacked.root / ".claude/REVIEW_WORKFLOW.md").write_text(
         "# changed workflow\n", encoding="utf-8"
@@ -1163,7 +1125,6 @@ def test_a_base_branch_bump_after_the_fork_is_not_a_regression(
     _git(stacked.root, "add", ".")
     _git(stacked.root, "commit", "-qm", "prompt change plus patch bump")
 
-    # Meanwhile the base branch lands its own change and a larger bump.
     _git(stacked.root, "checkout", "-q", "main")
     stacked.version_path.write_text("1.3.0\n", encoding="utf-8")
     _git(stacked.root, "add", ".")
@@ -1195,12 +1156,7 @@ def test_a_version_below_the_merge_base_is_a_regression(
 def test_changed_stack_membership_requires_a_version_advance(
     stacked: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Dropping a file from the stack moves the digest, so it must bump too.
-
-    The manifest paths are folded into the compared set for exactly this: the
-    declared membership can change with no edit to any prompt file, and that is
-    still a new prompt generation.
-    """
+    """Changed stack membership requires version bump."""
     monkeypatch.setattr(stacked._rp, "format_markdown", lambda *a, **k: None)
     assert stacked._rp.main([]) == 0
     _committed_repo(stacked)
@@ -1240,18 +1196,11 @@ def test_the_manifest_is_inside_the_ownership_domain(
             render_prompts._validate_generated_path(rejected)
 
 
-# --------------------------------------------------------------------------
 # Unowned files inside a rendered skill directory
-# --------------------------------------------------------------------------
 
 
 def test_check_reports_a_file_the_render_never_emitted(cli: Harness) -> None:
-    """The gap this closes: an addition in neither the inventory nor the render.
-
-    Before, `--check` compared the render against the inventory and nothing
-    enumerated the directory, so a hand-added file was in neither set and was
-    reported by nothing.
-    """
+    """--check reports unowned files never emitted by the render."""
     assert cli._rp.main([]) == 0
     intruder = cli.root / ".claude/skills/demo/EXTRA.md"
     intruder.write_text("hand added\n", encoding="utf-8")
@@ -1282,11 +1231,7 @@ def test_a_write_render_removes_an_unowned_file(cli: Harness) -> None:
 def test_the_sweep_ignores_the_build_artifacts_the_render_excludes(
     cli: Harness,
 ) -> None:
-    """CI's own compile step drops these next to the rendered issue scripts.
-
-    Failing on them would turn the gate red for something no change did, which
-    is how a gate ends up switched off.
-    """
+    """Sweep ignores build artifacts excluded by render."""
     assert cli._rp.main([]) == 0
     cache = cli.root / ".claude/skills/demo/__pycache__"
     cache.mkdir(parents=True, exist_ok=True)
@@ -1297,11 +1242,7 @@ def test_the_sweep_ignores_the_build_artifacts_the_render_excludes(
 
 
 def test_the_sweep_leaves_unrendered_skills_alone(cli: Harness) -> None:
-    """Ownership is per rendered skill, not per harness root.
-
-    A harness root also holds hand-authored skills the renderer knows nothing
-    about, and sweeping those would delete the majority of the tree.
-    """
+    """Sweep leaves hand-authored or unrendered skills untouched."""
     assert cli._rp.main([]) == 0
     hand_authored = cli.root / ".claude/skills/critique/SKILL.md"
     hand_authored.parent.mkdir(parents=True, exist_ok=True)
@@ -1355,9 +1296,7 @@ def test_remove_unowned_refuses_a_path_outside_a_skill_directory(
         cli._rp._remove_unowned(Path("docs/whatever.md"))
 
 
-# --------------------------------------------------------------------------
 # Vendored documents
-# --------------------------------------------------------------------------
 
 
 DOC_SOURCE = "packages/demo/protocol/contract.md"
@@ -1381,12 +1320,7 @@ def test_a_vendored_document_is_written_to_every_root(documents: Harness) -> Non
 
 
 def test_a_vendored_document_is_copied_verbatim(documents: Harness) -> None:
-    """No substitution: the copies are the source's bytes, not a per-profile render.
-
-    The profiles define `INVOKE` differently, so a document that *were*
-    substituted would come out as two different files under one name — which is
-    the opposite of what vendoring a shared contract is for.
-    """
+    """Vendored documents are copied verbatim without placeholder substitution."""
     (documents.root / DOC_SOURCE).write_text(
         "Call `<<INVOKE>>critique`.\n", encoding="utf-8"
     )
@@ -1534,12 +1468,7 @@ def test_a_vendored_document_may_not_land_in_a_rendered_skill_directory(
 def test_only_the_declared_document_path_is_renderer_owned(
     render_prompts: ModuleType,
 ) -> None:
-    """Owning a file must not mean owning the directory it sits in.
-
-    `references/` carries hand-authored role prompts in two roots. If the
-    ownership domain admitted the directory, a manifest line naming one of them
-    would authorize its deletion.
-    """
+    """Owning a document path does not grant ownership over parent directory."""
     render_prompts._validate_generated_path(
         Path(".claude/references/local-review-ledger.md")
     )

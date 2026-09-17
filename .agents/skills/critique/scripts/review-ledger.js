@@ -15020,14 +15020,7 @@ var DefaultGitHubRunner = class {
     this.cachedActor ??= this.liveActor();
     return this.cachedActor;
   }
-  /**
-   * Resolve the actor bypassing the cache.
-   *
-   * An explicit pin outranks the session, so an `actorOverride` is returned
-   * without a lookup. That is deliberate, and it means a runner constructed
-   * with an actor performs no live check at all — seeding an actor disables
-   * rotation detection.
-   */
+  /** Resolve the actor bypassing the cache. */
   liveActor() {
     if (this.actorOverride !== null) {
       return this.actorOverride;
@@ -15952,7 +15945,6 @@ function isDirective(value) {
 function parseSource(source, extension) {
   const options = {
     sourceType: /\.[cm][jt]s$/.test(extension) ? extension.startsWith(".m") ? "module" : "commonjs" : "unambiguous",
-    // HTML-like comments are executable in modules and TypeScript.
     annexB: false,
     attachComment: false,
     tokens: true,

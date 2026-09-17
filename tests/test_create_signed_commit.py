@@ -40,16 +40,13 @@ def _http_error(path: str, code: int, msg: str) -> urllib.error.HTTPError:
     )
 
 
-# ---------------------------------------------------------------------------
 # Helpers: drive parse_status through a real git working tree
-# ---------------------------------------------------------------------------
 
 
 def _git(*args: str, cwd: Path) -> str:
     """Run a git command in `cwd` and return stdout (raises on failure)."""
     env = os.environ.copy()
-    # Force a deterministic identity for commits — the tests don't rely on
-    # `git config` being set on the host runner.
+    # Force deterministic commit identity.
     env["GIT_AUTHOR_NAME"] = "Test"
     env["GIT_AUTHOR_EMAIL"] = "test@example.invalid"
     env["GIT_COMMITTER_NAME"] = "Test"
@@ -76,9 +73,7 @@ def git_repo(tmp_path: Path) -> Path:
     return repo
 
 
-# ---------------------------------------------------------------------------
 # parse_status
-# ---------------------------------------------------------------------------
 
 
 def test_parse_status_empty_tree(
@@ -101,10 +96,7 @@ def test_parse_status_modified_file(
 def test_parse_status_new_untracked_file_via_uall(
     create_signed_commit: ModuleType, git_repo: Path
 ) -> None:
-    # Without -uall, a new untracked file inside a new untracked dir would
-    # be reported as `?? newdir/` (single entry) and the engine would try
-    # to read a directory. With -uall (which the engine uses), each file
-    # is reported individually.
+    # -uall reports each file in a new directory individually.
     nested = git_repo / "newdir" / "sub"
     nested.mkdir(parents=True)
     (nested / "a.txt").write_text("a\n")
@@ -126,10 +118,7 @@ def test_parse_status_deleted_file(
 def test_parse_status_rename_emits_both_upsert_and_delete(
     create_signed_commit: ModuleType, git_repo: Path
 ) -> None:
-    # Set up a tracked file, then rename it via the index so git status
-    # reports `R` rather than `D` + `??`. Pure renames need the OLD path
-    # marked deleted — without that, the API's base_tree would preserve
-    # the old file, turning the rename into a copy.
+    # Renames require old path marked deleted to prevent copy semantics.
     (git_repo / "old.txt").write_text("content\n")
     _git("add", "old.txt", cwd=git_repo)
     _git("commit", "-q", "-m", "add", cwd=git_repo)
@@ -156,8 +145,7 @@ def test_parse_status_bytes_rejects_truncated_rename(
 def test_parse_status_handles_paths_with_spaces(
     create_signed_commit: ModuleType, git_repo: Path
 ) -> None:
-    # `-z` output is NUL-separated and never quotes — verifies the parser
-    # doesn't trip on whitespace inside paths.
+    # Verify parser handles spaces in NUL-separated paths.
     spaced = git_repo / "file with spaces.txt"
     spaced.write_text("x\n")
     changes = create_signed_commit.parse_status(git_repo)
@@ -186,24 +174,11 @@ def test_parse_status_mixed_upsert_and_delete(
 def test_parse_status_d_entry_trusts_git_code_not_disk_state(
     create_signed_commit: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Regression lock for the inverted-classification bug fixed upstream:
-    a `D` entry must be classified as a delete based on the git status
-    code alone, NOT by re-checking `.exists()` on disk. The old code
-    introduced a TOCTOU window where a concurrent re-create of the path
-    between `git status` and the disk check caused the delete to be
-    misclassified as an upsert — re-uploading the file to the tree
-    instead of removing it.
-
-    The cleanest test of the contract is to mock `run` so we control
-    exactly what porcelain output the parser sees, and assert that even
-    when the file exists on disk, a `D` code routes to deletes.
-    """
-    # Real-disk state: the file IS present (the TOCTOU we're guarding
-    # against — git said delete, but disk says present).
+    """D entry must be classified as delete from git status alone, not disk state."""
+    # File present on disk to test TOCTOU resilience against git delete status.
     (tmp_path / "ghost.txt").write_text("oops still here\n")
 
-    # Mock `run` so the parser sees a synthetic `D` entry regardless of
-    # disk state. NUL-separated porcelain v1 with -z.
+    # Synthetic D entry with -z format.
     def fake_run(*args: str, cwd: Path | None = None) -> str:
         return "D  ghost.txt\0"
 
@@ -213,9 +188,7 @@ def test_parse_status_d_entry_trusts_git_code_not_disk_state(
     assert changes.upserts == []
 
 
-# ---------------------------------------------------------------------------
 # derive_signoff_trailer + with_signoff
-# ---------------------------------------------------------------------------
 
 
 def test_derive_signoff_trailer_uses_bot_suffix(create_signed_commit: ModuleType) -> None:
@@ -226,17 +199,7 @@ def test_derive_signoff_trailer_uses_bot_suffix(create_signed_commit: ModuleType
 def test_derive_signoff_trailer_empty_slug_documents_current_behavior(
     create_signed_commit: ModuleType,
 ) -> None:
-    """Pinning current behavior: an empty `--app-slug` produces a
-    `[bot] <[bot]@users.noreply.github.com>` trailer. The DCO regex
-    accepts it (`.+ <.+@.+>`) but it's an obvious misconfiguration.
-    The argparse default is `None` (no trailer); empty-string is only
-    reachable from a misconfigured workflow input.
-
-    Recording the behavior as-is rather than tightening the validator
-    here — the upstream `actions/create-github-app-token` output is
-    never empty in practice, so this is a contract-pinning test
-    rather than a hardening one.
-    """
+    """Empty --app-slug produces a [bot] trailer."""
     out = create_signed_commit.derive_signoff_trailer("")
     assert out == "Signed-off-by: [bot] <[bot]@users.noreply.github.com>"
 
@@ -256,15 +219,12 @@ def test_with_signoff_idempotent_when_present(create_signed_commit: ModuleType) 
 def test_with_signoff_strips_message_trailing_newlines(
     create_signed_commit: ModuleType,
 ) -> None:
-    # Multiple trailing newlines in the caller's message would otherwise
-    # produce double-blank-line drift before the trailer.
+    # Normalize trailing newlines before trailer.
     out = create_signed_commit.with_signoff("feat: x\n\n\n", "Signed-off-by: a <a@b>")
     assert out == "feat: x\n\nSigned-off-by: a <a@b>\n"
 
 
-# ---------------------------------------------------------------------------
-# main(): the new_branch == base_branch guard
-# ---------------------------------------------------------------------------
+# main(): new_branch == base_branch guard
 
 
 def test_main_refuses_new_branch_equals_base_branch(
@@ -273,12 +233,8 @@ def test_main_refuses_new_branch_equals_base_branch(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Passing `--new-branch == --base-branch` would, at the final force-PATCH,
-    fast-forward the base branch onto the sync commit — a force-update of
-    `main` from a workflow. Must hard-fail with exit code 2.
-    """
-    # Set a token so main() reaches the branch-name guard (token check is
-    # before the guard).
+    """Refuse --new-branch == --base-branch to prevent overwriting base."""
+    # Provide token to reach branch guard.
     monkeypatch.setenv("GH_APP_TOKEN", "fake-token-not-used")
     monkeypatch.setattr(
         "sys.argv",
@@ -324,9 +280,7 @@ def test_main_requires_token_env(
     assert "missing token" in err
 
 
-# ---------------------------------------------------------------------------
 # _github_request: JSON object shape check
-# ---------------------------------------------------------------------------
 
 
 def test_github_request_rejects_non_object_json(
@@ -334,11 +288,7 @@ def test_github_request_rejects_non_object_json(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The GitHub Contents API returns objects, never bare arrays/strings
-    on the endpoints this script hits. A non-object response signals a
-    spoofed or proxied response; fail-closed rather than feed garbage
-    into the rest of the pipeline.
-    """
+    """Non-object JSON response fails closed."""
     import urllib.request
 
     class FakeResp:
@@ -355,7 +305,6 @@ def test_github_request_rejects_non_object_json(
             return self._body
 
     def fake_urlopen(req: object, timeout: int = 30) -> FakeResp:
-        # Return a JSON array — valid JSON but not an object.
         return FakeResp(b'["not", "an", "object"]')
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -366,9 +315,7 @@ def test_github_request_rejects_non_object_json(
     assert "expected JSON object" in err
 
 
-# ---------------------------------------------------------------------------
 # github_api / github_api_optional: HTTPError + 404 handling
-# ---------------------------------------------------------------------------
 
 
 def test_github_api_optional_returns_none_on_404(
@@ -432,23 +379,19 @@ def test_run_exits_on_command_failure(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as exc:
-        # `false` exits 1; `run` must surface that as sys.exit(1) with stderr.
         create_signed_commit.run("false")
     assert exc.value.code == 1
     err = capsys.readouterr().err
     assert "command failed" in err
 
 
-# ---------------------------------------------------------------------------
-# main() with mocked _github_request: full flow including ref create + force-PATCH
-# ---------------------------------------------------------------------------
+# main() with mocked _github_request
 
 
 class _ApiRecorder:
     """Captures (method, path, body) tuples; returns scripted responses by path-prefix."""
 
     def __init__(self, responses: list[tuple[str, str, object]]) -> None:
-        # responses: ordered list of (method, path_prefix, return_value_or_exception)
         self._responses = list(responses)
         self.calls: list[tuple[str, str, object]] = []
 
@@ -462,9 +405,7 @@ class _ApiRecorder:
         if not self._responses:
             raise AssertionError(f"unexpected API call: {method} {path}")
         exp_method, exp_prefix, value = self._responses.pop(0)
-        # Explicit `raise` (not `assert`) so mismatches still surface under
-        # `python -O` / `PYTHONOPTIMIZE=1`. Bare asserts would silently
-        # pass mismatched calls, turning the contract test into a no-op.
+        # Explicit raise survives PYTHONOPTIMIZE.
         if method != exp_method:
             raise AssertionError(f"expected {exp_method} {exp_prefix}, got {method} {path}")
         if not path.startswith(exp_prefix):
@@ -499,11 +440,8 @@ def test_main_no_changes_exits_zero_without_api_calls(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """An empty diff means no work to do — main() must return 0 BEFORE
-    making any API calls. Otherwise a no-op sync wastes a token round-trip
-    and (worse) could force-update the ref onto the unchanged tree.
-    """
-    recorder = _ApiRecorder([])  # any API call asserts
+    """Empty diff exits 0 before making API calls."""
+    recorder = _ApiRecorder([])
     monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
     monkeypatch.setenv("GH_APP_TOKEN", "fake-token")
     monkeypatch.setattr("sys.argv", _commit_main_argv(git_repo))
@@ -520,33 +458,23 @@ def test_main_full_flow_creates_new_branch_when_absent(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """End-to-end: with one upsert + one delete in the working tree, main()
-    must walk the 5-step API sequence (ref → commit → tree → blobs → ref).
-    """
+    """Full API sequence for one upsert and one delete."""
     _git("mv", "seed.txt", "renamed.txt", cwd=git_repo)
     (git_repo / "new.txt").write_text("brand new\n")
 
     recorder = _ApiRecorder([
-        # 1. base-branch ref
         ("GET", "/repos/loomantix/test/git/ref/heads/main",
          {"object": {"sha": "base-sha"}}),
-        # 2. base commit
         ("GET", "/repos/loomantix/test/git/commits/base-sha",
          {"tree": {"sha": "base-tree-sha"}}),
-        # 3. blob for renamed.txt
         ("POST", "/repos/loomantix/test/git/blobs", {"sha": "blob-renamed"}),
-        # 4. blob for new.txt
         ("POST", "/repos/loomantix/test/git/blobs", {"sha": "blob-new"}),
-        # 5. tree
         ("POST", "/repos/loomantix/test/git/trees", {"sha": "new-tree-sha"}),
-        # 6. commit
         ("POST", "/repos/loomantix/test/git/commits", {"sha": "new-commit-sha"}),
         ("GET", "/repos/loomantix/test/git/commits/new-commit-sha",
          {"sha": "new-commit-sha", "verification": {"verified": True, "reason": "valid"}}),
-        # 7. check if new branch exists — 404 = absent
         ("GET", "/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16",
          _http_error("/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16", 404, "Not Found")),
-        # 8. POST new ref
         ("POST", "/repos/loomantix/test/git/refs", {"ref": "refs/heads/x"}),
     ])
     monkeypatch.setattr(create_signed_commit, "_github_request", recorder)
@@ -556,13 +484,10 @@ def test_main_full_flow_creates_new_branch_when_absent(
     rc = create_signed_commit.main()
     assert rc == 0, capsys.readouterr().err
 
-    # Verify the commit's message carried the Signed-off-by trailer.
     commit_call = next(c for c in recorder.calls if c[0] == "POST" and c[1].endswith("/commits"))
     assert isinstance(commit_call[2], dict)
     assert "Signed-off-by: loomantix[bot]" in commit_call[2]["message"]
 
-    # Verify the tree contained both the upsert (with blob sha) and the
-    # delete (with sha: null) for the rename.
     tree_call = next(c for c in recorder.calls if c[0] == "POST" and c[1].endswith("/trees"))
     assert isinstance(tree_call[2], dict)
     paths_in_tree = {e["path"]: e for e in tree_call[2]["tree"]}
@@ -577,9 +502,7 @@ def test_main_force_updates_branch_when_already_exists(
     git_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If the date-stamped branch already exists from a prior run, the
-    script force-PATCHes it. Verify the PATCH is sent with force: true.
-    """
+    """Force-update branch when it already exists."""
     (git_repo / "new.txt").write_text("x\n")
 
     recorder = _ApiRecorder([
@@ -592,10 +515,8 @@ def test_main_force_updates_branch_when_already_exists(
         ("POST", "/repos/loomantix/test/git/commits", {"sha": "new-commit-sha"}),
         ("GET", "/repos/loomantix/test/git/commits/new-commit-sha",
          {"sha": "new-commit-sha", "verification": {"verified": True, "reason": "valid"}}),
-        # Branch exists this time — GET returns an object.
         ("GET", "/repos/loomantix/test/git/ref/heads/sync/upstream-2026-05-16",
          {"object": {"sha": "old-sha"}}),
-        # PATCH the existing ref with force: true.
         ("PATCH", "/repos/loomantix/test/git/refs/heads/sync/upstream-2026-05-16",
          {"ref": "refs/heads/x"}),
     ])
@@ -618,11 +539,7 @@ def test_main_rejects_non_file_upsert_path(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Even with -uall, an upsert path that resolves to a non-regular file
-    (broken symlink, fifo, etc.) must hard-fail rather than silently drop
-    the entry from the tree.
-    """
-    # Create a dangling symlink that git will report as new.
+    """Reject upsert paths that resolve to non-regular files."""
     (git_repo / "dangling").symlink_to(git_repo / "nope")
 
     recorder = _ApiRecorder([
@@ -902,14 +819,7 @@ def test_glob_to_regex_stays_in_lockstep_with_sync_engine_dialect(
     create_signed_commit: ModuleType,
     sync_engine: ModuleType,
 ) -> None:
-    # `create-signed-commit.py` deliberately carries a copy of the sync
-    # engine's `glob_to_regex` so a consumer's `allowed_destinations`
-    # means the same thing to both gates. Nothing at runtime imports one
-    # from the other, so this parity check is the only thing that stops
-    # the two dialects drifting apart — a fix to one compiler should fail
-    # here until it is mirrored into the other. It compares compiled
-    # patterns over the sample below, not every possible construct, so
-    # extend the list when adding one the dialect must handle.
+    # Ensure create-signed-commit and sync-engine glob dialects match.
     patterns = [
         ".agents/**",
         "**/SKILL.md",
@@ -934,9 +844,7 @@ def test_sensitive_pattern_sets_match_sync_engine(
     create_signed_commit: ModuleType,
     sync_engine: ModuleType,
 ) -> None:
-    # The payload gate carries copies of the engine's write/delete admission
-    # policy. If the engine's tuples change and these do not, an untrusted
-    # manifest is gated by a stale policy — so pin them together.
+    # Pin sensitive pattern tuples to sync engine policy.
     assert (
         create_signed_commit.SENSITIVE_WRITE_PATTERNS == sync_engine.SENSITIVE_WRITE_PATTERNS
     )
@@ -980,7 +888,6 @@ def test_validate_payload_allows_consented_sensitive_write(
     changes = create_signed_commit.StatusChanges(
         upserts=[".github/workflows/ci.yml"], deletes=[]
     )
-    # Consented — returns unchanged rather than raising.
     assert create_signed_commit.validate_payload_paths(changes, config) == changes
 
 
@@ -989,7 +896,6 @@ def test_validate_payload_rejects_glob_sensitive_grant(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # A glob grant would re-open the hole the per-file gate closes.
     config = _payload_config(
         tmp_path,
         "allowed_destinations:\n  - .github/**\n"
@@ -1021,7 +927,6 @@ def test_validate_payload_allows_engine_surface_write_without_grant(
     create_signed_commit: ModuleType,
     tmp_path: Path,
 ) -> None:
-    # Engine-surface paths are the normal sync target, not sensitive.
     config = _payload_config(tmp_path, "allowed_destinations:\n  - .claude/**\n")
     changes = create_signed_commit.StatusChanges(
         upserts=[".claude/skills/x/SKILL.md"], deletes=[]
@@ -1078,7 +983,6 @@ def test_validate_payload_rejects_falsy_scalar_skip_targets(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # `skip_targets: ""` must error, not coalesce to "skip nothing".
     config = _payload_config(
         tmp_path, "allowed_destinations:\n  - new.txt\nskip_targets: \"\"\n"
     )
@@ -1100,7 +1004,7 @@ def test_main_rejects_empty_base_sha_file(
     manifest_path = tmp_path / "manifest"
     manifest_path.write_bytes(b"?? new.txt\0")
     base_sha_file = tmp_path / "base-sha"
-    base_sha_file.write_text("   \n")  # whitespace only
+    base_sha_file.write_text("   \n")
     config_path = tmp_path / ".platform-config.yml"
     config_path.write_text("allowed_destinations:\n  - new.txt\n")
 
@@ -1135,20 +1039,13 @@ def test_payload_mode_rejects_a_config_inside_the_payload_tree(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The gate's own policy must not come from the tree it is gating.
-
-    A config read out of the payload lets the build job that produced that
-    payload ship its own `allowed_destinations`, so the admission gate is
-    handed its rules rather than defeated. Refused before any API call.
-    """
+    """Config must not come from within the payload tree."""
     payload_dir = tmp_path / "payload"
     payload_dir.mkdir()
     (payload_dir / "CODEOWNERS").write_text("* @attacker\n")
     manifest = tmp_path / "manifest"
     manifest.write_bytes(b"?? CODEOWNERS\0")
-    # The self-authorizing config: permissive allowlist, sensitive grant,
-    # and a `--config-destination` naming a path it never writes, so the
-    # config-self-write refusal cannot fire either.
+    # Self-authorizing config inside payload.
     config = payload_dir / ".platform-config.yml"
     config.write_text(
         "allowed_destinations:\n  - '**'\nallow_sensitive_writes:\n  - CODEOWNERS\n"

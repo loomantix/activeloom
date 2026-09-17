@@ -40,32 +40,18 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-# Running `python3 .claude/lint-claude-cli-invocations.py` already puts
-# `.claude/` on sys.path[0], but an importlib/`-c` caller does not get that.
-# Pin it explicitly so the shared scope module resolves either way.
+# Pin .claude/ on sys.path for callers invoking without script directory in path.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import prompt_roots  # noqa: E402  (needs the sys.path line above)
 
-# `prompts/skills` is the rendered roster's source tree: a shell payload added there is
-# rendered into every harness root, so it belongs in scope alongside the output.
-# It is named literally because it is not under any harness root.
 SOURCE_SCOPE_DIR = "prompts/skills"
-
-# The subtree of each harness prompt root that carries executable payloads.
-# Deliberately not the whole root: `.claude/` also holds this linter and its
-# sibling, which quote every sensitive token they exist to detect, and putting
-# a gate's own fixtures inside its scan set is how a gate ends up disabled.
 ROOT_SCOPE_SUBDIR = "skills"
 SCOPE_SUFFIXES = (".sh", ".bash")
 ALLOWLIST_PATH = ".claude/claude-cli-invocations.allowlist"
 SYNC_TARGETS_PATH = "scripts/sync-targets.yml"
 
-# Files that MUST be present in the scan set. Pins the gate's scope so an
-# attacker can't escape by removing agent-loop.sh from sync-targets.yml or
-# moving it outside the scanned dirs while keeping it synced from a fresh entry.
-# One entry per harness root, so removing a root's launchers from the scan set
-# is a hard error rather than a quieter scan.
+# Mandatory scope files required in the scan set across each harness root.
 REQUIRED_FILES = [
     ".claude/skills/agent-loop/scripts/agent-loop.sh",
     ".claude/skills/critique/scripts/run-agy-review.sh",
@@ -82,35 +68,7 @@ REQUIRED_FILES = [
 START_MARKER = "# claude-cli-invocations:start"
 END_MARKER = "# claude-cli-invocations:end"
 
-# Sensitive tokens that must only appear inside a marker pair. The binary-call
-# pattern catches `claude --flag`, `claude -p`, `claude "$arg"`, `claude $arg`,
-# `claude < file`, `claude <<< str`, and path-qualified forms like
-# `/usr/local/bin/claude --print`. The lookbehind allows `/` so path-prefixed
-# invocations are detected, but blocks `\w` and `.-` so `.claude/skills/...`
-# path mentions and `claude.err` filename mentions don't false-flag. The
-# `--permission-mode`, `bypassPermissions`, and `--dangerously-skip-permissions`
-# literals catch the dangerous escalation signal directly even when the binary
-# name has been variable-aliased (`CMD=claude; $CMD --permission-mode
-# bypassPermissions ...`, `CLI=agy; $CLI --dangerously-skip-permissions ...`).
-# `agy` is scanned on the same terms as `claude`: it is the other agent CLI a
-# synced script launches unattended, and its permission-skip flag grants the
-# same tool authority.
-#
-# `--dangerously-bypass-approvals-and-sandbox` and its alias `--yolo` are the
-# Codex equivalents of `--dangerously-skip-permissions`: they remove the
-# sandbox entirely (full write, network, and command execution) with no
-# approval prompt. The imported Codex launchers use them, and until they were
-# added here an unattended full-access Codex launch was the one escalation
-# spelling this gate did not read.
-#
-# Out-of-model (explicitly NOT caught — relies on CODEOWNERS + reviewer
-# attention as the structural defense):
-#  - Bare-word positional invocations: `claude help`, `claude prompt.txt`,
-#    `claude foo` (where `foo` doesn't start with `-`, `"`, `'`, `$`, or `<`).
-#    Detecting these reliably without false-flagging benign `claude exited`
-#    -style echo strings would require a quote-state tracker.
-#  - Bash quote-concat of the flag literals: `--per""mission-mode`,
-#    `bypa""ssPermissions`. Same false-flag-vs-coverage trade-off.
+# Sensitive CLI invocations and permission-bypass flags requiring allowlisted regions.
 SENSITIVE_TOKEN_RE = re.compile(
     r"(?<![\w.-])claude\s+(?:--?|[\"'$<])"
     r"|(?<![\w.-])agy\s+(?:--?|[\"'$<])"
@@ -142,13 +100,11 @@ class Region:
 @dataclass(frozen=True)
 class AllowlistEntry:
     sha256: str
-    path: str  # bound to a specific source file — defends against region-copy attacks
+    path: str
     description: str
 
     def __post_init__(self) -> None:
-        # Defense in depth: parse_allowlist gates entries at construction-from-text,
-        # but a direct caller bypassing the parser could otherwise ship an invalid
-        # entry that silently never matches. Cheap to enforce here.
+        # Validate entry format for direct constructor callers.
         if not re.fullmatch(r"[0-9a-f]{64}", self.sha256):
             raise ValueError(
                 f"sha256 must be 64 lowercase hex chars, got {self.sha256!r}"
@@ -338,9 +294,6 @@ def _synced_shell_sources() -> tuple[list[str], list[str]]:
     except yaml.YAMLError as exc:
         errors.append(f"{SYNC_TARGETS_PATH}: {exc}")
         return [], errors
-    # yaml.safe_load("") returns None; a top-level list or scalar isn't a
-    # mapping either. Guard before .get(...) so the lint surfaces the
-    # malformed-manifest case instead of crashing with AttributeError.
     if not isinstance(doc, dict):
         errors.append(
             f"{SYNC_TARGETS_PATH}: expected top-level mapping, got {type(doc).__name__}"
@@ -358,9 +311,6 @@ def _synced_shell_sources() -> tuple[list[str], list[str]]:
             or declared_executable
             or _is_executable_regular_file(source)
         ):
-            # Normalize so `./foo`, `foo/`, `foo//bar`, etc., all map to the
-            # same canonical form as `git ls-files`'s output — keeps the
-            # union-with-tracked-files dedup honest.
             sources.append(os.path.normpath(source))
     return sources, errors
 
@@ -379,10 +329,7 @@ def _read_file_preserving_newlines(path: str) -> str:
 
 def scan(paths: list[str], allowlist_entries: list[AllowlistEntry]) -> int:
     """Return number of findings (0 = clean)."""
-    # (hash, path) pairs are the unit of approval — an allowlisted region in
-    # `foo.sh` does NOT auto-approve the same bytes appearing in `bar.sh`.
-    # Defends against the region-copy attack (clone allowlisted block into a
-    # new synced .sh file, evade the gate).
+    # Path-bound approval pairs defend against cross-file duplication.
     allowed: set[tuple[str, str]] = {(e.sha256, e.path) for e in allowlist_entries}
     observed: set[tuple[str, str]] = set()
     findings = 0
@@ -390,8 +337,6 @@ def scan(paths: list[str], allowlist_entries: list[AllowlistEntry]) -> int:
         try:
             text = _read_file_preserving_newlines(path)
         except OSError as exc:
-            # Security-lint posture: an attacker who can affect file
-            # permissions might otherwise hide weaponized content from the scan.
             print(f"unreadable: {path}: {exc}", file=sys.stderr)
             findings += 1
             continue
@@ -399,11 +344,7 @@ def scan(paths: list[str], allowlist_entries: list[AllowlistEntry]) -> int:
         for err in region_errors:
             print(err)
             findings += 1
-        # Per-file duplicate detection: one allowlist entry approves one
-        # locked region. If a file contains two regions with the same hash,
-        # an attacker has cloned the approved block within the same file
-        # to double up `bypassPermissions` invocations without rotating the
-        # allowlist. Flag every duplicate occurrence beyond the first.
+        # Enforce at most one occurrence of each region hash per file.
         seen_hashes_this_file: dict[str, int] = {}
         for region in regions:
             digest = hash_region(region)
@@ -418,7 +359,7 @@ def scan(paths: list[str], allowlist_entries: list[AllowlistEntry]) -> int:
                     "approves one occurrence, not arbitrarily many."
                 )
                 findings += 1
-                continue  # don't double-count via the allowlist gate
+                continue
             observed.add((digest, path))
             if (digest, path) not in allowed:
                 print(
@@ -445,9 +386,7 @@ def scan(paths: list[str], allowlist_entries: list[AllowlistEntry]) -> int:
                     f"{ALLOWLIST_PATH}, or remove the token."
                 )
                 findings += 1
-    # Unused allowlist entries: prevents pre-seeding an opaque (hash, path)
-    # in one PR and adding the matching region in a follow-up PR without
-    # touching the allowlist (which would defeat the audit-trail invariant).
+    # Verify all allowlisted entries are observed in the scanned files.
     for sha, entry_path in sorted(allowed - observed):
         print(f"{ALLOWLIST_PATH}: unused allowlist entry {sha[:12]}… for {entry_path}")
         print(
@@ -544,27 +483,17 @@ claude --print  "x"
 # claude-cli-invocations:end
 """
 
-# Markers stripped but the call remains — the bare-invocation gate must
-# catch this. Defends against an attacker removing the markers (and the
-# allowlist entry going stale, which on its own would pass the hash check
-# because there's no region to hash).
 _FIXTURE_MARKER_DELETED = """\
 #!/bin/bash
 claude --print "$PROMPT"
 """
 
-# CRLF line endings on marker lines — `.strip()` removes the trailing
-# `\\r`, so the marker still matches. The body bytes (between markers)
-# carry their own CRLF, which a hash check correctly treats as different
-# content from the LF version.
 _FIXTURE_CRLF_MARKERS = (
     "# claude-cli-invocations:start\r\n"
     'claude --print "x"\r\n'
     "# claude-cli-invocations:end\r\n"
 )
 
-# Mixed scope: one marked region followed by a bare invocation later. The
-# scan must flag exactly the bare invocation, not the in-region one.
 _FIXTURE_MIXED_REGION_AND_BARE = """\
 #!/bin/bash
 # claude-cli-invocations:start
@@ -574,8 +503,6 @@ echo middle
 claude --print "out"
 """
 
-# Two regions in one file. Allowlisting only one must surface a finding on
-# the other — this exercises the per-region hash loop.
 _FIXTURE_TWO_REGIONS = """\
 #!/bin/bash
 # claude-cli-invocations:start
@@ -587,16 +514,12 @@ claude --print "second"
 # claude-cli-invocations:end
 """
 
-# bypassPermissions flag outside a marker — the sensitive-token gate
-# must flag this even though `claude` itself isn't on the line.
 _FIXTURE_BYPASS_FLAG_OUTSIDE = """\
 #!/bin/bash
 CMD=claude
 $CMD --permission-mode bypassPermissions --print "$PROMPT"
 """
 
-# The other agent CLI a synced script launches unattended. Scanned on the
-# same terms as `claude`, with its own permission-skip literal.
 _FIXTURE_AGY_BARE_INVOCATION = """\
 #!/bin/bash
 agy --print "leak"
@@ -611,8 +534,6 @@ _FIXTURE_AGY_POSITIONAL_VAR = """\
 agy "$EVIL"
 """
 
-# Negative fixtures for the `agy` widening — the launcher's own variable
-# names and the relay surface's directory name must not false-flag.
 _FIXTURE_AGY_VARIABLE_NAMES = """\
 #!/bin/bash
 agy_pid=""
@@ -624,9 +545,6 @@ _FIXTURE_AGENTS_DIR_MENTION = """\
 echo "$SURFACE/.agents/skills/critique/SKILL.md"
 """
 
-# Widened-regex coverage — exercises every alternative trailing-context
-# branch that was added to `SENSITIVE_TOKEN_RE`. Each line MUST match so a
-# future regex narrowing can't silently re-open one of these bypass forms.
 _FIXTURE_SHORT_OPTION = """\
 #!/bin/bash
 claude -p "$EVIL"
@@ -652,8 +570,6 @@ _FIXTURE_PATH_QUALIFIED = """\
 /usr/local/bin/claude --print "$EVIL"
 """
 
-# Negative fixtures — these MUST NOT match (false-positive avoidance for
-# the existing in-script references the widening had to step around).
 _FIXTURE_PATH_MENTION_IN_PRESENCE_CHECK = """\
 #!/bin/bash
 for cmd in gh jq python3 claude; do echo "$cmd"; done
@@ -671,18 +587,12 @@ _FIXTURE_URL_MENTION = """\
 echo "See https://claude.com/docs for help."
 """
 
-# Continuation-line evasion — `claude \\` on one line, `"$PROMPT"` on the
-# next. The line-based scan would miss this; `_join_continuations` joins
-# them before regex matching so the invocation surfaces.
 _FIXTURE_CONTINUATION_INVOCATION = """\
 #!/bin/bash
 claude \\
     "$PROMPT"
 """
 
-# Duplicate region within the same file — the allowlist approves one
-# region, not arbitrarily many. The per-file duplicate detector must flag
-# the second occurrence.
 _FIXTURE_DUPLICATE_REGION = """\
 #!/bin/bash
 # claude-cli-invocations:start
@@ -737,8 +647,6 @@ def run_self_test() -> int:
             "internal whitespace change should rotate the hash",
         )
 
-    # CRLF on the marker line itself still matches; the body content
-    # differs from the LF variant by its line endings → different hash.
     regions_lf, _ = extract_regions("lf.sh", _FIXTURE_WHITESPACE_SENSITIVE_A)
     regions_crlf, _ = extract_regions("crlf.sh", _FIXTURE_CRLF_MARKERS)
     check(
@@ -753,12 +661,6 @@ def run_self_test() -> int:
             "line-ending flip should rotate the hash",
         )
 
-    # --- Codex full-access spellings ---
-    # `--dangerously-bypass-approvals-and-sandbox` (and its `--yolo` alias)
-    # remove the sandbox AND the approval prompt. They are the Codex peers of
-    # `--dangerously-skip-permissions`; the imported Codex launchers use them,
-    # and before they were added here a full-access unattended Codex launch was
-    # the one escalation spelling the gate could not read.
     for label, line in [
         ("codex bypass long form", 'codex exec --dangerously-bypass-approvals-and-sandbox -C "$W"'),
         ("codex bypass alias", '"$review_cli" exec --yolo --ephemeral "$prompt"'),
@@ -768,9 +670,6 @@ def run_self_test() -> int:
             bool(SENSITIVE_TOKEN_RE.search(line)),
             f"not flagged: {line!r}",
         )
-    # `--yolo` is bounded by \b so it does not swallow longer flags that merely
-    # start with it — a lint that flags `--yolo-mode-disabled` teaches people to
-    # ignore it.
     check(
         "CODEX-BYPASS/--yolo is not a prefix match",
         not SENSITIVE_TOKEN_RE.search("--yolonger --flag"),
@@ -778,10 +677,6 @@ def run_self_test() -> int:
     )
 
     # --- scope derivation ---
-    # Scope is one `<root>/skills` per declared profile root plus the rendered
-    # roster's source tree. The properties that matter: a root the profiles
-    # declare is always covered, the source tree is always covered, and the
-    # order does not depend on which profile file was read first.
     derived = scope_dirs([".codex", ".claude", ".agents"])
     check(
         "SCOPE/derives one skills dir per root, plus the source tree",
@@ -804,19 +699,13 @@ def run_self_test() -> int:
         scope_dirs([]) == [SOURCE_SCOPE_DIR],
         f"got {scope_dirs([])!r}",
     )
-    # Not scoping a whole root is deliberate: `.claude/` holds this linter,
-    # which quotes every token it detects. A gate whose own fixtures are inside
-    # its scan set gets switched off.
     check(
         "SCOPE/root itself is never the scan dir",
         all(d != ".claude" for d in scope_dirs([".claude"])),
         f"got {scope_dirs(['.claude'])!r}",
     )
 
-    # --- shared profile-root derivation (fail-closed contract) ---
-    # Errors from `prompt_roots` are exit-2 for both gates, so the contract
-    # tested here is "malformed input yields an error", never "yields fewer
-    # roots".
+    # --- shared profile-root derivation ---
     for label, root_value in [
         ("absolute", "/etc"),
         ("parent escape", "../outside"),
@@ -843,19 +732,9 @@ def run_self_test() -> int:
     check("BARE", len(inv) == 1, f"got {inv!r}")
     inv = find_sensitive_token_lines("x.sh", _FIXTURE_COMMENT_REFERENCE)
     check("COMMENT REFERENCE", len(inv) == 1, f"got {inv!r}")
-    # The dangerous flag literals are caught even when the binary name has
-    # been variable-aliased and the line itself doesn't contain `claude`.
-    # Line 2 of the fixture (`CMD=claude`) is deliberately NOT expected to
-    # match — `claude` at end-of-line has no following `\s+` so the binary
-    # pattern fails, and there's no flag literal on that line. If the regex
-    # is later widened to detect variable assignments, this expected count
-    # would change and the test should be updated deliberately.
     inv = find_sensitive_token_lines("x.sh", _FIXTURE_BYPASS_FLAG_OUTSIDE)
     check("BYPASS TOKENS", len(inv) == 1, f"got {inv!r}")
 
-    # `agy` is in scope on the same terms as `claude`. Line 2 of the
-    # skip-permissions fixture (`CLI=agy`) is deliberately NOT expected to
-    # match, mirroring the `CMD=claude` case above.
     for label, fixture in [
         ("AGY BARE", _FIXTURE_AGY_BARE_INVOCATION),
         ("AGY SKIP-PERMISSIONS FLAG", _FIXTURE_AGY_SKIP_PERMISSIONS_OUTSIDE),
@@ -870,8 +749,6 @@ def run_self_test() -> int:
         inv = find_sensitive_token_lines("x.sh", fixture)
         check(f"REGEX-NEG/{label}", inv == [], f"got {inv!r}")
 
-    # Every widened-regex case must produce exactly one match — locks in
-    # the iter-2 widening so a future narrowing reopens a documented bypass.
     for label, fixture in [
         ("SHORT OPTION (claude -p)", _FIXTURE_SHORT_OPTION),
         ("STDIN REDIRECT (claude <)", _FIXTURE_STDIN_REDIRECT),
@@ -882,8 +759,6 @@ def run_self_test() -> int:
     ]:
         inv = find_sensitive_token_lines("x.sh", fixture)
         check(f"REGEX/{label}", len(inv) == 1, f"got {inv!r}")
-    # Negative cases — these must NOT match (otherwise the lint false-flags
-    # benign references that exist in the current agent-loop.sh).
     for label, fixture in [
         ("PRESENCE-CHECK loop", _FIXTURE_PATH_MENTION_IN_PRESENCE_CHECK),
         (".claude/ path mention", _FIXTURE_DOTPATH),
@@ -893,8 +768,6 @@ def run_self_test() -> int:
         inv = find_sensitive_token_lines("x.sh", fixture)
         check(f"REGEX-NEG/{label}", inv == [], f"got {inv!r}")
 
-    # Continuation-line join: `claude \` + `"$PROMPT"` must surface as one
-    # finding, lineno pointing at the line where `claude` lives.
     inv = find_sensitive_token_lines("x.sh", _FIXTURE_CONTINUATION_INVOCATION)
     check(
         "CONTINUATION joined into one logical line",
@@ -902,27 +775,17 @@ def run_self_test() -> int:
         f"got {inv!r}",
     )
 
-    # Direct `_join_continuations` unit tests — lock the four documented
-    # behaviors so a regex regression doesn't slip past `find_sensitive_token_lines`
-    # by happening to still produce a match.
     join_cases = [
-        # (label, input, expected output)
         ("single-line passthrough", "a\nb\n", [(1, "a"), (2, "b")]),
         ("normal join", "a \\\nb\n", [(1, "a b")]),
         ("triple join", "a \\\nb \\\nc\n", [(1, "a b c")]),
-        # Escaped trailing backslash (`\\` at EOL) is NOT a continuation —
-        # it's a literal pair. The line stands alone.
         (
             "escaped backslash not a continuation",
             "a \\\\\nb\n",
             [(1, "a \\\\"), (2, "b")],
         ),
-        # Unclosed trailing continuation at EOF — emit what we have.
         ("unclosed trailing continuation", "a \\\n", [(1, "a")]),
-        # Empty input.
         ("empty input", "", []),
-        # Continuation with trailing whitespace after the backslash —
-        # `rstrip()` normalizes so the `\\` at the visual EOL still wins.
         ("continuation with trailing space", "a \\  \nb\n", [(1, "a b")]),
     ]
     for label, text_in, expected in join_cases:
@@ -942,7 +805,6 @@ def run_self_test() -> int:
         return n, sink.getvalue()
 
     with tempfile.TemporaryDirectory() as tmp:
-        # bare invocation → at least one finding, message names the file:line.
         bare_path = os.path.join(tmp, "bare.sh")
         with open(bare_path, "w") as fh:
             fh.write(_FIXTURE_BARE_INVOCATION)
@@ -950,7 +812,6 @@ def run_self_test() -> int:
         check("SCAN(bare) findings", n >= 1, f"got {n}")
         check("SCAN(bare) message", f"{bare_path}:2:" in out, f"output:\n{out}")
 
-        # OK + allowlisted (correct path) → 0 findings.
         ok_path = os.path.join(tmp, "ok.sh")
         with open(ok_path, "w") as fh:
             fh.write(_FIXTURE_OK)
@@ -961,10 +822,6 @@ def run_self_test() -> int:
         n, out = scan_into([ok_path], [entry])
         check("SCAN(ok+allowlist)", n == 0, f"got {n}; output:\n{out}")
 
-        # Path-binding gate: the same hash allowlisted for a DIFFERENT path
-        # must NOT auto-approve the region in this file. Defends against the
-        # region-copy attack — clone allowlisted bytes into a new synced .sh
-        # file and the gate still fires.
         other_path = os.path.join(tmp, "ok-clone.sh")
         with open(other_path, "w") as fh:
             fh.write(_FIXTURE_OK)
@@ -975,9 +832,6 @@ def run_self_test() -> int:
             f"got {n}; output:\n{out}",
         )
 
-        # Markers deleted but allowlist entry stale → bare-token finding
-        # surfaces. The stale entry is harmless on its own (no region to
-        # hash); the call is what trips the gate.
         del_path = os.path.join(tmp, "del.sh")
         with open(del_path, "w") as fh:
             fh.write(_FIXTURE_MARKER_DELETED)
@@ -988,8 +842,6 @@ def run_self_test() -> int:
             f"got {n}; output:\n{out}",
         )
 
-        # Mixed: one in-region call (allowlisted) + one bare call → exactly
-        # one finding, pointing at the bare call's line (line 6).
         mixed_path = os.path.join(tmp, "mixed.sh")
         with open(mixed_path, "w") as fh:
             fh.write(_FIXTURE_MIXED_REGION_AND_BARE)
@@ -1004,7 +856,6 @@ def run_self_test() -> int:
             f"got {n}; output:\n{out}",
         )
 
-        # Two regions, allowlist only the first → finding on the second.
         two_path = os.path.join(tmp, "two.sh")
         with open(two_path, "w") as fh:
             fh.write(_FIXTURE_TWO_REGIONS)
@@ -1019,8 +870,6 @@ def run_self_test() -> int:
             f"got {n}; output:\n{out}",
         )
 
-        # --dangerously-skip-permissions outside any marker pair → finding.
-        # This is the escalation literal the Agy relay launcher locks.
         skip_path = os.path.join(tmp, "agy-skip.sh")
         with open(skip_path, "w") as fh:
             fh.write(_FIXTURE_AGY_SKIP_PERMISSIONS_OUTSIDE)
@@ -1031,7 +880,6 @@ def run_self_test() -> int:
             f"got {n}; output:\n{out}",
         )
 
-        # bypassPermissions flag outside any marker pair → finding.
         bypass_path = os.path.join(tmp, "bypass.sh")
         with open(bypass_path, "w") as fh:
             fh.write(_FIXTURE_BYPASS_FLAG_OUTSIDE)
@@ -1042,10 +890,6 @@ def run_self_test() -> int:
             f"got {n}; output:\n{out}",
         )
 
-        # Unused allowlist entry → finding. Closes the iter-2 attack of
-        # pre-seeding an opaque (hash, path) in one PR and adding the
-        # matching region in a follow-up PR without re-touching the
-        # allowlist (which would defeat the audit-trail invariant).
         empty_path = os.path.join(tmp, "no-regions.sh")
         with open(empty_path, "w") as fh:
             fh.write("#!/bin/bash\necho hello\n")
@@ -1059,7 +903,6 @@ def run_self_test() -> int:
             f"got {n}; output:\n{out}",
         )
 
-        # compute_hashes surfaces region-parse errors and returns nonzero.
         bad_path = os.path.join(tmp, "malformed.sh")
         with open(bad_path, "w") as fh:
             fh.write(_FIXTURE_UNCLOSED_REGION)
@@ -1073,9 +916,6 @@ def run_self_test() -> int:
             f"rc={ch_rc} stderr={sink_err.getvalue()!r}",
         )
 
-        # Duplicate region within the same file → finding on the second
-        # occurrence. The allowlist approves ONE region, not two with the
-        # same bytes — a clone introduces another bypassPermissions call.
         dup_path = os.path.join(tmp, "dup-region.sh")
         with open(dup_path, "w") as fh:
             fh.write(_FIXTURE_DUPLICATE_REGION)
@@ -1084,22 +924,12 @@ def run_self_test() -> int:
             sha256=hash_region(dup_regions[0]), path=dup_path, description="test"
         )
         n, out = scan_into([dup_path], [dup_entry])
-        # First region matches allowlist (no finding); second region trips
-        # the duplicate detector exactly once. Tight `n == 1` catches a
-        # regression where the second region ALSO hits the hash-mismatch
-        # gate (which the `continue` after the duplicate emit is meant to
-        # prevent).
         check(
             "SCAN(duplicate-region) flagged within same file",
             n == 1 and "duplicate locked region" in out,
             f"got {n}; output:\n{out}",
         )
 
-        # CRLF on disk: write CRLF bytes through binary mode so Python's
-        # text-mode universal-newline translation can't normalize them
-        # before the lint sees them. The lint MUST read with newline=""
-        # and treat the bytes as written, so the LF and CRLF versions of
-        # the same logical region hash differently.
         lf_disk_path = os.path.join(tmp, "lf.sh")
         crlf_disk_path = os.path.join(tmp, "crlf.sh")
         with open(lf_disk_path, "wb") as fb:
@@ -1140,7 +970,6 @@ def run_self_test() -> int:
         f"got {errors!r}",
     )
 
-    # Same hash, different path → both kept (path-binding is the dedup key).
     dual_fixture = ("0" * 64) + "  a.sh  first\n" + ("0" * 64) + "  b.sh  second\n"
     entries, errors = parse_allowlist(dual_fixture)
     check(
@@ -1149,7 +978,6 @@ def run_self_test() -> int:
         f"entries={entries!r} errors={errors!r}",
     )
 
-    # Same (hash, path) → duplicate, second rejected.
     dup_fixture = ("0" * 64) + "  a.sh  first\n" + ("0" * 64) + "  a.sh  second\n"
     entries, errors = parse_allowlist(dup_fixture)
     check(
@@ -1158,7 +986,6 @@ def run_self_test() -> int:
         f"entries={entries!r} errors={errors!r}",
     )
 
-    # Missing path field → format error.
     short_fixture = ("0" * 64) + "\n"
     entries, errors = parse_allowlist(short_fixture)
     check(
@@ -1168,12 +995,7 @@ def run_self_test() -> int:
     )
 
     # --- _synced_shell_sources via temporary manifest files ---
-    # Cover the manifest parser end-to-end: synced shell/executable payloads
-    # outside the scanned dirs surface, non-executable prose is filtered out, malformed YAML and
-    # missing manifests produce clear errors. Runs in a tempdir-as-cwd so
-    # the test never touches the real `scripts/sync-targets.yml`.
     test_cases: list[tuple[str, str, list[str], bool]] = [
-        # (label, manifest_yaml, expected_sources, expect_errors)
         (
             "synced .sh outside the scanned dirs surfaces",
             "targets:\n"
@@ -1258,7 +1080,6 @@ def run_self_test() -> int:
                 sources == expected_sources and not errors,
                 f"got sources={sources!r} errors={errors!r}",
             )
-    # Missing manifest → error.
     with tempfile.TemporaryDirectory() as tmp:
         cwd_was = os.getcwd()
         try:
@@ -1321,9 +1142,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.compute_hash:
         return compute_hashes(args.compute_hash)
 
-    # Scope comes from the declared profile roots. A profile set that cannot be
-    # read is exit-2, never a smaller scan: the whole point of deriving scope is
-    # that a root can never be in the tree and outside the gate at the same time.
+    # Derive scan scope from declared profile roots.
     roots, root_errors = prompt_roots.declared_prompt_roots()
     if root_errors:
         for err in root_errors:
@@ -1337,13 +1156,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"git ls-files failed: {exc.stderr}", file=sys.stderr)
         return 2
 
-    # Belt-and-braces scope: union of (a) tracked shell or executable files under `dirs`
-    # — covers upstream-only files that a developer might still execute —
-    # and (b) all shell or executable `source` paths in sync-targets.yml — covers files
-    # outside those dirs that get propagated to consumers. (b) is the
-    # primary mission per the threat model; (a) catches the on-disk
-    # variant. If sync-targets.yml is unreadable / unparseable, fail loud
-    # rather than silently degrading to (a) only.
+    # Union tracked shell files with sync-targets.yml source entries.
     synced, sync_errors = _synced_shell_sources()
     if sync_errors:
         for err in sync_errors:
@@ -1351,10 +1164,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     paths = sorted(set(tracked) | set(synced))
 
-    # Scope-pin: REQUIRED_FILES must be in the scan set. Defends against
-    # an attacker moving the locked script out of the scanned dirs *and*
-    # removing it from sync-targets.yml in the same PR (lint would otherwise
-    # scan an empty file list and exit clean).
+    # Verify all required scope files are present in the scan set.
     missing = [f for f in REQUIRED_FILES if f not in paths]
     if missing:
         print(
@@ -1368,9 +1178,6 @@ def main(argv: list[str] | None = None) -> int:
         with open(ALLOWLIST_PATH, encoding="utf-8") as fh:
             allowlist_text = fh.read()
     except FileNotFoundError:
-        # Treating missing-allowlist as empty would be fail-open: an attacker
-        # could delete the file alongside marker edits and the gate would not
-        # detect the change. Require the file to exist unconditionally.
         print(
             f"allowlist file missing: {ALLOWLIST_PATH}. "
             "Create the file (commit at least the header) before running.",

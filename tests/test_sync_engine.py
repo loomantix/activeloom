@@ -22,9 +22,7 @@ import pytest
 import yaml
 
 
-# ---------------------------------------------------------------------------
 # resolve_under — lexical traversal check
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_under_accepts_normal_child(sync_engine: ModuleType, tmp_path: Path) -> None:
@@ -44,7 +42,7 @@ def test_resolve_under_rejects_absolute_path(sync_engine: ModuleType, tmp_path: 
 def test_resolve_under_rejects_path_collapsing_to_parent(
     sync_engine: ModuleType, tmp_path: Path
 ) -> None:
-    # `foo/..` normalizes back to the parent itself — must be rejected.
+
     assert sync_engine.resolve_under(tmp_path, "foo/..") is None
     assert sync_engine.resolve_under(tmp_path, ".") is None
 
@@ -93,9 +91,7 @@ def test_consumer_symlink_destinations_ignores_skipped_targets(
     ) == []
 
 
-# ---------------------------------------------------------------------------
 # parse_mode — octal coercion + type strictness
-# ---------------------------------------------------------------------------
 
 
 def test_parse_mode_none_returns_none(sync_engine: ModuleType) -> None:
@@ -113,8 +109,7 @@ def test_parse_mode_octal_string(sync_engine: ModuleType) -> None:
 
 
 def test_parse_mode_rejects_bool(sync_engine: ModuleType) -> None:
-    # bool subclasses int in Python; without an explicit guard, `True`
-    # would become mode 1 and `False` mode 0.
+    # Reject bool in parse_mode.
     with pytest.raises(TypeError, match="bool"):
         sync_engine.parse_mode(True)
     with pytest.raises(TypeError, match="bool"):
@@ -134,23 +129,18 @@ def test_parse_mode_rejects_non_octal_string(sync_engine: ModuleType) -> None:
 
 
 def test_parse_mode_rejects_negative_int(sync_engine: ModuleType) -> None:
-    # `Path.chmod(-1)` raises OverflowError mid-loop, partially syncing the
-    # consumer tree. Reject at the parse boundary so the sync fails before
-    # any write happens.
+    # Reject negative modes at parse boundary.
     with pytest.raises(ValueError, match="out of range"):
         sync_engine.parse_mode(-1)
 
 
 def test_parse_mode_rejects_oversized_int(sync_engine: ModuleType) -> None:
-    # Values above 0o7777 are not valid POSIX file modes; reject rather
-    # than silently truncate.
+    # Reject modes above 0o7777.
     with pytest.raises(ValueError, match="out of range"):
         sync_engine.parse_mode(0o10000)
 
 
-# ---------------------------------------------------------------------------
 # substitute — placeholder warnings + missing-required failure
-# ---------------------------------------------------------------------------
 
 
 def test_substitute_replaces_declared_placeholder(
@@ -160,7 +150,7 @@ def test_substitute_replaces_declared_placeholder(
     out = sync_engine.substitute(text, {"NAME": "world"}, ["NAME"], "src.md")
     assert out == "hello world, welcome"
     err = capsys.readouterr().err
-    assert err == ""  # clean substitution: no warnings
+    assert err == ""
 
 
 def test_substitute_warns_on_declared_not_in_source(
@@ -178,7 +168,7 @@ def test_substitute_warns_on_undeclared_placeholder_left_intact(
 ) -> None:
     text = "hello <<NAME>>, you are <<ROLE>>"
     out = sync_engine.substitute(text, {"NAME": "world"}, ["NAME"], "src.md")
-    # <<ROLE>> is left intact since it's not in the declared list.
+
     assert "<<ROLE>>" in out
     assert "hello world" in out
     err = capsys.readouterr().err
@@ -199,9 +189,7 @@ def test_substitute_exits_on_missing_required_substitution(
 def test_substitute_strips_trailing_newlines_from_block_scalar(
     sync_engine: ModuleType,
 ) -> None:
-    # YAML `|` block scalars carry a trailing \n; the engine strips it so
-    # the template's explicit blank line after each placeholder controls
-    # inter-section spacing.
+    # Strip trailing newline from YAML block scalar.
     out = sync_engine.substitute(
         "before\n<<KEY>>\nafter",
         {"KEY": "value\n\n"},
@@ -211,23 +199,13 @@ def test_substitute_strips_trailing_newlines_from_block_scalar(
     assert out == "before\nvalue\nafter"
 
 
-# ---------------------------------------------------------------------------
 # drop_empty_placeholder_lines — blank-line stability of template renders
-# ---------------------------------------------------------------------------
-#
-# The engine renders faithfully: the only whitespace it removes is a line that a
-# substitution emptied. Every literal-content case below is a regression guard
-# against reintroducing a whole-file normalizer, which cannot tell an
-# author-written blank line from a placeholder-produced one and so rewrites
-# content the pinned prettier preserves.
 
 
 def test_render_collapses_blank_run_left_by_empty_placeholder(
     sync_engine: ModuleType,
 ) -> None:
-    # The motivating case: an empty substitution on its own template line would
-    # leave the blank lines around it stacked — prettier collapses the run, so
-    # every sync PR would reintroduce it and every local format run revert it.
+    # Empty substitution collapses surrounding blank lines.
     out = sync_engine.substitute(
         "- last list item\n\n<<EXTRA>>\n\n---\n",
         {"EXTRA": ""},
@@ -241,8 +219,7 @@ def test_render_collapses_blank_run_left_by_empty_placeholder(
 def test_render_drops_separator_only_when_a_run_would_form(
     sync_engine: ModuleType,
 ) -> None:
-    # One side non-blank means removing the placeholder line leaves no run, so
-    # no separator is consumed and the author's spacing survives intact.
+
     assert sync_engine.substitute("a\n<<E>>\n\nb\n", {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\nb\n"
     assert sync_engine.substitute("a\n\n<<E>>\nb\n", {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\nb\n"
     assert sync_engine.substitute("a\n<<E>>\nb\n", {"E": ""}, ["E"], "src.md", ["E"]) == "a\nb\n"
@@ -251,8 +228,7 @@ def test_render_drops_separator_only_when_a_run_would_form(
 def test_render_drops_leading_and_trailing_blank_at_file_edges(
     sync_engine: ModuleType,
 ) -> None:
-    # Start/end of file behave like a blank line: a placeholder at either edge
-    # would otherwise leave a leading or trailing blank that prettier strips.
+
     assert sync_engine.substitute("<<E>>\n\nb\n", {"E": ""}, ["E"], "src.md", ["E"]) == "b\n"
     assert sync_engine.substitute("a\n\n<<E>>\n", {"E": ""}, ["E"], "src.md", ["E"]) == "a\n"
 
@@ -260,8 +236,7 @@ def test_render_drops_leading_and_trailing_blank_at_file_edges(
 def test_render_handles_back_to_back_empty_placeholders(
     sync_engine: ModuleType,
 ) -> None:
-    # Adjacent empty placeholders must not each eat a separator and glue the
-    # surrounding sections together.
+    # Adjacent empty placeholders must not collapse surrounding sections.
     assert (
         sync_engine.substitute(
             "a\n\n<<E>>\n<<F>>\n\nb\n",
@@ -307,8 +282,7 @@ def test_render_handles_back_to_back_empty_placeholders(
 def test_render_matches_whole_line_placeholder_with_surrounding_whitespace(
     sync_engine: ModuleType,
 ) -> None:
-    # An indented or trailing-space placeholder line is still a whole-line
-    # placeholder; leaving it behind would emit a whitespace-only line.
+
     out = sync_engine.substitute("a\n\n  <<E>>  \n\nb\n", {"E": ""}, ["E"], "src.md", ["E"])
     assert out == "a\n\nb\n"
 
@@ -316,8 +290,7 @@ def test_render_matches_whole_line_placeholder_with_surrounding_whitespace(
 def test_render_keeps_line_for_non_empty_and_inline_placeholders(
     sync_engine: ModuleType,
 ) -> None:
-    # Only a whole-line placeholder that renders empty is removed. A value with
-    # content keeps its line, and an inline placeholder never removes one.
+
     assert sync_engine.substitute("a\n\n<<E>>\n\nb\n", {"E": "X"}, ["E"], "src.md", ["E"]) == "a\n\nX\n\nb\n"
     assert sync_engine.substitute("docs: <<E>>.\n", {"E": ""}, ["E"], "src.md", ["E"]) == "docs: .\n"
 
@@ -346,8 +319,7 @@ def test_render_keeps_line_when_only_some_placeholders_are_opted_in(
     sync_engine: ModuleType,
 ) -> None:
     text = "a\n\n<<E>><<F>>\n\nb\n"
-    # `F` is substituted but not opted in, so the line is not the engine's to
-    # remove even though both values render empty.
+
     assert sync_engine.substitute(text, {"E": "", "F": ""}, ["E", "F"], "src.md", ["E"]) == "a\n\n\n\nb\n"
 
 
@@ -364,23 +336,19 @@ def test_render_keeps_line_when_an_opted_in_sibling_is_non_empty(
 def test_render_keeps_line_carrying_an_undeclared_placeholder(
     sync_engine: ModuleType,
 ) -> None:
-    # `PLACEHOLDER_RE.sub("", line)` erases the undeclared token too, so the
-    # line looks placeholder-only; dropping it would delete a real unsubstituted
-    # token the consumer has not configured yet.
+    # Do not drop line if it contains undeclared placeholders.
     text = "a\n\n<<E>><<UNKNOWN>>\n\nb\n"
     assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\n<<UNKNOWN>>\n\nb\n"
 
 
 def test_render_collapses_crlf_source(sync_engine: ModuleType) -> None:
-    # `.split("\n")` leaves a `\r` on every line; the qualification test must
-    # strip it or a CRLF checkout silently gets no collapsing at all.
+    # Strip carriage returns before evaluating placeholder line.
     text = "a\r\n\r\n<<E>>\r\n\r\nb\r\n"
     assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\r\n\r\nb\r\n"
 
 
 def test_render_treats_a_null_value_as_empty(sync_engine: ModuleType) -> None:
-    # `DOMAIN_RULES:` with nothing after the colon parses as None. `str(None)`
-    # would render the literal word `None` into the consumer's repo.
+    # Null YAML scalar should not render as "None".
     text = "a\n\n<<E>>\n\nb\n"
     assert sync_engine.substitute(text, {"E": None}, ["E"], "src.md", ["E"]) == "a\n\nb\n"
     assert sync_engine.substitute("x <<E>> y\n", {"E": None}, ["E"], "src.md") == "x  y\n"
@@ -389,8 +357,7 @@ def test_render_treats_a_null_value_as_empty(sync_engine: ModuleType) -> None:
 def test_render_warns_when_an_opted_in_key_never_qualifies(
     sync_engine: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A list bullet is not a whole-line placeholder, so the opt-in cannot fire
-    # and the consumer silently keeps the blank-line run it was meant to remove.
+
     text = "a\n\n- <<E>>\n\nb\n"
     assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md", ["E"]) == "a\n\n- \n\nb\n"
     err = capsys.readouterr().err
@@ -415,8 +382,7 @@ def test_render_does_not_warn_for_a_non_empty_opted_in_key(
 def test_render_preserves_blank_runs_inside_raw_pre_html(
     sync_engine: ModuleType,
 ) -> None:
-    # Verified against the pinned prettier: it leaves raw <pre> content alone,
-    # blank runs included. Collapsing them would rewrite literal page content.
+    # Preserve blank runs in raw <pre> blocks.
     text = "intro\n\n<pre>\nline one\n\n\n\nline two\n</pre>\n\nafter\n"
     assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md") == text
 
@@ -424,7 +390,7 @@ def test_render_preserves_blank_runs_inside_raw_pre_html(
 def test_render_preserves_blank_runs_inside_indented_code(
     sync_engine: ModuleType,
 ) -> None:
-    # Same for four-space indented code blocks — the blank runs are code.
+    # Preserve blank runs in four-space indented code blocks.
     text = "intro\n\n    code one\n\n\n\n    code two\n\nafter\n"
     assert sync_engine.substitute(text, {"E": ""}, ["E"], "src.md") == text
 
@@ -432,11 +398,7 @@ def test_render_preserves_blank_runs_inside_indented_code(
 def test_render_preserves_fenced_code_regardless_of_fence_shape(
     sync_engine: ModuleType,
 ) -> None:
-    # CommonMark fence closing has corner cases a normalizer gets wrong: a
-    # closer carrying both leading indentation and trailing whitespace is valid
-    # (and was previously missed), while a split-marker line like "``` ```" is
-    # not a closer (and previously closed the block early). Rendering faithfully
-    # makes both moot — no fence is parsed at all.
+    # Preserve blank runs in fenced code blocks.
     samples = [
         "text\n\n   ```\ncode\n\n\n\nmore\n   ```   \n\n\n\nafter\n",
         "```\na\n``` ```\n\n\n\nb\n```\n",
@@ -451,19 +413,16 @@ def test_render_preserves_fenced_code_regardless_of_fence_shape(
 def test_render_leaves_empty_and_blank_only_documents_alone(
     sync_engine: ModuleType,
 ) -> None:
-    # The pinned prettier writes an empty file for empty input, so appending a
-    # newline here would be churn. A blank-only source is left verbatim: no
-    # substitution emptied those lines, so they are the author's content.
+    # Empty input produces empty output; blank-only input preserved.
     assert sync_engine.substitute("", {}, [], "src.md") == ""
     assert sync_engine.substitute("\n", {}, [], "src.md") == "\n"
     assert sync_engine.substitute("\n\n  \n", {}, [], "src.md") == "\n\n  \n"
-    # A document that is nothing but an emptied placeholder renders empty.
+
     assert sync_engine.substitute("<<E>>\n", {"E": ""}, ["E"], "src.md", ["E"]) == ""
 
 
 def test_render_is_idempotent(sync_engine: ModuleType) -> None:
-    # Re-rendering an already-rendered document is a no-op: the output holds no
-    # placeholders, so nothing further can be dropped.
+
     samples = [
         "- last list item\n\n<<EXTRA>>\n\n---\n",
         "a\n\n<<E>>\n<<F>>\n\nb\n",
@@ -481,8 +440,7 @@ def test_render_is_idempotent(sync_engine: ModuleType) -> None:
 def test_verbatim_copy_never_drops_a_placeholder_line(
     sync_engine: ModuleType,
 ) -> None:
-    # subs == [] declares nothing, so a `<<KEY>>` line is left intact even when
-    # the consumer happens to configure an empty value for that key.
+
     text = "a\n\n<<E>>\n\nb\n"
     assert sync_engine.substitute(text, {"E": ""}, [], "src.md") == text
 
@@ -493,10 +451,7 @@ def test_main_renders_substituted_md_but_leaves_verbatim_copies_alone(
     consumer_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Substituted render: the emptied placeholder line and one separator go.
-    # Verbatim copy (subs == []): byte-identical even with ugly whitespace —
-    # consumers prettier-ignore vendored files, and an engine rewrite would
-    # itself be churn against the upstream source of truth.
+
     ugly = "# Title\n\n\n\nbody\n\n\n"
     (upstream_repo / "tpl.md").write_text("# <<NAME>>\n\n<<EXTRA>>\n\nbody\n")
     (upstream_repo / "verbatim.md").write_text(ugly)
@@ -529,9 +484,7 @@ def test_main_renders_substituted_md_but_leaves_verbatim_copies_alone(
     assert (consumer_dir / "verbatim.md").read_text() == ugly
 
 
-# ---------------------------------------------------------------------------
 # write_if_changed — content + mode divergence
-# ---------------------------------------------------------------------------
 
 
 def test_write_if_changed_creates_new_file(sync_engine: ModuleType, tmp_path: Path) -> None:
@@ -566,11 +519,7 @@ def test_write_if_changed_rewrites_on_diverged_content(
 def test_write_if_changed_preserves_existing_mode_without_explicit_mode(
     sync_engine: ModuleType, tmp_path: Path
 ) -> None:
-    # The atomic write replaces the destination with a fresh temp file
-    # (born 0o600), so an existing file's permission bits only survive a
-    # rewrite because `write_if_changed` puts them back deliberately. An
-    # executable script synced without a manifest `mode:` must stay
-    # executable across content updates.
+    # Preserve existing file permissions on content updates.
     target = tmp_path / "run.sh"
     target.write_text("#!/bin/sh\necho old\n")
     target.chmod(0o755)
@@ -582,8 +531,7 @@ def test_write_if_changed_preserves_existing_mode_without_explicit_mode(
 def test_write_if_changed_new_file_gets_default_mode(
     sync_engine: ModuleType, tmp_path: Path
 ) -> None:
-    # A brand-new destination must not inherit the temp file's 0o600 —
-    # that would strip group/other read from every freshly synced file.
+    # New files do not inherit 0o600 temp permissions.
     target = tmp_path / "new.txt"
     changed = sync_engine.write_if_changed(target, "content", None)
     assert changed is True
@@ -593,9 +541,7 @@ def test_write_if_changed_new_file_gets_default_mode(
 def test_write_utf8_leaves_no_temp_file_behind(
     sync_engine: ModuleType, tmp_path: Path
 ) -> None:
-    # The atomic-write plumbing must be invisible on success: exactly the
-    # destination, no `.name.XXXX` siblings for a consumer's `git status`
-    # (and the sync commit) to pick up.
+    # Atomic write cleans up temp siblings.
     target = tmp_path / "out.txt"
     sync_engine.write_utf8(target, "content\n")
     assert target.read_text() == "content\n"
@@ -624,7 +570,7 @@ def test_write_if_changed_applies_mode_when_diverged(
     target.write_text("#!/bin/sh\n")
     target.chmod(0o644)
     changed = sync_engine.write_if_changed(target, "#!/bin/sh\n", 0o755)
-    # Content unchanged, mode diverged → still reports changed=True.
+
     assert changed is True
     assert stat.S_IMODE(target.stat().st_mode) == 0o755
 
@@ -642,7 +588,7 @@ def test_write_if_changed_compares_full_12bit_mode(
     target = tmp_path / "setuid.sh"
     target.write_text("#!/bin/sh\n")
     target.chmod(0o4755)  # setuid + rwxr-xr-x
-    # Content identical, mode matches at the FULL 12-bit level → no change.
+
     changed = sync_engine.write_if_changed(target, "#!/bin/sh\n", 0o4755)
     assert changed is False
     assert stat.S_IMODE(target.stat().st_mode) == 0o4755
@@ -656,9 +602,7 @@ def test_write_if_changed_leaves_mode_when_none(sync_engine: ModuleType, tmp_pat
     assert stat.S_IMODE(target.stat().st_mode) == 0o600  # mode untouched
 
 
-# ---------------------------------------------------------------------------
 # prune_empty_parents — walk-up with non-empty stop + ENOENT tolerance
-# ---------------------------------------------------------------------------
 
 
 def test_prune_empty_parents_removes_empty_chain(
@@ -683,7 +627,7 @@ def test_prune_empty_parents_stops_at_non_empty(
     f.write_text("x")
     f.unlink()
     sync_engine.prune_empty_parents(f, tmp_path)
-    # `b` was empty so it's gone; `a` had a sibling so it's preserved.
+
     assert not (tmp_path / "a" / "b").exists()
     assert (tmp_path / "a").exists()
     assert sibling.exists()
@@ -702,16 +646,14 @@ def test_prune_empty_parents_does_not_remove_root(
 def test_prune_empty_parents_tolerates_concurrent_remove(
     sync_engine: ModuleType, tmp_path: Path
 ) -> None:
-    # Simulate the file's parent dir already being gone (concurrent cleanup).
+
     nested = tmp_path / "a" / "b"
     f = nested / "ghost.txt"
-    # No mkdir — `f.parent` doesn't exist. prune_empty_parents must not raise.
+
     sync_engine.prune_empty_parents(f, tmp_path)
 
 
-# ---------------------------------------------------------------------------
 # End-to-end main() invocation via direct call
-# ---------------------------------------------------------------------------
 
 
 # The harness a bare `{"targets": [...]}` fixture is filed under. Any name in
@@ -1519,9 +1461,7 @@ def test_main_rejects_pre_sync_v2_manifest(
     assert "pre-sync-v2 manifest format" in err
 
 
-# ---------------------------------------------------------------------------
 # glob_to_regex + path_matches_any — pattern matcher semantics
-# ---------------------------------------------------------------------------
 
 
 def test_glob_to_regex_literal_path(sync_engine: ModuleType) -> None:
@@ -1595,9 +1535,7 @@ def test_path_matches_any_matches_on_any_pattern(sync_engine: ModuleType) -> Non
     assert not sync_engine.path_matches_any(".github/workflows/release.yml", patterns)
 
 
-# ---------------------------------------------------------------------------
 # allowed_destinations + SENSITIVE_DELETE_PATTERNS — main() enforcement
-# ---------------------------------------------------------------------------
 
 
 def test_main_allowlist_match_permits_write(
@@ -2053,9 +1991,7 @@ def test_main_allowlist_refusal_reports_every_denied_destination(
     assert ".github/workflows/two.yml" in err
 
 
-# ---------------------------------------------------------------------------
 # Adversarial path forms — destinations that exploit normalization seams
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -2253,9 +2189,7 @@ def test_main_sensitive_delete_blocks_codeowners(
     assert "refusing to delete sensitive path" in err
 
 
-# ---------------------------------------------------------------------------
 # Fail-open semantics — distinguishing missing key from null value
-# ---------------------------------------------------------------------------
 
 
 def test_main_allowlist_null_value_is_config_error(
@@ -2307,9 +2241,7 @@ def test_main_fail_open_warning_uses_github_annotation(
     assert "allowed_destinations" in out
 
 
-# ---------------------------------------------------------------------------
 # Skip + allowlist coexistence and OR-semantics across patterns
-# ---------------------------------------------------------------------------
 
 
 def test_main_skip_target_short_circuits_allowlist(
@@ -2451,9 +2383,7 @@ def test_main_allowlist_empty_string_pattern_matches_only_empty(
     assert "destination not in consumer's `allowed_destinations`" in err
 
 
-# ---------------------------------------------------------------------------
 # allow_sensitive_writes — per-file consent for sensitive destinations
-# ---------------------------------------------------------------------------
 
 
 def test_main_sensitive_overwrite_refused_without_opt_in(
@@ -2972,11 +2902,7 @@ def test_main_sensitive_write_covers_lockfile_and_codeowners(
 
 
 def test_sensitive_write_patterns_cover_the_delete_set(sync_engine: ModuleType) -> None:
-    # The two sets are the same object today. Pin that: a path added to
-    # the delete set because its absence breaks an invariant is, so far
-    # without exception, also a path whose contents control execution,
-    # review gating, or dependency resolution. If a future change makes
-    # them genuinely diverge, this assertion is the place to record why.
+    # Pin sensitive pattern sets to match.
     assert set(sync_engine.SENSITIVE_DELETE_PATTERNS) <= set(
         sync_engine.SENSITIVE_WRITE_PATTERNS
     )
@@ -2985,29 +2911,13 @@ def test_sensitive_write_patterns_cover_the_delete_set(sync_engine: ModuleType) 
 def test_sensitive_write_patterns_are_all_delete_protected(
     sync_engine: ModuleType,
 ) -> None:
-    # This is the direction that carries the pre-pass's atomicity guarantee,
-    # and it is not the same claim as the assertion above.
-    #
-    # `unconsented_sensitive_writes` skips a `create_if_missing` target whose
-    # destination already exists, on the assumption it will still be there
-    # when the loop arrives. The only way it disappears mid-run is an earlier
-    # `delete:` target — refused only when the path is in the *delete* set. A
-    # write-sensitive path that is not delete-protected can therefore be
-    # removed after admission control has cleared the run, dropping its target
-    # into the in-loop gate after a write and a delete have already landed:
-    # the mid-run abort the pre-pass exists to prevent.
-    #
-    # Both hold trivially while `SENSITIVE_WRITE_PATTERNS` aliases the delete
-    # tuple. This one is what must survive the split that alias's comment
-    # invites.
+    # Verify write-sensitive paths are delete-protected to preserve pre-pass atomicity.
     assert set(sync_engine.SENSITIVE_WRITE_PATTERNS) <= set(
         sync_engine.SENSITIVE_DELETE_PATTERNS
     )
 
 
-# ---------------------------------------------------------------------------
 # The gate must track writes, not targets
-# ---------------------------------------------------------------------------
 
 
 def test_main_sensitive_write_not_reported_when_nothing_changes(
@@ -3196,9 +3106,7 @@ def test_main_sensitive_write_skipped_target_needs_no_opt_in(
     assert not (consumer_dir / ".github" / "workflows" / "dco.yml").exists()
 
 
-# ---------------------------------------------------------------------------
 # Sensitive patterns match at any depth, not just repository root
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -3394,16 +3302,7 @@ def test_main_sensitive_write_refusal_is_one_pasteable_yaml_block(
 
     assert err.count("allow_sensitive_writes:") == 1
 
-    # Lift the block verbatim and append it to a config that already has
-    # top-level keys, which is the only paste a consumer ever performs.
-    #
-    # Slice on whole lines, not on the offset of the key's first character.
-    # `err.index("allow_sensitive_writes:")` starts *after* whatever
-    # indentation precedes the key, so it silently re-dedents the block and
-    # strips the exact defect this test is named for — an indented grant
-    # block pasted into a real config either raises ParserError or nests
-    # silently under the preceding key. Anchoring on the newline keeps
-    # column-zero placement load-bearing here.
+    # Verify emitted allow_sensitive_writes block starts at column zero.
     assert "\nallow_sensitive_writes:" in err, (
         "the grant block must start at column zero to survive being pasted "
         "into a config that already has top-level keys"
@@ -3423,12 +3322,7 @@ def test_main_sensitive_refusal_block_carries_existing_grants(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The steady state after the fleet migration: the consumer already holds
-    # a grant and upstream adds a second sensitive destination. A block
-    # listing only the *new* path is a second occurrence of a key the config
-    # already has — `safe_load` keeps the last, so following the instruction
-    # discards the existing grant and the next run refuses a path the config
-    # visibly names. Pasting again refuses the other one, forever.
+    # Refusal block includes existing grants to prevent overwriting them.
     (upstream_repo / "dco.yml").write_text("name: DCO\n")
     (upstream_repo / "pkg.json").write_text('{"type": "module"}\n')
     _write_yaml(
@@ -3451,9 +3345,7 @@ def test_main_sensitive_refusal_block_carries_existing_grants(
     err = capsys.readouterr().err
     assert err.count("allow_sensitive_writes:") == 1
 
-    # Appending the emitted block is the worst thing a consumer can do with
-    # it, so it is what the assertion has to survive: the duplicate key wins,
-    # and it must carry both grants rather than only the new one.
+    # Verify appended block retains existing grants.
     assert "\nallow_sensitive_writes:" in err, (
         "the grant block must start at column zero to survive being pasted "
         "into a config that already has top-level keys"
@@ -3472,12 +3364,7 @@ def test_main_config_destination_refused_and_not_grantable(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The consent store cannot be governed by the consent it stores. A
-    # manifest able to rewrite `.platform-config.yml` can write its own
-    # `allow_sensitive_writes` entry and then, on the next run, write any
-    # sensitive path with the gate reporting an opt-in that upstream granted
-    # itself. Refused unconditionally, and naming it in the allowlist must
-    # not help.
+    # Sync config cannot be rewritten by sync manifest.
     (upstream_repo / "cfg.yml").write_text(
         "allowed_destinations:\n  - '**'\n"
         "allow_sensitive_writes:\n  - .github/workflows/deploy.yml\n"
@@ -3495,9 +3382,7 @@ def test_main_config_destination_refused_and_not_grantable(
     assert "refusing to write the consumer's own sync config" in err
     assert (consumer_dir / ".platform-config.yml").read_text() == original
 
-    # And the refusal is not opt-in-able: naming the config in
-    # `allow_sensitive_writes` is rejected at parse time, so there is no
-    # spelling of the config that authorizes rewriting the config.
+    # Refusal cannot be bypassed via allow_sensitive_writes.
     (consumer_dir / ".platform-config.yml").write_text(
         "allowed_destinations:\n  - '**'\n"
         "allow_sensitive_writes:\n  - .platform-config.yml\n"
@@ -3545,17 +3430,7 @@ def test_main_in_loop_sensitive_gate_refuses_when_the_pre_pass_misses(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # `unconsented_sensitive_writes`' docstring justifies duplicating the
-    # consent check in the loop as the fallback for drift: "if the two ever
-    # drift, the loop still refuses — it just refuses less atomically."
-    # Nothing exercised that fallback, so the whole in-loop gate could be
-    # deleted with the suite green.
-    #
-    # The two agree by construction today, so the drift has to be injected:
-    # blind the pre-pass and assert the loop still refuses. This is the
-    # documented property, not a hypothetical one — it is the only thing
-    # standing between a future pre-pass bug and an unconsented workflow
-    # write.
+    # In-loop sensitive gate acts as fallback when pre-pass is bypassed.
     (upstream_repo / "dco.yml").write_text("name: DCO\n")
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml",
@@ -3754,12 +3629,7 @@ def test_main_engine_surface_is_retirable_by_tombstone(
     consumer_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # claude-platform#115: sharing one tuple made the delete refusal
-    # unconditional on a path the manifest itself ships. No consent key
-    # covers deletes, so the marker could never be withdrawn — consumers
-    # would keep a stale `"type": "module"` governing a bundle that no
-    # longer exists, or go permanently red on a tombstone none of them
-    # could clear.
+    # Engine surface patterns permit manifest deletions via tombstone.
     marker = consumer_dir / ".claude" / "skills" / "critique" / "scripts"
     marker.mkdir(parents=True)
     (marker / "package.json").write_text('{"type": "module"}\n')
@@ -3792,9 +3662,7 @@ def test_main_carve_out_does_not_reach_outside_the_prompt_surface(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The carve-out is scoped to the manifest's own payload. Every guarded
-    # shape outside it keeps matching at any depth — this is the `**/`
-    # widening the patterns were given, and it has to survive the split.
+    # Sensitive patterns outside engine surface remain protected.
     (upstream_repo / "payload").write_text("payload\n")
     for destination in (
         "apps/web/package.json",
