@@ -24,6 +24,9 @@ what a reader of a harness root expects to find. A consumer receives only the
 paths selected by its own sync configuration; rendering does not imply that
 every consumer syncs all three roots.
 
+The renderer also writes the [vendored documents](#vendored-documents), whose
+source is not in `prompts/` at all.
+
 ```bash
 python3 scripts/render-prompts.py            # write the harness roots
 python3 scripts/render-prompts.py --check    # what CI runs; prints a diff per drift
@@ -57,6 +60,44 @@ name temporarily to `RETIRED_SKILLS` in `scripts/render-prompts.py`, render once
 to retire the generated files, then remove the name after the committed
 inventory is clean. This prevents the inventory from authorizing deletion of
 an unrelated hand-authored skill.
+
+## Vendored documents
+
+`VENDORED_DOCUMENTS` in `scripts/render-prompts.py` maps a repo-relative source
+to the path it is copied to under **every** harness root. One entry today:
+
+| Source                                                   | Written to                                 |
+| -------------------------------------------------------- | ------------------------------------------ |
+| `packages/review-ledger/protocol/local-review-ledger.md` | `<root>/references/local-review-ledger.md` |
+
+The ledger protocol is the engine-neutral contract that
+[`packages/review-ledger`](../packages/review-ledger/README.md) implements, so
+the package is the only place it can be authored without the document and the
+code enforcing it drifting apart. A hand-edit to a copy fails `--check` like
+any other generated file, and a write-mode render restores it.
+
+Two deliberate differences from a rendered skill:
+
+- **No substitution.** These documents carry no `<<KEY>>` vocabulary, and a
+  placeholder resolving per profile would make three documents out of one.
+- **No Prettier.** The renderer formats the Markdown it substitutes into,
+  because substitution changes table widths. A verbatim copy has nothing to
+  reformat, and formatting it here is the one way a copy could stop matching its
+  source with nothing failing. The source is ordinary Markdown covered by the
+  repo-wide `Prettier --check`, so an unformatted source fails there.
+
+Retiring one is deliberately two-step, exactly like retiring a skill: drop the
+entry and add its root-relative destination to `RETIRED_DOCUMENTS`, render once
+to delete the copies, then drop the name once the inventory is clean. A dropped
+entry alone leaves three files the inventory still names and the ownership
+domain no longer admits, which is a render that cannot be made to pass.
+
+Only the exact paths the table produces are renderer-owned. `references/`
+itself is not: it holds hand-authored prompts in two roots, and a destination
+directory is never swept the way a rendered skill directory is. A destination
+inside `skills/` is rejected too: a rendered skill directory is wholly owned by
+the skill render, so a document there could collide with a file that skill
+emits, and a hand-authored skill directory is not the renderer's to write into.
 
 ## The prompt stack manifest
 
@@ -129,17 +170,19 @@ newline and no comments or blank lines. The renderer is its only writer, and
 `--check` compares it against a fresh render, so it cannot silently go stale.
 
 Every entry is inside the renderer's ownership domain, which is what makes the
-file safe to act on. Two shapes appear in it:
+file safe to act on. Three shapes appear in it:
 
 | Shape                          | Source                                                           |
 | ------------------------------ | ---------------------------------------------------------------- |
 | `<root>/skills/<skill>/<path>` | `prompts/skills/<skill>/<path>`                                  |
 | `<root>/prompt-stack.json`     | `prompts/profiles/<profile>.yml` and root `PROMPT_STACK_VERSION` |
+| `<root>/<vendored path>`       | the `VENDORED_DOCUMENTS` source for that path                    |
 
-The second shape is the one to check a reader against: it is a generated path
-with **no** corresponding file under `prompts/skills/`, so a tool that resolves
-an inventory entry back to a source by string surgery on the skill segment will
-not find one. It is also the only entry that is not inside a skill directory.
+The shapes after the first are the ones to check a reader against: they are
+generated paths with **no** corresponding file under `prompts/skills/`, so a
+tool that resolves an inventory entry back to a source by string surgery on the
+skill segment will not find one. They are also the only entries that are not
+inside a skill directory.
 
 ## Adding a variable
 
@@ -187,12 +230,16 @@ powerful file.
 The vendored `review-ledger.js` helper is not a rendered prompt. It is the build
 output of [`packages/review-ledger`](../packages/review-ledger/README.md), copied
 byte-for-byte into each root's `skills/critique/scripts/`, and CI's
-`Review-ledger package` job fails when any copy differs from a fresh build. The
-protocol document in `references/local-review-ledger.md` is vendored from the
-same package and is a prompt-stack input, so editing it advances
-`PROMPT_STACK_VERSION`. The bundle is deliberately outside the prompt stack (see
+`Review-ledger package` job fails when any copy differs from a fresh build. It
+cannot be a render output because its source is a build artifact that does not
+exist until `pnpm run build` has run, and the renderer must work from a clean
+checkout. The bundle is deliberately outside the prompt stack (see
 `prompt_stack` in `prompts/profiles/claude.yml`), so a helper-only change does
-not.
+not advance `PROMPT_STACK_VERSION`.
+
+The protocol document that ships beside it _is_ rendered — see
+[vendored documents](#vendored-documents) — and it is a prompt-stack input, so
+editing it does advance `PROMPT_STACK_VERSION`.
 
 The review chain — `critique`, `deepcritique`, `refactorpass`, `reviewit`,
 `copilot-review`, and their siblings — is deliberately never single-sourced.

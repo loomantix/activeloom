@@ -188,6 +188,7 @@ class Harness:
     ) -> None:
         self._rp = render_prompts
         self._se = sync_engine
+        self._monkeypatch = monkeypatch
         self.root = root
         self.src = root / "src"
         self.profiles_dir = root / "profiles"
@@ -201,6 +202,18 @@ class Harness:
         self.version_path = root / "PROMPT_STACK_VERSION"
         self.version_path.write_text("1.2.3\n", encoding="utf-8")
         monkeypatch.setattr(render_prompts, "VERSION_PATH", self.version_path)
+        # The real map names a file in the real repo, which this fake root does
+        # not have. Tests that want a vendored document declare one with
+        # `vendor_document`; every other test renders skills only.
+        monkeypatch.setattr(render_prompts, "VENDORED_DOCUMENTS", {})
+
+    def vendor_document(self, source: str, root_relative: str, text: str) -> Path:
+        """Declare one vendored document and write its source into the fake repo."""
+        path = self.root / source
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        self._monkeypatch.setitem(self._rp.VENDORED_DOCUMENTS, source, root_relative)
+        return path
 
     def write_source(self, relative: str, text: str | bytes) -> Path:
         path = self.src / relative
@@ -1340,3 +1353,228 @@ def test_remove_unowned_refuses_a_path_outside_a_skill_directory(
         cli._rp._remove_unowned(Path(".claude/prompt-stack.json"))
     with pytest.raises(ValueError, match="outside the renderer ownership domain"):
         cli._rp._remove_unowned(Path("docs/whatever.md"))
+
+
+# --------------------------------------------------------------------------
+# Vendored documents
+# --------------------------------------------------------------------------
+
+
+DOC_SOURCE = "packages/demo/protocol/contract.md"
+DOC_RELATIVE = "references/contract.md"
+DOC_TEXT = "# Contract\n\nOne source, three roots.\n"
+
+
+@pytest.fixture
+def documents(cli: Harness) -> Harness:
+    """The CLI harness with one vendored document declared."""
+    cli.vendor_document(DOC_SOURCE, DOC_RELATIVE, DOC_TEXT)
+    return cli
+
+
+def test_a_vendored_document_is_written_to_every_root(documents: Harness) -> None:
+    assert documents._rp.main([]) == 0
+    for root in (".claude", ".codex"):
+        assert (documents.root / root / DOC_RELATIVE).read_text(
+            encoding="utf-8"
+        ) == DOC_TEXT
+
+
+def test_a_vendored_document_is_copied_verbatim(documents: Harness) -> None:
+    """No substitution: the copies are the source's bytes, not a per-profile render.
+
+    The profiles define `INVOKE` differently, so a document that *were*
+    substituted would come out as two different files under one name — which is
+    the opposite of what vendoring a shared contract is for.
+    """
+    (documents.root / DOC_SOURCE).write_text(
+        "Call `<<INVOKE>>critique`.\n", encoding="utf-8"
+    )
+    assert documents._rp.main([]) == 0
+    claude = (documents.root / ".claude" / DOC_RELATIVE).read_bytes()
+    codex = (documents.root / ".codex" / DOC_RELATIVE).read_bytes()
+    assert claude == codex == (documents.root / DOC_SOURCE).read_bytes()
+
+
+def test_a_vendored_document_is_in_the_generated_inventory(
+    documents: Harness,
+) -> None:
+    assert documents._rp.main([]) == 0
+    inventory = documents._rp.MANIFEST_PATH.read_text(encoding="utf-8").splitlines()
+    assert f".claude/{DOC_RELATIVE}" in inventory
+    assert f".codex/{DOC_RELATIVE}" in inventory
+
+
+def test_check_reports_a_hand_edited_vendored_document(
+    documents: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The point of the whole exercise: a copy edited in place fails the gate."""
+    assert documents._rp.main([]) == 0
+    copy = documents.root / ".codex" / DOC_RELATIVE
+    copy.write_text(DOC_TEXT + "\nsmuggled in\n", encoding="utf-8")
+    assert documents._rp.main(["--check"]) == 1
+    assert f"differs:   .codex/{DOC_RELATIVE}" in capsys.readouterr().err
+
+
+def test_check_reports_a_stale_vendored_document(
+    documents: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Editing the source without re-rendering is drift too, not a silent pass."""
+    assert documents._rp.main([]) == 0
+    (documents.root / DOC_SOURCE).write_text("# Contract v2\n", encoding="utf-8")
+    assert documents._rp.main(["--check"]) == 1
+    err = capsys.readouterr().err
+    assert f"differs:   .claude/{DOC_RELATIVE}" in err
+    assert f"differs:   .codex/{DOC_RELATIVE}" in err
+
+
+def test_a_retired_vendored_document_is_removed(
+    documents: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retirement is the two-step `RETIRED_SKILLS` shape, for the same reason."""
+    assert documents._rp.main([]) == 0
+    copy = documents.root / ".claude" / DOC_RELATIVE
+    assert copy.exists()
+    monkeypatch.setattr(documents._rp, "VENDORED_DOCUMENTS", {})
+    monkeypatch.setattr(documents._rp, "RETIRED_DOCUMENTS", frozenset({DOC_RELATIVE}))
+    assert documents._rp.main([]) == 0
+    assert not copy.exists()
+    assert DOC_RELATIVE not in documents._rp.MANIFEST_PATH.read_text(encoding="utf-8")
+
+
+def test_dropping_a_document_without_retiring_it_fails_closed(
+    documents: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The step that makes retirement two-step rather than a silent orphan."""
+    assert documents._rp.main([]) == 0
+    monkeypatch.setattr(documents._rp, "VENDORED_DOCUMENTS", {})
+    with pytest.raises(ValueError, match="invalid generated path"):
+        documents._rp.main([])
+
+
+def test_a_vendored_document_source_that_does_not_exist_fails_the_render(
+    cli: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli._rp, "VENDORED_DOCUMENTS", {DOC_SOURCE: DOC_RELATIVE})
+    with pytest.raises(ValueError, match="source does not exist"):
+        cli._rp.main([])
+
+
+def test_a_vendored_document_source_must_not_be_a_symlink(
+    documents: Harness, tmp_path: Path
+) -> None:
+    """A symlinked source is a read of whatever it points at, from three roots."""
+    source = documents.root / DOC_SOURCE
+    elsewhere = tmp_path / "outside.md"
+    elsewhere.write_text("# Elsewhere\n", encoding="utf-8")
+    source.unlink()
+    source.symlink_to(elsewhere)
+    with pytest.raises(ValueError, match="must not contain symlinks"):
+        documents._rp.main([])
+
+
+@pytest.mark.parametrize(
+    "root_relative",
+    [
+        "/etc/passwd",
+        "../outside.md",
+        "references/../../escape.md",
+        "./references/escape.md",
+        "references//escape.md",
+        "~escape.md",
+    ],
+)
+def test_a_vendored_document_destination_must_stay_relative(
+    cli: Harness, monkeypatch: pytest.MonkeyPatch, root_relative: str
+) -> None:
+    monkeypatch.setattr(cli._rp, "VENDORED_DOCUMENTS", {DOC_SOURCE: root_relative})
+    with pytest.raises(ValueError, match="plain relative path"):
+        cli._rp.main([])
+
+
+@pytest.mark.parametrize(
+    "source_relative",
+    [
+        "/etc/passwd",
+        "../outside.md",
+        "./packages/demo/protocol/contract.md",
+        "packages//demo/protocol/contract.md",
+        "~outside.md",
+    ],
+)
+def test_a_vendored_document_source_must_stay_relative(
+    cli: Harness, monkeypatch: pytest.MonkeyPatch, source_relative: str
+) -> None:
+    monkeypatch.setattr(cli._rp, "VENDORED_DOCUMENTS", {source_relative: DOC_RELATIVE})
+    with pytest.raises(ValueError, match="plain relative path"):
+        cli._rp.main([])
+
+
+def test_a_vendored_document_destination_must_not_collide_with_stack_manifest(
+    cli: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        cli._rp, "VENDORED_DOCUMENTS", {DOC_SOURCE: cli._rp.STACK_MANIFEST_NAME}
+    )
+    with pytest.raises(ValueError, match="must not collide with"):
+        cli._rp.main([])
+
+
+def test_a_vendored_document_may_not_land_in_a_rendered_skill_directory(
+    cli: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skill directory belongs to the skill render; a document could collide there."""
+    monkeypatch.setattr(
+        cli._rp, "VENDORED_DOCUMENTS", {DOC_SOURCE: "skills/demo/contract.md"}
+    )
+    with pytest.raises(ValueError, match="inside a rendered skill directory"):
+        cli._rp.main([])
+
+
+def test_only_the_declared_document_path_is_renderer_owned(
+    render_prompts: ModuleType,
+) -> None:
+    """Owning a file must not mean owning the directory it sits in.
+
+    `references/` carries hand-authored role prompts in two roots. If the
+    ownership domain admitted the directory, a manifest line naming one of them
+    would authorize its deletion.
+    """
+    render_prompts._validate_generated_path(
+        Path(".claude/references/local-review-ledger.md")
+    )
+    with pytest.raises(ValueError, match="outside the renderer ownership domain"):
+        render_prompts._validate_generated_path(
+            Path(".codex/references/roles/code-reviewer.md")
+        )
+
+
+def test_a_vendored_document_is_not_sweepable(render_prompts: ModuleType) -> None:
+    """The unowned sweep never produces one, and the deleting line proves it."""
+    with pytest.raises(ValueError, match="outside a rendered skill directory"):
+        render_prompts._remove_unowned(
+            Path(".claude/references/local-review-ledger.md")
+        )
+
+
+def test_format_markdown_never_formats_a_vendored_document(
+    render_prompts: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Formatting a verbatim copy is how it stops matching its source unnoticed."""
+    calls: list[list[str]] = []
+
+    def record(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(render_prompts.subprocess, "run", record)
+    render_prompts.format_markdown(
+        tmp_path,
+        [
+            Path(".claude/skills/demo/SKILL.md"),
+            Path(".claude/references/local-review-ledger.md"),
+        ],
+    )
+    assert len(calls) == 1
+    assert str(tmp_path / ".claude/skills/demo/SKILL.md") in calls[0]
+    assert str(tmp_path / ".claude/references/local-review-ledger.md") not in calls[0]
