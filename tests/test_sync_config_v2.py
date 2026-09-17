@@ -1,13 +1,4 @@
-"""Tests for the sync-v2 manifest shape and the one consumer config schema.
-
-`test_sync_engine.py` covers what one target does; this covers the layer above
-it — which target sets a consumer receives, which gates govern each of them,
-and how a repository still carrying the pre-sync-v2 per-harness config files is
-read.
-
-The fixtures here write manifests in the real shape rather than through
-`test_sync_engine.py`'s adapter, because that shape is the thing under test.
-"""
+"""Tests for the sync-v2 manifest shape and consumer config schema."""
 
 from __future__ import annotations
 
@@ -94,11 +85,6 @@ def consumer(tmp_path: Path) -> Path:
     return path
 
 
-# ---------------------------------------------------------------------------
-# Manifest shape
-# ---------------------------------------------------------------------------
-
-
 def test_only_declared_harnesses_are_delivered(
     sync_engine: ModuleType,
     upstream: Path,
@@ -112,8 +98,6 @@ def test_only_declared_harnesses_are_delivered(
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
     assert (consumer / ".claude/skills/a/SKILL.md").is_file()
-    # A repository that never ran Codex must not acquire a `.codex` tree by
-    # syncing from an upstream that happens to define the harness.
     assert not (consumer / ".codex").exists()
 
 
@@ -172,9 +156,6 @@ def test_manifest_rejects_duplicate_legacy_config(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Two harnesses claiming one filename makes the shim's filename-to-harness
-    # mapping ambiguous, and it is resolved before anything has been read that
-    # could disambiguate it.
     _manifest(upstream)
     doc = yaml.safe_load((upstream / "scripts" / "sync-targets.yml").read_text())
     doc["harnesses"]["codex"]["legacy_config"] = ".platform-config.yml"
@@ -185,11 +166,6 @@ def test_manifest_rejects_duplicate_legacy_config(
     assert (
         "both declare `legacy_config: .platform-config.yml`" in capsys.readouterr().err
     )
-
-
-# ---------------------------------------------------------------------------
-# Consumer config schema
-# ---------------------------------------------------------------------------
 
 
 def test_harnesses_mapping_form_matches_list_form(
@@ -272,9 +248,6 @@ def test_config_rejects_unknown_keys(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Same fail-closed reasoning as the manifest's unknown-field check: every
-    # optional key here *enables* something, so a typo silently disables it
-    # and every gate still reads green.
     _manifest(upstream)
     _write(consumer / CANONICAL, doc)
 
@@ -289,9 +262,6 @@ def test_harness_allowed_destinations_replace_rather_than_union(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The gate that bounds the write surface is the one composition rule that
-    # must not union: unioning would hand every harness every other harness's
-    # surface, which is exactly the separation three config files provided.
     _manifest(upstream)
     _write(
         consumer / CANONICAL,
@@ -314,11 +284,6 @@ def test_top_level_allowed_destinations_govern_a_harness_that_declares_none(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The list must actually *bound* the harness, not merely permit it. A
-    # top-level list that admits the target proves nothing: an inheriting
-    # harness and a harness inheriting no gate at all both fail open to
-    # "write anywhere", so both would pass an existence assertion. Declare a
-    # list that EXCLUDES the harness's target and require the refusal.
     _manifest(upstream)
     _write(
         consumer / CANONICAL,
@@ -338,8 +303,6 @@ def test_top_level_allowed_destinations_admit_an_inheriting_harness(
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The other half of the pair above: the same harness, with the target
-    # inside the top-level list, is delivered.
     _manifest(upstream)
     _write(
         consumer / CANONICAL,
@@ -408,10 +371,6 @@ def test_top_level_substitutions_reach_a_harness_that_does_not_redeclare_them(
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The override case above passes even if the harness inherits nothing,
-    # because the harness redeclares the only key in play. This pins the
-    # merge itself: a key set only at the top level must still render for a
-    # harness that declares its own, unrelated, override.
     _manifest(upstream)
     (upstream / "claude-src.md").write_text("own: <<NAME>>\nshared: <<SHARED>>\n")
     doc = yaml.safe_load((upstream / "scripts" / "sync-targets.yml").read_text())
@@ -453,11 +412,6 @@ def test_reserved_substitution_key_is_rejected(
     assert "may not declare REVIEW_TELEMETRY_ENV" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
-# Telemetry gates
-# ---------------------------------------------------------------------------
-
-
 def _render_telemetry(
     sync_engine: ModuleType,
     upstream: Path,
@@ -485,9 +439,7 @@ def test_telemetry_absent_renders_an_empty_object(
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Settings-declared environment beats the ambient shell, so a consumer
-    # that declared no gate must get an env block that names none — not one
-    # defaulted to `off`, which would override a developer who exported `on`.
+    # Empty gate config must not default to off.
     rendered = _render_telemetry(
         sync_engine, upstream, consumer, monkeypatch, None, omit=True
     )
@@ -512,9 +464,7 @@ def test_telemetry_accepts_yaml_booleans_and_fixes_key_order(
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # `emit: on` parses as True long before the engine sees a string, and the
-    # rendered order follows the engine's gate table so reordering two lines
-    # in a consumer config does not churn the sync diff.
+    # Boolean inputs are normalized and output order is deterministic.
     rendered = _render_telemetry(
         sync_engine, upstream, consumer, monkeypatch, {"extract": False, "emit": True}
     )
@@ -555,11 +505,6 @@ def test_telemetry_rejects_bad_input(
     assert fragment in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
-# Compatibility shim over the pre-sync-v2 config files
-# ---------------------------------------------------------------------------
-
-
 def test_legacy_files_compose_into_their_own_harnesses(
     sync_engine: ModuleType,
     upstream: Path,
@@ -588,8 +533,6 @@ def test_a_missing_legacy_file_means_that_harness_is_absent(
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Absence is the consumer's real state, not a gap to be defaulted: a repo
-    # that never carried `.codex-platform-config.yml` never ran that harness.
     _manifest(upstream)
     _write(consumer / ".platform-config.yml", {"allowed_destinations": ["**"]})
 
@@ -604,9 +547,6 @@ def test_shared_skip_is_the_intersection_of_the_legacy_files(
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A shared target skipped in two files and synced by the third was being
-    # routed to a single owner, not switched off. A union would silently
-    # retire it at the cutover.
     _manifest(upstream)
     _write(consumer / ".platform-config.yml", {"allowed_destinations": ["**"]})
     _write(
@@ -625,12 +565,6 @@ def test_legacy_config_rejects_an_unknown_top_level_key(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The composed document is assembled from known keys only, so the
-    # canonical path's unknown-key check can never fire for a legacy file.
-    # Without a check here, `allowed_destination:` (singular) is dropped in
-    # silence and the gate reverts to the fail-open migration path — on the
-    # one run nobody is re-reading the file. Fail closed instead, exactly as
-    # the canonical config does for the same typo.
     _manifest(upstream)
     _write(
         consumer / ".platform-config.yml",
@@ -698,8 +632,6 @@ def test_explicit_legacy_config_selects_one_harness(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The transitional invocation: a consumer mid-cutover still running one
-    # workflow per upstream.
     _manifest(upstream)
     _write(consumer / ".platform-config.yml", {"allowed_destinations": ["**"]})
     _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": ["**"]})
@@ -714,8 +646,7 @@ def test_explicit_legacy_config_selects_one_harness(
     assert rc == 0
     assert (consumer / ".codex/skills/a/SKILL.md").is_file()
     assert not (consumer / ".claude").exists()
-    # stdout, not stderr: GitHub parses `::warning` workflow commands
-    # from a step's stdout only.
+    # GitHub parses ::warning workflow commands from stdout.
     assert "names a pre-sync-v2 per-harness config" in capsys.readouterr().out
 
 
@@ -726,8 +657,6 @@ def test_no_config_at_all_is_an_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Exit 2, like any other missing required file — not 1, which is reserved
-    # for a config that exists and is wrong.
     _manifest(upstream)
 
     with pytest.raises(SystemExit) as excinfo:
@@ -745,9 +674,6 @@ def test_every_composed_config_file_is_protected_from_being_written(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The config is the consent store, so it cannot be governed by the consent
-    # it stores. After a compose there is more than one store on disk and each
-    # one can grant what the others gate, so all of them are refused.
     _manifest(upstream)
     doc = yaml.safe_load((upstream / "scripts" / "sync-targets.yml").read_text())
     doc["harnesses"]["codex"]["targets"].append(
@@ -869,10 +795,7 @@ def test_one_fail_open_legacy_file_keeps_the_shared_scope_open(
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A legacy file that declared no allowlist was fail-open, and its run
-    delivered the shared targets. Composing the *other* file's list over the
-    shared scope would refuse a shared target the consumer used to receive, so
-    one fail-open input keeps the synthesized shared scope open."""
+    """A fail-open legacy file keeps the synthesized shared scope open."""
     _manifest(upstream)
     _write(consumer / ".platform-config.yml", {})
     _write(
@@ -933,11 +856,7 @@ def test_real_manifest_delivers_repository_telemetry(
     root = Path(__file__).resolve().parents[1]
     manifest = yaml.safe_load((root / "scripts/sync-targets.yml").read_text())
     selected = manifest["harnesses"][harness]
-    # The gate reader is imported by `usage-snapshot.js` and the pass-key helper
-    # is invoked by every lane, so a consumer that receives the rendered config
-    # without them loses measurement and emission entirely. Assert all three
-    # against the harness root the manifest declares, rather than against a
-    # destination read back out of the manifest under test.
+    # Assert gate reader and pass-key helper delivery for telemetry measurement.
     scripts = f"{selected['root']}/skills/critique/scripts"
     expected = {
         f"{scripts}/review-telemetry.json",

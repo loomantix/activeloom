@@ -1,15 +1,4 @@
-"""Acceptance suite for the pass-scoped usage extractor.
-
-The case names here are the shared contract: the sibling engine repository
-runs the same scenarios against its own log format, so a behaviour that
-diverges between engines shows up as a named case that only one side has.
-
-What these assert is mostly about *not lying*. An extractor that guesses is
-worse than one that abstains, because a plausible wrong number is indistinguishable
-from a right one once it reaches an aggregate. So the cases below pin the
-abstention paths — no log, no snapshot, a rewound log, a bucket the CLI never
-reported — at least as hard as they pin the happy path.
-"""
+"""Acceptance suite for the pass-scoped usage extractor."""
 
 from __future__ import annotations
 
@@ -25,14 +14,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".claude" / "skills" / "critique" / "scripts" / "usage-snapshot.js"
 
-# Discovery falls back to ~/.claude/projects when no --projects-dir or env
-# override is given, and a checkout that has ever hosted a Claude Code session
-# has a live log there under this repo's cwd slug — which silently turns the
-# "no discoverable log" cases into `unscoped-session`. Point the env fallback
-# at an empty directory instead of popping it; tests that exercise discovery
-# pass --projects-dir explicitly, which takes precedence over the env var.
-# Allocated through tmp_path_factory so pytest owns the cleanup — a bare
-# mkdtemp() here would leak one directory per test run, forever.
+# Point default projects directory at an empty tempdir to prevent ambient session discovery.
 _EMPTY_PROJECTS: str | None = None
 
 
@@ -62,8 +44,6 @@ def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
         env=environment,
         check=False,
     )
-    # Emission never fails the pass that produced the record, so a non-zero
-    # exit is itself a defect regardless of what went wrong inside.
     assert result.returncode == 0, result.stderr
     payload: dict[str, Any] = json.loads(result.stdout)
     return payload
@@ -382,13 +362,7 @@ def test_multiple_models_get_one_bucket_each(tmp_path: Path, session: Path) -> N
 def test_a_streaming_turn_is_counted_once_at_its_final_usage(
     tmp_path: Path, session: Path
 ) -> None:
-    """The failure this guards against is silent and one-directional.
-
-    A turn is appended repeatedly while it streams, with the input and cache
-    buckets fixed and `output_tokens` climbing to its final value. Counting
-    every occurrence multiplies the input side; keeping the first records a
-    fraction of the output. Both produce a plausible number.
-    """
+    """Ensure streaming turn appends are deduplicated to the final usage."""
     session.write_text("")
     start = snapshot(session, tmp_path)
     with session.open("a") as handle:
@@ -512,12 +486,7 @@ def test_no_bucket_is_ever_negative(tmp_path: Path, session: Path) -> None:
 def test_the_project_slug_substitutes_every_non_alphanumeric(
     tmp_path: Path,
 ) -> None:
-    """A dotted working directory must still resolve its project directory.
-
-    The harness replaces every non-alphanumeric character with a dash, not only
-    the separator, so a hostname-style repository name resolves to a directory
-    a separator-only substitution never finds.
-    """
+    """A dotted working directory must still resolve its project directory."""
     cwd = tmp_path / "www.example.com"
     cwd.mkdir()
     slug = re.sub(r"[^A-Za-z0-9]", "-", str(cwd.resolve()))
@@ -541,12 +510,7 @@ def test_the_project_slug_substitutes_every_non_alphanumeric(
 def test_a_snapshot_from_another_session_is_not_scoped(
     tmp_path: Path, session: Path
 ) -> None:
-    """A stale start file must not scope this pass to its predecessor's log.
-
-    The start file sits at a fixed path across an autonomous run, so a pass
-    whose snapshot step failed would otherwise measure from the previous pass's
-    baseline and still call the result scoped.
-    """
+    """A stale start file must not scope this pass to its predecessor's log."""
     start = snapshot(session, tmp_path)
     other = session.parent / "1111-other.jsonl"
     other.write_text(turn(request_id="other", output=99))
@@ -729,22 +693,14 @@ def test_an_unavailable_record_reports_no_measured_fields(
     tmp_path: Path, session: Path
 ) -> None:
     """A record that declared its inputs unusable must not report values from them."""
-    # Pin the projects root and cwd, as `test_no_session_log_reports_unavailable`
-    # does. `run()` only *removes* CLAUDE_PROJECTS_DIR, which leaves the helper
-    # falling back to `~/.claude/projects/<slug of cwd>` — a directory that
-    # exists whenever an agent session is running in this checkout, so the
-    # helper found a real session log and reported `unscoped-session`. The
-    # assertion below then depended on the developer's home directory, and the
-    # `unavailable` branch it names went unexercised on exactly the machines
-    # that run this suite during a local review.
+    # Pin projects root and cwd to avoid matching ambient agent session logs.
     empty = tmp_path / "empty-projects"
     empty.mkdir()
     payload = delta(tmp_path, projects_dir=str(empty), cwd=str(tmp_path))
     assert payload["tokenSource"] == "unavailable"
     assert payload["engineVersion"] is None
     assert payload["durationSeconds"] is None
-    # Never zero: a missing count that serialises as zero makes the pass look
-    # free, which is the same defect as a zero-filled token bucket.
+    # Missing counts must serialize as null, never zero.
     assert payload["turns"] is None
 
 
@@ -830,8 +786,7 @@ def test_a_canonical_bucket_is_never_restated_as_a_provider_bucket(
     )
     [bucket] = tokens_of(delta(tmp_path, start))
     assert "providerBuckets" not in bucket
-    # The source keys the canonical buckets read are excluded too, so no count
-    # can arrive twice under two names.
+    # Canonical source keys are excluded from provider buckets to prevent double counting.
     assert bucket["input"] == 10
     assert bucket["output"] == 1
 

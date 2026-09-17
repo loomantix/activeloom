@@ -1,11 +1,4 @@
-"""Unit tests for `scripts/lint-prompt-parity.py`.
-
-The lint is the only thing standing between "these two copies differ because
-somebody decided they should" and "these two copies differ because a fix landed
-in one root and not the others". Its two jobs are therefore tested separately:
-that normalization erases dialect and nothing else, and that the allowlist can
-only be satisfied by a citation someone can go and read.
-"""
+"""Unit tests for `scripts/lint-prompt-parity.py`."""
 
 from __future__ import annotations
 
@@ -81,11 +74,6 @@ def _norm(lint: ModuleType, rules: dict[str, list[Any]], root: str, text: str) -
     return normalized
 
 
-# --------------------------------------------------------------------------
-# normalization
-# --------------------------------------------------------------------------
-
-
 def test_two_dialects_of_one_sentence_normalize_alike(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
@@ -99,10 +87,7 @@ def test_two_dialects_of_one_sentence_normalize_alike(
 def test_engine_id_and_cli_collapse_to_one_token(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
-    # `ENGINE_ID` and `ENGINE_CLI` are the same word on the Claude profile and
-    # different words on the Gemini one. Without the alias, `claude` would be
-    # tagged with whichever key sorted first and `gemini`/`agy` with two other
-    # tokens, so an exact match would read as a divergence.
+    # Ensure ENGINE_ID and ENGINE_CLI collapse to the same token across profiles.
     assert (
         _norm(lint_prompt_parity, rules, ".claude", "run claude")
         == _norm(lint_prompt_parity, rules, ".agents", "run agy")
@@ -121,8 +106,6 @@ def test_engine_name_normalizes_regardless_of_case(
 def test_longer_values_win_so_a_path_is_not_eaten_by_the_engine_name(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
-    # `.claude/skills` must be consumed as `SKILLS_ROOT` before the bare
-    # `claude` rule gets a look at it.
     assert (
         _norm(lint_prompt_parity, rules, ".claude", "see .claude/skills/critique/")
         == "see <<SKILLS_ROOT>>/critique/"
@@ -140,8 +123,6 @@ def test_the_prompt_root_normalizes_even_though_no_profile_declares_it(
 def test_a_key_empty_on_one_profile_is_deleted_not_tagged(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
-    # `Q_BULLET` is decoration on one harness and absent on another. Tagging
-    # the side that has it would report the *slot* as a difference.
     assert _norm(lint_prompt_parity, rules, ".claude", "Q: why?") == _norm(
         lint_prompt_parity, rules, ".codex", "why?"
     )
@@ -150,8 +131,7 @@ def test_a_key_empty_on_one_profile_is_deleted_not_tagged(
 def test_a_value_rewrapped_across_a_line_break_still_matches(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
-    # Prettier re-wraps rendered Markdown, so a multi-word value can straddle a
-    # newline in one root and not in another.
+    # Prettier may re-wrap multi-word values across newlines.
     wrapped = "read AGENTS.md or\nCLAUDE.md first"
     assert "<<AGENT_DOC>>" in _norm(lint_prompt_parity, rules, ".claude", wrapped)
 
@@ -159,10 +139,6 @@ def test_a_value_rewrapped_across_a_line_break_still_matches(
 def test_a_value_nested_in_another_dialect_normalizes_on_every_root(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
-    # `AGENT_DOC` is `AGENTS.md or CLAUDE.md` on one harness and `AGENTS.md` on
-    # the others, so byte-identical prose used to be tagged on two roots and
-    # left alone on the third — a residual line for text that does not differ,
-    # which put zero out of reach for every skill that names the file.
     line = "Read AGENTS.md before starting."
     normalized = {
         _norm(lint_prompt_parity, rules, root, line)
@@ -174,9 +150,7 @@ def test_a_value_nested_in_another_dialect_normalizes_on_every_root(
 def test_borrowing_is_limited_to_a_nested_value(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
-    # The borrow must never reach across values that merely share a slot.
-    # `codex` is not inside `claude`, so a deliberate cross-engine mention
-    # stays visible instead of collapsing into this root's own engine token.
+    # Cross-engine mentions should not collapse into the current root's engine token.
     assert "<<ENGINE>>" not in _norm(
         lint_prompt_parity, rules, ".claude", "hand off to codex"
     )
@@ -185,10 +159,7 @@ def test_borrowing_is_limited_to_a_nested_value(
 def test_a_trailing_space_in_a_value_does_not_swallow_a_line_break(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
-    # `Q_BULLET` is `'Q: '` here and empty elsewhere, so it is a delete rule.
-    # A greedy `\s+` at the edge consumed the newline, the blank line and the
-    # indent behind it, merging three lines into one and hiding whatever the
-    # diff would have found in that whitespace.
+    # Trailing whitespace in delete rule must not consume subsequent newlines.
     assert (
         _norm(lint_prompt_parity, rules, ".claude", "Q: \n\n  nested\n")
         == "\n\n  nested\n"
@@ -214,17 +185,9 @@ def test_an_unknown_slash_word_is_left_alone(
     )
 
 
-# --------------------------------------------------------------------------
-# scope
-# --------------------------------------------------------------------------
-
-
 def test_a_declared_root_nobody_compares_is_an_error(
     lint_prompt_parity: ModuleType,
 ) -> None:
-    # The pinned order is the authority, but a harness added to the profiles
-    # and not to it would render a whole skill roster into a root this lint
-    # never looks at — and report that every copy agreed.
     profiles = [*_profiles(), StubProfile(".cursor", {})]
     with pytest.raises(lint_prompt_parity.ParityError, match=r"absent from ROOT_ORDER"):
         lint_prompt_parity.check_root_coverage(profiles)
@@ -233,9 +196,6 @@ def test_a_declared_root_nobody_compares_is_an_error(
 def test_a_pinned_root_with_no_profile_is_an_error(
     lint_prompt_parity: ModuleType,
 ) -> None:
-    # Without a profile there is no vocabulary to normalize that root with, so
-    # comparing it would diff two roots in different dialects and call the
-    # dialect divergence.
     with pytest.raises(lint_prompt_parity.ParityError, match=r"no profile declares"):
         lint_prompt_parity.check_root_coverage(_profiles()[:2])
 
@@ -243,10 +203,6 @@ def test_a_pinned_root_with_no_profile_is_an_error(
 def test_a_pinned_root_with_no_skills_tree_is_an_error(
     lint_prompt_parity: ModuleType, tree: Path
 ) -> None:
-    # A declaration that is true on paper and false on disk. `_skills_in`
-    # returns nothing for a directory that is not there, so a renamed or
-    # relocated `skills/` tree drops a whole harness out of scope without ever
-    # being missing from a comparison.
     (tree / ".claude/skills").mkdir(parents=True)
     (tree / ".codex/skills").mkdir(parents=True)
     with pytest.raises(
@@ -271,9 +227,6 @@ def test_the_shipped_profiles_cover_every_compared_root(
 def test_an_unknown_profile_key_does_not_disturb_the_vocabulary(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]]
 ) -> None:
-    # The profile schema is shared with the renderer and grows keys this lint
-    # has no opinion about (a prompt-stack declaration, say). Reading a slice
-    # of someone else's schema means tolerating the rest of it.
     extended = _profiles()
     extended[0].values["PROMPT_STACK"] = {"files": ["a.md"]}
     extended[0].values["FUTURE_LIST"] = ["x"]
@@ -281,11 +234,6 @@ def test_an_unknown_profile_key_does_not_disturb_the_vocabulary(
     keys = {rule.key for rule in widened[".claude"]}
     assert "PROMPT_STACK" not in keys and "FUTURE_LIST" not in keys
     assert keys == {rule.key for rule in rules[".claude"]}
-
-
-# --------------------------------------------------------------------------
-# measurement against a scratch tree
-# --------------------------------------------------------------------------
 
 
 def _write(path: Path, text: str) -> None:
@@ -315,14 +263,12 @@ def test_a_real_difference_is_counted(
     _write(tree / ".claude/skills/demo/SKILL.md", "Guard the empty case.\n")
     _write(tree / ".codex/skills/demo/SKILL.md", "\n")
     pair = lint_prompt_parity.compare_pair("demo", ".claude", ".codex", rules, tree)
-    assert pair.lines == 2  # one line removed, one added
+    assert pair.lines == 2
 
 
 def test_a_file_only_one_root_has_counts_every_line(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]], tree: Path
 ) -> None:
-    # A whole document one harness has and the other does not is the largest
-    # divergence there is; it must not hide behind a small number.
     _write(tree / ".claude/skills/demo/SKILL.md", "same\n")
     _write(tree / ".codex/skills/demo/SKILL.md", "same\n")
     _write(tree / ".codex/skills/demo/scripts/run.sh", "a\nb\nc\n")
@@ -382,9 +328,6 @@ def test_unmatched_empty_file_is_still_divergence(
 def test_an_undecodable_difference_is_rejected_rather_than_scored_as_one_line(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]], tree: Path
 ) -> None:
-    # Scoring an unmeasurable payload as a single line is a ceiling as well as
-    # a floor: a whole document's divergence would sit under `ceiling: 1` and
-    # the number in the allowlist would stop being true.
     _write(tree / ".claude/skills/demo/SKILL.md", "same\n")
     _write(tree / ".codex/skills/demo/SKILL.md", "same\n")
     (tree / ".claude/skills/demo/logo.bin").write_bytes(b"\xff\xfe\x00")
@@ -396,8 +339,6 @@ def test_an_undecodable_difference_is_rejected_rather_than_scored_as_one_line(
 def test_identical_undecodable_payloads_are_parity(
     lint_prompt_parity: ModuleType, rules: dict[str, list[Any]], tree: Path
 ) -> None:
-    # Only a *difference* is unmeasurable. Matching bytes are matching copies,
-    # whatever their encoding, and must not fail the gate.
     for root in (".claude", ".codex"):
         _write(tree / root / "skills/demo/SKILL.md", "same\n")
         (tree / root / "skills/demo/logo.bin").write_bytes(b"\xff\xfe\x00")
@@ -430,17 +371,10 @@ def test_symlinked_skill_payload_is_rejected(
 def test_a_skill_in_one_root_only_is_out_of_scope(
     lint_prompt_parity: ModuleType, tree: Path
 ) -> None:
-    # A per-harness skill has nothing to be in parity *with* and owes no
-    # justification; only copies do.
     _write(tree / ".claude/skills/solo/SKILL.md", "x\n")
     _write(tree / ".claude/skills/pair/SKILL.md", "x\n")
     _write(tree / ".codex/skills/pair/SKILL.md", "x\n")
     assert lint_prompt_parity.shared_skills(tree) == {"pair": [".claude", ".codex"]}
-
-
-# --------------------------------------------------------------------------
-# the allowlist
-# --------------------------------------------------------------------------
 
 
 def _allowlist(lint: ModuleType, tmp_path: Path, document: object) -> dict[str, object]:
@@ -480,8 +414,6 @@ def test_a_recorded_entry_may_cite_one_record_or_several(
 def test_a_citation_to_a_record_nobody_wrote_is_fatal(
     lint_prompt_parity: ModuleType, tmp_path: Path
 ) -> None:
-    # The record is the entry's whole substance, so it is resolved against the
-    # filesystem rather than trusted as a string.
     with pytest.raises(lint_prompt_parity.ParityError, match="does not exist"):
         _allowlist(
             lint_prompt_parity,
@@ -526,7 +458,7 @@ def test_a_held_entry_needs_an_issue_and_a_ceiling(
 def test_a_boolean_is_not_a_ceiling(
     lint_prompt_parity: ModuleType, tmp_path: Path
 ) -> None:
-    # `True` is an `int` in Python and would otherwise pass as a ceiling of 1.
+    # True is an int subclass in Python; ensure bool is rejected.
     with pytest.raises(lint_prompt_parity.ParityError, match="ceiling"):
         _allowlist(
             lint_prompt_parity,
@@ -538,8 +470,6 @@ def test_a_boolean_is_not_a_ceiling(
 def test_a_boolean_is_not_an_issue_number(
     lint_prompt_parity: ModuleType, tmp_path: Path
 ) -> None:
-    # Same `bool`-is-an-`int` trap as the ceiling above. `issue: true` was
-    # accepted and rendered in the residual table as `#True`.
     with pytest.raises(lint_prompt_parity.ParityError, match="issue"):
         _allowlist(
             lint_prompt_parity,
@@ -562,8 +492,6 @@ def test_every_entry_needs_a_reason(
 def test_an_unknown_key_is_fatal_rather_than_ignored(
     lint_prompt_parity: ModuleType, tmp_path: Path
 ) -> None:
-    # A silently ignored key is how a `ceiling:` typo turns a ratchet into a
-    # permanent exemption.
     with pytest.raises(lint_prompt_parity.ParityError, match="unknown keys"):
         _allowlist(
             lint_prompt_parity,
@@ -593,11 +521,6 @@ def test_a_missing_allowlist_is_an_error_not_an_empty_one(
 ) -> None:
     with pytest.raises(lint_prompt_parity.ParityError, match="not found"):
         lint_prompt_parity.load_allowlist(tmp_path / "absent.yml")
-
-
-# --------------------------------------------------------------------------
-# verdicts
-# --------------------------------------------------------------------------
 
 
 def _result(lint: ModuleType, skill: str, lines: int) -> object:
@@ -630,8 +553,7 @@ def test_an_unlisted_skill_at_zero_is_a_candidate_not_a_failure(
 def test_an_allowlisted_skill_at_zero_is_stale_and_fails(
     lint_prompt_parity: ModuleType,
 ) -> None:
-    # This is the promotion trigger: the debt reached zero, so the entry has to
-    # go and the skill has to move into the rendered roster.
+    # Zero-debt requires removing the allowlist entry.
     violations, candidates = lint_prompt_parity.evaluate(
         [_result(lint_prompt_parity, "demo", 0)],
         {"demo": _held(lint_prompt_parity, "demo", 4)},
@@ -651,8 +573,6 @@ def test_held_drift_may_not_grow(lint_prompt_parity: ModuleType) -> None:
 def test_held_drift_that_shrank_must_lower_its_ceiling(
     lint_prompt_parity: ModuleType,
 ) -> None:
-    # A ceiling left above the real number stops being a ratchet and becomes
-    # headroom for the next regression.
     violations, _ = lint_prompt_parity.evaluate(
         [_result(lint_prompt_parity, "demo", 2)],
         {"demo": _held(lint_prompt_parity, "demo", 4)},
@@ -683,11 +603,6 @@ def test_an_entry_for_a_skill_that_is_not_in_scope_fails(
     assert "not a shared unrendered skill" in violations[0]
 
 
-# --------------------------------------------------------------------------
-# the shipped state
-# --------------------------------------------------------------------------
-
-
 def test_the_repository_passes_its_own_parity_gate(lint_prompt_parity: ModuleType) -> None:
     assert lint_prompt_parity.main([]) == 0
 
@@ -697,11 +612,6 @@ def test_every_shipped_entry_names_a_skill_that_still_exists(
 ) -> None:
     entries = lint_prompt_parity.load_allowlist()
     assert set(entries) <= set(lint_prompt_parity.shared_skills())
-
-
-# --------------------------------------------------------------------------
-# reporting
-# --------------------------------------------------------------------------
 
 
 def test_the_table_labels_every_disposition(lint_prompt_parity: ModuleType) -> None:
@@ -737,8 +647,6 @@ def test_the_table_names_a_file_only_one_root_has(lint_prompt_parity: ModuleType
 def test_promotion_candidates_reach_the_job_summary(
     lint_prompt_parity: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A non-fatal finding printed into a green job's log is read by nobody; the
-    # summary is where a zero-residual skill actually gets noticed.
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     lint_prompt_parity._write_step_summary(["ship-staging"])
@@ -762,7 +670,7 @@ def test_an_unwritable_summary_does_not_fail_a_clean_gate(
     lint_prompt_parity: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "absent-dir" / "summary.md"))
-    lint_prompt_parity._write_step_summary(["ship-staging"])  # must not raise
+    lint_prompt_parity._write_step_summary(["ship-staging"])
 
 
 def test_report_mode_never_fails(
@@ -791,8 +699,6 @@ def test_an_empty_allowlist_fails_the_real_repository(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The gate has to bite on the tree as it actually is; a lint that only
-    # passes is indistinguishable from one that never runs.
     monkeypatch.setattr(lint_prompt_parity, "load_allowlist", lambda: {})
     assert lint_prompt_parity.main([]) == 1
     assert "no allowlist entry" in capsys.readouterr().err
