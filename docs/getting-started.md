@@ -226,7 +226,7 @@ Substitution is plain `<<KEY>>` find-and-replace — no template engine. Multi-l
 
 `skip_targets`, `allowed_destinations`, `allow_sensitive_writes`, and `substitutions` may also be set per harness under a `harnesses:` mapping — see [`docs/sync.md`](sync.md#how-the-two-levels-compose) for how the two levels compose, which is not the same rule for every key.
 
-**Already have `.platform-config.yml` / `.codex-platform-config.yml` / `.gemini-platform-config.yml`?** They keep working: the engine composes the ones present into this shape, one harness per file. See [Migrating from the pre-sync-v2 config files](sync.md#migrating-from-the-pre-sync-v2-config-files).
+**Still have `.platform-config.yml` / `.codex-platform-config.yml` / `.gemini-platform-config.yml`?** The engine no longer reads them and will refuse to run until you replace them with a single `.activeloom-config.yml`. See [Migrating from the pre-sync-v2 config files](sync.md#migrating-from-the-pre-sync-v2-config-files).
 
 ## Where the content comes from
 

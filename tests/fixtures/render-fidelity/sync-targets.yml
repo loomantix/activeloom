@@ -8,7 +8,6 @@
 harnesses:
   fixture:
     root: .fixture
-    legacy_config: .fixture-platform-config.yml
     targets:
       - source: template.md
         destination: rendered.md

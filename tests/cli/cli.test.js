@@ -546,7 +546,7 @@ test('Tier 2 refuses an existing config that would let GITHUB_TOKEN push a workf
   }
 });
 
-test('Tier 2 config check uses the effective shared skip across config sources', () => {
+test('Tier 2 config check reads the shared skip from the consumer config', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-configs-'));
   try {
     const safe = path.join(dir, 'safe.yml');
@@ -556,17 +556,13 @@ test('Tier 2 config check uses the effective shared skip across config sources',
     assert.deepStrictEqual(initLib.checkTier2Config('python3', [safe]), {
       ok: true,
     });
-    assert.strictEqual(
-      initLib.checkTier2Config('python3', [safe, unsafe]).ok,
-      false,
-      'legacy config skips compose by intersection, so every source must skip',
-    );
+    assert.strictEqual(initLib.checkTier2Config('python3', [unsafe]).ok, false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('legacy configs remain authoritative until deliberately migrated', async () => {
+test('a pre-sync-v2 per-harness config no longer stands in for the config', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
   try {
     fs.writeFileSync(
@@ -576,7 +572,7 @@ test('legacy configs remain authoritative until deliberately migrated', async ()
     assert.strictEqual(await initLib.init(initArgs(repo)), 0);
     assert.strictEqual(
       fs.existsSync(path.join(repo, '.activeloom-config.yml')),
-      false,
+      true,
     );
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });

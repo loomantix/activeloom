@@ -84,12 +84,13 @@ def upstream_repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def consumer_dir(tmp_path: Path) -> Path:
-    """A consumer working tree with an empty `.platform-config.yml`.
+    """A consumer working tree with a minimal `.activeloom-config.yml`.
 
-    Tests that need substitutions or skip_targets overwrite the file in-
-    place. The default empty config means most tests can omit the boilerplate.
+    It declares the one harness the fixture manifests file their targets
+    under and nothing else. Tests that need substitutions or skip_targets
+    overwrite the file in place, so most tests can omit the boilerplate.
     """
     consumer = tmp_path / "consumer"
     consumer.mkdir()
-    (consumer / ".platform-config.yml").write_text("")
+    (consumer / ".activeloom-config.yml").write_text("harnesses: [claude]\n")
     return consumer

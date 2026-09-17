@@ -13,7 +13,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const { HARNESSES } = require(path.join(REPO_ROOT, 'cli', 'lib', 'detect.js'));
 
 /**
- * Read `harnesses:` from the manifest as `{id: {root, legacyConfig}}`.
+ * Read `harnesses:` from the manifest as `{id: {root}}`.
  *
  * @returns {Map<string, string>}
  */
@@ -47,10 +47,6 @@ function parseHarnesses() {
       found.get(currentId).root = rootMatch[1];
       continue;
     }
-    const legacyMatch = /^ {4}legacy_config:\s*(\S+)\s*$/.exec(line);
-    if (legacyMatch && currentId) {
-      found.get(currentId).legacyConfig = legacyMatch[1];
-    }
   }
   return found;
 }
@@ -65,12 +61,7 @@ test('the manifest still has a parseable harnesses block', () => {
 
 test('CLI harness ids and roots match scripts/sync-targets.yml', () => {
   const manifest = parseHarnesses();
-  const cli = new Map(
-    HARNESSES.map((h) => [
-      h.id,
-      { root: h.root, legacyConfig: h.legacyConfig },
-    ]),
-  );
+  const cli = new Map(HARNESSES.map((h) => [h.id, { root: h.root }]));
 
   assert.deepStrictEqual(
     [...cli.keys()].sort(),

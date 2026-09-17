@@ -23,11 +23,12 @@ SYNC_ENGINE = REPO_ROOT / "scripts" / "sync-engine.py"
 
 
 def _write_yaml(path: Path, doc: object) -> None:
-    """Write a fixture document, lifting a legacy manifest shape on the way.
+    """Write a fixture document, lifting a flat manifest shape on the way.
 
     See `_as_manifest` in `test_sync_engine.py`: these fixtures are about what
     the engine does with a target, not about the `harnesses:` layer, and the
-    layer itself is covered in `test_sync_config_v2.py`.
+    layer itself is covered in `test_sync_config_v2.py`. A consumer config
+    likewise gets the matching one-harness declaration.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.name == "sync-targets.yml" and isinstance(doc, dict) and "harnesses" not in doc:
@@ -36,14 +37,14 @@ def _write_yaml(path: Path, doc: object) -> None:
             doc = {
                 key: value for key, value in doc.items() if key != "targets"
             } | {
-                "harnesses": {
-                    "claude": {
-                        "root": ".claude",
-                        "legacy_config": ".platform-config.yml",
-                        "targets": targets,
-                    }
-                }
+                "harnesses": {"claude": {"root": ".claude", "targets": targets}}
             }
+    elif (
+        path.name == ".activeloom-config.yml"
+        and isinstance(doc, dict)
+        and "harnesses" not in doc
+    ):
+        doc = {"harnesses": ["claude"], **doc}
     path.write_text(yaml.safe_dump(doc))
 
 
@@ -110,7 +111,7 @@ def _setup_fixture(tmp_path: Path) -> tuple[Path, Path]:
     (consumer / "retired.md").write_text("stale\n")
 
     _write_yaml(
-        consumer / ".platform-config.yml",
+        consumer / ".activeloom-config.yml",
         {
             "substitutions": {"NAME": "alice"},
             "skip_targets": ["skipped.md"],
@@ -221,7 +222,7 @@ def test_engine_exits_2_on_missing_config(tmp_path: Path) -> None:
     (upstream / "scripts").mkdir(parents=True)
     consumer.mkdir()
     _write_yaml(upstream / "scripts" / "sync-targets.yml", {"targets": []})
-    # No .platform-config.yml in consumer.
+    # No consumer config at all.
 
     result = _run_engine(upstream, consumer)
     assert result.returncode == 2
@@ -233,7 +234,7 @@ def test_engine_exits_2_on_missing_targets_file(tmp_path: Path) -> None:
     consumer = tmp_path / "consumer"
     (upstream / "scripts").mkdir(parents=True)
     consumer.mkdir()
-    _write_yaml(consumer / ".platform-config.yml", {})
+    _write_yaml(consumer / ".activeloom-config.yml", {})
     # No sync-targets.yml in upstream.
 
     result = _run_engine(upstream, consumer)
@@ -275,7 +276,7 @@ def test_two_job_sync_payload_preserves_untracked_new_files(tmp_path: Path) -> N
         },
     )
     _write_yaml(
-        consumer / ".platform-config.yml",
+        consumer / ".activeloom-config.yml",
         {"substitutions": {}},
     )
 
@@ -318,7 +319,7 @@ def test_template_consumer_config_satisfies_canonical_manifest(tmp_path: Path) -
     clear the engine's gates against the canonical manifest — otherwise every
     new consumer onboards into a red first sync."""
     template_configs = (
-        sorted((REPO_ROOT / "templates").glob(".*platform-config.yml"))
+        sorted((REPO_ROOT / "templates").glob(".activeloom-config.yml"))
         if (REPO_ROOT / "templates").is_dir()
         else []
     )
@@ -328,7 +329,7 @@ def test_template_consumer_config_satisfies_canonical_manifest(tmp_path: Path) -
     for template_config in template_configs:
         consumer = tmp_path / f"consumer-{template_config.stem}"
         consumer.mkdir()
-        (consumer / ".platform-config.yml").write_text(
+        (consumer / ".activeloom-config.yml").write_text(
             template_config.read_text(encoding="utf-8"), encoding="utf-8"
         )
 

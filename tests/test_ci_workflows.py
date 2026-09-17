@@ -66,12 +66,12 @@ def test_manifest_gate_rejects_cross_set_delete_beside_same_set_reissue(
     document = {
         "harnesses": {
             "b": {
-                "root": ".b", "legacy_config": ".b.yml",
+                "root": ".b",
                 "targets": [{"destination": "example.md" if cross_set_delete else "unused.md",
                              "delete": True}],
             },
             "a": {
-                "root": ".a", "legacy_config": ".a.yml",
+                "root": ".a",
                 "targets": [
                     {"destination": "example.md", "delete": True},
                     {"source": "source.md", "destination": "example.md"},
