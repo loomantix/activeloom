@@ -1,17 +1,7 @@
 'use strict';
 
 /**
- * The docs and the code must describe the same ladder.
- *
- * `cli/lib/tiers.js` is the definition; `README.md`, `docs/getting-started.md`,
- * and the CLI's own `tiers` output are four descriptions of it. Prose drifts
- * silently — a tier renamed in code leaves stale docs that still read fine, and
- * the reader follows the docs. So pin the parts a reader acts on: the command
- * for each tier, and the claim that decides which tier they pick.
- *
- * This checks correspondence, not wording. Nothing here objects to the docs
- * explaining a tier differently from the CLI; it objects to them naming a
- * command that no longer exists.
+ * Verifies documentation across README and getting-started matches cli/lib/tiers.js.
  */
 
 const test = require('node:test');
@@ -33,22 +23,13 @@ const GETTING_STARTED = fs.readFileSync(
 /**
  * The command a tier is reached by, as it appears in prose.
  *
- * `tiers.js` writes Tier 0's command with a `<skill>` metavariable, which the
- * docs replace with a real skill name. Source-checkout instructions invoke the
- * same commands without npx; compare arguments independently of the launcher.
- *
  * @param {import('../../cli/lib/tiers').Tier} tier
  */
 const commandStem = (tier) =>
   tier.command.replace(/^npx activeloom /, '').replace(/ <skill>$/, '');
 
 /**
- * Whether a page presents a tier's command *as a command*.
- *
- * Tier 0 and Tier 1 stem to `add` and `init`, which are ordinary English
- * words: a bare substring search passes on any page that happens to use them
- * in a sentence. Require either a real invocation — `npx activeloom init`,
- * `node cli/bin/activeloom.js add` — or the arguments written as a code span.
+ * Whether a page presents a tier's command as a command.
  *
  * @param {string} body
  * @param {string} stem
@@ -82,8 +63,6 @@ test('the README names every tier command', () => {
 });
 
 test('both docs state which tier is recommended', () => {
-  // The single most load-bearing sentence in the onboarding: it is what stops a
-  // reader concluding they need a GitHub App to begin.
   for (const [name, body] of [
     ['README.md', README],
     ['docs/getting-started.md', GETTING_STARTED],
@@ -97,10 +76,7 @@ test('both docs state which tier is recommended', () => {
 });
 
 test('the recommended tier is not what bare `init` resolves to', () => {
-  // The reason the prose says "recommended" rather than "default": a reader who
-  // takes "default" literally runs `npx activeloom init`, gets Tier 1, and no
-  // sync workflow is ever installed. If someone later makes bare `init` mean
-  // the recommended tier, this fails and the docs can go back to saying so.
+  // Bare init resolves to Tier 1, so recommended tier is distinct from default.
   assert.notStrictEqual(
     resolveTier({}).n,
     RECOMMENDED_TIER,
@@ -110,9 +86,7 @@ test('the recommended tier is not what bare `init` resolves to', () => {
 });
 
 test('both docs confine the GitHub App to tier 3', () => {
-  // #786's one fixed constraint. The old getting-started led with "a GitHub App
-  // is installed" as a hard prerequisite, which is exactly the barrier the
-  // tiering exists to move — so assert it has not crept back.
+  // Verify documentation confines the GitHub App requirement to Tier 3.
   for (const [name, body] of [
     ['README.md', README],
     ['docs/getting-started.md', GETTING_STARTED],
@@ -126,9 +100,6 @@ test('both docs confine the GitHub App to tier 3', () => {
 });
 
 test('getting-started does not open with a credential prerequisite', () => {
-  // Structural, not stylistic: whatever appears before the first tier heading
-  // is what a first-time reader meets. A secret or an App named there
-  // re-erects the barrier regardless of what the tier table later says.
   const preamble = GETTING_STARTED.split('## Tier 0')[0];
   assert.ok(preamble.length > 0, 'no Tier 0 heading found');
   for (const forbidden of [
@@ -146,8 +117,7 @@ test('getting-started does not open with a credential prerequisite', () => {
 test('tier 0 is documented as needing nothing', () => {
   const tier0 = TIERS[0];
   assert.strictEqual(tier0.credential, 'none');
-  // The acceptance criterion is "no account/key/secret". If a step needs a
-  // token it is not Tier 0, so the doc must not introduce one in that section.
+  // Tier 0 requires no credentials or tokens.
   const section =
     GETTING_STARTED.split('## Tier 0')[1].split('<a id="tier-1">')[0];
   assert.ok(!/gh secret set/.test(section), 'Tier 0 section sets a secret');

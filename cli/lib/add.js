@@ -59,7 +59,6 @@ function walkFiles(dir) {
  */
 function assertNoPlaceholders(dir, label) {
   for (const full of walkFiles(dir)) {
-    // Skills are text by construction.
     if (PLACEHOLDER.test(fs.readFileSync(full, 'utf8'))) {
       throw new Error(
         `${label} contains an unsubstituted placeholder (${full}). ` +

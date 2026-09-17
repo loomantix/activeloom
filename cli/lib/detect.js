@@ -131,9 +131,6 @@ function detectPackageManager(repoDir) {
 /**
  * The language ecosystems present, by their canonical marker file.
  *
- * A repo may legitimately be several of these at once (a Python service with a
- * TypeScript frontend), so this returns every match rather than picking one.
- *
  * @param {string} repoDir
  * @returns {string[]}
  */

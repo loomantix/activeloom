@@ -1,14 +1,7 @@
 'use strict';
 
 /**
- * Unit coverage for the CLI's decisions: argument parsing, tier resolution,
- * harness selection, config rendering, and the Tier 0 placeholder guard.
- *
- * The end-to-end behaviour of `init` is proved in
- * `tests/test_cli_init_equivalence.py`, which runs the real binary against the
- * real engine. What is left for here is the logic that decides *what* to ask
- * the engine for — the part where a wrong answer produces a plausible-looking
- * config rather than a crash.
+ * Unit tests for CLI parsing, tier resolution, harness selection, and config rendering.
  */
 
 const test = require('node:test');
@@ -74,8 +67,6 @@ function facts(overrides = {}) {
   };
 }
 
-// --- argument parsing -------------------------------------------------------
-
 test('parseArgs reads a command and its positionals', () => {
   const opts = parseArgs(['add', 'critique', 'issues']);
   assert.strictEqual(opts.command, 'add');
@@ -88,8 +79,7 @@ test('parseArgs accumulates repeated --harness', () => {
 });
 
 test('parseArgs rejects an unknown option instead of ignoring it', () => {
-  // A mistyped flag that parsed as "no flags" would report success having
-  // skipped the behaviour asked for — the failure this rejection prevents.
+  // Unknown options must throw rather than silently passing.
   assert.throws(() => parseArgs(['init', '--forse']), /unknown option --forse/);
 });
 
@@ -123,8 +113,6 @@ test('detect resolves a repository subdirectory to the git top level', () => {
   }
 });
 
-// --- tiers ------------------------------------------------------------------
-
 test('the ladder is monotonic and complete', () => {
   assert.deepStrictEqual(
     TIERS.map((t) => t.n),
@@ -139,8 +127,7 @@ test('flags resolve to the documented tiers', () => {
 });
 
 test('--app alone still resolves to tier 3', () => {
-  // An App identity with nothing to sign is not a coherent request; silently
-  // producing a tier-1 tree would be the wrong resolution of it.
+  // App flag implies scheduled sync; bare app flag is not a distinct tier.
   assert.strictEqual(resolveTier({ app: true }).n, 3);
 });
 
@@ -155,15 +142,12 @@ test('only tier 3 requires a credential', () => {
   }
 });
 
-// --- harness selection ------------------------------------------------------
-
 test('init prefers harnesses already checked into the repo', () => {
   const f = facts();
   f.harnesses[1].inRepo = true; // codex in repo
   f.harnesses[0].cliInstalled = true; // claude only on this machine
   const chosen = initLib.chooseHarnesses(f, []);
-  // The config is committed and governs every teammate's sync, so a harness
-  // the team checked in outranks one that happens to be on this laptop.
+  // Harnesses present in the repository outrank machine-only signals.
   assert.deepStrictEqual(chosen.ids, ['codex']);
 });
 
@@ -192,22 +176,14 @@ test('chooseHarnesses deduplicates repeated explicit harnesses', () => {
   assert.deepStrictEqual(chosen.ids, ['claude']);
 });
 
-// --- config rendering -------------------------------------------------------
-
 test('the generated config never declares the reserved telemetry key', () => {
-  // `REVIEW_TELEMETRY_ENV` is computed by the engine from the `telemetry:`
-  // block, and a consumer that declares it is rejected outright — so emitting
-  // it would produce a config that fails on its very first sync.
+  // The engine computes REVIEW_TELEMETRY_ENV; config must not declare it.
   const body = initLib.renderConfig({ harnesses: ['claude'], facts: facts() });
   assert.ok(!body.includes('REVIEW_TELEMETRY_ENV'));
 });
 
 test('only tier 2 skips the workflow target GITHUB_TOKEN cannot push', () => {
-  // GitHub refuses a GITHUB_TOKEN push whose commit touches
-  // `.github/workflows/`, and no `permissions:` key grants it. Tier 2 is the
-  // only tier that pushes as GITHUB_TOKEN, so it is the only tier that must
-  // skip the shared target set's `dco.yml` — tier 1 runs the engine locally
-  // and tier 3 commits through an App installation token.
+  // Tier 2 uses GITHUB_TOKEN and must skip pushing changes to workflow files.
   const render = (tierNumber) =>
     initLib.renderConfig({ harnesses: ['claude'], facts: facts(), tierNumber });
 
@@ -254,7 +230,6 @@ test('detected facts reach the config, and are not invented when absent', () => 
   assert.ok(body.includes('| Packages | pnpm |'));
   assert.ok(body.includes('pnpm run test'));
   assert.ok(body.includes('pnpm run lint'));
-  // No format script was detected, so none is claimed.
   assert.ok(!body.includes('run format'));
 });
 
@@ -263,12 +238,8 @@ test('config scalars are quoted so punctuation cannot restructure the YAML', () 
   assert.strictEqual(initLib.yamlScalar('a: b #c'), "'a: b #c'");
 });
 
-// --- tier 0 guard -----------------------------------------------------------
-
 test('add refuses a skill tree containing an unsubstituted placeholder', () => {
-  // Installing one would put a literal `<<KEY>>` in front of a model, which
-  // reads as an instruction it cannot satisfy — and would stay invisible until
-  // a review went wrong.
+  // Reject unsubstituted placeholder tokens in skills.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-test-'));
   try {
     fs.writeFileSync(
@@ -297,9 +268,7 @@ test('add accepts a clean skill tree, including nested files', () => {
 });
 
 test('copyTree preserves the executable bit', () => {
-  // The manifest ships `skills/issues/scripts/ready.py` as 0755 and it is
-  // invoked directly; a copy that flattened modes would install a skill that
-  // silently cannot run its own helper.
+  // Preserve executable permission bits when copying skills.
   const src = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-src-'));
   const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-dst-'));
   try {
@@ -468,15 +437,12 @@ test('installSupportFiles ignores ENOENT from lstatSync', () => {
 });
 
 test('add chooses harnesses from machine evidence, not repo evidence', () => {
-  // Tier 0 installs into the user's own config directory, so what this repo
-  // contains is irrelevant to it — the mirror image of `init`'s rule.
+  // Tier 0 installs to user config directory and ignores repo contents.
   const f = facts();
   f.harnesses[0].inRepo = true;
   f.harnesses[1].onMachine = true;
   assert.deepStrictEqual(addLib.chooseHarnesses(f, []).ids, ['codex']);
 });
-
-// --- self-sync guard --------------------------------------------------------
 
 test('refuseSelfSync catches the identical-directory case', () => {
   const msg = initLib.refuseSelfSync(REPO_ROOT, REPO_ROOT);
@@ -738,15 +704,7 @@ test('init preserves pre-existing config when the sync engine exits non-zero', a
   }
 });
 
-// --- harness confirmation ---------------------------------------------------
-
-/**
- * Force the TTY branch on.
- *
- * `confirmHarnesses` short-circuits when stdin is not a TTY, which is exactly
- * what a test runner gives it — so without this the interactive assertions
- * below would pass by never running the code they name.
- */
+/** Force the TTY branch on for interactive tests. */
 function withTTY(value, fn) {
   const original = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
   Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true });
@@ -773,8 +731,7 @@ function prompts({ accept = true, answer = '' } = {}) {
 }
 
 test('confirmHarnesses does not prompt when stdin is not a TTY', async () => {
-  // Scripts, CI, and `npx | sh` pipelines must never block on a question
-  // nobody can answer.
+  // Never prompt interactively when stdin is not a TTY.
   const p = prompts();
   await withTTY(false, async () => {
     const chosen = { ids: ['claude', 'codex'], reason: 'detected' };
@@ -805,7 +762,7 @@ test('confirmHarnesses does not prompt when --yes is passed', async () => {
 });
 
 test('confirmHarnesses does not re-ask what --harness already stated', async () => {
-  // Re-asking second-guesses a decision the user just typed.
+  // Do not prompt when harnesses were explicitly specified.
   const p = prompts();
   await withTTY(true, async () => {
     const chosen = { ids: ['codex'], reason: 'requested with --harness' };
@@ -840,8 +797,6 @@ test('confirmHarnesses keeps the detected set when the user accepts', async () =
 });
 
 test('confirmHarnesses takes a corrected list when the user declines', async () => {
-  // The case the whole prompt exists for: three CLIs installed, one actually
-  // used, and without this all three trees get committed to a shared repo.
   const p = prompts({ accept: false, answer: 'claude' });
   await withTTY(true, async () => {
     const chosen = { ids: ['claude', 'codex', 'gemini'], reason: 'detected' };
@@ -857,7 +812,7 @@ test('confirmHarnesses takes a corrected list when the user declines', async () 
 });
 
 test('a corrected list is ordered by the manifest, not by typing order', async () => {
-  // So the generated config is byte-stable regardless of how it was entered.
+  // Normalize harness ordering according to manifest.
   const p = prompts({ accept: false, answer: 'gemini claude' });
   await withTTY(true, async () => {
     const out = await initLib.confirmHarnesses(
@@ -884,9 +839,7 @@ test('confirmHarnesses accepts comma-separated input and de-duplicates', async (
 });
 
 test('confirmHarnesses gives up after three unusable answers', async () => {
-  // Bounded rather than looping forever: a user who cannot name a valid
-  // harness is better served by the error and `--harness` than by a prompt
-  // they have to Ctrl-C out of.
+  // Abort after three invalid responses to avoid an infinite prompt loop.
   const p = prompts({ accept: false, answer: 'gemeni' });
   await withTTY(true, async () => {
     await assert.rejects(
@@ -904,11 +857,7 @@ test('confirmHarnesses gives up after three unusable answers', async () => {
 });
 
 test('add exit code separates an unknown skill from one already installed', async () => {
-  // The two `skipped` branches mean opposite things to a caller: a name that
-  // does not exist is the run failing, a skill already on disk is the run
-  // having nothing left to do. Collapsing them made `add x && next` break on
-  // the second run and swallowed a typo'd name whenever anything else
-  // installed alongside it.
+  // Distinguish missing skill names from skills that are already installed.
   const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
   try {
@@ -1078,8 +1027,7 @@ for (const restoreFails of [false, true]) {
       fs.renameSync = (from, to) => {
         if (to === destSkill && !path.basename(from).includes('-old-')) {
           if (restoreFails) {
-            // A competing installer claims the destination between renames.
-            // Both promotion and restoration then fail on the real filesystem.
+            // Simulate destination existing between renames to test restore failure.
             fs.mkdirSync(destSkill);
             fs.writeFileSync(path.join(destSkill, 'concurrent.txt'), 'keep me');
           } else {
@@ -1183,10 +1131,7 @@ test('add replaces an existing skill when force is passed and cleans up temp dir
 });
 
 test('init keeps the existing config without asking which harnesses to write', async () => {
-  // The harness list only ever lands in a *new* config. With one already on
-  // disk the engine reads the list from it, so a prompt here would ask a
-  // question whose answer is discarded — and the interactive path must not
-  // block a re-run on it.
+  // Existing configs are preserved without prompting for harness selection.
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-consumer-'));
   const originalConfirm = ui.confirm;
   const asked = [];
@@ -1213,9 +1158,7 @@ test('init keeps the existing config without asking which harnesses to write', a
 });
 
 test('checkPython ignores a yaml.py in the working directory', () => {
-  // `python -c` puts the working directory on sys.path first, and the
-  // working directory is the consumer checkout. A checked-in `yaml.py` must
-  // neither run nor stand in for PyYAML.
+  // Checked-in yaml.py in consumer directory must not shadow PyYAML.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-cwd-'));
   const marker = path.join(dir, 'ran');
   const previous = process.cwd();

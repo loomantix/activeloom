@@ -1,20 +1,7 @@
 'use strict';
 
 /**
- * The two sync workflow templates may differ in identity — and nowhere else
- * that matters.
- *
- * Tier 2 (`sync-from-upstream-token.yml.template`, `GITHUB_TOKEN`) and Tier 3
- * (`sync-from-upstream.yml.template`, GitHub App) are separate files rather
- * than one file with a switch, because they differ in permissions, credential,
- * and commit mechanism — a difference in kind, not a flag. The cost of that
- * choice is duplication, and duplication drifts.
- *
- * So pin the parts that must never diverge: both must invoke the same engine
- * with the same arguments, default to the same content gate, honour the same
- * kill switch, and refuse to guess `PR_BASE_BRANCH`. A tier-2 workflow that
- * quietly tracked `main` while tier 3 tracked `sync-v2` would ship unreviewed
- * upstream content to exactly the consumers who chose the lower-trust tier.
+ * Verifies structural and behavioral parity across Tier 2 and Tier 3 workflow templates.
  */
 
 const test = require('node:test');
@@ -48,8 +35,7 @@ test('both templates default to the same content gate', () => {
 });
 
 test('both templates invoke the same engine with the same arguments', () => {
-  // Whitespace-normalised: the two files wrap the continuation differently and
-  // that is not a difference worth failing on.
+  // Normalize whitespace across continuation lines.
   const invocation = (body) => {
     const m =
       /python3 \/tmp\/upstream\/scripts\/sync-engine\.py[\s\S]*?--consumer-dir \./.exec(
@@ -87,9 +73,7 @@ test('both templates refuse to guess PR_BASE_BRANCH', () => {
 });
 
 test('both templates carry the placeholders the CLI substitutes', () => {
-  // `writeWorkflow` throws when neither placeholder is found, but only after it
-  // has already decided to write. Pinning them here fails at build time
-  // instead, where the fix is obvious.
+  // Pin required template placeholders.
   for (const [name, body] of TEMPLATES) {
     assert.ok(
       body.includes('UPSTREAM_REPO: <owner>/<repo>'),
@@ -122,9 +106,6 @@ test('both templates publish the replacement before closing prior PRs', () => {
 });
 
 test('only the app template uses App credentials', () => {
-  // The whole claim of Tier 2 is "no secrets". A stray `secrets.SYNC_APP_*`
-  // reference in the token template would make it fail on a repo that has none,
-  // which is every repo the tier is aimed at.
   assert.match(APP, /secrets\.SYNC_APP_ID/);
   assert.ok(
     !/SYNC_APP_ID/.test(TOKEN),
@@ -150,9 +131,6 @@ test('the app template permits anonymous reads from public upstreams', () => {
 });
 
 test('the token template grants itself the write scope it needs', () => {
-  // With no App token, GITHUB_TOKEN is the only identity, so the job needs
-  // write scope the App variant does not. Getting this wrong fails at the push,
-  // several minutes into a scheduled run nobody is watching.
   assert.match(
     TOKEN,
     /^permissions:\n {2}contents: write\n {2}pull-requests: write$/m,
@@ -160,25 +138,12 @@ test('the token template grants itself the write scope it needs', () => {
 });
 
 test('the token template names the repository setting it depends on', () => {
-  // `GITHUB_TOKEN` cannot open a PR unless the repo allows it, and the raw
-  // error does not name the setting. Both the header and the failure path have
-  // to say so, or every Tier 2 adopter files the same issue.
   assert.match(
     TOKEN,
     /Allow GitHub Actions to create and approve pull requests/,
   );
   assert.match(TOKEN, /::error::GITHUB_TOKEN may not open pull requests/);
 });
-
-// --- which template each tier actually receives -----------------------------
-//
-// Everything above compares the two templates as files. That says nothing about
-// the branch that decides which one a consumer gets, and until this block that
-// branch had no test at all: changing `tier.n === 3` to `tier.n >= 2` kept the
-// whole suite green while every Tier 2 consumer received a workflow referencing
-// `secrets.SYNC_APP_ID` — a secret those repositories have no reason to hold,
-// since needing none is the entire promise of the tier. The failure would first
-// appear on someone else's scheduled run.
 
 const os = require('node:os');
 const { writeWorkflow } = require(
@@ -233,14 +198,12 @@ test('the installed workflow carries the substituted values, not placeholders', 
 });
 
 test('the installed workflow tracks the ref the trees came from', () => {
-  // `init --sync --ref main` renders trees from `main`; a workflow left on the
-  // template's `sync-v2` would open a PR reverting them on its next run.
+  // Verify UPSTREAM_REF matches the ref used during init.
   assert.match(
     workflowFor(TIERS[2], { upstreamRef: 'main' }),
     /^ {2}UPSTREAM_REF: 'main'$/m,
   );
-  // `--upstream-dir` has no remote ref to track, so the template's own default
-  // is left standing rather than replaced with the word `local`.
+  // Local upstreamDir preserves default sync-v2 ref.
   assert.match(
     workflowFor(TIERS[2], { upstreamRef: 'local' }),
     /^ {2}UPSTREAM_REF: sync-v2$/m,
@@ -288,9 +251,6 @@ test('an existing workflow must match the requested tier unless force replaces i
 });
 
 test('a template missing a placeholder is refused by name', () => {
-  // The guard used to compare the whole body before and after, which passed as
-  // long as *either* substitution landed — so a drifted `PR_BASE_BRANCH` line
-  // installed a workflow the consumer's own validate step then rejected.
   const upstreamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-wf-'));
   try {

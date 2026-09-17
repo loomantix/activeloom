@@ -1,18 +1,7 @@
 'use strict';
 
 /**
- * Getting the content this CLI installs.
- *
- * The published npm package carries the installer, not the prompts. Content is
- * fetched from a tag-pinned GitHub tarball at run time, which is what keeps
- * `npx activeloom` and the CI sync engine on **one** content gate: both read
- * the same tag, so the two doors cannot deliver different prompts. Bundling a
- * rendered copy into the npm tarball would make the package version a second
- * content channel, and two channels drift — the failure this whole
- * consolidation exists to end.
- *
- * The cost is that Tier 0 needs the network. `npx` already does, so this adds
- * no requirement a user did not already have.
+ * Fetches prompt and skill trees from a tag-pinned upstream GitHub tarball at runtime.
  */
 
 const fs = require('node:fs');
@@ -24,14 +13,7 @@ const { execFileSync } = require('node:child_process');
 const DEFAULT_UPSTREAM =
   process.env.ACTIVELOOM_UPSTREAM || 'loomantix/activeloom';
 
-/**
- * The content gate.
- *
- * `sync-v2` is the same ref migrated consumers' sync workflows track, which is
- * the entire point of the choice: a change reaches npx users and CI consumers
- * at the moment it reaches the tag, and never before. `main` is deliberately
- * not the default — a stray push to main must not propagate.
- */
+/** Default ref tracked by migrated consumer sync workflows. */
 const DEFAULT_REF = 'sync-v2';
 
 /**
@@ -61,14 +43,8 @@ async function resolveUpstream(options = {}) {
     return { dir, ref: 'local', source: dir, cleanup: () => {} };
   }
 
-  // Encoded per path segment: `encodeURIComponent` on the whole ref would
-  // escape `/`, so a slashed ref like `release/2.0` could not be spelled at
-  // all. Tag first, then branch — the ref this CLI installs from is normally a
-  // tag, but a branch has to be reachable or the remedy the 404 below prints
-  // would be impossible to follow.
+  // Encode each path segment so slashes in branch or tag names are preserved.
   const encoded = ref.split('/').map(encodeURIComponent).join('/');
-  // The resolved URL is returned as `source`, so which of the two answered is
-  // visible to the caller without a second field to keep in step.
   const candidates = [
     `https://codeload.github.com/${repo}/tar.gz/refs/tags/${encoded}`,
     `https://codeload.github.com/${repo}/tar.gz/refs/heads/${encoded}`,
@@ -78,8 +54,7 @@ async function resolveUpstream(options = {}) {
     try {
       fs.rmSync(workdir, { recursive: true, force: true });
     } catch {
-      // A tmpdir we cannot remove is the OS's to reap; never fail a successful
-      // install over cleanup.
+      // Ignore tmpdir removal errors on cleanup.
     }
   };
 
@@ -98,10 +73,7 @@ async function resolveUpstream(options = {}) {
     }
 
     if (response === null) {
-      // Overwhelmingly the interesting failure, and worth naming precisely:
-      // until the consumer cutover cuts `sync-v2`, the default ref genuinely
-      // does not exist yet, and a bare "404" would read as a broken CLI. Both
-      // forms 404'd, so the ref is neither a tag nor a branch.
+      // Ref was not found as either a tag or branch.
       throw new Error(
         `no tag or branch \`${ref}\` in ${repo}.\n` +
           `  If \`${ref}\` has not been cut yet, pin an existing ref explicitly:\n` +
@@ -120,9 +92,7 @@ async function resolveUpstream(options = {}) {
 
     const dir = path.join(workdir, 'upstream');
     fs.mkdirSync(dir);
-    // `--strip-components=1` drops the `<repo>-<ref>/` wrapper GitHub adds, so
-    // the result is shaped exactly like a checkout and the sync engine's
-    // `--upstream-repo` needs no special-casing for the two sources.
+    // Strip repository root directory so files unpack directly into dir.
     try {
       execFileSync(
         'tar',
@@ -130,9 +100,7 @@ async function resolveUpstream(options = {}) {
         { stdio: ['ignore', 'ignore', 'pipe'] },
       );
     } catch (err) {
-      // `execFileSync` throws with a bare "Command failed: tar ...". The real
-      // cause — a truncated download, a corrupt archive, an HTML error page
-      // served with a 200 — is on `err.stderr`, which nothing else reads.
+      // Capture stderr for tar extraction diagnostics.
       const detail = String(err.stderr ?? '').trim() || err.message;
       throw new Error(
         `could not unpack the archive from ${url}` +

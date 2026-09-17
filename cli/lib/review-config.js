@@ -1,13 +1,7 @@
 'use strict';
 
 /**
- * `activeloom review-config` — the per-user review profile, from the CLI.
- *
- * The profile's only validator and writer is the Python helper that ships with
- * the `review-setup` skill; review launchers resolve their model and effort
- * through that same file. This command runs the helper from the fetched
- * upstream instead of reimplementing it, so the CLI and the launchers cannot
- * disagree about what a valid profile is.
+ * Runs the upstream review-profile helper to manage user review profiles.
  */
 
 const fs = require('node:fs');
