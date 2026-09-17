@@ -90,7 +90,7 @@ The hosted `reviewit` skill remains an explicit option where repository policy p
 
 The installer contains code, not the prompt payload. By default it downloads this repository at `sync-v2`; scheduled sync uses the same distribution ref. `sync-v2` is a movable release gate, not an immutable version. `main` may contain work not yet distributed, and consumers update only when they install or merge a sync PR. Explicit refs, harness selections, and consumer substitutions can produce different installed content.
 
-`sync-v1` is the frozen compatibility route for older consumers. See [migration guidance](docs/sync.md#migrating-from-the-pre-sync-v2-config-files) before changing an existing setup.
+`sync-v1` is a frozen historical pin from the pre-`sync-v2` protocol with no remaining consumers. See [migration guidance](docs/sync.md#migrating-from-the-pre-sync-v2-config-files) if you are reviving an old checkout.
 
 | If you need to change…                             | The owner is…                                                                      |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------- |

@@ -27,7 +27,7 @@ A reviewer merges the PR; once merged, the next `git pull` on a developer's mach
 
 ### Tag advancement (the gate that ships)
 
-Migrated consumers track a tag (`sync-v2`), not `main`. So an unintended push to upstream main does NOT propagate. After the coordinated cutover establishes `sync-v2`, ship reviewed content updates by advancing that tag. Keep `sync-v1` frozen for consumers that have not migrated.
+Migrated consumers track a tag (`sync-v2`), not `main`. So an unintended push to upstream main does NOT propagate. Ship reviewed content updates by advancing that tag. `sync-v1` is retained as a frozen historical pin; the cutover is complete and no consumer tracks it.
 
 ```bash
 # in the upstream repo, on main, after merging changes you want to ship
@@ -43,7 +43,7 @@ The suffix pins the **sync protocol** — the manifest schema, the substitution 
 
 For ordinary content advances on the v2 protocol — adding a new file to the sync surface, retiring a stub, or fixing typos in a synced doc — advance the existing `sync-v2` tag. Do not advance `sync-v1` to a v2 commit or create a new protocol version for a content-only change.
 
-In practice: `sync-v1` was the active tag from the protocol's introduction until the manifest grew its `harnesses:` layer and the three per-harness consumer configs became one. That change is engine-breaking in both directions — a sync-v1 engine reads the new manifest as zero targets, and this engine rejects a flat `targets:` list by name — which is what the protocol pin is for. `sync-v1` stays frozen at the last pre-restructure commit for consumers that have not cut over; `sync-v2` is the tag a cut-over consumer pins.
+In practice: `sync-v1` was the active tag from the protocol's introduction until the manifest grew its `harnesses:` layer and the three per-harness consumer configs became one. That change is engine-breaking in both directions — a sync-v1 engine reads the new manifest as zero targets, and this engine rejects a flat `targets:` list by name — which is what the protocol pin is for. `sync-v1` stays frozen at the last pre-restructure commit and is kept as the historical anchor for that protocol, not as a live route — every consumer now pins `sync-v2`. A future protocol break repeats the pattern with a new suffix rather than reusing this one.
 
 ### Kill switch
 
