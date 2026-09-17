@@ -487,7 +487,46 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check if Python test suite can be skipped
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "Push event on main — running full suite."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --no-tags origin "$BASE_REF"
+          export CHANGED_FILES="$(git diff --name-only "origin/$BASE_REF...HEAD")"
+          echo "Changed files in PR:"
+          echo "$CHANGED_FILES"
+
+          python3 - <<'PY'
+          import os, re, sys
+          raw = os.environ.get("CHANGED_FILES", "").strip()
+          if not raw:
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("skip=false\n")
+              sys.exit(0)
+          files = [line.strip() for line in raw.splitlines() if line.strip()]
+          ignore = re.compile(r"^(?:docs/.+|imports/.+|\.claude/prompt-stack\.json|\.codex/prompt-stack\.json|PROMPT_STACK_VERSION|\.prettierignore|\.prettierrc|\.gitignore|recommended-prettierignore\.txt|[^/]+\.md)$")
+          if all(ignore.match(f) for f in files):
+              print("PR only touches docs, imports, or prompt stack version manifests — skipping Python tests.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("skip=true\n")
+          else:
+              print("PR touches Python, tests, scripts, CLI, or harness files — running Python tests.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("skip=false\n")
+          PY
       - uses: actions/setup-python@v7
+        if: steps.filter.outputs.skip != 'true'
         with:
           python-version: '3.12'
           # Cache the resolved wheel cohort against the pinned-tool list
@@ -500,9 +539,11 @@ jobs:
       # `format`, `accessibility-asset`, and `render-check`.
       # Same pin as `static-checks` above, for the reason recorded there.
       - uses: actions/setup-node@v7
+        if: steps.filter.outputs.skip != 'true'
         with:
           node-version: '24'
       - name: Install pinned tooling
+        if: steps.filter.outputs.skip != 'true'
         run: |
           python3 -m pip install \
             'mypy==1.13.0' \
@@ -513,16 +554,17 @@ jobs:
             'pytest-xdist==3.8.0' \
             'coverage==7.16.0'
       - name: mypy --strict (config from pyproject.toml)
+        if: steps.filter.outputs.skip != 'true'
         run: python3 -m mypy
       - name: Configure git identity (parse_status tests use a fixture git repo)
+        if: steps.filter.outputs.skip != 'true'
         run: |
           git config --global user.email "ci@example.invalid"
           git config --global user.name "CI"
           git config --global init.defaultBranch main
-      # Two workers roughly halve the subprocess-heavy agent-loop suite without
-      # starving its intentional one-second timeout probes. Four workers made
-      # those tests flaky under local load, so keep this explicit rather than
-      # deriving the worker count from runner CPU capacity.
+      # Four workers fully utilize the 4 vCPUs on the standard ubuntu-latest
+      # runner. The agent-loop timeout probe was tuned to 2s to eliminate
+      # local-load starvation flakiness under concurrency.
       # `--cov-config` is load-bearing, not decoration. pytest-cov only
       # exports `COV_CORE_CONFIG` (the config path every auto-started
       # subprocess reads) when `--cov-config` names a file that exists;
@@ -534,20 +576,23 @@ jobs:
       # and `coverage combine` fails with "Can't combine statement
       # coverage data with branch data" as soon as any subprocess records
       # a line. coverage <7.16.0 merged the mismatch silently.
-      - name: Run pytest with two workers + write coverage data
+      - name: Run pytest with four workers + write coverage data
+        if: steps.filter.outputs.skip != 'true'
         run: >-
           python3 -m pytest tests/ --cov --cov-config=pyproject.toml
-          --cov-report=term-missing -ra --durations=30 -n 2 --dist worksteal
+          --cov-report=term-missing -ra --durations=30 -n 4 --dist worksteal
       # Per-file gate matches the security contract: a future refactor
       # that spikes one file's coverage can't paper over a regression
       # in the other. The `test -f` precondition is load-bearing —
       # `coverage report --include=<missing>` exits 0 with "No data to
       # report", silently passing the gate if a file gets renamed.
       - name: Coverage gate — sync-engine.py >=80%
+        if: steps.filter.outputs.skip != 'true'
         run: |
           test -f scripts/sync-engine.py
           python3 -m coverage report --include='scripts/sync-engine.py' --fail-under=80
       - name: Coverage gate — create-signed-commit.py >=80%
+        if: steps.filter.outputs.skip != 'true'
         run: |
           test -f scripts/create-signed-commit.py
           python3 -m coverage report --include='scripts/create-signed-commit.py' --fail-under=80
@@ -557,6 +602,7 @@ jobs:
       # exits 0 with "No data to report", so a rename would otherwise pass this
       # gate silently.
       - name: Coverage gate — render-prompts.py >=80%
+        if: steps.filter.outputs.skip != 'true'
         run: |
           test -f scripts/render-prompts.py
           python3 -m coverage report --include='scripts/render-prompts.py' --fail-under=80
@@ -564,6 +610,7 @@ jobs:
       # unrendered divergence is accounted for. Same floor, same `test -f`
       # precondition, for the same reason.
       - name: Coverage gate — lint-prompt-parity.py >=80%
+        if: steps.filter.outputs.skip != 'true'
         run: |
           test -f scripts/lint-prompt-parity.py
           python3 -m coverage report --include='scripts/lint-prompt-parity.py' --fail-under=80

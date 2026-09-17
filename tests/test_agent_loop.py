@@ -3189,7 +3189,7 @@ def test_timeout_retries_only_an_unchanged_worktree(
         config=_config(
             tmp_path,
             worker_hook=worker,
-            worker_timeout_seconds=1,
+            worker_timeout_seconds=2,
             worker_retries=1,
         ),
         extra_env={"RETRY_MARK": str(retry_mark)},
@@ -3628,7 +3628,7 @@ def test_timeout_with_committed_work_does_not_retry(
         config=_config(
             tmp_path,
             worker_hook=worker,
-            worker_timeout_seconds=1,
+            worker_timeout_seconds=2,
             worker_retries=1,
         ),
     )

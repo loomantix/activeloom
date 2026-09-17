@@ -25,14 +25,9 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
-source = ["scripts", ".claude"]
+source = ["scripts"]
 omit = [
     "tests/*",
-    # The lint scripts are exercised by their own --self-test invocations
-    # in CI (see ci.yml). Pytest coverage on them would duplicate that
-    # surface without adding signal.
-    ".claude/lint-skill-content.py",
-    ".claude/lint-claude-cli-invocations.py",
 ]
 
 [tool.coverage.report]

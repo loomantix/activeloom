@@ -9,6 +9,7 @@ so it detects renames rather than regressions.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 
@@ -227,5 +228,36 @@ def test_pytest_run_pins_coverage_and_names_the_branch_config() -> None:
         s for s in steps if s.get("run", "").startswith("python3 -m pytest")
     )
     assert "--cov-config=pyproject.toml" in pytest_step["run"]
-    assert "-n 2" in pytest_step["run"]
+    assert "-n 4" in pytest_step["run"]
     assert "--dist worksteal" in pytest_step["run"]
+
+
+@pytest.mark.parametrize(
+    ("path", "skips"),
+    [
+        ("docs/agent-guide.md", True),
+        ("docs/decisions/0001-x.md", True),
+        ("imports/upstream/file.txt", True),
+        ("README.md", True),
+        ("PROMPT_STACK_VERSION", True),
+        (".claude/prompt-stack.json", True),
+        ("docs/", False),
+        ("cli/index.js", False),
+        ("scripts/render-prompts.py", False),
+        ("tests/fixtures/sample.md", False),
+        (".claude/skills/critique/SKILL.md", False),
+        (".prettierrc.py", False),
+    ],
+)
+def test_python_suite_skip_filter_matches_only_inert_paths(path: str, skips: bool) -> None:
+    """The skip filter reports a required check green without running it.
+
+    Exercise the pattern the workflow actually ships in both directions: a
+    directory prefix that stops matching silently re-runs the suite on every
+    docs PR, and one that widens silently skips tests a change needed.
+    """
+    steps = _workflow("ci.yml")["jobs"]["python-types-and-tests"]["steps"]
+    script = next(s for s in steps if s.get("id") == "filter")["run"]
+    match = re.search(r'ignore = re\.compile\(r"(.+)"\)', script)
+    assert match, "skip filter pattern not found in the filter step"
+    assert bool(re.compile(match.group(1)).match(path)) is skips
