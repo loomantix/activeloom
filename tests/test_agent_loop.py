@@ -1,13 +1,4 @@
-"""Deterministic integration coverage for the agent-loop wrapper.
-
-Each test drives the real `.claude/skills/agent-loop/scripts/agent-loop.sh`
-against a throwaway git repo + bare remote, with `gh`/`ready.py`/`claude`
-replaced by tiny stubs on `PATH`. The cases mirror the Codex wrapper's safety
-suite: allowlisting, ready/dependency gates, worktree isolation, dry-run, hook
-ordering, claim/assignee-identity races, worker failure + recovery,
-capacity/timeout retry with model fallback, private bounded logs, fresh-base
-publication, and conflict-marker rejection.
-"""
+"""Deterministic integration coverage for the agent-loop wrapper."""
 
 from __future__ import annotations
 
@@ -50,9 +41,7 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _run_git("init", "-b", "main", str(repo))
     _run_git("config", "user.name", "Test", cwd=repo)
     _run_git("config", "user.email", "test@example.invalid", cwd=repo)
-    # Hermetic commits: the worker/hook stubs commit inside worktrees that share
-    # this repo's config, so pin signing off regardless of any ambient global
-    # `commit.gpgsign = true` (which would otherwise block the throwaway commits).
+    # Pin signing off so ambient commit.gpgsign does not block throwaway commits.
     _run_git("config", "commit.gpgsign", "false", cwd=repo)
 
     script = repo / ".claude/skills/agent-loop/scripts/agent-loop.sh"
@@ -72,17 +61,12 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     ledger_target = repo / ".claude/skills/critique/scripts/review-ledger.js"
     ledger_target.parent.mkdir(parents=True)
     shutil.copy2(ledger_source, ledger_target)
-    # Sync ships a sibling `package.json` declaring the bundle as ESM; copy it
-    # so the fixture receives what a consumer receives.
+    # Copy sibling package.json to test consumer ESM bundle resolution.
     shutil.copy2(
         REPO_ROOT / ".claude/skills/critique/scripts/package.json",
         ledger_target.parent / "package.json",
     )
-    # claude-platform has no root manifest, which is the most permissive module
-    # resolution context there is — the bundle would load here even with no
-    # sibling manifest at all. Give the fixture consumer a CommonJS root, the
-    # context that breaks an undeclared ESM `.js`, so this suite actually
-    # exercises what a consumer repo does rather than what upstream does.
+    # Use CommonJS root to test ESM bundle loading in consumer context.
     (repo / "package.json").write_text(
         '{"name": "fixture-consumer", "private": true, "type": "commonjs"}\n',
         encoding="utf-8",
@@ -527,19 +511,11 @@ def _environment(
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     repo, _, bin_dir, state_dir = fixture
-    # Hooks run under `bash -lc`, a login shell that re-sources profile files. On
-    # a developer box those dotfiles prepend real tool paths (e.g. a genuine
-    # `claude` in ~/.local/bin), shadowing the stubs this suite installs in
-    # bin_dir. Point HOME at an empty dir so the login shell finds no profile to
-    # reorder PATH, keeping the run hermetic here and on CI alike.
+    # Point HOME at an empty dir so login shells do not source profiles and shadow stubs.
     home = bin_dir.parent / "home"
     home.mkdir(exist_ok=True)
     env = os.environ.copy()
-    # The temporary ready.py/gh/claude fixtures are black-box shell dependencies,
-    # not coverage targets. pytest-cov exports COV_CORE_* for subprocess
-    # collection; letting these standalone stubs auto-start coverage can produce
-    # statement data that pytest-cov 6 cannot combine with this repo's branch
-    # data.
+    # Disable subprocess coverage collection for shell stub fixtures.
     for key in [name for name in env if name.startswith("COV_CORE_")]:
         env.pop(key)
     env.update(
@@ -648,9 +624,7 @@ def _counting_hook(engine: str, body: str) -> str:
 def test_review_hook_that_ends_without_a_result_is_retried_once_in_place(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The first Claude attempt ends its turn without writing a result and
-    # without touching the PR. Retrying it costs one pass; restarting the round
-    # would re-run Codex against an unchanged head.
+    # First attempt ends without result; verify in-place retry runs before round restart.
     claude = _counting_hook(
         "claude",
         'if [ ! -e "$AGENT_STATE_DIR/claude-ended-early" ]; then '
@@ -899,8 +873,6 @@ def _ends_early_for(issue: int) -> str:
 def test_park_mode_parks_a_resumable_failure_and_its_dependent_then_finishes_the_lane(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # One issue whose Claude pass keeps ending without a result used to halt
-    # the lane with every later issue unstarted.
     result = _run(
         consumer,
         ["--issues", "50,51,52", "--iterations", "3"],
@@ -1008,8 +980,6 @@ def test_parking_preserves_assigned_issue_selection(
 def test_park_mode_still_stops_on_an_uncertain_push(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The pass pushed a commit and then ended without a result: the remote no
-    # longer matches the checkpoint and no result explains the move.
     claude = (
         'if [ "$AGENT_LOOP_ISSUE_ID" = 53 ]; then '
         "printf 'fix\\n' > early-fix.txt; git add early-fix.txt; "
@@ -1060,16 +1030,12 @@ _PER_ISSUE_WORKER = (
 def test_batch_stack_builds_a_dependent_issue_on_its_unmerged_predecessor(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The dependent used to start from the base without its predecessor's
-    # change, so the two PRs conflicted and the dependent was reviewed against
-    # code that would not exist once the predecessor merged.
     result = _run(
         consumer,
         ["--issues", "60,61", "--iterations", "2"],
         issues=[_issue(60), _issue(61, "Depends on #60")],
         config=_config_v3(
             tmp_path,
-            # The dependent's worker must see its predecessor's work.
             worker_hook='if [ "$AGENT_LOOP_ISSUE_ID" = 61 ]; then test -f result-60.py || exit 9; fi; '
             + _PER_ISSUE_WORKER,
             dependency_gate="batch-stack",
@@ -1084,14 +1050,13 @@ def test_batch_stack_builds_a_dependent_issue_on_its_unmerged_predecessor(
     assert batch["issues"][1]["stackedOn"] == 60
     parent = json.loads(Path(batch["issues"][0]["childRunState"]).read_text(encoding="utf-8"))
     child = json.loads(Path(batch["issues"][1]["childRunState"]).read_text(encoding="utf-8"))
-    # Built from the predecessor's reviewed head, with its branch as the PR base.
+    # Verify dependent branch uses predecessor head as PR base.
     assert child["baseBranch"] == parent["branch"]
     assert child["baseSha"] == parent["headSha"]
     creates = [line for line in (consumer[3] / "gh.log").read_text(encoding="utf-8").splitlines()
                if line.startswith("pr create")]
     assert "--base main" in creates[0]
     assert f"--base {parent['branch']}" in creates[1]
-    # Review and publication are scoped to the dependent's own commits.
     child_log = Path(str(child["logDir"]))
     codex_result = json.loads((child_log / "codex-review-round-1.result.json").read_text(encoding="utf-8"))
     assert codex_result["baseSha"] == parent["headSha"]
@@ -1109,8 +1074,7 @@ def test_batch_stack_builds_a_dependent_issue_on_its_unmerged_predecessor(
 def test_batch_stack_resumes_an_interrupted_stacked_issue(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The parent issue stays open until its branch merges. A resumed stacked
-    # issue has no batch state loaded and used to drop out of the ready queue.
+    # Parent issue stays open until its branch merges.
     config = _config_v3(tmp_path, worker_hook=_PER_ISSUE_WORKER, dependency_gate="batch-stack")
     blockers = {"AGENT_READY_BLOCKERS": json.dumps({"69": [68]})}
     issues = [_issue(68), _issue(69, "Depends on #68")]
@@ -1273,7 +1237,6 @@ def test_batch_preflight_warns_on_a_prose_only_dependency(
 
 
 def test_every_recovery_message_names_a_known_stop_category() -> None:
-    # A stop without a category leaves a supervisor guessing from glyph lines.
     text = AGENT_LOOP.read_text(encoding="utf-8")
     declared = re.search(r'^STOP_CATEGORIES="([^"]+)"', text, re.M)
     assert declared is not None
@@ -1307,8 +1270,7 @@ def test_parkable_stop_categories_are_known_and_resumable() -> None:
     parkable = re.search(r'^PARKABLE_STOP_CATEGORIES="([^"]+)"', text, re.M)
     assert stop is not None and parkable is not None
     assert set(parkable.group(1).split()) <= set(stop.group(1).split())
-    # Resume restores the round cap and the review deadline from run state,
-    # so a run parked on either would stop the same way again.
+    # Resume restores round cap and review deadline from run state.
     assert not set(parkable.group(1).split()) & {"review-cap-exhausted", "budget-exhausted"}
 
 
@@ -1412,9 +1374,7 @@ def test_stop_events_name_the_hook_log_and_carry_no_free_text(
 def test_budget_spent_before_post_pass_validation_stops_as_budget_exhausted(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The pass commits after using most of the budget, so its validation finds
-    # less than the per-pass floor left. Resume restores that deadline, so a
-    # parkable validation-red here would park an issue that cannot resume.
+    # Validate that pass budget exhaustion does not park unresumable issues.
     codex = "sleep 12; " + _minor_committed_v3_hook("codex")
     result = _run(
         consumer,
@@ -1856,8 +1816,6 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
 ) -> None:
     fail_marker = consumer[3] / "fail-claude-review"
     fail_marker.touch()
-    # The interruption lands in the Claude leg itself: a clean Codex pass
-    # leaves the head unchanged, so no validation runs between the two legs.
     claude_hook = (
         'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
         + _clean_v3_hook("claude")
@@ -1894,8 +1852,6 @@ def test_v3_final_round_clean_interruption_resumes_without_exhausting_cap(
 def test_interrupted_claude_leg_below_the_cap_resumes_in_the_same_round(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Below the round cap, resuming used to start a new round and re-run Codex
-    # against the head its round-1 result already covered.
     fail_marker = consumer[3] / "fail-claude-review"
     fail_marker.touch()
     claude_hook = (
@@ -1935,8 +1891,7 @@ def test_interrupted_claude_leg_below_the_cap_resumes_in_the_same_round(
 def test_interrupted_claude_leg_restarts_at_codex_when_the_base_advanced(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The same-round shortcut relies on the Codex result covering the head the
-    # Claude leg will read. Integrating an advanced base moves that head.
+    # Base integration moves head, invalidating previous engine result.
     fail_marker = consumer[3] / "fail-claude-review"
     fail_marker.touch()
     claude_hook = (
@@ -1980,8 +1935,7 @@ def test_interrupted_claude_leg_restarts_at_codex_when_the_base_advanced(
 
 
 _STRANDING_CLAUDE_HOOK = (
-    # First run: commit a fix and stop before publishing it, as a pass killed
-    # mid-push does. Later runs review cleanly.
+    # First run commits a fix and stops before publishing.
     'if [ -e "$AGENT_STATE_DIR/strand-claude" ]; then '
     "printf 'fix\\n' > stranded-fix.txt; git add stranded-fix.txt; "
     "git commit -m 'test: stranded fix'; exit 0; fi; "
@@ -2020,8 +1974,7 @@ def test_resume_keeps_stranded_review_commits_on_a_rescue_ref_and_replays_the_pa
     assert "recovered: stranded-review-commits -> refs/agent-loop/rescue/" in resumed.stdout
     assert "resuming its remaining leg in the same round" in resumed.stdout
     ref = f"refs/agent-loop/rescue/{state['runId']}/claude-r1"
-    # The worktree was removed after publication; the ref lives in the shared
-    # repository and still holds the stranded commit.
+    # Worktree removed after publish; stranded commit remains in repo ref.
     assert not Path(str(state["worktree"])).exists()
     assert _run_git("rev-parse", ref, cwd=consumer[0]).stdout.strip() == stranded
     assert f"Rescued review commits kept at {ref}" in resumed.stdout
@@ -2100,9 +2053,6 @@ def test_park_mode_parks_a_stranded_review_commit(
 def test_run_records_wrapper_pid_and_phase_timing(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Every duration in the first consumer reports had to be reconstructed from
-    # log mtimes, and the only liveness check available from outside was a
-    # `pgrep -f` that matched the monitor's own shell.
     repo = consumer[0]
     (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(
         _config_v3(tmp_path), encoding="utf-8"
@@ -2137,10 +2087,7 @@ def test_run_records_wrapper_pid_and_phase_timing(
 def test_draft_pr_title_is_the_worker_commit_subject(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Consumers that merge with merge commits get the PR title as the merge
-    # subject; the generic "agent-loop: resolve #N" landed in history where a
-    # conventional subject was expected. The fixture worker commits
-    # "fix: worker", and a control character in a subject must not reach gh.
+    # Ensure conventional PR titles and sanitize control characters.
     worker = (
         "printf 'worker\\n' >> \"$EVENT_LOG\"; printf done > result.py; "
         "git add result.py; git commit -m \"$(printf 'feat(demo): add\\tresult\\x01 file')\""
@@ -2162,10 +2109,7 @@ def test_draft_pr_title_is_the_worker_commit_subject(
 def test_unchanged_head_is_validated_once_then_only_at_the_final_gate(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # One converged run used to validate the same head three times: worker,
-    # "Already up to date" base integration, and after each clean pass, then
-    # again at the final gate. Only the worker validation and the final gate
-    # should run the hook when nothing moved.
+    # Only worker validation and final gate should run when head does not move.
     result = _run(
         consumer,
         ["--issues", "18"],
@@ -2183,9 +2127,7 @@ def test_unchanged_head_is_validated_once_then_only_at_the_final_gate(
 def test_wrapper_validation_is_recorded_as_the_gating_run_for_the_reviewed_head(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Under agent-loop the engines run focused checks and the wrapper's
-    # validation hook is the gating run. Its evidence must name the command
-    # and the exact head it ran on, including the head that is marked ready.
+    # Validation evidence must record the command and exact head validated.
     result = _run(
         consumer,
         ["--issues", "23"],
@@ -2241,8 +2183,6 @@ def test_red_post_pass_validation_blocks_convergence(
 
 
 def _minor_committed_v3_hook(engine: str) -> str:
-    # A changed pass with complete ledger evidence: one finding, fixed in a
-    # committed cleanup, classified minor so the round still converges.
     return (
         f"printf '{engine}\\n' >> \"$EVENT_LOG\"; "
         'before="$AGENT_LOOP_PR_HEAD_SHA"; '
@@ -2276,8 +2216,7 @@ def _minor_committed_v3_hook(engine: str) -> str:
 def test_changed_review_head_is_revalidated(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # A pass that commits moves the head, and the new head must be validated
-    # before the next leg reads it; the clean Claude pass after it is skipped.
+    # Commits move head and trigger validation before subsequent review legs.
     result = _run(
         consumer,
         ["--issues", "19"],
@@ -2510,9 +2449,7 @@ def test_per_issue_worktrees_and_hook_order(
     assert paths[0] != paths[1]
     assert all(not Path(path).exists() for path in paths)
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
-    # Worker validation, then the two clean passes without re-validating the
-    # head they did not move, then the final gate. The "Already up to date"
-    # base integration and both clean passes reuse the worker validation.
+    # Unmoved heads reuse earlier validation evidence.
     expected = [
         "setup",
         "worker",
@@ -2572,9 +2509,7 @@ def test_marked_review_thread_requires_reply_and_resolution(
 def test_silent_review_pass_without_attestation_is_not_convergence(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # A hook that exits 0 without committing or posting anything is exactly what a
-    # misconfigured or silently declining reviewer looks like. Convergence must
-    # not be satisfied by an empty thread list plus a successful exit code.
+    # A review hook exiting 0 without posting or committing does not converge.
     result = _run(
         consumer,
         ["--issues", "43"],
@@ -2709,8 +2644,7 @@ def test_review_hooks_receive_same_literal_base_sha(
 def test_failed_ledger_fetch_is_not_a_verified_ledger(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The thread query exits nonzero after emitting a parseable but incomplete
-    # page. Without an explicit status check the jq predicate would accept it.
+    # Nonzero exit on incomplete thread query must not be accepted.
     result = _run(
         consumer,
         ["--issues", "45"],
@@ -2726,8 +2660,7 @@ def test_failed_ledger_fetch_is_not_a_verified_ledger(
 def test_resolved_thread_needs_a_reply_after_its_latest_marker(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # A reused fingerprint thread already holding a finding and its reply; a new
-    # marker is appended last and the thread resolved with no disposition for it.
+    # Reused thread with unresolved new marker must not converge.
     thread = {
         "isResolved": True,
         "comments": {
@@ -2793,8 +2726,7 @@ def test_resolved_thread_needs_reply_from_local_reviewer(
 def test_unpaginated_thread_comments_fail_closed(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The marker may sit past the first comment page, so a thread whose comments
-    # are truncated cannot be cleared — even though no marker is visible on it.
+    # Truncated thread comments cannot be cleared without full pagination.
     thread = {
         "isResolved": True,
         "comments": {
@@ -2817,8 +2749,6 @@ def test_unpaginated_thread_comments_fail_closed(
 def test_validation_hook_dirt_blocks_ready_and_preserves_the_worktree(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Head attestation compares SHAs only, so an uncommitted validation write
-    # would otherwise be published-as-absent and then force-removed.
     validation = (
         "printf 'validate\\n' >> \"$EVENT_LOG\"; "
         '[ ! -e "$AGENT_LOOP_PR_URL_MARK" ] || printf regenerated > seed.txt'
@@ -2840,10 +2770,7 @@ def test_validation_hook_dirt_blocks_ready_and_preserves_the_worktree(
 def test_base_movement_after_convergence_is_named_not_a_bare_abort(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Convergence proves base ancestry, not that the base tip is unchanged, and
-    # the final reviewed-head validation runs between the two checks. A base
-    # commit landing in that window must say so — an unexplained abort on a
-    # converged PR invites a manual `gh pr ready`.
+    # Advancing base during final validation must produce explicit abort message.
     validation = (
         "printf 'validate\\n' >> \"$EVENT_LOG\"; "
         '[ ! -e "$AGENT_LOOP_LOG_DIR/final-reviewed-head-validation.log" ] || '
@@ -2866,8 +2793,7 @@ def test_base_movement_after_convergence_is_named_not_a_bare_abort(
 def test_pr_body_rewrite_failure_stops_before_ready(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # A failed PR mutation has an uncertain remote outcome. Recovery must stop
-    # before any later readiness mutation.
+    # PR mutation failures must halt before readiness changes.
     result = _run(
         consumer,
         ["--issues", "52"],
@@ -2947,13 +2873,7 @@ def test_worker_failure_preserves_worktree(
 def test_hooks_and_default_worker_do_not_inherit_the_wrapper_stdin(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # `codex exec` reads stdin to EOF when it is not a TTY. A hook that inherits
-    # an open pipe from whatever launched the wrapper blocks until the pass
-    # times out, so the wrapper must hand every hook (and the default worker,
-    # which runs through the same bounded runner) /dev/null even when its own
-    # stdin is a pipe that never closes. The pipe here stays open for the whole
-    # run: a `read` that sees EOF at once proves the redirect, a `read` that
-    # has to wait for its timeout proves the leak.
+    # Wrapper must redirect /dev/null to hooks so open stdin pipes do not block execution.
     worker = (
         '[ "$(readlink /proc/self/fd/0)" = /dev/null ] || exit 71; '
         "if read -r -t 3 line; then exit 72; else status=$?; fi; "
@@ -2983,10 +2903,7 @@ def test_hooks_and_default_worker_run_background_tasks_in_the_foreground(
     inherited: str | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A one-shot Claude CLI that moves a long command to the background can
-    # end its turn with it still running and exit 0 with no result. The
-    # wrapper forces foreground execution for every hook, even over an
-    # inherited 0.
+    # Force foreground execution for review hooks.
     record = 'printf "%s\\n" "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-unset}" >> "$AGENT_STATE_DIR/background.log"; '
     claude = consumer[2] / "claude"
     _write_executable(
@@ -3013,7 +2930,6 @@ def test_hooks_and_default_worker_run_background_tasks_in_the_foreground(
     )
     assert result.returncode == 0, result.stderr + result.stdout
     values = (consumer[3] / "background.log").read_text(encoding="utf-8").split()
-    # worker, worker validation, codex, claude, final validation
     assert len(values) >= 5
     assert set(values) == {"1"}
 
@@ -3021,8 +2937,7 @@ def test_hooks_and_default_worker_run_background_tasks_in_the_foreground(
 def test_capacity_failure_uses_fallback_model(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The default worker is the Claude CLI. Stub it so the primary model reports
-    # a capacity failure and the retry switches to worker_fallback_model.
+    # Stub primary model capacity failure to test fallback model switch.
     claude = consumer[2] / "claude"
     _write_executable(
         claude,
@@ -3058,9 +2973,6 @@ git commit -m 'fix: fallback worker'
 def test_worker_effort_is_passed_to_the_default_worker(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Before worker_effort existed the default worker's effort came from
-    # whatever CLAUDE_CODE_EFFORT_LEVEL the operator exported at launch, which
-    # was easy to forget and invisible afterwards.
     claude = consumer[2] / "claude"
     _write_executable(
         claude,
@@ -3220,9 +3132,7 @@ def test_fresh_base_is_integrated_and_validated_before_publication(
     ).stdout.strip()
     published = _run_git("show", f"{branch}:fresh-base.txt", cwd=consumer[1]).stdout
     assert published == "fresh\n"
-    # The base advanced during round 1, so round 2 merges it before either engine
-    # runs and both then review that merged head. That is a complete pass over the
-    # final tree, so it must converge in round 2 rather than spending a third.
+    # Base advanced in round 1; merged head reviewed in round 2 converges.
     assert "convergence round 2/4" in result.stdout
     assert "convergence round 3/4" not in result.stdout
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
@@ -3317,11 +3227,7 @@ jq -n --arg engine "$AGENT_LOOP_REVIEW_ENGINE" \
 def test_large_worker_writes_survive_and_log_is_bounded(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Regression: the log-size bound must not constrain files the worker writes. A
-    # prior `ulimit -f` capped every file the hook wrote and SIGXFSZ-killed (and
-    # truncated) legitimate large writes. The worker below writes a repo file and
-    # streams stdout both larger than the cap; the file must land intact and the
-    # captured log must still be bounded to roughly log_max_kb.
+    # Log-size bound must capture stdout without truncating files written to the repo.
     cap_kb = 64
     worker = (
         "dd if=/dev/zero of=big.bin bs=1024 count=2048 2>/dev/null; "  # 2 MiB file > cap
@@ -3353,9 +3259,7 @@ def test_large_worker_writes_survive_and_log_is_bounded(
 def test_committed_conflict_markers_block_publication(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Regression: `inspect_publication_diff` runs in an `||` context (set -e off), so
-    # the `git diff --check` gate must check its status explicitly. A committed
-    # conflict marker in the publication diff must block the PR, not sail through.
+    # Conflict markers in publication diff must block PR creation.
     worker = (
         r"printf '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\n' > conflict.txt; "
         "git add conflict.txt; git commit -m 'fix: conflicted'"
@@ -3507,7 +3411,6 @@ def test_persistent_logs_are_owner_only(
     assert stat.S_IMODE(log_dirs[0].stat().st_mode) == 0o700
     for log_file in log_dirs[0].iterdir():
         assert stat.S_IMODE(log_file.stat().st_mode) & 0o077 == 0
-    # The run's event stream sits beside the issue log directory.
     streams = [entry for entry in entries if not entry.is_dir()]
     assert [entry.name.endswith("-events.jsonl") for entry in streams] == [True]
     assert stat.S_IMODE(streams[0].stat().st_mode) == 0o600
@@ -3516,12 +3419,7 @@ def test_persistent_logs_are_owner_only(
 def test_untracked_leftover_does_not_abort_batch_after_publish(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # A worker/setup hook can leave a non-ignored untracked file. With
-    # `status.showUntrackedFiles=no` the clean-tree gates pass, but a plain
-    # `git worktree remove` would still exit non-zero on it — which, post-publish
-    # and under `set -e`, would abort the whole batch and fire a bogus recovery
-    # banner. The success-path removal must force + tolerate so the run finishes
-    # and continues to the next issue.
+    # Success-path worktree removal must tolerate untracked files without aborting the batch.
     _run_git("config", "status.showUntrackedFiles", "no", cwd=consumer[0])
     worker = (
         "printf done > result.py; git add result.py; git commit -m 'fix: worker'; "
@@ -3551,10 +3449,7 @@ def test_untracked_leftover_does_not_abort_batch_after_publish(
 def test_pr_create_failure_reports_orphaned_pushed_branch(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # The push lands the remote branch before `gh pr create` runs. If PR creation
-    # fails, the recovery message must name the already-pushed branch so the
-    # operator can open the PR or delete it — otherwise a re-run (new RUN_TAG)
-    # orphans the first branch and double-PRs the issue.
+    # If PR creation fails after push, recovery message must name the pushed branch.
     result = _run(
         consumer,
         ["--issues", "23"],
@@ -3564,7 +3459,6 @@ def test_pr_create_failure_reports_orphaned_pushed_branch(
     )
     assert result.returncode != 0
     assert "could not create draft PR after publishing remote branch" in result.stderr
-    # The push really happened, so the branch exists on the remote.
     remote_branches = _run_git(
         "for-each-ref",
         "--format=%(refname:short)",
@@ -3577,8 +3471,7 @@ def test_pr_create_failure_reports_orphaned_pushed_branch(
 def test_malformed_ready_payload_is_a_hard_error_not_empty_backlog(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # ready.py exiting 0 with a non-array payload must be a hard error, not read
-    # as "no work" (which would exit 0 and look like an empty backlog).
+    # ready.py returning non-array payload must fail as a hard error.
     result = _run(
         consumer,
         [],
@@ -3594,10 +3487,7 @@ def test_malformed_ready_payload_is_a_hard_error_not_empty_backlog(
 def test_backstop_recovery_is_accurate_when_no_worktree_exists(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Force a bare `set -e` abort before the worktree is created: point
-    # worktree_root at a regular file so `mkdir -p` fails. The on_exit backstop
-    # must fire, and recovery_message must NOT claim a worktree is preserved at a
-    # path that was never created.
+    # Abort before worktree creation must not report a nonexistent worktree path.
     worktree_file = tmp_path / "worktrees-as-file"
     worktree_file.write_text("not a directory\n", encoding="utf-8")
     result = _run(
@@ -3614,9 +3504,7 @@ def test_backstop_recovery_is_accurate_when_no_worktree_exists(
 def test_timeout_with_committed_work_does_not_retry(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # A timeout that fires AFTER the worker committed must not retry on top of
-    # that work — the retry gate is `worktree_has_work`, which a committed change
-    # trips regardless of the timeout exit code (124/137).
+    # Worker timeout after committing work must not retry on top of existing work.
     worker = (
         "printf done > result.py; git add result.py; "
         "git commit -m 'fix: committed then hung'; sleep 5"
@@ -3655,9 +3543,7 @@ def test_review_budget_config_fails_before_issue_mutation(
     message: str,
 ) -> None:
     config = _config(tmp_path, **{config_key: config_value})
-    # Deliberately not --dry-run: that short-circuits before the claim on every
-    # path, so it would satisfy the gh-log assertion below whether or not config
-    # validation ran.
+    # Run full path without --dry-run to verify config validation before claim.
     result = _run(
         consumer,
         ["--issues", "27"],
