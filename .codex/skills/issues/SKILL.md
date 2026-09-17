@@ -1,6 +1,6 @@
 ---
 name: issues
-description: GitHub issue workflow — work an issue end to end (claim, worktree, implement, draft PR), ready queue with dependency resolution, claim, close, link
+description: GitHub issue workflow — work an issue end to end (scope check, claim, worktree, implement, draft PR), view one read-only, ready queue with dependency resolution, claim, close, link
 ---
 
 # issues
@@ -9,7 +9,7 @@ Thin workflow over `gh issue` with a smart **ready** query that parses `Blocked 
 
 **Arguments**: `$ARGUMENTS`
 
-Dispatch on the first word of `$ARGUMENTS`. A bare issue number (`issues 123`) means `start 123`. If `$ARGUMENTS` is empty, default to `ready`.
+Dispatch on the first word of `$ARGUMENTS`. A bare issue number (`issues 123`) means `start 123`, which claims and implements it; use `show 123` to only read it. If `$ARGUMENTS` is empty, default to `ready`.
 
 ---
 
@@ -85,12 +85,18 @@ gh issue comment <n> --body-file /tmp/issue-comment.md
 
 ## start \<n\> \[--setup-only\]
 
-Take the issue from trigger to an open draft PR in one run: claim, isolate, implement, validate, publish. `--setup-only` stops after step 2.
+Take the issue from trigger to an open draft PR in one run: claim, isolate, implement, validate, publish. `--setup-only` runs steps 1–2 — the scope check included — and stops once the worktree exists.
 
 Stop and report — rather than guessing — when:
 
 - the issue is closed, assigned to someone else, labeled `status: blocked`, or lists an open `Blocked by` / `Depends on` ref;
-- an open PR already closes it (`gh pr list --search "<n> in:body" --state open`);
+- an open PR already closes it. GitHub only records closing links for PRs into the default branch, so also match closing keywords in the body (a PR into an integration branch has none):
+
+  ```bash
+  gh pr list --state open --limit 200 --json number,body,closingIssuesReferences \
+    --jq '.[] | select(any(.closingIssuesReferences[]; .number == <n>) or ((.body // "") | test("(?i)\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#<n>\\b"))) | .number'
+  ```
+
 - the issue fails the scope check in step 1.
 
 ### 1. Read, check scope, claim
@@ -128,11 +134,22 @@ git fetch origin "$base"
 git worktree add "../$(basename "$PWD")-issue-<n>" -b "fix/issue-<n>-$slug" "origin/$base"
 ```
 
-Use the repo's own worktree location or branch-prefix convention instead when AGENTS.md sets one (`feat/` for a feature issue). Do all remaining work inside the worktree. Done when `git rev-parse --show-toplevel` prints the worktree path.
+Use the repo's own worktree location or branch-prefix convention instead when AGENTS.md sets one (`feat/` for a feature issue). Note the resolved base branch name: shell variables do not survive into later commands, so steps 3–5 write it out literally as `<base>`. Do all remaining work inside the worktree. Done when `git rev-parse --show-toplevel` prints the worktree path.
 
 ### 3. Implement
 
-Make the change the issue asks for, in the layer it names, and add tests that encode each stated invariant. A regression test must fail against the base branch: run it once against the original file before relying on it. Track multi-part issues with update_plan.
+For a bug whose issue describes symptoms but not a verified cause, run `diagnosing-bugs` first and fix the cause it finds; an issue that already names the cause and the code path goes straight to the change.
+
+Make the change the issue asks for, in the layer it names, and add tests that encode each stated invariant. Show each regression test fails without the fix by restoring the base version of the changed source file, running the test, and putting your version back:
+
+```bash
+cp <path> <scratch>/<file>.fixed
+git show origin/<base>:<path> > <path>
+<run the test — it must fail>
+cp <scratch>/<file>.fixed <path>
+```
+
+Use this copy-and-restore rather than `git stash`, whose stack is shared by every worktree of the repository and can hand another session's work back to you. Track multi-part issues with update_plan.
 
 Most lookups here are two greps and a read, and belong inline. Reach for delegation only where this session supports it and the lookup is both genuinely independent and too large for a handful of tool calls — a sweep across many files or repos. State a word ceiling on what it returns.
 
@@ -148,12 +165,12 @@ Run the typecheck, lint, and test commands AGENTS.md prescribes for the touched 
 git add <changed paths>
 git commit -m "<type>(<scope>): <summary>" -m "Closes #<n>"
 git push -u origin HEAD
-gh pr create --draft --base "$base" --title "<type>(<scope>): <summary>" --body-file /tmp/pr-body.md
+gh pr create --draft --base <base> --title "<type>(<scope>): <summary>" --body-file <body-file>
 ```
 
-The body (write it to a temp file first) states what changed, any behavior change a reviewer should know about, the validation commands with their results and the commit SHA, and `Closes #<n>`. Keep it under ~250 words.
+Write the body to a file unique to this run — the session scratch directory, or a path from `mktemp` — since a fixed `/tmp` name is shared by concurrent sessions. It states what changed, any behavior change a reviewer should know about, the validation commands with their results and the commit SHA, and `Closes #<n>`. Keep it under ~250 words.
 
-Done when `gh pr view --json url,isDraft,baseRefName` shows a draft against `$base`. Report the PR URL, the worktree path, and anything left undone. Review runs afterwards in a fresh session, per .codex/REVIEW_WORKFLOW.md; do not start it from this one.
+Done when `gh pr view --json url,isDraft,baseRefName` shows a draft against `<base>`. Report the PR URL, the worktree path, and anything left undone. Review runs afterwards in a fresh session, per .codex/REVIEW_WORKFLOW.md; do not start it from this one.
 
 ---
 
