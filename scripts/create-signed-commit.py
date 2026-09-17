@@ -124,11 +124,7 @@ def _compile_case_insensitive(pattern: str) -> re.Pattern[str]:
     return re.compile(glob_to_regex(pattern).pattern, re.IGNORECASE)
 
 
-# The engine's write/delete admission policy, carried verbatim so payload
-# mode gates an untrusted manifest with the same rules `sync-engine.py`
-# applies to a checkout. Kept as a copy (like `glob_to_regex`) because the
-# scripts ship as standalone hyphenated files; the parity test in
-# `tests/test_create_signed_commit.py` pins these tuples to the engine's.
+# Write/delete admission policy matching sync-engine.py.
 SENSITIVE_DELETE_PATTERNS: tuple[str, ...] = (
     ".github/workflows/**",
     ".github/actions/**",
@@ -244,11 +240,6 @@ def validate_payload_paths(
         )
         raise ValueError("invalid consumer allowlist")
     patterns = [glob_to_regex(pattern) for pattern in allowed]
-    # Mirror the engine's explicit None-vs-type-error handling rather than
-    # `... or []`: a falsy scalar (`skip_targets: ""`, `0`, `false`) would
-    # otherwise coalesce to `[]` before the type check and silently drop the
-    # consumer's opt-outs, while a truthy scalar errors — a fail-open the
-    # engine side of this PR deliberately closed.
     skip_raw = document.get("skip_targets")
     if skip_raw is None:
         skipped_paths: set[str] = set()
@@ -258,10 +249,7 @@ def validate_payload_paths(
     else:
         skipped_paths = set(skip_raw)
 
-    # Per-file consent for sensitive writes. Absent means deny (no fail-open
-    # migration phase — an unconsented sensitive write is a hard refusal);
-    # present-but-null is a config error; entries must be literal canonical
-    # sensitive paths, never globs.
+    # Sensitive writes require explicit literal paths in allow_sensitive_writes.
     sensitive_grant: set[str] = set()
     if "allow_sensitive_writes" in document:
         grant_raw = document.get("allow_sensitive_writes")
@@ -287,10 +275,6 @@ def validate_payload_paths(
                 raise ValueError("invalid sensitive-write allowlist")
             sensitive_grant.add(canonical_entry)
 
-    # The trusted config may be copied to an arbitrary publish-job path, so
-    # its local basename cannot identify the repository path it represents.
-    # The caller supplies that destination explicitly and it is validated by
-    # the same canonical-path rules as manifest entries.
     config_store_path = _canonical_manifest_path(config_destination)
     if config_store_path is None:
         sys.stderr.write(f"unsafe consumer config destination: {config_destination!r}\n")
@@ -448,13 +432,11 @@ def parse_status_bytes(raw: str) -> StatusChanges:
         i += 1
         if not entry:
             continue
-        # Format: "XY path" — XY are the 2-char status codes; path is at
-        # column 3. With -z, paths are never quoted.
+        # Porcelain -z format: "XY path" with path starting at index 3.
         code = entry[:2]
         path = entry[3:]
 
-        # Renames (R) and copies (C) are followed by a separate
-        # NUL-terminated string carrying the source path. Consume it.
+        # Consume subsequent NUL-delimited source path for renames and copies.
         if "R" in code or "C" in code:
             old_path = parts[i] if i < len(parts) else ""
             i += 1
@@ -462,16 +444,9 @@ def parse_status_bytes(raw: str) -> StatusChanges:
                 raise ValueError("status manifest is truncated (rename/copy source is missing)")
             upserts.append(path)
             if "R" in code and old_path:
-                # Pure rename: source path is removed from the new tree.
                 deletes.append(old_path)
-            # For copies (C), the source stays in place — no delete.
             continue
 
-        # Trust the git status code: `D` is a delete regardless of whether
-        # the file currently exists on disk. Re-checking `.exists()` here
-        # introduced a TOCTOU window where a recreated file would be
-        # misclassified as an upsert and re-uploaded to the tree instead
-        # of removed from it.
         if "D" in code:
             deletes.append(path)
         else:
@@ -482,16 +457,6 @@ def parse_status_bytes(raw: str) -> StatusChanges:
 
 def parse_status(consumer_dir: Path) -> StatusChanges:
     """Return (modified_or_added, deleted) file paths relative to consumer_dir."""
-    # `git status --porcelain` covers tracked + untracked, staged + unstaged.
-    # That's the right scope: anything the sync engine touched shows up.
-    #
-    # `-uall` (untracked-files=all) is critical: without it, an untracked
-    # directory is reported as a single `?? path/` entry instead of one
-    # entry per file inside. Reading bytes from a directory entry raises
-    # IsADirectoryError. With `-uall`, every untracked file is listed
-    # individually — which is what's needed to create a blob per file.
-    # This case shows up the first time a new skill (whose directory
-    # didn't previously exist on the consumer) gets synced.
     raw = run("git", "status", "--porcelain=v1", "-z", "-uall", cwd=consumer_dir)
     return parse_status_bytes(raw)
 
@@ -582,16 +547,12 @@ def main() -> int:
 
     # Refuse to force-update the base branch onto itself. A typo / hostile
     # caller passing `--new-branch == --base-branch` would otherwise fast-
-    # forward main onto the sync commit via the force PATCH at the end.
     if args.new_branch == args.base_branch:
         sys.stderr.write(
             f"refusing to operate: --new-branch and --base-branch are the same ({args.new_branch})\n"
         )
         return 2
 
-    # Exactly one mode. `--payload-dir` without `--manifest` (or the other
-    # way round) is a half-configured payload job, not a fallback to
-    # consumer mode.
     payload_mode = args.payload_dir is not None or args.manifest is not None
     consumer_mode = args.consumer_dir is not None
     if payload_mode == consumer_mode:
@@ -625,15 +586,7 @@ def main() -> int:
         assert args.manifest is not None
         assert args.config is not None
         assert args.config_destination is not None
-        # The config is what gives this gate its authority: it supplies
-        # `allowed_destinations`, `skip_targets`, and
-        # `allow_sensitive_writes`. A config read out of the payload tree
-        # would let the lower-privilege build job that produced that tree
-        # ship its own admission policy, so the gate would be handed its
-        # own rules rather than defeated. Refuse structurally instead of
-        # trusting the caller to wire it correctly — pointing `--config`
-        # at the payload copy is the natural mistake, since that is where
-        # the config sits in a real checkout.
+        # Config must reside outside the payload tree to maintain the trust boundary.
         if args.config.resolve().is_relative_to(tree_dir):
             sys.stderr.write(
                 f"--config must live outside the payload tree, but "
@@ -643,11 +596,7 @@ def main() -> int:
         if not args.manifest.is_file():
             sys.stderr.write(f"manifest file not found: {args.manifest}\n")
             return 1
-        # `surrogateescape` preserves non-UTF-8 bytes in filenames
-        # losslessly, so a hostile or corrupt byte survives the decode as a
-        # surrogate and is rejected explicitly by `_canonical_manifest_path`
-        # (surrogates are non-printable) instead of the decode itself
-        # throwing an unhandled `UnicodeDecodeError`.
+        # Use surrogateescape to decode unprintable/invalid bytes for explicit rejection.
         raw_manifest = args.manifest.read_text(encoding="utf-8", errors="surrogateescape")
         try:
             changes = validate_payload_paths(
@@ -665,11 +614,6 @@ def main() -> int:
         return 0
     print(f"Changes detected: {len(changes.upserts)} upsert, {len(changes.deletes)} delete")
 
-    # The base SHA the payload was rendered against, when the caller has
-    # one. A payload built from an older base could otherwise silently
-    # revert commits that landed on the base branch in between — the new
-    # tree is rooted at whatever HEAD is *now*, but its file contents were
-    # rendered from *then*.
     expected_base_sha: str | None = None
     if args.base_sha_file is not None:
         if not args.base_sha_file.is_file():
@@ -679,13 +623,6 @@ def main() -> int:
     elif args.expected_base_sha is not None:
         expected_base_sha = args.expected_base_sha.strip()
 
-    # An empty or malformed pin must fail, not silently disarm the
-    # divergence guard below (`if expected_base_sha and ...` treats "" as
-    # "no pin"). A truncated artifact, a `> file` of a failed command, or —
-    # in payload mode, where this file rides in the untrusted artifact — a
-    # hostile build job all produce an empty file; each must be a config
-    # error, not a skipped check. Presence of the flag is opt-in; a bad
-    # value once opted in is fatal.
     if expected_base_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", expected_base_sha):
         sys.stderr.write(
             f"expected base SHA is not a 40-character hex commit id: {expected_base_sha!r}\n"
@@ -705,21 +642,12 @@ def main() -> int:
     base_commit = github_api("GET", f"/repos/{owner_repo}/git/commits/{base_sha}", token)
     base_tree_sha = base_commit["tree"]["sha"]
 
-    # 2. Build the tree-entry list:
-    #    - For upserts: create a blob, reference it
-    #    - For deletes: tree entry with sha=null (omits from new tree)
+    # 2. Build tree entries: create blobs for upserts, set sha=None for deletes.
     tree: list[dict[str, Any]] = []
 
     for path in changes.upserts:
         full = tree_dir / path
-        # Even with `-uall`, an upsert path that isn't a regular file
-        # (broken symlink, socket, directory) is a hard error: skipping it
-        # silently would let the sync claim success while quietly dropping
-        # files from the tree. A symlink — even one to a regular file — is
-        # rejected too: `read_bytes` would upload the *target's* content
-        # under the link's path, and a link pointing outside the tree would
-        # exfiltrate whatever the runner can read into the commit. Fail
-        # loudly instead.
+        # Symlinks and non-regular files are rejected to prevent path traversal and exfiltration.
         if full.is_symlink() or not full.is_file() or not full.resolve().is_relative_to(tree_dir):
             sys.stderr.write(f"  ❌ upsert path is not a regular file: {path}\n")
             return 1
@@ -730,13 +658,11 @@ def main() -> int:
             token,
             {"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
         )
-        # Preserve executable bit (sync targets like ready.py, link.py
-        # carry mode 0755).
+        # Preserve executable bit.
         mode = "100755" if os.access(full, os.X_OK) else "100644"
         tree.append({"path": path, "mode": mode, "type": "blob", "sha": blob["sha"]})
 
     for path in changes.deletes:
-        # `sha: null` removes the path from the resulting tree.
         tree.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
 
     # 3. Create the new tree (rooted at base_tree, with the entries above applied).
@@ -747,13 +673,7 @@ def main() -> int:
         {"base_tree": base_tree_sha, "tree": tree},
     )
 
-    # 4. Create the commit. GitHub auto-signs commits created via this
-    #    endpoint when the token is from a GitHub App — committer becomes
-    #    "GitHub", verification: valid.
-    #
-    #    The Signed-off-by trailer is appended when `--app-slug` is given,
-    #    so consumers that gate PRs on DCO accept the resulting commit
-    #    without needing a per-consumer bot exemption.
+    # 4. Create the commit.
     full_message = (
         with_signoff(args.message, derive_signoff_trailer(args.app_slug))
         if args.app_slug
@@ -766,10 +686,7 @@ def main() -> int:
         {"message": full_message, "tree": new_tree["sha"], "parents": [base_sha]},
     )
 
-    # GitHub's commit endpoint can accept the commit even when the resulting
-    # signature is absent or unverified (e.g. a non-App token). Read it back
-    # and fail before publishing any ref unless GitHub explicitly attests
-    # the commit — "signed" is this script's contract, not a happy accident.
+    # Verify that GitHub explicitly signed and attested the commit before updating refs.
     verified_commit = github_api(
         "GET", f"/repos/{owner_repo}/git/commits/{new_commit['sha']}", token
     )
@@ -797,10 +714,7 @@ def main() -> int:
             {"ref": f"refs/heads/{args.new_branch}", "sha": new_commit["sha"]},
         )
     else:
-        # Force-update — the prior run on the same date may have left a
-        # branch behind. The sync workflow's `Open or refresh` step closes
-        # the prior PR and reuses the date-stamped branch, so a force
-        # update is the documented behavior.
+        # Force-update existing branch to refresh the sync commit.
         github_api(
             "PATCH",
             f"/repos/{owner_repo}/git/refs/heads/{args.new_branch}",

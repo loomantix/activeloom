@@ -100,56 +100,26 @@ RENDERED_SRC = PROMPTS_DIR / "skills"
 DECISIONS_DIR = REPO_ROOT / "docs" / "decisions"
 ALLOWLIST_PATH = DECISIONS_DIR / "parity-allowlist.yml"
 
-# Prompt roots in comparison order. Adjacent pairs are what get diffed
-# (`.claude`↔`.codex`, `.codex`↔`.agents`), which is enough to prove a
-# three-way match: agreement is transitive, so two pairs settle three roots.
-#
-# The residual *count* is a pair-sum and is not deduplicated. A divergence in
-# the middle root is unmatched in both pairs and is charged to both, so the
-# magnitude depends on where in this tuple a root sits — reordering the tuple
-# re-baselines every ceiling in the allowlist. That is over-counting, never
-# under-counting, so no divergence escapes on it; it is a reason to treat a
-# ceiling as a ratchet against itself rather than as a portable measurement.
-#
-# Pinned here rather than derived from the profiles, and the distinction
-# matters: a comparator that takes its subject list from the same declaration
-# it is checking cannot detect an error *in that declaration*. This is the
-# authority argument `render-prompts.py` makes for `SUPPORTED_PROFILE_ROOTS`,
-# and a scope-derivation module is the wrong shape to borrow here — its job is
-# that scope can never silently shrink, this one's job is that a difference can
-# never silently go unexamined.
-#
-# `check_root_coverage` is the other half of that trade: pinned as the
-# authority, then asserted against what the profiles actually declare, so a
-# root added to the profiles and not to this tuple fails loudly instead of
-# quietly going uncompared.
+# Prompt roots in comparison order; adjacent pairs are diffed transitively.
 ROOT_ORDER = (".claude", ".codex", ".agents")
 
-# Build artifacts that live inside a skill directory and are not part of it.
-# Same exclusions the renderer applies to its sources, for the same reason:
-# they are gitignored, so a reviewer never sees them, so the tool has to.
+# Build artifacts excluded from parity comparisons.
 IGNORED_DIR_NAMES = frozenset({"__pycache__"})
 IGNORED_SUFFIXES = (".pyc", ".pyo")
 
-# Vocabulary keys that name the engine from different angles and must collapse
-# to one token. See the module docstring.
+# Engine aliases collapsed to one token.
 ALIASES = {"ENGINE_ID": "ENGINE", "ENGINE_CLI": "ENGINE"}
 
-# Matched without regard to case: these are proper nouns that appear as
-# `claude`, `Claude`, and `CLAUDE` in the same paragraph.
+# Keys matched case-insensitively.
 CASE_INSENSITIVE_KEYS = frozenset({"ENGINE_ID", "ENGINE_CLI"})
 
-# Normalized structurally rather than by value — see the module docstring.
+# Keys normalized structurally rather than by value.
 STRUCTURAL_KEYS = frozenset({"INVOKE"})
 
-# A value made only of these characters is a single token and gets word
-# boundaries; anything else (a path, a phrase) is matched as written.
+# Tokens matched with word boundaries; others matched as written.
 TOKEN_RE = re.compile(r"[\w.-]+\Z")
 
-# Zero residuals says the copies agree. It does not say the copies are the only
-# thing that has to move. A per-line lint suppression keyed to a hand-maintained
-# path stops matching the moment that path becomes generated output, and the
-# failure lands on a file nobody edited.
+# Warning on zero-residual promotion impact.
 PROMOTION_CAVEAT = (
     "Zero residuals means single-sourceable, not automatically free to promote: "
     "promotion turns one hand-maintained path per root into one source plus three "
@@ -174,9 +144,7 @@ class ProfileLike(Protocol):
     values: dict[str, object]
 
 
-# --------------------------------------------------------------------------
-# vocabulary
-# --------------------------------------------------------------------------
+
 
 
 def _load_render_prompts() -> ModuleType:
@@ -264,8 +232,7 @@ def _value_pattern(value: str) -> re.Pattern[str]:
     indent and merged three lines into one. Anything the diff would have seen
     in that whitespace disappeared with it, which is the fail-open direction.
     """
-    # `re.split` brackets the value with empty strings when it starts or ends
-    # on whitespace, so the edges have to be found after those are dropped.
+    # Find edges after dropping empty splits from leading/trailing whitespace.
     splits = [part for part in re.split(r"(\s+)", value) if part]
     edges = {0, len(splits) - 1}
     parts = [
@@ -276,11 +243,7 @@ def _value_pattern(value: str) -> re.Pattern[str]:
         raise ParityError("cannot build a pattern for an empty value")
     body = "".join(parts)
     if TOKEN_RE.match(value) is not None:
-        # Asymmetric on purpose. The lookbehind excludes `.` and `-` so a bare
-        # `claude` rule cannot rewrite the tail of `.claude/MODEL_NOTES.md`
-        # after the longer path rules have had their chance at it. The
-        # lookahead must NOT exclude `.`, or the same rule would miss every
-        # occurrence that ends a sentence.
+        # Lookbehind excludes '.' and '-' to protect paths; lookahead allows '.' for sentence ends.
         body = rf"(?<![\w.-]){body}(?![\w-])"
     return re.compile(body)
 
@@ -337,18 +300,11 @@ def build_rules(
     for profile in profiles:
         root = profile.root
         declared: dict[str, object] = dict(profile.values)
-        # The renderer takes the prompt root from `root:` rather than from a
-        # value, so no profile declares it — but it is the single most common
-        # harness-specific string in the prose, and a parity diff that cannot
-        # see through `.claude/MODEL_NOTES.md` vs `.agents/GEMINI_NOTES.md`
-        # is not measuring divergence, it is measuring spelling.
         declared["ROOT"] = root
-        # A `None` is legal in a profile (the renderer's collapse-key contract)
-        # and has no text to reverse-substitute, so it is dropped here rather
-        # than crashing the lint on a valid profile.
+        # Drop None values allowed by profile schema.
         by_root[root] = {k: v for k, v in declared.items() if isinstance(v, str)}
 
-    # A key empty anywhere is deleted everywhere; see the module docstring.
+    # Keys empty on any profile are deleted everywhere.
     empty_anywhere = {
         key
         for values in by_root.values()
@@ -404,9 +360,7 @@ def normalize(text: str, rules: list[Rule]) -> str:
     return text
 
 
-# --------------------------------------------------------------------------
-# the skill trees
-# --------------------------------------------------------------------------
+
 
 
 def rendered_roster() -> set[str]:
@@ -469,9 +423,7 @@ def _read(path: Path) -> str | None:
         return None
 
 
-# --------------------------------------------------------------------------
-# measurement
-# --------------------------------------------------------------------------
+
 
 
 @dataclass
@@ -541,12 +493,7 @@ def compare_pair(
             continue
 
         if left_text is None or right_text is None:
-            # Undecodable on at least one side. Identical bytes are still
-            # parity, so only a difference is a problem — and a difference here
-            # cannot be measured at all. Scoring it as one line would let a
-            # whole document's divergence sit under a ceiling of 1 and make the
-            # number in the allowlist untrue, so it is rejected the same way a
-            # symlink is: the payload has to become diffable text.
+            # Undecodable files must have identical bytes to satisfy parity.
             if left_path.read_bytes() != right_path.read_bytes():
                 raise ParityError(
                     f"{left}/skills/{skill}/{name} and {right}/skills/{skill}/{name} "
@@ -567,8 +514,7 @@ def compare_pair(
         )
         changed = [
             line
-            # Only the first two records are file headers. Real content can
-            # start with `--` or `++` (frontmatter and shell options included).
+            # Skip diff headers (first two lines).
             for line in delta[2:]
             if line.startswith(("+", "-"))
         ]
@@ -591,9 +537,7 @@ def measure(
     return results
 
 
-# --------------------------------------------------------------------------
-# the allowlist
-# --------------------------------------------------------------------------
+
 
 
 @dataclass(frozen=True)
@@ -658,9 +602,7 @@ def _parse_entry(path: Path, kind: str, raw: object) -> Entry:
 
     if kind == "recorded":
         raw_record = raw.get("record")
-        # One divergence can rest on more than one record — a specific one for
-        # the behaviour and the standing one for the lineage — so a list is
-        # accepted and a bare string is the one-record shorthand.
+        # Accept either a string or list of records.
         records = [raw_record] if isinstance(raw_record, str) else raw_record
         if not isinstance(records, list) or not records:
             raise ParityError(
@@ -669,10 +611,7 @@ def _parse_entry(path: Path, kind: str, raw: object) -> Entry:
         for record in records:
             if not isinstance(record, str) or not record:
                 raise ParityError(f"{path}: `{skill}` has a malformed `record` entry")
-            # The record is the whole point of the entry, so it is resolved
-            # against the filesystem rather than trusted as a string. A
-            # citation to a file nobody wrote is exactly the rot this lint
-            # exists to stop.
+            # Validate record path against filesystem.
             if "/" in record or record.startswith("."):
                 raise ParityError(
                     f"{path}: `{skill}` record must be a bare filename in "
@@ -686,15 +625,7 @@ def _parse_entry(path: Path, kind: str, raw: object) -> Entry:
         return Entry(skill, kind, ", ".join(records), reason, None)
 
     issue = raw.get("issue")
-    # `isinstance(True, int)` is true, so the bool guard is load-bearing here
-    # exactly as it is on `ceiling` below: `issue: true` would otherwise be
-    # accepted and cited as `#True`.
-    #
-    # The shape is checked; that the issue exists is not. A `record` is
-    # resolved against the filesystem because it costs a `stat`, and the
-    # asymmetry with an issue reference is deliberate — confirming one needs a
-    # network call, and a lint that fails on a rate limit or an expired token
-    # is a lint people learn to skip.
+    # Check issue number shape (bool excluded because bool subclasses int).
     if not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0:
         raise ParityError(f"{path}: `{skill}` needs an `issue` number to be held against")
     ceiling = raw.get("ceiling")
@@ -703,9 +634,7 @@ def _parse_entry(path: Path, kind: str, raw: object) -> Entry:
     return Entry(skill, kind, f"#{issue}", reason, ceiling)
 
 
-# --------------------------------------------------------------------------
-# verdicts
-# --------------------------------------------------------------------------
+
 
 
 def evaluate(
@@ -766,9 +695,7 @@ def evaluate(
     return violations, candidates
 
 
-# --------------------------------------------------------------------------
-# reporting
-# --------------------------------------------------------------------------
+
 
 
 def format_table(results: list[SkillResult], entries: dict[str, Entry]) -> str:
@@ -814,14 +741,8 @@ def _write_step_summary(candidates: list[str]) -> None:
         with open(destination, "a", encoding="utf-8") as handle:
             handle.write("\n".join(body))
     except OSError:
-        # A summary is a courtesy. Losing it must not fail an otherwise clean
-        # gate, and the same list is on stdout regardless.
+        # Ignore step summary write failures.
         pass
-
-
-# --------------------------------------------------------------------------
-# entry point
-# --------------------------------------------------------------------------
 
 
 def _skill_universe() -> Iterator[str]:
@@ -853,13 +774,7 @@ def main(argv: list[str] | None = None) -> int:
         rules = build_rules(profiles, set(_skill_universe()))
         results = measure(rules)
         entries = load_allowlist()
-    # `ValueError` is in this list because importing the renderer's loader
-    # means inheriting its failure modes, deliberately. This lint is a
-    # *consumer* of that reader rather than a second one, so a profile the
-    # renderer rejects must fail here too — and as a config error (exit 2),
-    # not as a parity violation (exit 1) or a traceback. Any validation the
-    # renderer grows arrives here automatically, which is the point: one
-    # reader of the profile schema, one verdict on what a valid profile is.
+    # Handle both parity and renderer profile validation errors as exit 2.
     except (ParityError, ValueError, OSError, yaml.YAMLError) as error:
         sys.stderr.write(f"prompt-parity: {error}\n")
         return 2

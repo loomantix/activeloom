@@ -52,10 +52,7 @@ from typing import cast
 
 import yaml
 
-# Where sibling scripts live, and where rendered output goes. Normally one is
-# the parent of the other, but they are different concepts and only `REPO_ROOT`
-# is a rendering destination — keeping them apart is what lets the tests point
-# the destination at a scratch tree without hiding `sync-engine.py`.
+# Script directory and default repo root destination.
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 PROMPTS_DIR = REPO_ROOT / "prompts"
@@ -63,105 +60,48 @@ SKILLS_SRC = PROMPTS_DIR / "skills"
 PROFILES_DIR = PROMPTS_DIR / "profiles"
 MANIFEST_PATH = PROMPTS_DIR / "rendered-files.txt"
 
-# The prompt stack's semantic version, single-sourced here and stamped into
-# every emitted stack manifest. It is not the sync protocol pin: that tag is
-# force-moved whenever content changes, so two consumers "on sync-v1" at
-# different times are running different prompts and the tag carries no content
-# identity. It is not `hashInputVersion` either — that versions the *hash input
-# definition*. This one versions the prompts themselves, and it is what makes a
-# telemetry comparison legible: a digest identifies a generation but does not
-# order two of them.
+# Prompt stack semantic version stamped into emitted stack manifests.
 VERSION_PATH = REPO_ROOT / "PROMPT_STACK_VERSION"
 
-# Deliberately strict. The value is emitted into a telemetry record through the
-# ledger's `--prompt-stack-version`, which accepts a protocol token — a looser
-# grammar than this. Anything that is not three dotted integers is a typo here,
-# and a typo that ships is a prompt generation nobody can order.
+# Strict MAJOR.MINOR.PATCH format required.
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
-# Emitted into each harness root that declares a `prompt_stack`. Read by that
-# root's `skills/critique/scripts/prompt-stack-hash.js`.
+# Stack manifest file emitted into each harness root declaring a prompt_stack.
 STACK_MANIFEST_NAME = "prompt-stack.json"
 
-# The manifest's own schema version, carried in the file so a consumer holding
-# an older synced copy is told what it is holding rather than guessed at. A
-# reader that does not recognise the value must abstain, not improvise.
+# Manifest schema version for synced consumers.
 STACK_MANIFEST_SCHEMA_VERSION = 1
 
-# Same pin as the `Prettier --check` step in `.github/workflows/ci.yml`. If one
-# moves and the other does not, CI fails on the renderer's own output — which is
-# the intended failure, but the fix is to move both.
+# Prettier version pinned to match CI.
 PRETTIER = "prettier@3.8.3"
 
-# Suffixes Prettier owns. Everything else is written through byte-for-byte.
+# Suffixes formatted with Prettier.
 FORMATTED_SUFFIXES = (".md",)
 
-# `FM_EXTRAS` is the one key whose placeholder sits alone on a line and must
-# take the line with it when the value is empty — a harness with no extra
-# frontmatter keys would otherwise get a blank line inside its YAML block.
-# Every other key is substituted inline, where an empty value is just an empty
-# string. Kept explicit rather than inferred so a new whole-line placeholder is
-# a deliberate addition.
+# Keys whose lines are dropped entirely when empty.
 COLLAPSE_KEYS = ("FM_EXTRAS",)
 
-# Rendering and deletion are intentionally confined to the harness roots this
-# repository ships. Adding a harness is a code-reviewed authority change, not a
-# side effect of adding an arbitrary profile file. A removed profile remains in
-# this set so its previously rendered outputs can be retired safely.
+# Supported harness roots for rendered outputs.
 SUPPORTED_PROFILE_ROOTS = frozenset({".agents", ".claude", ".codex"})
 
-# A removed source skill must be named here for the one render that retires its
-# old outputs, then may be removed after the generated-path manifest is clean.
-# This keeps retirement possible without letting the deletion manifest promote
-# an unrelated hand-authored skill into the renderer's ownership domain.
+# Skills pending retirement from rendered outputs.
 RETIRED_SKILLS: frozenset[str] = frozenset()
 
-# Documents that are single-sourced somewhere else in the repository and
-# vendored, verbatim, into the same relative path under every harness root.
-# Keys are repo-root-relative sources; values are the path below each root.
-#
-# These are not skills and not templates. The ledger protocol is the
-# engine-neutral contract `packages/review-ledger` implements, so the package is
-# the only place it can be authored without the document and the code that
-# enforces it drifting apart. Before this, each root's copy was updated by hand
-# from the package and nothing in the render gate compared them.
-#
-# Deliberately *not* substituted and deliberately not Prettier-formatted here.
-# Both would let a rendered copy differ from the source it is vendored from,
-# which is the one property every reader of these files relies on. The source
-# is covered by the repo-wide `Prettier --check` like any other Markdown, so an
-# unformatted source fails there rather than being silently reformatted into
-# three copies that no longer match it.
+# Documents single-sourced and vendored verbatim into each harness root.
 VENDORED_DOCUMENTS: dict[str, str] = {
     "packages/review-ledger/protocol/local-review-ledger.md": (
         "references/local-review-ledger.md"
     ),
 }
 
-# The `RETIRED_SKILLS` counterpart: a root-relative destination removed from
-# `VENDORED_DOCUMENTS` must be named here for the one render that deletes its
-# copies, then dropped once the generated-path inventory is clean. Without it a
-# dropped entry leaves three orphans the inventory still names and the ownership
-# domain no longer admits, which is a render that cannot be made to pass.
+# Vendored documents pending retirement.
 RETIRED_DOCUMENTS: frozenset[str] = frozenset()
 
-# Build artifacts that appear *inside* the source tree and must never be
-# rendered into a harness root. `prompts/skills/issues/scripts/*.py` are real
-# Python, so CI's `Compile-check every Python source` step (and any local
-# `py_compile` or import) drops `__pycache__/*.pyc` next to them. Those are
-# gitignored, so they are invisible in review, but `rglob("*")` sees them and
-# would copy stale bytecode into all three roots.
+# Build artifacts excluded from rendered outputs.
 IGNORED_DIR_NAMES = frozenset({"__pycache__"})
 IGNORED_SUFFIXES = (".pyc", ".pyo")
 
-# Deliberately looser than the engine's `<<KEY>>` pattern, because its whole
-# purpose is to catch tokens that pattern would *miss* — a key mangled into
-# `<<REVIEW*CHAIN_POINTER>>` is no longer a `<<KEY>>` but is still a bug.
-#
-# It must not, however, match a shell heredoc: `issues/SKILL.md` is a rendered
-# skill and contains `cat > /tmp/issue-body.md << 'BODY'`. Excluding whitespace
-# and quotes from the token body is what separates a placeholder-shaped run from
-# `<< 'BODY'`, `<<'PY'`, and `<<<"$VAR"`.
+# Matches placeholder residue while avoiding shell heredocs.
 RESIDUE_RE = re.compile(r"""<<[^<>\s'"]{1,80}>>""")
 
 
@@ -196,9 +136,7 @@ class Profile:
         root = doc.get("root")
         if not isinstance(root, str) or not root:
             raise ValueError(f"{path}: `root` must be a non-empty string")
-        # A profile root is joined to the repo root and must stay inside it.
-        # Profiles are checked-in config, not user input, but a rendering step
-        # that can be pointed at `/` by a typo is worth one cheap assertion.
+        # Validate profile root stays within repository.
         root_path = Path(root)
         if root.startswith("~") or root_path.is_absolute() or ".." in root_path.parts:
             raise ValueError(
@@ -215,9 +153,7 @@ class Profile:
                 f"{sorted(SUPPORTED_PROFILE_ROOTS)}; got {root!r}"
             )
 
-        # `is None` rather than a falsy test: an omitted key is fine and means
-        # "empty", but `values: []` is a malformed profile and must not be
-        # silently coerced to an empty mapping.
+        # Treat omitted values as empty, reject non-mapping values.
         values = doc.get("values")
         if values is None:
             values = {}
@@ -403,11 +339,7 @@ def verify_prompt_stack_version(
         raise ValueError(
             f"could not resolve prompt-stack comparison base {base_revision!r}"
         )
-    # Both ends of the comparison must come from the same commit. The diff below
-    # is scoped to what this branch changed, so the ordering value it is judged
-    # against has to be the one this branch started from — not the tip, which
-    # carries bumps that landed on the base branch after the fork and would read
-    # as a regression the branch never made.
+    # Compare against merge base to isolate branch changes.
     merged = subprocess.run(
         ["git", "merge-base", verified.stdout.strip(), "HEAD"],
         check=False,
@@ -445,9 +377,7 @@ def verify_prompt_stack_version(
 
     tracked = sorted(base_files | current_files | manifest_paths)
     changed = subprocess.run(
-        # Two-dot: `base` is already the merge base, so the three-dot form would
-        # recompute the same commit and only obscure that the version above and
-        # the diff here are anchored to it together.
+        # Two-dot diff anchored to merge base.
         ["git", "diff", "--quiet", f"{base}..HEAD", "--", *tracked],
         check=False,
         cwd=REPO_ROOT,
@@ -478,8 +408,7 @@ def load_profiles() -> list[Profile]:
             f"profiles share a root, so one would overwrite the other: {sorted(duplicates)}"
         )
 
-    # Keep the containment assertion even though the current supported roots
-    # are siblings. It protects the invariant if that explicit set is extended.
+    # Ensure profile roots do not nest.
     for outer in profiles:
         for inner in profiles:
             if outer is inner:
@@ -536,8 +465,7 @@ def render_tree(
                 target = destination / profile.root / "skills" / skill / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _render_file(engine, raw, source, profile, skill, target)
-                # Preserve the source's executable bit: the issues scripts are
-                # synced with `mode: '0755'` and are executed from the skill.
+                # Preserve source executable permissions.
                 shutil.copymode(source, target)
                 written.append(target.relative_to(destination))
     written.extend(render_documents(profiles, destination))
@@ -599,9 +527,7 @@ def _document_source(source_relative: str, root_relative: str) -> Path:
             f"{STACK_MANIFEST_NAME!r}: {root_relative!r}"
         )
     if root_path.parts[0] == "skills":
-        # A rendered skill directory is wholly owned by the skill render, so a
-        # document there could collide with a file that skill emits; a
-        # hand-authored skill directory is not the renderer's to write into.
+        # Vendored documents must not sit inside skill directories.
         raise ValueError(
             f"vendored document destination must not sit inside a rendered "
             f"skill directory: {root_relative!r}"
@@ -755,21 +681,14 @@ def _validate_generated_path(path: Path) -> None:
         raise ValueError(
             f"path is outside the renderer ownership domain: {path.as_posix()!r}"
         )
-    # The stack manifest is the one generated file that is not inside a skill
-    # directory. It is admitted by exact name at the top of a supported root and
-    # nothing else is, so widening the domain by one file does not widen the
-    # deletion authority the generated-path inventory carries.
+    # Permit the top-level stack manifest for supported roots.
     if (
         len(path.parts) == 2
         and path.parts[0] in SUPPORTED_PROFILE_ROOTS
         and path.parts[1] == STACK_MANIFEST_NAME
     ):
         return
-    # Vendored documents are the other generated files outside a skill
-    # directory. They are admitted by exact path — the full `<root>/<relative>`
-    # set `VENDORED_DOCUMENTS` produces — so the domain widens by the named
-    # files and not by the directories that contain them. `references/` holds
-    # hand-authored prompts in two roots and must not become renderer-owned.
+    # Permit exact paths of vendored documents.
     if path.as_posix() in vendored_document_destinations():
         return
     if (
@@ -896,9 +815,7 @@ def _remove_unowned(relative: Path) -> None:
     """Delete one unowned file after re-proving it is inside a skill we own."""
     _validate_generated_path(relative)
     if len(relative.parts) < 4 or relative.parts[1] != "skills":
-        # `_validate_generated_path` also admits `<root>/prompt-stack.json`,
-        # which the sweep never produces. Refuse anything that reached here by
-        # another route rather than trusting the shared validator's wider domain.
+        # Ensure path is inside a rendered skill directory.
         raise ValueError(
             f"refusing to remove a path outside a rendered skill directory: "
             f"{relative.as_posix()!r}"
@@ -920,8 +837,6 @@ def _publish_outputs(
     for relative in unowned:
         _remove_unowned(relative)
     for relative in sorted(set(previously_owned) - current):
-        # Belt and braces with `_load_manifest`: the deleting line revalidates
-        # both ownership and every existing path component.
         target = _destination_path(relative)
         if target.is_file() or target.is_symlink():
             target.unlink()
@@ -944,15 +859,7 @@ def _render_file(
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        # Not text, so not substitutable — copy it through untouched rather
-        # than corrupting it or refusing to render the whole roster.
-        #
-        # But byte-passthrough skips substitution *and* every guard below it,
-        # so a text file that merely fails to decode (one latin-1 smart quote
-        # is enough) would ship with its `<<KEY>>` placeholders intact into all
-        # three harness roots, exit 0, and then match itself on `--check`.
-        # Passthrough is for genuinely binary assets; a source carrying
-        # placeholder delimiters is text with an encoding defect.
+        # Pass binary files through, but reject invalid UTF-8 with delimiters.
         if _delimiter_residue(raw.decode("utf-8", "replace")):
             raise ValueError(
                 f"{source} is not valid UTF-8 but contains placeholder delimiters. "
@@ -964,11 +871,7 @@ def _render_file(
     values = profile.values_for(skill)
     found = sorted(set(engine.PLACEHOLDER_RE.findall(text)))
 
-    # `key not in values` catches an omitted key. A key written bare
-    # (`SKILLS_ROOT:`) parses as `None`, which the engine coerces to `""` — so
-    # without the second test a one-character edit renders `.//issues/...`
-    # into a harness root and exits 0. `COLLAPSE_KEYS` are exempt: an empty
-    # value is their normal state and the whole line is dropped.
+    # Catch omitted or None-valued keys (except COLLAPSE_KEYS).
     undefined = [
         key
         for key in found
@@ -980,10 +883,7 @@ def _render_file(
             f"{', '.join(undefined)}"
         )
 
-    # `target_keys` is the set actually present in this file, not everything the
-    # profile defines. A profile may legitimately carry vocabulary no rendered
-    # skill uses yet (the review-chain keys exist for skills still held back),
-    # and passing those would make the engine warn on every render.
+    # Pass only placeholders found in this file to avoid unused key warnings.
     rendered = engine.substitute(
         text,
         values,
@@ -991,14 +891,7 @@ def _render_file(
         source=str(source.relative_to(REPO_ROOT)),
         collapse_empty_substitutions=[k for k in COLLAPSE_KEYS if k in found],
     )
-    # Nothing that looks like a placeholder delimiter may survive into a
-    # harness root. The `undefined` check above only sees tokens that match the
-    # engine's `<<KEY>>` pattern, so it cannot catch a *mangled* one — and
-    # mangling is a real failure mode, not a hypothetical: Prettier's Markdown
-    # parser rewrote `<<REVIEW_CHAIN_POINTER>>` to `<<REVIEW*CHAIN_POINTER>>` by
-    # pairing its underscores with a neighbouring `_emphasis_` span, which then
-    # substituted nothing and rendered through verbatim. A blanket delimiter
-    # check costs nothing and closes the whole class.
+    # Check for mangled placeholder delimiters that survived substitution.
     residue = _delimiter_residue(rendered)
     if residue:
         raise ValueError(
@@ -1018,10 +911,7 @@ def _delimiter_residue(text: str) -> list[str]:
 
 def format_markdown(destination: Path, written: list[Path]) -> None:
     """Run Prettier over the rendered Markdown, in place."""
-    # Vendored documents are excluded: they are byte-for-byte copies of a
-    # source this repo already Prettier-checks in place, and formatting them
-    # here is the one way a copy could stop matching the file it is vendored
-    # from without anything failing.
+    # Vendored documents are already Prettier-checked at their source.
     vendored = vendored_document_destinations()
     targets = [
         str(destination / p)
@@ -1036,9 +926,7 @@ def format_markdown(destination: Path, written: list[Path]) -> None:
                 "npx",
                 "--yes",
                 PRETTIER,
-                # The rendered tree may be a temp dir outside the repo, where
-                # Prettier's config discovery would find nothing and silently
-                # fall back to its defaults. Name the config explicitly.
+                # Name config explicitly for staging trees outside repo root.
                 "--config",
                 str(REPO_ROOT / ".prettierrc"),
                 "--log-level",
@@ -1112,8 +1000,7 @@ def _report_drift(
     missing: list[Path] = []
     differing: list[Path] = []
     stale = sorted(set(previously_owned) - set(written))
-    # A stale path is already reported as stale; reporting it twice under a
-    # second name would suggest two problems where there is one.
+    # Exclude stale paths from unowned list to avoid duplicate reporting.
     unowned = [path for path in unowned if path not in set(stale)]
     for relative in written:
         committed = _destination_path(relative)
@@ -1166,9 +1053,7 @@ def _report_drift(
         )
     for relative in differing:
         sys.stderr.write(f"\n--- diff: {relative} ---\n")
-        # Capture and re-emit rather than handing `sys.stderr` to the child:
-        # under pytest (or any wrapped stream) it has no file descriptor and
-        # `subprocess` raises `io.UnsupportedOperation: fileno`.
+        # Capture and re-emit diff output to avoid fileno issues under pytest.
         diff = subprocess.run(
             ["diff", "-u", str(REPO_ROOT / relative), str(staging / relative)],
             check=False,
