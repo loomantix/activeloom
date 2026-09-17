@@ -2,13 +2,7 @@
 'use strict';
 
 /**
- * `npx activeloom` — the CLI door onto the toolkit.
- *
- * Four commands, mapping onto the four onboarding tiers plus two read-only
- * helpers. Argument parsing is hand-rolled and dependency-free on purpose: this
- * package is fetched and executed by `npx` before a user has decided to trust
- * it, so its install footprint is part of its argument. Zero dependencies means
- * zero transitive supply chain for that first run.
+ * CLI entry point mapping commands to onboarding tiers and helpers.
  */
 
 const { detect } = require('../lib/detect');
@@ -52,11 +46,7 @@ ${ui.dim('the CI sync workflow reads, so both doors deliver identical prompts.')
 `.trimStart();
 
 /**
- * Parse argv.
- *
- * Unknown flags are an error rather than a silent no-op: a mistyped `--forse`
- * that parsed as "no flags" would report success while having skipped the
- * behaviour the user asked for.
+ * Parse argv into command and options.
  *
  * @param {string[]} argv
  */
@@ -100,8 +90,7 @@ function parseArgs(argv) {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    // Everything after `review-config` belongs to the profile helper, which
-    // validates its own arguments; global options must precede the command.
+    // Pass subsequent arguments directly to the review-config helper.
     if (opts.command === 'review-config') {
       opts.positionals.push(...argv.slice(i));
       break;
@@ -210,7 +199,7 @@ function validateCommandArgs(opts, argv) {
     : null;
 }
 
-/** Print the tier ladder. Read-only; touches neither disk nor network. */
+/** Print the tier ladder. */
 function printTiers() {
   ui.info(
     ui.bold('The four tiers') +
@@ -233,9 +222,6 @@ function printTiers() {
 
 /**
  * Print detection results.
- *
- * Its own command because it is the thing to run when `init` chose something
- * surprising — it shows the same facts `init` decided on, with nothing written.
  *
  * @param {ReturnType<import('../lib/detect').detect>} facts
  */
@@ -313,8 +299,7 @@ async function main(argv) {
     return 0;
   }
 
-  // `--app` without `--sync` is accepted and resolves to Tier 3, but say so
-  // rather than silently reinterpreting the flags the user typed.
+  // Warn when --app is passed without --sync since Tier 3 implies --sync.
   if (opts.app && !opts.sync) {
     ui.warn('--app implies --sync; installing Tier 3.');
   }

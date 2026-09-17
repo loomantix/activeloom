@@ -1,23 +1,4 @@
-"""`npx activeloom init` delivers exactly what the CI sync delivers.
-
-This is the executable form of #786's acceptance criterion: "`init` on a
-triple-harness repo writes the same trees sync would deliver". It is an
-equivalence claim, so it is proved the way activeloom's other equivalence
-claims are — render both sides from one config and compare the bytes — rather
-than asserted in prose.
-
-The comparison is expected to be trivially true, and that is the design rather
-than a weakness of the test: `init` shells out to `scripts/sync-engine.py` with
-the same arguments the consumer workflow uses, so there is no second
-implementation that *could* drift. What this test actually pins is that the CLI
-keeps delegating instead of growing its own copy of the manifest walk — the day
-someone reimplements the engine in JavaScript "for speed", this goes red.
-
-Modes are compared alongside content because the manifest ships `0755` targets
-(`skills/issues/scripts/ready.py`) that are invoked directly. A copy that
-flattened permissions would pass a content-only diff and install a skill that
-silently cannot run its own helper.
-"""
+"""Verify `npx activeloom init` delivers byte- and mode-identical trees to sync-engine.py."""
 
 from __future__ import annotations
 
@@ -35,9 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CLI = REPO_ROOT / "cli" / "bin" / "activeloom.js"
 FIXTURE_CONFIG = REPO_ROOT / "tests" / "fixtures" / "render-check" / ".activeloom-config.yml"
 
-# Written by `init` but not by the sync engine: the CLI's own outputs. They are
-# additions on top of an identical synced tree, not divergences within it, so
-# the comparison excludes them by name rather than by pattern.
+# Outputs written by init but not sync-engine.py.
 CLI_ONLY = frozenset(
     {
         ".activeloom-config.yml",
@@ -52,12 +31,7 @@ def _require(binary: str) -> None:
 
 
 def _init_git_repo(path: Path) -> None:
-    """A consumer `init` will accept: a git repo with a GitHub origin.
-
-    `init` refuses to run outside a git repository, and tiers 2+ additionally
-    require a GitHub remote. This builds the minimum that satisfies both, with
-    no network access.
-    """
+    """Initialize a git repo with an origin remote to satisfy init preconditions."""
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
     subprocess.run(
         ["git", "remote", "add", "origin", "https://github.com/example/consumer.git"],
@@ -75,22 +49,13 @@ def _copy_config(path: Path, tier_flags: list[str]) -> None:
     """Write the same valid config policy both doors receive for this tier."""
     body = FIXTURE_CONFIG.read_text(encoding="utf-8")
     if "--sync" in tier_flags:
-        # Tier 2 runs its workflow with GITHUB_TOKEN, which cannot push a
-        # workflow-file update. Model the policy its initializer requires on
-        # both sides so this remains an engine/CLI equivalence proof rather
-        # than an assertion that an unsafe Tier 1 config should be accepted.
+        # Tier 2 workflow uses GITHUB_TOKEN and must skip workflow target updates.
         body += "\nskip_targets:\n  - .github/workflows/dco.yml\n"
     path.write_text(body, encoding="utf-8")
 
 
 def _tree(root: Path) -> dict[str, int]:
-    """Map every file under `root` to its permission bits.
-
-    Directories are not listed in their own right: an empty directory on one
-    side and not the other shows up as a missing file, and a directory that
-    holds files is implied by them. Symlinks are excluded because the shipped
-    surface contains none, so one appearing is a separate bug from this one.
-    """
+    """Map every file under `root` to its permission bits."""
     out: dict[str, int] = {}
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = Path(dirpath).relative_to(root)
@@ -116,7 +81,6 @@ def test_init_writes_what_sync_writes(tmp_path: Path, tier_flags: list[str]) -> 
     _require("node")
     _require("git")
 
-    # --- side A: the engine, invoked exactly as the consumer workflow does ---
     via_sync = tmp_path / "via-sync"
     via_sync.mkdir()
     _copy_config(via_sync / ".activeloom-config.yml", tier_flags)
@@ -134,14 +98,10 @@ def test_init_writes_what_sync_writes(tmp_path: Path, tier_flags: list[str]) -> 
     )
     assert engine.returncode == 0, engine.stderr
 
-    # --- side B: the CLI ---------------------------------------------------
     via_cli = tmp_path / "via-cli"
     via_cli.mkdir()
     _init_git_repo(via_cli)
-    # The same config, placed before the run. `init` keeps an existing config
-    # rather than overwriting it, which is what makes the two sides comparable:
-    # a generated config would carry this repo's detected values and substitute
-    # different content into `.github/copilot-instructions.md`.
+    # Pre-placed config avoids detected substitutions so outputs are comparable.
     _copy_config(via_cli / ".activeloom-config.yml", tier_flags)
     cli = subprocess.run(
         [
@@ -161,14 +121,10 @@ def test_init_writes_what_sync_writes(tmp_path: Path, tier_flags: list[str]) -> 
     )
     assert cli.returncode == 0, cli.stdout + cli.stderr
 
-    # --- compare ------------------------------------------------------------
     sync_tree = _tree(via_sync)
     cli_tree = _tree(via_cli)
 
-    # Tier 2 additionally installs the sync workflow, which the engine does not
-    # ship. Account for it explicitly rather than filtering `.github/workflows`
-    # wholesale — the engine *does* ship `dco.yml` there, and a filter broad
-    # enough to hide the CLI's workflow would hide a real divergence in that one.
+    # Tier 2 installs the sync workflow, which the sync engine does not ship.
     workflow = ".github/workflows/sync-from-upstream.yml"
     if "--sync" in tier_flags:
         assert workflow in cli_tree, "tier 2 must install the sync workflow"
@@ -187,9 +143,7 @@ def test_init_writes_what_sync_writes(tmp_path: Path, tier_flags: list[str]) -> 
     }
     assert not mode_diffs, f"permission bits differ (sync, cli): {mode_diffs}"
 
-    # `shallow=False` forces a content read. The default compares stat
-    # signatures, and two files written seconds apart with the same size would
-    # compare equal without either being opened.
+    # shallow=False forces content comparison over stat signatures.
     match, mismatch, errors = filecmp.cmpfiles(
         via_sync, via_cli, list(sync_tree), shallow=False
     )
@@ -199,13 +153,7 @@ def test_init_writes_what_sync_writes(tmp_path: Path, tier_flags: list[str]) -> 
 
 
 def test_init_refuses_to_sync_a_tree_into_itself(tmp_path: Path) -> None:
-    """The guard that a self-sync would otherwise delete source files.
-
-    The manifest carries `delete: true` retirement targets, so running the
-    engine with the upstream as its own consumer removes files from the
-    upstream working tree while reporting a successful sync. This is reachable
-    by typing something reasonable, so it is refused rather than documented.
-    """
+    """Verify that init refuses to sync an upstream repository into itself."""
     _require("node")
 
     result = subprocess.run(
@@ -297,7 +245,7 @@ def test_init_refuses_selected_consumer_symlinks_before_writing(
 
 
 def test_init_refuses_a_non_repository(tmp_path: Path) -> None:
-    """`init` writes files a team commits, so it needs a repository to be in."""
+    """Verify init refuses a non-repository consumer directory."""
     _require("node")
 
     result = subprocess.run(
@@ -308,8 +256,6 @@ def test_init_refuses_a_non_repository(tmp_path: Path) -> None:
     assert result.returncode == 1
     combined = result.stdout + result.stderr
     assert "not a git repository" in combined
-    # The refusal has to name the tier that *does* work without a repo, or a
-    # first-time user reads it as "this tool does not work here".
     assert "activeloom add" in combined
 
 
@@ -317,15 +263,7 @@ def test_init_refuses_a_non_repository(tmp_path: Path) -> None:
 def test_init_generated_config_is_accepted_by_the_engine(
     tmp_path: Path, tier_flags: list[str]
 ) -> None:
-    """A config `init` writes itself gets through the real engine at its tier.
-
-    Every other `init` test either pre-places a config or stubs the engine, so
-    the tier-specific policy `renderConfig` emits — the `dco.yml` sensitive
-    write at Tier 1, the `skip_targets` exclusion at Tier 2 — was reachable
-    only by hand. Dropping the tier from that call would leave the suite green
-    while every fresh Tier 2 consumer received a config whose first sync tries
-    to push a workflow file with `GITHUB_TOKEN`.
-    """
+    """Verify generated config is accepted by the sync engine for the selected tier."""
     _require("node")
     _require("git")
 
