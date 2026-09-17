@@ -545,8 +545,7 @@ def main() -> int:
         sys.stderr.write(f"missing token in env var {args.token_env}\n")
         return 2
 
-    # Refuse to force-update the base branch onto itself. A typo / hostile
-    # caller passing `--new-branch == --base-branch` would otherwise fast-
+    # Prevent force-updating the base branch onto itself.
     if args.new_branch == args.base_branch:
         sys.stderr.write(
             f"refusing to operate: --new-branch and --base-branch are the same ({args.new_branch})\n"
@@ -629,7 +628,6 @@ def main() -> int:
         )
         return 1
 
-    # 1. Resolve the base branch's HEAD commit + tree.
     base_ref = github_api("GET", f"/repos/{owner_repo}/git/ref/heads/{args.base_branch}", token)
     base_sha = base_ref["object"]["sha"]
 
@@ -642,7 +640,6 @@ def main() -> int:
     base_commit = github_api("GET", f"/repos/{owner_repo}/git/commits/{base_sha}", token)
     base_tree_sha = base_commit["tree"]["sha"]
 
-    # 2. Build tree entries: create blobs for upserts, set sha=None for deletes.
     tree: list[dict[str, Any]] = []
 
     for path in changes.upserts:
@@ -658,14 +655,12 @@ def main() -> int:
             token,
             {"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
         )
-        # Preserve executable bit.
         mode = "100755" if os.access(full, os.X_OK) else "100644"
         tree.append({"path": path, "mode": mode, "type": "blob", "sha": blob["sha"]})
 
     for path in changes.deletes:
         tree.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
 
-    # 3. Create the new tree (rooted at base_tree, with the entries above applied).
     new_tree = github_api(
         "POST",
         f"/repos/{owner_repo}/git/trees",
@@ -673,7 +668,6 @@ def main() -> int:
         {"base_tree": base_tree_sha, "tree": tree},
     )
 
-    # 4. Create the commit.
     full_message = (
         with_signoff(args.message, derive_signoff_trailer(args.app_slug))
         if args.app_slug
@@ -702,7 +696,6 @@ def main() -> int:
         )
         return 1
 
-    # 5. Create or force-update the new-branch ref.
     existing = github_api_optional(
         "GET", f"/repos/{owner_repo}/git/ref/heads/{args.new_branch}", token
     )
@@ -714,7 +707,6 @@ def main() -> int:
             {"ref": f"refs/heads/{args.new_branch}", "sha": new_commit["sha"]},
         )
     else:
-        # Force-update existing branch to refresh the sync commit.
         github_api(
             "PATCH",
             f"/repos/{owner_repo}/git/refs/heads/{args.new_branch}",
