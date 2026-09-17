@@ -103,23 +103,17 @@ ALLOWLIST_PATH = DECISIONS_DIR / "parity-allowlist.yml"
 # Prompt roots in comparison order; adjacent pairs are diffed transitively.
 ROOT_ORDER = (".claude", ".codex", ".agents")
 
-# Build artifacts excluded from parity comparisons.
 IGNORED_DIR_NAMES = frozenset({"__pycache__"})
 IGNORED_SUFFIXES = (".pyc", ".pyo")
 
-# Engine aliases collapsed to one token.
 ALIASES = {"ENGINE_ID": "ENGINE", "ENGINE_CLI": "ENGINE"}
 
-# Keys matched case-insensitively.
 CASE_INSENSITIVE_KEYS = frozenset({"ENGINE_ID", "ENGINE_CLI"})
 
-# Keys normalized structurally rather than by value.
 STRUCTURAL_KEYS = frozenset({"INVOKE"})
 
-# Tokens matched with word boundaries; others matched as written.
 TOKEN_RE = re.compile(r"[\w.-]+\Z")
 
-# Warning on zero-residual promotion impact.
 PROMOTION_CAVEAT = (
     "Zero residuals means single-sourceable, not automatically free to promote: "
     "promotion turns one hand-maintained path per root into one source plus three "
@@ -232,7 +226,6 @@ def _value_pattern(value: str) -> re.Pattern[str]:
     indent and merged three lines into one. Anything the diff would have seen
     in that whitespace disappeared with it, which is the fail-open direction.
     """
-    # Find edges after dropping empty splits from leading/trailing whitespace.
     splits = [part for part in re.split(r"(\s+)", value) if part]
     edges = {0, len(splits) - 1}
     parts = [
@@ -301,7 +294,6 @@ def build_rules(
         root = profile.root
         declared: dict[str, object] = dict(profile.values)
         declared["ROOT"] = root
-        # Drop None values allowed by profile schema.
         by_root[root] = {k: v for k, v in declared.items() if isinstance(v, str)}
 
     # Keys empty on any profile are deleted everywhere.
@@ -514,7 +506,6 @@ def compare_pair(
         )
         changed = [
             line
-            # Skip diff headers (first two lines).
             for line in delta[2:]
             if line.startswith(("+", "-"))
         ]
@@ -602,7 +593,6 @@ def _parse_entry(path: Path, kind: str, raw: object) -> Entry:
 
     if kind == "recorded":
         raw_record = raw.get("record")
-        # Accept either a string or list of records.
         records = [raw_record] if isinstance(raw_record, str) else raw_record
         if not isinstance(records, list) or not records:
             raise ParityError(
@@ -611,7 +601,6 @@ def _parse_entry(path: Path, kind: str, raw: object) -> Entry:
         for record in records:
             if not isinstance(record, str) or not record:
                 raise ParityError(f"{path}: `{skill}` has a malformed `record` entry")
-            # Validate record path against filesystem.
             if "/" in record or record.startswith("."):
                 raise ParityError(
                     f"{path}: `{skill}` record must be a bare filename in "
@@ -741,7 +730,6 @@ def _write_step_summary(candidates: list[str]) -> None:
         with open(destination, "a", encoding="utf-8") as handle:
             handle.write("\n".join(body))
     except OSError:
-        # Ignore step summary write failures.
         pass
 
 

@@ -52,7 +52,6 @@ from typing import cast
 
 import yaml
 
-# Script directory and default repo root destination.
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 PROMPTS_DIR = REPO_ROOT / "prompts"
@@ -60,31 +59,22 @@ SKILLS_SRC = PROMPTS_DIR / "skills"
 PROFILES_DIR = PROMPTS_DIR / "profiles"
 MANIFEST_PATH = PROMPTS_DIR / "rendered-files.txt"
 
-# Prompt stack semantic version stamped into emitted stack manifests.
 VERSION_PATH = REPO_ROOT / "PROMPT_STACK_VERSION"
 
-# Strict MAJOR.MINOR.PATCH format required.
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
-# Stack manifest file emitted into each harness root declaring a prompt_stack.
 STACK_MANIFEST_NAME = "prompt-stack.json"
 
-# Manifest schema version for synced consumers.
 STACK_MANIFEST_SCHEMA_VERSION = 1
 
-# Prettier version pinned to match CI.
 PRETTIER = "prettier@3.8.3"
 
-# Suffixes formatted with Prettier.
 FORMATTED_SUFFIXES = (".md",)
 
-# Keys whose lines are dropped entirely when empty.
 COLLAPSE_KEYS = ("FM_EXTRAS",)
 
-# Supported harness roots for rendered outputs.
 SUPPORTED_PROFILE_ROOTS = frozenset({".agents", ".claude", ".codex"})
 
-# Skills pending retirement from rendered outputs.
 RETIRED_SKILLS: frozenset[str] = frozenset()
 
 # Documents single-sourced and vendored verbatim into each harness root.
@@ -94,10 +84,8 @@ VENDORED_DOCUMENTS: dict[str, str] = {
     ),
 }
 
-# Vendored documents pending retirement.
 RETIRED_DOCUMENTS: frozenset[str] = frozenset()
 
-# Build artifacts excluded from rendered outputs.
 IGNORED_DIR_NAMES = frozenset({"__pycache__"})
 IGNORED_SUFFIXES = (".pyc", ".pyo")
 
@@ -136,7 +124,6 @@ class Profile:
         root = doc.get("root")
         if not isinstance(root, str) or not root:
             raise ValueError(f"{path}: `root` must be a non-empty string")
-        # Validate profile root stays within repository.
         root_path = Path(root)
         if root.startswith("~") or root_path.is_absolute() or ".." in root_path.parts:
             raise ValueError(
@@ -153,7 +140,6 @@ class Profile:
                 f"{sorted(SUPPORTED_PROFILE_ROOTS)}; got {root!r}"
             )
 
-        # Treat omitted values as empty, reject non-mapping values.
         values = doc.get("values")
         if values is None:
             values = {}
@@ -377,7 +363,6 @@ def verify_prompt_stack_version(
 
     tracked = sorted(base_files | current_files | manifest_paths)
     changed = subprocess.run(
-        # Two-dot diff anchored to merge base.
         ["git", "diff", "--quiet", f"{base}..HEAD", "--", *tracked],
         check=False,
         cwd=REPO_ROOT,
@@ -408,7 +393,6 @@ def load_profiles() -> list[Profile]:
             f"profiles share a root, so one would overwrite the other: {sorted(duplicates)}"
         )
 
-    # Ensure profile roots do not nest.
     for outer in profiles:
         for inner in profiles:
             if outer is inner:
@@ -465,7 +449,6 @@ def render_tree(
                 target = destination / profile.root / "skills" / skill / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _render_file(engine, raw, source, profile, skill, target)
-                # Preserve source executable permissions.
                 shutil.copymode(source, target)
                 written.append(target.relative_to(destination))
     written.extend(render_documents(profiles, destination))
@@ -527,7 +510,6 @@ def _document_source(source_relative: str, root_relative: str) -> Path:
             f"{STACK_MANIFEST_NAME!r}: {root_relative!r}"
         )
     if root_path.parts[0] == "skills":
-        # Vendored documents must not sit inside skill directories.
         raise ValueError(
             f"vendored document destination must not sit inside a rendered "
             f"skill directory: {root_relative!r}"
@@ -681,14 +663,12 @@ def _validate_generated_path(path: Path) -> None:
         raise ValueError(
             f"path is outside the renderer ownership domain: {path.as_posix()!r}"
         )
-    # Permit the top-level stack manifest for supported roots.
     if (
         len(path.parts) == 2
         and path.parts[0] in SUPPORTED_PROFILE_ROOTS
         and path.parts[1] == STACK_MANIFEST_NAME
     ):
         return
-    # Permit exact paths of vendored documents.
     if path.as_posix() in vendored_document_destinations():
         return
     if (
@@ -815,7 +795,6 @@ def _remove_unowned(relative: Path) -> None:
     """Delete one unowned file after re-proving it is inside a skill we own."""
     _validate_generated_path(relative)
     if len(relative.parts) < 4 or relative.parts[1] != "skills":
-        # Ensure path is inside a rendered skill directory.
         raise ValueError(
             f"refusing to remove a path outside a rendered skill directory: "
             f"{relative.as_posix()!r}"
@@ -871,7 +850,6 @@ def _render_file(
     values = profile.values_for(skill)
     found = sorted(set(engine.PLACEHOLDER_RE.findall(text)))
 
-    # Catch omitted or None-valued keys (except COLLAPSE_KEYS).
     undefined = [
         key
         for key in found
@@ -891,7 +869,6 @@ def _render_file(
         source=str(source.relative_to(REPO_ROOT)),
         collapse_empty_substitutions=[k for k in COLLAPSE_KEYS if k in found],
     )
-    # Check for mangled placeholder delimiters that survived substitution.
     residue = _delimiter_residue(rendered)
     if residue:
         raise ValueError(

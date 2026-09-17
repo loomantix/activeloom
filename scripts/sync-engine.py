@@ -123,19 +123,16 @@ class ConsumerConfig(TypedDict, total=False):
     telemetry: dict[str, object]
 
 
-# Canonical consumer config filename expected for sync-v2.
 CANONICAL_CONFIG_NAME: Final[str] = ".activeloom-config.yml"
 
 # Substitution keys computed and injected by the engine.
 RESERVED_SUBSTITUTION_KEYS: Final[frozenset[str]] = frozenset({"REVIEW_TELEMETRY_ENV"})
 
-# Review-telemetry gates mapping config keys to environment variables.
 TELEMETRY_GATES: Final[dict[str, str]] = {
     "emit": "LOOM_REVIEW_TELEMETRY",
     "extract": "LOOM_REVIEW_TELEMETRY_EXTRACT",
 }
 
-# Valid telemetry gate setting values.
 TELEMETRY_VALUES: Final[frozenset[str]] = frozenset({"on", "off"})
 
 KNOWN_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(ConsumerConfig.__annotations__)
@@ -167,7 +164,6 @@ class Scope:
 PLACEHOLDER_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 PLACEHOLDER_RE = re.compile(r"<<([A-Z][A-Z0-9_]*)>>")
 
-# Valid Target fields; unrecognized keys fail closed to catch typos.
 KNOWN_TARGET_FIELDS: Final[frozenset[str]] = frozenset(Target.__annotations__)
 
 
@@ -338,7 +334,6 @@ def write_utf8(path: Path, content: str, mode: int | None = None) -> None:
             temporary_path = Path(file.name)
             file.write(content)
         if mode is not None:
-            # Apply mode before atomic swap.
             os.chmod(temporary_path, mode)
         os.replace(temporary_path, destination_path)
         temporary_path = None
@@ -400,7 +395,6 @@ def drop_empty_placeholder_lines(
     collapsed: set[str] = set()
     for i, line in enumerate(lines):
         matches = list(PLACEHOLDER_RE.finditer(line))
-        # Strip trailing carriage return and whitespace to check emptiness.
         if not matches or PLACEHOLDER_RE.sub("", line).strip(" \t\r"):
             continue
         keys = [match.group(1) for match in matches]
@@ -424,7 +418,6 @@ def drop_empty_placeholder_lines(
         if key in present and rendered_values.get(key) == "" and key not in collapsed
     )
     if unmatched:
-        # Emit GitHub Actions warning annotation on stderr.
         sys.stderr.write(
             f"::warning file={source}::collapse_empty_substitutions keys rendered empty "
             f"in {source} but no line qualified (not a whole-line placeholder?): "
@@ -498,7 +491,6 @@ def substitute(
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
         if key in declared:
-            # Strip trailing newlines from block scalar substitutions.
             return rendered_values[key]
         return match.group(0)
 
@@ -512,7 +504,6 @@ def write_if_changed(path: Path, content: str, mode: int | None) -> bool:
     existing = read_utf8(path) if path.is_file() else None
     changed = existing != content
     if changed:
-        # Apply explicit mode, existing mode, or default 0o644 to temp file before swap.
         if mode is not None:
             desired_mode = mode
         elif existing is not None:
@@ -546,7 +537,6 @@ def resolve_under(parent: Path, child_rel: str) -> Path | None:
     """
     candidate = Path(os.path.normpath(parent / child_rel))
     if candidate == parent:
-        # Target must resolve to a child path, not the parent root.
         return None
     try:
         candidate.relative_to(parent)
@@ -597,7 +587,6 @@ def parse_mode(value: object) -> int | None:
     else:
         raise TypeError(f"mode must be int, str, or None; got {type(value).__name__}")
     if not 0 <= mode_int <= 0o7777:
-        # Fail closed on negative or >12-bit mode values.
         raise ValueError(f"mode out of range [0, 0o7777]: {value!r}")
     return mode_int
 
@@ -1046,7 +1035,6 @@ def render_telemetry_env(raw: object, config_path: Path) -> str | None:
         if key not in raw:
             continue
         value = raw[key]
-        # Accept YAML boolean or case-insensitive string values.
         if isinstance(value, bool):
             text = "on" if value else "off"
         elif isinstance(value, str) and value.strip().lower() in TELEMETRY_VALUES:
@@ -1119,7 +1107,6 @@ def parse_manifest(
             return None
         specs[name] = spec
 
-    # Ensure legacy config filenames are uniquely claimed across harnesses.
     seen: dict[str, str] = {}
     for name, spec in specs.items():
         legacy = str(spec["legacy_config"])
@@ -1242,7 +1229,6 @@ def compose_legacy_config(
     sensitive: list[str] = []
 
     for harness, (path, doc) in present.items():
-        # Validate known harness keys to prevent unrecognized typo keys from silently passing.
         unknown = sorted(str(key) for key in doc if key not in KNOWN_HARNESS_CONFIG_FIELDS)
         if unknown:
             sys.stderr.write(
@@ -1342,7 +1328,6 @@ def resolve_config(
             if composed is None:
                 return None
             doc, sources = composed
-            # Write GitHub workflow warning command to stdout.
             sys.stdout.write(
                 f"::warning file={path}::`--config {path.name}` names a "
                 f"pre-sync-v2 per-harness config. It was read as the config for "
@@ -1365,7 +1350,6 @@ def resolve_config(
         return loaded, canonical, [canonical], False
 
     if not present_legacy_configs(consumer_dir, specs):
-        # Exit 2 on missing config invocation error.
         sys.stderr.write(
             f"missing required file: {canonical} — and no pre-sync-v2 config "
             f"file ({', '.join(sorted(legacy_names))}) is present either. A "
@@ -1507,7 +1491,6 @@ def resolve_scopes(
     if not isinstance(base_skip_raw, list) or not all(
         isinstance(p, str) for p in base_skip_raw
     ):
-        # Validate skip_targets is a list of strings.
         sys.stderr.write(f"{config_path}: `skip_targets` must be a list of strings\n")
         return None
 
@@ -1563,7 +1546,6 @@ def resolve_scopes(
         elif inherit and base_allowed_declared:
             patterns = base_allowed_patterns
         else:
-            # Surface GitHub Actions workflow warning command on stdout.
             sys.stdout.write(
                 f"::warning file={config_path}::`allowed_destinations` not set "
                 f"for {where}. Upstream sync-targets are currently trusted to "
@@ -1672,11 +1654,8 @@ def main() -> int:
         + ", ".join(f"{name} ({specs[name]['root']})" for name in harness_scopes)
     )
 
-    # Checked ahead of the consent gate: a manifest that can rewrite the
-    # config can grant itself consent, so this refusal has to be the one the
-    # consumer sees rather than a sensitive-write refusal they could "fix"
-    # by granting the config path. Protect current and future selectable
-    # stores, including deletes that could change config selection.
+    # Check config writes before consent gates so an upstream manifest cannot
+    # grant itself permissions by overwriting consumer configuration.
     config_writes = config_write_targets(
         [target for _, targets in plan for target in targets],
         consumer_dir,
@@ -1688,7 +1667,6 @@ def main() -> int:
 
     # Admission control: validate destinations across scopes before modifying files.
     for scope, scope_targets in plan:
-        # Check allowed_destinations before sensitive writes.
         denied_allowed = unallowed_destinations(
             scope_targets, scope.skip, consumer_dir, scope.allowed_patterns
         )
@@ -1743,7 +1721,6 @@ def main() -> int:
 
     for scope, targets in plan:
         for target in targets:
-            # Ensure target entry is a mapping.
             if not isinstance(target, dict):
                 sys.stderr.write(f"  ❌ malformed target entry: expected a mapping, got {target!r}\n")
                 return 1
@@ -1781,7 +1758,6 @@ def main() -> int:
                 )
                 return 1
 
-            # Validate delete is a boolean.
             delete_raw = target.get("delete")
             if delete_raw is not None and not isinstance(delete_raw, bool):
                 sys.stderr.write(
@@ -1790,7 +1766,6 @@ def main() -> int:
                 return 1
             delete_flag = bool(delete_raw)
 
-            # Validate create_if_missing is a boolean.
             cim_raw = target.get("create_if_missing")
             if cim_raw is not None and not isinstance(cim_raw, bool):
                 sys.stderr.write(
@@ -1805,7 +1780,6 @@ def main() -> int:
                 )
                 return 1
 
-            # Validate destination and source paths are non-empty printable strings.
             if dest_rel is not None and (
                 not isinstance(dest_rel, str)
                 or not dest_rel
@@ -1829,12 +1803,10 @@ def main() -> int:
                 )
                 return 1
 
-            # Require destination always, and source for copy entries.
             if not dest_rel or (not delete_flag and not source_rel):
                 sys.stderr.write(f"  ❌ malformed entry: {target!r}\n")
                 return 1
 
-            # Parse mode for copy targets.
             if delete_flag:
                 if target.get("mode") is not None:
                     sys.stderr.write(f"  ❌ `mode` is not valid on a delete target: {target!r}\n")
@@ -1853,13 +1825,11 @@ def main() -> int:
                 skipped += 1
                 continue
 
-            # Guard against path traversal outside consumer directory.
             dest_path = resolve_under(consumer_dir, dest_rel)
             if dest_path is None:
                 sys.stderr.write(f"  ❌ destination escapes consumer root: {dest_rel}\n")
                 return 1
 
-            # Reject non-canonical posix paths for policy matching.
             dest_rel_canonical = dest_path.relative_to(consumer_dir).as_posix()
             if dest_rel_canonical != dest_rel:
                 sys.stderr.write(
@@ -1869,7 +1839,6 @@ def main() -> int:
                 )
                 return 1
 
-            # Enforce consumer-side allowed_destinations.
             if scope.allowed_patterns is not None and not path_matches_any(
                 dest_rel_canonical, scope.allowed_patterns
             ):
@@ -1884,7 +1853,6 @@ def main() -> int:
                 return 1
 
             if delete_flag:
-                # Refuse deletion of sensitive guardrail paths.
                 if is_sensitive_delete_dest(dest_rel_canonical):
                     sys.stderr.write(
                         f"  ❌ refusing to delete sensitive path (engine-level "
@@ -1892,7 +1860,6 @@ def main() -> int:
                         f"{dest_rel_canonical}\n"
                     )
                     return 1
-                # Refuse to unlink directories.
                 if dest_path.is_dir() and not dest_path.is_symlink():
                     sys.stderr.write(
                         f"  ❌ destination is a directory, refusing to unlink: {dest_rel}\n"
@@ -1944,7 +1911,6 @@ def main() -> int:
                 )
                 return 1
 
-            # Validate source path does not escape upstream repository.
             if source_rel is None:
                 sys.stderr.write(
                     f"  ❌ internal invariant violated: copy target reached "
@@ -1961,12 +1927,10 @@ def main() -> int:
                 return 1
 
             text = read_utf8(source_path)
-            # Run substitution and placeholder validation.
             substituted = substitute(
                 text, scope.values, subs, source_rel, collapse_empty_substitutions
             )
 
-            # Track and report actual sensitive writes.
             if args.dry_run:
                 existing = read_utf8(dest_path) if dest_path.is_file() else None
                 current_mode = stat.S_IMODE(dest_path.stat().st_mode) if dest_path.is_file() else None
