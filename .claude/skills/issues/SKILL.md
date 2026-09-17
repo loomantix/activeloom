@@ -92,16 +92,30 @@ Stop and report — rather than guessing — when:
 
 - the issue is closed, assigned to someone else, labeled `status: blocked`, or lists an open `Blocked by` / `Depends on` ref;
 - an open PR already closes it (`gh pr list --search "<n> in:body" --state open`);
-- the issue leaves a decision open that the code and AGENTS.md or CLAUDE.md cannot settle. Ask that one question, then continue.
+- the issue fails the scope check in step 1.
 
-### 1. Read and claim
+### 1. Read, check scope, claim
 
 ```bash
 gh issue view <n> --comments
-gh issue edit <n> --add-assignee @me
 ```
 
 Read the whole body and every comment. Required fixes, test invariants, "must preserve" and "out of scope" lists in the issue are the acceptance criteria for this run.
+
+**Scope check.** The issue is ready to implement when all of these hold:
+
+- **Outcome:** it says what should be true when done, not only what is wrong.
+- **Done is checkable:** a reviewer could tell from the issue whether a PR finishes it — stated invariants, a reproduction that should stop reproducing, or concrete acceptance criteria.
+- **Bounded:** it is one change that fits one reviewable PR, and names what is out of scope where the boundary is not obvious.
+- **Direction chosen:** where several designs would satisfy it, the issue (or AGENTS.md or CLAUDE.md and the code) picks one. At most one small open question remains.
+
+Read the code the issue points at before judging; a short issue can still be fully scoped by the code it names. If one item fails narrowly, ask that single question and continue once answered. If more than one fails, or the missing piece is the direction itself, do not claim or branch: report which items fail, quote the gap, and recommend running `/grill` on issue #<n>, recording the settled scope in the issue, then re-running `/issues start <n>`.
+
+Once the check passes, claim it:
+
+```bash
+gh issue edit <n> --add-assignee @me
+```
 
 ### 2. Isolate in a worktree
 
