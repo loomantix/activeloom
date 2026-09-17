@@ -1,31 +1,9 @@
 #!/usr/bin/env python3
 """Check every `collapse_empty_substitutions` key against its template sites.
 
-`drop_empty_placeholder_lines` in `sync-engine.py` deletes a qualifying line —
-plus one adjacent blank, but only when keeping it would leave a blank-line run —
-and it decides purely from the line's own bytes. The engine carries no Markdown
-knowledge, by design, because a whole-file normalizer cannot tell an
-author-written blank line from a placeholder-produced one without re-parsing the
-document. That leaves one gap: a key opted into collapsing whose template
-occurrence sits inside literal content — front matter, a fenced block, a
-four-space indented block, an HTML comment, or a raw `<pre>`, `<script>`,
-`<style>`, or `<textarea>` — would silently delete a line of that content from
-every consumer's rendered file.
-
-Close it here rather than in the engine. Reading the template is cheap at lint
-time, a violation is always an authoring mistake in this repo's own manifest,
-and keeping the check out of the engine preserves the property the fix depends
-on: rendering is byte-faithful and knows nothing about Markdown.
-
-A key passes when its name is a valid placeholder key and every one of its
-`<<KEY>>` occurrences is alone on its line with only other opted-in placeholders
-and horizontal whitespace, outside literal Markdown content. The key-name rule is
-the one violation reported against the file rather than a `file:line` site, since
-an invalid key has no occurrence to point at. Collapse opt-ins are limited to
-Markdown destinations;
-other formats need their own syntax-aware safety check. Exits 1 listing every
-violation. Paths resolve against the repo root, so the working directory does
-not matter.
+Ensures opted-in placeholders occur alone on their lines outside literal
+Markdown content (code blocks, raw HTML tags, comments), preventing
+`sync-engine.py` from deleting lines from literal content in rendered files.
 """
 from __future__ import annotations
 
@@ -54,11 +32,7 @@ CDATA_CLOSE = "]]>"
 
 
 def front_matter_delimiter(lines: list[str]) -> str | None:
-    """Return the delimiter line 0 opens a front-matter block with, if any.
-
-    `read_text(encoding="utf-8")` keeps a leading byte-order mark, so strip one
-    for this comparison only. Every other rule still sees the source bytes.
-    """
+    """Return the delimiter line 0 opens a front-matter block with, if any."""
     if not lines:
         return None
     first = lines[0].lstrip("\ufeff").strip(" \t\r")
@@ -68,25 +42,8 @@ def front_matter_delimiter(lines: list[str]) -> str | None:
 def literal_content_lines(lines: list[str]) -> list[bool]:
     """Mark each line that a Markdown reader would treat as literal content.
 
-    Deliberately over-marks: an indented line is flagged whether or not a
-    preceding blank line makes it a real CommonMark indented code block. A lint
-    that is too strict costs one manifest comment; one that is too loose costs
-    a consumer a deleted line.
-
-    Two of the rules below are ambiguous on their own, and reading a document
-    only one way can mark *fewer* lines literal than reading it the other way:
-
-      - a leading `---` may open front matter or be a thematic break. Read as
-        front matter, the scanner skips the fence machinery for those lines, so
-        a `---` inside a fenced block closes a block it never saw open;
-      - a closing fence may be indented independently of its opener, and a
-        blockquote's fence ends when the quote does. Requiring the opener's
-        exact prefix holds the fence open past its real closer, which then
-        swallows the next genuine opener.
-
-    So scan every applicable reading and mark a line literal when *any* of them
-    does. Each rule can then only add coverage, never remove it, which is the
-    only direction that is safe here.
+    Scans under all interpretations of ambiguous fence and front-matter rules,
+    marking a line literal if any interpretation considers it literal.
     """
     scans = [
         _scan_literal_lines(lines, None, strict_fence_prefix=True),
@@ -102,12 +59,7 @@ def literal_content_lines(lines: list[str]) -> list[bool]:
 def _scan_literal_lines(
     lines: list[str], delimiter: str | None, *, strict_fence_prefix: bool
 ) -> list[bool]:
-    """One pass of the scanner, under one reading of the ambiguous rules.
-
-    `delimiter` is the front-matter delimiter to honour, or None to scan the
-    whole document as Markdown. `strict_fence_prefix` requires a fence closer to
-    repeat its opener's prefix.
-    """
+    """Scan literal lines under one reading of fence and front-matter rules."""
     literal = [False] * len(lines)
     fence: tuple[str, int, str] | None = None
     raw_tag: str | None = None
@@ -118,9 +70,7 @@ def _scan_literal_lines(
     for index, line in enumerate(lines):
         if delimiter is not None:
             literal[index] = True
-            # YAML and TOML both require the closing delimiter at column 0.
-            # Stripping the indentation would let an indented `---` inside a
-            # block scalar end the block early.
+            # Closing delimiter must be at column 0 to prevent indented markers in block scalars ending the block.
             if index > 0 and line.rstrip(" \t\r") == delimiter:
                 delimiter = None
             continue
@@ -148,10 +98,7 @@ def _scan_literal_lines(
                     not strict_fence_prefix
                     or (
                         line[: fence_match.start()] == opener_prefix
-                        # Repeating a list-item prefix starts another list
-                        # item; it cannot close the earlier item's fence.
-                        # Treating it as a closer exposes the second fenced
-                        # block to unsafe collapsing.
+                        # A repeated list prefix starts another item rather than closing the fence.
                         and LIST_ITEM_FENCE_PREFIX_RE.search(opener_prefix) is None
                     )
                 )
@@ -208,9 +155,7 @@ def _scan_literal_lines(
             literal[index] = True
             continue
 
-        # CommonMark expands tabs to four-column stops. Mixed prefixes such as
-        # one space plus a tab therefore form indented code even though neither
-        # `startswith("    ")` nor `startswith("\t")` recognizes them.
+        # Expand tabs to 4 columns to recognize mixed-indentation code blocks.
         columns = 0
         for char in line:
             if char == " ":
@@ -260,21 +205,12 @@ def check_source(source: Path, collapse_keys: list[str]) -> list[str]:
 
 
 def manifest_targets(manifest: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every target in the manifest, across all harnesses and the shared set.
-
-    The lint is about one target's template, so which set a target came from
-    does not change the answer — but missing a whole harness silently would,
-    and did not use to be possible when the manifest was one flat list.
-    """
+    """Return every target in the manifest across all harnesses and the shared set."""
     collected: list[dict[str, Any]] = []
     for harness in (manifest.get("harnesses") or {}).values():
         collected.extend((harness or {}).get("targets") or [])
     collected.extend((manifest.get("shared") or {}).get("targets") or [])
     if not collected:
-        # Every lookup above degrades to empty, so a renamed or restructured
-        # top-level key yields zero targets and a green run. That shape was
-        # unreachable when the manifest was one flat list; it is reachable now,
-        # and a lint that silently inspects nothing is a disarmed guardrail.
         raise ValueError(
             f"manifest yielded no targets: expected `harnesses:` and/or `shared:` "
             f"target lists, got top-level keys {sorted(manifest)!r}"
@@ -308,9 +244,6 @@ def main() -> int:
             sys.stderr.write(f"  ❌ {violation}\n")
         return 1
     if not checked:
-        # `manifest_targets` guarantees a non-empty target list, so zero
-        # inspected sources means every collapse opt-in disappeared from the
-        # manifest at once — a restructure, not a deliberate removal.
         sys.stderr.write(
             "no collapse_empty_substitutions opt-ins found in the manifest; "
             "this lint has nothing to verify and would pass vacuously\n"
