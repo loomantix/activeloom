@@ -128,6 +128,18 @@ describe('classifyFiles', () => {
     ).toBe(false);
   });
 
+  it('does not skip a range whose only change is a prompt surface', () => {
+    // The gate that reads `skip` is what decides a human glance, so a prompt
+    // file classified as docs would route the surface that ships to every
+    // consumer straight past review.
+    const report = classifyFiles([
+      { path: 'README.md', added: 4, deleted: 0 },
+      { path: '.claude/skills/critique/SKILL.md', added: 2, deleted: 1 },
+    ]);
+    expect(report.skip).toBe(false);
+    expect(report.reviewSignificantFiles).toBe(1);
+  });
+
   it('reviews a lockfile-only change while keeping it out of the ratio', () => {
     const report = classifyFiles([
       { path: 'pnpm-lock.yaml', added: 300, deleted: 120 },

@@ -1,14 +1,28 @@
 ---
 name: refactorpass
-description: PR-first cleanup pass for Codex. Use when the user asks for refactoring, cleanup, simplification, or the platform review chain on an open draft PR. Posts verified cleanup suggestions inline before editing, skips docs/config-only changesets, runs a structured cleanup matrix, and pushes, replies, and resolves when appropriate. Runs at most once per PR for this engine.
+description: PR-first cleanup pass for Codex. Use when the user asks for refactoring, cleanup, simplification, or the platform review chain on an open draft PR. Posts verified cleanup suggestions inline before editing, runs a structured cleanup matrix, and pushes, replies, and resolves when appropriate. Runs at most once per PR for this engine.
 ---
 
 # Refactor Pass
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow `.codex/REVIEW_WORKFLOW.md` "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Findings before telemetry emission
 
-Before every telemetry emission attempt, including an early `skipped`, `blocked`,
-or spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
+Before every telemetry emission attempt, including an early `blocked` or
+spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
 write the complete measured findings file and supply `--findings-file`.
 Preserve findings posted before an interruption; unknown counts are not zeros.
 If counts cannot be established, report `telemetry not emitted: findings measurement unavailable`
@@ -72,13 +86,10 @@ belong in `critique`, where their behavior change can be reviewed and tested.
    list, and diff stat once and build the ledger's immutable review packet. Pass
    the literal `<base-sha>..<head-sha>` range to every cleanup lane; never let
    lanes re-resolve a mutable ref or rebuild the packet independently.
-4. Skip if the changeset is docs/config-only. Treat source files such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash` as review-worthy. Emit the step 14
-   record with `--status skipped` before stopping — the classification read that
-   reached this decision is itself part of what the pass cost.
-5. Check the once-per-engine latch. Search the PR's comments for
+4. Check the once-per-engine latch. Search the PR's comments for
    `local-review-refactor:v1 engine=codex`, authored by the actor running this
    review. If it is present, this PR has already had its Codex cleanup pass:
-   report the skip with the head the earlier pass ran on, emit the step 14
+   report the skip with the head the earlier pass ran on, emit the step 13
    record with `--status clean`, and stop without running a lane. Continue only
    when the marker is absent or the caller explicitly asked to force a re-run,
    and say which of the two applied.
@@ -87,23 +98,23 @@ belong in `critique`, where their behavior change can be reviewed and tested.
    returns naming and shape churn, not cleanups. That churn moves the head and
    re-stales the other engine's attestation for no shipped benefit.
 
-6. Review the changed source using "Cleanup scope and value". For delegated
+5. Review the changed source using "Cleanup scope and value". For delegated
    work, assign bounded paths and follow the ledger's scoped-read contract.
-7. Consolidate lane suggestions, verify them, and deduplicate them against the
+6. Consolidate lane suggestions, verify them, and deduplicate them against the
    complete PR ledger.
-8. Post each confirmed cleanup inline before editing, then apply only cleanup
+7. Post each confirmed cleanup inline before editing, then apply only cleanup
    that is behavior-preserving and clearly improves the fresh diff.
-9. Keep scope tight: touch only code changed by the current branch unless a tiny adjacent edit is required to finish the cleanup safely.
-10. Do not introduce feature behavior, broad rewrites, unrelated style churn, formatting-only commits, or speculative abstraction.
-11. Run the smallest relevant formatter/test command if the repo documents one.
-12. If changes were made, commit them as `refactor: codex cleanup pass - <summary>`.
+8. Keep scope tight: touch only code changed by the current branch unless a tiny adjacent edit is required to finish the cleanup safely.
+9. Do not introduce feature behavior, broad rewrites, unrelated style churn, formatting-only commits, or speculative abstraction.
+10. Run the smallest relevant formatter/test command if the repo documents one.
+11. If changes were made, commit them as `refactor: codex cleanup pass - <summary>`.
     When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set this pass is running inside a
     wrapper review pass, which permits exactly one publication; commit locally
     and leave publishing to the single publication the enclosing pass makes
     after its fixes, so the cleanup and the fixes travel in one validated push.
     Otherwise push without force. Reply to each cleanup thread with the commit
     and validation, then resolve it.
-13. Whether or not the lanes produced changes, post one informational PR comment
+12. Whether or not the lanes produced changes, post one informational PR comment
     closing the latch for this engine, carrying the ledger's marker:
 
     ```text
@@ -114,29 +125,27 @@ belong in `critique`, where their behavior change can be reviewed and tested.
     skip leaves the latch open, so a later round whose changeset contains source
     can still spend the one pass.
 
-14. Take the prompt-stack digests and emit this pass's telemetry record per
+13. Take the prompt-stack digests and emit this pass's telemetry record per
     `.codex/REVIEW_WORKFLOW.md` "Pass Telemetry" with `--pass-type refactor`. A
     record that cannot name the prompt generation it ran on cannot be compared
     against the next one, so the two digests are part of emitting, not an
     optional extra. A pass that committed is `changed`;
     one that found nothing is `clean`. A pass that stopped on a spent latch is
-    also `clean`, not `skipped` — its changeset was reviewable, this engine had
-    simply already spent its one pass, and the record rejects a `skipped` pass
-    carrying review-significant files. A docs/config-only skip is the case that
-    genuinely reports `skipped`. A pass that could not complete at all reports
+    also `clean`: its changeset was reviewable, this engine had simply already
+    spent its one pass. A pass that could not complete at all reports
     `blocked`. Emission exits zero whether or not it succeeded: report the
     outcome and move on.
 
-    Steps 4 and 5 return before reaching this step, so each names the record it
-    emits rather than relying on the pass reaching the end. Skip emission
+    Step 4 returns before reaching this step, so it names the record it emits
+    rather than relying on the pass reaching the end. Skip emission
     entirely when the telemetry helper reports `emit: false`.
 
 ## Output
 
 Report:
 
-- cleanup depth: direct, delegated, mixed, docs/config-only skip, or no source changes
-- latch state: first pass for this engine, skipped because already spent at `<sha>`, or forced re-run
+- cleanup depth: direct, delegated, mixed, or no source changes
+- latch state: first pass for this engine, already spent at `<sha>`, or forced re-run
 - whether changes were made
 - commit SHA if created
 - validation run

@@ -83,5 +83,6 @@
 .claude/skills/task-packet/SKILL.md
 .github/copilot-instructions.md
 .github/workflows/dco.yml
+.github/workflows/review-glance-label.yml
 agent-loop-instructions.md
 # <<< platform-synced paths >>>

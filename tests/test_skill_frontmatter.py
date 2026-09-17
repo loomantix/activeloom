@@ -194,12 +194,14 @@ def test_review_skills_define_wrapper_and_standalone_v3_finalization() -> None:
 
     assert "Finalize wrapper and standalone results" in ledger
     assert "helper returns `verified: true`" in ledger
-    assert "On a skip, finalize a clean v3 result" in deepcritique
     assert "Do not emit `clean` for a cleanup-moved enclosing hook" in deepcritique
     assert "the enclosing review hook did not move" in critique
     for skill in (deepcritique, critique, codex_review):
-        assert "wrapper/standalone" in skill
+        # deepcritique spells the rule out rather than naming it, because its
+        # final critique lane is the one that finalizes the result.
         assert "standalone pass" in skill
+    for skill in (critique, codex_review):
+        assert "wrapper/standalone" in skill
 
 
 def test_review_tier_contract_is_consistent_across_review_skills() -> None:
@@ -217,7 +219,7 @@ def test_review_tier_contract_is_consistent_across_review_skills() -> None:
 
     assert "authenticated GitHub actor" in ledger
     assert "latest accepted comment" in ledger
-    assert "every `.claude/**` path is source" in reviewit
+    assert "Prompt surface — source, whatever the extension" in ledger
     assert "direct human `deep` request is trigger 6" in reviewit
     assert "direct human `deep` request is trigger 6" in critique
     assert "all owning lenses for every recorded trigger" in deepcritique

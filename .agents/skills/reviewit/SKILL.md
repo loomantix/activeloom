@@ -5,10 +5,24 @@ description: Post-push AI review orchestrator for pull requests. Use when the us
 
 # Reviewit
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow `.agents/REVIEW_WORKFLOW.md` "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Findings before telemetry emission
 
-Before every telemetry emission attempt, including an early `skipped`, `blocked`,
-or spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
+Before every telemetry emission attempt, including an early `blocked` or
+spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
 write the complete measured findings file and supply `--findings-file`.
 Preserve findings posted before an interruption; unknown counts are not zeros.
 If counts cannot be established, report `telemetry not emitted: findings measurement unavailable`
@@ -79,10 +93,9 @@ If `.agents/reviewit-state/` is not gitignored, add it to a repo-appropriate ign
    gh pr view <pr> --json number,title,headRefName,baseRefName,headRefOid,state,files,mergeable,id
    ```
 
-3. Skip or ask before spending reviewer budget on docs/config-only PRs.
-4. Use an adversarial stance for all local review in this skill: assume there are problems to find, try to disprove safety with code/tests/docs evidence, and report only actionable findings with file/line support.
-5. Bias toward fixing every valid finding in this PR, including nits and cleanup items. Dismiss only invalid findings, false positives, or suggestions that would make the code worse. Defer only valid but extremely large follow-up refactors, roughly 300+ lines or cross-cutting rewrites, and create/link a GitHub issue for each deferral.
-6. If `--resume` is present:
+3. Use an adversarial stance for all local review in this skill: assume there are problems to find, try to disprove safety with code/tests/docs evidence, and report only actionable findings with file/line support.
+4. Bias toward fixing every valid finding in this PR, including nits and cleanup items. Dismiss only invalid findings, false positives, or suggestions that would make the code worse. Defer only valid but extremely large follow-up refactors, roughly 300+ lines or cross-cutting rewrites, and create/link a GitHub issue for each deferral.
+5. If `--resume` is present:
    - Load `.agents/reviewit-state/<pr>.json` if present.
    - Normalize the legacy final-deepgrill phase/key as described above before
      branching on state, and persist the normalized form.
@@ -90,7 +103,7 @@ If `.agents/reviewit-state/` is not gitignored, add it to a repo-appropriate ign
    - If the current PR head SHA differs from the saved `headSha`, ask whether to start a new iteration. Do not silently process stale reviewer output.
    - Do not trigger Gemini or request Copilot again unless the saved reviewer request clearly failed or the user explicitly asks to rerun.
    - Continue at the polling/dedupe/fix/reply step. If the saved `phase` is `final-deepcritique` and `deepcritiqueRan` is false, resume by invoking the `deepcritique` skill directly (skip the bot polling loop).
-7. For each iteration up to the cap:
+6. For each iteration up to the cap:
    - Capture current PR head SHA and timestamp before firing reviewers.
    - Write the initial state file.
    - Trigger Gemini Flash:
@@ -135,7 +148,7 @@ If `.agents/reviewit-state/` is not gitignored, add it to a repo-appropriate ign
      - **Lean**: continue to the next iteration if any reviewer found new findings on the post-fix HEAD and the cap is not reached. Otherwise exit the loop.
      - **Deep**: continue to the next iteration only if this iteration produced ≥1 `fix` resolution (a commit was pushed) and the cap is not reached. If the iteration produced only defer/dismiss findings (or none at all), **early-exit** the loop — re-firing reviewers on an unchanged HEAD just re-posts the same findings.
 
-8. **Deep mode only — final `deepcritique`.** After the loop exits for any reason (clean, early-exit, or iter cap), set `phase: final-deepcritique` and invoke `deepcritique <pr-number>`. It loads the existing PR ledger, runs `critique deep`'s six core lanes (code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, security reviewer) and the conditional tenant-coupling lane when signaled, posts verified findings inline before fixes, then replies and resolves. It runs `refactorpass` first only when this engine has not already spent its once-per-PR cleanup latch — on a PR that ran the pre-push chain it normally has, so expect a critique-only tail pass. If the PR is already three or more Codex rounds deep, `deepcritique` selects its convergence stance: narrowed lanes, blocking-defects-only fixes, and issues for the rest. Both decisions come from the PR ledger; do not override them from here. When control returns from the sub-skill, set `deepcritiqueRan: true`, capture the sub-skill's output, and continue to the summary step. **Do not stop after `deepcritique` returns** — `reviewit` owns the final summary.
+7. **Deep mode only — final `deepcritique`.** After the loop exits for any reason (clean, early-exit, or iter cap), set `phase: final-deepcritique` and invoke `deepcritique <pr-number>`. It loads the existing PR ledger, runs `critique deep`'s six core lanes (code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, security reviewer) and the conditional tenant-coupling lane when signaled, posts verified findings inline before fixes, then replies and resolves. It runs `refactorpass` first only when this engine has not already spent its once-per-PR cleanup latch — on a PR that ran the pre-push chain it normally has, so expect a critique-only tail pass. If the PR is already three or more Codex rounds deep, `deepcritique` selects its convergence stance: narrowed lanes, blocking-defects-only fixes, and issues for the rest. Both decisions come from the PR ledger; do not override them from here. When control returns from the sub-skill, set `deepcritiqueRan: true`, capture the sub-skill's output, and continue to the summary step. **Do not stop after `deepcritique` returns** — `reviewit` owns the final summary.
 
 ## Important Details
 

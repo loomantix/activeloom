@@ -604,7 +604,7 @@ INTERRUPTED=false
 
 # Every stop names one of these. tests/test_agent_loop.py holds each
 # recovery_message call site to this list.
-STOP_CATEGORIES="no-result/hook-ended-early invalid-result review-blocked ledger-evidence push-checkpoint-mismatch heads-misaligned worktree-state validation-red hook-failed hook-timeout budget-exhausted review-cap-exhausted worker-ambiguous-bail worker-no-commit worker-failed setup-failed merge-conflict publication-diff base-diverged dependency-blocked issue-changed checkpoint-failed uncertain-mutation child-resume-failed batch-incomplete interrupted internal-error"
+STOP_CATEGORIES="no-result/hook-ended-early invalid-result review-blocked ledger-evidence push-checkpoint-mismatch heads-misaligned worktree-state validation-red hook-failed hook-timeout budget-exhausted review-cap-exhausted worker-ambiguous-bail worker-no-commit worker-failed setup-failed merge-conflict publication-diff base-diverged dependency-blocked issue-changed checkpoint-failed uncertain-mutation child-resume-failed batch-incomplete human-glance interrupted internal-error"
 
 # Append one supervision event. The stream is the supported way to watch a
 # batch; console glyph lines are for people and may change. Each line is
@@ -2203,6 +2203,22 @@ prepare_review_pass_budget() {
         echo -e "${CYAN}⏱${NC}  Review budget: ${remaining}s of ${REVIEW_TIMEOUT_SECONDS}s left;" \
             "pass bounded at ${REVIEW_PASS_TIMEOUT_SECONDS}s"
     fi
+}
+
+# A range with no review-significant file needs a human glance, not a review
+# chain. Classify before the first round so no hook, checkpoint, latch, or
+# marker is spent on it. Returns 0 only on a confident skip carrying at least
+# one file; an unreadable classification falls through to the normal review.
+human_glance_gate() {
+    local base_sha="$1" head_sha="$2" report
+    HUMAN_GLANCE_FILES=0
+    [ -n "$REVIEW_LEDGER" ] && [ -f "$REVIEW_LEDGER" ] || return 1
+    command -v node >/dev/null 2>&1 || return 1
+    report="$(node "$REVIEW_LEDGER" classify-changeset \
+        --base "$base_sha" --head "$head_sha" 2>/dev/null)" || return 1
+    [ "$(jq -r '.skip // false' <<<"$report" 2>/dev/null)" = true ] || return 1
+    HUMAN_GLANCE_FILES="$(jq -r '.classifications | length' <<<"$report" 2>/dev/null)" || return 1
+    [ "$HUMAN_GLANCE_FILES" -gt 0 ] || return 1
 }
 
 run_review_convergence() {
@@ -3857,6 +3873,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
     initial_pr_sha="$(git rev-parse HEAD)"
     open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
+
+    if human_glance_gate "$initial_base_sha" "$initial_pr_sha"; then
+        echo "Human glance: $HUMAN_GLANCE_FILES docs/config files, no review-significant changes — read the diff and merge. No review chain run."
+        recovery_message "Draft PR $AGENT_LOOP_PR_URL needs a human glance, not a review chain." human-glance
+        exit 1
+    fi
 
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"

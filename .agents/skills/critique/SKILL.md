@@ -5,10 +5,24 @@ description: PR-first adversarial code review for Antigravity or Gemini CLI. Use
 
 # Critique
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow `.agents/REVIEW_WORKFLOW.md` "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Findings before telemetry emission
 
-Before every telemetry emission attempt, including an early `skipped`, `blocked`,
-or spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
+Before every telemetry emission attempt, including an early `blocked` or
+spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
 write the complete measured findings file and supply `--findings-file`.
 Preserve findings posted before an interruption; unknown counts are not zeros.
 If counts cannot be established, report `telemetry not emitted: findings measurement unavailable`
@@ -260,18 +274,17 @@ Run these lanes as independently as the active runtime permits:
    list, and stat once, then build the ledger's immutable packet using the same
    literal `<base-sha>..<head-sha>` range for every lane. Do not make each lane
    reload the PR ledger.
-4. Skip docs/config-only changes unless the user explicitly wants review.
-5. Read `AGENTS.md` and relevant path-specific instructions. Assign every lane
+4. Read `AGENTS.md` and relevant path-specific instructions. Assign every lane
    the exact changed paths its lens needs, and have it pull path-scoped diffs per
    the ledger instead of receiving one pasted or stored whole diff.
-6. Resolve the round and stance per "Stance Resolution". In a convergence round,
-   the lane list in "Convergence Rounds" replaces steps 7 and 8, and its inverted
-   fix bias replaces step 10. Every other step, including step 9, is unchanged.
-7. In lean mode, execute every lane in the Lean Review Matrix. Load these role references for lane prompts:
+5. Resolve the round and stance per "Stance Resolution". In a convergence round,
+   the lane list in "Convergence Rounds" replaces steps 6 and 7, and its inverted
+   fix bias replaces step 9. Every other step, including step 8, is unchanged.
+6. In lean mode, execute every lane in the Lean Review Matrix. Load these role references for lane prompts:
    - `.agents/references/roles/code-reviewer.md`
    - `.agents/references/roles/silent-failure-hunter.md`
      Keep lane findings separated until both lanes complete, then deduplicate by root cause.
-8. In deep mode, execute every lane in the Deep Review Matrix. Load these role references for lane prompts:
+7. In deep mode, execute every lane in the Deep Review Matrix. Load these role references for lane prompts:
    - `.agents/references/roles/code-reviewer.md`
    - `.agents/references/roles/silent-failure-hunter.md`
    - `.agents/references/roles/type-design-analyzer.md`
@@ -279,24 +292,24 @@ Run these lanes as independently as the active runtime permits:
    - `.agents/references/roles/pr-test-analyzer.md`
    - `.agents/references/roles/security-reviewer.md`
      When the tenant-coupling signal is present, load `.agents/references/roles/code-reviewer.md` again for the dedicated conditional pass. Keep lane findings separated until all lanes complete, then deduplicate by root cause.
-9. Verify and deduplicate lane findings against the source and complete PR
+8. Verify and deduplicate lane findings against the source and complete PR
    ledger. For each confirmed root cause, use the deterministic ledger helper
    required by `.agents/references/local-review-ledger.md` to post one inline
    comment on an exact GitHub diff anchor before editing. Do not hand-compose
    review-comment API requests.
-10. Apply the Disposition Bar. Fix only findings whose expected harm reduction
-    justifies the churn. Defer the rest, and create an issue only for an urgent
-    follow-up that should be scheduled within roughly two weeks.
-11. Run targeted validation and commit. When
+9. Apply the Disposition Bar. Fix only findings whose expected harm reduction
+   justifies the churn. Defer the rest, and create an issue only for an urgent
+   follow-up that should be scheduled within roughly two weeks.
+10. Run targeted validation and commit. When
     `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, accumulate every local fix commit
     across the wrapper pass and invoke the helper exactly once after the final
     fix; a second publication fails closed. Otherwise push normally with no
     force.
-12. Use the ledger helper's resumable `dispose` transaction for every posted
+11. Use the ledger helper's resumable `dispose` transaction for every posted
     finding. Reconcile failures through the workflow's bounded recovery. On an
     uncertain helper response, retry only the identical command; correct a
     preflight rejection only when it is known to have performed no mutation.
-13. Always use the ledger helper's `write-result` command to create the v3
+12. Always use the ledger helper's `write-result` command to create the v3
     structured result at `$AGENT_LOOP_REVIEW_RESULT_FILE` when set. The outer
     wrapper validates it and owns the pass/completion attestation. Inside
     agent-loop, omit thread and transition files so the helper fetches and

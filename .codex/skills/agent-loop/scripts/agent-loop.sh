@@ -2289,6 +2289,22 @@ prepare_review_pass_budget() {
     fi
 }
 
+# A range with no review-significant file needs a human glance, not a review
+# chain. Classify before the first round so no hook, checkpoint, latch, or
+# marker is spent on it. Returns 0 only on a confident skip carrying at least
+# one file; an unreadable classification falls through to the normal review.
+human_glance_gate() {
+    local base_sha="$1" head_sha="$2" report
+    HUMAN_GLANCE_FILES=0
+    [ -n "$REVIEW_LEDGER" ] && [ -f "$REVIEW_LEDGER" ] || return 1
+    command -v node >/dev/null 2>&1 || return 1
+    report="$(node "$REVIEW_LEDGER" classify-changeset \
+        --base "$base_sha" --head "$head_sha" 2>/dev/null)" || return 1
+    [ "$(jq -r '.skip // false' <<<"$report" 2>/dev/null)" = true ] || return 1
+    HUMAN_GLANCE_FILES="$(jq -r '.classifications | length' <<<"$report" 2>/dev/null)" || return 1
+    [ "$HUMAN_GLANCE_FILES" -gt 0 ] || return 1
+}
+
 run_review_convergence() {
     local round="${1:-1}" codex_classification claude_classification
     local resume_engine="${2:-codex}"
@@ -3585,6 +3601,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
     initial_pr_sha="$(git rev-parse HEAD)"
     open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
+
+    if human_glance_gate "$initial_base_sha" "$initial_pr_sha"; then
+        echo "Human glance: $HUMAN_GLANCE_FILES docs/config files, no review-significant changes — read the diff and merge. No review chain run."
+        recovery_message "Draft PR $AGENT_LOOP_PR_URL needs a human glance, not a review chain."
+        exit 1
+    fi
 
     if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"

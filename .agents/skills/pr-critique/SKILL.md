@@ -27,6 +27,20 @@ on, a relay pass narrows to the deploy-blocking lanes, changes the PR only for a
 blocking defect, and dispositions the rest without creating unnecessary issues.
 At Lean, round 2 is already convergence; follow the tier-specific stance in `critique`.
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow `.agents/REVIEW_WORKFLOW.md` "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Safety preconditions — verify before doing anything
 
 1. **Own-branch only.** This skill pushes. Refuse to run if the checked-out
@@ -105,10 +119,6 @@ fi
 REVIEW_BASE_SHA=$(git rev-parse --verify "$REVIEW_BASE_SHA^{commit}") || exit 1
 RANGE="$REVIEW_BASE_SHA..HEAD"
 ```
-
-Skip docs/config-only changesets (same heuristic as `critique`): if `git diff
---name-only "$RANGE"` contains no source files, report the skip and exit — there
-is nothing for the review to find.
 
 ## Phase 1: Review at the resolved tier
 

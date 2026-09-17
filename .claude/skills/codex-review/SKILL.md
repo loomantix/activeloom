@@ -11,13 +11,26 @@ You are getting an **independent opinion** on an open PR from the [Codex CLI](ht
 
 Codex runs **read-only by default** — it can read the tree and reason, but cannot modify files, so it is a safe reviewer. This skill never lets Codex edit code. Findings come back to _you_; you verify each against the source and fix only the confirmed ones.
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## When to use
 
 - Before the round's Claude lane (`/critique` at Lean, `/deepcritique` at Deep)
   in each bounded local round, including after any material Claude fix restarts
   the loop.
 - Standalone, when you want a fresh cold read of a PR.
-- Skip on docs/config-only changesets — there is nothing for an adversarial reviewer to find.
 
 ## Phase 0: Pre-flight
 
@@ -48,9 +61,6 @@ Codex runs **read-only by default** — it can read the tree and reason, but can
      git ls-files --others --exclude-standard
      ```
 
-   - If the changeset is docs/config-only per the ledger's classification,
-     finalize a scoped clean v3 result using the ledger's wrapper/standalone
-     ownership rule, then exit.
    - Resolve the review tier before starting Codex. Resolve the effective PR `local-review-tier:v1` marker under the ledger's authenticated, forward-only transition rule; if none exists, classify against the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and post the marker, Lean being the tier when no trigger matches. Reviewer order within a round is a scheduling choice, not a protocol rule, so tier resolution belongs to whichever reviewer runs first; an unresolved tier leaves the whole round unresolved. State the tier and its triggers in the pass output.
    - Resolve the Codex engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND` when the runner set it, otherwise one past the count of `local-review-pass:v3` and `local-review-complete:v3` markers on the PR naming `engine=codex`. The stance follows the tier's schedule: at Deep, rounds 1–2 are adversarial and round 3 and later are convergence rounds; at Lean the cap is 2 and round 2 is the convergence round. The prompt and dispositions change accordingly. The result's `baseSha` and the prompt range must name `REVIEW_BASE` exactly.
 

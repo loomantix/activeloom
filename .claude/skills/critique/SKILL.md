@@ -6,10 +6,24 @@ argument-hint: (optional PR number and/or "deep")
 
 # /critique — PR-first adversarial review
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Findings before telemetry emission
 
-Before every telemetry emission attempt, including an early `skipped`, `blocked`,
-or spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
+Before every telemetry emission attempt, including an early `blocked` or
+spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
 write the complete measured findings file and supply `--findings-file`.
 Preserve findings posted before an interruption; unknown counts are not zeros.
 If counts cannot be established, report `telemetry not emitted: findings measurement unavailable`
@@ -99,8 +113,7 @@ does not admit a session that implemented the feature before review started.
    marker begins `local-review-telemetry:`.
 6. Resolve the round and stance now, before the telemetry boundary or any branch
    that can emit. Read the effective tier marker already on the PR — reading it
-   only, since a pass that exits on the docs/config classification posts no
-   marker — and fall back to `adversarial` when none exists, which is correct
+   only — and fall back to `adversarial` when none exists, which is correct
    because a PR carrying no tier marker has had no prior round and both schedules
    make round 1 adversarial. `emit-telemetry` requires `--stance` and offers no
    way to omit it.
@@ -121,17 +134,12 @@ does not admit a session that implemented the feature before review started.
    An enclosing deepcritique already captured this snapshot before cleanup:
    reuse it unchanged so this pass's cleanup findings remain current-pass
    evidence, rather than taking a new snapshot that marks them historical.
-9. Skip docs/config-only changesets, per the ledger's changeset classification.
-   Finalize a clean v3 result using the ledger's wrapper/standalone ownership
-   rule, then emit a `skipped` telemetry record, before returning. A skip still
-   spends tokens reading and classifying the PR, and that overhead is worth
-   seeing.
-10. If a failure terminates this pass after the snapshot boundary, emit
-    `status=blocked` before returning. This applies from here on, not only at
-    Phase 4 — a pass that dies in Phase 1 through 3 never reaches the output
-    phase, and that is exactly the pass the `blocked` record describes.
-    A failure in steps 1–6 reports `telemetry not emitted: boundary unresolved`
-    instead; it does not yet have the mandatory identity needed to emit.
+9. If a failure terminates this pass after the snapshot boundary, emit
+   `status=blocked` before returning. This applies from here on, not only at
+   Phase 4 — a pass that dies in Phase 1 through 3 never reaches the output
+   phase, and that is exactly the pass the `blocked` record describes.
+   A failure in steps 1–6 reports `telemetry not emitted: boundary unresolved`
+   instead; it does not yet have the mandatory identity needed to emit.
 
 Do not begin a reviewer until the PR ledger is available. Do not use a
 force-push to establish or update the review branch.

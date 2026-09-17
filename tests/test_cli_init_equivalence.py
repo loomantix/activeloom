@@ -294,11 +294,17 @@ def test_init_generated_config_is_accepted_by_the_engine(
     config = (repo / ".activeloom-config.yml").read_text(encoding="utf-8")
     dco = repo / ".github" / "workflows" / "dco.yml"
     if "--sync" in tier_flags:
-        assert "skip_targets:\n  - .github/workflows/dco.yml" in config
+        assert (
+            "skip_targets:\n  - .github/workflows/dco.yml\n"
+            "  - .github/workflows/review-glance-label.yml" in config
+        )
         assert "allow_sensitive_writes: []" in config
         assert not dco.exists(), "tier 2 must not deliver a workflow GITHUB_TOKEN cannot push"
     else:
-        assert "allow_sensitive_writes:\n  - .github/workflows/dco.yml" in config
+        assert (
+            "allow_sensitive_writes:\n  - .github/workflows/dco.yml\n"
+            "  - .github/workflows/review-glance-label.yml" in config
+        )
         assert "skip_targets: []" in config
         assert dco.is_file(), "tier 1 delivers the shared DCO workflow"
     assert (repo / ".claude" / "REVIEW_WORKFLOW.md").is_file()

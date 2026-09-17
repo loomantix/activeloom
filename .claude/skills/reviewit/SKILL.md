@@ -6,10 +6,24 @@ argument-hint: PR number (e.g., 42), optionally followed by "deep" (e.g., 42 dee
 
 # reviewit — post-push AI review cycle
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Findings before telemetry emission
 
-Before every telemetry emission attempt, including an early `skipped`, `blocked`,
-or spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
+Before every telemetry emission attempt, including an early `blocked` or
+spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
 write the complete measured findings file and supply `--findings-file`.
 Preserve findings posted before an interruption; unknown counts are not zeros.
 If counts cannot be established, report `telemetry not emitted: findings measurement unavailable`
@@ -95,34 +109,7 @@ mode.
 
 4. **Confirm the head ref is checked out locally** (`git rev-parse --abbrev-ref HEAD` matches `headRefName`). If not, the skill cannot push fixes — surface and exit.
 
-5. **Triviality detection — prompt to skip the chain on docs/config-only PRs.**
-   Classify with the ledger's shared definition, including that every
-   `.claude/**` path is source whatever its extension:
-
-   ```bash
-   gh pr view <pr-number> --json files --jq '.files[].path'
-   ```
-
-   If the shared classifier returns only docs/config files, prompt the user
-   **before** spending any reviewer budget. Never offer this skip after a tier
-   trigger matched:
-
-   ```
-   This PR looks docs/config-only — N files, no source code changes.
-   Gemini Flash costs $0.05–$0.20 even on near-empty diffs.
-
-   How to proceed?
-     [C] Run the full chain anyway. Pick this if you specifically want
-         Gemini's eyes on the doc content.
-     [S] Skip everything — just merge.
-   ```
-
-   - **C**: proceed to Phase 1 normally.
-   - **S**: exit cleanly. Print a summary noting nothing was run.
-
-   For mixed changesets (some source, some docs), run the full chain (Phase 1 onward) without prompting — source files justify the spend.
-
-6. **TodoWrite**: create tasks per iteration for "fire reviewers", "parse + dedup (Gemini fast pass)", "address findings (record resolutions)", "commit + push fixes", "post replies with real SHA", "poll Copilot", "parse + dedup (Copilot delayed pass)", "address + push + reply", "loop check". In deep mode, add a "cost-shift checkpoint" task at iterations 2 and 3 (the loop-check step ends with a possible AskUserQuestion in those iterations), and a final "run /deepcritique on the PR" task. The "post replies" tasks are their own line items — don't fold them into "commit + push" or they get skipped.
+5. **TodoWrite**: create tasks per iteration for "fire reviewers", "parse + dedup (Gemini fast pass)", "address findings (record resolutions)", "commit + push fixes", "post replies with real SHA", "poll Copilot", "parse + dedup (Copilot delayed pass)", "address + push + reply", "loop check". In deep mode, add a "cost-shift checkpoint" task at iterations 2 and 3 (the loop-check step ends with a possible AskUserQuestion in those iterations), and a final "run /deepcritique on the PR" task. The "post replies" tasks are their own line items — don't fold them into "commit + push" or they get skipped.
 
 ---
 

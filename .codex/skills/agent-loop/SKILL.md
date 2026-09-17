@@ -225,18 +225,21 @@ and never copies issue bodies, model logs, or findings into GitHub.
 4. Run the isolated setup hook.
 5. Run the worker and require a clean local commit.
 6. Integrate the fresh base, validate, push, and open a draft PR.
-7. Run a fresh Codex `deepcritique` followed by a fresh Claude review on that PR,
+7. Classify the reviewed range. A range with no review-significant file stops
+   here: the draft PR is left for a human to read and merge, and no hook,
+   checkpoint, or marker is spent on it.
+8. Run a fresh Codex `deepcritique` followed by a fresh Claude review on that PR,
    validating and attesting the PR head after each pass.
-8. Each reviewer may publish at most one committed candidate. The guarded push
+9. Each reviewer may publish at most one committed candidate. The guarded push
    helper runs the configured validation before that publication and records the
    exact validated and published SHA; validation is not repeated afterward.
    If either reviewer commits a material fix, restart at Codex. Minor-only fixes
    are validated and retained without restarting. Convergence requires one
    entire Codex-then-Claude round with no material fixes. Exhausting
    `review_max_rounds` blocks publication and preserves the worktree.
-9. If the base advances, integrate and push it on the draft PR before restarting
-   at Codex. A non-fast-forward base move stops the loop.
-10. Re-attest unchanged issue requirements/readiness while excluding only the
+10. If the base advances, integrate and push it on the draft PR before restarting
+    at Codex. A non-fast-forward base move stops the loop.
+11. Re-attest unchanged issue requirements/readiness while excluding only the
     wrapper-captured PR from the open-PR addressed check, require every marked
     review thread to contain a reply and be resolved, then mark the PR ready.
 
