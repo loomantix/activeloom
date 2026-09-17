@@ -180,7 +180,8 @@ is resolved.
 
 ## Establish the PR boundary
 
-Before any cleanup or adversarial review:
+After the changeset classification below finds a review-significant file, and
+before any cleanup or adversarial review:
 
 1. Require a clean, committed feature branch.
 2. Reuse the open PR whose head is that branch. If none exists, push the branch
@@ -192,8 +193,9 @@ Never force-push during a review relay. A moved remote head ends the pass.
 
 ## Classify the changeset
 
-Every cleanup and adversarial lane skips docs/config-only changesets. This is
-the shared definition for the pinned `<base-sha>..<head-sha>` review range:
+Classification is the first step of every review entry point, before the PR
+boundary above. This is the shared definition for the `<base-sha>..<head-sha>`
+review range:
 
 - **Source code** — `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
   `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, `.bash`.
@@ -210,12 +212,23 @@ the shared definition for the pinned `<base-sha>..<head-sha>` review range:
   when their extension is `.yml`, `.yaml`, `.json`, or `.toml`.
 - **Anything else** — treat as source.
 
-Zero review-significant files means skip; one or more means run the full pass.
-A mixed changeset is not a partial skip.
+Zero review-significant files means **human glance**: a human reads the diff and
+merges, and no review chain runs. The entry point prints one line and stops
+before it requires or opens a draft PR, checks context, resolves a round or
+stance, takes a telemetry snapshot, or writes a result, attestation, tier or
+refactor marker, or telemetry record — so none of those artifacts exists for a
+human-glance range. One or more review-significant files means the normal chain.
+A mixed changeset is not a partial human glance.
+
+The workflow's "Human glance" section names the range each entry point
+classifies, the explicit-request override, and the controller-scheduled pass
+that skips the gate. A later push that adds a review-significant file takes the
+PR out of human glance, and the normal tier resolution then covers the whole
+range.
 
 The rules above are executable: `review-ledger classify-changeset --base <sha>
---head <sha>` returns `skip` alongside per-file classifications, and every lane
-decides from that rather than from its own reading of this paragraph. Four
+--head <sha>` returns `skip` alongside per-file classifications, and every entry
+point decides from that rather than from its own reading of this paragraph. Four
 skills interpreting the same prose independently is four chances to disagree
 about whether a pass was owed.
 
@@ -357,8 +370,7 @@ tier and triggers in the pass output.
 The marker is per-PR, not per-engine and not per-round — every engine resolves
 the same transition chain. Post a replacement only for an evidence-backed
 escalation or de-escalation, naming the confirmed finding, direct request, or
-clean lenses that justified it. A pass that exits on the docs/config-only
-classification posts no marker.
+clean lenses that justified it.
 
 ## Run the refactor pass once per engine
 
@@ -378,10 +390,9 @@ If one exists, skip the cleanup lanes, say so in the pass output, and go straigh
 to the adversarial lanes. If none exists, run the cleanup lanes and post the
 marker as an informational PR comment when they finish.
 
-Post the marker only for a pass that actually ran the cleanup lanes. A pass that
-exited on the docs/config-only classification has not spent its engine's refactor
-pass — leave the marker off so a later round whose changeset does contain source
-can still run one.
+Post the marker only for a pass that actually ran the cleanup lanes. A
+human-glance range never reaches a cleanup lane, so the latch stays open for a
+later push that adds a review-significant file.
 
 The marker carries no `round`: it is a per-PR, per-engine latch rather than
 per-round evidence, and no automated runner parses it.
@@ -935,17 +946,15 @@ Result ownership depends on the caller:
   returned by `validate-result` as `--expected-result-sha256`. Do not report the
   pass complete unless the helper returns `verified: true`.
 
-Docs/config-only skips follow the same rule with a `clean` result whose
-`beforeSha` and `afterSha` both name the reviewed head. A skip returns only
-after wrapper result creation or standalone attestation succeeds; it does not
-spend the refactor latch.
-
 ## Record what the pass cost
 
 Every pass attempts to emit one `local-review-telemetry:v1` marker: adversarial reviews,
-cleanup passes, hosted lanes, and passes that skipped or were blocked. A skip
-still spends tokens reading and classifying the pull request, and a pass whose
-cost vanished from the record would have its churn attributed to nobody.
+cleanup passes, hosted lanes, and passes that were blocked. A pass whose cost
+vanished from the record would have its churn attributed to nobody. A
+human-glance range is not a pass: it stops before the telemetry snapshot and
+emits nothing. The record writer still accepts `status=skipped`, rejecting it
+when the changeset carries review-significant files, so existing records and
+older consumers stay valid; no entry point in this protocol emits it.
 
 The marker is a separate comment carrying a versioned JSON payload, never an
 extension of the attestation. The attestation body is byte-verified and hashed;

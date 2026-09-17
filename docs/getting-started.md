@@ -207,11 +207,12 @@ substitutions:
     3. Convention adherence.
   WHAT_NOT_TO_SUGGEST_EXTRA: ''
 
-# Required for syncing DCO in Tier 1 or Tier 3. Tier 2 skips this target
-# because its built-in token cannot push workflow changes.
+# Required for syncing the shared workflows in Tier 1 or Tier 3. Tier 2 skips
+# those targets because its built-in token cannot push workflow changes.
 # A refusal names any others it needs, in a block you can paste as-is.
 allow_sensitive_writes:
   - .github/workflows/dco.yml
+  - .github/workflows/review-glance-label.yml
 
 # Optional: opt out of specific upstream files, by source or destination path.
 skip_targets: []

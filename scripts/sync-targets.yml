@@ -1365,3 +1365,14 @@ shared:
     - source: .github/workflows/dco.yml
       destination: .github/workflows/dco.yml
       substitutions: []
+
+    # Human-glance label — marks a pull request whose range holds no
+    # review-significant file, so a person reads the diff and merges instead of
+    # a review chain running. Advisory only: the review skills classify the
+    # pinned range themselves. It classifies with whichever vendored
+    # `review-ledger.js` the consumer's base ref carries, so a consumer that
+    # syncs a single harness root still gets it, and consumers that want no
+    # label opt out via `skip_targets` in their own configuration.
+    - source: .github/workflows/review-glance-label.yml
+      destination: .github/workflows/review-glance-label.yml
+      substitutions: []

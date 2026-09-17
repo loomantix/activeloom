@@ -5,6 +5,20 @@ description: High-fidelity PR-first review chain that opens or reuses a draft PR
 
 # Deep Critique
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow `.agents/REVIEW_WORKFLOW.md` "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Context Window Check
 
 Run this check before anything else. `deepcritique` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `critique deep` (six core independent review lanes, plus a conditional tenant-coupling lane). When subagents/delegation are available, the lanes run in parallel, each inheriting cache state from this session; when subagents are not available they run as serial local passes against the same context. Either way, if the current Antigravity or Gemini session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.
@@ -116,7 +130,6 @@ that one. **Lean is the default; Deep is the exception you justify.**
 Resolve the effective `local-review-tier:v1` marker under the ledger's
 authenticated, forward-only transition rule. If no accepted marker exists,
 classify against the workflow doc's triggers and post the marker before starting
-a lane. A pass that exits on the docs/config-only skip never needs a tier.
 
 **If the tier is Lean, do not run this chain.** Report the resolved tier and
 hand the changeset to `critique <pr-number>`, which owns the Lean lane set.

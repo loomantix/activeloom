@@ -7,7 +7,8 @@ edits will be overwritten on the next sync.
 
 For an explicitly requested automatic review chain, use the deterministic
 `.codex/skills/critique/scripts/review-chain-runner.py` controller. Resolve the
-tier and its triggers first, then supply either an exact `--chain` or a repeating
+tier and its triggers first — after the [human-glance gate](#human-glance),
+which starts no run for a docs/config-only range — then supply either an exact `--chain` or a repeating
 `--cycle --until-converged`. Do not implement the outer loop in conversation.
 Read [runner usage](../.codex/references/review-chain-runner.md) before starting;
 it defines required validation commands, durable checkpoints, and recovery.
@@ -162,7 +163,8 @@ does not determine severity or classification.
 
 ## Review Tier
 
-Resolve the tier **before the first reviewer runs**, on every path. An
+Resolve the tier **before the first reviewer runs**, on every path that passes
+the [human-glance gate](#human-glance). An
 unresolved tier is not a neutral state — it is how the expensive path becomes
 the default. **Lean is the default; Deep is the exception you justify.**
 
@@ -173,6 +175,50 @@ effective marker under the ledger's authenticated, forward-only transition rule
 instead of reclassifying the unchanged range. A tier re-derived from scratch
 each round, or re-derived against a different list in each engine, drifts back
 to Deep.
+
+### Human glance
+
+A changeset with no review-significant file needs a human to read the diff and
+merge, not a review chain. This outcome sits below Lean and is decided first:
+classification is the first step of `critique`, `deepcritique`, `pr-critique`, `refactorpass`, `reviewit`,
+and the review phase of `agent-loop`. It runs before a draft PR is
+required or opened, before the context-window check, round, stance, and
+telemetry snapshot, and before any ledger result, attestation, tier or refactor
+marker, or telemetry record.
+
+Classify the committed range against the open PR's base branch, or the
+repository's default branch when the branch has no open PR:
+
+```bash
+git fetch origin <base-branch>
+base_sha=$(git merge-base "origin/<base-branch>" HEAD)
+node .agents/skills/critique/scripts/review-ledger.js classify-changeset \
+  --base "$base_sha" --head "$(git rev-parse HEAD)"
+```
+
+When the output has `"skip": true` and a non-empty `classifications` array,
+print this line with N as that array's length, and stop:
+
+```text
+Human glance: N docs/config files, no review-significant changes — read the diff and merge. No review chain run.
+```
+
+Otherwise continue the entry point unchanged. An empty range or a classifier
+that cannot run is not human glance; the entry point's own pre-flight handles it.
+
+- **Explicit request.** A human who directly asks for this change to be reviewed
+  anyway overrides the gate. That request is trigger 6: the chain runs and the
+  tier marker records it. Typing a review skill's name is not that request.
+- **Controller-scheduled passes.** When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set,
+  the controller that scheduled the pass owns the gate, and the pass reviews the
+  range it was given. `agent-loop` classifies before its first review round, and
+  an automatic chain classifies before it starts the runner.
+- **Later pushes.** Every invocation classifies the whole range again. A push
+  that adds a review-significant file takes the PR out of human glance, and tier
+  resolution applies to the whole range.
+- **The label.** Where the synced `review-glance-label.yml` workflow runs, the
+  `review: human-glance` label marks a PR whose latest push classified the same
+  way. It is a hint; the gate's own classification decides.
 
 ### What sets the tier
 
@@ -532,7 +578,7 @@ creation fails, report telemetry failure rather than falling back to a key
 that may identify a different pass. This works with existing ledger bundles.
 
 Every review and cleanup pass attempts one `local-review-telemetry:v1` PR
-comment after finalizing its review result, including blocked and skipped
+comment after finalizing its review result, including blocked
 passes. Telemetry is best-effort: report failure and continue without changing
 the review outcome. Never read prior telemetry into reviewer context; filter
 all comments carrying the `local-review-telemetry:` prefix.
@@ -573,20 +619,19 @@ When `emit` is true, invoke the ledger's `emit-telemetry` command with:
 - `--pass-type review` or `refactor`, `--round`, and `--stance`;
 - `--review-tier lean` or `deep` when resolved;
 - `--trigger autonomous` for a runner invocation, otherwise `interactive`;
-- `--status clean`, `changed`, `blocked`, or `skipped` as actually observed;
+- `--status clean`, `changed`, or `blocked` as actually observed;
 - `--token-source unavailable`, omitting token/model/version arguments;
 - `--findings-file` pointing to an explicit numeric findings object below.
 
-Omit `--changeset-file` to use the package's changeset classifier. `skipped`
-is reserved for a changeset with zero review-significant files; a cleanup
+Omit `--changeset-file` to use the package's changeset classifier. A cleanup
 that stops at its previously spent latch reports `clean`. Pass the original
 boundary even when fixes moved the head; do not silently attribute the pass
 to a different diff. Omit prompt hashes until this harness has a hasher.
 
 ### Count the findings
 
-Before every emission attempt, including `clean`, `changed`, `skipped`, and
-`blocked` exits, write this pass's complete findings object to an owner-only
+Before every emission attempt, including `clean`, `changed`, and `blocked`
+exits, write this pass's complete findings object to an owner-only
 regular file and pass its path as `--findings-file`. This step also applies to
 early returns before the normal end-of-pass sequence and to a spent cleanup
 latch. Never omit the file or reuse a previous pass's measurements.

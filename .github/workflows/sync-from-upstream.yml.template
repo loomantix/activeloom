@@ -25,7 +25,8 @@
 #        - SYNC_APP_PRIVATE_KEY (PEM-encoded private key)
 #      The App must be installed on the consumer repo with `contents: write`,
 #      `pull_requests: write`, and `workflows: write`. Workflows write is
-#      required because the shared target set ships `.github/workflows/dco.yml`.
+#      required because the shared target set ships workflows under
+#      `.github/workflows/`.
 #      If your conventions name the secrets differently, update the references
 #      below.
 #

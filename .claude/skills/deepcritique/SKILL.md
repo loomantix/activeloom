@@ -16,6 +16,20 @@ This lane runs only when the review tier resolved to Deep. The triggers and the
 Lean-by-default rule live in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md);
 this skill reads that decision rather than making its own.
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Phase 0: Pre-flight
 
 ### Controller or one-pass reviewer
@@ -79,18 +93,12 @@ records therefore understate the chain, and a `session-log-delta` emitted under
 this wrapper is scoped to its lane rather than to the chain. Do not read the
 Deep-versus-Lean comparison as if the two were measured on the same boundary.
 
-6. Apply the docs/config-only skip, per the ledger's changeset classification.
-   On a skip, finalize a clean v3 result through immediate handoff to
-   `/critique <pr-number>`: that telemetry-owning lane takes its snapshot,
-   independently confirms the classification, finalizes the result, and emits
-   `status=skipped` under the ledger's wrapper/standalone ownership rule. Return
-   after it completes without spending the refactor latch.
-7. Resolve the changed-file list once for the initial packet. If refactorpass
+6. Resolve the changed-file list once for the initial packet. If refactorpass
    commits, that packet ends with its reviewed head: resolve the new local head and
    build a new immutable packet before deep critique. If refactorpass is a no-op,
    both lanes may reuse the initial packet. The ledger's diff-delivery rules
    govern both.
-8. Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied.
+7. Use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND` when supplied.
    Otherwise select one past Claude's highest completed round within the latest
    authenticated `local-review-run:v1` (1 when it has none), using only its
    pass/complete comments after that run marker. Honor the run's cap and use
@@ -105,8 +113,7 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
 
 ### Tier gate
 
-Runs after the PR boundary: the marker lives on the PR, and a changeset that
-exits on the docs/config-only skip never needs a tier.
+Runs after the PR boundary: the marker lives on the PR.
 
 Resolve the effective `local-review-tier:v1` marker under the ledger's
 authenticated, forward-only transition rule; if none exists, classify against

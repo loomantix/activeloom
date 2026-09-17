@@ -7,7 +7,8 @@ edits will be overwritten on the next sync.
 
 For an explicitly requested automatic review chain, use the deterministic
 `.codex/skills/critique/scripts/review-chain-runner.py` controller. Resolve the
-tier and its triggers first, then supply either an exact `--chain` or a repeating
+tier and its triggers first — after the [human-glance gate](#human-glance),
+which starts no run for a docs/config-only range — then supply either an exact `--chain` or a repeating
 `--cycle --until-converged`. Do not implement the outer loop in conversation.
 Read [runner usage](../.codex/references/review-chain-runner.md) before starting;
 it defines required validation commands, durable checkpoints, and recovery.
@@ -252,8 +253,7 @@ engine in a fresh terminal.
    - **The refactor pass runs once per engine per PR.** A second cleanup pass over
      an already-simplified diff returns naming and shape churn, which moves the
      head and invalidates the other engines' attestations for nothing that ships.
-     Each engine's cleanup lane latches on a `local-review-refactor:v1` marker;
-     a docs/config-only skip does not consume it.
+     Each engine's cleanup lane latches on a `local-review-refactor:v1` marker.
    - **A fix invalidates by head, not by position.** An attestation is evidence
      for the exact commit it names. A material fix does not restart the round at
      some first engine; it moves the head, which invalidates precisely those
@@ -564,7 +564,8 @@ does not determine severity or classification.
 
 ## Review Tier
 
-Resolve the tier **before the first reviewer runs**, on every path. An
+Resolve the tier **before the first reviewer runs**, on every path that passes
+the [human-glance gate](#human-glance). An
 unresolved tier is not a neutral state — it is how the expensive path becomes
 the default. **Lean is the default; Deep is the exception you justify.**
 
@@ -575,6 +576,50 @@ effective marker under the ledger's authenticated, forward-only transition rule
 instead of reclassifying the unchanged range. A tier re-derived from scratch
 each round, or re-derived against a different list in each engine, drifts back
 to Deep.
+
+### Human glance
+
+A changeset with no review-significant file needs a human to read the diff and
+merge, not a review chain. This outcome sits below Lean and is decided first:
+classification is the first step of `critique`, `deepcritique`, `pr-critique`, `refactorpass`, `reviewit`,
+and the review phase of `agent-loop`. It runs before a draft PR is
+required or opened, before the context-window check, round, stance, and
+telemetry snapshot, and before any ledger result, attestation, tier or refactor
+marker, or telemetry record.
+
+Classify the committed range against the open PR's base branch, or the
+repository's default branch when the branch has no open PR:
+
+```bash
+git fetch origin <base-branch>
+base_sha=$(git merge-base "origin/<base-branch>" HEAD)
+node .codex/skills/critique/scripts/review-ledger.js classify-changeset \
+  --base "$base_sha" --head "$(git rev-parse HEAD)"
+```
+
+When the output has `"skip": true` and a non-empty `classifications` array,
+print this line with N as that array's length, and stop:
+
+```text
+Human glance: N docs/config files, no review-significant changes — read the diff and merge. No review chain run.
+```
+
+Otherwise continue the entry point unchanged. An empty range or a classifier
+that cannot run is not human glance; the entry point's own pre-flight handles it.
+
+- **Explicit request.** A human who directly asks for this change to be reviewed
+  anyway overrides the gate. That request is trigger 6: the chain runs and the
+  tier marker records it. Typing a review skill's name is not that request.
+- **Controller-scheduled passes.** When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set,
+  the controller that scheduled the pass owns the gate, and the pass reviews the
+  range it was given. `agent-loop` classifies before its first review round, and
+  an automatic chain classifies before it starts the runner.
+- **Later pushes.** Every invocation classifies the whole range again. A push
+  that adds a review-significant file takes the PR out of human glance, and tier
+  resolution applies to the whole range.
+- **The label.** Where the synced `review-glance-label.yml` workflow runs, the
+  `review: human-glance` label marks a PR whose latest push classified the same
+  way. It is a hint; the gate's own classification decides.
 
 ### What sets the tier
 
@@ -719,13 +764,6 @@ reply, or resolve contract.
 to `critique`; typing the deep skill does not select the deep path. `reviewit`'s
 iteration cap matches the tier's round cap numerically — two at Lean, four at
 Deep.
-
-## Skip Path
-
-For docs/config-only changes, skip expensive review automation unless the user
-explicitly wants it. Source-code changes include common implementation
-extensions such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`,
-`.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash`.
 
 ## Reviewing Another Engine's Change
 
@@ -970,8 +1008,8 @@ times are running different prompts and the tag carries no content identity.
 
 ### Count the findings
 
-Before every emission attempt, including `clean`, `changed`, `skipped`, and
-`blocked` exits, write this pass's complete findings object to an owner-only
+Before every emission attempt, including `clean`, `changed`, and `blocked`
+exits, write this pass's complete findings object to an owner-only
 regular file and pass its path as `--findings-file`. This step also applies to
 early returns before the normal end-of-pass sequence and to a spent cleanup
 latch. Never omit the file or reuse a previous pass's measurements.
@@ -1034,7 +1072,7 @@ node <ledger-helper> emit-telemetry \
   --base <full-base-sha> --head <full-head-sha> \
   --pass-type <review|refactor> --review-tier <lean|deep> \
   --trigger <autonomous|interactive> --round <n> \
-  --stance <adversarial|convergence> --status <clean|changed|blocked|skipped> \
+  --stance <adversarial|convergence> --status <clean|changed|blocked> \
   --token-source <from delta> --engine-version <from delta> \
   --duration-seconds <from delta> \
   --tokens-file <from delta> \
@@ -1068,22 +1106,20 @@ the exact pattern that otherwise reads as efficiency.
 
 ### What each pass emits
 
-| Pass                                  | `--pass-type`      | `--status` |
-| ------------------------------------- | ------------------ | ---------- |
-| Adversarial pass, nothing to fix      | `review`           | `clean`    |
-| Adversarial pass that committed a fix | `review`           | `changed`  |
-| Pass that could not complete          | `review`           | `blocked`  |
-| Docs/config-only skip                 | matching pass-type | `skipped`  |
-| Cleanup pass that committed           | `refactor`         | `changed`  |
-| Cleanup pass that found nothing       | `refactor`         | `clean`    |
-| Cleanup skipped on a spent latch      | `refactor`         | `clean`    |
+| Pass                                  | `--pass-type` | `--status` |
+| ------------------------------------- | ------------- | ---------- |
+| Adversarial pass, nothing to fix      | `review`      | `clean`    |
+| Adversarial pass that committed a fix | `review`      | `changed`  |
+| Pass that could not complete          | `review`      | `blocked`  |
+| Cleanup pass that committed           | `refactor`    | `changed`  |
+| Cleanup pass that found nothing       | `refactor`    | `clean`    |
+| Cleanup skipped on a spent latch      | `refactor`    | `clean`    |
 
-A skip still burns tokens reading and classifying the PR, and "we spent eight
-thousand tokens deciding not to review" is exactly the machinery overhead worth
-seeing. `skipped` is reserved for the changeset that had nothing reviewable in
-it — the record rejects a `skipped` pass carrying review-significant files, so a
-cleanup pass that stopped on a spent latch reports `clean` instead. Its
-changeset was reviewable; this engine had simply already spent its one pass.
+A human-glance range emits no record: it stops before the telemetry snapshot.
+A cleanup pass that stopped on a spent latch reports `clean`. Its changeset was
+reviewable; this engine had simply already spent its one pass. The record writer
+still accepts `skipped`, and rejects it for a changeset carrying
+review-significant files, so existing records stay valid; no pass emits it.
 
 ### Emission failure is never fatal
 

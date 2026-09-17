@@ -485,7 +485,7 @@ def _config(tmp_path: Path, **overrides: str | int) -> str:
         # attests the exact head it read.
         "claude_review_hook": _clean_pass_hook("claude"),
         "codex_review_hook": _clean_pass_hook("codex"),
-        "worker_hook": "printf 'worker\\n' >> \"$EVENT_LOG\"; printf 'done\\n' > result.txt; git add result.txt; git commit -m 'fix: worker'",
+        "worker_hook": "printf 'worker\\n' >> \"$EVENT_LOG\"; printf 'done\\n' > result.py; git add result.py; git commit -m 'fix: worker'",
         "worker_retries": 1,
         "worker_timeout_seconds": 5,
         "hook_timeout_seconds": 10,
@@ -1052,8 +1052,8 @@ def test_stop_mode_is_the_default_and_does_not_park(
 
 _PER_ISSUE_WORKER = (
     "printf 'worker\\n' >> \"$EVENT_LOG\"; "
-    'printf "%s\\n" "$AGENT_LOOP_ISSUE_ID" > "result-$AGENT_LOOP_ISSUE_ID.txt"; '
-    'git add "result-$AGENT_LOOP_ISSUE_ID.txt"; git commit -m "fix: issue $AGENT_LOOP_ISSUE_ID"'
+    'printf "%s\\n" "$AGENT_LOOP_ISSUE_ID" > "result-$AGENT_LOOP_ISSUE_ID.py"; '
+    'git add "result-$AGENT_LOOP_ISSUE_ID.py"; git commit -m "fix: issue $AGENT_LOOP_ISSUE_ID"'
 )
 
 
@@ -1070,7 +1070,7 @@ def test_batch_stack_builds_a_dependent_issue_on_its_unmerged_predecessor(
         config=_config_v3(
             tmp_path,
             # The dependent's worker must see its predecessor's work.
-            worker_hook='if [ "$AGENT_LOOP_ISSUE_ID" = 61 ]; then test -f result-60.txt || exit 9; fi; '
+            worker_hook='if [ "$AGENT_LOOP_ISSUE_ID" = 61 ]; then test -f result-60.py || exit 9; fi; '
             + _PER_ISSUE_WORKER,
             dependency_gate="batch-stack",
         ),
@@ -1098,7 +1098,7 @@ def test_batch_stack_builds_a_dependent_issue_on_its_unmerged_predecessor(
     changed = _run_git(
         "diff", "--name-only", f"{parent['headSha']}..{child['headSha']}", cwd=consumer[0]
     ).stdout.split()
-    assert changed == ["result-61.txt"]
+    assert changed == ["result-61.py"]
     assert _run_git("merge-base", "--is-ancestor", str(parent["headSha"]), str(child["headSha"]), cwd=consumer[0])
     assert "--ignore-blocker 60" in (consumer[3] / "ready-args.log").read_text(encoding="utf-8")
     assert f"Stacked PR: after {parent['branch']} merges, retarget it" in result.stdout
@@ -2142,8 +2142,8 @@ def test_draft_pr_title_is_the_worker_commit_subject(
     # conventional subject was expected. The fixture worker commits
     # "fix: worker", and a control character in a subject must not reach gh.
     worker = (
-        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf done > result.txt; "
-        "git add result.txt; git commit -m \"$(printf 'feat(demo): add\\tresult\\x01 file')\""
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf done > result.py; "
+        "git add result.py; git commit -m \"$(printf 'feat(demo): add\\tresult\\x01 file')\""
     )
     result = _run(
         consumer,
@@ -2958,7 +2958,7 @@ def test_hooks_and_default_worker_do_not_inherit_the_wrapper_stdin(
         '[ "$(readlink /proc/self/fd/0)" = /dev/null ] || exit 71; '
         "if read -r -t 3 line; then exit 72; else status=$?; fi; "
         '[ "$status" -eq 1 ] || exit 73; '
-        "printf done > result.txt; git add result.txt; git commit -m 'fix: worker'"
+        "printf done > result.py; git add result.py; git commit -m 'fix: worker'"
     )
     validation = '[ "$(readlink /proc/self/fd/0)" = /dev/null ] || exit 74'
     reader, writer = os.pipe()
@@ -2993,7 +2993,7 @@ def test_hooks_and_default_worker_run_background_tasks_in_the_foreground(
         claude,
         "#!/usr/bin/env bash\n"
         + record
-        + "printf 'done\\n' > result.txt\ngit add result.txt\ngit commit -m 'fix: worker'\n",
+        + "printf 'done\\n' > result.py\ngit add result.py\ngit commit -m 'fix: worker'\n",
     )
     monkeypatch.delenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", raising=False)
     extra_env = {} if inherited is None else {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": inherited}
@@ -3032,8 +3032,8 @@ if [[ "$*" == *"--model primary"* ]]; then
   echo 'capacity exhausted' >&2
   exit 9
 fi
-printf 'done\\n' > result.txt
-git add result.txt
+printf 'done\\n' > result.py
+git add result.py
 git commit -m 'fix: fallback worker'
 """,
     )
@@ -3066,8 +3066,8 @@ def test_worker_effort_is_passed_to_the_default_worker(
         claude,
         """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$AGENT_STATE_DIR/worker-args.log"
-printf 'done\\n' > result.txt
-git add result.txt
+printf 'done\\n' > result.py
+git add result.py
 git commit -m 'fix: effort worker'
 """,
     )
@@ -3123,8 +3123,8 @@ def test_worker_handoff_is_a_bail_whatever_the_exit_status(
     worker = (
         'if [ "$AGENT_LOOP_ISSUE_ID" = 40 ]; then '
         f"{_HANDOFF}; exit {exit_status}; fi; "
-        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf done > result.txt; "
-        "git add result.txt; git commit -m 'fix: worker'"
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf done > result.py; "
+        "git add result.py; git commit -m 'fix: worker'"
     )
     result = _run(
         consumer,
@@ -3156,7 +3156,7 @@ def test_worker_handoff_with_committed_work_is_an_ambiguous_bail(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     worker = (
-        "printf done > result.txt; git add result.txt; git commit -m 'fix: worker'; "
+        "printf done > result.py; git add result.py; git commit -m 'fix: worker'; "
         f"{_HANDOFF}"
     )
     result = _run(
@@ -3180,7 +3180,7 @@ def test_timeout_retries_only_an_unchanged_worktree(
     retry_mark = tmp_path / "retry-mark"
     worker = (
         'if [ ! -e "$RETRY_MARK" ]; then touch "$RETRY_MARK"; sleep 5; fi; '
-        "printf done > result.txt; git add result.txt; git commit -m 'fix: retry worker'"
+        "printf done > result.py; git add result.py; git commit -m 'fix: retry worker'"
     )
     result = _run(
         consumer,
@@ -3384,7 +3384,7 @@ def test_issue_branch_has_no_upstream_during_worker(
     worker = (
         "if git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' "
         ">/dev/null 2>&1; then exit 41; fi; "
-        "printf done > result.txt; git add result.txt; "
+        "printf done > result.py; git add result.py; "
         "git commit -m 'fix: untracked issue branch'"
     )
     result = _run(
@@ -3524,7 +3524,7 @@ def test_untracked_leftover_does_not_abort_batch_after_publish(
     # and continues to the next issue.
     _run_git("config", "status.showUntrackedFiles", "no", cwd=consumer[0])
     worker = (
-        "printf done > result.txt; git add result.txt; git commit -m 'fix: worker'; "
+        "printf done > result.py; git add result.py; git commit -m 'fix: worker'; "
         "printf scratch > leftover.txt"  # untracked, not ignored
     )
     result = _run(
@@ -3618,7 +3618,7 @@ def test_timeout_with_committed_work_does_not_retry(
     # that work — the retry gate is `worktree_has_work`, which a committed change
     # trips regardless of the timeout exit code (124/137).
     worker = (
-        "printf done > result.txt; git add result.txt; "
+        "printf done > result.py; git add result.py; "
         "git commit -m 'fix: committed then hung'; sleep 5"
     )
     result = _run(

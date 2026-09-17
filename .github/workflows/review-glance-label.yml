@@ -1,0 +1,120 @@
+# Human-glance label.
+#
+# Marks a pull request whose range holds no review-significant file with
+# `review: human-glance` — the advisory signal that a person should read the
+# diff and merge it, and that no AI review chain is owed. The review skills
+# re-classify the pinned range themselves; this label is a hint on the PR, never
+# the authority.
+#
+# Runs on `pull_request_target` so a fork PR still gets the label, and checks
+# out the BASE ref only: the classifier that runs is the one already reviewed on
+# the base branch, never the head's copy. The head's contents reach this job as
+# a patch read through the API and parsed as data.
+#
+# Fails closed. When the diff cannot be fetched (the API declines oversized
+# diffs) or no vendored classifier exists on the base ref, the label is removed
+# and the job exits 0 with a notice, so an unclassified PR never keeps a stale
+# human-glance claim.
+name: Review glance label
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: review-glance-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  classify:
+    name: Human-glance classification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The base ref, pinned to the exact base commit of this PR. The PR's own
+      # commits are never checked out: this job holds a write token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .claude/skills/critique/scripts
+            .codex/skills/critique/scripts
+            .agents/skills/critique/scripts
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Classify the pull request and set the label
+        env:
+          # Every value here is either a constant or an integer GitHub
+          # controls. No PR-authored text is interpolated into this script.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL: 'review: human-glance'
+        run: |
+          set -euo pipefail
+
+          present=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/labels" \
+            --jq '.[].name' | grep -Fx "$LABEL" || true)
+
+          add_label() {
+            # A label the repository does not have yet is created by this call.
+            gh api -X POST "repos/$GH_REPO/issues/$PR_NUMBER/labels" \
+              -f "labels[]=$LABEL" >/dev/null
+            echo "labelled: $LABEL"
+          }
+
+          remove_label() {
+            if [ -n "$present" ]; then
+              encoded=$(jq -rn --arg name "$LABEL" '$name|@uri')
+              gh api -X DELETE \
+                "repos/$GH_REPO/issues/$PR_NUMBER/labels/$encoded" >/dev/null
+              echo "label removed: $LABEL"
+            else
+              echo "not labelled"
+            fi
+          }
+
+          classifier=""
+          for candidate in .claude/skills/critique/scripts/review-ledger.js \
+                           .codex/skills/critique/scripts/review-ledger.js \
+                           .agents/skills/critique/scripts/review-ledger.js; do
+            if [ -f "$candidate" ]; then
+              classifier="$candidate"
+              break
+            fi
+          done
+          if [ -z "$classifier" ]; then
+            echo "::notice::No vendored review-ledger classifier on the base ref; not claiming human glance."
+            remove_label
+            exit 0
+          fi
+
+          diff_file="$RUNNER_TEMP/pull-request.diff"
+          if ! gh api -H 'Accept: application/vnd.github.diff' \
+              "repos/$GH_REPO/pulls/$PR_NUMBER" > "$diff_file"; then
+            echo "::notice::Could not fetch the pull request diff; not claiming human glance."
+            remove_label
+            exit 0
+          fi
+
+          if ! report=$(node "$classifier" classify-changeset --diff-file "$diff_file"); then
+            echo "::notice::The classifier could not read the diff; not claiming human glance."
+            remove_label
+            exit 0
+          fi
+
+          skip=$(jq -r '.skip // false' <<<"$report")
+          files=$(jq -r '.classifications | length' <<<"$report")
+          echo "skip=$skip files=$files"
+          if [ "$skip" = true ] && [ "$files" -gt 0 ]; then
+            add_label
+          else
+            remove_label
+          fi

@@ -6,10 +6,24 @@ argument-hint: (optional PR number, optional "force"; always single-pass)
 
 # Refactor pass — PR-first wrapper
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Findings before telemetry emission
 
-Before every telemetry emission attempt, including an early `skipped`, `blocked`,
-or spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
+Before every telemetry emission attempt, including an early `blocked` or
+spent-latch return, follow [Count the findings](../../REVIEW_WORKFLOW.md#count-the-findings):
 write the complete measured findings file and supply `--findings-file`.
 Preserve findings posted before an interruption; unknown counts are not zeros.
 If counts cannot be established, report `telemetry not emitted: findings measurement unavailable`
@@ -59,9 +73,6 @@ review started.
    measurement boundary.
 8. Read all prior review threads. Telemetry markers are not review context:
    exclude them by marker prefix and never carry one into context assembly.
-   Apply the docs/config-only classification. On a skip, set the telemetry
-   status to `skipped` and continue directly to Output without spending the
-   refactor latch.
 9. **Check the once-per-engine latch.** Search the PR's comments for
    `local-review-refactor:v1 engine=claude`, authored by the actor running this
    review. If it is present, this PR has already had its Claude cleanup pass:
@@ -121,9 +132,7 @@ the current PR head. This comment closes the once-per-engine latch:
 <!-- local-review-refactor:v1 engine=claude head=<reviewed-sha> outcome=<committed|no-op> -->
 ```
 
-Post it only for a pass that actually ran cleanup. A docs/config-only skip
-leaves the latch open, so a later round whose changeset contains source can still
-spend the one pass.
+Post it only for a pass that actually ran cleanup.
 
 The latch is informational; it cannot replace fixed finding evidence. Only the
 final adversarial `critique` lane writes the enclosing review's v3 result. It
@@ -139,10 +148,8 @@ Take the prompt-stack digests and emit this pass's telemetry record per
 that cannot name the prompt generation it ran on cannot be compared against the
 next one, so the two digests are part of emitting, not an optional extra. A pass
 that committed is `changed`; one that found nothing is `clean`. A pass that
-stopped on a spent latch is also `clean`, not `skipped` — its changeset was
-reviewable, this engine had simply already spent its one pass, and the record
-rejects a `skipped` pass carrying review-significant files. A docs/config-only
-skip is the case that genuinely reports `skipped`.
+stopped on a spent latch is also `clean`: its changeset was reviewable, this
+engine had simply already spent its one pass.
 
 Emission exits zero whether or not it succeeded. Report the outcome and move on.
 When a failure terminates the pass after a snapshot was taken, emit
@@ -154,7 +161,7 @@ identity does not yet exist.
 Report:
 
 - PR number and reviewed head;
-- latch state: `first pass for this engine`, `skipped — already spent at <sha>`,
+- latch state: `first pass for this engine`, `already spent at <sha>`,
   or `forced re-run`;
 - whether cleanup changed the branch and the commit SHA;
 - cleanups kept and cleanups dropped on verification;

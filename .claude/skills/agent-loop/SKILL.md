@@ -294,16 +294,19 @@ wrong engine identity and corrupt the ledger's roster, so it is not a workaround
 6. Fetch and merge the base, inspect the diff, validate, push, and open a draft PR
    titled with the worker's first commit subject (so a merge-commit consumer gets
    a conventional merge subject), falling back to `agent-loop: resolve #N`.
-7. Run a Codex pass and then a Claude pass against the PR ledger. Each hook
+7. Classify the reviewed range. A range with no review-significant file stops
+   here with stop category `human-glance`: the draft PR is left for a human to
+   read and merge, and no hook, checkpoint, or marker is spent on it.
+8. Run a Codex pass and then a Claude pass against the PR ledger. Each hook
    comments before fixes, publishes committed fixes only through the wrapper-owned
    safe-push helper, posts structured fix and final-lane
    completion evidence, then resolves.
-8. If either engine made material fixes, restart from Codex. Stop after
+9. If either engine made material fixes, restart from Codex. Stop after
    `review_max_rounds` or the persisted whole-run deadline and preserve the draft.
-9. Re-attest the exact issue contract and dependencies, excluding only the
-   wrapper-captured PR from the addressed-by-open-PR check. Require a complete
-   clean round plus replies and resolutions on every marked thread, then mark
-   the PR ready.
+10. Re-attest the exact issue contract and dependencies, excluding only the
+    wrapper-captured PR from the addressed-by-open-PR check. Require a complete
+    clean round plus replies and resolutions on every marked thread, then mark
+    the PR ready.
 
 Do not invoke `reviewit`, Copilot, or any GitHub-hosted AI reviewer, including
 hosted Gemini. This bans _hosted_ review, not the local `gemini` engine identity
@@ -460,7 +463,7 @@ Every stop names a category from a fixed list: `no-result/hook-ended-early`,
 `worker-failed`, `setup-failed`, `merge-conflict`, `publication-diff`,
 `base-diverged`, `dependency-blocked`, `issue-changed`, `checkpoint-failed`,
 `uncertain-mutation`, `child-resume-failed`, `batch-incomplete`,
-`interrupted`, or `internal-error`. A stop that follows a hook carries that
+`human-glance`, `interrupted`, or `internal-error`. A stop that follows a hook carries that
 hook's phase and the path of its log (`hookLog`), never the output itself.
 `resumable` is true when `resumeCommand` names a command; it does not mean
 resuming is safe, which the stop category decides. Events carry identifiers, categories, counts, and paths: never issue titles or

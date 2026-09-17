@@ -5,6 +5,20 @@ description: High-fidelity PR-first Codex review chain that opens or reuses a dr
 
 # Deep Critique
 
+## Step 0: Human-glance gate
+
+Classify the range before every other step in this skill — before the
+context-window check, the PR boundary, round and stance, the telemetry
+snapshot, and any marker. Follow `.codex/REVIEW_WORKFLOW.md` "Human glance": on `skip: true` with at
+least one classified file, print that section's one-line message and stop, with
+no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
+record.
+
+Continue when the range carries a review-significant file, when a human
+explicitly asked for this change to be reviewed anyway, or when
+`$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
+pass owns the gate.
+
 ## Automatic chain dispatch
 
 When the user requests a full automatic chain and this is not already a
@@ -183,7 +197,6 @@ that one. **Lean is the default; Deep is the exception you justify.**
 Resolve the effective `local-review-tier:v1` marker under the ledger's
 authenticated, forward-only transition rule. If no accepted marker exists,
 classify against the workflow doc's triggers and post the marker before starting
-a lane. A pass that exits on the docs/config-only skip never needs a tier.
 
 **If the tier is Lean, do not run this chain.** Report the resolved tier and
 hand the changeset to `critique <pr-number>`, which owns the Lean lane set.

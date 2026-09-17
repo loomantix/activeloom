@@ -153,7 +153,7 @@ test('Tier 3 names every App permission its synced targets require', () => {
     assert.match(GETTING_STARTED, new RegExp(permission));
   }
   assert.match(template, /`workflows: write`/);
-  assert.match(template, /\.github\/workflows\/dco\.yml/);
+  assert.match(template, /ships workflows under\n#\s+`\.github\/workflows\/`/);
 });
 
 test('Tier 2 documents approval-required pull-request checks', () => {

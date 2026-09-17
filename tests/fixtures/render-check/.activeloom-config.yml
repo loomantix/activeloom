@@ -52,11 +52,12 @@ substitutions:
 allowed_destinations:
   - '**'
 
-# The canonical manifest ships `.github/workflows/dco.yml`, and writing a
+# The canonical manifest ships two workflows, and writing a
 # workflow now needs per-file consent (docs/sync.md, `allow_sensitive_writes`).
 # Unlike `allowed_destinations` above, this cannot be waved through with a
 # wildcard — the gate rejects globs on purpose — so the fixture names the
 # file, exactly as a real consumer does.
 allow_sensitive_writes:
   - .github/workflows/dco.yml
+  - .github/workflows/review-glance-label.yml
   - .claude/skills/critique/scripts/package.json

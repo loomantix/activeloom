@@ -318,19 +318,21 @@ allow_sensitive_writes: []
 
 # Opt out of specific upstream files by source or destination path.
 #
-# \`.github/workflows/dco.yml\` is skipped because this repo syncs with the
-# workflow's built-in GITHUB_TOKEN (tier 2), and GitHub refuses a GITHUB_TOKEN
-# push whose commit creates or updates any file under \`.github/workflows/\`.
-# To receive it, either add the file by hand once, or move to tier 3
-# (\`npx activeloom init --sync --app\`) and delete this entry.
+# The shared workflows are skipped because this repo syncs with the workflow's
+# built-in GITHUB_TOKEN (tier 2), and GitHub refuses a GITHUB_TOKEN push whose
+# commit creates or updates any file under \`.github/workflows/\`.
+# To receive them, either add the files by hand once, or move to tier 3
+# (\`npx activeloom init --sync --app\`) and delete these entries.
 skip_targets:
-  - .github/workflows/dco.yml`
+  - .github/workflows/dco.yml
+  - .github/workflows/review-glance-label.yml`
     : `# Required before the sync may write a sensitive path. The shared target set
-# ships \`.github/workflows/dco.yml\`, which every consumer receives, so this
-# entry is what lets your first sync run. A refusal names any others it needs,
-# in a block you can paste as-is.
+# ships two workflows every consumer receives, so these entries are what let
+# your first sync run. A refusal names any others it needs, in a block you can
+# paste as-is.
 allow_sensitive_writes:
   - .github/workflows/dco.yml
+  - .github/workflows/review-glance-label.yml
 
 # Opt out of specific upstream files by source or destination path.
 skip_targets: []`

@@ -188,15 +188,18 @@ test('only tier 2 skips the workflow target GITHUB_TOKEN cannot push', () => {
     initLib.renderConfig({ harnesses: ['claude'], facts: facts(), tierNumber });
 
   const tier2 = render(2);
-  assert.match(tier2, /^skip_targets:\n {2}- \.github\/workflows\/dco\.yml$/m);
+  assert.match(
+    tier2,
+    /^skip_targets:\n {2}- \.github\/workflows\/dco\.yml\n {2}- \.github\/workflows\/review-glance-label\.yml$/m,
+  );
   assert.match(tier2, /^allow_sensitive_writes: \[\]$/m);
 
   for (const tierNumber of [1, 3]) {
     const body = render(tierNumber);
     assert.match(
       body,
-      /^allow_sensitive_writes:\n {2}- \.github\/workflows\/dco\.yml$/m,
-      `tier ${tierNumber} must still receive the shared workflow target`,
+      /^allow_sensitive_writes:\n {2}- \.github\/workflows\/dco\.yml\n {2}- \.github\/workflows\/review-glance-label\.yml$/m,
+      `tier ${tierNumber} must still receive the shared workflow targets`,
     );
     assert.match(body, /^skip_targets: \[\]$/m);
   }
