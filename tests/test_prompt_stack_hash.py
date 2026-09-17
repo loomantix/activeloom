@@ -1,16 +1,4 @@
-"""Acceptance suite for the prompt-stack identity helper.
-
-The case names here are the shared contract: the sibling engine repository runs
-the same scenarios against its own declared file set, so a behaviour that
-diverges between engines shows up as a named case that only one side has.
-
-What these assert is mostly about *not lying*. A digest that covers part of a
-prompt stack is indistinguishable from one that covers all of it, and a digest
-that moves for a reason nobody intended reads downstream as a real prompt
-change. So the cases below pin the abstention paths — an unreadable file, an
-empty set — at least as hard as they pin the happy path, and pin the hash input
-definition itself against an independent implementation of it.
-"""
+"""Acceptance suite for the prompt-stack identity helper."""
 
 from __future__ import annotations
 
@@ -33,12 +21,7 @@ MANIFEST_PATH = f"{HARNESS_ROOT}/prompt-stack.json"
 MANIFEST_VERSION = 1
 STACK_VERSION = "4.5.6"
 
-# The stack these fixtures declare. Under hash input version 2 the membership is
-# no longer pinned in this file, because it is no longer pinned in the script
-# either: the list is a build output of the repository that owns the prompts,
-# shipped as `prompt-stack.json` and read from there. What stays pinned is the
-# *definition* — how a declared set becomes a digest — which is what
-# `expected_digest` below reimplements independently.
+# Fixture prompt stack files used to test hash computation against expected_digest.
 PROMPT_STACK_FILES = [
     ".claude/MODEL_NOTES.md",
     ".claude/REVIEW_WORKFLOW.md",
@@ -57,19 +40,14 @@ def run(*args: str) -> dict[str, Any]:
 
 
 def run_script(script: Path, *args: str) -> dict[str, Any]:
-    """Run one engine's copy of the helper.
-
-    Named separately because which copy runs is a property under test for the
-    shipped manifests: each engine's script derives its own `HARNESS_ROOT`.
-    """
+    """Run one engine's copy of the helper."""
     result = subprocess.run(
         ["node", str(script), *args],
         capture_output=True,
         text=True,
         check=False,
     )
-    # A telemetry defect must never fail a review that found real defects, so a
-    # non-zero exit is itself a defect regardless of what went wrong inside.
+    # The helper must always exit 0.
     assert result.returncode == 0, result.stderr
     payload: dict[str, Any] = json.loads(result.stdout)
     return payload
@@ -82,11 +60,7 @@ def write(root: Path, relative: str, content: bytes) -> None:
 
 
 def write_manifest(repo: Path, **overrides: Any) -> None:
-    """Ship a stack declaration, as the upstream renderer would.
-
-    The parameter is `repo`, not `root`: `root` is a manifest field a caller
-    needs to override to build a manifest belonging to another harness.
-    """
+    """Ship a stack declaration, as the upstream renderer would."""
     payload: dict[str, Any] = {
         "manifestVersion": MANIFEST_VERSION,
         "promptStackVersion": STACK_VERSION,
@@ -150,8 +124,7 @@ def test_the_two_digests_are_never_collapsed(tmp_path: Path) -> None:
     payload = run("--repo-root", str(tmp_path))
     assert payload["promptStackSha256"] != payload["repoInstructionsSha256"]
 
-    # The same single file in each set must not produce the same digest, or the
-    # domain separation is decorative.
+    # Identical single files in stack vs instructions must yield different digests.
     left = tmp_path / "left"
     right = tmp_path / "right"
     write(left, PROMPT_STACK_FILES[0], b"same\n")
@@ -173,8 +146,6 @@ def test_the_hash_is_stable_under_file_order_variation(tmp_path: Path) -> None:
     write_manifest(forward, files=list(PROMPT_STACK_FILES))
     for relative in reversed(PROMPT_STACK_FILES):
         write(reverse, relative, b"body\n")
-    # Declared in the opposite order as well: the manifest is a file, editable
-    # anywhere it lands, so its order must not be part of the hash input.
     write_manifest(reverse, files=list(reversed(PROMPT_STACK_FILES)))
     assert (
         run("--repo-root", str(forward))["promptStackSha256"]
@@ -252,13 +223,7 @@ def test_an_absent_file_is_recorded_not_skipped(tmp_path: Path) -> None:
 
 
 def test_a_stack_with_nothing_present_yields_null(tmp_path: Path) -> None:
-    """ "Everything absent" is not a prompt generation to compare against.
-
-    The stack half states its reason; the instructions half does not. That
-    asymmetry is the point: a manifest that parsed asserts these files *are* the
-    stack, so nothing arriving contradicts it, while a repository carrying
-    neither instruction file is simply a repository without one.
-    """
+    """Verify that an empty or missing stack yields null with an explanatory error."""
     write_manifest(tmp_path)
     payload = run("--repo-root", str(tmp_path))
     assert payload["promptStackSha256"] is None
@@ -281,7 +246,6 @@ def test_an_unreadable_file_yields_null_not_a_partial_hash(tmp_path: Path) -> No
         blocked.chmod(0o600)
     assert payload["promptStackSha256"] is None
     assert payload["error"] == "the prompt stack could not be read"
-    # The other set is independent and must survive.
     assert payload["repoInstructionsSha256"] is not None
 
 
@@ -321,11 +285,6 @@ def test_a_missing_repo_root_reports_no_digest(tmp_path: Path) -> None:
     assert payload["promptStackSha256"] is None
     assert payload["promptStackVersion"] is None
     assert payload["error"] == "no prompt-stack.json under .claude"
-
-
-# --------------------------------------------------------------------------
-# The stack declaration
-# --------------------------------------------------------------------------
 
 
 def test_the_declared_version_is_reported_beside_the_digest(tmp_path: Path) -> None:
@@ -412,10 +371,6 @@ def test_a_changed_declaration_changes_the_identity(tmp_path: Path) -> None:
             {"files": [".claude\\x.md"]}, None, "unusable path", id="backslash"
         ),
         pytest.param({"files": [3]}, None, "unusable path", id="not-a-string"),
-        # The renderer refuses to emit this, but a manifest is an ordinary file
-        # by the time it is read here. Hashing it would fold
-        # `promptStackVersion` into the digest, so a version-only bump would
-        # move a digest that is documented never to move for one.
         pytest.param(
             {"files": [".claude/prompt-stack.json"]},
             None,
@@ -436,11 +391,7 @@ def test_an_unusable_declaration_abstains(
     raw: str | None,
     expected: str,
 ) -> None:
-    """Every rejection abstains rather than falling back to some other list.
-
-    A fallback would produce a digest anyway, which is the one outcome worse
-    than no digest: it looks measured.
-    """
+    """Every rejection abstains rather than falling back to some other list."""
     populate(tmp_path)
     if raw is not None:
         write(tmp_path, MANIFEST_PATH, raw.encode())
@@ -452,8 +403,6 @@ def test_an_unusable_declaration_abstains(
     assert payload["promptStackSha256"] is None
     assert payload["promptStackVersion"] is None
     assert expected in payload["error"]
-    # The two sets are independent, so a broken declaration must not cost the
-    # record its repo-instructions digest as well.
     assert payload["repoInstructionsSha256"] is not None
 
 
@@ -510,15 +459,7 @@ def test_an_oversized_declared_prompt_abstains(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("root", [".claude", ".codex"])
 def test_the_shipped_declaration_is_well_formed(root: str) -> None:
-    """Every shipped manifest must satisfy the reader shipped beside it.
-
-    Parametrized over both roots because the two manifests are not two copies of
-    one file the way the two scripts are. They are separately generated
-    artifacts with their own `engine`, `root`, and `files`, so the byte-equality
-    assertion below covers the script and says nothing about either of them. Each
-    engine's own copy is run here, since `HARNESS_ROOT` comes from the script's
-    location and is the whole point of the distinction.
-    """
+    """Verify every shipped manifest satisfies its corresponding engine reader."""
     script = REPO_ROOT / root / "skills/critique/scripts" / "prompt-stack-hash.js"
     payload = run_script(script, "--repo-root", str(REPO_ROOT))
     assert payload["error"] is None
@@ -536,18 +477,8 @@ def test_the_shipped_declaration_is_well_formed(root: str) -> None:
 
 
 def test_a_symlinked_directory_component_abstains(tmp_path: Path) -> None:
-    """The per-component walk, which `O_NOFOLLOW` cannot stand in for.
-
-    `O_NOFOLLOW` constrains only the final component, so the two symlink cases
-    above pass with the component loop deleted. This one does not: it links a
-    *directory* component at an otherwise valid target, which is the case the
-    loop exists for and the shape the round-1 finding reported.
-    """
+    """Verify that symlinked directory components cause the reader to abstain."""
     populate(tmp_path)
-    # `.claude/references` holds a declared prompt. Move the real directory
-    # outside the harness root and leave a link where it was: every declared
-    # file still resolves and still has the right bytes, so only the component
-    # check can tell the difference.
     inside = tmp_path / ".claude/references"
     outside = tmp_path / "external-references"
     inside.rename(outside)
@@ -560,15 +491,7 @@ def test_a_symlinked_directory_component_abstains(tmp_path: Path) -> None:
 
 
 def test_a_declared_stack_that_arrived_empty_says_so(tmp_path: Path) -> None:
-    """A null digest must never be a null reason.
-
-    A manifest that parsed is a positive assertion that these files are the
-    stack, so `declared > 0, present == 0` contradicts it. Reporting no reason
-    would leave a record that abstains without saying why — the same failure as
-    a digest that looks measured, which is what the abstention exists to avoid.
-    A partial sync reaches this: the manifest and the prompts it names are
-    separate sync targets.
-    """
+    """Verify that a declared stack with 0 present files reports an error."""
     populate(tmp_path)
     for relative in PROMPT_STACK_FILES:
         (tmp_path / relative).unlink()
@@ -586,12 +509,7 @@ def test_a_declared_stack_that_arrived_empty_says_so(tmp_path: Path) -> None:
 
 
 def test_a_wholly_absent_instruction_set_is_not_an_error(tmp_path: Path) -> None:
-    """The counterpart: a repository with no instruction file has no fault.
-
-    Pinned so the reason added for the stack half is not copied to this one. A
-    repository carrying neither `AGENTS.md` nor `CLAUDE.md` is a normal
-    repository, not a broken sync.
-    """
+    """Verify that absent instruction files are permitted without error."""
     populate(tmp_path)
     for relative in REPO_INSTRUCTION_FILES:
         path = tmp_path / relative
@@ -605,19 +523,10 @@ def test_a_wholly_absent_instruction_set_is_not_an_error(tmp_path: Path) -> None
 
 
 def test_both_abstention_reasons_are_reported(tmp_path: Path) -> None:
-    """A manifest problem must not hide a repo-instructions read failure.
-
-    The two digests are documented as independent, and they are. The reason
-    channel is one scalar, so a short-circuit that reports only the first cause
-    leaves a null `repoInstructionsSha256` with a stated reason that belongs to
-    the other half — a null that looks diagnosed. The counters cannot close the
-    gap either: `present: 0` is what a wholly absent set and a set that bailed
-    on a read error both report.
-    """
+    """Verify that both stack and repo instruction errors are reported concurrently."""
     populate(tmp_path)
     (tmp_path / MANIFEST_PATH).unlink()
-    # A directory where a declared file is expected reads as EISDIR, which is a
-    # failure rather than an absence, and needs no non-root user to arrange.
+    # Directory in place of instruction file causes read failure.
     (tmp_path / "CLAUDE.md").unlink()
     (tmp_path / "CLAUDE.md").mkdir()
 
@@ -637,14 +546,6 @@ def test_a_single_abstention_reason_reads_unchanged(tmp_path: Path) -> None:
 
 
 def test_the_two_engine_copies_of_this_helper_are_identical() -> None:
-    """One implementation, two install locations — enforced, not conventional.
-
-    Every case in this file runs the `.claude` copy. That proves nothing about
-    the `.codex` copy unless the two are the same bytes: `HARNESS_ROOT` is
-    derived from the script's own location, so the sibling resolves a different
-    manifest, a different root cross-check, and a different path prefix. Two
-    copies that drift mint two identities for one prompt generation, which is
-    the failure this whole mechanism exists to prevent.
-    """
+    """Verify that the .claude and .codex copies of the script are identical."""
     sibling = REPO_ROOT / ".codex/skills/critique/scripts" / "prompt-stack-hash.js"
     assert sibling.read_bytes() == SCRIPT.read_bytes()
