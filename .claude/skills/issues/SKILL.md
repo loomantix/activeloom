@@ -1,7 +1,7 @@
 ---
 name: issues
-description: GitHub issue workflow — ready queue with dependency resolution, claim, start, close, link
-argument-hint: 'verb [args]: ready | show <n> | claim <n> | start <n> | close <n> [msg] | link <n> blocks|blocked-by <m> | search <q>'
+description: GitHub issue workflow — work an issue end to end (scope check, claim, worktree, implement, draft PR), view one read-only, ready queue with dependency resolution, claim, close, link
+argument-hint: 'verb [args]: <n> | start <n> [--setup-only] | ready | show <n> | claim <n> | close <n> [msg] | link <n> blocks|blocked-by <m> | search <q>'
 ---
 
 # /issues
@@ -10,7 +10,7 @@ Thin workflow over `gh issue` with a smart **ready** query that parses `Blocked 
 
 **Arguments**: `$ARGUMENTS`
 
-Dispatch on the first word of `$ARGUMENTS`. If no verb is given, default to `ready`.
+Dispatch on the first word of `$ARGUMENTS`. A bare issue number (`/issues 123`) means `start 123`, which claims and implements it; use `show 123` to only read it. If `$ARGUMENTS` is empty, default to `ready`.
 
 ---
 
@@ -84,20 +84,94 @@ gh issue comment <n> --body-file /tmp/issue-comment.md
 
 ---
 
-## start \<n\>
+## start \<n\> \[--setup-only\]
 
-Claim + create working branch off the repo's default branch. The default branch is auto-detected (`main`, `staging`, etc.) via the upstream HEAD ref so this works across consumer repos without per-repo config:
+Take the issue from trigger to an open draft PR in one run: claim, isolate, implement, validate, publish. `--setup-only` runs steps 1–2 — the scope check included — and stops once the worktree exists.
+
+Stop and report — rather than guessing — when:
+
+- the issue is closed, assigned to someone else, labeled `status: blocked`, or lists an open `Blocked by` / `Depends on` ref;
+- an open PR already closes it. GitHub only records closing links for PRs into the default branch, so also match closing keywords in the body (a PR into an integration branch has none):
+
+  ```bash
+  gh pr list --state open --limit 200 --json number,body,closingIssuesReferences \
+    --jq '.[] | select(any(.closingIssuesReferences[]; .number == <n>) or ((.body // "") | test("(?i)\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#<n>\\b"))) | .number'
+  ```
+
+- the issue fails the scope check in step 1.
+
+### 1. Read, check scope, claim
+
+```bash
+gh issue view <n> --comments
+```
+
+Read the whole body and every comment. Required fixes, test invariants, "must preserve" and "out of scope" lists in the issue are the acceptance criteria for this run.
+
+**Scope check.** The issue is ready to implement when all of these hold:
+
+- **Outcome:** it says what should be true when done, not only what is wrong.
+- **Done is checkable:** a reviewer could tell from the issue whether a PR finishes it — stated invariants, a reproduction that should stop reproducing, or concrete acceptance criteria.
+- **Bounded:** it is one change that fits one reviewable PR, and names what is out of scope where the boundary is not obvious.
+- **Direction chosen:** where several designs would satisfy it, the issue (or AGENTS.md or CLAUDE.md and the code) picks one. At most one small open question remains.
+
+Read the code the issue points at before judging; a short issue can still be fully scoped by the code it names. If one item fails narrowly, ask that single question and continue once answered. If more than one fails, or the missing piece is the direction itself, do not claim or branch: report which items fail, quote the gap, and recommend running `/grill` on issue #<n>, recording the settled scope in the issue, then re-running `/issues start <n>`.
+
+Once the check passes, claim it:
 
 ```bash
 gh issue edit <n> --add-assignee @me
-slug=$(gh issue view <n> --json title --jq '.title' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//' | cut -c1-50 | sed 's/-$//')
-default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
-default_branch="${default_branch:-main}"
-git fetch origin "$default_branch"
-git checkout -b "fix/issue-<n>-$slug" "origin/$default_branch"
 ```
 
-Replace `<n>` and the slug interpolation with the real issue number. If `git symbolic-ref` is unset (rare; happens when the remote was added without `--mirror` or `git remote set-head` was never run), the fallback is `main`. Run `git remote set-head origin --auto` once on the affected clone to fix it permanently.
+### 2. Isolate in a worktree
+
+Never `git checkout -b` in the primary checkout: other sessions may share it. Base the branch on the integration branch named in AGENTS.md or CLAUDE.md if it names one (PRs target it), else the remote default:
+
+```bash
+base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+base="${base:-main}"   # override with the integration branch AGENTS.md or CLAUDE.md names
+slug=$(gh issue view <n> --json title --jq '.title' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//' | cut -c1-40 | sed 's/-$//')
+git fetch origin "$base"
+git worktree add "../$(basename "$PWD")-issue-<n>" -b "fix/issue-<n>-$slug" "origin/$base"
+```
+
+Use the repo's own worktree location or branch-prefix convention instead when AGENTS.md or CLAUDE.md sets one (`feat/` for a feature issue). Note the resolved base branch name: shell variables do not survive into later commands, so steps 3–5 write it out literally as `<base>`. Do all remaining work inside the worktree. Done when `git rev-parse --show-toplevel` prints the worktree path.
+
+### 3. Implement
+
+For a bug whose issue describes symptoms but not a verified cause, run `/diagnosing-bugs` first and fix the cause it finds; an issue that already names the cause and the code path goes straight to the change.
+
+Make the change the issue asks for, in the layer it names, and add tests that encode each stated invariant. Show each regression test fails without the fix by restoring the base version of the changed source file, running the test, and putting your version back:
+
+```bash
+cp <path> <scratch>/<file>.fixed
+git show origin/<base>:<path> > <path>
+<run the test — it must fail>
+cp <scratch>/<file>.fixed <path>
+```
+
+Use this copy-and-restore rather than `git stash`, whose stack is shared by every worktree of the repository and can hand another session's work back to you. Track multi-part issues with TodoWrite.
+
+Delegate a lookup only when it is genuinely independent and too large for a handful of tool calls — a sweep across many files or repos. If one agent can do it, use one; state a word ceiling on what it returns. Most lookups here are two greps and a read, and should stay inline.
+
+Done when every required fix and test invariant in the issue maps to a change and a test.
+
+### 4. Validate
+
+Run the typecheck, lint, and test commands AGENTS.md or CLAUDE.md prescribes for the touched packages — the gating configuration, not a filtered subset. If a failure is yours, fix it; if it predates the branch, confirm that against the base and say so in the PR. Done when every command exits zero or each remaining failure is shown to exist on the base.
+
+### 5. Commit, push, open a draft PR
+
+```bash
+git add <changed paths>
+git commit -m "<type>(<scope>): <summary>" -m "Closes #<n>"
+git push -u origin HEAD
+gh pr create --draft --base <base> --title "<type>(<scope>): <summary>" --body-file <body-file>
+```
+
+Write the body to a file unique to this run — the session scratch directory, or a path from `mktemp` — since a fixed `/tmp` name is shared by concurrent sessions. It states what changed, any behavior change a reviewer should know about, the validation commands with their results and the commit SHA, and `Closes #<n>`. Keep it under ~250 words.
+
+Done when `gh pr view --json url,isDraft,baseRefName` shows a draft against `<base>`. Report the PR URL, the worktree path, and anything left undone. Review runs afterwards in a fresh session, per .claude/REVIEW_WORKFLOW.md; do not start it from this one.
 
 ---
 

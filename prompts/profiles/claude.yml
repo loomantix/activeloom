@@ -72,7 +72,7 @@ values:
 
 skills:
   issues:
-    FM_EXTRAS: "argument-hint: 'verb [args]: ready | show <n> | claim <n> | start <n> | close <n> [msg] | link <n> blocks|blocked-by <m> | search <q>'"
+    FM_EXTRAS: "argument-hint: 'verb [args]: <n> | start <n> [--setup-only] | ready | show <n> | claim <n> | close <n> [msg] | link <n> blocks|blocked-by <m> | search <q>'"
 
   feature-dev:
     FM_EXTRAS: 'argument-hint: Optional feature description'
