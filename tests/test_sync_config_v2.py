@@ -19,8 +19,8 @@ def _write(path: Path, doc: object) -> None:
     path.write_text(yaml.safe_dump(doc))
 
 
-def _harness(root: str, legacy: str, targets: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"root": root, "legacy_config": legacy, "targets": targets}
+def _harness(root: str, targets: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"root": root, "targets": targets}
 
 
 def _copy(source: str, destination: str, **extra: Any) -> dict[str, Any]:
@@ -36,12 +36,10 @@ def _manifest(upstream: Path, **overrides: Any) -> None:
         "harnesses": {
             "claude": _harness(
                 ".claude",
-                ".platform-config.yml",
                 [_copy("claude-src.md", ".claude/skills/a/SKILL.md")],
             ),
             "codex": _harness(
                 ".codex",
-                ".codex-platform-config.yml",
                 [_copy("codex-src.md", ".codex/skills/a/SKILL.md")],
             ),
         },
@@ -130,9 +128,7 @@ def test_manifest_rejects_unknown_top_level_key(
     assert "unknown top-level key(s): harneses" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("field", ["root", "legacy_config"])
-def test_manifest_harness_requires_metadata(
-    field: str,
+def test_manifest_harness_requires_a_root(
     sync_engine: ModuleType,
     upstream: Path,
     consumer: Path,
@@ -141,31 +137,12 @@ def test_manifest_harness_requires_metadata(
 ) -> None:
     _manifest(upstream)
     doc = yaml.safe_load((upstream / "scripts" / "sync-targets.yml").read_text())
-    del doc["harnesses"]["claude"][field]
+    del doc["harnesses"]["claude"]["root"]
     _write(upstream / "scripts" / "sync-targets.yml", doc)
     _write(consumer / CANONICAL, {"harnesses": ["claude"]})
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
-    assert f"needs a non-empty string `{field}`" in capsys.readouterr().err
-
-
-def test_manifest_rejects_duplicate_legacy_config(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _manifest(upstream)
-    doc = yaml.safe_load((upstream / "scripts" / "sync-targets.yml").read_text())
-    doc["harnesses"]["codex"]["legacy_config"] = ".platform-config.yml"
-    _write(upstream / "scripts" / "sync-targets.yml", doc)
-    _write(consumer / CANONICAL, {"harnesses": ["claude"]})
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
-    assert (
-        "both declare `legacy_config: .platform-config.yml`" in capsys.readouterr().err
-    )
+    assert "needs a non-empty string `root`" in capsys.readouterr().err
 
 
 def test_harnesses_mapping_form_matches_list_form(
@@ -505,151 +482,6 @@ def test_telemetry_rejects_bad_input(
     assert fragment in capsys.readouterr().err
 
 
-def test_legacy_files_compose_into_their_own_harnesses(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _manifest(upstream)
-    _write(
-        consumer / ".platform-config.yml",
-        {"allowed_destinations": [".claude/**", ".github/**"]},
-    )
-    _write(
-        consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]}
-    )
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
-    assert (consumer / ".claude/skills/a/SKILL.md").is_file()
-    assert (consumer / ".codex/skills/a/SKILL.md").is_file()
-    assert "Composed a sync-v2 config from" in capsys.readouterr().out
-
-
-def test_a_missing_legacy_file_means_that_harness_is_absent(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _manifest(upstream)
-    _write(consumer / ".platform-config.yml", {"allowed_destinations": ["**"]})
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
-    assert (consumer / ".claude/skills/a/SKILL.md").is_file()
-    assert not (consumer / ".codex").exists()
-
-
-def test_shared_skip_is_the_intersection_of_the_legacy_files(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _manifest(upstream)
-    _write(consumer / ".platform-config.yml", {"allowed_destinations": ["**"]})
-    _write(
-        consumer / ".codex-platform-config.yml",
-        {"allowed_destinations": ["**"], "skip_targets": [".github/shared.md"]},
-    )
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
-    assert (consumer / ".github/shared.md").is_file()
-
-
-def test_legacy_config_rejects_an_unknown_top_level_key(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _manifest(upstream)
-    _write(
-        consumer / ".platform-config.yml",
-        {"allowed_destination": [".claude/**"], "skip_targets": []},
-    )
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
-    err = capsys.readouterr().err
-    assert "unknown key(s): allowed_destination" in err
-    assert not (consumer / ".claude").exists()
-
-
-def test_shared_skip_survives_when_every_legacy_file_skips_it(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _manifest(upstream)
-    for name in (".platform-config.yml", ".codex-platform-config.yml"):
-        _write(
-            consumer / name,
-            {"allowed_destinations": ["**"], "skip_targets": [".github/shared.md"]},
-        )
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
-    assert not (consumer / ".github/shared.md").exists()
-
-
-def test_legacy_files_disagreeing_on_a_substitution_fail_closed(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _manifest(upstream)
-    _write(consumer / ".platform-config.yml", {"substitutions": {"NAME": "one"}})
-    _write(consumer / ".codex-platform-config.yml", {"substitutions": {"NAME": "two"}})
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
-    assert "disagree on `substitutions.NAME`" in capsys.readouterr().err
-
-
-def test_canonical_config_wins_over_surviving_legacy_files(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _manifest(upstream)
-    _write(
-        consumer / CANONICAL, {"harnesses": ["claude"], "allowed_destinations": ["**"]}
-    )
-    _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": ["**"]})
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
-    assert not (consumer / ".codex").exists()
-
-
-def test_explicit_legacy_config_selects_one_harness(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _manifest(upstream)
-    _write(consumer / ".platform-config.yml", {"allowed_destinations": ["**"]})
-    _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": ["**"]})
-
-    rc = _run(
-        sync_engine,
-        upstream,
-        consumer,
-        monkeypatch,
-        config=consumer / ".codex-platform-config.yml",
-    )
-    assert rc == 0
-    assert (consumer / ".codex/skills/a/SKILL.md").is_file()
-    assert not (consumer / ".claude").exists()
-    # GitHub parses ::warning workflow commands from stdout.
-    assert "names a pre-sync-v2 per-harness config" in capsys.readouterr().out
-
-
 def test_no_config_at_all_is_an_error(
     sync_engine: ModuleType,
     upstream: Path,
@@ -663,59 +495,64 @@ def test_no_config_at_all_is_an_error(
         _run(sync_engine, upstream, consumer, monkeypatch)
     assert excinfo.value.code == 2
     err = capsys.readouterr().err
-    assert "missing required file" in err
-    assert "no pre-sync-v2 config file" in err
+    assert f"missing required file: {consumer / CANONICAL}" in err
+    assert "a consumer needs one config declaring which harnesses it runs" in err
 
 
-def test_every_composed_config_file_is_protected_from_being_written(
+@pytest.mark.parametrize(
+    "retired",
+    [".platform-config.yml", ".codex-platform-config.yml", ".gemini-platform-config.yml"],
+)
+def test_only_a_pre_sync_v2_config_is_a_clear_error(
+    retired: str,
     sync_engine: ModuleType,
     upstream: Path,
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """The one file the consumer has, the file it needs, and what to write."""
     _manifest(upstream)
-    doc = yaml.safe_load((upstream / "scripts" / "sync-targets.yml").read_text())
-    doc["harnesses"]["codex"]["targets"].append(
-        _copy("codex-src.md", ".codex-platform-config.yml")
-    )
-    _write(upstream / "scripts" / "sync-targets.yml", doc)
-    _write(consumer / ".platform-config.yml", {"allowed_destinations": ["**"]})
-    _write(consumer / ".codex-platform-config.yml", {"allowed_destinations": ["**"]})
+    _write(consumer / retired, {"allowed_destinations": ["**"]})
 
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
-    assert "refusing to write the consumer's own sync config" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as excinfo:
+        _run(sync_engine, upstream, consumer, monkeypatch)
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert retired in err
+    assert CANONICAL in err
+    assert "declaring which harnesses this repository runs" in err
+    assert not (consumer / ".claude").exists()
 
 
-@pytest.mark.parametrize("destination", [CANONICAL, ".codex-platform-config.yml"])
-@pytest.mark.parametrize("explicit", [False, True])
-def test_legacy_sync_cannot_seed_a_future_config(
+@pytest.mark.parametrize(
+    "destination", [CANONICAL, ".platform-config.yml", ".gemini-platform-config.yml"]
+)
+def test_a_manifest_cannot_write_any_selectable_config_path(
     destination: str,
-    explicit: bool,
     sync_engine: ModuleType,
     upstream: Path,
     consumer: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Retired filenames stay unwritable even though the engine ignores them."""
     _manifest(upstream)
     doc = yaml.safe_load((upstream / "scripts/sync-targets.yml").read_text())
     doc["harnesses"]["claude"]["targets"].append(_copy("claude-src.md", destination))
     _write(upstream / "scripts/sync-targets.yml", doc)
-    config = consumer / ".platform-config.yml"
-    _write(config, {"allowed_destinations": ["**"]})
+    config = consumer / CANONICAL
+    _write(config, {"harnesses": ["claude"], "allowed_destinations": ["**"]})
     original = config.read_bytes()
 
-    assert (
-        _run(sync_engine, upstream, consumer, monkeypatch, config if explicit else None)
-        == 1
-    )
-    assert not (consumer / destination).exists()
+    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
+    assert "refusing to write the consumer's own sync config" in capsys.readouterr().err
     assert not (consumer / ".claude").exists()
     assert config.read_bytes() == original
 
 
 @pytest.mark.parametrize("bypass_preflight", [False, True])
-def test_config_deletion_cannot_select_weaker_legacy_permissions(
+def test_the_consumer_config_cannot_be_deleted_by_a_manifest(
     bypass_preflight: bool,
     sync_engine: ModuleType,
     upstream: Path,
@@ -734,115 +571,12 @@ def test_config_deletion_cannot_select_weaker_legacy_permissions(
             "allow_sensitive_writes": [],
         },
     )
-    _write(
-        consumer / ".platform-config.yml",
-        {
-            "allowed_destinations": ["**"],
-            "allow_sensitive_writes": [".github/workflows/example.yml"],
-        },
-    )
     original = (consumer / CANONICAL).read_bytes()
     if bypass_preflight:
         monkeypatch.setattr(sync_engine, "config_write_targets", lambda *args: [])
 
     assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
     assert (consumer / CANONICAL).read_bytes() == original
-
-
-@pytest.mark.parametrize("scope", ["codex", "shared"])
-def test_legacy_sensitive_consent_stays_with_its_harness(
-    scope: str,
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _manifest(upstream)
-    workflow = ".github/workflows/example.yml"
-    doc = yaml.safe_load((upstream / "scripts/sync-targets.yml").read_text())
-    target = _copy("shared-src.md", workflow)
-    if scope == "shared":
-        doc["shared"]["targets"].append(target)
-    else:
-        doc["harnesses"][scope]["targets"].append(target)
-    _write(upstream / "scripts/sync-targets.yml", doc)
-    _write(
-        consumer / ".platform-config.yml",
-        {
-            "allowed_destinations": ["**"],
-            "allow_sensitive_writes": [workflow],
-        },
-    )
-    _write(
-        consumer / ".codex-platform-config.yml",
-        {
-            "allowed_destinations": ["**"],
-            "allow_sensitive_writes": [],
-        },
-    )
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == (
-        0 if scope == "shared" else 1
-    )
-    assert (consumer / workflow).exists() is (scope == "shared")
-    if scope == "codex":
-        assert not (consumer / ".claude").exists()
-
-
-def test_one_fail_open_legacy_file_keeps_the_shared_scope_open(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A fail-open legacy file keeps the synthesized shared scope open."""
-    _manifest(upstream)
-    _write(consumer / ".platform-config.yml", {})
-    _write(
-        consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]}
-    )
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
-    assert (consumer / ".github/shared.md").exists()
-
-
-def test_shared_allowlist_is_enforced_when_every_legacy_file_declares_one(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The union still gates the shared scope when no input was fail-open."""
-    _manifest(upstream)
-    _write(consumer / ".platform-config.yml", {"allowed_destinations": [".claude/**"]})
-    _write(
-        consumer / ".codex-platform-config.yml", {"allowed_destinations": [".codex/**"]}
-    )
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 1
-    assert not (consumer / ".github/shared.md").exists()
-
-
-def test_legacy_shared_skip_accepts_mixed_source_and_destination_spellings(
-    sync_engine: ModuleType,
-    upstream: Path,
-    consumer: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _manifest(upstream)
-    for name, skip in [
-        (".platform-config.yml", "shared-src.md"),
-        (".codex-platform-config.yml", ".github/shared.md"),
-    ]:
-        _write(
-            consumer / name, {"allowed_destinations": ["**"], "skip_targets": [skip]}
-        )
-    destination = consumer / ".github/shared.md"
-    destination.parent.mkdir()
-    destination.write_text("consumer-owned content\n")
-
-    assert _run(sync_engine, upstream, consumer, monkeypatch) == 0
-    assert destination.read_text() == "consumer-owned content\n"
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex", "gemini"])

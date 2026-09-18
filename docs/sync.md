@@ -6,7 +6,7 @@ ActiveLoom distributes selected Claude Code, Codex, and Gemini/Agy harness files
 
 The single-source-of-truth list is [`scripts/sync-targets.yml`](../scripts/sync-targets.yml) — it lives in the **upstream** repo (this one, or a fork). Consumers don't author it; they only opt out of specific entries via `skip_targets` in `.activeloom-config.yml`. Each entry maps a file in the upstream repo to a destination path in the consumer, optionally with placeholder substitution (`<<KEY>>` form) resolved from the consumer's `.activeloom-config.yml`.
 
-The manifest emits **one target set per harness plus one harness-independent `shared:` set**. A consumer receives the shared set plus the sets of every harness it names in its config's `harnesses:` list — so a repo that only runs Codex never sees a `.claude/**` write, and one that runs all three receives exactly what three separate upstreams used to deliver. Each harness declares a `root` (the prompt directory it owns), a `legacy_config` (the pre-sync-v2 config filename the compatibility shim maps back to it), and its `targets`.
+The manifest emits **one target set per harness plus one harness-independent `shared:` set**. A consumer receives the shared set plus the sets of every harness it names in its config's `harnesses:` list — so a repo that only runs Codex never sees a `.claude/**` write, and one that runs all three receives exactly what three separate upstreams used to deliver. Each harness declares a `root` (the prompt directory it owns) and its `targets`.
 
 Harnesses are processed in manifest declaration order. That matters in exactly one place: a `create_if_missing` destination shipped by more than one harness is bootstrapped by the first declared harness and preserved by every later one.
 
@@ -172,20 +172,11 @@ The value is computed by the engine and exposed as the reserved substitution key
 
 ### Migrating from the pre-sync-v2 config files
 
-Before sync-v2 a consumer carried one config file per upstream: `.platform-config.yml`, `.codex-platform-config.yml`, `.gemini-platform-config.yml`. Those are not three names for one file — each **is** the config for its own harness, which is the fragmentation this schema removes. So the engine's compatibility shim **composes** them rather than choosing between them, and the config rename does not have to happen in the same change as the workflow cutover.
+Before sync-v2 a consumer carried one config file per upstream: `.platform-config.yml`, `.codex-platform-config.yml`, `.gemini-platform-config.yml`. Those were not three names for one file — each **was** the config for its own harness, which is the fragmentation this schema removes.
 
-When there is no `.activeloom-config.yml`, the engine reads every legacy file that is present and builds the config for you:
+**The engine no longer reads those files.** A compatibility shim composed them into one in-memory config while the migration was in progress; it has been removed now that the cutover is complete. The current engine reads `.activeloom-config.yml` and nothing else.
 
-- Each file becomes the entry for the harness that claims its filename in the manifest (`legacy_config`).
-- **A missing legacy file means that harness is absent.** A repository that never carried `.gemini-platform-config.yml` never ran that harness, and must not acquire it by upgrading its engine.
-- Per-harness keys are carried over verbatim.
-- Top-level `substitutions` are merged; two files disagreeing on one key is a real collision and fails closed.
-- Shared `skip_targets` is the **intersection**, treating a target's source and destination as equivalent opt-outs. A shared target skipped in two files and synced by the third was being routed to a single owner, not switched off; a union would silently retire it.
-- Shared `allow_sensitive_writes` grants are unioned. Shared `allowed_destinations` are unioned only when every present legacy config declares an allowlist; if any omits one, the shared scope retains fail-open behavior and emits a warning. These synthesized gates apply only to shared targets; each legacy harness retains its own gates without inheriting another harness's grants.
-
-The composed config is reported in the job log. `--config <legacy file>` still works and reads that one file as its harness alone, which is the transitional invocation for a consumer still running one workflow per upstream.
-
-To retire the shim, write one `.activeloom-config.yml` and delete the legacy files. An `.activeloom-config.yml` present on disk wins outright — surviving legacy files are then ignored, not merged in.
+If a repository still carries one of the old files, the sync refuses to run and names it. Migrate by hand: write one `.activeloom-config.yml` whose `harnesses:` list names the harnesses the repository runs, move each old file's `substitutions`, `skip_targets`, `allowed_destinations`, and `allow_sensitive_writes` into that harness's entry (or to the top level where they were shared), then delete the old files. There is nothing to compose — each old file's keys belong to exactly one harness.
 
 The engine cannot create, overwrite, or delete any automatically selectable config path, even while absent, or an explicitly supplied config file. Config migration is consumer-owned: an upstream manifest must not be able to change which permissions a later sync will read.
 
@@ -203,7 +194,7 @@ Entries must be literal, canonical, repo-relative paths — no globs. Consent in
 
 Consent is required for any target the sync would write, whether or not this particular run changes the bytes — a sync that ran green for months and then failed the day upstream edited the file would surface the missing entry at the worst possible time. Two cases need no entry, because no write can happen: a target you opted out of with `skip_targets`, and a `create_if_missing` target whose destination already exists as a file (the engine has permanently committed to leaving that file alone). A destination outside `allowed_destinations` reports that error instead, since adding sensitive consent for it would not make it writable.
 
-Your consumer config is refused as a destination, and no entry authorizes it. It records both `allow_sensitive_writes` and `allowed_destinations`, so a manifest able to rewrite it could grant itself consent on one run and spend that consent on the next — with the job log reporting an opt-in you never made. The refusal compares each destination against the resolved config path, so an explicit `--config` elsewhere is covered, while a config file vendored in your tree as an example or a fixture stays an ordinary destination. After a legacy compose (below) every file the config was read from is protected, not just one.
+Your consumer config is refused as a destination, and no entry authorizes it. It records both `allow_sensitive_writes` and `allowed_destinations`, so a manifest able to rewrite it could grant itself consent on one run and spend that consent on the next — with the job log reporting an opt-in you never made. The refusal compares each destination against the resolved config path, so an explicit `--config` elsewhere is covered, while a config file vendored in your tree as an example or a fixture stays an ordinary destination. The retired pre-sync-v2 config filenames stay protected too, even though the engine no longer reads them.
 
 **All of these checks match the destination path as written, not the file it resolves to.** The write itself follows symlinks, so a symlink in your working tree decouples the path the gate judges from the file that ends up rewritten — an ordinary destination symlinked to a workflow is written without consent, and a symlinked consumer config is not caught by the refusal above. The engine assumes an upstream-controlled manifest and a consumer tree free of malicious symlinks (see `resolve_under` in `scripts/sync-engine.py`); anyone able to commit a symlink to your repository can commit the target file directly regardless. Closing the gap is tracked internally.
 

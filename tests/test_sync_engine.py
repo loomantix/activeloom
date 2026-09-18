@@ -474,7 +474,7 @@ def test_main_renders_substituted_md_but_leaves_verbatim_copies_alone(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"substitutions": {"NAME": "Repo", "EXTRA": ""}},
     )
 
@@ -657,15 +657,14 @@ def test_prune_empty_parents_tolerates_concurrent_remove(
 
 
 # The harness a bare `{"targets": [...]}` fixture is filed under. Any name in
-# the manifest would do; `claude` keeps the legacy consumer-config filename
-# these tests already write (`.platform-config.yml`) resolving through the
-# compatibility shim, so a fixture only has to describe the targets it cares
+# the manifest would do; `claude` is the one the `consumer_dir` fixture's
+# config declares, so a fixture only has to describe the targets it cares
 # about.
-FIXTURE_HARNESS = {"root": ".claude", "legacy_config": ".platform-config.yml"}
+FIXTURE_HARNESS = {"root": ".claude"}
 
 
 def _as_manifest(doc: object) -> object:
-    """Lift a legacy `{"targets": [...]}` fixture into the sync-v2 shape.
+    """Lift a flat `{"targets": [...]}` fixture into the sync-v2 shape.
 
     The manifest grew a `harnesses:` layer in sync-v2, but almost every test
     here is about one target's behaviour and says nothing about harnesses.
@@ -689,6 +688,13 @@ def _write_yaml(path: Path, doc: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.name == "sync-targets.yml":
         doc = _as_manifest(doc)
+    elif (
+        path.name == ".activeloom-config.yml"
+        and isinstance(doc, dict)
+        and "harnesses" not in doc
+    ):
+        # Match the `consumer_dir` fixture: one harness, declared once.
+        doc = {"harnesses": ["claude"], **doc}
     path.write_text(yaml.safe_dump(doc))
 
 
@@ -723,7 +729,7 @@ def test_main_copy_target_writes_substituted_file(
         upstream_repo / "scripts" / "sync-targets.yml",
         {"targets": [{"source": "src.md", "destination": "dest.md", "substitutions": ["NAME"]}]},
     )
-    _write_yaml(consumer_dir / ".platform-config.yml", {"substitutions": {"NAME": "world"}})
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"substitutions": {"NAME": "world"}})
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
@@ -750,7 +756,7 @@ def test_main_plain_substitution_preserves_non_markdown_literal_spacing(
             ]
         },
     )
-    _write_yaml(consumer_dir / ".platform-config.yml", {"substitutions": {"EMPTY": ""}})
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"substitutions": {"EMPTY": ""}})
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
@@ -1065,7 +1071,7 @@ def test_main_rejects_list_consumer_config_document(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _write_yaml(upstream_repo / "scripts" / "sync-targets.yml", {"targets": []})
-    (consumer_dir / ".platform-config.yml").write_text("- not\n- a\n- mapping\n")
+    (consumer_dir / ".activeloom-config.yml").write_text("- not\n- a\n- mapping\n")
 
     assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
     assert "top-level YAML document must be a mapping" in capsys.readouterr().err
@@ -1096,7 +1102,7 @@ def test_main_rejects_falsy_non_mapping_consumer_config_document(
     document: str,
 ) -> None:
     _write_yaml(upstream_repo / "scripts" / "sync-targets.yml", {"targets": []})
-    (consumer_dir / ".platform-config.yml").write_text(document)
+    (consumer_dir / ".activeloom-config.yml").write_text(document)
 
     assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
     assert "top-level YAML document must be a mapping" in capsys.readouterr().err
@@ -1115,8 +1121,8 @@ def test_main_rejects_scalar_skip_targets(
         upstream_repo / "scripts" / "sync-targets.yml",
         {"targets": [{"source": "src.md", "destination": "dest.md"}]},
     )
-    (consumer_dir / ".platform-config.yml").write_text(
-        "skip_targets: .github/workflows/dco.yml\n"
+    (consumer_dir / ".activeloom-config.yml").write_text(
+        "harnesses: [claude]\nskip_targets: .github/workflows/dco.yml\n"
     )
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 1
@@ -1135,7 +1141,7 @@ def test_main_rejects_non_string_list_skip_targets(
         {"targets": [{"source": "src.md", "destination": "dest.md"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"skip_targets": [123]},
     )
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
@@ -1227,7 +1233,7 @@ def test_main_skip_targets_by_source(
         upstream_repo / "scripts" / "sync-targets.yml",
         {"targets": [{"source": "src.md", "destination": "dest.md"}]},
     )
-    _write_yaml(consumer_dir / ".platform-config.yml", {"skip_targets": ["src.md"]})
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"skip_targets": ["src.md"]})
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
@@ -1250,7 +1256,7 @@ def test_main_skip_delete_target_by_destination(
         upstream_repo / "scripts" / "sync-targets.yml",
         {"targets": [{"destination": "kept.md", "delete": True}]},
     )
-    _write_yaml(consumer_dir / ".platform-config.yml", {"skip_targets": ["kept.md"]})
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"skip_targets": ["kept.md"]})
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
@@ -1550,7 +1556,7 @@ def test_main_allowlist_match_permits_write(
         {"targets": [{"source": "skill.md", "destination": ".claude/skills/foo.md"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"]},
     )
 
@@ -1582,7 +1588,7 @@ def test_main_allowlist_refuses_out_of_list_destination(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**", ".github/copilot-instructions.md"]},
     )
 
@@ -1611,7 +1617,7 @@ def test_main_allowlist_absent_warns_and_proceeds_migration(
         upstream_repo / "scripts" / "sync-targets.yml",
         {"targets": [{"source": "src.md", "destination": ".claude/skills/foo.md"}]},
     )
-    # Default consumer_dir fixture has empty .platform-config.yml (no
+    # Default consumer_dir fixture has empty .activeloom-config.yml (no
     # `allowed_destinations` key) — exactly the pre-migration state.
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
@@ -1636,7 +1642,7 @@ def test_main_empty_allowlist_refuses_everything(
         upstream_repo / "scripts" / "sync-targets.yml",
         {"targets": [{"source": "src.md", "destination": ".claude/foo.md"}]},
     )
-    _write_yaml(consumer_dir / ".platform-config.yml", {"allowed_destinations": []})
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"allowed_destinations": []})
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 1
@@ -1655,7 +1661,7 @@ def test_main_allowlist_rejects_non_list_type(
         upstream_repo / "scripts" / "sync-targets.yml", {"targets": []}
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ".claude/**"},  # string, not list
     )
 
@@ -1676,7 +1682,7 @@ def test_main_allowlist_rejects_non_string_element(
         upstream_repo / "scripts" / "sync-targets.yml", {"targets": []}
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**", 42]},
     )
 
@@ -1710,7 +1716,7 @@ def test_main_sensitive_delete_refused_even_when_allowlisted(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/workflows/**"]},
     )
 
@@ -1745,7 +1751,7 @@ def test_main_sensitive_copy_allowed_when_opted_in(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".github/workflows/**"],
             "allow_sensitive_writes": [".github/workflows/ci.yml"],
@@ -1778,7 +1784,7 @@ def test_main_sensitive_delete_lockfiles_and_dockerfile(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["package.json", "pnpm-lock.yaml", "Dockerfile"]},
     )
 
@@ -1808,7 +1814,7 @@ def test_main_allowlist_applies_to_delete_target_too(
         {"targets": [{"destination": ".docs/old.md", "delete": True}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"]},  # .docs not in list
     )
 
@@ -1844,7 +1850,7 @@ def test_main_allowlist_applies_to_create_if_missing_target_too(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"]},
     )
 
@@ -1875,7 +1881,7 @@ def test_main_allowlist_dual_prefix_for_dual_upstream_consumer(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**", ".codex/**"]},
     )
 
@@ -1908,7 +1914,7 @@ def test_main_allowlist_checked_before_source_read(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"]},
     )
 
@@ -1944,7 +1950,7 @@ def test_main_allowlist_refusal_writes_nothing_when_a_later_target_is_denied(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"]},
     )
 
@@ -1979,7 +1985,7 @@ def test_main_allowlist_refusal_reports_every_denied_destination(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"]},
     )
 
@@ -2023,7 +2029,7 @@ def test_main_refuses_non_canonical_destination(
         {"targets": [{"source": "src.md", "destination": bad_destination}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/workflows/**"]},
     )
 
@@ -2057,7 +2063,7 @@ def test_main_refuses_non_canonical_delete_destination(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/workflows/**"]},
     )
 
@@ -2089,7 +2095,7 @@ def test_main_refuses_control_char_in_destination(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/skills/*"]},
     )
 
@@ -2116,7 +2122,7 @@ def test_main_sensitive_delete_case_insensitive(
         {"targets": [{"destination": "dockerfile", "delete": True}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["dockerfile", "Dockerfile"]},
     )
     (consumer_dir / "dockerfile").write_text("FROM scratch\n")
@@ -2152,7 +2158,7 @@ def test_main_sensitive_delete_blocks_github_actions(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/actions/**"]},
     )
 
@@ -2179,7 +2185,7 @@ def test_main_sensitive_delete_blocks_codeowners(
         {"targets": [{"destination": ".github/CODEOWNERS", "delete": True}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/CODEOWNERS"]},
     )
 
@@ -2209,7 +2215,9 @@ def test_main_allowlist_null_value_is_config_error(
         upstream_repo / "scripts" / "sync-targets.yml",
         {"targets": [{"source": "src.md", "destination": ".claude/foo.md"}]},
     )
-    (consumer_dir / ".platform-config.yml").write_text("allowed_destinations:\n")
+    (consumer_dir / ".activeloom-config.yml").write_text(
+        "harnesses: [claude]\nallowed_destinations:\n"
+    )
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 1
@@ -2232,7 +2240,7 @@ def test_main_fail_open_warning_uses_github_annotation(
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml", {"targets": []}
     )
-    # Consumer .platform-config.yml has no `allowed_destinations` key.
+    # Consumer .activeloom-config.yml has no `allowed_destinations` key.
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 0
@@ -2270,7 +2278,7 @@ def test_main_skip_target_short_circuits_allowlist(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "skip_targets": [".claude/skills/local/SKILL.md"],
             "allowed_destinations": [".claude/skills/permitted/**"],
@@ -2304,7 +2312,7 @@ def test_main_allowlist_matches_second_pattern_in_list(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [
                 ".github/copilot-instructions.md",  # doesn't match
@@ -2343,7 +2351,7 @@ def test_main_create_if_missing_sensitive_path_allowed_for_copy(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".github/workflows/**"],
             "allow_sensitive_writes": [".github/workflows/ci.yml"],
@@ -2373,7 +2381,7 @@ def test_main_allowlist_empty_string_pattern_matches_only_empty(
         {"targets": [{"source": "src.md", "destination": ".claude/foo.md"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [""]},
     )
 
@@ -2416,7 +2424,7 @@ def test_main_sensitive_overwrite_refused_without_opt_in(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/workflows/**"]},
     )
 
@@ -2451,7 +2459,7 @@ def test_main_sensitive_write_opt_in_is_per_file(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".github/workflows/**"],
             "allow_sensitive_writes": [".github/workflows/dco.yml"],
@@ -2489,7 +2497,7 @@ def test_main_sensitive_create_if_missing_refused_without_opt_in(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/workflows/**"]},
     )
 
@@ -2519,7 +2527,7 @@ def test_main_sensitive_write_still_bounded_by_allowed_destinations(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".claude/**"],
             "allow_sensitive_writes": [".github/workflows/ci.yml"],
@@ -2549,7 +2557,7 @@ def test_main_sensitive_write_opt_in_does_not_permit_delete(
         {"targets": [{"destination": ".github/workflows/dco.yml", "delete": True}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".github/workflows/**"],
             "allow_sensitive_writes": [".github/workflows/dco.yml"],
@@ -2582,7 +2590,7 @@ def test_main_sensitive_write_dry_run_refuses_before_reporting(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/workflows/**"]},
     )
 
@@ -2609,7 +2617,7 @@ def test_main_sensitive_write_opt_in_is_case_sensitive(
     )
     (upstream_repo / "img").write_text("FROM scratch\n")
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": ["**"],
             "allow_sensitive_writes": ["Dockerfile"],
@@ -2637,7 +2645,7 @@ def test_main_sensitive_write_reports_opted_in_destination(
         {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".github/workflows/dco.yml"],
             "allow_sensitive_writes": [".github/workflows/dco.yml"],
@@ -2667,7 +2675,7 @@ def test_main_ordinary_destination_needs_no_sensitive_opt_in(
         {"targets": [{"source": "skill.md", "destination": ".claude/skills/foo.md"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"]},
     )
 
@@ -2697,7 +2705,7 @@ def test_main_sensitive_write_allowlist_rejects_glob_entry(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".github/workflows/**"],
             "allow_sensitive_writes": [".github/workflows/**"],
@@ -2727,7 +2735,7 @@ def test_main_sensitive_write_allowlist_rejects_non_canonical_entry(
     )
     (upstream_repo / "x").write_text("name: CI\n")
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".github/workflows/**"],
             "allow_sensitive_writes": ["./.github/workflows/ci.yml"],
@@ -2752,7 +2760,7 @@ def test_main_sensitive_write_allowlist_rejects_escaping_entry(
     )
     (upstream_repo / "x").write_text("name: CI\n")
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".github/workflows/**"],
             "allow_sensitive_writes": ["../elsewhere/Dockerfile"],
@@ -2781,7 +2789,7 @@ def test_main_sensitive_write_allowlist_rejects_non_sensitive_entry(
         {"targets": [{"source": "skill.md", "destination": ".claude/skills/foo.md"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".claude/**"],
             "allow_sensitive_writes": [".github/workflow/dco.yml"],
@@ -2809,7 +2817,7 @@ def test_main_sensitive_write_allowlist_null_is_config_error(
         {"targets": [{"source": "skill.md", "destination": ".claude/skills/foo.md"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"], "allow_sensitive_writes": None},
     )
 
@@ -2831,7 +2839,7 @@ def test_main_sensitive_write_allowlist_rejects_non_list(
         {"targets": [{"source": "skill.md", "destination": ".claude/skills/foo.md"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".claude/**"],
             "allow_sensitive_writes": ".github/workflows/dco.yml",
@@ -2863,7 +2871,7 @@ def test_main_sensitive_write_empty_list_denies(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/workflows/**"], "allow_sensitive_writes": []},
     )
 
@@ -2889,7 +2897,7 @@ def test_main_sensitive_write_covers_lockfile_and_codeowners(
             {"targets": [{"source": "payload", "destination": destination}]},
         )
         _write_yaml(
-            consumer_dir / ".platform-config.yml",
+            consumer_dir / ".activeloom-config.yml",
             {"allowed_destinations": ["**"]},
         )
 
@@ -2942,7 +2950,7 @@ def test_main_sensitive_write_not_reported_when_nothing_changes(
         {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": [".github/workflows/dco.yml"],
             "allow_sensitive_writes": [".github/workflows/dco.yml"],
@@ -2986,7 +2994,7 @@ def test_main_sensitive_create_if_missing_preserved_needs_no_opt_in(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".github/workflows/**"]},
     )
 
@@ -3025,7 +3033,7 @@ def test_main_sensitive_write_refused_before_any_target_is_written(
     ordinary.parent.mkdir(parents=True)
     ordinary.write_text("OLD consumer a\n")
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["**"]},
     )
 
@@ -3062,7 +3070,7 @@ def test_main_sensitive_write_refusal_lists_every_denied_destination(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["**"]},
     )
 
@@ -3090,7 +3098,7 @@ def test_main_sensitive_write_skipped_target_needs_no_opt_in(
         {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {
             "allowed_destinations": ["**"],
             "skip_targets": [".github/workflows/dco.yml"],
@@ -3101,7 +3109,7 @@ def test_main_sensitive_write_skipped_target_needs_no_opt_in(
     assert rc == 0
     out = capsys.readouterr().out
     # The skip line is labelled by source (`source_rel or dest_rel`).
-    assert "skip dco.yml (opted out via .platform-config.yml)" in out
+    assert "skip dco.yml (opted out via .activeloom-config.yml)" in out
     assert "1 skipped" in out
     assert not (consumer_dir / ".github" / "workflows" / "dco.yml").exists()
 
@@ -3195,7 +3203,7 @@ def test_main_nested_package_json_needs_opt_in(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["**"]},
     )
 
@@ -3223,7 +3231,7 @@ def test_main_root_codeowners_needs_opt_in(
         {"targets": [{"source": "owners", "destination": "CODEOWNERS", "substitutions": []}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["**"]},
     )
 
@@ -3253,7 +3261,7 @@ def test_main_nested_sensitive_write_allowed_when_opted_in(
         {"targets": [{"source": "pkg.json", "destination": dest, "substitutions": []}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["**"], "allow_sensitive_writes": [dest]},
     )
 
@@ -3292,7 +3300,7 @@ def test_main_sensitive_write_refusal_is_one_pasteable_yaml_block(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["**"]},
     )
 
@@ -3335,10 +3343,11 @@ def test_main_sensitive_refusal_block_carries_existing_grants(
         },
     )
     existing = (
-        'substitutions:\n  FOO: bar\n\nallowed_destinations:\n  - "**"\n'
+        'harnesses: [claude]\nsubstitutions:\n  FOO: bar\n\n'
+        'allowed_destinations:\n  - "**"\n'
         "allow_sensitive_writes:\n  - .github/workflows/dco.yml\n"
     )
-    (consumer_dir / ".platform-config.yml").write_text(existing)
+    (consumer_dir / ".activeloom-config.yml").write_text(existing)
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 1
@@ -3371,21 +3380,24 @@ def test_main_config_destination_refused_and_not_grantable(
     )
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml",
-        {"targets": [{"source": "cfg.yml", "destination": ".platform-config.yml"}]},
+        {"targets": [{"source": "cfg.yml", "destination": ".activeloom-config.yml"}]},
     )
-    original = "allowed_destinations:\n  - '**'\nallow_sensitive_writes: []\n"
-    (consumer_dir / ".platform-config.yml").write_text(original)
+    original = (
+        "harnesses: [claude]\nallowed_destinations:\n  - '**'\n"
+        "allow_sensitive_writes: []\n"
+    )
+    (consumer_dir / ".activeloom-config.yml").write_text(original)
 
     rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
     assert rc == 1
     err = capsys.readouterr().err
     assert "refusing to write the consumer's own sync config" in err
-    assert (consumer_dir / ".platform-config.yml").read_text() == original
+    assert (consumer_dir / ".activeloom-config.yml").read_text() == original
 
     # Refusal cannot be bypassed via allow_sensitive_writes.
-    (consumer_dir / ".platform-config.yml").write_text(
-        "allowed_destinations:\n  - '**'\n"
-        "allow_sensitive_writes:\n  - .platform-config.yml\n"
+    (consumer_dir / ".activeloom-config.yml").write_text(
+        "harnesses: [claude]\nallowed_destinations:\n  - '**'\n"
+        "allow_sensitive_writes:\n  - .activeloom-config.yml\n"
     )
     assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
     assert "which is not a sensitive path" in capsys.readouterr().err
@@ -3399,8 +3411,8 @@ def test_main_symlinked_config_destination_is_refused(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     real_config = consumer_dir / "config-store.yml"
-    _write_yaml(real_config, {"allowed_destinations": ["**"]})
-    config_link = consumer_dir / ".platform-config.yml"
+    _write_yaml(real_config, {"harnesses": ["claude"], "allowed_destinations": ["**"]})
+    config_link = consumer_dir / ".activeloom-config.yml"
     config_link.unlink()
     config_link.symlink_to(real_config.name)
     original = real_config.read_text()
@@ -3408,7 +3420,7 @@ def test_main_symlinked_config_destination_is_refused(
     (upstream_repo / "cfg.yml").write_text("allowed_destinations:\n  - '**'\n")
     _write_yaml(
         upstream_repo / "scripts" / "sync-targets.yml",
-        {"targets": [{"source": "cfg.yml", "destination": ".platform-config.yml"}]},
+        {"targets": [{"source": "cfg.yml", "destination": ".activeloom-config.yml"}]},
     )
 
     assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 1
@@ -3437,7 +3449,7 @@ def test_main_in_loop_sensitive_gate_refuses_when_the_pre_pass_misses(
         {"targets": [{"source": "dco.yml", "destination": ".github/workflows/dco.yml"}]},
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["**"]},
     )
     monkeypatch.setattr(sync_engine, "unconsented_sensitive_writes", lambda *a: [])
@@ -3476,7 +3488,7 @@ def test_main_sensitive_directory_destination_refused_before_any_delete(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": ["**"]},
     )
     child = consumer_dir / "Dockerfile" / "child.txt"
@@ -3548,7 +3560,7 @@ def test_main_preserves_crlf_while_collapsing_an_empty_placeholder(
             ]
         },
     )
-    _write_yaml(consumer_dir / ".platform-config.yml", {"substitutions": {"E": ""}})
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"substitutions": {"E": ""}})
 
     assert _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch) == 0
     assert (consumer_dir / "rendered.md").read_bytes() == b"a\r\n\r\nb\r\n"
@@ -3579,7 +3591,7 @@ def test_main_engine_surface_manifest_needs_no_consent(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"]},
     )
 
@@ -3613,7 +3625,7 @@ def test_main_engine_surface_covers_every_relay_engine(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**", ".codex/**", ".agents/**"]},
     )
 
@@ -3646,7 +3658,7 @@ def test_main_engine_surface_is_retirable_by_tombstone(
         },
     )
     _write_yaml(
-        consumer_dir / ".platform-config.yml",
+        consumer_dir / ".activeloom-config.yml",
         {"allowed_destinations": [".claude/**"]},
     )
 
@@ -3675,7 +3687,7 @@ def test_main_carve_out_does_not_reach_outside_the_prompt_surface(
             {"targets": [{"source": "payload", "destination": destination}]},
         )
         _write_yaml(
-            consumer_dir / ".platform-config.yml",
+            consumer_dir / ".activeloom-config.yml",
             {"allowed_destinations": ["**"]},
         )
         rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
