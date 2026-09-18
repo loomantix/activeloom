@@ -100,7 +100,7 @@ A **provisional finish** is also valid when no answerable frontier remains and f
 
 Produce one self-contained, shareable summary for a reader who was not in the room: the completion status and chosen outcome (proceed, don't build, or gather evidence first), who it is for, the problem and evidence, success measures, settled decisions, alternatives rejected and why, scope, and any blocking unknowns with the evidence needed to resume. Write it at the plain-language default whatever the interviewee's fluency, and name the role of the person who made the decisions. Target 500 words; use more when necessary to preserve consequential dependencies.
 
-Include a labeled **Technical review** section that distinguishes product requirements from unverified technical assumptions. For each actual assumption, include its dependent product decision and required verification, followed by unresolved engineering questions. State when there are no recorded assumptions or questions rather than manufacturing them.
+Include a labeled **Technical review** section that distinguishes product requirements from unverified technical assumptions. List any engineering input supplied during the session with its source. For each actual assumption, include its dependent product decision and required verification, followed by unresolved engineering questions. State when there are no recorded assumptions or questions rather than manufacturing them.
 
 **Do not act on it until the user confirms the understanding is shared.** For a proceed outcome, `<<INVOKE>>grill` can help an engineer work the technical branches from this summary; `<<INVOKE>>issues` can record the chosen next step, including research. Don't-build outcomes need no implementation handoff.
 
