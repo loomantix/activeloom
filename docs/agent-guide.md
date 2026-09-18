@@ -10,7 +10,7 @@ https://github.com/loomantix/activeloom/blob/main/docs/agent-guide.md.
 Assess how ActiveLoom can help with the task in this repository.
 
 Read the repository's own agent instructions first. Inspect existing harness
-roots, ActiveLoom or legacy sync configuration, and relevant installed skills.
+roots, ActiveLoom sync configuration, and relevant installed skills.
 Identify the smallest useful workflow, its prerequisites, and missing setup.
 Distinguish what is installed from what current upstream documentation describes.
 Report the recommended entry point and why it fits. Do not install files,
@@ -23,7 +23,7 @@ When the session already has an implementation or review task, append its concre
 ## Establish the local facts
 
 1. Read the consumer repository's `AGENTS.md`, `CLAUDE.md`, or equivalent. Preserve its provider choices, worktree rules, validation requirements, and action boundaries.
-2. Inspect `.activeloom-config.yml`, or the legacy `.platform-config.yml`, `.codex-platform-config.yml`, and `.gemini-platform-config.yml`. Identify selected harnesses and existing sync workflows before proposing another installation.
+2. Inspect `.activeloom-config.yml`. Identify selected harnesses and existing sync workflows before proposing another installation.
 3. Locate the relevant installed `SKILL.md` and its supporting references. The distribution roots are `.claude/`, `.codex/`, and `.agents/`; personal installations can also supply skills. Do not assume the skill loaded by the session is the repository copy.
 4. Establish the installed revision where available: configured upstream ref, latest merged sync commit, and ledger version/integrity files for review work. A movable tag name alone does not prove which bytes are installed.
 5. Read only the selected skill and the references it requires. Check tools, authentication, and prerequisites before attempting its workflow. An installed prompt is not evidence that a reviewer launcher is usable.

@@ -150,7 +150,7 @@ every consumer of the telemetry.
 - **PATCH** — editorial only: wording, formatting, a fixed typo, a clarified
   sentence that changes no instruction.
 
-The active distribution ref (`sync-v2`) is not this version: that tag can advance, so two consumers installed from it at different times may run different prompts. `sync-v1` is frozen for legacy consumers. The CLI package version, distribution ref, prompt-stack version, and per-harness digest identify different things.
+The active distribution ref (`sync-v2`) is not this version: that tag can advance, so two consumers installed from it at different times may run different prompts. `sync-v1` is a frozen historical pin with no remaining consumers. The CLI package version, distribution ref, prompt-stack version, and per-harness digest identify different things.
 
 ## What other tools may read, and what they may assume
 

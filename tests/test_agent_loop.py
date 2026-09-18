@@ -2875,12 +2875,12 @@ def test_hooks_and_default_worker_do_not_inherit_the_wrapper_stdin(
 ) -> None:
     # Wrapper must redirect /dev/null to hooks so open stdin pipes do not block execution.
     worker = (
-        '[ "$(readlink /proc/self/fd/0)" = /dev/null ] || exit 71; '
+        "[ /dev/fd/0 -ef /dev/null ] || exit 71; "
         "if read -r -t 3 line; then exit 72; else status=$?; fi; "
         '[ "$status" -eq 1 ] || exit 73; '
         "printf done > result.py; git add result.py; git commit -m 'fix: worker'"
     )
-    validation = '[ "$(readlink /proc/self/fd/0)" = /dev/null ] || exit 74'
+    validation = "[ /dev/fd/0 -ef /dev/null ] || exit 74"
     reader, writer = os.pipe()
     try:
         result = _run(

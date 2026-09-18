@@ -20,10 +20,6 @@
 #                    (`agent-loop-instructions.md`), which is why the engine
 #                    gates destinations through the consumer's
 #                    `allowed_destinations` rather than through this value.
-#   `legacy_config`  the pre-sync-v2 per-harness config filename. The engine's
-#                    compatibility shim reads this to decide which harness a
-#                    surviving legacy config file configures, so the mapping
-#                    lives here as data rather than in the engine.
 #   `targets`        that harness's target list.
 #
 # Harnesses are processed in declaration order. That only matters for a
@@ -48,7 +44,6 @@ harnesses:
   # Claude consumer reads.
   claude:
     root: .claude
-    legacy_config: .platform-config.yml
     targets:
       # Claude Code skills — checked into consumer repo so teammates without the
       # global install can still invoke them. Devs who installed via
@@ -529,7 +524,6 @@ harnesses:
   # the Claude tree expresses as `.claude/agents/` subagents instead.
   codex:
     root: .codex
-    legacy_config: .codex-platform-config.yml
     targets:
       # Codex skills — checked into consumer repo so teammates without the
       # global install can still invoke them. Devs who installed via
@@ -994,7 +988,6 @@ harnesses:
   # Gemini, whose harness reads `.agents` rather than a vendor-named root.
   gemini:
     root: .agents
-    legacy_config: .gemini-platform-config.yml
     targets:
       # Antigravity / Gemini skills
       - source: .agents/skills/issues/SKILL.md

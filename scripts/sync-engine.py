@@ -10,10 +10,7 @@ harnesses it declares.
 Reads `.activeloom-config.yml` from the consumer to learn which harnesses it
 runs, to resolve placeholders, and to read the gates (`skip_targets`,
 `allowed_destinations`, `allow_sensitive_writes`) that bound what may be
-written. A consumer still carrying the pre-sync-v2 per-harness config files
-(`.platform-config.yml` and friends) is handled by a compatibility shim that
-composes them into one in-memory config — see `compose_legacy_config`.
-Writes substituted files into the consumer working directory.
+written. Writes substituted files into the consumer working directory.
 
 A target with `delete: true` instead causes the engine to *unlink* the
 destination on the consumer (idempotent; no-op if already absent), then
@@ -124,6 +121,16 @@ class ConsumerConfig(TypedDict, total=False):
 
 
 CANONICAL_CONFIG_NAME: Final[str] = ".activeloom-config.yml"
+
+# Pre-sync-v2 per-harness config filenames. The engine no longer reads them.
+# They survive here for two reasons: a consumer that still carries one gets an
+# error naming the file it has instead of a bare "file not found", and they
+# stay unwritable destinations so an upstream manifest cannot author one.
+RETIRED_CONFIG_NAMES: Final[tuple[str, ...]] = (
+    ".platform-config.yml",
+    ".codex-platform-config.yml",
+    ".gemini-platform-config.yml",
+)
 
 # Substitution keys computed and injected by the engine.
 RESERVED_SUBSTITUTION_KEYS: Final[frozenset[str]] = frozenset({"REVIEW_TELEMETRY_ENV"})
@@ -1095,28 +1102,16 @@ def parse_manifest(
         if not isinstance(spec, dict):
             sys.stderr.write(f"{targets_path}: harness `{name}` must be a mapping\n")
             return None
-        for field in ("root", "legacy_config"):
-            value = spec.get(field)
-            if not isinstance(value, str) or not value:
-                sys.stderr.write(
-                    f"{targets_path}: harness `{name}` needs a non-empty string `{field}`\n"
-                )
-                return None
+        root = spec.get("root")
+        if not isinstance(root, str) or not root:
+            sys.stderr.write(
+                f"{targets_path}: harness `{name}` needs a non-empty string `root`\n"
+            )
+            return None
         if not isinstance(spec.get("targets"), list):
             sys.stderr.write(f"{targets_path}: harness `{name}` needs a `targets` list\n")
             return None
         specs[name] = spec
-
-    seen: dict[str, str] = {}
-    for name, spec in specs.items():
-        legacy = str(spec["legacy_config"])
-        if legacy in seen:
-            sys.stderr.write(
-                f"{targets_path}: harnesses `{seen[legacy]}` and `{name}` both "
-                f"declare `legacy_config: {legacy}`\n"
-            )
-            return None
-        seen[legacy] = name
 
     shared_raw = targets_doc.get("shared") or {}
     if not isinstance(shared_raw, dict):
@@ -1152,194 +1147,22 @@ def parse_allowed_destinations(
     return True, raw
 
 
-def present_legacy_configs(
-    consumer_dir: Path, specs: dict[str, dict[str, Any]], only: Path | None = None
-) -> dict[str, Path]:
-    """Which pre-sync-v2 config files this consumer actually carries.
-
-    Keyed by harness, in manifest order. `only` narrows the answer to the one
-    legacy file an explicit `--config` named, which is still looked up through
-    the manifest so an unrecognized filename comes back empty rather than
-    being read as some harness's config.
-    """
-    found: dict[str, Path] = {}
-    for harness, spec in specs.items():
-        filename = str(spec["legacy_config"])
-        if only is not None:
-            if only.name == filename:
-                found[harness] = only
-            continue
-        path = consumer_dir / filename
-        if path.is_file():
-            found[harness] = path
-    return found
-
-
-def compose_legacy_config(
-    consumer_dir: Path, specs: dict[str, dict[str, Any]], only: Path | None = None,
-    shared_targets: Sequence[Any] = (),
-) -> tuple[dict[str, Any], list[Path]] | None:
-    """Compose surviving pre-sync-v2 config files into one sync-v2 config.
-
-    The three legacy filenames are not three names for one file: each one *is*
-    the config for its own harness, which is the fragmentation sync-v2 exists
-    to remove. So this composes rather than selects, and a missing legacy file
-    means that harness is absent — never that it should be defaulted on. A
-    repository that never ran the Gemini harness must not acquire it by
-    upgrading its engine.
-
-    Returns the composed document and the config files it was built from, or
-    None after writing the error. `only` restricts the composition to a single
-    legacy file, for `--config <legacy file>` during the cutover.
-
-    Composition rules, and why each is what it is:
-
-    * **Per-harness keys are carried verbatim.** Whatever a legacy file said
-      about its own harness is exactly what that harness gets.
-    * **`substitutions` merge**, because they feed the shared templated
-      targets and were only ever filled in on one stream. Two files
-      disagreeing on one key is a genuine collision and fails closed.
-    * **Top-level `skip_targets` is the *intersection*.** A shared target
-      skipped in two files and synced by the third was being routed to a
-      single owner, not switched off; a union would silently retire it.
-    * **Top-level `allow_sensitive_writes` is a union**, since the shared
-      scope must keep whichever grant covered the shared targets before.
-    * **Top-level `allowed_destinations` is a union, but only when *every*
-      present legacy file declared one.** A file that declared none was
-      fail-open, and its run delivered the shared targets through the absence
-      of a gate rather than through an allowlist — so there is nothing for a
-      union to be a superset of. Composing the other files' lists would gate
-      the shared set below what that consumer had, and the sync would refuse
-      a shared target it used to write. One fail-open input therefore keeps
-      the synthesized shared scope fail-open, warning included.
-    """
-    present: dict[str, tuple[Path, dict[str, Any]]] = {}
-    for harness, path in present_legacy_configs(consumer_dir, specs, only=only).items():
-        doc = load_yaml(path)
-        if not isinstance(doc, dict):
-            sys.stderr.write(f"{path}: top-level YAML document must be a mapping\n")
-            return None
-        present[harness] = (path.resolve(), doc)
-
-    harnesses: dict[str, Any] = {}
-    substitutions: dict[str, object] = {}
-    skip_sets: list[set[str]] = []
-    allowed: list[str] = []
-    allowed_declared_count = 0
-    sensitive: list[str] = []
-
-    for harness, (path, doc) in present.items():
-        unknown = sorted(str(key) for key in doc if key not in KNOWN_HARNESS_CONFIG_FIELDS)
-        if unknown:
-            sys.stderr.write(
-                f"{path}: unknown key(s): {', '.join(unknown)} "
-                f"(known: {', '.join(sorted(KNOWN_HARNESS_CONFIG_FIELDS))})\n"
-            )
-            return None
-        harnesses[harness] = {
-            key: doc[key]
-            for key in KNOWN_HARNESS_CONFIG_FIELDS
-            if key in doc
-        }
-
-        subs = doc.get("substitutions") or {}
-        if not isinstance(subs, dict):
-            sys.stderr.write(f"{path}: `substitutions` must be a mapping\n")
-            return None
-        for key, value in subs.items():
-            if key in substitutions and substitutions[key] != value:
-                sys.stderr.write(
-                    f"{path}: legacy config files disagree on `substitutions.{key}`. "
-                    f"Resolve it by hand: write one {CANONICAL_CONFIG_NAME} with the "
-                    f"value you want and delete the legacy files.\n"
-                )
-                return None
-            substitutions[key] = value
-
-        skip_raw = doc.get("skip_targets") or []
-        if not isinstance(skip_raw, list) or not all(isinstance(p, str) for p in skip_raw):
-            sys.stderr.write(f"{path}: `skip_targets` must be a list of strings\n")
-            return None
-        skip_sets.append(set(skip_raw))
-
-        parsed_allowed = parse_allowed_destinations(doc, path, "this file")
-        if parsed_allowed is None:
-            return None
-        declared_here, allowed_raw = parsed_allowed
-        if declared_here:
-            allowed_declared_count += 1
-            allowed.extend(allowed_raw)
-
-        sensitive_raw = doc.get("allow_sensitive_writes") or []
-        if not isinstance(sensitive_raw, list) or not all(
-            isinstance(p, str) for p in sensitive_raw
-        ):
-            sys.stderr.write(
-                f"{path}: `allow_sensitive_writes` must be a list of strings\n"
-            )
-            return None
-        sensitive.extend(sensitive_raw)
-
-    # Normalize source and destination skip spellings before intersection.
-    for skipped in skip_sets:
-        original_skips = set(skipped)
-        for target in shared_targets:
-            if not isinstance(target, dict):
-                continue
-            destination = target.get("destination")
-            source = target.get("source")
-            if isinstance(destination, str) and (
-                destination in original_skips
-                or isinstance(source, str) and source in original_skips
-            ):
-                skipped.add(destination)
-
-    composed: dict[str, Any] = {
-        "harnesses": harnesses,
-        "substitutions": substitutions,
-        "skip_targets": sorted(set.intersection(*skip_sets)) if skip_sets else [],
-        "allow_sensitive_writes": sorted(set(sensitive)),
-    }
-    # Keep shared scope fail-open if any present legacy file lacked allowed_destinations.
-    if present and allowed_declared_count == len(present):
-        composed["allowed_destinations"] = sorted(set(allowed))
-
-    return composed, [path for path, _ in present.values()]
-
-
 def resolve_config(
-    explicit: Path | None, consumer_dir: Path, specs: dict[str, dict[str, Any]],
-    shared_targets: Sequence[Any] = (),
-) -> tuple[dict[str, Any], Path, list[Path], bool] | None:
-    """Load the consumer config, composing legacy files when that is all there is.
+    explicit: Path | None, consumer_dir: Path
+) -> tuple[dict[str, Any], Path, list[Path]] | None:
+    """Load the consumer config.
 
-    Returns the config document, the path to name in errors, every input
-    config path, and whether shared defaults were synthesized from legacy
-    files. Synthesized grants must not be inherited by other harnesses.
+    Returns the config document, the path to name in errors, and every input
+    config path, or None after writing the error. Exits 2 when the consumer
+    carries no config this engine can read.
     """
-    legacy_names = {str(spec["legacy_config"]) for spec in specs.values()}
-
     if explicit is not None:
         path = explicit.resolve()
-        if path.name in legacy_names:
-            composed = compose_legacy_config(
-                consumer_dir, specs, only=path, shared_targets=shared_targets
-            )
-            if composed is None:
-                return None
-            doc, sources = composed
-            sys.stdout.write(
-                f"::warning file={path}::`--config {path.name}` names a "
-                f"pre-sync-v2 per-harness config. It was read as the config for "
-                f"that harness alone. Move to a single {CANONICAL_CONFIG_NAME} "
-                f"with a `harnesses:` list.\n"
-            )
-            return doc, path, sources, True
         loaded = load_yaml(path)
         if not isinstance(loaded, dict):
             sys.stderr.write(f"{path}: top-level YAML document must be a mapping\n")
             return None
-        return loaded, path, [path], False
+        return loaded, path, [path]
 
     canonical = (consumer_dir / CANONICAL_CONFIG_NAME).resolve()
     if canonical.is_file():
@@ -1347,26 +1170,24 @@ def resolve_config(
         if not isinstance(loaded, dict):
             sys.stderr.write(f"{canonical}: top-level YAML document must be a mapping\n")
             return None
-        return loaded, canonical, [canonical], False
+        return loaded, canonical, [canonical]
 
-    if not present_legacy_configs(consumer_dir, specs):
+    retired = [name for name in RETIRED_CONFIG_NAMES if (consumer_dir / name).is_file()]
+    if retired:
+        found = ", ".join(retired)
         sys.stderr.write(
-            f"missing required file: {canonical} — and no pre-sync-v2 config "
-            f"file ({', '.join(sorted(legacy_names))}) is present either. A "
-            f"consumer needs one config declaring which harnesses it runs.\n"
+            f"missing required file: {canonical} — this repository still "
+            f"carries the pre-sync-v2 per-harness config {found}, which this "
+            f"engine no longer reads. Write a single {CANONICAL_CONFIG_NAME} "
+            f"declaring which harnesses this repository runs, then delete "
+            f"{found}.\n"
         )
-        sys.exit(2)
-    composed = compose_legacy_config(consumer_dir, specs, shared_targets=shared_targets)
-    if composed is None:
-        return None
-    doc, sources = composed
-    print(
-        "Composed a sync-v2 config from "
-        + ", ".join(path.name for path in sources)
-        + f" — write a single {CANONICAL_CONFIG_NAME} to retire the shim."
-    )
-    # Name the single legacy file or the canonical config in error messages.
-    return doc, sources[0] if len(sources) == 1 else canonical, sources, True
+    else:
+        sys.stderr.write(
+            f"missing required file: {canonical} — a consumer needs one config "
+            f"declaring which harnesses it runs.\n"
+        )
+    sys.exit(2)
 
 
 def _harness_blocks(
@@ -1445,8 +1266,6 @@ def resolve_scopes(
     config_path: Path,
     consumer_dir: Path,
     specs: dict[str, dict[str, Any]],
-    *,
-    legacy: bool = False,
 ) -> tuple[Scope, dict[str, Scope]] | None:
     """Build the shared scope and one scope per declared harness.
 
@@ -1506,7 +1325,7 @@ def resolve_scopes(
         return None
 
     def build(
-        label: str, block: dict[str, Any], where: str, *, inherit: bool = True,
+        label: str, block: dict[str, Any], where: str, *,
         harness_name: str | None = None,
     ) -> Scope | None:
         values = dict(base_values)
@@ -1543,7 +1362,7 @@ def resolve_scopes(
             patterns: list[re.Pattern[str]] | None = [
                 glob_to_regex(p) for p in own_allowed_globs
             ]
-        elif inherit and base_allowed_declared:
+        elif base_allowed_declared:
             patterns = base_allowed_patterns
         else:
             sys.stdout.write(
@@ -1562,9 +1381,9 @@ def resolve_scopes(
         return Scope(
             label=label,
             values=values,
-            skip=(set(base_skip_raw) if inherit else set()) | set(own_skip),
+            skip=set(base_skip_raw) | set(own_skip),
             allowed_patterns=patterns,
-            sensitive_write_allowlist=(base_sensitive if inherit else frozenset()) | own_sensitive,
+            sensitive_write_allowlist=base_sensitive | own_sensitive,
             harness_name=harness_name,
             own_sensitive_write_allowlist=own_sensitive,
         )
@@ -1575,10 +1394,8 @@ def resolve_scopes(
 
     harness_scopes: dict[str, Scope] = {}
     for name, block in blocks.items():
-        # Legacy top-level gates apply only to shared scope, not individual harnesses.
         scope = build(
-            f"harness {name}", block, f"`harnesses.{name}`",
-            inherit=not legacy, harness_name=None if legacy else name,
+            f"harness {name}", block, f"`harnesses.{name}`", harness_name=name
         )
         if scope is None:
             return None
@@ -1597,8 +1414,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             f"path to the consumer config (default: <consumer-dir>/"
-            f"{CANONICAL_CONFIG_NAME}, falling back to a compose of any "
-            f"pre-sync-v2 per-harness config files still present)"
+            f"{CANONICAL_CONFIG_NAME})"
         ),
     )
     parser.add_argument("--dry-run", action="store_true", help="don't write files; report what would change")
@@ -1627,18 +1443,18 @@ def main() -> int:
         return 1
     specs, shared_targets = manifest
 
-    resolved = resolve_config(args.config, consumer_dir, specs, shared_targets)
+    resolved = resolve_config(args.config, consumer_dir)
     if resolved is None:
         return 1
-    config_doc, config_path, config_sources, legacy = resolved
+    config_doc, config_path, config_sources = resolved
     # Protect selectable config paths to prevent upstream manifests from overriding config.
     selectable_config_paths = frozenset({
         *config_sources,
         (consumer_dir / CANONICAL_CONFIG_NAME).resolve(),
-        *((consumer_dir / str(spec["legacy_config"])).resolve() for spec in specs.values()),
+        *((consumer_dir / name).resolve() for name in RETIRED_CONFIG_NAMES),
     })
 
-    resolved_scopes = resolve_scopes(config_doc, config_path, consumer_dir, specs, legacy=legacy)
+    resolved_scopes = resolve_scopes(config_doc, config_path, consumer_dir, specs)
     if resolved_scopes is None:
         return 1
     shared_scope, harness_scopes = resolved_scopes

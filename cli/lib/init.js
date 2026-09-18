@@ -527,11 +527,7 @@ async function init(args) {
 
   // Existing configuration owns the harness list.
   const configPath = path.join(facts.repoDir, '.activeloom-config.yml');
-  const configExists = fs.existsSync(configPath);
-  const legacyConfigs = HARNESSES.map((harness) => harness.legacyConfig)
-    .map((name) => path.join(facts.repoDir, name))
-    .filter((candidate) => fs.existsSync(candidate));
-  const keepingConfig = configExists || legacyConfigs.length > 0;
+  const keepingConfig = fs.existsSync(configPath);
   if (keepingConfig && args.harnesses.length > 0) {
     ui.fail(
       '`--harness` only applies when creating a new config; edit the existing config harness list, then re-run `init`.',
@@ -540,10 +536,7 @@ async function init(args) {
   }
   let chosen = { ids: [], reason: 'from the existing config' };
   if (keepingConfig) {
-    const source = configExists
-      ? '.activeloom-config.yml'
-      : legacyConfigs.map((entry) => path.basename(entry)).join(', ');
-    ui.step(`harnesses: ${ui.dim(`from ${source}`)}`);
+    ui.step(`harnesses: ${ui.dim('from .activeloom-config.yml')}`);
   } else {
     const detected = chooseHarnesses(facts, args.harnesses);
     chosen = await confirmHarnesses(detected, facts, {
@@ -574,10 +567,7 @@ async function init(args) {
   }
 
   if (tier.n === 2 && keepingConfig) {
-    const check = checkTier2Config(
-      python,
-      configExists ? [configPath] : legacyConfigs,
-    );
+    const check = checkTier2Config(python, [configPath]);
     if (!check.ok) {
       ui.fail(`config:     ${check.reason}.`);
       ui.info('  Preserve your existing values and add this top-level entry:');
@@ -588,13 +578,9 @@ async function init(args) {
     }
   }
   let configWritten = false;
-  if (configExists) {
+  if (keepingConfig) {
     ui.step(
       `config:     ${ui.dim('.activeloom-config.yml exists — keeping yours')}`,
-    );
-  } else if (legacyConfigs.length > 0) {
-    ui.step(
-      `config:     ${ui.dim(`keeping legacy config${legacyConfigs.length > 1 ? 's' : ''} (${legacyConfigs.map((entry) => path.basename(entry)).join(', ')}); the sync engine will compose them`)}`,
     );
   } else {
     const body = renderConfig({
@@ -625,8 +611,7 @@ async function init(args) {
   if (dryRun) engineArgs.push('--dry-run');
 
   // The sync engine requires config on disk, which dry-run skips writing on new repos.
-  const engineCanRun =
-    !dryRun || fs.existsSync(configPath) || legacyConfigs.length > 0;
+  const engineCanRun = !dryRun || fs.existsSync(configPath);
   if (!engineCanRun) {
     ui.step(
       `trees:      ${ui.dim('skipped — the engine needs .activeloom-config.yml on disk, and a dry run has not written it')}`,
