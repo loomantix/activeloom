@@ -10,6 +10,24 @@ Interview the user until you reach a shared understanding of who this is for, wh
 
 This is the product-side sibling of `<<INVOKE>>grill`. `<<INVOKE>>grill` settles how a thing gets built; this settles what it must do for the people who use it, and why it is worth building at all.
 
+## Who you are interviewing
+
+Every question is worded for the person answering it, so settle three things about them before the first product question:
+
+- **Role** — engineer, product manager, designer, founder, or something else.
+- **Technical fluency** — they read and write code regularly, read it sometimes, or don't read it.
+- **Backlog context** — they know the open issues and past decisions in this area, know them roughly, or are new to it.
+
+Infer what you can from the invocation and the conversation, then ask what remains as an opening round in the usual question format, with your inference as the recommended answer. When the inference is clear on all three, state it in one line, invite correction, and go on to the first product round. Skip this when the idea looks settled enough to finish in two or three questions. This step is done when all three are answered, confirmed, or skipped.
+
+The answers change how you ask, not how hard you push:
+
+- **Fluency** sets the vocabulary under Plain language.
+- **Role** decides who answers technical questions. An engineer can supply technical facts in the session, such as what exists today or what a change would roughly cost; record each as engineering input under Technical review, with its source. Technical design choices still go on the list for engineering, whatever the interviewee's role.
+- **Backlog context** decides the briefing. For someone new to the area, look up related issues and past decisions and summarize them in plain language before the first product round. For someone who knows it, skip the briefing and ask which issues matter.
+
+Everyone gets the same challenge to the premise and the same bar for a settled decision. Someone who arrives with a solution already in mind, often an engineer, needs the premise challenged more, not less.
+
 ## The design tree
 
 Map the problem as a **design tree**: every decision branches into the decisions that hang off it. Grow it from the people outward. Every tree has at least these branches:
@@ -42,7 +60,7 @@ Always recommend an answer, argued from what the end user would experience. When
 
 ## Plain language
 
-Name things the way the interviewee names them. Every question, recommendation, and reported fact is written for someone who has never opened the codebase: describe what a user would see or be able to do, and leave file names, function names, and engineering acronyms out unless the interviewee used them first.
+Name things the way the interviewee names them. By default, every question, recommendation, and reported fact is written for someone who has never opened the codebase: describe what a user would see or be able to do, and leave file names, function names, and engineering acronyms out unless the interviewee used them first. For an interviewee who reads code regularly, you may also name the code when it is the quickest shared reference, but lead with what the user sees; the question is still about the product.
 
 "Today, cancelling an order cancels every item in it" — not the name of the handler that does it.
 
@@ -80,9 +98,9 @@ The session is complete when every applicable branch is settled and each inappli
 
 A **provisional finish** is also valid when no answerable frontier remains and further progress requires unavailable research or engineering input. Separate settled decisions, assumptions, and blocking unknowns; record the evidence needed to resume each affected branch. An empty frontier caused by blocked prerequisites is not full completion, and the user need not guess to finish.
 
-Produce one self-contained, shareable summary for a reader who was not in the room: the completion status and chosen outcome (proceed, don't build, or gather evidence first), who it is for, the problem and evidence, success measures, settled decisions, alternatives rejected and why, scope, and any blocking unknowns with the evidence needed to resume. Target 500 words; use more when necessary to preserve consequential dependencies.
+Produce one self-contained, shareable summary for a reader who was not in the room: the completion status and chosen outcome (proceed, don't build, or gather evidence first), who it is for, the problem and evidence, success measures, settled decisions, alternatives rejected and why, scope, and any blocking unknowns with the evidence needed to resume. Write it at the plain-language default whatever the interviewee's fluency, and name the role of the person who made the decisions. Target 500 words; use more when necessary to preserve consequential dependencies.
 
-Include a labeled **Technical review** section that distinguishes product requirements from unverified technical assumptions. For each actual assumption, include its dependent product decision and required verification, followed by unresolved engineering questions. State when there are no recorded assumptions or questions rather than manufacturing them.
+Include a labeled **Technical review** section that distinguishes product requirements from unverified technical assumptions. List any engineering input supplied during the session with its source. For each actual assumption, include its dependent product decision and required verification, followed by unresolved engineering questions. State when there are no recorded assumptions or questions rather than manufacturing them.
 
 **Do not act on it until the user confirms the understanding is shared.** For a proceed outcome, `<<INVOKE>>grill` can help an engineer work the technical branches from this summary; `<<INVOKE>>issues` can record the chosen next step, including research. Don't-build outcomes need no implementation handoff.
 
