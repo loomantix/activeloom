@@ -904,8 +904,8 @@ reported beside the digest and never mixed into it — a version bump that chang
 no prompt must not move the digest, and a prompt edit must move it whether or not
 anyone remembered to bump the version.
 
-The sync protocol pin (`sync-v1`) is not this version either. That tag is
-force-moved whenever content changes, so two consumers "on sync-v1" at different
+The sync protocol pin (`sync-v2`) is not this version either. That tag is
+force-moved whenever content changes, so two consumers "on sync-v2" at different
 times are running different prompts and the tag carries no content identity.
 
 ### Count the findings
