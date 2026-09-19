@@ -27,10 +27,9 @@ from where it paused. Report any other exit verbatim and stop.
 ## Cross-engine mode
 
 Resolve `auto` or `handoff` from the user's request or repository instructions
-before a mutating run. Contract-v4 auto mode requires `config_doctor = true` and
-`claude_effort_policy = low`; the pinned launcher owns that policy and the
-doctor verifies its contract query. Never substitute another effort or bypass
-the doctor. Handoff mode must stop after
+before a mutating run. Contract-v4 auto mode requires `config_doctor = true`;
+never bypass the doctor. Reviewer and worker model and effort come from the
+developer's review profile (see Review Settings). Handoff mode must stop after
 the Codex leg, post `local-review-handoff:v1`, and return control so the user can
 start the Claude review in a new terminal. Do not silently change modes during
 a round. Until the wrapper implements that pause point, refuse an `agent-loop`
@@ -106,12 +105,13 @@ with the issue worktree as the current directory.
 | `claude_review_hook`                             | Pinned trusted-launcher invocation for the fresh local Claude review. Consumer overrides are rejected.                                        |
 | `codex_review_hook`                              | Pinned trusted-launcher invocation for the fresh local Codex review. Consumer overrides are rejected.                                         |
 | `review_contract_version`                        | Required hook contract. New and migrated consumers use `4`; versions `2` and `3` remain accepted for staged migration.                        |
-| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Contract-v3/v4 consumers set `true`.                            |
-| `claude_effort_policy`                           | Auto mode requires `low`; v3 verifies the hook and v4 verifies the pinned launcher's contract.                                                |
+| `config_doctor`                                  | Run the consumer compatibility doctor after settings are pinned and before selection or claim. Contract-v3/v4 consumers set `true`.           |
+| `claude_effort_policy`                           | Retired. The doctor refuses a non-empty value; `config-doctor.py --migrate` removes it.                                                       |
 | `review_max_rounds`                              | Codex-then-Claude round cap from `1` through the hard ceiling `4`. Default `4`; cap exhaustion preserves the worktree and blocks publication. |
 | `review_timeout_seconds`                         | Positive wall-clock budget for the entire review run, persisted across resume. Default `7200`; each pass is capped at the remaining budget.   |
 | `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                                    |
-| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                  |
+| `worker_model`, `worker_fallback_model`          | Retired. The default worker's settings come from the review profile; the doctor refuses a non-empty value and `--migrate` removes the keys.   |
+| `worker_effort`                                  | Retired, like `worker_model`.                                                                                                                 |
 | `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                   |
 | `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                                 |
 | `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                         |
@@ -133,7 +133,9 @@ ref, the immutable `AGENT_LOOP_REVIEW_BASE_SHA` captured after the round's fresh
 fetch, `AGENT_LOOP_REVIEW_ROUND`, `AGENT_LOOP_REVIEW_ENGINE`, and
 `AGENT_LOOP_REVIEW_RESULT_FILE` and `AGENT_LOOP_REVIEW_PUSH_HELPER` for
 contract v3 or v4. Both hooks must scope against the SHA so a
-mid-round remote update cannot give the engines different bases.
+mid-round remote update cannot give the engines different bases. Every hook and
+the default worker also receive `AGENT_LOOP_NONINTERACTIVE=1` and the pinned
+settings described under Review Settings.
 
 Contract v4 resolves both reviewers through the synced
 `.codex/skills/agent-loop/scripts/run-codex-review.sh` launcher in the source
@@ -154,6 +156,13 @@ worker-authored files in the issue worktree. The wrapper pins both hook
 strings byte-for-byte; an existing consumer must migrate them before
 contract-v4 auto mode will run. Contract v3 retains its configurable hook
 semantics for staged migration.
+
+The launcher passes each reviewer the run's pinned model and effort: Codex
+gets `-m` and `-c model_reasoning_effort=`, Claude gets `--model` and
+`--effort` plus `CLAUDE_CODE_EFFORT_LEVEL`. A model of `inherit` omits the model
+flag; because Codex runs with user configuration ignored, that means the CLI's
+built-in default model. A missing or malformed pinned value stops the launcher
+before either CLI starts.
 
 The wrapper treats the selected Codex and Claude reviewer processes as trusted
 participants. Its command guards and review-push helper constrain cooperative
@@ -196,6 +205,45 @@ origin identity, and identical local, remote, and PR head SHAs. At convergence
 it queries GitHub review threads and fails if any local-review thread lacks a
 disposition reply or remains unresolved.
 
+## Review Settings
+
+Reviewer and worker model and effort come from the per-user review profile,
+never from this config. At startup, before any issue is selected or claimed,
+the wrapper resolves the Codex and Claude reviewer settings and the Codex
+worker settings through `.codex/skills/critique/scripts/review-settings.py`
+(under contract v4, the copy in the pinned base commit), logs each pinned pair
+once, and exports them to every hook and the default worker:
+
+- `AGENT_LOOP_CODEX_MODEL`, `AGENT_LOOP_CODEX_EFFORT`
+- `AGENT_LOOP_CLAUDE_MODEL`, `AGENT_LOOP_CLAUDE_EFFORT`
+- `AGENT_LOOP_CODEX_WORKER_MODEL`, `AGENT_LOOP_CODEX_WORKER_EFFORT`
+
+Each also has a `_SOURCE` variable naming where it came from. Inherited values
+of these variables are discarded. The pins are recorded in each issue's run
+state, and `--resume-run` launches with the recorded pins even after the
+profile changes or is removed; a profile edit applies to the next run.
+
+With no profile, a missing key, or a required engine marked `unavailable`, the
+wrapper exits `4` before any issue mutation and prints one line naming the
+missing keys and the next step: run the review-setup skill, then rerun
+agent-loop.
+
+The default worker runs `codex exec` with `-m` (omitted for `inherit`) and
+`-c model_reasoning_effort=` from the pinned worker settings. A failed attempt
+whose log matches the capacity patterns and left the worktree unchanged
+switches the worker to its pinned fallback once per issue and retries within
+`worker_retries`; a timeout retries on the settings in use. A `worker_hook`
+reads the same values from `AGENT_LOOP_CODEX_WORKER_MODEL` and
+`AGENT_LOOP_CODEX_WORKER_EFFORT`.
+
+With `config_doctor = true`, the doctor refuses a contract-v3 review hook whose
+model or effort flag (`--model`, `--effort`, `-m`, `-c model=`,
+`-c model_reasoning_effort=`) names a literal that differs from the run's
+pinned settings, and warns when the literal matches. Run it standalone to check
+against the resolved review profile. `config-doctor.py --project-dir <repo>
+--migrate` rewrites those literals to the variables above and removes the
+retired keys; every other line is kept, and a second run changes nothing.
+
 ## Existing Consumer Migration
 
 The wrapper is upstream-owned, but config, worker instructions, and the prompt
@@ -210,8 +258,9 @@ the current templates manually before the synced wrapper can run:
    current config template. Do not wrap, extend, or replace those commands; the
    launcher selects the engine, scopes the review to the immutable base and
    exact head, and owns the contract-v4 result path.
-3. Configure a non-mutating `validation_hook`, retain `config_doctor = true` and
-   `claude_effort_policy = low`, and optionally override
+3. Configure a non-mutating `validation_hook`, retain `config_doctor = true`,
+   run `config-doctor.py --project-dir <repo> --migrate` to remove the retired
+   keys, and optionally override
    `review_max_rounds = 4` with another value from 1 through 4. The launcher and reviewer
    skill own the result, push, and blocked-result contracts. Before issue
    selection or claim, the doctor requires the fetched base to contain the full
