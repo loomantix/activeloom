@@ -122,10 +122,16 @@ def resolve(
             )
             path = located.stdout.strip() or None
         # The profile helper's diagnostics name only the profile path and the
-        # invalid setting, and the unconfigured case points at setup.
+        # invalid setting, and the unconfigured case points at setup. Its
+        # tracebacks also exit 1, so only its own diagnostic means refused.
+        status = result.returncode
+        if status not in (1, 2, 3) or (
+            status == EXIT_REFUSED and not result.stderr.startswith("review profile:")
+        ):
+            status = EXIT_INVALID
         raise SettingsError(
             result.stderr.strip() or f"review profile cannot resolve {engine}",
-            result.returncode if result.returncode in (1, 2, 3) else EXIT_INVALID,
+            status,
             missing,
             path,
         )
@@ -136,9 +142,9 @@ def resolve(
 
 def _require_settings(settings: Any, label: str) -> None:
     if not isinstance(settings, dict) or not all(
-        isinstance(settings.get(key), str) and settings[key] for key in PAIR
+        isinstance(settings.get(key), str) and settings[key] for key in (*PAIR, "source")
     ):
-        raise SettingsError(f"{label} lack a model and effort")
+        raise SettingsError(f"{label} lack a model, effort and source")
     fallback = settings.get("fallback")
     if fallback is not None and not (
         isinstance(fallback, dict)
@@ -400,6 +406,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"missing": error.missing, "path": error.path}))
         print(f"review settings: {error}", file=sys.stderr)
         return error.status
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        # An uncaught traceback would exit 1, which callers read as refused.
+        print(f"review settings: {type(error).__name__}: {error}", file=sys.stderr)
+        return EXIT_INVALID
     return 0
 
 

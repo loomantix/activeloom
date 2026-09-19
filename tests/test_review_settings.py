@@ -296,21 +296,62 @@ def test_a_damaged_or_foreign_pin_file_is_refused(
     assert result.stdout == ""
 
 
-def test_env_output_is_quoted_and_limited_to_the_allowlist(tmp_path: Path) -> None:
-    module = load()
+def test_env_output_is_quoted_and_limited_to_the_allowlist(
+    scripts: Path, tmp_path: Path
+) -> None:
     hostile = "x'; touch " + str(tmp_path / "pwned") + "; echo '$(id)`id`*"
-    state = {
-        "review_settings": {
-            "codex": {"model": hostile, "effort": "max", "source": "user profile"}
-        }
-    }
-    assert set(module.environment(state)) <= ENV_KEYS
-    lines = [
-        f"{key}={module.shlex.quote(value)}"
-        for key, value in module.environment(state).items()
-    ]
-    assert evaluated("\n".join(lines))["AGENT_LOOP_CODEX_MODEL"] == hostile
+    pin_file = tmp_path / "settings.json"
+    pin_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "repo": None,
+                "review_settings": {
+                    "codex": {"model": hostile, "effort": "max", "source": hostile}
+                },
+                "worker_settings": {
+                    "claude": {"model": "opus", "effort": "high", "source": hostile}
+                },
+            }
+        )
+    )
+    result = run(scripts, "pin", "--pin-file", str(pin_file))
+    assert result.returncode == 0, result.stderr
+    assert {line.split("=", 1)[0] for line in result.stdout.splitlines()} <= ENV_KEYS
+    values = evaluated(result.stdout)
+    assert values["AGENT_LOOP_CODEX_MODEL"] == hostile
+    assert values["AGENT_LOOP_CLAUDE_WORKER_SOURCE"] == hostile
     assert not (tmp_path / "pwned").exists()
+
+
+def test_unexpected_failures_are_invalid_not_refused(
+    scripts: Path, tmp_path: Path
+) -> None:
+    unsourced = tmp_path / "unsourced.json"
+    unsourced.write_text(
+        json.dumps(
+            {"version": 1, "repo": None, "review_settings": {"codex": {"model": "m", "effort": "e"}}}
+        )
+    )
+    result = run(scripts, "pin", "--pin-file", str(unsourced))
+    assert (result.returncode, result.stdout) == (2, "")
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    pin_file = locked / "settings.json"
+    assert run(scripts, "pin", "--pin-file", str(pin_file), "--reviewer", "codex").returncode == 0
+    locked.chmod(0o500)
+    try:
+        result = run(scripts, "fallback", "--pin-file", str(pin_file), "--engine", "codex")
+    finally:
+        locked.chmod(0o700)
+    assert (result.returncode, result.stdout) == (2, "")
+    assert "Traceback" not in result.stderr
+
+    crashing = scripts / "review-profile.py"
+    crashing.write_text("raise SystemExit('boom')\n")
+    result = run(scripts, "pin", "--pin-file", str(tmp_path / "new.json"), "--reviewer", "codex")
+    assert (result.returncode, result.stdout) == (2, "")
 
 
 def test_pin_resolves_only_on_first_use() -> None:
