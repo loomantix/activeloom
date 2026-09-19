@@ -669,7 +669,12 @@ def test_template_ships_in_the_migrated_form(
     examples = re.findall(r"^#\s+((claude|codex)_review_hook)\s+=(.*)$", text, re.MULTILINE)
     assert [engine for _, engine, _ in examples] == ["claude", "codex"]
     for key, engine, hook in examples:
-        assert f'"$AGENT_LOOP_{engine.upper()}_MODEL"' in hook
+        flag = "--model" if engine == "claude" else "-m"
+        model_variable = f"AGENT_LOOP_{engine.upper()}_MODEL"
+        assert (
+            f'$([ "${model_variable}" = inherit ] || '
+            f"printf -- '{flag} %s' \"${model_variable}\")"
+        ) in hook
         assert f'"$AGENT_LOOP_{engine.upper()}_EFFORT"' in hook
         assert module._hook_literals(key, hook) == []
 
