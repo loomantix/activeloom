@@ -3089,6 +3089,48 @@ git commit -m 'fix: inherited worker model'
     assert "--effort high" in args
 
 
+def test_config_doctor_checks_the_pinned_settings_before_any_issue_mutation(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    doctor = consumer[0] / ".claude/skills/agent-loop/scripts/config-doctor.py"
+    # The wrapper runs the doctor with python3; this stub records what it saw.
+    _write_executable(
+        doctor,
+        "import os, pathlib, sys\n"
+        "state = pathlib.Path(os.environ['AGENT_STATE_DIR'])\n"
+        "(state / 'doctor-args.log').write_text(' '.join(sys.argv[1:]))\n"
+        "pinned = sorted(f'{k}={v}' for k, v in os.environ.items()\n"
+        "    if k.startswith(('AGENT_LOOP_CLAUDE_', 'AGENT_LOOP_CODEX_'))\n"
+        "    and k.endswith(('_MODEL', '_EFFORT')) and '_WORKER_' not in k)\n"
+        "(state / 'doctor-env.log').write_text('\\n'.join(pinned))\n"
+        "print('agent-loop config doctor: refused', file=sys.stderr)\n"
+        "sys.exit(1)\n",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "41"],
+        issues=[_issue(41)],
+        config=_config_v3(tmp_path, config_doctor="true", claude_effort_policy="low"),
+    )
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "agent-loop config doctor: refused" in result.stderr
+    assert "claude_effort_policy is retired and ignored" in result.stderr
+    args = (consumer[3] / "doctor-args.log").read_text(encoding="utf-8")
+    assert "--repo fixture/consumer --settings-from-env" in args
+    assert (consumer[3] / "doctor-env.log").read_text(encoding="utf-8").splitlines() == [
+        "AGENT_LOOP_CLAUDE_EFFORT=medium",
+        "AGENT_LOOP_CLAUDE_MODEL=claude-review",
+        "AGENT_LOOP_CODEX_EFFORT=high",
+        "AGENT_LOOP_CODEX_MODEL=codex-review",
+    ]
+    gh_log = consumer[3] / "gh.log"
+    gh_calls = gh_log.read_text(encoding="utf-8") if gh_log.exists() else ""
+    assert "issue edit" not in gh_calls
+    assert "pr create" not in gh_calls
+    assert not list(consumer[3].glob("claimed-*"))
+    assert not (tmp_path / "worktrees").exists()
+
+
 def _env_hook(engine: str) -> str:
     return (
         "env | grep -E '^AGENT_LOOP_(CLAUDE|CODEX|GEMINI|NONINTERACTIVE)' | sort "

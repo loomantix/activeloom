@@ -60,15 +60,15 @@ with the issue worktree as the current directory.
 | `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                                                                                                  |
 | `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                                                                                                    |
 | `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility.                                                                                                  |
-| `config_doctor`                                  | Run the non-mutating compatibility preflight before issue selection or claim, including that each review hook's CLI resolves on `PATH`.                                                                      |
-| `claude_effort_policy`                           | Optional literal Claude review-hook effort policy enforced by the doctor.                                                                                                                                    |
+| `config_doctor`                                  | Run the compatibility preflight after settings are pinned and before issue selection or claim, including that each review hook's CLI resolves on `PATH`.                                                     |
+| `claude_effort_policy`                           | Retired. The doctor refuses a non-empty value; `config-doctor.py --migrate` removes it.                                                                                                                      |
 | `review_max_rounds`                              | Codex→Claude round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the draft PR.                                                                                                |
 | `review_timeout_seconds`                         | Positive wall-clock budget for one issue's review, persisted across resume. Default `7200`; each review pass and its validation is capped at the smaller of the remaining budget and `hook_timeout_seconds`. |
 | `claude_review_hook`                             | Required local Claude PR review. Reads the ledger, comments before fixes, publishes through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, replies, and resolves.                                                         |
 | `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                                                                                                                                |
 | `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                                                                                                |
-| `worker_model`, `worker_fallback_model`          | Ignored, with a warning. The default worker's model and fallback come from the review profile; see Review Settings.                                                                                          |
-| `worker_effort`                                  | Ignored, with a warning. The default worker's effort comes from the review profile.                                                                                                                          |
+| `worker_model`, `worker_fallback_model`          | Retired. The default worker's model and fallback come from the review profile; the doctor refuses a non-empty value and `--migrate` removes the keys.                                                        |
+| `worker_effort`                                  | Retired, like `worker_model`. The default worker's effort comes from the review profile.                                                                                                                     |
 | `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                  |
 | `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                      |
 | `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                        |
@@ -239,11 +239,11 @@ The loop runs three model-backed aspects, and all three take their model and
 effort from the review profile. This is the most common onboarding question, so
 it is spelled out here.
 
-| Aspect         | Where the model is chosen                              | Effort control                                                                  |
-| -------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| Default worker | review profile `claude.worker`, applied by the wrapper | same                                                                            |
-| Codex review   | review profile `codex`, read by `codex_review_hook`    | same                                                                            |
-| Claude review  | review profile `claude`, read by `claude_review_hook`  | same; a literal `--effort` is validated against `claude_effort_policy` when set |
+| Aspect         | Where the model is chosen                              | Effort control |
+| -------------- | ------------------------------------------------------ | -------------- |
+| Default worker | review profile `claude.worker`, applied by the wrapper | same           |
+| Codex review   | review profile `codex`, read by `codex_review_hook`    | same           |
+| Claude review  | review profile `claude`, read by `claude_review_hook`  | same           |
 
 A review hook is a literal shell command, so it passes the pinned reviewer
 settings as ordinary flags, reading them from the variables above. A hook that
@@ -278,11 +278,14 @@ that moves a long command, such as a test suite, to the background can end its
 turn with that command still running: it exits 0 and writes no result. The
 doctor warns when a hook sets the variable to anything else or unsets it.
 
-`claude_effort_policy` constrains `claude_review_hook` only when
-`config_doctor = true`, since the doctor is what enforces it. When it is set,
-the doctor requires a literal `--effort <policy>` in the hook, so that hook
-keeps the literal effort instead of `$AGENT_LOOP_CLAUDE_EFFORT`; the profile's
-Claude effort is not checked against the policy.
+With `config_doctor = true`, the doctor refuses a review hook whose model or
+effort flag (`--model`, `--effort`, `-m`, `-c model=`,
+`-c model_reasoning_effort=`) names a literal that differs from the run's
+pinned settings, and warns when the literal matches. Run it standalone to check
+against the resolved review profile. `config-doctor.py --project-dir <repo>
+--migrate` rewrites those literals in `claude_review_hook` and
+`codex_review_hook` to the variables above and removes the retired keys;
+every other line is kept, and a second run changes nothing.
 
 The default worker always runs on the pinned Claude worker settings. When
 `worker_hook` is set the wrapper runs that hook verbatim, and the hook reads
