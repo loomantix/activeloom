@@ -836,7 +836,7 @@ class Runner:
             ]
             if len(attempts) != 1:
                 raise Blocked("capacity fallback origin changed")
-            self.verify_capacity_evidence(pending, attempts[0])
+            self.verify_retry_evidence(pending, attempts[0], "capacity")
         if origin := pending.get("idle_exit_origin"):
             attempts = [
                 item for item in self.state["attempts"]
@@ -1060,11 +1060,6 @@ class Runner:
         )
         pending["phase"] = "idle_exit_failed"
 
-    def verify_capacity_evidence(
-        self, pending: dict[str, Any], attempt: dict[str, Any]
-    ) -> None:
-        self.verify_retry_evidence(pending, attempt, "capacity")
-
     def verify_retry_evidence(
         self, pending: dict[str, Any], attempt: dict[str, Any], kind: str
     ) -> None:
@@ -1144,7 +1139,7 @@ class Runner:
         attempt = self.state["attempts"][-1]
         if attempt.get("attempt_id") != pending.get("attempt_id"):
             raise Blocked("capacity fallback transaction changed")
-        self.verify_capacity_evidence(pending, attempt)
+        self.verify_retry_evidence(pending, attempt, "capacity")
         retry = self.stage_retry(
             pending, attempt, "capacity_recovery", "fallback", "capacity fallback"
         )
