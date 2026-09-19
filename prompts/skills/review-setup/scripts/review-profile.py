@@ -12,6 +12,9 @@ optional `fallback` pair), and an optional global `availability`. An engine
 marked `unavailable` is never launched and cannot appear in an order. A key the
 profile does not hold yet is reported as missing rather than making the whole
 profile invalid; schema_version 1 profiles are read as version 2 unchanged.
+The profile is shared by every repository's synced copy of this helper, so a
+profile that stores no version 2 setting is still written as version 1, which
+older copies can read.
 
 Exit status: 0 success, 1 refused operation (including an unavailable engine),
 2 invalid input or profile, 3 no profile or missing keys. When keys are missing,
@@ -300,9 +303,29 @@ def require_profile() -> dict[str, Any]:
     return document
 
 
+def storage_schema_version(document: dict[str, Any]) -> int:
+    """The oldest schema that holds the document: 1 while a version 1 reader accepts it."""
+    engines = document.get("engines", {})
+    scopes = [engines] + [
+        override.get("engines", {}) for override in document.get("repos", {}).values()
+    ]
+    fits_v1 = (
+        set(engines) == set(ENGINES)
+        and all(set(PAIR) <= set(settings) for settings in engines.values())
+        and set(document.get("order", {})) == set(TIERS)
+        and not any(
+            {"worker", "availability"} & set(settings)
+            for scope in scopes
+            for settings in scope.values()
+        )
+    )
+    return 1 if fits_v1 else SCHEMA_VERSION
+
+
 def save_profile(document: dict[str, Any]) -> Path:
     document = validate_profile(document)
     require_consistent_orders(document)
+    document["schema_version"] = storage_schema_version(document)
     path = profile_path()
     if path.is_symlink() or path.parent.is_symlink():
         _fail(f"review profile path cannot be a symlink: {path}")

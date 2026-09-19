@@ -463,6 +463,26 @@ def test_v1_profile_is_read_without_rewriting_and_reports_missing_worker_keys(
     assert stored["engines"]["codex"] == REVIEWER_V1["codex"]
 
 
+def test_profile_without_version_2_settings_is_still_written_as_version_1(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Older synced copies of the helper read only version 1, and the profile is
+    # shared by every repository on the machine.
+    write_profile(profile, schema_version=1)
+    assert run(capsys, "set", "claude.effort=high", "codex.fallback=none")[0] == 0
+    assert run(capsys, "set", "--repo", "example/project", "codex.model=gpt-x")[0] == 0
+    stored = json.loads(profile.read_text())
+    assert stored["schema_version"] == 1
+    assert run(capsys, "set", "--repo", "example/project", "codex.worker.effort=low")[
+        0
+    ] == 0
+    assert json.loads(profile.read_text())["schema_version"] == 2
+    assert run(capsys, "unset", "--repo", "example/project", "codex.worker.effort")[0] == 0
+    assert json.loads(profile.read_text())["schema_version"] == 1
+    assert run(capsys, "set", "gemini.availability=available")[0] == 0
+    assert json.loads(profile.read_text())["schema_version"] == 2
+
+
 def test_profile_missing_only_new_keys_exits_3_not_2(
     profile: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
