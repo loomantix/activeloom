@@ -48,6 +48,12 @@ def test_entry_skill_runs_the_preflight(root: str, skill: str) -> None:
         "`AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set" in section
     )
     assert 'review-setup` "Inline setup"' in section
+    # A schema-1 profile lacks only worker keys, which no review run reads;
+    # storing them relabels the shared profile as schema 2.
+    assert (
+        'Exit 3 with `"configured": true` and only `ENGINE.worker.*` keys in '
+        "`missing` also means continue" in section
+    )
 
 
 # Every path that starts a one-pass reviewer; the preflight skips on the
