@@ -377,9 +377,7 @@ def role_settings(settings: dict[str, Any], role: str) -> dict[str, Any]:
     return {key: settings[key] for key in (*PAIR, "fallback") if key in settings}
 
 
-def missing_keys(
-    merged: dict[str, Any], needs: list[Need], *, skip_unavailable: bool = True
-) -> list[str]:
+def missing_keys(merged: dict[str, Any], needs: list[Need]) -> list[str]:
     missing = []
     for kind, name in needs:
         if kind == "order":
@@ -387,7 +385,7 @@ def missing_keys(
                 missing.append(f"order.{name}")
             continue
         settings = merged["engines"].get(name, {})
-        if skip_unavailable and settings.get("availability") == "unavailable":
+        if settings.get("availability") == "unavailable":
             continue
         present = role_settings(settings, kind)
         prefix = f"{name}.worker" if kind == "worker" else name
@@ -474,10 +472,7 @@ def apply_assignments(target: dict[str, Any], assignments: list[str]) -> None:
             _fail(f"unknown setting {section}.{field}")
         settings = target.setdefault("engines", {}).setdefault(section, {})
         worker_field = field.removeprefix("worker.")
-        if field in PAIR:
-            validate_engine_settings(section, {field: value}, partial=True)
-            settings[field] = value
-        elif field == "availability":
+        if field in (*PAIR, "availability"):
             validate_engine_settings(section, {field: value}, partial=True)
             settings[field] = value
         elif section == "codex" and field == "fallback" and value == "none":
