@@ -1,12 +1,12 @@
 ---
 name: review-setup
-description: Set up or change the per-user review profile — the model, effort, and engine order that local review launchers, agent-loop workers, and the automatic review chain use. Use when a launcher, the runner, or an entry skill's preflight reports that the review profile is missing or incomplete, or when the user asks to change a reviewer's or worker's model or effort, mark an engine unavailable, or change the order engines review a pull request in.
+description: Set up or change the per-user review profile — reviewer and worker model/effort pairs plus local review engine order. Use when a launcher, the runner, or an entry skill's preflight reports that the review profile is missing or incomplete, or when the user asks to change a reviewer or worker setting, mark an engine unavailable, or change the order engines review a pull request in.
 <<FM_EXTRAS>>
 ---
 
 # <<INVOKE>>review-setup — per-user review profile
 
-The profile is a file outside every repository. Launchers and the review-chain runner refuse to start without the settings they need, so no reviewer or worker runs on a model, effort, or order the user did not confirm.
+The profile is a file outside every repository. Review launchers and the review-chain runner refuse to start without the reviewer settings and order they need. The profile also exposes a separate worker role to callers that explicitly resolve it.
 
 Run the helper beside this file: `python3 -I <this skill's directory>/scripts/review-profile.py <command>`. It is the only writer of the profile — never edit the JSON directly. Report a helper error to the user verbatim; do not retry with a guessed value.
 
@@ -45,7 +45,7 @@ Show the current values with `show` (add `--repo OWNER/REPO` for a repository-sp
 | "run Codex reviews at max effort"       | `set codex.effort=max`                                              |
 | "fall back to Sol at medium"            | `set codex.fallback.model=gpt-5.6-sol codex.fallback.effort=medium` |
 | "disable the Codex fallback"            | `set codex.fallback=none`                                           |
-| "agent-loop workers use sonnet"         | `set claude.worker.model=sonnet`                                    |
+| "set the Claude worker role to sonnet"  | `set claude.worker.model=sonnet`                                    |
 | "I don't have a Gemini plan"            | `set gemini.availability=unavailable order.deep=claude,codex`       |
 | "deep reviews go Codex, then Claude"    | `set order.deep=codex,claude`                                       |
 | "in this repo, add Gemini to lean runs" | `set --repo OWNER/REPO order.lean=claude,codex,gemini`              |
@@ -63,4 +63,5 @@ When `show` reports a `defaults_version` older than `current_defaults_version`, 
 
 - An automatic review run already in progress keeps the settings it started with; a change applies to the next run.
 - A run with `AGENT_LOOP_NONINTERACTIVE=1` set, or one a launcher or runner started (`AGENT_LOOP_REVIEW_ENGINE` set), never comes here; it uses its pinned values.
+- Current `agent-loop` implementations take worker settings from their consumer-owned config; this skill does not rewrite that config.
 - This skill does not start reviews, resolve a review tier, install engine CLIs, or edit an engine CLI's own configuration.
