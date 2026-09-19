@@ -127,18 +127,15 @@ def parse_rca_stub(number: int) -> dict[str, str] | None:
 
 
 def _normalize_category(name: str) -> str:
-    norm = name.strip().casefold()
-    if norm.startswith("agent-bail:"):
-        norm = norm[len("agent-bail:") :].strip()
-    return norm
+    return name.strip().casefold().removeprefix(BAIL_PREFIX).strip()
 
 
 def is_bucket_a(issue: dict[str, Any], category: str) -> bool:
     """Use the consumer-recorded RCA bucket, falling back for legacy comments."""
     rca = issue.get("_rca") or {}
     bucket = str(rca.get("bucket", "")).upper()
-    recorded_category = str(rca.get("category", "")).strip()
-    if bucket in {"A", "B"} and _normalize_category(recorded_category) == _normalize_category(category):
+    recorded_category = _normalize_category(str(rca.get("category", "")))
+    if bucket in {"A", "B"} and recorded_category == _normalize_category(category):
         return bucket == "A"
     return category in DEFAULT_BUCKET_A
 

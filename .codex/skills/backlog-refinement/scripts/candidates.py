@@ -41,7 +41,6 @@ from typing import Any, NamedTuple
 REFINED_LABEL = "agent: refined"
 READY_LABEL = "dev: agent"
 BAIL_PREFIX = "agent-bail:"
-NEEDS_PREFIX = "needs:"
 # Bail categories whose next step is an interview (core rubric, "Needs labels").
 GRILL_CLASS_BAILS = frozenset({
     "agent-bail: open-decision",
@@ -352,7 +351,7 @@ def main() -> int:
     # and to any consumer that does not filter through ready.py.
     # Surface it by default — the `excluded` section below is --include-refined only.
     section("Conflicted — excluded but still dev: agent (stale label; strip it so the labels match the bail)",
-            [i for i in buckets["excluded"] if READY_LABEL in label_names(i)])
+            conflicted)
     section("Conflicted priority — more than one priority label (human call)",
             conflicted_priority)
     section("Un-refined — refinement queue", buckets["unrefined"])
