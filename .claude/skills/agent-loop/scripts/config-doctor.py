@@ -70,11 +70,11 @@ _FLAG_PATTERNS = {
     ),
 }
 # `codex -c key=value`, with the token optionally quoted and the TOML value
-# optionally quoted inside it.
+# optionally quoted inside it, including as `\"...\"`.
 _CODEX_CONFIG = re.compile(
     r"""(?<![\w-])(?:-c|--config)(?:=|\s+)"""
     r"""(?P<token>(?P<q>['"]?)(?P<key>model|model_reasoning_effort)="""
-    r"""(?P<value>"[^"]*"|'[^']*'|[^\s'"<>()]+)(?P=q))"""
+    r"""(?P<value>\\"[^"\\]*\\"|"[^"]*"|'[^']*'|[^\s'"<>()\\]+)(?P=q))"""
 )
 _CODEX_CONFIG_FIELDS = {"model": "model", "model_reasoning_effort": "effort"}
 
@@ -136,6 +136,8 @@ def _command_segments(hook: str) -> tuple[list[tuple[int, int]], set[int]]:
 
 
 def _unquote(word: str) -> str:
+    if len(word) >= 4 and word.startswith('\\"') and word.endswith('\\"'):
+        return word[2:-2]
     if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"":
         return word[1:-1]
     return word
@@ -166,7 +168,7 @@ def _hook_literals(key: str, hook: str) -> list[HookLiteral]:
         ) -> None:
             """`option` prints the flag before a value; `prefix` precedes the value in `span`."""
             value = _unquote(match["value"])
-            if seg_start + match.start() in quoted or not value or "$" in value or "`" in value:
+            if seg_start + match.start() in quoted or not value or any(c in value for c in "$`\\"):
                 return
             variable = _setting_variable(engine, field)
             if field == "model":

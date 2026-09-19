@@ -342,6 +342,13 @@ CONFLICTING_LITERALS = [
         "-c model_reasoning_effort",
         "xhigh",
     ),
+    ("codex", 'codex exec -c "model=\\"gpt-other\\"" /deepcritique', "-c model", "gpt-other"),
+    (
+        "codex",
+        'codex exec -c "model_reasoning_effort=\\"xhigh\\"" /deepcritique',
+        "-c model_reasoning_effort",
+        "xhigh",
+    ),
 ]
 
 
@@ -441,19 +448,26 @@ def test_doctor_settings_from_env_requires_the_pinned_variables(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    "hook",
+    ("engine", "hook"),
     [
-        # Another program's -m, a flag outside the engine's command, and prose.
-        "python3 -m deepcritique; claude -p /deepcritique",
-        "echo --effort low; claude -p /deepcritique",
-        "claude -p '/deepcritique' && echo '--model x'",
+        # Another program's -m, flags in a command before or after the
+        # engine's, and prose.
+        ("claude", "python3 -m deepcritique; claude -p /deepcritique"),
+        ("claude", "echo --effort low; claude -p /deepcritique"),
+        ("claude", "claude -p /deepcritique now; echo --effort low --model x"),
+        ("claude", "claude -p /deepcritique && echo --model x | cat"),
+        ("codex", "codex exec deepcritique now; python3 -m pytest -c model=x"),
+        ("codex", "codex exec deepcritique || echo --model x"),
+        ("claude", "claude -p '/deepcritique' && echo '--model x'"),
     ],
 )
-def test_doctor_reads_literals_only_from_the_engine_command(tmp_path: Path, hook: str) -> None:
+def test_doctor_reads_literals_only_from_the_engine_command(
+    tmp_path: Path, engine: str, hook: str
+) -> None:
     project = _project(tmp_path)
-    _set_hooks(project, claude=hook)
+    _set_hooks(project, **{engine: hook})
     # No profile exists, so any literal the doctor found would fail resolution.
-    result = _run(project, path_stubs=("deepcritique", "claude", "echo"))
+    result = _run(project, path_stubs=("deepcritique", "claude", "codex", "echo"))
     assert result.returncode == 0, result.stderr
 
 
@@ -592,7 +606,10 @@ def test_migrated_model_flag_is_dropped_for_inherit_and_quoted_text_is_kept(
     hooks = {
         "claude_review_hook": f"claude --print --model opus --effort low {prompt} /deepcritique"
         + TAIL,
-        "codex_review_hook": f"codex exec -m gpt-old -c model=gpt-old {prompt} deepcritique"
+        "codex_review_hook": (
+            f'codex exec -m gpt-old -c model=gpt-old -c "model=\\"gpt-old\\"" '
+            f'-c "model_reasoning_effort=\\"low\\"" {prompt} deepcritique'
+        )
         + TAIL,
     }
     lines = [
@@ -614,6 +631,8 @@ def test_migrated_model_flag_is_dropped_for_inherit_and_quoted_text_is_kept(
     )
     for hook in migrated.values():
         assert prompt in hook
+    # Escaped-quote tokens are replaced whole, leaving no stray quote behind.
+    assert '\\"' not in migrated["codex_review_hook"]
 
     inherit = {**PINNED, "AGENT_LOOP_CLAUDE_MODEL": "inherit", "AGENT_LOOP_CODEX_MODEL": "inherit"}
     for pinned in (PINNED, inherit):
@@ -636,6 +655,11 @@ def test_migrated_model_flag_is_dropped_for_inherit_and_quoted_text_is_kept(
                 assert not any(arg in ("--model", "-m") or "model=" in arg for arg in argv)
             else:
                 assert model in argv or f"model={model}" in argv
+            effort = pinned[f"AGENT_LOOP_{engine.upper()}_EFFORT"]
+            if engine == "codex":
+                assert f"model_reasoning_effort={effort}" in argv
+            else:
+                assert argv[argv.index("--effort") + 1] == effort
             assert prompt.strip('"') in argv
 
 
