@@ -112,24 +112,33 @@ def fetch_bailed(since: datetime | None) -> list[dict[str, Any]]:
 def parse_rca_stub(number: int) -> dict[str, str] | None:
     """Pull the most recent agent-loop-rca stub from an issue's comments."""
     data = run_gh(["issue", "view", str(number), "--json", "comments"]) or {}
-    for comment in reversed(data.get("comments", [])):
-        match = RCA_STUB_RE.search(comment.get("body", ""))
+    comments = data.get("comments") or []
+    for comment in reversed(comments):
+        body = comment.get("body") or ""
+        match = RCA_STUB_RE.search(body)
         if match:
             fields: dict[str, str] = {}
             for line in match.group(1).splitlines():
                 if ":" in line:
                     key, _, val = line.partition(":")
-                    fields[key.strip()] = val.strip()
+                    fields[key.strip().lower()] = val.strip()
             return fields
     return None
+
+
+def _normalize_category(name: str) -> str:
+    norm = name.strip().casefold()
+    if norm.startswith("agent-bail:"):
+        norm = norm[len("agent-bail:") :].strip()
+    return norm
 
 
 def is_bucket_a(issue: dict[str, Any], category: str) -> bool:
     """Use the consumer-recorded RCA bucket, falling back for legacy comments."""
     rca = issue.get("_rca") or {}
     bucket = str(rca.get("bucket", "")).upper()
-    recorded_category = str(rca.get("category", "")).strip().casefold()
-    if bucket in {"A", "B"} and recorded_category == category.casefold():
+    recorded_category = str(rca.get("category", "")).strip()
+    if bucket in {"A", "B"} and _normalize_category(recorded_category) == _normalize_category(category):
         return bucket == "A"
     return category in DEFAULT_BUCKET_A
 

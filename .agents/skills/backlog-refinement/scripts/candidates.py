@@ -48,6 +48,10 @@ GRILL_CLASS_BAILS = frozenset({
     "agent-bail: spec-gap",
     "agent-bail: epic",
 })
+GRILL_NEEDS_LABELS = frozenset({
+    "needs: grill",
+    "needs: product-grill",
+})
 # Surfaced but never auto-queued — these read as coordination, not bounded work.
 EPIC_TITLE_MARKERS = ("epic:",)
 LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "agent-bail:", "agent:", "status:", "needs:")
@@ -226,7 +230,7 @@ def backfill_gaps(issue: dict[str, Any]) -> list[str]:
     if CONFIG.priority_labels and not any(n in CONFIG.priority_labels for n in labels):
         gaps.append("priority")
     if any(n in GRILL_CLASS_BAILS for n in labels) and not any(
-        n.startswith(NEEDS_PREFIX) for n in labels
+        n in GRILL_NEEDS_LABELS for n in labels
     ):
         gaps.append("needs")
     return gaps
@@ -295,28 +299,36 @@ def main() -> int:
         (i for i in issues if priority_conflicted(i)), key=lambda i: i["number"]
     )
 
+    conflicted = [i for i in buckets["excluded"] if READY_LABEL in label_names(i)]
+
     if args.json:
         # The work queue is `unrefined` + `reverify` (+ epics for visibility); counts for the rest.
         counts = {k: len(v) for k, v in buckets.items()}
         counts["backfill"] = len(backfill)
         counts["priority_conflicted"] = len(conflicted_priority)
-        print(json.dumps({
+        counts["conflicted"] = len(conflicted)
+        payload: dict[str, Any] = {
             "rubric": CONFIG.source,
             "counts": counts,
             "unrefined": buckets["unrefined"][: args.limit],
             "reverify": buckets["reverify"][: args.limit],
-            "epic": buckets["epic"],
+            "epic": buckets["epic"][: args.limit],
             "backfill": [
                 {**i, "gaps": backfill_gaps(i)} for i in backfill[: args.limit]
             ],
             "priority_conflicted": [i["number"] for i in conflicted_priority],
-        }, indent=2))
+        }
+        if args.include_refined:
+            payload["ready"] = buckets["ready"][: args.limit]
+            payload["excluded"] = buckets["excluded"][: args.limit]
+        print(json.dumps(payload, indent=2))
         return 0
 
     c = {k: len(v) for k, v in buckets.items()}
     print(
         f"Open: {len(issues)}  |  ready (dev: agent + refined): {c['ready']}  |  "
         f"RE-VERIFY (dev: agent, NOT refined): {c['reverify']}  |  "
+        f"conflicted: {len(conflicted)}  |  "
         f"excluded (agent-bail:*): {c['excluded']}  |  epics: {c['epic']}  |  "
         # Only surface the auto-managed skip count when the repo actually uses it.
         + (f"skipped (auto-managed): {c['skipped']}  |  " if c["skipped"] else "")

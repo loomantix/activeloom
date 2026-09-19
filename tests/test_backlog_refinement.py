@@ -316,3 +316,54 @@ def test_bail_report_parses_latest_rca_stub(
         "bucket": "A",
         "category": "agent-bail: custom",
     }
+
+
+def test_bail_report_parses_rca_stub_null_safety(
+    bail_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        bail_mod,
+        "run_gh",
+        lambda args: {
+            "comments": [
+                {"body": None},
+                {"body": "<!-- agent-loop-rca\nBucket: B\nCategory: stale\n-->"},
+            ]
+        },
+    )
+    assert bail_mod.parse_rca_stub(1) == {
+        "bucket": "B",
+        "category": "stale",
+    }
+
+
+def test_bail_report_is_bucket_a_normalization(bail_mod: ModuleType) -> None:
+    # 1. Custom category without agent-bail: prefix in RCA stub matches label
+    issue_custom = {"_rca": {"bucket": "A", "category": "custom-rule"}}
+    assert bail_mod.is_bucket_a(issue_custom, "agent-bail: custom-rule") is True
+
+    # 2. Explicit bucket B override on default bucket A category
+    issue_override = {"_rca": {"bucket": "B", "category": "stale"}}
+    assert bail_mod.is_bucket_a(issue_override, "agent-bail: stale") is False
+
+    # 3. Fallback when no RCA stub exists
+    issue_none = {"_rca": None}
+    assert bail_mod.is_bucket_a(issue_none, "agent-bail: stale") is True
+    assert bail_mod.is_bucket_a(issue_none, "agent-bail: unlisted") is False
+
+
+def test_candidates_backfill_gaps_requires_grill_interview_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _load_candidates(tmp_path, monkeypatch)
+    # Issue with unrelated needs: triage label still lacks interview label
+    issue_unrelated = {
+        "labels": [{"name": "agent-bail: spec-gap"}, {"name": "needs: triage"}]
+    }
+    assert "needs" in mod.backfill_gaps(issue_unrelated)
+
+    # Issue with needs: grill satisfies the interview requirement
+    issue_grill = {
+        "labels": [{"name": "agent-bail: spec-gap"}, {"name": "needs: grill"}]
+    }
+    assert "needs" not in mod.backfill_gaps(issue_grill)
