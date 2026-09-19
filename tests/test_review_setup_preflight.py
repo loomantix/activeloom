@@ -81,6 +81,12 @@ def test_preflight_follows_the_human_glance_gate(root: str, skill: str) -> None:
 def test_review_setup_defines_the_inline_flow(root: str) -> None:
     body = (ROOT / root / "skills/review-setup/SKILL.md").read_text(encoding="utf-8")
     section = _section(body, "## Inline setup")
-    for phrase in ("`missing`", "`suggested`", "availability=unavailable", "`set`"):
+    for phrase in (
+        "Run `show`, `detect`, and `defaults`",
+        "`missing`",
+        "`suggested`",
+        "availability=unavailable",
+        "`set`",
+    ):
         assert phrase in section
     assert "`check` exits 0" in section
