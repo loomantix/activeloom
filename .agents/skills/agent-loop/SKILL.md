@@ -69,30 +69,32 @@ The config is parsed as literal `key = value` lines and is never sourced.
 Unknown or duplicate keys fail closed. Hook values are shell commands executed
 with the issue worktree as the current directory.
 
-| Key                                              | Purpose                                                                                                                                                                                                     |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                                                                              |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.                                                                                |
-| `validation_hook`                                | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                                                                                           |
-| `claude_review_hook`                             | Required fresh local Claude review on the draft PR. It must post confirmed findings inline before fixes, publish through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply, resolve, and fail on undisposed findings. |
-| `gemini_review_hook`                             | Required fresh local Gemini `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                                                            |
-| `review_contract_version`                        | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                                                                         |
-| `config_doctor`                                  | Run the non-mutating consumer compatibility doctor before selection or claim. Current contract-v3 consumers set `true`.                                                                                     |
-| `claude_effort_policy`                           | Optional literal Claude effort policy checked by the doctor, such as `low`.                                                                                                                                 |
-| `review_max_rounds`                              | Review-round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the worktree and blocks publication.                                                                              |
-| `review_timeout_seconds`                         | Positive wall-clock budget for the complete review run, persisted across resume. Default `7200`; each pass is capped at the remaining budget.                                                               |
-| `worker_hook`                                    | Optional worker command override (e.g. `agy`, `gemini`, or custom CLI invocation).                                                                                                                          |
-| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                                                                                                |
-| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                 |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                                                                                               |
-| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                       |
-| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                                                                                       |
-| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                                                                 |
-| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                                                            |
+| Key                                                      | Purpose                                                                                                                                                                                                     |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_branch`                                            | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                                                                              |
+| `setup_hook`                                             | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. It must not change HEAD or leave Git-visible worktree changes.                                                                                |
+| `validation_hook`                                        | Required non-mutating validation after the worker, every review pass, and fresh-base integration.                                                                                                           |
+| `claude_review_hook`                                     | Required fresh local Claude review on the draft PR. It must post confirmed findings inline before fixes, publish through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply, resolve, and fail on undisposed findings. |
+| `gemini_review_hook`                                     | Required fresh local Gemini `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                                                            |
+| `review_contract_version`                                | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                                                                         |
+| `config_doctor`                                          | Run the consumer compatibility doctor after settings are pinned and before selection or claim. Current contract-v3 consumers set `true`.                                                                    |
+| `claude_effort_policy`                                   | Retired. The doctor refuses a non-empty value; `config-doctor.py --migrate` removes it.                                                                                                                     |
+| `review_max_rounds`                                      | Review-round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the worktree and blocks publication.                                                                              |
+| `review_timeout_seconds`                                 | Positive wall-clock budget for the complete review run, persisted across resume. Default `7200`; each pass is capped at the remaining budget.                                                               |
+| `worker_hook`                                            | Optional worker command override (e.g. `agy`, `gemini`, or custom CLI invocation).                                                                                                                          |
+| `worker_model`, `worker_fallback_model`, `worker_effort` | Retired. The default worker's model, effort, and fallback come from the review profile; the doctor refuses a non-empty value and `--migrate` removes the keys.                                              |
+| `worker_retries`                                         | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                 |
+| `worker_timeout_seconds`, `hook_timeout_seconds`         | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                                                                                               |
+| `retry_on_timeout`, `retry_delay_seconds`                | Timeout retry policy.                                                                                                                                                                                       |
+| `dependency_gate`                                        | `ready` (legacy) or `merged-to-base`.                                                                                                                                                                       |
+| `branch_prefix`, `worktree_root`, `log_root`             | Isolated path/ref controls.                                                                                                                                                                                 |
+| `log_max_kb`, `output_max_lines`                         | Bound captured logs and displayed failure tails.                                                                                                                                                            |
 
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_ISSUE_TITLE`,
 `AGENT_LOOP_ISSUE_BODY`, `AGENT_LOOP_BASE_BRANCH`, `AGENT_LOOP_BRANCH`,
-`AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and `AGENT_LOOP_PROMPT`. Because
+`AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, `AGENT_LOOP_PROMPT`,
+`AGENT_LOOP_NONINTERACTIVE=1`, and the pinned worker settings described under
+Worker Settings. Because
 ordinary `gh` commands are masked inside hooks, the worker reads its issue from
 `AGENT_LOOP_ISSUE_TITLE` and `AGENT_LOOP_ISSUE_BODY` rather than the API. Both
 are byte-exact copies of the issue text, including trailing whitespace; the
@@ -135,6 +137,34 @@ origin identity, and identical local, remote, and PR head SHAs. At convergence
 it queries GitHub review threads and fails if any local-review thread lacks a
 disposition reply or remains unresolved.
 
+## Worker Settings
+
+The default worker's model and effort come from the per-user review profile,
+never from this config. At startup, before any issue is selected or claimed,
+the wrapper resolves the Gemini worker settings through
+`.agents/skills/review-setup/scripts/review-settings.py`, logs the pinned pair
+once, and exports it to every hook and the default worker as
+`AGENT_LOOP_GEMINI_WORKER_MODEL` and `AGENT_LOOP_GEMINI_WORKER_EFFORT`, with
+`AGENT_LOOP_GEMINI_WORKER_SOURCE` naming where it came from. Inherited values
+of these variables are discarded. The default worker passes both to the Agy
+worker launcher as `--model` and `--effort`; a `worker_hook` reads them from
+the variables. The review hooks are the fixed Agy launcher commands, and the
+launcher sets each reviewer's model and effort.
+
+The pins are recorded in each issue's run state, and `--resume-run` launches
+with the recorded pins even after the profile changes or is removed; a profile
+edit applies to the next run.
+
+With no profile, a missing key, or the Gemini engine marked `unavailable`, the
+wrapper exits `4` before any issue mutation and prints one line naming the
+missing keys and the next step: run the review-setup skill, then rerun
+agent-loop.
+
+A failed worker attempt whose log matches the capacity patterns and left the
+worktree unchanged switches the worker to its pinned fallback once per issue,
+reports the model and effort now in use, and retries within `worker_retries`.
+A timeout retries on the settings in use.
+
 ## Existing Consumer Migration
 
 The wrapper is upstream-owned, but config, worker instructions, and the prompt
@@ -151,9 +181,12 @@ discard those runs under their original wrapper before migrating.
    The wrapper rejects either review hook naming a retired `grill`-family skill
    or path during startup, before it claims an issue. The check applies to
    every accepted contract version, including an existing version 3 config.
-2. Leave `worker_hook` empty so the default Agy worker launcher consumes
-   `worker_model` and `worker_fallback_model`; a hard-coded nonempty hook cannot
-   change models during a capacity retry.
+2. Leave `worker_hook` empty so the default Agy worker launcher runs on the
+   pinned worker settings; a hard-coded nonempty hook cannot change models
+   during a capacity retry. Run `config-doctor.py --project-dir <repo> --migrate`
+   to remove the retired `worker_model`, `worker_fallback_model`,
+   `worker_effort`, and `claude_effort_policy` keys; every other line is kept,
+   and a second run changes nothing.
 3. Configure a non-mutating `validation_hook`, add
    `review_contract_version = 3`, enable `config_doctor = true`, and optionally
    override `review_max_rounds = 4` with another value from `1` through `4`.
