@@ -3,7 +3,7 @@
 
 An issue is "un-refined" when it carries neither `agent: refined` nor any
 `agent-bail:*` label and is not already `dev: agent`. Those are the issues
-`/backlog-refinement refine` should process. Epics and obvious tracking issues
+`backlog-refinement refine` should process. Epics and obvious tracking issues
 are surfaced separately so the operator can see them without them polluting the
 work queue.
 
@@ -11,14 +11,20 @@ A `dev: agent` issue that is ALSO `agent: refined` was tagged by this skill and
 is trusted-ready. But a `dev: agent` issue WITHOUT `agent: refined` was tagged by
 something else — older triage, a bulk import, a parallel pass — and has never been
 verified-against-HEAD. `refine --all` walks only the un-refined bucket, so these
-pre-tagged issues are silently skipped and feed `/agent-loop` stale work. They are
+pre-tagged issues are silently skipped and feed `agent-loop` stale work. They are
 surfaced as a distinct "re-verify" bucket so the operator re-assesses them (same
 verify-against-HEAD + §1 pass as a fresh refine) before trusting the queue. When
 such an issue ALSO carries a bail label the bail wins and it classifies as
 excluded, but it is still surfaced — under "Conflicted" — because the leftover
 `dev: agent` label misrepresents the issue's real queue state to anything that
-reads labels directly. `/agent-loop` itself is not fooled: it selects through
+reads labels directly. `agent-loop` itself is not fooled: it selects through
 `ready.py`, which hard-excludes `agent-bail:*`.
+
+Assessed issues missing what the current core rubric sets — a priority label,
+or the `needs:` label a grill-class bail requires — are listed as "backfill"
+for `refine --backfill`. Repository settings (priority label names,
+auto-managed skip labels) come from `.backlog/refinement.local.md` at the
+repository root, falling back to a legacy per-harness `RUBRIC.md`.
 
 Mirrors the gh-invocation conventions of `../../issues/scripts/ready.py`.
 """
@@ -30,70 +36,123 @@ import os
 import re
 import subprocess
 import sys
-from typing import Any
+from typing import Any, NamedTuple
 
 REFINED_LABEL = "agent: refined"
 READY_LABEL = "dev: agent"
 BAIL_PREFIX = "agent-bail:"
+NEEDS_PREFIX = "needs:"
+# Bail categories whose next step is an interview (core rubric, "Needs labels").
+GRILL_CLASS_BAILS = frozenset({
+    "agent-bail: open-decision",
+    "agent-bail: spec-gap",
+    "agent-bail: epic",
+})
 # Surfaced but never auto-queued — these read as coordination, not bounded work.
 EPIC_TITLE_MARKERS = ("epic:",)
-LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "agent-bail:", "agent:", "status:", "priority:")
-GH_LIST_LIMIT = 1000
+LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "agent-bail:", "agent:", "status:", "needs:")
+# `gh issue list` pages internally; the cap only guards against truncation.
+GH_LIST_LIMIT = 10000
+
+LOCAL_RUBRIC = os.path.join(".backlog", "refinement.local.md")
+LEGACY_HARNESS_ROOTS = (".claude", ".codex", ".agents")
+
+
+def _marker(name: str) -> re.Pattern[str]:
+    return re.compile(rf"(?m)^[ \t]*<!--\s*{name}:\s*(.*?)\s*-->[ \t]*$")
+
 
 # Workflow-auto-managed labels: issues a scheduled workflow both OPENS and
-# CLOSES (e.g. a nightly metrics/digest issue auto-closed after N days). They
-# are never refinement tasks, and a refinement comment on one resets its
-# `updatedAt` — which can DELAY that auto-close. The label list is repo-specific,
-# so it is declared in a marker in the consumer-owned RUBRIC.md rather than
-# hard-coded here (keeps repo config in the rubric, the skill's source of truth):
-#     <!-- auto-managed-labels: label-a, label-b -->
-# Absent or empty marker → no skipping (safe default; pre-existing repos are
-# unaffected until they opt in).
-_AUTO_MANAGED_MARKER = re.compile(
-    r"(?m)^[ \t]*<!--\s*auto-managed-labels:\s*(.*?)\s*-->[ \t]*$"
-)
+# CLOSES. They are never refinement tasks, and a refinement comment on one
+# resets its `updatedAt` — which can DELAY that auto-close.
+_AUTO_MANAGED_MARKER = _marker("auto-managed-labels")
+# The repository's four priority label names, highest first. Empty disables
+# priority-setting.
+_PRIORITY_MARKER = _marker("priority-labels")
 
 
-def load_auto_managed_labels() -> tuple[str, ...]:
-    """Repo-specific skip labels, read from the sibling RUBRIC.md marker."""
-    rubric_path = os.path.join(os.path.dirname(__file__), "..", "RUBRIC.md")
-    if not os.path.exists(rubric_path):
-        template_path = os.path.join(os.path.dirname(__file__), "..", "RUBRIC.md.template")
-        if os.path.exists(template_path):
-            rubric_path = template_path
+class RubricConfig(NamedTuple):
+    """Repository settings read from the local (or legacy) rubric."""
+
+    source: str | None
+    auto_managed_labels: tuple[str, ...]
+    priority_labels: tuple[str, ...]
+
+
+def repo_root() -> str:
+    """The repository the operator is refining — the working directory's checkout."""
     try:
-        with open(rubric_path, encoding="utf-8") as fh:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return os.getcwd()
+    return result.stdout.strip() if result.returncode == 0 else os.getcwd()
+
+
+def locate_rubric(root: str) -> tuple[str | None, bool]:
+    """Return (path, is_legacy) for the repository's local rubric, if any."""
+    local = os.path.join(root, LOCAL_RUBRIC)
+    if os.path.exists(local):
+        return local, False
+    for harness in LEGACY_HARNESS_ROOTS:
+        legacy = os.path.join(root, harness, "skills", "backlog-refinement", "RUBRIC.md")
+        if os.path.exists(legacy):
+            return legacy, True
+    return None, False
+
+
+def _read_marker(pattern: re.Pattern[str], name: str, text: str, path: str) -> tuple[str, ...] | None:
+    """Labels listed in a single-line marker; None when the marker is absent."""
+    matches = pattern.findall(text)
+    if not matches:
+        if f"{name}:" in text:
+            # Present but off-shape (indented under a bullet, trailing text on
+            # the line). Say so — silently dropping a marker the repo believes
+            # is live changes what refinement does without anyone noticing.
+            sys.stderr.write(
+                f"Found a {name} marker in {path} that is not on a line of its own; "
+                "ignoring it. Put the marker alone on one line.\n"
+            )
+        return None
+    if len(matches) > 1:
+        sys.stderr.write(f"Expected at most one {name} marker in {path}; found {len(matches)}\n")
+        sys.exit(1)
+    return tuple(label.strip() for label in matches[0].split(",") if label.strip())
+
+
+def load_config(root: str) -> RubricConfig:
+    """Repository settings, announcing on stderr whenever a default stands in."""
+    path, is_legacy = locate_rubric(root)
+    if path is None:
+        sys.stderr.write(
+            f"NOTE: {LOCAL_RUBRIC} not found; using core defaults (no skip labels, "
+            "priority off). Run `backlog-refinement setup` to configure this repository.\n"
+        )
+        return RubricConfig(None, (), ())
+    try:
+        with open(path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError as exc:
-        sys.stderr.write(f"Could not read required backlog rubric {rubric_path}: {exc}\n")
+        sys.stderr.write(f"Could not read backlog rubric {path}: {exc}\n")
         sys.exit(1)
-    matches = _AUTO_MANAGED_MARKER.findall(text)
-    if not matches:
-        # Absent marker → the repo hasn't opted into auto-managed skipping.
-        # Return no labels (the documented safe default) rather than failing;
-        # pre-existing consumers whose RUBRIC.md predates this marker must keep
-        # working. A present-but-empty marker yields the same empty result below.
-        if "auto-managed-labels:" in text:
-            # Present but off-shape (indented under a bullet, trailing text on
-            # the line). The safe default still applies, but say so — silently
-            # dropping a marker the repo believes is live delays the auto-close
-            # of every workflow-managed issue it names.
-            sys.stderr.write(
-                f"Found an auto-managed-labels marker in {rubric_path} that is not on a "
-                "line of its own; ignoring it. Put the marker alone on one line.\n"
-            )
-        return ()
-    if len(matches) > 1:
+    if is_legacy:
         sys.stderr.write(
-            f"Expected at most one auto-managed-labels marker in {rubric_path}; "
-            f"found {len(matches)}\n"
+            f"NOTE: reading legacy rubric {path}; run `backlog-refinement setup` "
+            f"to migrate it to {LOCAL_RUBRIC}.\n"
         )
-        sys.exit(1)
-    match = matches[0]
-    return tuple(label.strip() for label in match.split(",") if label.strip())
+    auto_managed = _read_marker(_AUTO_MANAGED_MARKER, "auto-managed-labels", text, path) or ()
+    priority = _read_marker(_PRIORITY_MARKER, "priority-labels", text, path)
+    if priority is None:
+        sys.stderr.write(
+            f"NOTE: no priority-labels marker in {path}; priority backfill is off.\n"
+        )
+        priority = ()
+    return RubricConfig(path, auto_managed, priority)
 
 
-AUTO_MANAGED_LABELS = load_auto_managed_labels()
+CONFIG = load_config(repo_root())
 
 
 def fetch_open_issues() -> list[dict[str, Any]]:
@@ -105,11 +164,11 @@ def fetch_open_issues() -> list[dict[str, Any]]:
         "--json", "number,title,labels,assignees,url",
     ]
     try:
-        # 60s timeout matches ready.py: a hung GitHub API shouldn't stall callers.
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        # 120s: a large backlog pages through many requests.
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
         sys.stderr.write(
-            "Timed out after 60s while running `gh issue list`. "
+            "Timed out after 120s while running `gh issue list`. "
             "Check GitHub auth/network connectivity and retry.\n"
         )
         sys.exit(1)
@@ -120,7 +179,7 @@ def fetch_open_issues() -> list[dict[str, Any]]:
         sys.stderr.write(result.stderr)
         sys.exit(result.returncode)
     try:
-        issues = json.loads(result.stdout)
+        issues: list[dict[str, Any]] = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         sys.stderr.write(f"Invalid JSON from `gh issue list`: {exc}\n")
         sys.exit(1)
@@ -140,7 +199,7 @@ def label_names(issue: dict[str, Any]) -> list[str]:
 def classify(issue: dict[str, Any]) -> str:
     """One of: skipped | ready | reverify | excluded | epic | unrefined."""
     labels = label_names(issue)
-    if any(name in AUTO_MANAGED_LABELS for name in labels):
+    if any(name in CONFIG.auto_managed_labels for name in labels):
         # Opened AND closed by a scheduled workflow — never a refinement task.
         return "skipped"
     if any(name.startswith(BAIL_PREFIX) for name in labels):
@@ -160,8 +219,27 @@ def classify(issue: dict[str, Any]) -> str:
     return "unrefined"
 
 
+def backfill_gaps(issue: dict[str, Any]) -> list[str]:
+    """What an assessed issue lacks under the current core rubric."""
+    labels = label_names(issue)
+    gaps = []
+    if CONFIG.priority_labels and not any(n in CONFIG.priority_labels for n in labels):
+        gaps.append("priority")
+    if any(n in GRILL_CLASS_BAILS for n in labels) and not any(
+        n.startswith(NEEDS_PREFIX) for n in labels
+    ):
+        gaps.append("needs")
+    return gaps
+
+
+def priority_conflicted(issue: dict[str, Any]) -> bool:
+    """More than one of the repository's priority labels — a human call."""
+    return sum(n in CONFIG.priority_labels for n in label_names(issue)) > 1
+
+
 def format_row(issue: dict[str, Any]) -> str:
-    display = [n for n in label_names(issue) if n.startswith(LABEL_PREFIXES_TO_SHOW)]
+    shown = LABEL_PREFIXES_TO_SHOW + CONFIG.priority_labels
+    display = [n for n in label_names(issue) if n.startswith(shown)]
     label_str = " ".join(f"[{n}]" for n in display)
     assignees = issue.get("assignees") or []
     assignee = f"@{assignees[0]['login']}" if assignees else "unassigned"
@@ -209,13 +287,29 @@ def main() -> int:
     for items in buckets.values():
         items.sort(key=lambda i: i["number"])
 
+    assessed = buckets["ready"] + buckets["excluded"]
+    backfill = sorted(
+        (i for i in assessed if backfill_gaps(i)), key=lambda i: i["number"]
+    )
+    conflicted_priority = sorted(
+        (i for i in issues if priority_conflicted(i)), key=lambda i: i["number"]
+    )
+
     if args.json:
         # The work queue is `unrefined` + `reverify` (+ epics for visibility); counts for the rest.
+        counts = {k: len(v) for k, v in buckets.items()}
+        counts["backfill"] = len(backfill)
+        counts["priority_conflicted"] = len(conflicted_priority)
         print(json.dumps({
-            "counts": {k: len(v) for k, v in buckets.items()},
+            "rubric": CONFIG.source,
+            "counts": counts,
             "unrefined": buckets["unrefined"][: args.limit],
             "reverify": buckets["reverify"][: args.limit],
             "epic": buckets["epic"],
+            "backfill": [
+                {**i, "gaps": backfill_gaps(i)} for i in backfill[: args.limit]
+            ],
+            "priority_conflicted": [i["number"] for i in conflicted_priority],
         }, indent=2))
         return 0
 
@@ -226,7 +320,7 @@ def main() -> int:
         f"excluded (agent-bail:*): {c['excluded']}  |  epics: {c['epic']}  |  "
         # Only surface the auto-managed skip count when the repo actually uses it.
         + (f"skipped (auto-managed): {c['skipped']}  |  " if c["skipped"] else "")
-        + f"UN-REFINED: {c['unrefined']}"
+        + f"backfill: {len(backfill)}  |  UN-REFINED: {c['unrefined']}"
     )
 
     def section(title: str, rows: list[dict[str, Any]]) -> None:
@@ -239,7 +333,7 @@ def main() -> int:
     section("Re-verify — pre-tagged dev: agent, never assessed (do BEFORE trusting the queue)",
             buckets["reverify"])
     # An excluded issue that still carries READY_LABEL is a conflicted state:
-    # the label says queue-me and the bail says do-not. /agent-loop resolves it
+    # the label says queue-me and the bail says do-not. agent-loop resolves it
     # correctly today — it selects through ready.py, which hard-excludes
     # agent-bail:* — so this is label hygiene, not a live queue leak. It still
     # matters: the stale label misreports queue state to a human scanning labels
@@ -247,7 +341,11 @@ def main() -> int:
     # Surface it by default — the `excluded` section below is --include-refined only.
     section("Conflicted — excluded but still dev: agent (stale label; strip it so the labels match the bail)",
             [i for i in buckets["excluded"] if READY_LABEL in label_names(i)])
+    section("Conflicted priority — more than one priority label (human call)",
+            conflicted_priority)
     section("Un-refined — refinement queue", buckets["unrefined"])
+    section("Backfill — assessed, missing a priority or needs label (refine --backfill)",
+            backfill)
     section("Epics / coordination (review manually, do not auto-queue)", buckets["epic"])
     if args.include_refined:
         section("Ready (dev: agent + refined)", buckets["ready"])

@@ -1,14 +1,15 @@
 ---
 name: backlog-refinement
-description: 'Prepare a GitHub backlog for autonomous agent-loop completion — assess each open issue against the agent-readiness rubric, set its priority, rewrite agent-shaped issues into agent-ready form and tag dev: agent, exclude the rest with agent-bail reasons and a needs label naming the interview that unblocks them, and run the post-loop RCA that sharpens the rubric from every bail. Use when the user says refine backlog or refine-backlog, asks to set up backlog refinement, or before agent-loop, after issue triage, or after a loop run.'
+description: 'Prepare a GitHub backlog for autonomous agent-loop completion — assess each open issue against the agent-readiness rubric, set its priority, rewrite agent-shaped issues into agent-ready form and tag dev: agent, exclude the rest with agent-bail reasons and a needs label naming the interview that unblocks them, and run the post-loop RCA that sharpens the rubric from every bail.<<DESC_TRIGGER>>'
+<<FM_EXTRAS>>
 ---
 
-# backlog-refinement
+# <<INVOKE>>backlog-refinement
 
-Maximize how much of the backlog `agent-loop` can complete unattended, route everything else to the step that would make it buildable, and **learn from every failure** so the backlog and the loop both get smarter over time.
+Maximize how much of the backlog `<<INVOKE>>agent-loop` can complete unattended, route everything else to the step that would make it buildable, and **learn from every failure** so the backlog and the loop both get smarter over time.
 
 ```
-backlog-refinement (prep)  →  dev: agent queue  →  agent-loop (consume)
+<<INVOKE>>backlog-refinement (prep)  →  dev: agent queue  →  <<INVOKE>>agent-loop (consume)
         ▲                                                   │
         └──────────  RCA sharpens the rubric  ◀── agent-bail:* on bail
 ```
@@ -17,11 +18,11 @@ backlog-refinement (prep)  →  dev: agent queue  →  agent-loop (consume)
 
 ## Two layers: the core rubric and the repo's local files
 
-| File                                 | Owner                    | Holds                                                                                                                                                  |
-| ------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`core-rubric.md`](./core-rubric.md) | upstream (synced)        | Criteria true of **any** repo: readiness, make-ready transformations, the bail taxonomy, priority tiers, needs labels, the issue-body template.        |
-| `.backlog/refinement.local.md`       | this repo (never synced) | This repo's **instances**: integration branch, sensitive-path disqualifiers, extra transformations, priority label names and definitions, skip labels. |
-| `.backlog/learnings.local.md`        | this repo (never synced) | The append-only RCA log.                                                                                                                               |
+| File                                     | Owner                 | Holds                                                                                                                                                    |
+| ---------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`core-rubric.md`](./core-rubric.md)     | upstream (synced)     | Criteria true of **any** repo: readiness, make-ready transformations, the bail taxonomy, priority tiers, needs labels, the issue-body template.          |
+| `.backlog/refinement.local.md`           | this repo (never synced) | This repo's **instances**: integration branch, sensitive-path disqualifiers, extra transformations, priority label names and definitions, skip labels. |
+| `.backlog/learnings.local.md`            | this repo (never synced) | The append-only RCA log.                                                                                                                              |
 
 Both `.backlog/` files sit at the repository root and are read identically by every harness, so a lesson recorded during a Codex run is applied by the Claude run that follows it. **Read `core-rubric.md` and `.backlog/refinement.local.md` fully before acting.** Where they disagree, the local file wins — it is the repo narrowing or extending the core, never the reverse.
 
@@ -42,13 +43,13 @@ Walk the user through creating or migrating the local files and the labels. The 
 Show what is left to refine.
 
 ```bash
-python3 .codex/skills/backlog-refinement/scripts/candidates.py
+python3 <<SKILLS_ROOT>>/backlog-refinement/scripts/candidates.py
 # --json for machine output, --limit N, --include-refined to also list assessed issues
 ```
 
 Report the counts the script prints: ready, re-verify, conflicted, excluded, epics, skipped, backfill, and un-refined (the work).
 
-- **Re-verify** — `dev: agent` without `agent: refined`: tagged by something other than this skill and never verified against HEAD. `refine --all` does not walk this bucket, yet it is exactly what `agent-loop` consumes. Clear it before trusting the queue.
+- **Re-verify** — `dev: agent` without `agent: refined`: tagged by something other than this skill and never verified against HEAD. `refine --all` does not walk this bucket, yet it is exactly what `<<INVOKE>>agent-loop` consumes. Clear it before trusting the queue.
 - **Backfill** — assessed issues that are missing what the current core rubric sets: a priority label, or the `needs:` label a grill-class bail requires. `refine --backfill` clears it.
 - **Skipped** — issues carrying a label in the local file's `auto-managed-labels` marker: opened and closed by a scheduled workflow. Never comment on one; a comment resets its `updatedAt` and delays the workflow's auto-close.
 
@@ -86,11 +87,11 @@ Dry-run one issue: the priority you would set, the §1 verdict, the §2 transfor
 
 ## Mode: `rca [run-window]` — close the learning loop
 
-Run after a `agent-loop` run.
+Run after a `<<INVOKE>>agent-loop` run.
 
 ```bash
-python3 .codex/skills/backlog-refinement/scripts/bail-report.py                    # every agent-bail:* issue
-python3 .codex/skills/backlog-refinement/scripts/bail-report.py --since 2026-01-01  # a window
+python3 <<SKILLS_ROOT>>/backlog-refinement/scripts/bail-report.py                    # every agent-bail:* issue
+python3 <<SKILLS_ROOT>>/backlog-refinement/scripts/bail-report.py --since 2026-01-01  # a window
 ```
 
 For each bailed issue and its `<!-- agent-loop-rca ... -->` stub (core §4):
@@ -119,4 +120,4 @@ An RCA over a run that produced bails is complete when every bail has a learning
 - Refinement labels and recommends; closing and reassigning issues stay with humans.
 - Bucket-B work — synced-surface, credential-gated, open-decision, cross-repo, or a local sensitive path — is excluded by definition, never tagged `dev: agent`.
 
-`issues` is the day-to-day workflow (ready queue, claim, link); this skill decides what earns the `dev: agent` label `issues ready --agent` and `agent-loop` key on, and which interview — `grill` or `product-grill` — each excluded issue needs next.
+`<<INVOKE>>issues` is the day-to-day workflow (ready queue, claim, link); this skill decides what earns the `dev: agent` label `<<INVOKE>>issues ready --agent` and `<<INVOKE>>agent-loop` key on, and which interview — `<<INVOKE>>grill` or `<<INVOKE>>product-grill` — each excluded issue needs next.

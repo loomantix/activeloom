@@ -379,9 +379,8 @@ harnesses:
 
       # /backlog-refinement — curates the `dev: agent` queue that /agent-loop
       # consumes, and runs the post-loop RCA that sharpens the rubric from every
-      # bail. SKILL.md + scripts are verbatim (overwrite); RUBRIC.md and
-      # LEARNINGS.md are consumer-owned (bootstrapped from templates, then each
-      # repo customizes the disqualifiers and accumulates its own learnings).
+      # bail. Every file here is verbatim (overwrite); the repo's own rubric and
+      # learnings live outside the harness roots (see below).
       - source: .claude/skills/backlog-refinement/SKILL.md
         destination: .claude/skills/backlog-refinement/SKILL.md
         substitutions: []
@@ -396,20 +395,26 @@ harnesses:
         substitutions: []
         mode: '0755'
 
-      # The agent-readiness rubric (criteria + disqualifier taxonomy) is the
-      # source of truth shared with /agent-loop. `create_if_missing: true` lets
-      # each repo tune its §3 disqualifiers (e.g. a repo-specific sensitive-path
-      # exclusion) without upstream clobbering them.
-      - source: .claude/skills/backlog-refinement/RUBRIC.md.template
-        destination: .claude/skills/backlog-refinement/RUBRIC.md
+      # The synced core rubric, the setup walkthrough, and the starter templates
+      # for the repo-owned `.backlog/` files. The repo's own rubric and RCA log
+      # live at `.backlog/refinement.local.md` and `.backlog/learnings.local.md`,
+      # which no target writes. Legacy per-harness RUBRIC.md/LEARNINGS.md are
+      # deliberately not deleted here: `setup` migrates them with the user.
+      - source: .claude/skills/backlog-refinement/core-rubric.md
+        destination: .claude/skills/backlog-refinement/core-rubric.md
         substitutions: []
-        create_if_missing: true
 
-      # Append-only RCA log — each repo accumulates its own learnings corpus.
-      - source: .claude/skills/backlog-refinement/LEARNINGS.md.template
-        destination: .claude/skills/backlog-refinement/LEARNINGS.md
+      - source: .claude/skills/backlog-refinement/SETUP.md
+        destination: .claude/skills/backlog-refinement/SETUP.md
         substitutions: []
-        create_if_missing: true
+
+      - source: .claude/skills/backlog-refinement/templates/refinement.local.md
+        destination: .claude/skills/backlog-refinement/templates/refinement.local.md
+        substitutions: []
+
+      - source: .claude/skills/backlog-refinement/templates/learnings.local.md
+        destination: .claude/skills/backlog-refinement/templates/learnings.local.md
+        substitutions: []
 
       # Custom Claude Code agents that the synced skills depend on. /feature-dev
       # invokes code-explorer, code-architect, and code-reviewer. Without these
@@ -844,8 +849,8 @@ harnesses:
         create_if_missing: true
 
       # /backlog-refinement curates the dev: agent queue consumed by /agent-loop.
-      # RUBRIC.md and LEARNINGS.md are consumer-owned so each repo can evolve its
-      # own safety envelope and retain lessons from autonomous-run bails.
+      # Verbatim; the repo's own rubric and learnings live in `.backlog/`, which
+      # no target writes.
       - source: .codex/skills/backlog-refinement/SKILL.md
         destination: .codex/skills/backlog-refinement/SKILL.md
         substitutions: []
@@ -860,15 +865,21 @@ harnesses:
         substitutions: []
         mode: '0755'
 
-      - source: .codex/skills/backlog-refinement/RUBRIC.md.template
-        destination: .codex/skills/backlog-refinement/RUBRIC.md
+      - source: .codex/skills/backlog-refinement/core-rubric.md
+        destination: .codex/skills/backlog-refinement/core-rubric.md
         substitutions: []
-        create_if_missing: true
 
-      - source: .codex/skills/backlog-refinement/LEARNINGS.md.template
-        destination: .codex/skills/backlog-refinement/LEARNINGS.md
+      - source: .codex/skills/backlog-refinement/SETUP.md
+        destination: .codex/skills/backlog-refinement/SETUP.md
         substitutions: []
-        create_if_missing: true
+
+      - source: .codex/skills/backlog-refinement/templates/refinement.local.md
+        destination: .codex/skills/backlog-refinement/templates/refinement.local.md
+        substitutions: []
+
+      - source: .codex/skills/backlog-refinement/templates/learnings.local.md
+        destination: .codex/skills/backlog-refinement/templates/learnings.local.md
+        substitutions: []
 
       # Long role prompts are references, not always-loaded agent definitions.
       # Skills load them only when they need a specialized stance.
@@ -1238,15 +1249,21 @@ harnesses:
         substitutions: []
         mode: '0755'
 
-      - source: .agents/skills/backlog-refinement/RUBRIC.md.template
-        destination: .agents/skills/backlog-refinement/RUBRIC.md
+      - source: .agents/skills/backlog-refinement/core-rubric.md
+        destination: .agents/skills/backlog-refinement/core-rubric.md
         substitutions: []
-        create_if_missing: true
 
-      - source: .agents/skills/backlog-refinement/LEARNINGS.md.template
-        destination: .agents/skills/backlog-refinement/LEARNINGS.md
+      - source: .agents/skills/backlog-refinement/SETUP.md
+        destination: .agents/skills/backlog-refinement/SETUP.md
         substitutions: []
-        create_if_missing: true
+
+      - source: .agents/skills/backlog-refinement/templates/refinement.local.md
+        destination: .agents/skills/backlog-refinement/templates/refinement.local.md
+        substitutions: []
+
+      - source: .agents/skills/backlog-refinement/templates/learnings.local.md
+        destination: .agents/skills/backlog-refinement/templates/learnings.local.md
+        substitutions: []
 
       - source: .agents/references/roles/code-explorer.md
         destination: .agents/references/roles/code-explorer.md

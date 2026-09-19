@@ -2,8 +2,8 @@
 """Aggregate `agent-bail:*` issues + their inline RCA stubs for the post-loop RCA pass.
 
 Reads every open/closed issue carrying an `agent-bail:*` label, parses the
-`<!-- agent-loop-rca ... -->` stub (RUBRIC.md §4) from its comments when present,
-and groups by category + A/B bucket so `/backlog-refinement rca` can turn the
+`<!-- agent-loop-rca ... -->` stub (core rubric §4) from its comments when present,
+and groups by category + A/B bucket so `backlog-refinement rca` can turn the
 run's bails into rubric edits. Bucket-A bails are flagged loudly: they mean
 refinement tagged something `dev: agent` that the loop couldn't finish.
 """
@@ -21,18 +21,19 @@ BAIL_PREFIX = "agent-bail:"
 # Backward-compatible defaults for bails whose older comments lack an RCA stub.
 DEFAULT_BUCKET_A = {"agent-bail: stale", "agent-bail: spec-gap", "agent-bail: loop-mechanics"}
 RCA_STUB_RE = re.compile(r"<!--\s*agent-loop-rca\s*(.*?)-->", re.DOTALL | re.IGNORECASE)
-GH_LIST_LIMIT = 1000
+# `gh issue list` pages internally; the cap only guards against truncation.
+GH_LIST_LIMIT = 10000
 
 
 def run_gh(args: list[str]) -> Any:
     action = " ".join(args[:2])
     try:
         result = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=60
+            ["gh", *args], capture_output=True, text=True, timeout=120
         )
     except subprocess.TimeoutExpired:
         sys.stderr.write(
-            f"Timed out after 60s while running `gh {action}`. "
+            f"Timed out after 120s while running `gh {action}`. "
             "Check GitHub auth/network connectivity and retry.\n"
         )
         sys.exit(1)
@@ -200,11 +201,12 @@ def main() -> int:
     bucket_a_hits = sorted(set(bucket_a_hits))
     if bucket_a_hits:
         print(
-            f"→ {len(bucket_a_hits)} Bucket-A bail(s) {bucket_a_hits}: ask which RUBRIC §2 "
+            f"→ {len(bucket_a_hits)} Bucket-A bail(s) {bucket_a_hits}: ask which core rubric §2 "
             "transformation / §1 check should have caught these at refinement time."
         )
     print("→ For repeated Bucket-B shapes, sharpen the §3 disqualifier. "
-          "Append each lesson to LEARNINGS.md; bump rubric version if criteria changed.")
+          "Append each lesson to .backlog/learnings.local.md; a repo-specific rule goes in "
+          ".backlog/refinement.local.md (bump its version), a generic one is an upstream candidate.")
     return 0
 
 

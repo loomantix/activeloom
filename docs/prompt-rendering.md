@@ -276,5 +276,4 @@ generated outputs, so anything else keyed to those paths — a lint suppression,
 a pin, a manifest — has to resolve to the source before the skill moves.
 
 Held today, with the drift written down rather than waved through:
-`actions-usage-audit`, `backlog-refinement`, `pr-critique`,
-`publish-npm-package`.
+`actions-usage-audit`, `pr-critique`, `publish-npm-package`.

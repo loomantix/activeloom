@@ -1,109 +1,122 @@
 ---
 name: backlog-refinement
-description: 'Prepare and refine a GitHub backlog for autonomous agent-loop completion—assess each open issue against the agent-readiness rubric, rewrite agent-shaped issues with acceptance criteria and file/out-of-scope pointers, tag dev: agent, classify exclusions with agent-bail labels, and aggregate post-loop RCA lessons. Use when the user says refine backlog or refine-backlog, before agent-loop, after issue triage, or after a loop run.'
+description: 'Prepare a GitHub backlog for autonomous agent-loop completion — assess each open issue against the agent-readiness rubric, set its priority, rewrite agent-shaped issues into agent-ready form and tag dev: agent, exclude the rest with agent-bail reasons and a needs label naming the interview that unblocks them, and run the post-loop RCA that sharpens the rubric from every bail. Use when the user says refine backlog or refine-backlog, asks to set up backlog refinement, or before agent-loop, after issue triage, or after a loop run.'
 ---
 
-# /backlog-refinement
+# backlog-refinement
 
-Maximize how much of the backlog `/agent-loop` can complete unattended, and **learn from every failure** so the backlog and the loop both get smarter over time.
-
-This skill is one half of a closed loop with `/agent-loop`:
+Maximize how much of the backlog `agent-loop` can complete unattended, route everything else to the step that would make it buildable, and **learn from every failure** so the backlog and the loop both get smarter over time.
 
 ```
-/backlog-refinement (prep)  →  dev: agent queue  →  /agent-loop (consume)
+backlog-refinement (prep)  →  dev: agent queue  →  agent-loop (consume)
         ▲                                                   │
         └──────────  RCA sharpens the rubric  ◀── agent-bail:* on bail
 ```
 
-The criteria, taxonomy, and templates live in **[`RUBRIC.md`](./RUBRIC.md)** (or `RUBRIC.md.template` when running globally or before local bootstrap; the single source of truth, shared with `/agent-loop`). The accumulated root-cause analyses live in **[`LEARNINGS.md`](./LEARNINGS.md)** (or `LEARNINGS.md.template`). Both are consumer-owned (bootstrapped once from `RUBRIC.md.template` / `LEARNINGS.md.template`, then customized per repo). **Read `RUBRIC.md` (or `RUBRIC.md.template`) fully before acting** — it defines §1 readiness criteria, §2 make-ready transformations, §3 disqualifiers (including any repo-specific ones), and the label model.
+**Arguments**: `$ARGUMENTS` — dispatch on the first word; default to `queue`. Modes: `setup`, `queue`, `refine [n | --all | --limit N | --backfill]`, `assess <n>`, `rca [run-window]`.
 
-> **Integration branch.** This skill says "verify against the integration branch" throughout — that is whatever branch your repo's `agent-loop-instructions.md` opens PRs against (`origin/main` for most repos, `origin/staging` for repos with a staging→main promotion flow). Substitute your repo's value.
+## Two layers: the core rubric and the repo's local files
 
-**Arguments**: `$ARGUMENTS` — dispatch on the first word; default to `queue`.
+| File                                 | Owner                    | Holds                                                                                                                                                  |
+| ------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`core-rubric.md`](./core-rubric.md) | upstream (synced)        | Criteria true of **any** repo: readiness, make-ready transformations, the bail taxonomy, priority tiers, needs labels, the issue-body template.        |
+| `.backlog/refinement.local.md`       | this repo (never synced) | This repo's **instances**: integration branch, sensitive-path disqualifiers, extra transformations, priority label names and definitions, skip labels. |
+| `.backlog/learnings.local.md`        | this repo (never synced) | The append-only RCA log.                                                                                                                               |
 
----
+Both `.backlog/` files sit at the repository root and are read identically by every harness, so a lesson recorded during a Codex run is applied by the Claude run that follows it. **Read `core-rubric.md` and `.backlog/refinement.local.md` fully before acting.** Where they disagree, the local file wins — it is the repo narrowing or extending the core, never the reverse.
+
+### Preflight — every mode except `setup`
+
+Check that `.backlog/refinement.local.md` exists at the repository root.
+
+- **Present** → continue.
+- **Absent, but a legacy `RUBRIC.md` exists** under any `*/skills/backlog-refinement/` → the repo predates the local layer. Say so, and offer `setup` to migrate it. `queue` and `assess` may continue against the legacy file; `refine` and `rca` wait for the migration, because they write to files that are about to move.
+- **Neither** → the repo has never been set up. Offer `setup`. `queue` may continue on core defaults; every other mode waits.
+
+## Mode: `setup`
+
+Walk the user through creating or migrating the local files and the labels. The full procedure is in [`SETUP.md`](./SETUP.md) — read it and follow it. It is done when both `.backlog/` files exist with every `TODO(backlog):` marker either filled or explicitly deferred by the user, every label the core and local rubrics name exists in the repo, and any legacy rubric has been migrated and removed with the user's agreement.
 
 ## Mode: `queue` (default)
 
-Show the refinement backlog — open issues not yet assessed (`agent: refined` absent) — so the operator can see what's left to prepare.
+Show what is left to refine.
 
 ```bash
 python3 .agents/skills/backlog-refinement/scripts/candidates.py
-# --json for machine output, --limit N, --include-refined to also show assessed issues
+# --json for machine output, --limit N, --include-refined to also list assessed issues
 ```
 
-Report counts: total open, already `dev: agent` (split into **ready** = also `agent: refined` vs **re-verify** = `dev: agent` without `agent: refined`), already `agent-bail:*`, and the un-refined remainder (the work).
+Report the counts the script prints: ready, re-verify, conflicted, excluded, epics, skipped, backfill, and un-refined (the work).
 
-> **Auto-managed skip.** Issues a scheduled workflow both opens and closes (e.g. a nightly metrics/digest issue) are never refinement tasks — and commenting on one resets its `updatedAt`, delaying the workflow's auto-close. Declare their labels in the `<!-- auto-managed-labels: … -->` marker in `RUBRIC.md` (§3); `candidates.py` routes matching issues to a `skipped` bucket that never enters the queue and never counts as un-refined. Empty marker → no skipping.
+- **Re-verify** — `dev: agent` without `agent: refined`: tagged by something other than this skill and never verified against HEAD. `refine --all` does not walk this bucket, yet it is exactly what `agent-loop` consumes. Clear it before trusting the queue.
+- **Backfill** — assessed issues that are missing what the current core rubric sets: a priority label, or the `needs:` label a grill-class bail requires. `refine --backfill` clears it.
+- **Skipped** — issues carrying a label in the local file's `auto-managed-labels` marker: opened and closed by a scheduled workflow. Never comment on one; a comment resets its `updatedAt` and delays the workflow's auto-close.
 
-> **Re-verify bucket.** A `dev: agent` issue lacking `agent: refined` was tagged by something other than this skill (older triage, bulk import, a parallel pass) and has **never been verified-against-HEAD**. `candidates.py` surfaces these separately because `refine --all` walks only the un-refined bucket and silently skips them — leaving stale, pre-tagged work to feed `/agent-loop`. **Clear the re-verify bucket before trusting the queue** (see `refine` below).
+## Mode: `refine [n | --all | --limit N | --backfill]`
 
-## Mode: `refine [n | --all | --limit N]`
-
-Prepare issues for the loop. Default refines the next un-assessed issue; `--limit N` processes a batch; `--all` walks the whole un-refined backlog. For each issue:
-
-> **Re-verify pre-tagged `dev: agent` FIRST.** `--all` processes only the un-refined bucket — it does **not** touch `dev: agent` issues that lack `agent: refined`. Those are pre-tagged and unverified, and they are exactly what `/agent-loop` consumes, so a plain `refine --all` leaves the loop's real queue stale. Before (or alongside) `refine --all`, run the same per-issue steps below over `gh issue list --label "dev: agent"` filtered to those without `agent: refined` (the `candidates.py` **re-verify** bucket): strip `dev: agent` + add the matching `agent-bail:` on failures, add `agent: refined` on passes. Sanity-check the auto-rewrite on a handful (`assess <n>` or `refine --limit 5`) before a large sweep, since it mutates issue bodies at scale.
+Default refines the next un-refined issue; `--limit N` a batch; `--all` the whole un-refined bucket. Run the **re-verify** bucket through the same steps before (or alongside) `--all`. Sanity-check the rewrite on a handful (`assess <n>` or `--limit 5`) before a large sweep, since it edits issue bodies at scale. For each issue:
 
 1. **Read it fully** — `gh issue view <N>` including comments.
-2. **Early-exit excludes** — if the title/body matches a §3 Bucket-B disqualifier on its face (`Epic:`, obvious cross-repo/credential/synced-surface/repo-sensitive), apply `agent: refined` + the `agent-bail:` label, add a one-line comment citing the rubric clause, and move on. Don't over-invest in clearly-excluded issues.
-3. **Verify-against-HEAD** (RUBRIC §2, highest-value check). Fetch the integration branch; determine whether the described problem still reproduces:
-   - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit/PR/file:line that shipped it) and recommend close. Do **not** tag `dev: agent`. Do **not** close it yourself (human triage gate).
-   - **Partially shipped** → re-scope: rewrite the body to the residual only, then continue assessing the residual.
+2. **Set priority** (core rubric, _Priority_). Skip when the issue already carries one of the local file's priority labels — a priority a human set stands. Otherwise apply exactly one, judged from impact and urgency alone. Readiness does not change priority: an excluded issue gets one too.
+3. **Early-exit excludes** — if the title/body matches a Bucket-B disqualifier on its face (core §3 or a local one), apply `agent: refined` + the `agent-bail:` label + the `needs:` label the core rubric maps it to, comment one line citing the clause, and move on.
+4. **Verify against HEAD** (core §2). Fetch the integration branch the local file names:
+   - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit / PR / `file:line`) and recommend close. Closing is the human's call.
+   - **Partially shipped** → rewrite the body to the residual and assess the residual.
    - **Still open** → continue.
-4. **External-dep check** (RUBRIC §2) — if the issue depends on a package/service, confirm it's published and consumable from this repo. If not → `status: blocked` + `agent-bail: cross-repo`, comment, skip.
-5. **Assess against §1.** If it fails a Bucket-B criterion → exclude with the matching `agent-bail:` label + comment. If it fails a Bucket-A criterion that §2 can fix → apply the transformation.
-6. **Auto-rewrite.** When the issue passes (possibly after §2 transforms), **rewrite the body** to the RUBRIC §5 agent-ready template:
-   - Preserve the original verbatim under a `> ### Original report` blockquote — never destroy human intent.
-   - Fill Goal / Acceptance criteria / Files-entry-points / Out-of-scope, grounding file pointers in real `grep`/`Read` results.
-   - Write the new body to a repo-scoped temp path (e.g. `/tmp/<repo>/refine-body-<N>.md`), then `gh issue edit <N> --body-file <path>` (avoids heredoc permission prompts).
-   - Apply `dev: agent` + `agent: refined`.
+5. **External-dependency check** (core §2) — a dependency that is not published and consumable from this repo → `status: blocked` + `agent-bail: cross-repo`, comment, stop.
+6. **Assess against core §1 and the local additions.** A Bucket-B failure → exclude with the matching `agent-bail:` label, its `needs:` label, and a comment. A Bucket-A failure a §2 transformation can fix → apply it.
+7. **Rewrite** a passing issue to the core §5 template:
+   - Preserve the original verbatim under a `> ### Original report` blockquote.
+   - Fill Goal / Acceptance criteria / Files-entry-points / Out-of-scope from real `grep` and file reads.
+   - Write the body to a repo-scoped temp path, then `gh issue edit <N> --body-file <path>`.
+   - Apply `dev: agent` + `agent: refined`, and remove any `needs:` label left from an earlier bail.
+   - If the local file sets `rewrite-mode: suggest`, post the body as a comment instead and leave the issue body untouched.
 
-   > Some teams prefer refinement to **suggest** the rewrite as a comment rather than edit the body directly. If so, post the proposed agent-ready body as a comment and leave the body untouched; a human applies it. Pick one mode per repo and note it in `RUBRIC.md`.
+Keep every rewrite inside the scope the issue asked for, with acceptance criteria grounded in the code, and tag `dev: agent` only on issues that pass every §1 criterion. **When torn between make-ready and exclude, exclude** — a false `dev: agent` costs a whole loop iteration; a false exclusion just waits for a human.
 
-7. **Never** rewrite an issue into a scope it didn't ask for, invent acceptance criteria you can't ground in the code, or tag `dev: agent` on anything that fails §1. When uncertain between make-ready and exclude, **exclude** — a false-positive `dev: agent` costs a whole wasted loop iteration; a false-negative just waits for a human.
+### `--backfill`
 
-Batch etiquette: process sequentially, one `gh` mutation at a time; summarize at the end (X tagged ready, Y excluded by category, Z re-scoped).
+Walk the **backfill** bucket from `candidates.py` and apply only steps 2 and the `needs:` mapping: add the missing priority, and on a grill-class bail add the missing `needs:` label. Change no body, add no comment, and leave every other label alone — these issues were assessed under an older rubric and the assessment still stands.
+
+Process sequentially, one `gh` mutation at a time. Summarize at the end: tagged ready, excluded by category, needs labels applied by kind, priorities set by tier, re-scoped.
 
 ## Mode: `assess <n>`
 
-Dry-run a single issue: print the §1 verdict, which §2 transformations would apply, and the proposed rewritten body — **without** mutating the issue. Use to sanity-check the rubric's judgement before a big `refine --all`.
+Dry-run one issue: the priority you would set, the §1 verdict, the §2 transformations that would apply, the `needs:` label on an exclusion, and the proposed rewritten body — without mutating anything.
 
-## Mode: `rca [run-window]` — post-loop aggregation (closes the learning loop)
+## Mode: `rca [run-window]` — close the learning loop
 
-Run **after** an `/agent-loop` run. Turns the run's bails into rubric improvements.
+Run after a `agent-loop` run.
 
 ```bash
-python3 .agents/skills/backlog-refinement/scripts/bail-report.py        # all agent-bail:* issues
-python3 .agents/skills/backlog-refinement/scripts/bail-report.py --since 2026-01-01  # window
+python3 .agents/skills/backlog-refinement/scripts/bail-report.py                    # every agent-bail:* issue
+python3 .agents/skills/backlog-refinement/scripts/bail-report.py --since 2026-01-01  # a window
 ```
 
-For each bailed issue (and its `<!-- agent-loop-rca ... -->` stub, RUBRIC §4):
+For each bailed issue and its `<!-- agent-loop-rca ... -->` stub (core §4):
 
-1. **Re-ask the two questions** (RUBRIC top) on the actual outcome — don't just trust the inner agent's self-classification; confirm the bucket.
-2. **Bucket A bail = a refinement miss.** This is the most valuable signal: refinement tagged `dev: agent` on something the loop couldn't finish. Ask "what §2 transformation or §1 check would have caught this at prep time?" and write it.
-3. **Bucket B repeat = a dull disqualifier.** If the same inherent shape bailed more than once, the §3 pattern isn't catching it early — sharpen the wording so future refinement excludes it on sight.
-4. **Loop-mechanics bail = an instructions/script gap.** Record the fix that belongs in `agent-loop-instructions.md` / `prompt.txt`; if it needs the synced `agent-loop.sh`, note it as an upstream change (don't edit synced files locally).
-5. **Append a dated entry to `LEARNINGS.md`** for each distinct lesson (template below), and if any §1/§2/§3 criterion changed, **bump the rubric version** at the top of `RUBRIC.md` and note the bump in `LEARNINGS.md`.
+1. **Re-ask the two questions** (core rubric, top) on the actual outcome; confirm the bucket rather than trusting the inner agent's self-classification.
+2. **Bucket A bail = a refinement miss** — the most valuable signal. Name the §2 transformation or §1 check that would have caught it at prep time.
+3. **Repeated Bucket-B shape = a dull disqualifier.** Sharpen it so refinement excludes that shape on sight.
+4. **Loop-mechanics bail = an instructions or script gap.** Record the fix for `agent-loop-instructions.md`; a fix to a synced script is an upstream change.
+5. **Route the edit.** Ask: _would this rule still be correct in a repo that has never heard of this project?_ **Yes** → it belongs in `core-rubric.md` upstream; record it in the local file under _Upstream candidates_ until it lands. **No** → edit `.backlog/refinement.local.md` and bump its local rubric version.
+6. **Append a dated entry to `.backlog/learnings.local.md`** for each distinct lesson.
 
-Every loop run should leave the rubric at least as sharp as it found it. A run that produced bails but no `LEARNINGS.md` entry is an incomplete RCA.
-
-### `LEARNINGS.md` entry template
+An RCA over a run that produced bails is complete when every bail has a learnings entry and every entry names its edit.
 
 ```markdown
 ### <date> — #<issue> — <short title> [bucket A|B | <agent-bail category>]
 
 - **Outcome:** PREVENTABLE | INHERENT
-- **What could we have done differently:** <the answer to question 1, or "nothing — inherent">
-- **Rubric/loop change:** <the concrete §2 transformation, §3 disqualifier, or agent-loop-instructions line this produced>
+- **What could we have done differently:** <the answer, or "nothing — inherent">
+- **Rubric/loop change:** <the edit, and whether it is local or an upstream candidate>
 - **Evidence:** <commit / file:line / comment link>
 ```
 
-## What this skill must not do
+## Boundaries
 
-- **Don't edit synced-from-upstream files** (the `agent-loop` SKILL/script, shared instruction files, other skills' `SKILL.md`). Loop-side fixes go in `agent-loop-instructions.md` / `prompt.txt`, or upstream.
-- **Don't close or reassign issues** — refinement labels and recommends; humans close. (Stale issues get `agent-bail: stale` + a close recommendation, not a close.)
-- **Don't tag `dev: agent` on §3 Bucket-B work** — synced-surface, credential-gated, open-decision, cross-repo, or any repo-specific sensitive path (e.g. compliance/PHI/PII/encryption/audit) — those are exclusions by definition.
+- Synced files — this skill, `core-rubric.md`, the `agent-loop` skill and scripts, shared instruction files — are edited upstream. Repo changes go in `.backlog/` or `agent-loop-instructions.md`.
+- Refinement labels and recommends; closing and reassigning issues stay with humans.
+- Bucket-B work — synced-surface, credential-gated, open-decision, cross-repo, or a local sensitive path — is excluded by definition, never tagged `dev: agent`.
 
-## Relationship to `/issues`
-
-`/issues` is the day-to-day workflow (ready queue, claim, link). `/backlog-refinement` is the upstream curator that decides _what earns the `dev: agent` label that `/issues ready --agent` and `/agent-loop` key on_. Run refinement before a loop; run `rca` after.
+`issues` is the day-to-day workflow (ready queue, claim, link); this skill decides what earns the `dev: agent` label `issues ready --agent` and `agent-loop` key on, and which interview — `grill` or `product-grill` — each excluded issue needs next.

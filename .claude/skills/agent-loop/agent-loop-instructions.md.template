@@ -123,8 +123,9 @@ classify the bail (see below), and exit without a commit**:
 This loop pairs with the **`/backlog-refinement`** skill to form a learning
 system: refinement curates the `dev: agent` queue you pull from, and **every
 bail teaches the system where the backlog or the loop fell short.** The shared
-rubric is `.claude/skills/backlog-refinement/RUBRIC.md` (§3 lists the
-`agent-bail:` taxonomy; §4 is this protocol). So when you exit _without a
+rubric is `.claude/skills/backlog-refinement/core-rubric.md` (§3 lists the
+`agent-bail:` taxonomy; §4 is this protocol), extended by this repository's
+`.backlog/refinement.local.md`. So when you exit _without a
 commit_, before exiting:
 
 1. **Pick the dominant `agent-bail:` category** (one label; mention any
@@ -144,7 +145,7 @@ commit_, before exiting:
    - `agent-bail: loop-mechanics` — the issue _was_ agent-shaped but the run hit
      an avoidable mechanical failure (tooling/env gap, prompt ambiguity,
      transient infra).
-   - _(plus any repo-specific sensitive-path category your `RUBRIC.md` §3
+   - _(plus any repo-specific category `.backlog/refinement.local.md`
      defines.)_
 2. **Write the operator handoff to `$AGENT_LOOP_HANDOFF_FILE`**. The wrapper
    treats that file as authoritative: when it exists and your worktree is clean
@@ -163,7 +164,7 @@ commit_, before exiting:
    bucket: A|B
    preventable: yes|no
    what-could-differ: <one line — the answer, or "nothing: inherent">
-   rubric-impact: <which RUBRIC §2 transformation or §3 disqualifier this sharpens>
+   rubric-impact: <which rubric §2 transformation or §3 disqualifier this sharpens>
    -->
    ```
 
