@@ -19,11 +19,20 @@ explicitly asked for this change to be reviewed anyway, or when
 `$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
 pass owns the gate.
 
+## Review profile preflight
+
+Run this before launching any reviewer, worker, or runner. When
+`AGENT_LOOP_NONINTERACTIVE=1` is set, skip it: the run uses its pinned values,
+and a launcher that reports missing settings is the blocker to report. Otherwise
+run `python3 -I .codex/skills/review-setup/scripts/review-profile.py check`.
+Exit 0 means continue. Exit 3 means settings are missing: follow
+`review-setup` "Inline setup" in this conversation, then continue this request
+from where it paused. Report any other exit verbatim and stop.
+
 ## Automatic chain dispatch
 
 When the user requests a full automatic chain and this is not already a
-one-pass worker invocation, read `.codex/references/review-chain-runner.md`,
-confirm the user's review profile (run `review-setup` when it is not configured),
+one-pass worker invocation, read `.codex/references/review-chain-runner.md`
 and start the deterministic runner with the authorized plan, resolved tier and
 required gates. Do not drive the cross-engine loop from conversation. This
 skill remains the one-pass review worker; a set

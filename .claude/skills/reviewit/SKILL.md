@@ -20,6 +20,16 @@ explicitly asked for this change to be reviewed anyway, or when
 `$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
 pass owns the gate.
 
+## Review profile preflight
+
+Run this before launching any reviewer, worker, or runner. When
+`AGENT_LOOP_NONINTERACTIVE=1` is set, skip it: the run uses its pinned values,
+and a launcher that reports missing settings is the blocker to report. Otherwise
+run `python3 -I .claude/skills/review-setup/scripts/review-profile.py check`.
+Exit 0 means continue. Exit 3 means settings are missing: follow
+`/review-setup` "Inline setup" in this conversation, then continue this request
+from where it paused. Report any other exit verbatim and stop.
+
 ## Findings before telemetry emission
 
 Before every telemetry emission attempt, including an early `blocked` or

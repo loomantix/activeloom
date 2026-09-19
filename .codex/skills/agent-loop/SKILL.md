@@ -10,6 +10,16 @@ local review starts. The wrapper owns selection, claiming, worktrees, base
 integration, initial publication, review-head attestation, and readiness. A
 worker only implements, validates, refactors, and commits locally.
 
+## Review profile preflight
+
+Run this before launching any reviewer, worker, or runner. When
+`AGENT_LOOP_NONINTERACTIVE=1` is set, skip it: the run uses its pinned values,
+and a launcher that reports missing settings is the blocker to report. Otherwise
+run `python3 -I .codex/skills/review-setup/scripts/review-profile.py check`.
+Exit 0 means continue. Exit 3 means settings are missing: follow
+`review-setup` "Inline setup" in this conversation, then continue this request
+from where it paused. Report any other exit verbatim and stop.
+
 ## Cross-engine mode
 
 Resolve `auto` or `handoff` from the user's request or repository instructions
