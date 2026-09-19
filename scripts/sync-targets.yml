@@ -171,6 +171,11 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      - source: .claude/skills/critique/scripts/review-settings.py
+        destination: .claude/skills/critique/scripts/review-settings.py
+        substitutions: []
+        mode: '0644'
+
       - source: .claude/skills/critique/scripts/run-agy-review.sh
         destination: .claude/skills/critique/scripts/run-agy-review.sh
         substitutions: []
@@ -281,6 +286,11 @@ harnesses:
         destination: .claude/skills/review-setup/scripts/review-profile.defaults.json
         substitutions: []
         mode: '0644'
+
+      - source: .claude/skills/review-setup/scripts/review-settings.py
+        destination: .claude/skills/review-setup/scripts/review-settings.py
+        substitutions: []
+        mode: '0755'
 
       - source: .claude/skills/phone-install/SKILL.md
         destination: .claude/skills/phone-install/SKILL.md
@@ -636,6 +646,11 @@ harnesses:
         substitutions: []
         mode: '0644'
 
+      - source: .codex/skills/critique/scripts/review-settings.py
+        destination: .codex/skills/critique/scripts/review-settings.py
+        substitutions: []
+        mode: '0644'
+
       - source: .codex/skills/critique/scripts/run-claude-review.sh
         destination: .codex/skills/critique/scripts/run-claude-review.sh
         substitutions: []
@@ -743,6 +758,11 @@ harnesses:
         destination: .codex/skills/review-setup/scripts/review-profile.defaults.json
         substitutions: []
         mode: '0644'
+
+      - source: .codex/skills/review-setup/scripts/review-settings.py
+        destination: .codex/skills/review-setup/scripts/review-settings.py
+        substitutions: []
+        mode: '0755'
 
       - source: .codex/skills/phone-install/SKILL.md
         destination: .codex/skills/phone-install/SKILL.md
@@ -1132,6 +1152,11 @@ harnesses:
         destination: .agents/skills/review-setup/scripts/review-profile.defaults.json
         substitutions: []
         mode: '0644'
+
+      - source: .agents/skills/review-setup/scripts/review-settings.py
+        destination: .agents/skills/review-setup/scripts/review-settings.py
+        substitutions: []
+        mode: '0755'
 
       - source: .agents/skills/phone-install/SKILL.md
         destination: .agents/skills/phone-install/SKILL.md
