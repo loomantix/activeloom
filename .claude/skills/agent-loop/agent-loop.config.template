@@ -80,30 +80,13 @@ codex_review_hook =
 
 # Optional worker override. When empty, the wrapper runs the Claude CLI in
 # headless, auto-approving mode (--permission-mode bypassPermissions --print)
-# with the prompt from prompt.txt, honoring the model settings below. Set this
+# with the prompt from prompt.txt and the worker settings below. Set this
 # to run a different implementation agent instead.
 worker_hook =
-# Both keys apply to the DEFAULT worker only, and are ignored entirely when
-# worker_hook is set above — a hook pins its own model, in the hook.
-#
-# Model ids as your CLI accepts them. `worker_model` is the primary and
-# `worker_fallback_model` is used only after a clean capacity failure that left
-# the worktree unchanged; a timeout retries on the primary model. Set them
-# together anyway: pinning a strong primary without a fallback makes capacity
-# errors more expensive. Leaving both empty is NOT neutral — the worker then
-# runs on whatever your CLI currently defaults to, which changes with CLI
-# releases, so the one slot that determines how much work the reviewers have to
-# do is the one slot that is not pinned.
-#
-# `worker_effort` is passed to the default worker as `--effort`. Leave it empty
-# and the worker runs at whatever the CLI or the launching environment defaults
-# to, which is easy to forget and invisible afterwards — the doctor warns.
-# When `claude_effort_policy` is set the doctor requires the two to match, since
-# the default worker is the same CLI the policy governs. Reviewer model and
-# effort are chosen inside the review hook commands above.
-worker_model =
-worker_fallback_model =
-worker_effort =
+# The default worker's model, effort, and capacity fallback come from the
+# per-user review profile (`claude.worker`), pinned at startup; there are no
+# worker model keys here. A worker_hook receives the same pinned values as
+# AGENT_LOOP_CLAUDE_WORKER_MODEL and AGENT_LOOP_CLAUDE_WORKER_EFFORT.
 worker_retries = 1
 worker_timeout_seconds = 3600
 hook_timeout_seconds = 3600
