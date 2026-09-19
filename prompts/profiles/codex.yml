@@ -50,6 +50,10 @@ skills:
   task-packet:
     FM_EXTRAS: ''
 
+  backlog-refinement:
+    FM_EXTRAS: ''
+    DESC_TRIGGER: ' Use when the user says refine backlog or refine-backlog, asks to set up backlog refinement, or before agent-loop, after issue triage, or after a loop run.'
+
   grill:
     # No `disable-model-invocation` on this harness, so the description has to
     # carry its own trigger prose or the skill never fires. The leading space is

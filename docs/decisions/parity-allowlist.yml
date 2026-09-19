@@ -79,15 +79,6 @@ recorded:
       exactly what will run.
 
 held:
-  - skill: backlog-refinement
-    issue: 171
-    ceiling: 123
-    reason: >-
-      Version drift, `.claude` newest. The older copies mis-handle an
-      undateable `updatedAt`, key the RCA bucket without matching the
-      category, double-count Bucket-A hits across labels, and drop both the
-      rubric-fallback warning and the Conflicted bucket.
-
   - skill: pr-critique
     issue: 172
     ceiling: 40

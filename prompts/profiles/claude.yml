@@ -86,6 +86,12 @@ skills:
   task-packet:
     FM_EXTRAS: 'argument-hint: Paste a full Task Packet markdown document'
 
+  backlog-refinement:
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: 'mode [args]: setup | queue | refine [n|--all|--limit N|--backfill] | assess <n> | rca [run-window]'
+    DESC_TRIGGER: ''
+
   grill:
     # `disable-model-invocation` is what makes trigger prose in the description
     # dead weight for Claude, so DESC_TRIGGER is empty here and non-empty on

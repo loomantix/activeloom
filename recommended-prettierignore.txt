@@ -49,11 +49,13 @@
 .claude/skills/agent-loop/scripts/hook-git-guard
 .claude/skills/agent-loop/scripts/review-push.sh
 .claude/skills/aws-infra-migration/SKILL.md
-.claude/skills/backlog-refinement/LEARNINGS.md
-.claude/skills/backlog-refinement/RUBRIC.md
+.claude/skills/backlog-refinement/SETUP.md
 .claude/skills/backlog-refinement/SKILL.md
+.claude/skills/backlog-refinement/core-rubric.md
 .claude/skills/backlog-refinement/scripts/bail-report.py
 .claude/skills/backlog-refinement/scripts/candidates.py
+.claude/skills/backlog-refinement/templates/learnings.local.md
+.claude/skills/backlog-refinement/templates/refinement.local.md
 .claude/skills/codex-review/SKILL.md
 .claude/skills/copilot-review/SKILL.md
 .claude/skills/critique/SKILL.md
