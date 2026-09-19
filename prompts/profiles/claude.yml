@@ -114,17 +114,15 @@ skills:
       `agent-loop` requires **both** the Claude and Codex CLIs. Its consumer-owned
       config is `.claude/skills/agent-loop/agent-loop.config`.
 
-      Ask which exact worker and reviewer model identifiers the user wants, and
-      which Claude effort policy they selected. Take identifiers from the user or
-      from CLI output; never invent one from memory.
+      Worker and reviewer models and efforts come from the per-user review
+      profile, not this config; if none exists, point the user at the
+      review-setup skill. Ask which Claude effort policy, if any, they selected.
 
       Fill only these currently empty keys, following the template comments for
       hook flags and required environment variables:
 
       | Key | Value |
       | --- | --- |
-      | `worker_model` | Exact worker identifier from the user. |
-      | `worker_fallback_model` | Only if the user names one. |
       | `claude_review_hook` | Literal Claude reviewer command from the template contract. |
       | `codex_review_hook` | Literal Codex reviewer command from the template contract. |
       | `claude_effort_policy` | Literal effort selected by the user. |
