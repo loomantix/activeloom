@@ -31,6 +31,13 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
     AGENT_LOOP_REVIEW_HISTORICAL_COMMENT_IDS_FILE \
     AGENT_LOOP_REVIEW_PUSH_STATE_FILE \
     AGENT_LOOP_REVIEW_DEADLINE_EPOCH LOCAL_REVIEW_PASS_TIMEOUT_SECONDS
+# Worker settings come only from this run's pins.
+for settings_engine in CLAUDE CODEX GEMINI; do
+    for settings_field in MODEL EFFORT SOURCE WORKER_MODEL WORKER_EFFORT WORKER_SOURCE; do
+        unset "AGENT_LOOP_${settings_engine}_${settings_field}"
+    done
+done
+unset AGENT_LOOP_NONINTERACTIVE
 
 MAX_ITERATIONS=10
 ISSUE_ALLOWLIST=""
@@ -154,6 +161,7 @@ REVIEW_LEDGER="$PACKAGED_SKILL_BASE/critique/scripts/review-ledger.js"
 RUN_STATE_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/agent-loop-state.py"
 REVIEW_PUSH_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/review-push.sh"
 CONFIG_DOCTOR_HELPER="$PACKAGED_SKILL_BASE/agent-loop/scripts/config-doctor.py"
+SETTINGS_HELPER="$PACKAGED_SKILL_BASE/review-setup/scripts/review-settings.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
 AGY_WORKER_LAUNCHER="$PACKAGED_SKILL_BASE/agent-loop/scripts/run-agy-worker.sh"
@@ -167,14 +175,17 @@ VALIDATION_HOOK=""
 CLAUDE_REVIEW_HOOK=""
 GEMINI_REVIEW_HOOK=""
 WORKER_HOOK=""
+# The default worker's model and effort, set from the pinned Gemini worker
+# settings. The worker config keys are accepted but ignored.
 WORKER_MODEL=""
-WORKER_FALLBACK_MODEL=""
+WORKER_EFFORT=""
+IGNORED_WORKER_SETTINGS=false
 WORKER_RETRIES=1
 WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
 REVIEW_CONTRACT_VERSION=""
 CONFIG_DOCTOR=false
-CLAUDE_EFFORT_POLICY=""
+IGNORED_EFFORT_POLICY=false
 REVIEW_MAX_ROUNDS=4
 REVIEW_TIMEOUT_SECONDS=7200
 REVIEW_DEADLINE_EPOCH=0
@@ -201,14 +212,15 @@ assign_config() {
             exit 1
             ;;
         worker_hook) WORKER_HOOK="$value" ;;
-        worker_model) WORKER_MODEL="$value" ;;
-        worker_fallback_model) WORKER_FALLBACK_MODEL="$value" ;;
+        worker_model|worker_fallback_model|worker_effort)
+            [ -z "$value" ] || IGNORED_WORKER_SETTINGS=true
+            ;;
         worker_retries) WORKER_RETRIES="$value" ;;
         worker_timeout_seconds) WORKER_TIMEOUT_SECONDS="$value" ;;
         hook_timeout_seconds) HOOK_TIMEOUT_SECONDS="$value" ;;
         review_contract_version) REVIEW_CONTRACT_VERSION="$value" ;;
         config_doctor) CONFIG_DOCTOR="$value" ;;
-        claude_effort_policy) CLAUDE_EFFORT_POLICY="$value" ;;
+        claude_effort_policy) [ -z "$value" ] || IGNORED_EFFORT_POLICY=true ;;
         review_max_rounds) REVIEW_MAX_ROUNDS="$value" ;;
         review_timeout_seconds) REVIEW_TIMEOUT_SECONDS="$value" ;;
         retry_on_timeout) RETRY_ON_TIMEOUT="$value" ;;
@@ -360,6 +372,12 @@ done
 [ "$REVIEW_MAX_ROUNDS" -le 4 ] || { echo "review_max_rounds cannot exceed the Deep review cap of 4" >&2; exit 1; }
 [ "$REVIEW_TIMEOUT_SECONDS" -gt 0 ] || { echo "review_timeout_seconds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
+if [ "$IGNORED_WORKER_SETTINGS" = true ]; then
+    echo "warning: worker_model, worker_fallback_model, and worker_effort are ignored; the default worker takes its model and effort from the review profile" >&2
+fi
+if [ "$IGNORED_EFFORT_POLICY" = true ]; then
+    echo "warning: claude_effort_policy is retired and ignored; the Agy review launcher sets reviewer effort" >&2
+fi
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate must be ready or merged-to-base" >&2; exit 1 ;; esac
 
@@ -372,16 +390,12 @@ REAL_GH_BIN="$(type -P gh)"
 [ -x "$REAL_GH_BIN" ] || { echo "required gh executable not found" >&2; exit 1; }
 uses_builtin_agy=false
 if [ -z "$WORKER_HOOK" ]; then
-    [ -n "$WORKER_MODEL" ] || { echo "worker_model must be configured for the default Agy worker" >&2; exit 1; }
     [ -x "$AGY_WORKER_LAUNCHER" ] || { echo "Agy worker launcher not found or not executable: $AGY_WORKER_LAUNCHER" >&2; exit 1; }
     [ -f "$AGY_LAUNCH_HELPER" ] && [ -r "$AGY_LAUNCH_HELPER" ] && [ ! -L "$AGY_LAUNCH_HELPER" ] || {
         echo "Agy launch helper not found, unreadable, or symlinked: $AGY_LAUNCH_HELPER" >&2
         exit 1
     }
     uses_builtin_agy=true
-elif [ -n "$WORKER_FALLBACK_MODEL" ]; then
-    echo "worker_fallback_model cannot be used with a custom worker_hook" >&2
-    exit 1
 fi
 case "$GEMINI_REVIEW_HOOK|$CLAUDE_REVIEW_HOOK" in
     *AGENT_LOOP_AGY_REVIEW_LAUNCHER*)
@@ -403,18 +417,11 @@ fi
 [ -x "$RUN_STATE_HELPER" ] || { echo "agent-loop run-state helper not found or not executable: $RUN_STATE_HELPER" >&2; exit 1; }
 [ -x "$REVIEW_PUSH_HELPER" ] || { echo "agent-loop review push helper not found or not executable: $REVIEW_PUSH_HELPER" >&2; exit 1; }
 [ -x "$CONFIG_DOCTOR_HELPER" ] || { echo "agent-loop config doctor not found or not executable: $CONFIG_DOCTOR_HELPER" >&2; exit 1; }
+[ -f "$SETTINGS_HELPER" ] && [ -r "$SETTINGS_HELPER" ] || { echo "review settings helper not found or not readable: $SETTINGS_HELPER" >&2; exit 1; }
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
 [ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$GEMINI_REVIEW_HOOK" ] || { echo "gemini_review_hook must be configured before running agent-loop" >&2; exit 1; }
-
-if [ "$CONFIG_DOCTOR" = true ]; then
-    doctor_command=(python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR")
-    if [ -n "$CLAUDE_EFFORT_POLICY" ]; then
-        doctor_command+=(--claude-effort "$CLAUDE_EFFORT_POLICY")
-    fi
-    "${doctor_command[@]}" || exit 1
-fi
 
 if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
     PROMPT_TEMPLATE="$(<"$PROMPT_FILE")"
@@ -648,9 +655,126 @@ on_exit() {
     if [ "$rc" -ne 0 ] && [ "$RECOVERY_EMITTED" = false ] && [ -n "$ACTIVE_WORKTREE" ]; then
         recovery_message "agent-loop aborted (exit $rc) with issue #${SELECTED_ID:-unknown} claimed."
     fi
+    [ -z "${SETTINGS_RUN_DIR:-}" ] || rm -rf -- "$SETTINGS_RUN_DIR"
 }
 trap on_interrupt INT TERM
 trap on_exit EXIT
+
+# Worker settings. The loop's reviewers run through the Agy review launcher,
+# which sets their model and effort; its default worker is the Agy CLI on the
+# Gemini worker settings, and a worker_hook receives the same settings.
+SETTINGS_WORKER=gemini
+EXIT_SETTINGS_UNAVAILABLE=4
+SETTINGS_FALLBACK_REASON=""
+
+# Export the helper's env output. Its keys come from a fixed allowlist and its
+# values are shell-quoted, so each line is evaluated only after its key checks.
+apply_review_settings() {
+    local output="$1" line name
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if ! [[ "$line" =~ ^AGENT_LOOP_(CLAUDE|CODEX|GEMINI)(_WORKER)?_(MODEL|EFFORT|SOURCE)= ]]; then
+            echo "review settings helper printed an unexpected line" >&2
+            return 1
+        fi
+        eval "export $line"
+    done <<<"$output"
+    for name in AGENT_LOOP_GEMINI_WORKER_MODEL AGENT_LOOP_GEMINI_WORKER_EFFORT; do
+        [ -n "${!name:-}" ] || { echo "review settings are incomplete: $name" >&2; return 1; }
+    done
+    WORKER_MODEL="$AGENT_LOOP_GEMINI_WORKER_MODEL"
+    WORKER_EFFORT="$AGENT_LOOP_GEMINI_WORKER_EFFORT"
+}
+
+# Pin every setting the run needs in the pin file and export it. The helper
+# resolves only pairs the file does not hold yet. When the profile cannot
+# supply them, print one line to act on and return EXIT_SETTINGS_UNAVAILABLE.
+pin_review_settings() {
+    local pin_file="$1" output errors status=0 missing profile reason
+    errors="$(mktemp)" || return 1
+    output="$(python3 "$SETTINGS_HELPER" pin --pin-file "$pin_file" --repo "$GH_REPO" \
+        --worker "$SETTINGS_WORKER" --format env 2>"$errors")" || status=$?
+    reason="$(sed -n '1s/^review settings: //p' "$errors")"
+    case "$status" in
+        0)
+            sed 's/^/   /' "$errors"
+            rm -f -- "$errors"
+            apply_review_settings "$output"
+            return
+            ;;
+        3)
+            rm -f -- "$errors"
+            missing="$(jq -r '.missing | join(", ")' <<<"$output" 2>/dev/null)" || missing=""
+            profile="$(jq -r '.path // empty' <<<"$output" 2>/dev/null)" || profile=""
+            echo "agent-loop: the review profile${profile:+ at $profile} is missing ${missing:-worker settings}; run the review-setup skill to set them, then rerun agent-loop." >&2
+            return "$EXIT_SETTINGS_UNAVAILABLE"
+            ;;
+        1)
+            rm -f -- "$errors"
+            echo "agent-loop: ${reason:-a required engine is unavailable}; then rerun agent-loop." >&2
+            return "$EXIT_SETTINGS_UNAVAILABLE"
+            ;;
+    esac
+    cat "$errors" >&2
+    rm -f -- "$errors"
+    echo "could not pin review settings in $pin_file" >&2
+    return 1
+}
+
+# After a recognized capacity rejection, switch one engine to its pinned
+# fallback and record the switch. Returns 1 when the helper refuses: no
+# fallback was pinned, or the run already used it.
+switch_review_settings_fallback() {
+    local engine="$1" role="$2" output errors status=0
+    errors="$(mktemp)" || return 2
+    output="$(python3 "$SETTINGS_HELPER" fallback --pin-file "$SETTINGS_PIN_FILE" \
+        --engine "$engine" --role "$role" --format env 2>"$errors")" || status=$?
+    SETTINGS_FALLBACK_REASON="$(sed -n '1s/^review settings: //p' "$errors")"
+    if [ "$status" -ne 0 ]; then
+        [ "$status" -eq 1 ] || cat "$errors" >&2
+        rm -f -- "$errors"
+        [ "$status" -eq 1 ] && return 1
+        return 2
+    fi
+    sed 's/^/   /' "$errors"
+    rm -f -- "$errors"
+    apply_review_settings "$output" || return 2
+    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+        python3 "$RUN_STATE_HELPER" settings-save --file "$AGENT_LOOP_RUN_STATE_FILE" \
+            --pin-file "$SETTINGS_PIN_FILE" || return 2
+    fi
+}
+
+export AGENT_LOOP_NONINTERACTIVE=1
+SETTINGS_RUN_DIR=""
+STARTUP_PIN_FILE=""
+SETTINGS_PIN_FILE=""
+if [ -n "$RESUME_RUN_FILE" ]; then
+    # A resumed run launches with the settings its checkpoint pinned. Only a
+    # checkpoint that predates them resolves them from the profile.
+    SETTINGS_PIN_FILE="$resume_log_dir/review-settings.json"
+    python3 "$RUN_STATE_HELPER" settings-restore --file "$RESUME_RUN_FILE" \
+        --pin-file "$SETTINGS_PIN_FILE" || exit 1
+    pin_review_settings "$SETTINGS_PIN_FILE" || exit $?
+    python3 "$RUN_STATE_HELPER" settings-save --file "$RESUME_RUN_FILE" \
+        --pin-file "$SETTINGS_PIN_FILE" || exit 1
+    if [ "$(jq -r '.reviewSettings != null' <<<"$RESUME_STATE_JSON")" = true ]; then
+        echo "   Review settings restored from run state: worker $WORKER_MODEL/$WORKER_EFFORT"
+    fi
+else
+    # Pinned before any issue is selected or claimed. Each issue starts from a
+    # copy of these pins, so a fallback switch stays within its issue.
+    SETTINGS_RUN_DIR="$(mktemp -d)" || exit 1
+    STARTUP_PIN_FILE="$SETTINGS_RUN_DIR/review-settings.json"
+    pin_review_settings "$STARTUP_PIN_FILE" || exit $?
+fi
+
+# Runs after pinning and before any issue is selected or claimed. The review
+# hooks are the fixed Agy launcher commands, so they carry no model or effort
+# literals to check against the pins.
+if [ "$CONFIG_DOCTOR" = true ]; then
+    python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR" || exit 1
+fi
 
 already_processed() {
     local candidate="$1" seen
@@ -1169,24 +1293,27 @@ run_bounded_hook() {
 }
 
 worker_command() {
-    local model="$1" launcher_command model_arg
+    local model="$1" effort="$2" launcher_command model_arg effort_arg
     if [ -n "$WORKER_HOOK" ]; then
         printf '%s' "$WORKER_HOOK"
         return
     fi
-    [ -n "$model" ] || { echo "worker_model must be configured for the default Agy worker" >&2; return 1; }
+    [ -n "$model" ] && [ -n "$effort" ] || {
+        echo "the default Agy worker needs the pinned Gemini worker model and effort" >&2
+        return 1
+    }
     printf -v launcher_command '%q' "$AGY_WORKER_LAUNCHER"
     printf -v model_arg '%q' "$model"
-    local rendered_command="$launcher_command --model $model_arg"
-    printf '%s' "$rendered_command"
+    printf -v effort_arg '%q' "$effort"
+    printf '%s' "$launcher_command --model $model_arg --effort $effort_arg"
 }
 
 run_worker() {
-    local start_sha="$1" attempt=0 model="$WORKER_MODEL" status log command retry
+    local start_sha="$1" attempt=0 status log command retry switch_status
     while [ "$attempt" -le "$WORKER_RETRIES" ]; do
         attempt=$((attempt + 1))
         log="$AGENT_LOOP_LOG_DIR/worker-attempt-$attempt.log"
-        command="$(worker_command "$model")"
+        command="$(worker_command "$WORKER_MODEL" "$WORKER_EFFORT")"
         status=0
         run_bounded_hook "worker attempt $attempt" "$command" "$WORKER_TIMEOUT_SECONDS" "$log" || status=$?
         [ "$status" -eq 0 ] && return 0
@@ -1201,13 +1328,22 @@ run_worker() {
             [ "$RETRY_ON_TIMEOUT" = true ] && retry=true
         elif grep -Eqi 'capacity|overloaded|rate.?limit|temporarily unavailable|resource exhausted' "$log"; then
             retry=true
-            [ -n "$WORKER_FALLBACK_MODEL" ] && model="$WORKER_FALLBACK_MODEL"
+            switch_status=0
+            switch_review_settings_fallback "$SETTINGS_WORKER" worker || switch_status=$?
+            case "$switch_status" in
+                0) ;;
+                1) echo "   ${SETTINGS_FALLBACK_REASON:-no worker fallback}; retrying on the settings in use" ;;
+                *)
+                    recovery_message "Could not switch the worker to its pinned fallback."
+                    return 1
+                    ;;
+            esac
         fi
         if [ "$retry" != true ] || [ "$attempt" -gt "$WORKER_RETRIES" ]; then
             recovery_message "Worker exited $status without recoverable retry conditions."
             return "$status"
         fi
-        echo -e "${YELLOW}›${NC} Retrying worker after bounded capacity/timeout failure (model: ${model:-default})"
+        echo -e "${YELLOW}›${NC} Retrying worker after bounded capacity/timeout failure (model: $WORKER_MODEL, effort: $WORKER_EFFORT)"
         [ "$RETRY_DELAY_SECONDS" -gt 0 ] && sleep "$RETRY_DELAY_SECONDS"
     done
 }
@@ -2857,6 +2993,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         continue
     fi
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
+    SETTINGS_PIN_FILE="$AGENT_LOOP_LOG_DIR/review-settings.json"
+    if ! cp -- "$STARTUP_PIN_FILE" "$SETTINGS_PIN_FILE" || \
+       ! pin_review_settings "$SETTINGS_PIN_FILE"; then
+        recovery_message "Could not copy the run's pinned review settings for issue #$SELECTED_ID."
+        exit 1
+    fi
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would
     # otherwise target the integration branch and bypass local review.
@@ -2941,7 +3083,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \
             --head-sha "$initial_pr_sha" \
             --review-deadline-epoch "$REVIEW_DEADLINE_EPOCH" \
-            --review-max-rounds "$REVIEW_MAX_ROUNDS" >/dev/null || {
+            --review-max-rounds "$REVIEW_MAX_ROUNDS" \
+            --review-settings-file "$SETTINGS_PIN_FILE" >/dev/null || {
             recovery_message "Could not create the private review run-state checkpoint."
             exit 1
         }

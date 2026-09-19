@@ -1,17 +1,34 @@
 #!/usr/bin/env python3
-"""Non-mutating compatibility preflight for consumer agent-loop configuration."""
+"""Compatibility preflight for consumer agent-loop configuration.
+
+The check is non-mutating. `--migrate` is the one mode that writes: it removes
+retired keys.
+"""
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 class DoctorError(RuntimeError):
     """An incompatible consumer configuration."""
+
+
+# Keys whose settings now come from the per-user review profile.
+RETIRED_KEYS = ("claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort")
+MIGRATE_COMMAND = "config-doctor.py --project-dir <repo> --migrate"
+CONFIG_PATH = ".agents/skills/agent-loop/agent-loop.config"
+
+
+def _warn(message: str) -> None:
+    print(f"agent-loop config doctor: warning: {message}", file=sys.stderr)
 
 
 def _config(path: Path) -> dict[str, str]:
@@ -46,7 +63,19 @@ def _version(command: list[str], label: str) -> str:
     return result.stdout.strip()
 
 
-def doctor(project: Path, claude_effort: str | None) -> None:
+def _check_retired_keys(values: dict[str, str]) -> None:
+    for key in RETIRED_KEYS:
+        if key not in values:
+            continue
+        if values[key]:
+            raise DoctorError(
+                f"{key} is retired: worker settings come from the per-user review profile. "
+                f"Run {MIGRATE_COMMAND} to remove it"
+            )
+        _warn(f"{key} is retired and has no effect; run {MIGRATE_COMMAND} to remove it")
+
+
+def doctor(project: Path) -> None:
     root = project.resolve()
     skill = root / ".agents/skills/agent-loop"
     config_path = skill / "agent-loop.config"
@@ -72,6 +101,7 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         if not path.is_file() or path.is_symlink():
             raise DoctorError(f"required agent-loop file is missing: {path.relative_to(root)}")
     values = _config(config_path)
+    _check_retired_keys(values)
     if values.get("review_contract_version") != "3":
         raise DoctorError("review_contract_version must be 3")
     if _version(["node", str(ledger), "--protocol-version"], "review ledger") != "3":
@@ -101,28 +131,55 @@ def doctor(project: Path, claude_effort: str | None) -> None:
         "gemini": '"$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine gemini',
         "claude": '"$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine claude',
     }
+    # The review hooks are the fixed launcher commands, so they carry no model
+    # or effort literal that could disagree with the run's pinned settings.
     for engine, expected in expected_hooks.items():
         if hooks[engine] != expected:
             raise DoctorError(f"{engine}_review_hook must use the dedicated Agy launcher")
-    if values.get("worker_hook", ""):
-        if values.get("worker_fallback_model", ""):
-            raise DoctorError("worker_fallback_model cannot be used with a custom worker_hook")
-    elif not values.get("worker_model", ""):
-        raise DoctorError("worker_model is required for the default Agy worker")
-    launcher_text = review_launcher.read_text(encoding="utf-8")
-    if claude_effort and not re.search(
-        rf'claude\) model="[^"]+"; effort="{re.escape(claude_effort)}"',
-        launcher_text,
-    ):
-        raise DoctorError(f"Agy review launcher must use literal Claude effort {claude_effort}")
+
+
+def migrate(project: Path) -> list[str]:
+    """Remove retired keys; every other line, comments included, is kept byte for byte."""
+    config_path = project.resolve() / CONFIG_PATH
+    if not config_path.is_file():
+        raise DoctorError(f"required agent-loop file is missing: {CONFIG_PATH}")
+    _config(config_path)
+    original = config_path.read_text(encoding="utf-8")
+    output: list[str] = []
+    changes: list[str] = []
+    for raw in original.splitlines(keepends=True):
+        match = re.fullmatch(r"\s*([a-z_]+)\s*=.*", raw.rstrip("\r\n"))
+        if match is not None and match[1] in RETIRED_KEYS:
+            changes.append(f"removed {match[1]}")
+            continue
+        output.append(raw)
+    if not changes:
+        return []
+    handle, temporary = tempfile.mkstemp(dir=config_path.parent, prefix=".agent-loop.config.")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:
+            stream.write("".join(output))
+        shutil.copymode(config_path, temporary)
+        os.replace(temporary, config_path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+    return changes
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-dir", required=True)
-    parser.add_argument("--claude-effort")
+    parser.add_argument("--migrate", action="store_true", help="remove retired keys")
     args = parser.parse_args()
-    doctor(Path(args.project_dir), args.claude_effort)
+    if args.migrate:
+        changes = migrate(Path(args.project_dir))
+        for change in changes:
+            print(f"agent-loop config doctor: migrated {change}")
+        if not changes:
+            print("agent-loop config doctor: nothing to migrate")
+        return 0
+    doctor(Path(args.project_dir))
     print("agent-loop config doctor: compatible")
     return 0
 

@@ -19,8 +19,6 @@ validation_hook =
 # consumer configs must migrate the hooks below before adding this marker.
 review_contract_version = 3
 config_doctor = true
-# Optional literal policy enforced by the doctor, for example `low`.
-claude_effort_policy = low
 
 # Both review hooks are required. The wrapper runs Gemini first, then Claude, and
 # repeats only when either hook commits a material fix. Minor-only fixes are
@@ -53,10 +51,12 @@ review_max_rounds = 4
 review_timeout_seconds = 7200
 
 # Optional worker override. When empty, the wrapper runs `agy` with the
-# prompt from prompt.txt. The default worker honors the model settings below.
+# prompt from prompt.txt and the worker settings below.
 worker_hook =
-worker_model = gemini-3.7-flash-high
-worker_fallback_model = gemini-3.1-pro-high
+# The default worker's model, effort, and capacity fallback come from the
+# per-user review profile (`gemini.worker`), pinned at startup; there are no
+# worker model keys here. A worker_hook receives the same pinned values as
+# AGENT_LOOP_GEMINI_WORKER_MODEL and AGENT_LOOP_GEMINI_WORKER_EFFORT.
 worker_retries = 1
 # Both timeout values must be positive; GNU `timeout 0` would disable the bound.
 worker_timeout_seconds = 3600
