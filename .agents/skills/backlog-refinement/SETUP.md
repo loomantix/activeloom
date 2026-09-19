@@ -29,7 +29,7 @@ Skip to step 3 when there is no legacy file.
    - **Repository-specific** (names this repo's paths, labels, branches, or incidents) — carry it into `.backlog/refinement.local.md` under the matching section.
    - **Generic but not yet in the core** — carry it into the local file _and_ list it under _Upstream candidates_, so it can be proposed to the core rubric.
 3. Keep the legacy rubric's version number as the local rubric's starting version, and carry its `auto-managed-labels` marker over verbatim.
-4. Move the authoritative `LEARNINGS.md` to `.backlog/learnings.local.md` unchanged. When the harness copies differ, append the entries unique to the others, newest first.
+4. Move the authoritative `LEARNINGS.md` to `.backlog/learnings.local.md` unchanged. When the harness copies differ, append the entries unique to the others, newest first. When `.backlog/learnings.local.md` already exists — an earlier `setup` ran and the legacy copies were kept — merge in only the entries it lacks; never overwrite it.
 5. If `agent-loop-instructions.md` names a legacy rubric path, point it at `.agents/skills/backlog-refinement/core-rubric.md` and `.backlog/refinement.local.md` instead.
 6. With the user's agreement, delete every legacy `RUBRIC.md` and `LEARNINGS.md`. The sync no longer writes them, so nothing will recreate them.
 
@@ -47,11 +47,11 @@ Ask the open questions in one round, numbered, each with your recommended answer
 
 ## 4. Write the files
 
-Create `.backlog/refinement.local.md` from the template, fill each section from the answers, and remove each `TODO(backlog):` marker you filled. Leave a marker in place for anything the user chose to defer, so the next `setup` run finds it. Create `.backlog/learnings.local.md` from its template unless step 2 already moved one into place. Show the user the finished local file.
+Create `.backlog/refinement.local.md` from the template — or, when it already exists, edit it in place — fill each section from the answers, and remove each `TODO(backlog):` marker you filled. Leave a marker in place for anything the user chose to defer, so the next `setup` run finds it. Create `.backlog/learnings.local.md` from its template unless step 2 already moved one into place. Show the user the finished local file.
 
 ## 5. Create the labels
 
-List the labels that do not exist yet — `dev: agent`, `agent: refined`, each core and local `agent-bail:` category, `needs: grill`, `needs: product-grill`, and the four priority labels — and create them once the user agrees:
+List the labels that do not exist yet — `dev: agent`, `agent: refined`, `status: blocked`, each core and local `agent-bail:` category, `needs: grill`, `needs: product-grill`, and the four priority labels — and create them once the user agrees:
 
 ```bash
 gh label create "<name>" --color <hex> --description "<one line from the core rubric>"

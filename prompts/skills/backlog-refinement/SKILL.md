@@ -55,7 +55,7 @@ Report the counts the script prints: ready, re-verify, conflicted, excluded, epi
 
 ## Mode: `refine [n | --all | --limit N | --backfill]`
 
-Default refines the next un-refined issue; `--limit N` a batch; `--all` the whole un-refined bucket. Run the **re-verify** bucket through the same steps before (or alongside) `--all`. Every exclusion below also removes `dev: agent` when present — it and `agent-bail:` never coexist. Sanity-check the rewrite on a handful (`assess <n>` or `--limit 5`) before a large sweep, since it edits issue bodies at scale. For each issue:
+Default refines the next un-refined issue; `--limit N` a batch; `--all` the whole un-refined bucket. Run the **re-verify** bucket through the same steps before (or alongside) `--all`. Every exclusion below also removes `dev: agent` when present — it and `agent-bail:` never coexist — and replaces any `agent-bail:` and `needs:` label left from an earlier assessment rather than adding to it. Sanity-check the rewrite on a handful (`assess <n>` or `--limit 5`) before a large sweep, since it edits issue bodies at scale. For each issue:
 
 1. **Read it fully** — `gh issue view <N>` including comments.
 2. **Set priority** (core rubric, _Priority_). Skip when the issue already carries one of the local file's priority labels — a priority a human set stands. Otherwise apply exactly one, judged from impact and urgency alone. Readiness does not change priority: an excluded issue gets one too.
@@ -70,7 +70,7 @@ Default refines the next un-refined issue; `--limit N` a batch; `--all` the whol
    - Preserve the original verbatim under a `> ### Original report` blockquote.
    - Fill Goal / Acceptance criteria / Files-entry-points / Out-of-scope from real `grep` and file reads.
    - Write the body to a repo-scoped temp path, then `gh issue edit <N> --body-file <path>`.
-   - Apply `dev: agent` + `agent: refined`, and remove any `agent-bail:` and `needs:` label left from an earlier bail.
+   - Apply `dev: agent` + `agent: refined`, and remove any `agent-bail:` and `needs:` label left from an earlier bail, plus the `status: blocked` a `cross-repo` bail added.
    - If the local file's **Rewrite mode** is `suggest`, post the body as a comment instead and leave the issue body untouched.
 
 Keep every rewrite inside the scope the issue asked for, with acceptance criteria grounded in the code, and tag `dev: agent` only on issues that pass every §1 criterion. **When torn between make-ready and exclude, exclude** — a false `dev: agent` costs a whole loop iteration; a false exclusion just waits for a human.
