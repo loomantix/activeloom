@@ -832,12 +832,11 @@ switch_review_settings_fallback() {
     output="$(python3 "$SETTINGS_HELPER" fallback --pin-file "$SETTINGS_PIN_FILE" \
         --engine "$engine" --role "$role" --format env 2>"$errors")" || status=$?
     SETTINGS_FALLBACK_REASON="$(sed -n '1s/^review settings: //p' "$errors")"
-    if [ "$status" -ne 0 ]; then
-        [ "$status" -eq 1 ] || cat "$errors" >&2
-        rm -f -- "$errors"
-        [ "$status" -eq 1 ] && return 1
-        return 2
-    fi
+    case "$status" in
+        0) ;;
+        1) rm -f -- "$errors"; return 1 ;;
+        *) cat "$errors" >&2; rm -f -- "$errors"; return 2 ;;
+    esac
     sed 's/^/   /' "$errors"
     rm -f -- "$errors"
     apply_review_settings "$output" || return 2
@@ -1604,13 +1603,13 @@ worker_handoff_classification() {
 }
 
 run_worker() {
-    local start_sha="$1" attempt=0 model="$WORKER_MODEL" status log command retry switch_status
+    local start_sha="$1" attempt=0 status log command retry switch_status
     WORKER_BAILED=false
     WORKER_BAIL_CLASSIFICATION=""
     while [ "$attempt" -le "$WORKER_RETRIES" ]; do
         attempt=$((attempt + 1))
         log="$AGENT_LOOP_LOG_DIR/worker-attempt-$attempt.log"
-        command="$(worker_command "$model")"
+        command="$(worker_command "$WORKER_MODEL")"
         status=0
         run_bounded_hook "worker attempt $attempt" "$command" "$WORKER_TIMEOUT_SECONDS" "$log" || status=$?
         # The handoff file, not the exit status, says the worker bailed: a
@@ -1646,7 +1645,7 @@ run_worker() {
             switch_status=0
             switch_review_settings_fallback "$SETTINGS_WORKER" worker || switch_status=$?
             case "$switch_status" in
-                0) model="$WORKER_MODEL" ;;
+                0) ;;
                 1) echo "   ${SETTINGS_FALLBACK_REASON:-no worker fallback}; retrying on the settings in use" ;;
                 *)
                     recovery_message "Could not switch the worker to its pinned fallback." worker-failed
@@ -1658,7 +1657,7 @@ run_worker() {
             recovery_message "Worker exited $status without recoverable retry conditions." worker-failed
             return "$status"
         fi
-        echo -e "${YELLOW}›${NC} Retrying worker after bounded capacity/timeout failure (model: ${model:-default})"
+        echo -e "${YELLOW}›${NC} Retrying worker after bounded capacity/timeout failure (model: ${WORKER_MODEL:-default})"
         [ "$RETRY_DELAY_SECONDS" -gt 0 ] && sleep "$RETRY_DELAY_SECONDS"
     done
 }
