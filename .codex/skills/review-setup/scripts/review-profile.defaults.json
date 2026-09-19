@@ -1,10 +1,22 @@
 {
-  "schema_version": 1,
-  "defaults_version": "2026.09.13",
+  "schema_version": 2,
+  "defaults_version": "2026.09.19",
   "engines": {
-    "claude": { "model": "opus", "effort": "medium" },
-    "codex": { "model": "inherit", "effort": "high" },
-    "gemini": { "model": "gemini-3.7-flash-high", "effort": "high" }
+    "claude": {
+      "model": "opus",
+      "effort": "medium",
+      "worker": { "model": "opus", "effort": "medium" }
+    },
+    "codex": {
+      "model": "inherit",
+      "effort": "high",
+      "worker": { "model": "inherit", "effort": "high" }
+    },
+    "gemini": {
+      "model": "gemini-3.7-flash-high",
+      "effort": "high",
+      "worker": { "model": "gemini-3.7-flash-high", "effort": "high" }
+    }
   },
   "order": {
     "lean": ["claude", "codex"],
