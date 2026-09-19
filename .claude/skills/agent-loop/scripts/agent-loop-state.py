@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Atomically create, update, and validate private agent-loop run state."""
+"""Atomically create, update, and validate private agent-loop run state.
+
+A run state also carries the run's pinned reviewer and worker settings in the
+review-settings pin-file format, so a resumed run launches the same models.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +30,15 @@ BATCH_ROW_REQUIRED = {"issue", "status", "childRunState"}
 BATCH_ROW_OPTIONAL = {"classification", "stopCategory", "stackedOn"}
 CLASSIFICATION_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")
 STOP_CATEGORY_RE = re.compile(r"[a-z][a-z0-9-]{0,31}(?:/[a-z][a-z0-9-]{0,31})?")
+SETTINGS_ENGINES = ("claude", "codex", "gemini")
+# review-settings.py pin-file keys: the pins of each role and the engines that
+# role has switched to its fallback.
+SETTINGS_ROLES = (
+    ("review_settings", "fallback_engines"),
+    ("worker_settings", "worker_fallback_engines"),
+)
+SETTINGS_KEYS = {"version", "repo", *(key for role in SETTINGS_ROLES for key in role)}
+CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model."
 
 
 class StateError(RuntimeError):
@@ -75,8 +88,11 @@ def _validate(value: dict[str, Any]) -> None:
         "claudeResultSha256",
     }
     budget = {"reviewDeadlineEpoch", "reviewMaxRounds"}
-    if set(value) not in (required, required | budget):
+    fields = set(value) - {"reviewSettings"}
+    if fields not in (required, required | budget):
         _fail("run state has missing or unknown fields")
+    if "reviewSettings" in value:
+        _validate_settings(value["reviewSettings"])
     if type(value["version"]) is not int or value["version"] != STATE_VERSION:
         _fail("unsupported run state version")
     for key in ("runId", "repo", "baseBranch", "branch", "worktree", "logDir", "prUrl"):
@@ -119,6 +135,82 @@ def _validate(value: dict[str, Any]) -> None:
     log_dir = Path(value["logDir"])
     if not worktree.is_absolute() or not log_dir.is_absolute():
         _fail("run state paths must be absolute")
+
+
+def _valid_pair(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(value.get(key), str) and value[key] for key in ("model", "effort")
+    )
+
+
+def _validate_settings(value: Any) -> None:
+    """The pin-file shape; review-settings.py validates the values it launches."""
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != 1
+        or set(value) - SETTINGS_KEYS
+        or not (value.get("repo") is None or isinstance(value["repo"], str))
+    ):
+        _fail("run state reviewSettings has an unsupported format")
+    for pins_key, switched_key in SETTINGS_ROLES:
+        pins = value.get(pins_key, {})
+        switched = value.get(switched_key, [])
+        if (
+            not isinstance(pins, dict)
+            or not isinstance(switched, list)
+            or any(engine not in SETTINGS_ENGINES for engine in pins)
+            or not all(_valid_pair(settings) for settings in pins.values())
+            or any(engine not in pins for engine in switched)
+            or len(set(switched)) != len(switched)
+        ):
+            _fail("run state reviewSettings has an unsupported format")
+        for engine in switched:
+            if not _valid_pair(pins[engine].get("fallback")):
+                _fail("run state reviewSettings switched to a missing fallback")
+
+
+def _settings_extend(old: dict[str, Any], new: dict[str, Any]) -> bool:
+    """Whether `new` keeps every pin and switch of `old` and only adds to them."""
+    if old.get("repo") != new.get("repo"):
+        return False
+    for pins_key, switched_key in SETTINGS_ROLES:
+        old_pins, new_pins = old.get(pins_key, {}), new.get(pins_key, {})
+        if any(new_pins.get(engine) != pins for engine, pins in old_pins.items()):
+            return False
+        if not set(old.get(switched_key, [])) <= set(new.get(switched_key, [])):
+            return False
+    return True
+
+
+def _read_pin_file(path: Path) -> dict[str, Any]:
+    metadata = os.lstat(path)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+        _fail("pin file must be an owner-controlled regular file")
+    try:
+        value = json.loads(path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise StateError("pin file must contain valid UTF-8 JSON") from error
+    _validate_settings(value)
+    return value
+
+
+def _write_pin_file(path: Path, value: dict[str, Any]) -> None:
+    if path.parent.is_symlink():
+        _fail("pin file directory must not be a symlink")
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def _atomic_write(
@@ -185,6 +277,8 @@ def _create(args: argparse.Namespace) -> None:
         value["reviewMaxRounds"] = args.review_max_rounds
     elif args.review_deadline_epoch is not None or args.review_max_rounds is not None:
         _fail("review deadline and maximum rounds must be provided together")
+    if args.review_settings_file is not None:
+        value["reviewSettings"] = _read_pin_file(Path(args.review_settings_file))
     _atomic_write(path, value, replace=False)
     print(json.dumps(value, sort_keys=True))
 
@@ -214,6 +308,69 @@ def _update(args: argparse.Namespace) -> None:
 
 def _show(args: argparse.Namespace) -> None:
     print(json.dumps(_read(Path(args.file)), sort_keys=True))
+
+
+def _settings_save(args: argparse.Namespace) -> None:
+    """Record the pin file in the run state; pins and switches only grow."""
+    path = Path(args.file)
+    value = _read(path)
+    settings = _read_pin_file(Path(args.pin_file))
+    if "reviewSettings" in value and not _settings_extend(value["reviewSettings"], settings):
+        _fail("pin file changes settings this run already pinned")
+    value["reviewSettings"] = settings
+    _atomic_write(path, value)
+
+
+def _settings_restore(args: argparse.Namespace) -> None:
+    """Write the run state's pins to the pin file a resumed run launches from.
+
+    A pin file that extends the recorded pins holds a fallback switch made just
+    before an interruption, so it is kept and recorded instead.
+    """
+    path = Path(args.file)
+    value = _read(path)
+    recorded = value.get("reviewSettings")
+    if recorded is None:
+        return
+    pin_file = Path(args.pin_file)
+    if pin_file.exists() or pin_file.is_symlink():
+        try:
+            current = _read_pin_file(pin_file)
+        except StateError:
+            current = None
+        if current is not None and _settings_extend(recorded, current):
+            if current != recorded:
+                value["reviewSettings"] = current
+                _atomic_write(path, value)
+            return
+    _write_pin_file(pin_file, recorded)
+
+
+def _capacity_rejected(args: argparse.Namespace) -> None:
+    """Exit 0 when the log's last terminal JSON event is a model-capacity rejection.
+
+    The same recognizer as the review-chain runner: only Codex JSON events count,
+    never command output or plain diagnostics.
+    """
+    path = Path(args.log)
+    rejected = False
+    if not path.is_symlink() and path.is_file():
+        with path.open(errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except (ValueError, UnicodeError):
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                kind = event.get("type")
+                if kind in ("error", "turn.failed"):
+                    error = event.get("error") if kind == "turn.failed" else event
+                    rejected = isinstance(error, dict) and error.get("message") == CAPACITY_MESSAGE
+                else:
+                    rejected = False
+    if not rejected:
+        raise SystemExit(1)
 
 
 def _validate_batch(value: dict[str, Any]) -> None:
@@ -484,6 +641,7 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--head-sha", required=True)
     create.add_argument("--review-deadline-epoch", type=int)
     create.add_argument("--review-max-rounds", type=int)
+    create.add_argument("--review-settings-file")
     create.set_defaults(handler=_create)
     update = commands.add_parser("update")
     update.add_argument("--file", required=True)
@@ -498,6 +656,14 @@ def _parser() -> argparse.ArgumentParser:
     show = commands.add_parser("show")
     show.add_argument("--file", required=True)
     show.set_defaults(handler=_show)
+    for name, handler in (("settings-save", _settings_save), ("settings-restore", _settings_restore)):
+        settings = commands.add_parser(name)
+        settings.add_argument("--file", required=True)
+        settings.add_argument("--pin-file", required=True)
+        settings.set_defaults(handler=handler)
+    capacity = commands.add_parser("capacity-rejected")
+    capacity.add_argument("--log", required=True)
+    capacity.set_defaults(handler=_capacity_rejected)
     batch_create = commands.add_parser("batch-create")
     batch_create.add_argument("--file", required=True)
     batch_create.add_argument("--run-id", required=True)

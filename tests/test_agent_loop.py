@@ -15,6 +15,54 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENT_LOOP = REPO_ROOT / ".claude/skills/agent-loop/scripts/agent-loop.sh"
+CRITIQUE_SCRIPTS = REPO_ROOT / ".claude/skills/critique/scripts"
+CAPACITY_EVENT = json.dumps(
+    {
+        "type": "turn.failed",
+        "error": {"message": "Selected model is at capacity. Please try a different model."},
+    }
+)
+
+
+def _profile(**engines: dict[str, object] | None) -> dict[str, object]:
+    """A complete review profile; an engine given as None is removed."""
+    defaults = json.loads(
+        (CRITIQUE_SCRIPTS / "review-profile.defaults.json").read_text(encoding="utf-8")
+    )
+    settings: dict[str, dict[str, object]] = {
+        "claude": {
+            "model": "claude-review",
+            "effort": "medium",
+            "worker": {
+                "model": "worker-primary",
+                "effort": "high",
+                "fallback": {"model": "worker-fallback", "effort": "medium"},
+            },
+        },
+        "codex": {
+            "model": "codex-review",
+            "effort": "high",
+            "fallback": {"model": "codex-fallback", "effort": "medium"},
+            "worker": {"model": "codex-worker", "effort": "high"},
+        },
+        "gemini": {
+            "model": "gemini-review",
+            "effort": "high",
+            "worker": {"model": "gemini-worker", "effort": "high"},
+        },
+    }
+    for engine, value in engines.items():
+        if value is None:
+            settings.pop(engine)
+        else:
+            settings[engine] = value
+    return {
+        "schema_version": 2,
+        "defaults_version": defaults["defaults_version"],
+        "confirmed_at": "2026-01-01T00:00:00Z",
+        "engines": settings,
+        "order": defaults["order"],
+    }
 
 
 def _run_git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -61,6 +109,9 @@ def consumer(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     ledger_target = repo / ".claude/skills/critique/scripts/review-ledger.js"
     ledger_target.parent.mkdir(parents=True)
     shutil.copy2(ledger_source, ledger_target)
+    for name in ("review-settings.py", "review-profile.py", "review-profile.defaults.json"):
+        shutil.copy2(CRITIQUE_SCRIPTS / name, ledger_target.parent / name)
+    (tmp_path / "review-profile.json").write_text(json.dumps(_profile()), encoding="utf-8")
     # Copy sibling package.json to test consumer ESM bundle resolution.
     shutil.copy2(
         REPO_ROOT / ".claude/skills/critique/scripts/package.json",
@@ -528,6 +579,7 @@ def _environment(
             ),
             "AGENT_READY_JSON": json.dumps(issues),
             "EVENT_LOG": str(state_dir / "events.log"),
+            "ACTIVELOOM_REVIEW_PROFILE": str(bin_dir.parent / "review-profile.json"),
         }
     )
     if extra_env:
@@ -2934,16 +2986,15 @@ def test_hooks_and_default_worker_run_background_tasks_in_the_foreground(
     assert set(values) == {"1"}
 
 
-def test_capacity_failure_uses_fallback_model(
+def test_worker_capacity_failure_switches_to_the_pinned_fallback_once(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
-    # Stub primary model capacity failure to test fallback model switch.
     claude = consumer[2] / "claude"
     _write_executable(
         claude,
         """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$AGENT_STATE_DIR/models.log"
-if [[ "$*" == *"--model primary"* ]]; then
+if [[ "$*" == *"--model worker-primary"* ]]; then
   echo 'capacity exhausted' >&2
   exit 9
 fi
@@ -2956,21 +3007,22 @@ git commit -m 'fix: fallback worker'
         consumer,
         ["--issues", "7"],
         issues=[_issue(7)],
-        config=_config(
-            tmp_path,
-            worker_hook="",
-            worker_model="primary",
-            worker_fallback_model="fallback",
-            worker_retries=1,
-        ),
+        config=_config_v3(tmp_path, worker_hook="", worker_retries=1),
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    models = (consumer[3] / "models.log").read_text(encoding="utf-8")
-    assert "--model primary" in models
-    assert "--model fallback" in models
+    models = (consumer[3] / "models.log").read_text(encoding="utf-8").splitlines()
+    assert len(models) == 2
+    assert "--model worker-primary --effort high" in models[0]
+    assert "--model worker-fallback --effort medium" in models[1]
+    assert "Capacity fallback: claude worker model worker-fallback, effort medium" in (
+        result.stdout + result.stderr
+    )
+    state = json.loads(next((tmp_path / "logs").glob("*/run-state.json")).read_text())
+    assert state["reviewSettings"]["worker_fallback_engines"] == ["claude"]
 
 
-def test_worker_effort_is_passed_to_the_default_worker(
+def test_default_worker_takes_model_and_effort_from_the_profile_not_config(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     claude = consumer[2] / "claude"
@@ -2978,9 +3030,10 @@ def test_worker_effort_is_passed_to_the_default_worker(
         claude,
         """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$AGENT_STATE_DIR/worker-args.log"
+printf '%s\\n' "$AGENT_LOOP_CLAUDE_WORKER_MODEL $AGENT_LOOP_CLAUDE_WORKER_EFFORT $AGENT_LOOP_NONINTERACTIVE" >> "$AGENT_STATE_DIR/worker-env.log"
 printf 'done\\n' > result.py
 git add result.py
-git commit -m 'fix: effort worker'
+git commit -m 'fix: profile worker'
 """,
     )
     result = _run(
@@ -2988,37 +3041,314 @@ git commit -m 'fix: effort worker'
         ["--issues", "15"],
         issues=[_issue(15)],
         config=_config(
-            tmp_path, worker_hook="", worker_model="primary", worker_effort="medium"
+            tmp_path,
+            worker_hook="",
+            worker_model="config-model",
+            worker_fallback_model="config-fallback",
+            worker_effort="medium --foo",
         ),
     )
     assert result.returncode == 0, result.stderr + result.stdout
     args = (consumer[3] / "worker-args.log").read_text(encoding="utf-8")
-    assert "--model primary --effort medium" in args
+    assert "--model worker-primary --effort high" in args
+    assert "config-model" not in args
+    assert (consumer[3] / "worker-env.log").read_text(encoding="utf-8") == "worker-primary high 1\n"
+    assert "worker_model, worker_fallback_model, and worker_effort are ignored" in result.stderr
 
-    (consumer[3] / "worker-args.log").unlink()
+
+def test_default_worker_omits_the_model_flag_for_an_inherited_model(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    profile = _profile(
+        claude={
+            "model": "claude-review",
+            "effort": "medium",
+            "worker": {"model": "inherit", "effort": "high"},
+        }
+    )
+    (tmp_path / "review-profile.json").write_text(json.dumps(profile), encoding="utf-8")
+    claude = consumer[2] / "claude"
+    _write_executable(
+        claude,
+        """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$AGENT_STATE_DIR/worker-args.log"
+printf 'done\\n' > result.py
+git add result.py
+git commit -m 'fix: inherited worker model'
+""",
+    )
     result = _run(
         consumer,
         ["--issues", "16"],
         issues=[_issue(16)],
-        config=_config(tmp_path, worker_hook="", worker_model="primary"),
+        config=_config(tmp_path, worker_hook=""),
     )
     assert result.returncode == 0, result.stderr + result.stdout
     args = (consumer[3] / "worker-args.log").read_text(encoding="utf-8")
-    assert "--effort" not in args
+    assert "--model" not in args
+    assert "--effort high" in args
 
 
-def test_worker_effort_must_be_a_single_flag_value(
+def _env_hook(engine: str) -> str:
+    return (
+        "env | grep -E '^AGENT_LOOP_(CLAUDE|CODEX|GEMINI|NONINTERACTIVE)' | sort "
+        f'> "$AGENT_STATE_DIR/{engine}-env-$AGENT_LOOP_REVIEW_ROUND.log"; '
+        + _clean_v3_hook(engine)
+    )
+
+
+def test_settings_are_pinned_once_and_exported_to_every_hook(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
     result = _run(
         consumer,
-        ["--issues", "17"],
-        issues=[_issue(17)],
-        config=_config(tmp_path, worker_hook="", worker_effort="medium --foo"),
+        ["--issues", "40"],
+        issues=[_issue(40)],
+        config=_config_v3(
+            tmp_path,
+            codex_review_hook=_env_hook("codex"),
+            claude_review_hook=_env_hook("claude"),
+            worker_hook=(
+                "env | grep -E '^AGENT_LOOP_(CLAUDE|CODEX|GEMINI|NONINTERACTIVE)' | sort "
+                '> "$AGENT_STATE_DIR/worker-env.log"; '
+                "printf 'done\\n' > result.py; git add result.py; git commit -m 'fix: worker'"
+            ),
+        ),
+        extra_env={
+            "AGENT_LOOP_GEMINI_MODEL": "stale",
+            "AGENT_LOOP_CODEX_MODEL": "stale",
+            "AGENT_LOOP_CLAUDE_WORKER_EFFORT": "stale",
+        },
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    expected = {
+        "AGENT_LOOP_CLAUDE_EFFORT=medium",
+        "AGENT_LOOP_CLAUDE_MODEL=claude-review",
+        "AGENT_LOOP_CLAUDE_SOURCE=user profile",
+        "AGENT_LOOP_CLAUDE_WORKER_EFFORT=high",
+        "AGENT_LOOP_CLAUDE_WORKER_MODEL=worker-primary",
+        "AGENT_LOOP_CLAUDE_WORKER_SOURCE=user profile",
+        "AGENT_LOOP_CODEX_EFFORT=high",
+        "AGENT_LOOP_CODEX_MODEL=codex-review",
+        "AGENT_LOOP_CODEX_SOURCE=user profile",
+        "AGENT_LOOP_NONINTERACTIVE=1",
+    }
+    for name in ("worker-env.log", "codex-env-1.log", "claude-env-1.log"):
+        assert set((consumer[3] / name).read_text(encoding="utf-8").splitlines()) == expected
+    output = result.stdout + result.stderr
+    for pair in ("codex reviewer", "claude reviewer", "claude worker"):
+        assert output.count(f"Pinned {pair} settings") == 1
+    state = json.loads(next((tmp_path / "logs").glob("*/run-state.json")).read_text())
+    settings = state["reviewSettings"]
+    assert settings["repo"] == "fixture/consumer"
+    assert settings["review_settings"]["codex"]["model"] == "codex-review"
+    assert settings["worker_settings"]["claude"]["model"] == "worker-primary"
+
+
+def _without_worker_keys() -> dict[str, object]:
+    claude = dict(_profile()["engines"]["claude"])  # type: ignore[index]
+    claude.pop("worker")
+    return _profile(claude=claude)
+
+
+@pytest.mark.parametrize(
+    ("profile", "missing"),
+    [
+        (None, "codex.model, codex.effort, claude.model, claude.effort, claude.worker.model"),
+        (_without_worker_keys(), "claude.worker.model, claude.worker.effort"),
+        ("codex-unavailable", None),
+    ],
+    ids=["no-profile", "missing-key", "unavailable-engine"],
+)
+def test_unresolvable_settings_fail_closed_before_any_issue_mutation(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    profile: object,
+    missing: str | None,
+) -> None:
+    profile_path = tmp_path / "review-profile.json"
+    if profile is None:
+        profile_path.unlink()
+    elif profile == "codex-unavailable":
+        codex = dict(_profile()["engines"]["codex"])  # type: ignore[index]
+        codex["availability"] = "unavailable"
+        profile_path.write_text(json.dumps(_profile(codex=codex)), encoding="utf-8")
+    else:
+        profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    result = _run(
+        consumer,
+        ["--issues", "41,42"],
+        issues=[_issue(41), _issue(42)],
+        config=_config_v3(tmp_path),
+    )
+    assert result.returncode == 4, result.stderr + result.stdout
+    action = [line for line in result.stderr.splitlines() if "review-setup" in line]
+    assert len(action) == 1, result.stderr
+    assert action[0].startswith("agent-loop: ")
+    assert "rerun agent-loop" in action[0]
+    if missing is not None:
+        assert missing in action[0]
+    else:
+        assert "unavailable" in result.stderr
+    gh_log = consumer[3] / "gh.log"
+    gh_calls = gh_log.read_text(encoding="utf-8") if gh_log.exists() else ""
+    assert "issue edit" not in gh_calls
+    assert "issue view" not in gh_calls
+    assert "pr create" not in gh_calls
+    assert not list(consumer[3].glob("claimed-*"))
+    assert not (tmp_path / "worktrees").exists()
+    logs = tmp_path / "logs"
+    assert not logs.exists() or not any(logs.iterdir())
+
+
+def test_resume_keeps_the_pinned_settings_after_the_profile_changes(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _env_hook("claude")
+    )
+    config = _config_v3(
+        tmp_path,
+        codex_review_hook=_env_hook("codex"),
+        claude_review_hook=claude_hook,
+        review_max_rounds=1,
+    )
+    first = _run(consumer, ["--issues", "43"], issues=[_issue(43)], config=config, timeout=60)
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    fail_marker.unlink()
+    # A profile edit, or its removal, applies to the next run, not this one.
+    (tmp_path / "review-profile.json").unlink()
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(43, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    claude_env = (consumer[3] / "claude-env-1.log").read_text(encoding="utf-8")
+    assert "AGENT_LOOP_CLAUDE_MODEL=claude-review" in claude_env
+    assert "AGENT_LOOP_CODEX_MODEL=codex-review" in claude_env
+    assert "AGENT_LOOP_NONINTERACTIVE=1" in claude_env
+    assert "Pinned " not in resumed.stdout + resumed.stderr
+    assert "Review settings restored from run state" in resumed.stdout
+    assert json.loads(state_file.read_text())["phase"] == "finalized"
+
+
+def test_resume_without_recorded_settings_fails_closed_without_a_profile(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    fail_marker = consumer[3] / "fail-claude-review"
+    fail_marker.touch()
+    claude_hook = (
+        'if [ -e "$AGENT_STATE_DIR/fail-claude-review" ]; then exit 71; fi; '
+        + _clean_v3_hook("claude")
+    )
+    config = _config_v3(tmp_path, claude_review_hook=claude_hook, review_max_rounds=1)
+    first = _run(consumer, ["--issues", "47"], issues=[_issue(47)], config=config, timeout=60)
+    assert first.returncode != 0
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    # A checkpoint written before settings were recorded falls back to the profile.
+    state = json.loads(state_file.read_text())
+    state.pop("reviewSettings")
+    state_file.write_text(json.dumps(state))
+    (state_file.parent / "review-settings.json").unlink()
+    (tmp_path / "review-profile.json").unlink()
+    fail_marker.unlink()
+    calls_before = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(47, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert resumed.returncode == 4, resumed.stderr + resumed.stdout
+    assert "claude.worker.model" in resumed.stderr
+    calls = (consumer[3] / "gh.log").read_text(encoding="utf-8")[len(calls_before):]
+    assert "issue view" not in calls
+    assert "pr " not in calls
+    assert json.loads(state_file.read_text())["phase"] == state["phase"]
+
+
+def _capacity_hook(engine: str, fallback_ok: bool = True) -> str:
+    failing = "true" if not fallback_ok else '[ "$AGENT_LOOP_CODEX_MODEL" = codex-review ]'
+    return _counting_hook(
+        engine,
+        f"printf '%s %s\\n' \"$AGENT_LOOP_CODEX_MODEL\" \"$AGENT_LOOP_CODEX_EFFORT\" "
+        '>> "$AGENT_STATE_DIR/codex-models.log"; '
+        f"if {failing}; then printf '%s\\n' '{CAPACITY_EVENT}'; exit 1; fi; "
+        + _clean_v3_hook(engine),
+    )
+
+
+def test_reviewer_capacity_rejection_switches_to_the_fallback_in_the_same_round(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "44"],
+        issues=[_issue(44)],
+        config=_config_v3(tmp_path, codex_review_hook=_capacity_hook("codex")),
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "retry: model-capacity (Codex, round 1)" in result.stdout
+    models = (consumer[3] / "codex-models.log").read_text(encoding="utf-8")
+    assert models == "codex-review high\ncodex-fallback medium\n"
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex-attempt\n") == 2
+    comments = (consumer[3] / "pr-comments.log").read_text(encoding="utf-8")
+    assert "local-review-pass:v3 engine=codex round=1" in comments
+    assert "round=2" not in comments
+    state = json.loads(next((tmp_path / "logs").glob("*/run-state.json")).read_text())
+    assert state["reviewSettings"]["fallback_engines"] == ["codex"]
+    assert state["round"] == 1
+
+
+def test_reviewer_capacity_rejection_on_the_fallback_stops(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "45"],
+        issues=[_issue(45)],
+        config=_config_v3(tmp_path, codex_review_hook=_capacity_hook("codex", fallback_ok=False)),
+        timeout=90,
     )
     assert result.returncode != 0
-    assert "worker_effort must be a single flag value" in result.stderr
-    assert not (consumer[3] / "claimed-17").exists()
+    assert "also at capacity" in result.stderr
+    assert "Stop category: hook-failed" in result.stderr
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex-attempt\n") == 2
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_reviewer_failure_without_a_capacity_event_is_not_retried(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    hook = _counting_hook("codex", "echo 'model at capacity, rate limit'; exit 1")
+    result = _run(
+        consumer,
+        ["--issues", "46"],
+        issues=[_issue(46)],
+        config=_config_v3(tmp_path, codex_review_hook=hook),
+        timeout=90,
+    )
+    assert result.returncode != 0
+    assert "Stop category: hook-failed" in result.stderr
+    assert "model-capacity" not in result.stdout
+    events = (consumer[3] / "events.log").read_text(encoding="utf-8")
+    assert events.count("codex-attempt\n") == 1
+    state = json.loads(next((tmp_path / "logs").glob("*/run-state.json")).read_text())
+    assert "fallback_engines" not in state["reviewSettings"]
 
 
 _HANDOFF = (

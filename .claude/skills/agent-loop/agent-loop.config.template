@@ -32,8 +32,9 @@ validation_hook =
 # GitHub actor running this wrapper; evidence from other accounts is ignored.
 # Validation hooks must also leave a clean tree.
 # They must not force-push, merge, or invoke hosted AI reviewers.
-# Codex runs `deepcritique`; Claude runs `deepcritique` with the consumer's literal
-# effort policy (for example `claude --effort low /deepcritique ...`).
+# Codex and Claude both run `deepcritique`. When claude_effort_policy is set,
+# the Claude hook must carry that literal effort (for example
+# `claude --effort low /deepcritique ...`); otherwise it reads the profile's.
 # Ask review hooks for focused checks on their own fixes only. validation_hook
 # is the gating suite: the wrapper runs it on the exact head after every pass,
 # so a hook that also runs the full suite duplicates it and can end its turn
@@ -49,14 +50,17 @@ review_max_rounds = 4
 # starting one it cannot complete.
 review_timeout_seconds = 7200
 #
-# MODEL SELECTION. A review hook is a literal shell command, so the engine's
-# model and effort are chosen here rather than through dedicated config keys —
-# whatever flags your CLI accepts. These fragments show flag placement only; a
-# working hook must also carry AGENT_LOOP_REVIEW_PUSH_HELPER,
-# AGENT_LOOP_REVIEW_RESULT_FILE, and write-result, or preflight rejects it.
+# MODEL SELECTION. Reviewer model and effort come from the per-user review
+# profile, pinned at startup and exported as AGENT_LOOP_{CLAUDE,CODEX}_MODEL and
+# AGENT_LOOP_{CLAUDE,CODEX}_EFFORT. A review hook passes them as ordinary flags;
+# a hard-coded model or effort ignores the profile and its capacity fallback.
+# A model of `inherit` means pass no model flag (see "Model Selection" in
+# SKILL.md). These fragments show flag placement only; a working hook must also
+# carry AGENT_LOOP_REVIEW_PUSH_HELPER, AGENT_LOOP_REVIEW_RESULT_FILE, and
+# write-result, or preflight rejects it.
 #
-#   claude_review_hook = claude --print --effort low --model <model-id> /deepcritique ... </dev/null
-#   codex_review_hook  = codex exec -c model_reasoning_effort=medium ... /deepcritique ... </dev/null
+#   claude_review_hook = claude --print --model "$AGENT_LOOP_CLAUDE_MODEL" --effort "$AGENT_LOOP_CLAUDE_EFFORT" /deepcritique ... </dev/null
+#   codex_review_hook  = codex exec -m "$AGENT_LOOP_CODEX_MODEL" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... /deepcritique ... </dev/null
 #
 # The wrapper runs every hook and the default worker with stdin from /dev/null
 # (`codex exec` reads stdin to EOF when it is not a TTY and would otherwise
@@ -80,30 +84,13 @@ codex_review_hook =
 
 # Optional worker override. When empty, the wrapper runs the Claude CLI in
 # headless, auto-approving mode (--permission-mode bypassPermissions --print)
-# with the prompt from prompt.txt, honoring the model settings below. Set this
+# with the prompt from prompt.txt and the pinned worker settings. Set this
 # to run a different implementation agent instead.
 worker_hook =
-# Both keys apply to the DEFAULT worker only, and are ignored entirely when
-# worker_hook is set above — a hook pins its own model, in the hook.
-#
-# Model ids as your CLI accepts them. `worker_model` is the primary and
-# `worker_fallback_model` is used only after a clean capacity failure that left
-# the worktree unchanged; a timeout retries on the primary model. Set them
-# together anyway: pinning a strong primary without a fallback makes capacity
-# errors more expensive. Leaving both empty is NOT neutral — the worker then
-# runs on whatever your CLI currently defaults to, which changes with CLI
-# releases, so the one slot that determines how much work the reviewers have to
-# do is the one slot that is not pinned.
-#
-# `worker_effort` is passed to the default worker as `--effort`. Leave it empty
-# and the worker runs at whatever the CLI or the launching environment defaults
-# to, which is easy to forget and invisible afterwards — the doctor warns.
-# When `claude_effort_policy` is set the doctor requires the two to match, since
-# the default worker is the same CLI the policy governs. Reviewer model and
-# effort are chosen inside the review hook commands above.
-worker_model =
-worker_fallback_model =
-worker_effort =
+# The default worker's model, effort, and capacity fallback come from the
+# per-user review profile (`claude.worker`), pinned at startup; there are no
+# worker model keys here. A worker_hook receives the same pinned values as
+# AGENT_LOOP_CLAUDE_WORKER_MODEL and AGENT_LOOP_CLAUDE_WORKER_EFFORT.
 worker_retries = 1
 worker_timeout_seconds = 3600
 hook_timeout_seconds = 3600
