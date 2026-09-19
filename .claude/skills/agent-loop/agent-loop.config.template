@@ -55,7 +55,8 @@ review_timeout_seconds = 7200
 # `inherit` means pass no model flag (see "Model Selection" in SKILL.md). The
 # config doctor refuses a literal model or effort that differs from the
 # resolved profile; `config-doctor.py --project-dir <repo> --migrate` rewrites
-# literals to these variables. These fragments show flag placement only; a
+# literals to these variables, with a model flag in the form that drops it for
+# `inherit`. These fragments show flag placement only; a
 # working hook must also carry AGENT_LOOP_REVIEW_PUSH_HELPER,
 # AGENT_LOOP_REVIEW_RESULT_FILE, and write-result, or preflight rejects it.
 #

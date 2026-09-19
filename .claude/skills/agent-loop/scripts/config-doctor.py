@@ -98,28 +98,41 @@ def _setting_variable(engine: str, field: str) -> str:
     return f"AGENT_LOOP_{engine.upper()}_{field.upper()}"
 
 
-def _command_segments(hook: str) -> list[tuple[int, int]]:
-    """Spans of the simple commands in a hook, split at unquoted ; & | and newlines."""
+def _command_segments(hook: str) -> tuple[list[tuple[int, int]], set[int]]:
+    """Spans of the simple commands in a hook, and the offsets inside quotes.
+
+    Commands split at unquoted ; & | and newlines outside `$(...)`.
+    """
     segments: list[tuple[int, int]] = []
+    quoted: set[int] = set()
     start = 0
     quote = ""
+    depth = 0
     index = 0
     while index < len(hook):
         char = hook[index]
         if char == "\\" and quote != "'":
+            if quote:
+                quoted.update((index, index + 1))
             index += 2
             continue
         if quote:
+            quoted.add(index)
             if char == quote:
                 quote = ""
         elif char in "'\"":
             quote = char
-        elif char in ";&|\n":
+        elif hook.startswith("$(", index):
+            depth += 1
+            index += 1
+        elif char == ")" and depth:
+            depth -= 1
+        elif char in ";&|\n" and not depth:
             segments.append((start, index))
             start = index + 1
         index += 1
     segments.append((start, len(hook)))
-    return segments
+    return segments, quoted
 
 
 def _unquote(word: str) -> str:
@@ -131,23 +144,39 @@ def _unquote(word: str) -> str:
 def _hook_literals(key: str, hook: str) -> list[HookLiteral]:
     """Model and effort flags with a literal value, in commands that run the hook's engine CLI.
 
-    A value that expands a variable is not a literal and is left alone.
+    A value that expands a variable is not a literal and is left alone, and so
+    is flag-like text inside a quoted argument such as the prompt. A model flag
+    is replaced whole by a form that drops it for a pinned model of `inherit`.
     """
     engine = REVIEW_HOOK_ENGINES[key]
     program = re.compile(rf"(?:^|(?<=[\s(]))(?:[^\s'\"]*/)?{engine}(?=\s|$)")
+    segments, quoted = _command_segments(hook)
     literals: list[HookLiteral] = []
-    for seg_start, seg_end in _command_segments(hook):
+    for seg_start, seg_end in segments:
         segment = hook[seg_start:seg_end]
-        launch = program.search(segment)
+        launch = next(
+            (m for m in program.finditer(segment) if seg_start + m.start() not in quoted), None
+        )
         if launch is None:
             continue
         found: list[HookLiteral] = []
 
-        def add(field: str, flag: str, match: re.Match[str], span: str, replacement: str) -> None:
+        def add(
+            field: str, flag: str, option: str, match: re.Match[str], span: str, prefix: str
+        ) -> None:
+            """`option` prints the flag before a value; `prefix` precedes the value in `span`."""
             value = _unquote(match["value"])
-            if not value or "$" in value or "`" in value:
+            if seg_start + match.start() in quoted or not value or "$" in value or "`" in value:
                 return
-            start, end = match.span(span)
+            variable = _setting_variable(engine, field)
+            if field == "model":
+                start, end = match.span()
+                replacement = (
+                    f'$([ "${variable}" = inherit ] || printf -- \'{option}%s\' "${variable}")'
+                )
+            else:
+                start, end = match.span(span)
+                replacement = f'{prefix}"${variable}"'
             found.append(
                 HookLiteral(engine, field, flag, value, seg_start + start, seg_start + end, replacement)
             )
@@ -155,12 +184,11 @@ def _hook_literals(key: str, hook: str) -> list[HookLiteral]:
         for field, pattern in _FLAG_PATTERNS[engine]:
             for match in pattern.finditer(segment, launch.end()):
                 flag = match["flag"].strip().rstrip("=")
-                add(field, flag, match, "value", f'"${_setting_variable(engine, field)}"')
+                add(field, flag, f"{flag} ", match, "value", "")
         if engine == "codex":
             for match in _CODEX_CONFIG.finditer(segment, launch.end()):
                 name = match["key"]
-                field = _CODEX_CONFIG_FIELDS[name]
-                add(field, f"-c {name}", match, "token", f'{name}="${_setting_variable(engine, field)}"')
+                add(_CODEX_CONFIG_FIELDS[name], f"-c {name}", f"-c {name}=", match, "token", f"{name}=")
         literals += sorted(found, key=lambda literal: literal.start)
     return literals
 
@@ -442,7 +470,8 @@ def migrate(project: Path) -> list[str]:
     if not config_path.is_file():
         raise DoctorError("required agent-loop file is missing: .claude/skills/agent-loop/agent-loop.config")
     _config(config_path)
-    original = config_path.read_text(encoding="utf-8")
+    # Decoded without newline translation so CRLF line endings survive.
+    original = config_path.read_bytes().decode("utf-8")
     output: list[str] = []
     changes: list[str] = []
     for raw in original.splitlines(keepends=True):

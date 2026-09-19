@@ -515,8 +515,8 @@ review_contract_version = 3
 config_doctor = true
 review_max_rounds = 4
 review_timeout_seconds = 7200
-claude_review_hook = claude --print --effort "$AGENT_LOOP_CLAUDE_EFFORT" --model "$AGENT_LOOP_CLAUDE_MODEL" /deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
-codex_review_hook = codex exec -m "$AGENT_LOOP_CODEX_MODEL" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
+claude_review_hook = claude --print --effort "$AGENT_LOOP_CLAUDE_EFFORT" $([ "$AGENT_LOOP_CLAUDE_MODEL" = inherit ] || printf -- '--model %s' "$AGENT_LOOP_CLAUDE_MODEL") /deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
+codex_review_hook = codex exec $([ "$AGENT_LOOP_CODEX_MODEL" = inherit ] || printf -- '-m %s' "$AGENT_LOOP_CODEX_MODEL") -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
 worker_hook =
 # Worker model keys.
 worker_retries = 1
@@ -572,6 +572,71 @@ def test_migrate_leaves_a_config_without_literals_byte_identical(tmp_path: Path)
     assert result.returncode == 0, result.stderr
     assert "nothing to migrate" in result.stdout
     assert config.read_bytes() == before
+
+
+def test_migrate_keeps_crlf_line_endings_on_a_config_it_changes(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    config.write_bytes(b"review_contract_version = 3\r\nworker_model = x\r\n# kept\r\n")
+    result = _migrate(project)
+    assert result.returncode == 0, result.stderr
+    assert config.read_bytes() == b"review_contract_version = 3\r\n# kept\r\n"
+
+
+def test_migrated_model_flag_is_dropped_for_inherit_and_quoted_text_is_kept(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    prompt = '"commit with git commit -m fix; run python3 -m pytest --model x"'
+    hooks = {
+        "claude_review_hook": f"claude --print --model opus --effort low {prompt} /deepcritique"
+        + TAIL,
+        "codex_review_hook": f"codex exec -m gpt-old -c model=gpt-old {prompt} deepcritique"
+        + TAIL,
+    }
+    lines = [
+        line
+        for line in config.read_text(encoding="utf-8").splitlines()
+        if not line.startswith(tuple(hooks))
+    ]
+    config.write_text(
+        "\n".join(lines + [f"{key} = {hook}" for key, hook in hooks.items()]) + "\n",
+        encoding="utf-8",
+    )
+    result = _migrate(project)
+    assert result.returncode == 0, result.stderr
+    assert "-m fix" not in result.stdout and "-m pytest" not in result.stdout
+    migrated = dict(
+        line.split(" = ", 1)
+        for line in config.read_text(encoding="utf-8").splitlines()
+        if line.startswith(tuple(hooks))
+    )
+    for hook in migrated.values():
+        assert prompt in hook
+
+    inherit = {**PINNED, "AGENT_LOOP_CLAUDE_MODEL": "inherit", "AGENT_LOOP_CODEX_MODEL": "inherit"}
+    for pinned in (PINNED, inherit):
+        result = _run(
+            project, path_stubs=("claude", "codex"), args=("--settings-from-env",), extra_env=pinned
+        )
+        assert result.returncode == 0, result.stderr
+        for key, engine in (("claude_review_hook", "claude"), ("codex_review_hook", "codex")):
+            # Run the hook's engine command with the CLI replaced by an argv printer.
+            shell = subprocess.run(
+                ["bash", "-c", f'{engine}() {{ printf "%s\\n" "$@"; exit; }}; {migrated[key]}'],
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, **pinned},
+            )
+            argv = shell.stdout.splitlines()
+            model = pinned[f"AGENT_LOOP_{engine.upper()}_MODEL"]
+            if model == "inherit":
+                assert not any(arg in ("--model", "-m") or "model=" in arg for arg in argv)
+            else:
+                assert model in argv or f"model={model}" in argv
+            assert prompt.strip('"') in argv
 
 
 def test_migrate_refuses_an_unparseable_config(tmp_path: Path) -> None:

@@ -281,11 +281,13 @@ doctor warns when a hook sets the variable to anything else or unsets it.
 With `config_doctor = true`, the doctor refuses a review hook whose model or
 effort flag (`--model`, `--effort`, `-m`, `-c model=`,
 `-c model_reasoning_effort=`) names a literal that differs from the run's
-pinned settings, and warns when the literal matches. Run it standalone to check
+pinned settings, and warns when the literal matches. Flag-like text inside a
+quoted argument, such as the prompt, is not a flag. Run it standalone to check
 against the resolved review profile. `config-doctor.py --project-dir <repo>
 --migrate` rewrites those literals in `claude_review_hook` and
-`codex_review_hook` to the variables above and removes the retired keys;
-every other line is kept, and a second run changes nothing.
+`codex_review_hook` to the variables above, turning a model flag into the
+`inherit`-safe form shown earlier, and removes the retired keys; every other
+line is kept, and a second run changes nothing.
 
 The default worker always runs on the pinned Claude worker settings. When
 `worker_hook` is set the wrapper runs that hook verbatim, and the hook reads
