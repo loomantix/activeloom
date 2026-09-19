@@ -182,6 +182,11 @@ def main() -> int:
         AGENT_LOOP_REVIEW_BASE_SHA=args.base,
         AGENT_LOOP_REVIEW_ROUND=str(args.round),
     )
+    # `codex exec` reads a non-TTY stdin to EOF before starting; an inherited
+    # open pipe would hang the review before it contacts the model.
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(devnull, 0)
+    os.close(devnull)
     launch_state("execution")
     os.execv(
         timeout,

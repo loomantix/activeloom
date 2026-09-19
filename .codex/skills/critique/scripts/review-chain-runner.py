@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import tarfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,10 @@ class ProcessFailure(Blocked):
         self.exit_status = exit_status
 
 
+class StartupStalled(Blocked):
+    """The worker never emitted its first event within the startup bound."""
+
+
 class CleanupBlocked(Blocked):
     def __init__(
         self, message: str, group: int, exit_status: int | None, completed: bool
@@ -93,6 +98,34 @@ def capacity_rejected(log: Path) -> bool:
             else:
                 rejected = False
     return rejected
+
+
+# Codex emits thread.started within about a second of launch; a worker still
+# silent after this bound stalled before contacting the model.
+CODEX_STARTUP_SECONDS = 180
+WAIT_POLL_SECONDS = 5.0
+
+
+def json_event_seen(log: Path, kind: str) -> bool:
+    """Whether the log holds a JSON event line of this type, ignoring plain text."""
+    if log.is_symlink() or not log.is_file():
+        return False
+    with log.open(errors="replace") as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except (ValueError, UnicodeError):
+                continue
+            if isinstance(event, dict) and event.get("type") == kind:
+                return True
+    return False
+
+
+def codex_startup_stalled(log: Path) -> bool:
+    """A Codex worker log that never reached thread.started."""
+    return log.is_file() and not log.is_symlink() and not json_event_seen(
+        log, "thread.started"
+    )
 
 
 AGY_IDLE = re.compile(
@@ -150,9 +183,18 @@ def command(argv: list[str]) -> str:
 
 
 def managed(
-    argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+    argv: list[str],
+    log: Path,
+    env: dict[str, str],
+    timeout: float = 3600,
+    startup_event: str | None = None,
+    startup_seconds: float = CODEX_STARTUP_SECONDS,
 ) -> None:
-    """Keep the PID through cancellation, forward TERM, then kill the group."""
+    """Keep the PID through cancellation, forward TERM, then kill the group.
+
+    With ``startup_event``, a worker whose log has no such JSON event after
+    ``startup_seconds`` is stopped as stalled instead of waiting out the timeout.
+    """
 
     def interrupted(signum: int, frame: Any) -> None:
         raise Blocked(f"interrupted by signal {signum}")
@@ -163,8 +205,16 @@ def managed(
     try:
         with log.open("ab") as output:
             os.chmod(log, 0o600)
+            # Never inherit the runner's stdin: CLIs such as `codex exec`
+            # read a non-TTY stdin to EOF before starting, so an open pipe
+            # from the caller hangs the worker indefinitely.
             child = subprocess.Popen(
-                argv, stdout=output, stderr=output, env=env, start_new_session=True
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=output,
+                env=env,
+                start_new_session=True,
             )
             pending: BaseException | None = None
 
@@ -208,7 +258,27 @@ def managed(
                     ) from error
 
             try:
-                code = child.wait(timeout=timeout)
+                started = time.monotonic()
+                watch = startup_event
+                while True:
+                    elapsed = time.monotonic() - started
+                    if elapsed >= timeout:
+                        raise subprocess.TimeoutExpired(argv, timeout)
+                    wait = min(WAIT_POLL_SECONDS, timeout - elapsed)
+                    if watch:
+                        wait = min(wait, max(startup_seconds - elapsed, 0.01))
+                    try:
+                        code = child.wait(timeout=wait)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if watch and time.monotonic() - started >= startup_seconds:
+                        if not json_event_seen(log, watch):
+                            raise StartupStalled(
+                                f"{Path(argv[0]).name} emitted no {watch} event "
+                                f"within {startup_seconds:g}s; stopped as stalled"
+                            )
+                        watch = None
                 if code:
                     raise ProcessFailure(
                         f"{Path(argv[0]).name} exited {code}; inspect {log}", code
@@ -841,6 +911,14 @@ class Runner:
             if len(attempts) != 1:
                 raise Blocked("idle-exit retry origin changed")
             self.verify_retry_evidence(pending, attempts[0], "idle_exit")
+        if origin := pending.get("startup_stall_origin"):
+            attempts = [
+                item for item in self.state["attempts"]
+                if item["attempt_id"] == origin
+            ]
+            if len(attempts) != 1:
+                raise Blocked("startup-stall retry origin changed")
+            self.verify_retry_evidence(pending, attempts[0], "startup_stall")
         attempt = {
             "attempt_id": uuid.uuid4().hex,
             "engine": pending["engine"],
@@ -886,6 +964,9 @@ class Runner:
                 folder / "worker.log",
                 env,
                 3660,
+                startup_event=(
+                    "thread.started" if pending["engine"] == "codex" else None
+                ),
             )
             attempt.update(exit_status=0, review_started=True, phase="returned")
             pending["phase"] = "returned"
@@ -945,6 +1026,21 @@ class Runner:
                                 log_sha256=digest(folder / "worker.log"),
                             )
                             pending["phase"] = "capacity_failed"
+                        elif (
+                            pending["engine"] == "codex"
+                            and isinstance(caught, StartupStalled)
+                            and codex_startup_stalled(folder / "worker.log")
+                        ):
+                            # Cleanup completed (a denial raises CleanupBlocked
+                            # instead), and nothing precedes thread.started that
+                            # could post, commit or push.
+                            attempt.update(
+                                review_started=True,
+                                phase="startup_stall_failed",
+                                failure_reason="codex_startup_stall",
+                                log_sha256=digest(folder / "worker.log"),
+                            )
+                            pending["phase"] = "startup_stall_failed"
             if isinstance(caught, CleanupBlocked):
                 attempt.update(
                     failure_reason="cleanup_denied",
@@ -961,7 +1057,7 @@ class Runner:
                     pending.update(phase="cleanup_blocked", **seal)
         finally:
             self.persist()
-        if error and pending["phase"] != "capacity_failed":
+        if error and pending["phase"] not in ("capacity_failed", "startup_stall_failed"):
             raise error
 
     def seal_completed(self, folder: Path) -> dict[str, Any] | None:
@@ -1065,9 +1161,16 @@ class Runner:
         self, pending: dict[str, Any], attempt: dict[str, Any], kind: str
     ) -> None:
         """Verify the original failure both during recovery and at the retry launch."""
+        exit_status: int | None
         if kind == "capacity":
             label, failure, exit_status = "capacity fallback", "capacity failure", 1
             proven, outputs = capacity_rejected, ("result.json",)
+        elif kind == "startup_stall":
+            label, failure, exit_status = (
+                "startup-stall retry", "Codex startup stall", None
+            )
+            proven = codex_startup_stalled
+            outputs = ("result.json", "result.json.recovery.json")
         else:
             label, failure, exit_status = "idle-exit retry", "Agy idle exit", 0
             proven = agy_idle_exit
@@ -1090,7 +1193,7 @@ class Runner:
             attempt.get("engine") != pending["engine"]
             or attempt.get("round") != pending["round"]
             or attempt.get("phase") != f"{kind}_failed"
-            or type(attempt.get("exit_status")) is not int
+            or type(attempt.get("exit_status")) is not type(exit_status)
             or attempt["exit_status"] != exit_status
             or attempt.get("review_started") is not True
             or digest(folder / "launch.json") != attempt.get("launch_sha256")
@@ -1194,6 +1297,36 @@ class Runner:
                     folder / name, target, attempt["attempt_id"]
                 )
         return retry
+
+    def recover_startup_stall(self, pending: dict[str, Any]) -> None:
+        """Relaunch a Codex pass that stalled before thread.started, once."""
+        self.verify_control()
+        if pending["engine"] != "codex" or pending.get("startup_stall_origin"):
+            raise Blocked(
+                "Codex stalled before starting again; no further retry"
+            )
+        attempt = self.state["attempts"][-1]
+        if attempt.get("attempt_id") != pending.get("attempt_id"):
+            raise Blocked("startup-stall retry transaction changed")
+        self.verify_retry_evidence(pending, attempt, "startup_stall")
+        retry = self.stage_retry(
+            pending,
+            attempt,
+            "startup_stall_recovery",
+            "stall-retry",
+            "startup-stall retry",
+        )
+        pending.update(
+            folder=str(retry.relative_to(self.directory)), phase="prepared",
+            startup_stall_origin=attempt["attempt_id"],
+        )
+        pending.pop("startup_stall_recovery")
+        self.persist()
+        print(
+            f"Codex startup stall: retrying {pending['engine']} pass "
+            f"{pending['round']} once at {pending['before']}",
+            flush=True,
+        )
 
     def recover_idle_exit(self, pending: dict[str, Any]) -> None:
         """Relaunch the same pinned Agy pass once without changing round or budget."""
@@ -1758,6 +1891,8 @@ class Runner:
                     self.recover_capacity(pending)
                 elif pending["phase"] == "idle_exit_failed":
                     self.recover_idle_exit(pending)
+                elif pending["phase"] == "startup_stall_failed":
+                    self.recover_startup_stall(pending)
                 elif pending["phase"] == "cleanup_blocked":
                     self.recover_cleanup(pending)
                 elif pending["phase"] == "prepared":
