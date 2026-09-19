@@ -19,9 +19,13 @@ validation_hook =
 # consumer configs must migrate the hooks below before adding this marker.
 review_contract_version = 4
 config_doctor = true
-# Required for contract-v4 auto mode. The pinned launcher owns Claude's `low`
-# effort policy; the doctor verifies the launcher's contract query.
-claude_effort_policy = low
+# Each developer's review profile sets the reviewers' and the default worker's
+# model and effort. The wrapper pins them at startup and exports them as
+# $AGENT_LOOP_CODEX_MODEL, $AGENT_LOOP_CODEX_EFFORT, $AGENT_LOOP_CLAUDE_MODEL,
+# $AGENT_LOOP_CLAUDE_EFFORT, $AGENT_LOOP_CODEX_WORKER_MODEL, and
+# $AGENT_LOOP_CODEX_WORKER_EFFORT; the contract-v4 launcher passes the reviewer
+# values to each CLI. `config-doctor.py --project-dir <repo> --migrate` removes
+# the retired claude_effort_policy and worker model keys from an existing config.
 
 # Contract v4 pins both review hooks to the upstream-owned trusted launcher. The
 # wrapper runs Codex first, then Claude, and
@@ -66,10 +70,10 @@ review_max_rounds = 4
 review_timeout_seconds = 7200
 
 # Optional worker override. When empty, the wrapper runs `codex exec` with the
-# prompt from prompt.txt. The default worker honors the model settings below.
+# prompt from prompt.txt and the pinned `codex.worker` settings, switching once
+# to their fallback after a clean capacity failure. A worker_hook receives the
+# same pinned values.
 worker_hook =
-worker_model =
-worker_fallback_model =
 worker_retries = 1
 # Both timeout values must be positive; GNU `timeout 0` would disable the bound.
 worker_timeout_seconds = 3600

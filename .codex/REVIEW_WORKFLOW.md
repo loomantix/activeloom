@@ -378,10 +378,10 @@ posting and disposition, and classification; they must fail or return blocked
 if a valid finding or undisposed local-review thread remains.
 
 An automated wrapper must make its mode explicit. Contract-v3/v4 auto mode requires
-`config_doctor = true` and `claude_effort_policy = low`; for v3 the doctor
-requires exactly one literal `--effort low` option in the Claude hook, while for
-v4 it verifies the pinned launcher's effort-policy query before selection or
-claim. Handoff mode stops after each nonterminal engine leg and uses the same
+`config_doctor = true`. Reviewer model and effort come from each developer's
+review profile, pinned at startup; the doctor refuses a v3 hook literal that
+differs from the pinned value, and the v4 launcher passes the pinned values to
+each CLI. Handoff mode stops after each nonterminal engine leg and uses the same
 PR-comment protocol as an interactive review.
 
 ## Cross-Engine Session Handoff
