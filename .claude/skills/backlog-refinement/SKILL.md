@@ -56,23 +56,23 @@ Report the counts the script prints: ready, re-verify, conflicted, excluded, epi
 
 ## Mode: `refine [n | --all | --limit N | --backfill]`
 
-Default refines the next un-refined issue; `--limit N` a batch; `--all` the whole un-refined bucket. Run the **re-verify** bucket through the same steps before (or alongside) `--all`. Sanity-check the rewrite on a handful (`assess <n>` or `--limit 5`) before a large sweep, since it edits issue bodies at scale. For each issue:
+Default refines the next un-refined issue; `--limit N` a batch; `--all` the whole un-refined bucket. Run the **re-verify** bucket through the same steps before (or alongside) `--all`. Every exclusion below also removes `dev: agent` when present — it and `agent-bail:` never coexist. Sanity-check the rewrite on a handful (`assess <n>` or `--limit 5`) before a large sweep, since it edits issue bodies at scale. For each issue:
 
 1. **Read it fully** — `gh issue view <N>` including comments.
 2. **Set priority** (core rubric, _Priority_). Skip when the issue already carries one of the local file's priority labels — a priority a human set stands. Otherwise apply exactly one, judged from impact and urgency alone. Readiness does not change priority: an excluded issue gets one too.
-3. **Early-exit excludes** — if the title/body matches a Bucket-B disqualifier on its face (core §3 or a local one), apply `agent: refined` + the `agent-bail:` label + the `needs:` label the core rubric maps it to, comment one line citing the clause, and move on.
+3. **Early-exit excludes** — if the title/body matches a Bucket-B disqualifier on its face (core §3 or a local one), apply `agent: refined` + the `agent-bail:` label + for a grill-class category the `needs:` label the core rubric maps it to, comment one line citing the clause, and move on.
 4. **Verify against HEAD** (core §2). Fetch the integration branch the local file names:
    - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit / PR / `file:line`) and recommend close. Closing is the human's call.
    - **Partially shipped** → rewrite the body to the residual and assess the residual.
    - **Still open** → continue.
 5. **External-dependency check** (core §2) — a dependency that is not published and consumable from this repo → `status: blocked` + `agent-bail: cross-repo`, comment, stop.
-6. **Assess against core §1 and the local additions.** A Bucket-B failure → exclude with the matching `agent-bail:` label, its `needs:` label, and a comment. A Bucket-A failure a §2 transformation can fix → apply it.
+6. **Assess against core §1 and the local additions.** A Bucket-B failure → exclude with the matching `agent-bail:` label, its `needs:` label when grill-class, and a comment. A Bucket-A failure a §2 transformation can fix → apply it.
 7. **Rewrite** a passing issue to the core §5 template:
    - Preserve the original verbatim under a `> ### Original report` blockquote.
    - Fill Goal / Acceptance criteria / Files-entry-points / Out-of-scope from real `grep` and file reads.
    - Write the body to a repo-scoped temp path, then `gh issue edit <N> --body-file <path>`.
-   - Apply `dev: agent` + `agent: refined`, and remove any `needs:` label left from an earlier bail.
-   - If the local file sets `rewrite-mode: suggest`, post the body as a comment instead and leave the issue body untouched.
+   - Apply `dev: agent` + `agent: refined`, and remove any `agent-bail:` and `needs:` label left from an earlier bail.
+   - If the local file's **Rewrite mode** is `suggest`, post the body as a comment instead and leave the issue body untouched.
 
 Keep every rewrite inside the scope the issue asked for, with acceptance criteria grounded in the code, and tag `dev: agent` only on issues that pass every §1 criterion. **When torn between make-ready and exclude, exclude** — a false `dev: agent` costs a whole loop iteration; a false exclusion just waits for a human.
 

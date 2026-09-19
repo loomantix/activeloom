@@ -53,7 +53,7 @@ GRILL_NEEDS_LABELS = frozenset({
 })
 # Surfaced but never auto-queued — these read as coordination, not bounded work.
 EPIC_TITLE_MARKERS = ("epic:",)
-LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "agent-bail:", "agent:", "status:", "needs:")
+LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "agent-bail:", "agent:", "status:", "needs:", "priority:")
 # `gh issue list` pages internally; the cap only guards against truncation.
 GH_LIST_LIMIT = 10000
 
