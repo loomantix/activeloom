@@ -495,6 +495,51 @@ def test_unsafe_agy_idle_exit_is_not_retried(
     assert len(runner.state["attempts"]) == 2
 
 
+@pytest.mark.parametrize(
+    "evidence", ["comments", "threads", "result", "partial", "log", "unchanged"]
+)
+def test_prepared_idle_retry_rechecks_evidence_before_launch(
+    idle_harness: Any, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    h = idle_harness.harness
+    runner = h.runner(h.args, h.directory)
+    recover = runner.recover_idle_exit
+
+    def interrupt(pending: dict[str, Any]) -> None:
+        recover(pending)
+        raise OSError("interrupted after idle-retry preparation")
+
+    monkeypatch.setattr(runner, "recover_idle_exit", interrupt)
+    with pytest.raises(OSError, match="after idle-retry preparation"):
+        runner.run()
+    before = h.module.read(h.directory / "state.json")
+    assert before["pending"]["phase"] == "prepared"
+    assert before["pending"]["folder"].endswith("/idle-retry")
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    if evidence in ("comments", "threads"):
+        monkeypatch.setattr(
+            resumed, evidence, lambda path: h.module.save(path, ["changed"])
+        )
+    elif evidence in ("result", "partial", "log"):
+        origin = h.directory / before["attempts"][1]["folder"]
+        name = {
+            "result": "result.json",
+            "partial": "result.json.recovery.json",
+            "log": "worker.log",
+        }[evidence]
+        (origin / name).write_text("{}")
+    if evidence == "unchanged":
+        assert resumed.run() == "converged"
+        assert resumed.state["run_id"] == before["run_id"]
+        assert idle_harness.idle_launches == ["gemini"]
+    else:
+        with pytest.raises(h.module.Blocked, match="evidence changed"):
+            resumed.run()
+        assert idle_harness.idle_launches == ["gemini"]
+        assert len(resumed.state["completed"]) == 1
+
+
 def test_agy_idle_lines_after_a_written_result_are_ordinary_success(
     idle_harness: Any,
 ) -> None:
