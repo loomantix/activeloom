@@ -81,7 +81,6 @@ _CODEX_CONFIG_FIELDS = {"model": "model", "model_reasoning_effort": "effort"}
 
 @dataclass(frozen=True)
 class HookLiteral:
-    key: str
     engine: str
     field: str
     flag: str
@@ -92,7 +91,11 @@ class HookLiteral:
 
     @property
     def variable(self) -> str:
-        return f"AGENT_LOOP_{self.engine.upper()}_{self.field.upper()}"
+        return _setting_variable(self.engine, self.field)
+
+
+def _setting_variable(engine: str, field: str) -> str:
+    return f"AGENT_LOOP_{engine.upper()}_{field.upper()}"
 
 
 def _command_segments(hook: str) -> list[tuple[int, int]]:
@@ -138,30 +141,27 @@ def _hook_literals(key: str, hook: str) -> list[HookLiteral]:
         launch = program.search(segment)
         if launch is None:
             continue
-        # (field, flag, start, end, raw value, replacement for [start, end))
-        found: list[tuple[str, str, int, int, str, str]] = []
+        found: list[HookLiteral] = []
+
+        def add(field: str, flag: str, match: re.Match[str], span: str, replacement: str) -> None:
+            value = _unquote(match["value"])
+            if not value or "$" in value or "`" in value:
+                return
+            start, end = match.span(span)
+            found.append(
+                HookLiteral(engine, field, flag, value, seg_start + start, seg_start + end, replacement)
+            )
+
         for field, pattern in _FLAG_PATTERNS[engine]:
-            variable = f"AGENT_LOOP_{engine.upper()}_{field.upper()}"
             for match in pattern.finditer(segment, launch.end()):
-                start, end = match.span("value")
                 flag = match["flag"].strip().rstrip("=")
-                found.append((field, flag, start, end, match["value"], f'"${variable}"'))
+                add(field, flag, match, "value", f'"${_setting_variable(engine, field)}"')
         if engine == "codex":
             for match in _CODEX_CONFIG.finditer(segment, launch.end()):
-                field = _CODEX_CONFIG_FIELDS[match["key"]]
-                variable = f"AGENT_LOOP_CODEX_{field.upper()}"
-                start, end = match.span("token")
-                replacement = f'{match["key"]}="${variable}"'
-                found.append((field, f"-c {match['key']}", start, end, match["value"], replacement))
-        for field, flag, start, end, raw, replacement in sorted(found, key=lambda item: item[2]):
-            value = _unquote(raw)
-            if not value or "$" in value or "`" in value:
-                continue
-            literals.append(
-                HookLiteral(
-                    key, engine, field, flag, value, seg_start + start, seg_start + end, replacement
-                )
-            )
+                name = match["key"]
+                field = _CODEX_CONFIG_FIELDS[name]
+                add(field, f"-c {name}", match, "token", f'{name}="${_setting_variable(engine, field)}"')
+        literals += sorted(found, key=lambda literal: literal.start)
     return literals
 
 
