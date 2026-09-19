@@ -32,16 +32,13 @@ validation_hook =
 # GitHub actor running this wrapper; evidence from other accounts is ignored.
 # Validation hooks must also leave a clean tree.
 # They must not force-push, merge, or invoke hosted AI reviewers.
-# Codex and Claude both run `deepcritique`. When claude_effort_policy is set,
-# the Claude hook must carry that literal effort (for example
-# `claude --effort low /deepcritique ...`); otherwise it reads the profile's.
+# Codex and Claude each run `deepcritique`.
 # Ask review hooks for focused checks on their own fixes only. validation_hook
 # is the gating suite: the wrapper runs it on the exact head after every pass,
 # so a hook that also runs the full suite duplicates it and can end its turn
 # while that suite is still running.
 review_contract_version = 3
 config_doctor = true
-claude_effort_policy =
 review_max_rounds = 4
 # Positive wall-clock budget for one selected issue's review. The deadline is
 # persisted so resume cannot reset it; each review pass and its validation is
@@ -50,17 +47,21 @@ review_max_rounds = 4
 # starting one it cannot complete.
 review_timeout_seconds = 7200
 #
-# MODEL SELECTION. Reviewer model and effort come from the per-user review
-# profile, pinned at startup and exported as AGENT_LOOP_{CLAUDE,CODEX}_MODEL and
-# AGENT_LOOP_{CLAUDE,CODEX}_EFFORT. A review hook passes them as ordinary flags;
-# a hard-coded model or effort ignores the profile and its capacity fallback.
-# A model of `inherit` means pass no model flag (see "Model Selection" in
-# SKILL.md). These fragments show flag placement only; a working hook must also
-# carry AGENT_LOOP_REVIEW_PUSH_HELPER, AGENT_LOOP_REVIEW_RESULT_FILE, and
-# write-result, or preflight rejects it.
+# MODEL SELECTION. Each developer's review profile sets the reviewers' model
+# and effort; the wrapper pins them at startup and exports them as
+# $AGENT_LOOP_CLAUDE_MODEL, $AGENT_LOOP_CLAUDE_EFFORT, $AGENT_LOOP_CODEX_MODEL,
+# and $AGENT_LOOP_CODEX_EFFORT. Pass them to your CLI's flags; a hard-coded
+# model or effort ignores the profile and its capacity fallback. A model of
+# `inherit` means pass no model flag (see "Model Selection" in SKILL.md). The
+# config doctor refuses a literal model or effort that differs from the
+# resolved profile; `config-doctor.py --project-dir <repo> --migrate` rewrites
+# literals to these variables, with a model flag in the form that drops it for
+# `inherit`. These fragments show flag placement only; a
+# working hook must also carry AGENT_LOOP_REVIEW_PUSH_HELPER,
+# AGENT_LOOP_REVIEW_RESULT_FILE, and write-result, or preflight rejects it.
 #
-#   claude_review_hook = claude --print --model "$AGENT_LOOP_CLAUDE_MODEL" --effort "$AGENT_LOOP_CLAUDE_EFFORT" /deepcritique ... </dev/null
-#   codex_review_hook  = codex exec -m "$AGENT_LOOP_CODEX_MODEL" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... /deepcritique ... </dev/null
+#   claude_review_hook = claude --print $([ "$AGENT_LOOP_CLAUDE_MODEL" = inherit ] || printf -- '--model %s' "$AGENT_LOOP_CLAUDE_MODEL") --effort "$AGENT_LOOP_CLAUDE_EFFORT" /deepcritique ... </dev/null
+#   codex_review_hook  = codex exec $([ "$AGENT_LOOP_CODEX_MODEL" = inherit ] || printf -- '-m %s' "$AGENT_LOOP_CODEX_MODEL") -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... /deepcritique ... </dev/null
 #
 # The wrapper runs every hook and the default worker with stdin from /dev/null
 # (`codex exec` reads stdin to EOF when it is not a TTY and would otherwise

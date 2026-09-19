@@ -180,7 +180,7 @@ WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
 REVIEW_CONTRACT_VERSION=""
 CONFIG_DOCTOR=true
-CLAUDE_EFFORT_POLICY=""
+IGNORED_EFFORT_POLICY=false
 REVIEW_MAX_ROUNDS=4
 REVIEW_TIMEOUT_SECONDS=7200
 REVIEW_DEADLINE_EPOCH=0
@@ -222,7 +222,7 @@ assign_config() {
         hook_timeout_seconds) HOOK_TIMEOUT_SECONDS="$value" ;;
         review_contract_version) REVIEW_CONTRACT_VERSION="$value" ;;
         config_doctor) CONFIG_DOCTOR="$value" ;;
-        claude_effort_policy) CLAUDE_EFFORT_POLICY="$value" ;;
+        claude_effort_policy) [ -z "$value" ] || IGNORED_EFFORT_POLICY=true ;;
         review_max_rounds) REVIEW_MAX_ROUNDS="$value" ;;
         review_timeout_seconds) REVIEW_TIMEOUT_SECONDS="$value" ;;
         retry_on_timeout) RETRY_ON_TIMEOUT="$value" ;;
@@ -386,6 +386,9 @@ case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be tru
 if [ "$IGNORED_WORKER_SETTINGS" = true ]; then
     echo "warning: worker_model, worker_fallback_model, and worker_effort are ignored; the default worker takes its model and effort from the review profile" >&2
 fi
+if [ "$IGNORED_EFFORT_POLICY" = true ]; then
+    echo "warning: claude_effort_policy is retired and ignored; reviewer effort comes from the review profile" >&2
+fi
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base|batch-stack) ;; *) echo "dependency_gate must be ready, merged-to-base, or batch-stack" >&2; exit 1 ;; esac
 case "$BATCH_ON_ISSUE_FAILURE" in stop|park) ;; *) echo "batch_on_issue_failure must be stop or park" >&2; exit 1 ;; esac
@@ -415,14 +418,6 @@ fi
 [ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CODEX_REVIEW_HOOK" ] || { echo "codex_review_hook must be configured before running agent-loop" >&2; exit 1; }
-
-if [ "$CONFIG_DOCTOR" = true ]; then
-    doctor_command=(python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR")
-    if [ -n "$CLAUDE_EFFORT_POLICY" ]; then
-        doctor_command+=(--claude-effort "$CLAUDE_EFFORT_POLICY")
-    fi
-    "${doctor_command[@]}" || exit 1
-fi
 
 if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
     PROMPT_TEMPLATE="$(<"$PROMPT_FILE")"
@@ -871,6 +866,13 @@ else
     SETTINGS_RUN_DIR="$(mktemp -d)" || exit 1
     STARTUP_PIN_FILE="$SETTINGS_RUN_DIR/review-settings.json"
     pin_review_settings "$STARTUP_PIN_FILE" || exit $?
+fi
+
+# Runs after pinning so review-hook literals are checked against the settings
+# this run launches with, and before any issue is selected or claimed.
+if [ "$CONFIG_DOCTOR" = true ]; then
+    python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR" --repo "$GH_REPO" \
+        --settings-from-env || exit 1
 fi
 
 already_processed() {
