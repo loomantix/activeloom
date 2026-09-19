@@ -16,7 +16,7 @@ Model identifiers come only from the user or from the engine CLI's own model lis
 An entry skill's review profile preflight sends the user here when `check` exits 3. Run this in the same conversation, then return to that skill and continue the user's original request without asking them to invoke it again.
 
 1. Run `check`. If it reports `"configured": false`, follow [First run](#first-run) instead; it ends in the same state.
-2. Run `detect`. For each key in `missing`, show the value you propose: the entry in `suggested` (a worker setting pre-filled from that engine's reviewer setting), otherwise the value from `defaults`. Ask only about the keys in `missing`; every stored value stays as confirmed.
+2. Run `detect` and `defaults`. For each key in step 1's `missing`, show the value you propose: its entry in step 1's `suggested` (a worker setting pre-filled from that engine's reviewer setting), otherwise the value from `defaults`. Ask only about the keys in `missing`; every stored value stays as confirmed.
 3. Ask the user to accept the proposals or name changes. For an engine whose CLI `detect` reports not installed, suggest declaring it unavailable. Accept "I don't have this plan" or "I don't use this engine" as that declaration: `ENGINE.availability=unavailable`, which also removes that engine's missing keys. An order may not name an unavailable engine, so when a stored order names it, propose the order without it and write both in the same command once the user agrees.
 4. Write the answers with one `set` command holding only the missing keys and any availability or order change the user agreed to (for example `set claude.worker.model=opus claude.worker.effort=medium gemini.availability=unavailable order.deep=claude,codex`).
 5. Run `show` and present the stored values.
@@ -61,5 +61,5 @@ When `show` reports a `defaults_version` older than `current_defaults_version`, 
 ## Scope
 
 - An automatic review run already in progress keeps the settings it started with; a change applies to the next run.
-- A run with `AGENT_LOOP_NONINTERACTIVE=1` set never comes here; it uses its pinned values.
+- A run with `AGENT_LOOP_NONINTERACTIVE=1` set, or one a launcher or runner started (`AGENT_LOOP_REVIEW_ENGINE` set), never comes here; it uses its pinned values.
 - This skill does not start reviews, resolve a review tier, install engine CLIs, or edit an engine CLI's own configuration.

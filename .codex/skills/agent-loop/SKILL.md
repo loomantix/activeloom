@@ -13,7 +13,8 @@ worker only implements, validates, refactors, and commits locally.
 ## Review profile preflight
 
 Run this before launching any reviewer, worker, or runner. When
-`AGENT_LOOP_NONINTERACTIVE=1` is set, skip it: the run uses its pinned values,
+`AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set (a launcher or
+runner started this pass), skip it: the run uses its pinned values,
 and a launcher that reports missing settings is the blocker to report. Otherwise
 run `python3 -I .codex/skills/review-setup/scripts/review-profile.py check`.
 Exit 0 means continue. Exit 3 means settings are missing: follow

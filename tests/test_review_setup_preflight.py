@@ -44,8 +44,29 @@ def test_entry_skill_runs_the_preflight(root: str, skill: str) -> None:
     helper = f"{root}/skills/review-setup/scripts/review-profile.py check"
     assert helper in section
     assert (ROOT / root / "skills/review-setup/scripts/review-profile.py").is_file()
-    assert "AGENT_LOOP_NONINTERACTIVE=1" in section
-    assert "review-setup` \"Inline setup\"" in section
+    assert (
+        "`AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set" in section
+    )
+    assert 'review-setup` "Inline setup"' in section
+
+
+# Every path that starts a one-pass reviewer; the preflight skips on the
+# variable they export, so an unattended pass never reaches interactive setup.
+LAUNCHERS = (
+    ".codex/skills/critique/scripts/run-claude-review.sh",
+    ".codex/skills/critique/scripts/run-codex-review.py",
+    ".codex/skills/critique/scripts/review-chain-runner.py",
+    ".claude/skills/critique/scripts/run-agy-review.sh",
+    ".codex/skills/critique/scripts/run-agy-review.sh",
+    ".codex/skills/agent-loop/scripts/agent-loop.sh",
+    ".agents/skills/agent-loop/scripts/agent-loop.sh",
+)
+
+
+@pytest.mark.parametrize("path", LAUNCHERS)
+def test_launchers_export_the_preflight_skip_variable(path: str) -> None:
+    source = (ROOT / path).read_text(encoding="utf-8")
+    assert re.search(r"AGENT_LOOP_REVIEW_ENGINE[\"']?\s*[=:]", source), path
 
 
 @pytest.mark.parametrize("root,skill", ENTRY_POINTS, ids=lambda v: str(v))
