@@ -95,6 +95,26 @@ def capacity_rejected(log: Path) -> bool:
     return rejected
 
 
+AGY_IDLE = re.compile(
+    r"root agent idle; waiting up to \d+s for [1-9]\d* background task\(s\)\s*$"
+)
+AGY_TERMINATE = re.compile(r"terminating [1-9]\d* background task\(s\) on exit\s*$")
+
+
+def agy_idle_exit(log: Path) -> bool:
+    """Recognize Agy ending its print turn and discarding its own background tasks."""
+    if log.is_symlink() or not log.is_file():
+        return False
+    idle = False
+    with log.open(errors="replace") as stream:
+        for line in stream:
+            if AGY_IDLE.search(line):
+                idle = True
+            elif idle and AGY_TERMINATE.search(line):
+                return True
+    return False
+
+
 def digest(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         raise Blocked(f"expected a regular file: {path.name}")
@@ -813,6 +833,14 @@ class Runner:
             if len(attempts) != 1:
                 raise Blocked("capacity fallback origin changed")
             self.verify_capacity_evidence(pending, attempts[0])
+        if origin := pending.get("idle_exit_origin"):
+            attempts = [
+                item for item in self.state["attempts"]
+                if item["attempt_id"] == origin
+            ]
+            if len(attempts) != 1:
+                raise Blocked("idle-exit retry origin changed")
+            self.verify_retry_evidence(pending, attempts[0], "idle_exit")
         attempt = {
             "attempt_id": uuid.uuid4().hex,
             "engine": pending["engine"],
@@ -868,6 +896,8 @@ class Runner:
             pending["result_recovery_sha256"] = (
                 digest(recovery) if recovery.exists() else None
             )
+            if pending["engine"] == "gemini":
+                self.classify_idle_exit(pending, attempt, folder)
         except (
             Blocked,
             OSError,
@@ -992,15 +1022,61 @@ class Runner:
         attempt["cleanup_reconciled"] = True
         self.persist()
 
+    def classify_idle_exit(
+        self, pending: dict[str, Any], attempt: dict[str, Any], folder: Path
+    ) -> None:
+        """Mark a returned Agy pass that wrote nothing because its turn ended early."""
+        marker = folder / "launch.json"
+        if (
+            any(
+                (folder / name).exists() or (folder / name).is_symlink()
+                for name in ("result.json", "result.json.recovery.json")
+            )
+            or marker.is_symlink()
+            or not marker.is_file()
+            or not agy_idle_exit(folder / "worker.log")
+        ):
+            return
+        try:
+            evidence = read(marker)
+        except (Blocked, OSError, ValueError):
+            return  # Unreadable evidence keeps the ordinary missing-result block.
+        if (
+            not isinstance(evidence, dict)
+            or evidence.get("attempt_id") != attempt["attempt_id"]
+            or evidence.get("version") != 1
+            or evidence.get("phase") != "execution"
+        ):
+            return
+        attempt.update(
+            phase="idle_exit_failed",
+            failure_reason="agy_idle_exit",
+            launch_sha256=digest(marker),
+            log_sha256=digest(folder / "worker.log"),
+        )
+        pending["phase"] = "idle_exit_failed"
+
     def verify_capacity_evidence(
         self, pending: dict[str, Any], attempt: dict[str, Any]
     ) -> None:
+        self.verify_retry_evidence(pending, attempt, "capacity")
+
+    def verify_retry_evidence(
+        self, pending: dict[str, Any], attempt: dict[str, Any], kind: str
+    ) -> None:
         """Verify the original failure both during recovery and at the retry launch."""
+        if kind == "capacity":
+            label, failure, exit_status = "capacity fallback", "capacity failure", 1
+            proven, outputs = capacity_rejected, ("result.json",)
+        else:
+            label, failure, exit_status = "idle-exit retry", "Agy idle exit", 0
+            proven = agy_idle_exit
+            outputs = ("result.json", "result.json.recovery.json")
         if (
             self.boundary() != pending["before"]
             or self.state["head"] != pending["before"]
         ):
-            raise Blocked("capacity fallback requires the unchanged review head")
+            raise Blocked(f"{label} requires the unchanged review head")
         decision = self.decision(pending["before"])
         if (
             decision.get("passes") != self.state["completed"]
@@ -1008,34 +1084,35 @@ class Runner:
             or (decision.get("engine"), decision.get("round"))
             != (pending["engine"], pending["round"])
         ):
-            raise Blocked("capacity fallback cannot change the owed pass or budget")
+            raise Blocked(f"{label} cannot change the owed pass or budget")
         folder = self.directory / attempt["folder"]
         if (
             attempt.get("engine") != pending["engine"]
             or attempt.get("round") != pending["round"]
-            or attempt.get("phase") != "capacity_failed"
+            or attempt.get("phase") != f"{kind}_failed"
             or type(attempt.get("exit_status")) is not int
-            or attempt["exit_status"] != 1
+            or attempt["exit_status"] != exit_status
             or attempt.get("review_started") is not True
             or digest(folder / "launch.json") != attempt.get("launch_sha256")
             or digest(folder / "worker.log") != attempt.get("log_sha256")
-            or not capacity_rejected(folder / "worker.log")
-            or (folder / "result.json").exists()
-            or (folder / "result.json").is_symlink()
+            or not proven(folder / "worker.log")
+            or any(
+                (folder / name).exists() or (folder / name).is_symlink()
+                for name in outputs
+            )
             or digest(folder / "historical.json") != pending["historical_sha256"]
         ):
-            raise Blocked(
-                "capacity failure evidence changed or a reviewer result exists"
-            )
+            raise Blocked(f"{failure} evidence changed or a reviewer result exists")
+        prefix = kind.replace("_", "-")
         for name, capture in (("threads", self.threads), ("comments", self.comments)):
             before = folder / f"before-{name}.json"
             if digest(before) != pending.get(f"before_{name}_sha256"):
                 raise Blocked("pre-pass review evidence changed")
-            current = folder / f"capacity-{name}.json"
+            current = folder / f"{prefix}-{name}.json"
             capture(current)
             if digest(current) != digest(before):
                 raise Blocked(
-                    "review evidence changed; capacity fallback requires reconciliation"
+                    f"review evidence changed; {label} requires reconciliation"
                 )
 
     def copy_recovery_snapshot(
@@ -1059,37 +1136,13 @@ class Runner:
         recovery = pending.get("capacity_recovery")
         if engine in self.state.get("fallback_engines", []) and not recovery:
             raise Blocked("configured fallback is also at capacity; no further retry")
-        folder = self.directory / pending["folder"]
         attempt = self.state["attempts"][-1]
         if attempt.get("attempt_id") != pending.get("attempt_id"):
             raise Blocked("capacity fallback transaction changed")
         self.verify_capacity_evidence(pending, attempt)
-        retry = folder / "fallback"
-        if recovery is None:
-            if retry.exists() or retry.is_symlink():
-                raise Blocked("unexpected capacity fallback directory")
-            pending["capacity_recovery"] = {"attempt_id": attempt["attempt_id"]}
-            self.persist()
-        elif recovery.get("attempt_id") != attempt["attempt_id"]:
-            raise Blocked("capacity fallback transaction changed")
-        if retry.is_symlink():
-            raise Blocked("capacity fallback directory cannot be a symlink")
-        retry.mkdir(mode=0o700, exist_ok=True)
-        names = {"historical.json", "before-threads.json", "before-comments.json"}
-        if any(
-            p.name not in names or p.is_symlink() or not p.is_file()
-            for p in retry.iterdir()
-        ):
-            raise Blocked("unexpected capacity fallback evidence")
-        for name in names:
-            target = retry / name
-            if target.exists():
-                if digest(target) != digest(folder / name):
-                    raise Blocked("capacity fallback snapshot changed")
-            else:
-                self.copy_recovery_snapshot(
-                    folder / name, target, attempt["attempt_id"]
-                )
+        retry = self.stage_retry(
+            pending, attempt, "capacity_recovery", "fallback", "capacity fallback"
+        )
         self.state.setdefault("fallback_engines", []).append(engine)
         pending.update(
             folder=str(retry.relative_to(self.directory)), phase="prepared",
@@ -1100,6 +1153,71 @@ class Runner:
         fallback = settings["fallback"]
         print(
             f"Capacity fallback: {engine} model {fallback['model']}, effort {fallback['effort']}",
+            flush=True,
+        )
+
+    def stage_retry(
+        self,
+        pending: dict[str, Any],
+        attempt: dict[str, Any],
+        key: str,
+        directory: str,
+        label: str,
+    ) -> Path:
+        """Copy the pre-pass snapshots into a fresh retry folder, resumably."""
+        folder = self.directory / pending["folder"]
+        retry = folder / directory
+        recovery = pending.get(key)
+        if recovery is None:
+            if retry.exists() or retry.is_symlink():
+                raise Blocked(f"unexpected {label} directory")
+            pending[key] = {"attempt_id": attempt["attempt_id"]}
+            self.persist()
+        elif recovery.get("attempt_id") != attempt["attempt_id"]:
+            raise Blocked(f"{label} transaction changed")
+        if retry.is_symlink():
+            raise Blocked(f"{label} directory cannot be a symlink")
+        retry.mkdir(mode=0o700, exist_ok=True)
+        names = {"historical.json", "before-threads.json", "before-comments.json"}
+        if any(
+            p.name not in names or p.is_symlink() or not p.is_file()
+            for p in retry.iterdir()
+        ):
+            raise Blocked(f"unexpected {label} evidence")
+        for name in names:
+            target = retry / name
+            if target.exists():
+                if digest(target) != digest(folder / name):
+                    raise Blocked(f"{label} snapshot changed")
+            else:
+                self.copy_recovery_snapshot(
+                    folder / name, target, attempt["attempt_id"]
+                )
+        return retry
+
+    def recover_idle_exit(self, pending: dict[str, Any]) -> None:
+        """Relaunch the same pinned Agy pass once without changing round or budget."""
+        self.verify_control()
+        if pending["engine"] != "gemini" or pending.get("idle_exit_origin"):
+            raise Blocked(
+                "Agy ended its turn again before writing a result; no further retry"
+            )
+        attempt = self.state["attempts"][-1]
+        if attempt.get("attempt_id") != pending.get("attempt_id"):
+            raise Blocked("idle-exit retry transaction changed")
+        self.verify_retry_evidence(pending, attempt, "idle_exit")
+        retry = self.stage_retry(
+            pending, attempt, "idle_exit_recovery", "idle-retry", "idle-exit retry"
+        )
+        pending.update(
+            folder=str(retry.relative_to(self.directory)), phase="prepared",
+            idle_exit_origin=attempt["attempt_id"],
+        )
+        pending.pop("idle_exit_recovery")
+        self.persist()
+        print(
+            f"Agy idle exit: retrying {pending['engine']} pass {pending['round']} "
+            f"once at {pending['before']}",
             flush=True,
         )
 
@@ -1638,6 +1756,8 @@ class Runner:
                     self.recover_preflight(pending)
                 elif pending["phase"] == "capacity_failed":
                     self.recover_capacity(pending)
+                elif pending["phase"] == "idle_exit_failed":
+                    self.recover_idle_exit(pending)
                 elif pending["phase"] == "cleanup_blocked":
                     self.recover_cleanup(pending)
                 elif pending["phase"] == "prepared":

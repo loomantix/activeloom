@@ -332,6 +332,211 @@ def test_recovery_snapshot_survives_process_termination(
     assert len(resumed.state["attempts"]) == 5
 
 
+AGY_IDLE_LINES = (
+    "I0919 10:00:00.000 root agent idle; waiting up to 5s for 2 background task(s)\n"
+    "I0919 10:00:05.000 terminating 2 background task(s) on exit\n"
+)
+
+
+@pytest.fixture
+def idle_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Agy ends its print turn with review lanes still in the background."""
+    module = harness.module
+    harness.args.chain = "codex,gemini,codex,gemini"
+    wrapped = module.managed
+    controls = SimpleNamespace(
+        idle=1, engine="gemini", side_effect=None, with_result=False, exit_code=0
+    )
+    idle_launches: list[str] = []
+
+    def managed(
+        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+    ) -> None:
+        if (
+            "AGENT_LOOP_REVIEW_RESULT_FILE" in env
+            and env["AGENT_LOOP_REVIEW_ENGINE"] == controls.engine
+            and controls.idle
+        ):
+            controls.idle -= 1
+            idle_launches.append(env["AGENT_LOOP_REVIEW_ENGINE"])
+            module.save(
+                Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+                {
+                    "version": 1,
+                    "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                    "phase": "execution",
+                    "review_started": None,
+                },
+            )
+            if controls.with_result:
+                wrapped(argv, log, env, timeout)
+            with log.open("a") as stream:
+                stream.write("Waiting for lane results.\n" + AGY_IDLE_LINES)
+            if controls.side_effect:
+                controls.side_effect(log.parent)
+            if controls.exit_code:
+                raise module.ProcessFailure("agy exited", controls.exit_code)
+            return
+        wrapped(argv, log, env, timeout)
+
+    monkeypatch.setattr(module, "managed", managed)
+    return SimpleNamespace(
+        harness=harness, controls=controls, idle_launches=idle_launches
+    )
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (AGY_IDLE_LINES, True),
+        (
+            "root agent idle; waiting up to 5s for 1 background task(s)\n"
+            "other output\n"
+            "terminating 1 background task(s) on exit\n",
+            True,
+        ),
+        (AGY_IDLE_LINES.splitlines(keepends=True)[0], False),
+        (AGY_IDLE_LINES.splitlines(keepends=True)[1], False),
+        ("".join(reversed(AGY_IDLE_LINES.splitlines(keepends=True))), False),
+        (
+            "root agent idle; waiting up to 5s for 0 background task(s)\n"
+            "terminating 0 background task(s) on exit\n",
+            False,
+        ),
+        (
+            "The log said root agent idle; waiting up to 5s for 2 background task(s) here.\n"
+            "It then said terminating 2 background task(s) on exit, as quoted.\n",
+            False,
+        ),
+    ],
+)
+def test_agy_idle_exit_recognition_is_specific(
+    tmp_path: Path, text: str, expected: bool
+) -> None:
+    log = tmp_path / "worker.log"
+    log.write_text(text)
+    assert load("review-chain-runner").agy_idle_exit(log) is expected
+
+
+def test_agy_idle_exit_retries_the_same_round_once(
+    idle_harness: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    h = idle_harness.harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert idle_harness.idle_launches == ["gemini"]
+    assert h.launches == ["codex", "gemini", "codex", "gemini"]
+    assert len(runner.state["completed"]) == 4
+    assert [(p["engine"], p["round"]) for p in runner.state["completed"]] == [
+        ("codex", 1),
+        ("gemini", 1),
+        ("codex", 2),
+        ("gemini", 2),
+    ]
+    assert len(runner.state["attempts"]) == 5
+    failed, retry = runner.state["attempts"][1:3]
+    assert failed["phase"] == "idle_exit_failed"
+    assert failed["failure_reason"] == "agy_idle_exit"
+    assert failed["exit_status"] == 0
+    assert (failed["engine"], failed["round"]) == (retry["engine"], retry["round"])
+    assert retry["folder"] == failed["folder"] + "/idle-retry"
+    assert (h.directory / failed["folder"] / "worker.log").is_file()
+    assert f"Agy idle exit: retrying gemini pass 1 once at {HEAD}" in (
+        capsys.readouterr().out
+    )
+
+
+def test_second_agy_idle_exit_blocks(idle_harness: Any) -> None:
+    h = idle_harness.harness
+    idle_harness.controls.idle = 2
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        runner.run()
+    assert idle_harness.idle_launches == ["gemini", "gemini"]
+    assert len(runner.state["completed"]) == 1
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        h.runner(h.args, h.directory).run()
+    assert idle_harness.idle_launches == ["gemini", "gemini"]
+    assert h.launches == ["codex"]
+
+
+@pytest.mark.parametrize(
+    "case", ["head", "threads", "comments", "result", "partial", "exit"]
+)
+def test_unsafe_agy_idle_exit_is_not_retried(
+    idle_harness: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    h = idle_harness.harness
+    controls = idle_harness.controls
+    runner = h.runner(h.args, h.directory)
+    if case == "head":
+        controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, "boundary", lambda: "f" * 40
+        )
+    elif case in ("threads", "comments"):
+        controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, case, lambda path: h.module.save(path, ["changed"])
+        )
+    elif case == "result":
+        controls.side_effect = lambda folder: (folder / "result.json").write_text("{}")
+    elif case == "partial":
+        controls.side_effect = lambda folder: (
+            folder / "result.json.recovery.json"
+        ).write_text("{}")
+    else:
+        controls.exit_code = 1
+    # The fake ledger helper reports an invalid result as a failed node call.
+    with pytest.raises((h.module.Blocked, subprocess.CalledProcessError)):
+        runner.run()
+    assert idle_harness.idle_launches == ["gemini"]
+    assert h.launches == ["codex"]
+    assert len(runner.state["completed"]) == 1
+    assert len(runner.state["attempts"]) == 2
+
+
+def test_agy_idle_lines_after_a_written_result_are_ordinary_success(
+    idle_harness: Any,
+) -> None:
+    h = idle_harness.harness
+    idle_harness.controls.with_result = True
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert idle_harness.idle_launches == ["gemini"]
+    assert len(runner.state["attempts"]) == 4
+    assert all(a["phase"] == "returned" for a in runner.state["attempts"])
+
+
+def test_idle_text_from_another_engine_is_not_retried(idle_harness: Any) -> None:
+    h = idle_harness.harness
+    idle_harness.controls.engine = "codex"
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="returned no result"):
+        runner.run()
+    assert idle_harness.idle_launches == ["codex"]
+    assert runner.state["attempts"][0]["phase"] == "returned"
+    assert runner.state["pending"]["phase"] == "returned"
+
+
+def test_checkpoint_blocked_without_result_stays_blocked_on_resume(
+    idle_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = idle_harness.harness
+    # A checkpoint written before idle-exit classification existed.
+    recognize = h.module.agy_idle_exit
+    monkeypatch.setattr(h.module, "agy_idle_exit", lambda log: False)
+    with pytest.raises(h.module.Blocked, match="returned no result"):
+        h.runner(h.args, h.directory).run()
+    saved = h.module.read(h.directory / "state.json")
+    assert saved["pending"]["phase"] == "returned"
+    monkeypatch.setattr(h.module, "agy_idle_exit", recognize)
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="returned no result"):
+        h.runner(h.args, h.directory).run()
+    assert idle_harness.idle_launches == ["gemini"]
+    assert h.launches == ["codex"]
+
+
 def load(name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
     assert spec and spec.loader

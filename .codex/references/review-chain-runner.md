@@ -159,6 +159,14 @@ For compatibility with the vendored run-end grammar, an un-converged completed
 fixed plan records `exhausted` as its terminal marker; checkpoint/output retain
 the more precise `plan-complete` reason. Neither grants extra passes.
 
+Agy's print mode ends the session when the root agent ends its turn, and
+discards background lanes or tests that are still running. The Agy launchers
+therefore tell Gemini to run all work in the foreground. When a Gemini worker
+still exits 0 without a result and its log shows Agy's idle-termination lines,
+the runner verifies the same unchanged evidence as the capacity fallback and
+relaunches that pass once, with the same round, budget and pinned settings.
+A second idle exit, any partial result, changed evidence, or a failed exit blocks.
+
 The runner never marks ready or merges, even on success. It reports the evidence
 to the caller, who follows the repository's finalization policy.
 
@@ -184,7 +192,7 @@ process-group cleanup; a preflight marker alone cannot authorize a retry.
 Recovery rechecks the live head and ledger, preserves the run ID,
 round, completed passes, original comment snapshots and attempt history, and
 launches only the owed pass. The retry has its own directory. It consumes the
-same remaining run budget. Outside the configured Codex capacity fallback above,
+same remaining run budget. Outside the Codex capacity fallback and the Agy idle-exit retry above,
 a missing result, a blocked result without a sealed completed candidate, unknown
 exit, interrupted reviewer, changed head or changed evidence still requires
 reconciliation; none is silently retried or converted into passing evidence.

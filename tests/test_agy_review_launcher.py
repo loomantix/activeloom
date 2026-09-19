@@ -26,6 +26,17 @@ LEDGER_VERSION = LEDGER_VERSION_FILE.read_text(encoding="utf-8").strip()
 # Continuation flags start a fresh one-shot only by their absence, so the
 # launcher is asserted against the CLI's complete resume surface.
 CONTINUATION_FLAGS = {"--continue", "-c", "--conversation", "--prompt-interactive", "-i"}
+# Agy's print mode ends the session with its turn and discards background work.
+FOREGROUND_INSTRUCTION = (
+    "Run every command, test, and review lane in the foreground so this turn waits for "
+    "each to finish: the session ends when this turn ends and discards unfinished "
+    "background work, so end the turn only after the canonical result is written."
+)
+AGY_REVIEW_LAUNCHERS = (
+    ".claude/skills/critique/scripts/run-agy-review.sh",
+    ".codex/skills/critique/scripts/run-agy-review.sh",
+    ".agents/skills/agent-loop/scripts/run-agy-review.sh",
+)
 
 
 def _trusted_environment(
@@ -657,8 +668,18 @@ def test_both_launchers_require_the_canonical_activeloom_surface(
     )
     assert (result.returncode == 0) is accepted, result.stderr
     assert argv_file.exists() is accepted
+    if accepted:
+        prompt = json.loads(argv_file.read_text(encoding="utf-8"))["argv"][-1]
+        assert FOREGROUND_INSTRUCTION in prompt
     if not accepted:
         assert "untrusted Git remote" in result.stderr
+
+
+@pytest.mark.parametrize("launcher", AGY_REVIEW_LAUNCHERS)
+def test_every_agy_review_prompt_keeps_background_work_in_the_turn(launcher: str) -> None:
+    source = (ROOT / launcher).read_text(encoding="utf-8")
+    prompt = source[source.index('prompt="') : source.index("# claude-cli-invocations:start")]
+    assert FOREGROUND_INSTRUCTION in prompt
 
 
 # --------------------------------------------------------------------------
