@@ -235,9 +235,9 @@ is not required on `PATH`.
 
 ## Model Selection
 
-The loop runs three model-backed aspects, and they are configured in two
-different places. This is the most common onboarding question, so it is spelled
-out here.
+The loop runs three model-backed aspects, and all three take their model and
+effort from the review profile. This is the most common onboarding question, so
+it is spelled out here.
 
 | Aspect         | Where the model is chosen                              | Effort control                                                                  |
 | -------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------- |
@@ -246,15 +246,23 @@ out here.
 | Claude review  | review profile `claude`, read by `claude_review_hook`  | same; a literal `--effort` is validated against `claude_effort_policy` when set |
 
 A review hook is a literal shell command, so it passes the pinned reviewer
-settings as ordinary flags, reading them from the variables above. These
-fragments show flag placement only; a working hook must also carry
-`AGENT_LOOP_REVIEW_PUSH_HELPER`, `AGENT_LOOP_REVIEW_RESULT_FILE`, and
-`write-result`, or contract-v3 preflight rejects it:
+settings as ordinary flags, reading them from the variables above. A hook that
+hard-codes a model or effort ignores the profile, and a capacity fallback
+switch cannot reach it. These fragments show flag placement only; a working
+hook must also carry `AGENT_LOOP_REVIEW_PUSH_HELPER`,
+`AGENT_LOOP_REVIEW_RESULT_FILE`, and `write-result`, or contract-v3 preflight
+rejects it:
 
 ```
-claude_review_hook = claude --print --effort low --model <model-id> /deepcritique ... </dev/null
-codex_review_hook  = codex exec -c model_reasoning_effort=medium ... /deepcritique ... </dev/null
+claude_review_hook = claude --print --model "$AGENT_LOOP_CLAUDE_MODEL" --effort "$AGENT_LOOP_CLAUDE_EFFORT" /deepcritique ... </dev/null
+codex_review_hook  = codex exec -m "$AGENT_LOOP_CODEX_MODEL" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... /deepcritique ... </dev/null
 ```
+
+A pinned model of `inherit` means "pass no model flag" so the CLI's own
+configured default applies; the default profile sets `codex.model` to
+`inherit`. A hook must drop its model flag for that value, for example with
+`$([ "$AGENT_LOOP_CODEX_MODEL" = inherit ] || printf -- '-m %s' "$AGENT_LOOP_CODEX_MODEL")`.
+The default worker does this itself.
 
 Every hook and the default worker run with stdin redirected from `/dev/null`;
 the wrapper does this itself, so the trailing `</dev/null` above is belt and
@@ -271,7 +279,10 @@ turn with that command still running: it exits 0 and writes no result. The
 doctor warns when a hook sets the variable to anything else or unsets it.
 
 `claude_effort_policy` constrains `claude_review_hook` only when
-`config_doctor = true`, since the doctor is what enforces it.
+`config_doctor = true`, since the doctor is what enforces it. When it is set,
+the doctor requires a literal `--effort <policy>` in the hook, so that hook
+keeps the literal effort instead of `$AGENT_LOOP_CLAUDE_EFFORT`; the profile's
+Claude effort is not checked against the policy.
 
 The default worker always runs on the pinned Claude worker settings. When
 `worker_hook` is set the wrapper runs that hook verbatim, and the hook reads
