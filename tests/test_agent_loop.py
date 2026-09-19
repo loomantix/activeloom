@@ -3056,6 +3056,39 @@ git commit -m 'fix: profile worker'
     assert "worker_model, worker_fallback_model, and worker_effort are ignored" in result.stderr
 
 
+def test_default_worker_omits_the_model_flag_for_an_inherited_model(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    profile = _profile(
+        claude={
+            "model": "claude-review",
+            "effort": "medium",
+            "worker": {"model": "inherit", "effort": "high"},
+        }
+    )
+    (tmp_path / "review-profile.json").write_text(json.dumps(profile), encoding="utf-8")
+    claude = consumer[2] / "claude"
+    _write_executable(
+        claude,
+        """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$AGENT_STATE_DIR/worker-args.log"
+printf 'done\\n' > result.py
+git add result.py
+git commit -m 'fix: inherited worker model'
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "16"],
+        issues=[_issue(16)],
+        config=_config(tmp_path, worker_hook=""),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    args = (consumer[3] / "worker-args.log").read_text(encoding="utf-8")
+    assert "--model" not in args
+    assert "--effort high" in args
+
+
 def _env_hook(engine: str) -> str:
     return (
         "env | grep -E '^AGENT_LOOP_(CLAUDE|CODEX|GEMINI|NONINTERACTIVE)' | sort "

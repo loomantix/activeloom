@@ -784,6 +784,8 @@ apply_review_settings() {
         [ -n "${!name:-}" ] || { echo "review settings are incomplete: $name" >&2; return 1; }
     done
     WORKER_MODEL="$AGENT_LOOP_CLAUDE_WORKER_MODEL"
+    # `inherit` passes no --model, so the CLI's own configured default applies.
+    [ "$WORKER_MODEL" != inherit ] || WORKER_MODEL=""
     WORKER_EFFORT="$AGENT_LOOP_CLAUDE_WORKER_EFFORT"
 }
 
