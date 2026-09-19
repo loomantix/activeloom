@@ -20,7 +20,7 @@ COPIES = [
     ROOT / ".claude/skills/critique/scripts",
     ROOT / ".codex/skills/critique/scripts",
 ]
-FILES = ("review-profile.py", "review-profile.defaults.json")
+FILES = ("review-profile.py", "review-profile.defaults.json", "review-settings.py")
 
 
 def load() -> ModuleType:

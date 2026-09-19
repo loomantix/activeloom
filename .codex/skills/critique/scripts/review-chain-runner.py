@@ -23,6 +23,7 @@ import tempfile
 import tarfile
 import uuid
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 LAUNCHERS = {
@@ -40,6 +41,7 @@ CONTROL_FILES = [
     "review-launch-state.py",
     "review-profile.py",
     "review-profile.defaults.json",
+    "review-settings.py",
     *LAUNCHERS.values(),
 ]
 # Only this inspected v1 pair supports legacy reconciliation. Git diagnostics
@@ -220,6 +222,7 @@ class Runner:
         )
         self.control = directory / self.state.get("control_directory", "control")
         self.installation_repaired = False
+        self._settings: ModuleType | None = None
 
     def persist(self) -> None:
         save(self.checkpoint, self.state)
@@ -708,49 +711,50 @@ class Runner:
             )
         return env
 
+    def settings_helper(self) -> ModuleType:
+        """Load the settings helper, from the verified control snapshot once pinned."""
+        if self._settings is None:
+            name = "review-settings.py"
+            expected = self.state.get("control_hashes", {}).get(name)
+            path = (self.control if expected else Path(__file__).resolve().parent) / name
+            digest(path)
+            source = path.read_bytes()
+            if expected and hashlib.sha256(source).hexdigest() != expected:
+                raise Blocked(
+                    "pinned controller or launcher changed; reconcile, do not relaunch"
+                )
+            module = ModuleType("review_settings")
+            module.__file__ = str(path)
+            exec(compile(source, str(path), "exec"), module.__dict__)
+            self._settings = module
+        return self._settings
+
+    def settings_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        helper = self.settings_helper()
+        try:
+            return getattr(helper, name)(*args, **kwargs)
+        except helper.SettingsError as error:
+            raise Blocked(str(error)) from error
+
     def review_settings(self, engine: str) -> dict[str, Any]:
         """Pin an engine's profile settings once; profile edits apply to the next run."""
-        pinned = self.state.setdefault("review_settings", {})
-        if engine not in pinned:
-            env = {
-                k: v
-                for k, v in os.environ.items()
-                if k not in ("ACTIVELOOM_REVIEW_MODEL", "ACTIVELOOM_REVIEW_EFFORT")
-            }
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-I",
-                    str(self.control / "review-profile.py"),
-                    "resolve",
-                    "--engine",
-                    engine,
-                    "--repo",
-                    self.args.repo,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                env=env,
-            )
-            if result.returncode:
-                # The helper's own diagnostics name only the profile path and
-                # the invalid setting, and the unconfigured case points at setup.
-                raise Blocked(
-                    result.stderr.strip() or f"review profile cannot resolve {engine}"
-                )
-            pinned[engine] = json.loads(result.stdout)
+        helper = self.settings_helper()
+        settings, created = self.settings_call(
+            "pin",
+            self.state,
+            engine,
+            "reviewer",
+            lambda: helper.resolve(
+                engine, "reviewer", self.args.repo, self.control / "review-profile.py"
+            ),
+        )
+        if created:
             self.persist()
-        return dict(pinned[engine])
+        return dict(settings)
 
     def selected_settings(self, engine: str) -> dict[str, Any]:
-        settings = self.review_settings(engine)
-        if engine in self.state.get("fallback_engines", []):
-            fallback = settings.get("fallback")
-            if not isinstance(fallback, dict):
-                raise Blocked("pinned fallback settings are missing")
-            return {**fallback, "engine": engine, "source": "capacity fallback"}
-        return settings
+        self.review_settings(engine)
+        return dict(self.settings_call("selected", self.state, engine, "reviewer"))
 
     def launcher_command(self, engine: str, head: str, number: int) -> list[str]:
         return [
@@ -1051,14 +1055,15 @@ class Runner:
         """Switch once to a pinned fallback without changing run, round or history."""
         self.verify_control()
         engine = pending["engine"]
-        settings = self.review_settings(engine)
-        if engine != "codex" or not settings.get("fallback"):
+        self.review_settings(engine)
+        if engine != "codex":
             raise Blocked(
                 "model is at capacity; no Codex fallback was pinned for this run"
             )
         recovery = pending.get("capacity_recovery")
-        if engine in self.state.get("fallback_engines", []) and not recovery:
-            raise Blocked("configured fallback is also at capacity; no further retry")
+        self.settings_call(
+            "check_fallback", self.state, engine, "reviewer", in_progress=bool(recovery)
+        )
         folder = self.directory / pending["folder"]
         attempt = self.state["attempts"][-1]
         if attempt.get("attempt_id") != pending.get("attempt_id"):
@@ -1090,14 +1095,13 @@ class Runner:
                 self.copy_recovery_snapshot(
                     folder / name, target, attempt["attempt_id"]
                 )
-        self.state.setdefault("fallback_engines", []).append(engine)
+        fallback = self.settings_call("switch_to_fallback", self.state, engine, "reviewer")
         pending.update(
             folder=str(retry.relative_to(self.directory)), phase="prepared",
             capacity_origin=attempt["attempt_id"],
         )
         pending.pop("capacity_recovery")
         self.persist()
-        fallback = settings["fallback"]
         print(
             f"Capacity fallback: {engine} model {fallback['model']}, effort {fallback['effort']}",
             flush=True,
@@ -1514,15 +1518,10 @@ class Runner:
         self.persist()
 
     def settings_line(self, engine: str) -> str:
-        settings = self.state.get("review_settings", {}).get(engine)
+        settings = self.settings_call("selected", self.state, engine, "reviewer")
         if not settings:
             return "Reviewer settings: not recorded by this run.\n"
-        if engine in self.state.get("fallback_engines", []):
-            settings = {**settings["fallback"], "source": "capacity fallback"}
-        return (
-            f"Reviewer settings: model {settings['model']}, "
-            f"effort {settings['effort']} ({settings['source']}).\n"
-        )
+        return f"Reviewer settings: {self.settings_call('describe', settings)}.\n"
 
     def run(self) -> str:
         self.initialize()
