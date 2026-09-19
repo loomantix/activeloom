@@ -3264,6 +3264,8 @@ def test_resume_keeps_the_pinned_settings_after_the_profile_changes(
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
     fail_marker.unlink()
     # A profile edit, or its removal, applies to the next run, not this one.
+    # Only the run state may supply the pins, not the previous pin file.
+    (state_file.parent / "review-settings.json").unlink()
     (tmp_path / "review-profile.json").unlink()
 
     resumed = _run(

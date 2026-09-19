@@ -145,11 +145,13 @@ issue and reports the model and effort now in use:
 
 - Worker: a failed attempt whose log matches the capacity patterns and left the
   worktree unchanged retries on the fallback, within `worker_retries`.
-- Reviewer (contract v3): a hook that exits `1` without a result, whose log's
-  last terminal JSON event is Codex's `Selected model is at capacity` error,
-  and that left no commit, push, ledger thread, or PR comment reruns in the same
-  round on the same budget (`retry: model-capacity`). A second capacity
-  rejection stops with `hook-failed`.
+- Reviewer (contract v3, Codex only; the profile pins no Claude reviewer
+  fallback): a hook that exits `1` without a result, whose log's last terminal
+  JSON event is Codex's `Selected model is at capacity` error, and that left no
+  commit, push, ledger thread, or PR comment reruns in the same round on the
+  same budget (`retry: model-capacity`). The hook must run `codex exec --json`
+  so that event reaches its log; plain output never matches. Without a pinned
+  fallback, or on a second rejection, the pass stops with `hook-failed`.
 
 ## Review Budget
 
@@ -255,7 +257,7 @@ rejects it:
 
 ```
 claude_review_hook = claude --print $([ "$AGENT_LOOP_CLAUDE_MODEL" = inherit ] || printf -- '--model %s' "$AGENT_LOOP_CLAUDE_MODEL") --effort "$AGENT_LOOP_CLAUDE_EFFORT" /deepcritique ... </dev/null
-codex_review_hook  = codex exec $([ "$AGENT_LOOP_CODEX_MODEL" = inherit ] || printf -- '-m %s' "$AGENT_LOOP_CODEX_MODEL") -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... /deepcritique ... </dev/null
+codex_review_hook  = codex exec --json $([ "$AGENT_LOOP_CODEX_MODEL" = inherit ] || printf -- '-m %s' "$AGENT_LOOP_CODEX_MODEL") -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... /deepcritique ... </dev/null
 ```
 
 A pinned model of `inherit` means "pass no model flag" so the CLI's own
