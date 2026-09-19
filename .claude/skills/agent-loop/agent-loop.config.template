@@ -54,13 +54,15 @@ review_timeout_seconds = 7200
 # profile, pinned at startup and exported as AGENT_LOOP_{CLAUDE,CODEX}_MODEL and
 # AGENT_LOOP_{CLAUDE,CODEX}_EFFORT. A review hook passes them as ordinary flags;
 # a hard-coded model or effort ignores the profile and its capacity fallback.
+# The Codex fallback needs `codex exec --json`: only its JSON capacity event
+# triggers the switch.
 # A model of `inherit` means pass no model flag (see "Model Selection" in
 # SKILL.md). These fragments show flag placement only; a working hook must also
 # carry AGENT_LOOP_REVIEW_PUSH_HELPER, AGENT_LOOP_REVIEW_RESULT_FILE, and
 # write-result, or preflight rejects it.
 #
 #   claude_review_hook = claude --print --model "$AGENT_LOOP_CLAUDE_MODEL" --effort "$AGENT_LOOP_CLAUDE_EFFORT" /deepcritique ... </dev/null
-#   codex_review_hook  = codex exec -m "$AGENT_LOOP_CODEX_MODEL" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... /deepcritique ... </dev/null
+#   codex_review_hook  = codex exec --json -m "$AGENT_LOOP_CODEX_MODEL" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... /deepcritique ... </dev/null
 #
 # The wrapper runs every hook and the default worker with stdin from /dev/null
 # (`codex exec` reads stdin to EOF when it is not a TTY and would otherwise
