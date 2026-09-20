@@ -36,6 +36,13 @@ unset AGENT_LOOP_REVIEW_BASE AGENT_LOOP_REVIEW_BASE_SHA AGENT_LOOP_REVIEW_ENGINE
 # honoured only for such a child and only under log_root.
 INHERITED_EVENTS_FILE="${AGENT_LOOP_EVENTS_FILE:-}"
 unset AGENT_LOOP_EVENTS_FILE
+# Reviewer and worker settings come only from this run's pins.
+for settings_engine in CLAUDE CODEX GEMINI; do
+    for settings_field in MODEL EFFORT SOURCE WORKER_MODEL WORKER_EFFORT WORKER_SOURCE; do
+        unset "AGENT_LOOP_${settings_engine}_${settings_field}"
+    done
+done
+unset AGENT_LOOP_NONINTERACTIVE
 
 MAX_ITERATIONS=10
 ITERATION=0
@@ -153,6 +160,7 @@ REVIEW_LEDGER="$PROJECT_DIR/.claude/skills/critique/scripts/review-ledger.js"
 RUN_STATE_HELPER="$PROJECT_DIR/.claude/skills/agent-loop/scripts/agent-loop-state.py"
 REVIEW_PUSH_HELPER="$PROJECT_DIR/.claude/skills/agent-loop/scripts/review-push.sh"
 CONFIG_DOCTOR_HELPER="$PROJECT_DIR/.claude/skills/agent-loop/scripts/config-doctor.py"
+SETTINGS_HELPER="$PROJECT_DIR/.claude/skills/critique/scripts/review-settings.py"
 HOOK_GIT_GUARD="$SCRIPT_DIR/hook-git-guard"
 HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
 
@@ -162,9 +170,11 @@ VALIDATION_HOOK=""
 CLAUDE_REVIEW_HOOK=""
 CODEX_REVIEW_HOOK=""
 WORKER_HOOK=""
+# The default worker's model and effort, set from the pinned Claude worker
+# settings. The worker config keys are accepted but ignored.
 WORKER_MODEL=""
-WORKER_FALLBACK_MODEL=""
 WORKER_EFFORT=""
+IGNORED_WORKER_SETTINGS=false
 WORKER_RETRIES=1
 WORKER_TIMEOUT_SECONDS=3600
 HOOK_TIMEOUT_SECONDS=3600
@@ -204,9 +214,9 @@ assign_config() {
         claude_review_hook) CLAUDE_REVIEW_HOOK="$value" ;;
         codex_review_hook) CODEX_REVIEW_HOOK="$value" ;;
         worker_hook) WORKER_HOOK="$value" ;;
-        worker_model) WORKER_MODEL="$value" ;;
-        worker_fallback_model) WORKER_FALLBACK_MODEL="$value" ;;
-        worker_effort) WORKER_EFFORT="$value" ;;
+        worker_model|worker_fallback_model|worker_effort)
+            [ -z "$value" ] || IGNORED_WORKER_SETTINGS=true
+            ;;
         worker_retries) WORKER_RETRIES="$value" ;;
         worker_timeout_seconds) WORKER_TIMEOUT_SECONDS="$value" ;;
         hook_timeout_seconds) HOOK_TIMEOUT_SECONDS="$value" ;;
@@ -373,9 +383,8 @@ done
 [ "$REVIEW_MAX_ROUNDS" -le 4 ] || { echo "review_max_rounds cannot exceed the Deep review cap of 4" >&2; exit 1; }
 [ "$REVIEW_TIMEOUT_SECONDS" -gt 0 ] || { echo "review_timeout_seconds must be a positive integer" >&2; exit 1; }
 case "$RETRY_ON_TIMEOUT" in true|false) ;; *) echo "retry_on_timeout must be true or false" >&2; exit 1 ;; esac
-if [ -n "$WORKER_EFFORT" ] && ! [[ "$WORKER_EFFORT" =~ ^[A-Za-z0-9_-]+$ ]]; then
-    echo "worker_effort must be a single flag value: $WORKER_EFFORT" >&2
-    exit 1
+if [ "$IGNORED_WORKER_SETTINGS" = true ]; then
+    echo "warning: worker_model, worker_fallback_model, and worker_effort are ignored; the default worker takes its model and effort from the review profile" >&2
 fi
 case "$CONFIG_DOCTOR" in true|false) ;; *) echo "config_doctor must be true or false" >&2; exit 1 ;; esac
 case "$DEPENDENCY_GATE" in ready|merged-to-base|batch-stack) ;; *) echo "dependency_gate must be ready, merged-to-base, or batch-stack" >&2; exit 1 ;; esac
@@ -401,6 +410,7 @@ fi
 [ -x "$RUN_STATE_HELPER" ] || { echo "agent-loop run-state helper not found or not executable: $RUN_STATE_HELPER" >&2; exit 1; }
 [ -x "$REVIEW_PUSH_HELPER" ] || { echo "agent-loop review push helper not found or not executable: $REVIEW_PUSH_HELPER" >&2; exit 1; }
 [ -x "$CONFIG_DOCTOR_HELPER" ] || { echo "agent-loop config doctor not found or not executable: $CONFIG_DOCTOR_HELPER" >&2; exit 1; }
+[ -f "$SETTINGS_HELPER" ] && [ -r "$SETTINGS_HELPER" ] || { echo "review settings helper not found or not readable: $SETTINGS_HELPER" >&2; exit 1; }
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
 [ -n "$VALIDATION_HOOK" ] || { echo "validation_hook must be configured before running agent-loop" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
@@ -737,6 +747,7 @@ on_exit() {
     if [ "$rc" -ne 0 ] && [ "$RECOVERY_EMITTED" = false ] && [ -n "$ACTIVE_WORKTREE" ]; then
         recovery_message "agent-loop aborted (exit $rc) with issue #${SELECTED_ID:-unknown} claimed." internal-error
     fi
+    [ -z "${SETTINGS_RUN_DIR:-}" ] || rm -rf -- "$SETTINGS_RUN_DIR"
     # Every stop path ends here, including errexit aborts, so this is the one
     # place a failed batch issue can be parked. An interrupt is never parked.
     if [ "$rc" -ne 0 ] && [ "$INTERRUPTED" = false ] && \
@@ -747,6 +758,120 @@ on_exit() {
 }
 trap on_interrupt INT TERM
 trap on_exit EXIT
+
+# Reviewer and worker settings. The loop's reviewers are Codex and Claude and
+# its default worker is the Claude CLI; a worker_hook receives the same Claude
+# worker settings.
+SETTINGS_REVIEWERS=(codex claude)
+SETTINGS_WORKER=claude
+EXIT_SETTINGS_UNAVAILABLE=4
+SETTINGS_FALLBACK_REASON=""
+
+# Export the helper's env output. Its keys come from a fixed allowlist and its
+# values are shell-quoted, so each line is evaluated only after its key checks.
+apply_review_settings() {
+    local output="$1" line name
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if ! [[ "$line" =~ ^AGENT_LOOP_(CLAUDE|CODEX|GEMINI)(_WORKER)?_(MODEL|EFFORT|SOURCE)= ]]; then
+            echo "review settings helper printed an unexpected line" >&2
+            return 1
+        fi
+        eval "export $line"
+    done <<<"$output"
+    for name in AGENT_LOOP_CODEX_MODEL AGENT_LOOP_CODEX_EFFORT AGENT_LOOP_CLAUDE_MODEL \
+                AGENT_LOOP_CLAUDE_EFFORT AGENT_LOOP_CLAUDE_WORKER_MODEL AGENT_LOOP_CLAUDE_WORKER_EFFORT; do
+        [ -n "${!name:-}" ] || { echo "review settings are incomplete: $name" >&2; return 1; }
+    done
+    WORKER_MODEL="$AGENT_LOOP_CLAUDE_WORKER_MODEL"
+    # `inherit` passes no --model, so the CLI's own configured default applies.
+    [ "$WORKER_MODEL" != inherit ] || WORKER_MODEL=""
+    WORKER_EFFORT="$AGENT_LOOP_CLAUDE_WORKER_EFFORT"
+}
+
+# Pin every setting the run needs in the pin file and export it. The helper
+# resolves only pairs the file does not hold yet. When the profile cannot
+# supply them, print one line to act on and return EXIT_SETTINGS_UNAVAILABLE.
+pin_review_settings() {
+    local pin_file="$1" output errors status=0 missing profile reason
+    errors="$(mktemp)" || return 1
+    output="$(python3 "$SETTINGS_HELPER" pin --pin-file "$pin_file" --repo "$GH_REPO" \
+        --reviewer "${SETTINGS_REVIEWERS[@]}" --worker "$SETTINGS_WORKER" \
+        --format env 2>"$errors")" || status=$?
+    reason="$(sed -n '1s/^review settings: //p' "$errors")"
+    case "$status" in
+        0)
+            sed 's/^/   /' "$errors"
+            rm -f -- "$errors"
+            apply_review_settings "$output"
+            return
+            ;;
+        3)
+            rm -f -- "$errors"
+            missing="$(jq -r '.missing | join(", ")' <<<"$output" 2>/dev/null)" || missing=""
+            profile="$(jq -r '.path // empty' <<<"$output" 2>/dev/null)" || profile=""
+            echo "agent-loop: the review profile${profile:+ at $profile} is missing ${missing:-reviewer and worker settings}; run the review-setup skill to set them, then rerun agent-loop." >&2
+            return "$EXIT_SETTINGS_UNAVAILABLE"
+            ;;
+        1)
+            rm -f -- "$errors"
+            echo "agent-loop: ${reason:-a required engine is unavailable}; then rerun agent-loop." >&2
+            return "$EXIT_SETTINGS_UNAVAILABLE"
+            ;;
+    esac
+    cat "$errors" >&2
+    rm -f -- "$errors"
+    echo "could not pin review settings in $pin_file" >&2
+    return 1
+}
+
+# After a recognized capacity rejection, switch one engine to its pinned
+# fallback and record the switch. Returns 1 when the helper refuses: no
+# fallback was pinned, or the run already used it.
+switch_review_settings_fallback() {
+    local engine="$1" role="$2" output errors status=0
+    errors="$(mktemp)" || return 2
+    output="$(python3 "$SETTINGS_HELPER" fallback --pin-file "$SETTINGS_PIN_FILE" \
+        --engine "$engine" --role "$role" --format env 2>"$errors")" || status=$?
+    SETTINGS_FALLBACK_REASON="$(sed -n '1s/^review settings: //p' "$errors")"
+    case "$status" in
+        0) ;;
+        1) rm -f -- "$errors"; return 1 ;;
+        *) cat "$errors" >&2; rm -f -- "$errors"; return 2 ;;
+    esac
+    sed 's/^/   /' "$errors"
+    rm -f -- "$errors"
+    apply_review_settings "$output" || return 2
+    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+        python3 "$RUN_STATE_HELPER" settings-save --file "$AGENT_LOOP_RUN_STATE_FILE" \
+            --pin-file "$SETTINGS_PIN_FILE" || return 2
+    fi
+}
+
+export AGENT_LOOP_NONINTERACTIVE=1
+SETTINGS_RUN_DIR=""
+STARTUP_PIN_FILE=""
+SETTINGS_PIN_FILE=""
+if [ -n "$RESUME_RUN_FILE" ]; then
+    # A resumed run launches with the settings its checkpoint pinned. Only a
+    # checkpoint that predates them resolves them from the profile.
+    SETTINGS_PIN_FILE="$resume_log_dir/review-settings.json"
+    python3 "$RUN_STATE_HELPER" settings-restore --file "$RESUME_RUN_FILE" \
+        --pin-file "$SETTINGS_PIN_FILE" || exit 1
+    pin_review_settings "$SETTINGS_PIN_FILE" || exit $?
+    python3 "$RUN_STATE_HELPER" settings-save --file "$RESUME_RUN_FILE" \
+        --pin-file "$SETTINGS_PIN_FILE" || exit 1
+    if [ "$(jq -r '.reviewSettings != null' <<<"$RESUME_STATE_JSON")" = true ]; then
+        echo "   Review settings restored from run state: Codex $AGENT_LOOP_CODEX_MODEL/$AGENT_LOOP_CODEX_EFFORT," \
+            "Claude $AGENT_LOOP_CLAUDE_MODEL/$AGENT_LOOP_CLAUDE_EFFORT, worker $WORKER_MODEL/$WORKER_EFFORT"
+    fi
+else
+    # Pinned before any issue is selected or claimed. Each issue starts from a
+    # copy of these pins, so a fallback switch stays within its issue.
+    SETTINGS_RUN_DIR="$(mktemp -d)" || exit 1
+    STARTUP_PIN_FILE="$SETTINGS_RUN_DIR/review-settings.json"
+    pin_review_settings "$STARTUP_PIN_FILE" || exit $?
+fi
 
 already_processed() {
     local candidate="$1" seen
@@ -1480,13 +1605,13 @@ worker_handoff_classification() {
 }
 
 run_worker() {
-    local start_sha="$1" attempt=0 model="$WORKER_MODEL" status log command retry
+    local start_sha="$1" attempt=0 status log command retry switch_status
     WORKER_BAILED=false
     WORKER_BAIL_CLASSIFICATION=""
     while [ "$attempt" -le "$WORKER_RETRIES" ]; do
         attempt=$((attempt + 1))
         log="$AGENT_LOOP_LOG_DIR/worker-attempt-$attempt.log"
-        command="$(worker_command "$model")"
+        command="$(worker_command "$WORKER_MODEL")"
         status=0
         run_bounded_hook "worker attempt $attempt" "$command" "$WORKER_TIMEOUT_SECONDS" "$log" || status=$?
         # The handoff file, not the exit status, says the worker bailed: a
@@ -1519,13 +1644,22 @@ run_worker() {
             [ "$RETRY_ON_TIMEOUT" = true ] && retry=true
         elif grep -Eqi 'capacity|overloaded|rate.?limit|temporarily unavailable|resource exhausted' "$log"; then
             retry=true
-            [ -n "$WORKER_FALLBACK_MODEL" ] && model="$WORKER_FALLBACK_MODEL"
+            switch_status=0
+            switch_review_settings_fallback "$SETTINGS_WORKER" worker || switch_status=$?
+            case "$switch_status" in
+                0) ;;
+                1) echo "   ${SETTINGS_FALLBACK_REASON:-no worker fallback}; retrying on the settings in use" ;;
+                *)
+                    recovery_message "Could not switch the worker to its pinned fallback." worker-failed
+                    return 1
+                    ;;
+            esac
         fi
         if [ "$retry" != true ] || [ "$attempt" -gt "$WORKER_RETRIES" ]; then
             recovery_message "Worker exited $status without recoverable retry conditions." worker-failed
             return "$status"
         fi
-        echo -e "${YELLOW}›${NC} Retrying worker after bounded capacity/timeout failure (model: ${model:-default})"
+        echo -e "${YELLOW}›${NC} Retrying worker after bounded capacity/timeout failure (model: ${WORKER_MODEL:-default})"
         [ "$RETRY_DELAY_SECONDS" -gt 0 ] && sleep "$RETRY_DELAY_SECONDS"
     done
 }
@@ -1904,7 +2038,7 @@ run_review_pass() {
     local boundary_status
     local review_pass_launcher_seconds
     local hook_log hook_attempt pre_pass_ledger_shape_file="" pre_pass_bodies_file=""
-    local hook_status
+    local hook_status switch_status
 
     prepare_review_pass_budget || return 1
 
@@ -2000,6 +2134,36 @@ run_review_pass() {
             fi
             return 1
         elif [ "$hook_status" -ne 0 ]; then
+            # A model-capacity rejection that changed nothing switches the
+            # engine to its pinned fallback once and reruns the pass in the
+            # same round on the same budget. Only Codex's terminal JSON
+            # capacity event counts, as in the review-chain runner.
+            if [ "$hook_status" -eq 1 ] && [ "$REVIEW_CONTRACT_VERSION" = 3 ] && \
+               [ ! -e "$result_file" ] && [ ! -L "$result_file" ] && \
+               python3 "$RUN_STATE_HELPER" capacity-rejected --log "$hook_log" && \
+               review_pass_left_no_trace "$before_sha" "$pre_pass_ledger_shape_file" \
+                   "$pre_pass_bodies_file" "$review_push_state_file"; then
+                switch_status=0
+                switch_review_settings_fallback "$slug" reviewer || switch_status=$?
+                if [ "$switch_status" -eq 1 ]; then
+                    recovery_message "$hook_failure_description failed in review round $round: model capacity (${SETTINGS_FALLBACK_REASON:-no fallback})." hook-failed
+                    return 1
+                elif [ "$switch_status" -ne 0 ]; then
+                    recovery_message "Could not switch the $engine review to its pinned fallback in round $round." internal-error
+                    return 1
+                fi
+                echo -e "${YELLOW}›${NC} retry: model-capacity ($engine, round $round); the pass changed nothing"
+                record_phase_event retry "$hook_description (round $round)"
+                emit_event retry --argjson issue "${SELECTED_ID:-null}" --argjson round "$round" \
+                    --arg engine "$slug" --arg reason model-capacity
+                cp -- "$hook_log" "${hook_log%.log}-capacity.log" 2>/dev/null || true
+                printf '%s\n' "$before_sha" > "$review_push_state_file" || {
+                    recovery_message "Could not reset the $engine review push checkpoint for its retry." internal-error
+                    return 1
+                }
+                prepare_review_pass_budget || return 1
+                continue
+            fi
             recovery_message "$hook_failure_description failed in review round $round." hook-failed
             return 1
         fi
@@ -3782,6 +3946,12 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     fi
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
     write_wrapper_pid
+    SETTINGS_PIN_FILE="$AGENT_LOOP_LOG_DIR/review-settings.json"
+    if ! cp -- "$STARTUP_PIN_FILE" "$SETTINGS_PIN_FILE" || \
+       ! pin_review_settings "$SETTINGS_PIN_FILE"; then
+        recovery_message "Could not copy the run's pinned review settings for issue #$SELECTED_ID." checkpoint-failed
+        exit 1
+    fi
     LAST_VALIDATED_HEAD=""
     LAST_VALIDATED_BASE=""
     LAST_VALIDATED_LABEL=""
@@ -3893,7 +4063,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \
             --head-sha "$initial_pr_sha" \
             --review-deadline-epoch "$REVIEW_DEADLINE_EPOCH" \
-            --review-max-rounds "$REVIEW_MAX_ROUNDS" >/dev/null || {
+            --review-max-rounds "$REVIEW_MAX_ROUNDS" \
+            --review-settings-file "$SETTINGS_PIN_FILE" >/dev/null || {
             recovery_message "Could not create the private review run-state checkpoint." checkpoint-failed
             exit 1
         }

@@ -257,35 +257,15 @@ def test_doctor_warns_when_a_hook_overrides_foreground_tasks(
     ) == warns
 
 
-def test_doctor_ties_worker_effort_to_the_claude_effort_policy(tmp_path: Path) -> None:
+def test_doctor_leaves_the_ignored_worker_keys_to_the_wrapper(tmp_path: Path) -> None:
     project = _project(tmp_path)
     config = project / ".claude/skills/agent-loop/agent-loop.config"
     base = config.read_text(encoding="utf-8")
 
-    # Empty is allowed but not silent: the default worker's effort then comes
-    # from the launch environment, which nothing records.
-    result = _run(project)
-    assert result.returncode == 0, result.stderr
-    assert "warning: worker_effort is empty" in result.stderr
-
-    config.write_text(base + "worker_effort = low\n", encoding="utf-8")
-    result = _run(project)
-    assert result.returncode == 0, result.stderr
-    assert "worker_effort" not in result.stderr
-
-    config.write_text(base + "worker_effort = high\n", encoding="utf-8")
-    result = _run(project)
-    assert result.returncode != 0
-    assert "worker_effort (high) must match claude_effort_policy (low)" in result.stderr
-
-    # A worker_hook pins its own model and effort; the policy does not reach it.
-    config.write_text(
-        base + "worker_effort = high\nworker_hook = my-worker\n", encoding="utf-8"
-    )
-    result = _run(project)
-    assert result.returncode == 0, result.stderr
-
-    config.write_text(base + "worker_effort = medium --foo\n", encoding="utf-8")
-    result = _run(project)
-    assert result.returncode != 0
-    assert "worker_effort must be a single flag value" in result.stderr
+    # Worker model and effort come from the review profile, so the doctor
+    # neither warns about an empty worker_effort nor enforces a stale one.
+    for extra in ("", "worker_effort = high\n", "worker_effort = medium --foo\n"):
+        config.write_text(base + extra, encoding="utf-8")
+        result = _run(project)
+        assert result.returncode == 0, result.stderr
+        assert "worker_effort" not in result.stderr

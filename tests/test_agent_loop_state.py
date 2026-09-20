@@ -535,3 +535,167 @@ def test_converged_state_requires_and_preserves_review_result_hashes(
     assert finalized.returncode == 0, finalized.stderr
     value = json.loads(state.read_text(encoding="utf-8"))
     assert value["codexResultSha256"] == "c" * 64
+
+
+PINS = {
+    "version": 1,
+    "repo": "example/repository",
+    "review_settings": {
+        "claude": {"engine": "claude", "model": "opus", "effort": "medium", "source": "user profile"},
+        "codex": {
+            "engine": "codex",
+            "model": "gpt-review",
+            "effort": "high",
+            "fallback": {"model": "gpt-fallback", "effort": "medium"},
+            "source": "user profile",
+        },
+    },
+    "worker_settings": {
+        "claude": {
+            "engine": "claude",
+            "role": "worker",
+            "model": "opus",
+            "effort": "high",
+            "source": "user profile",
+        }
+    },
+}
+
+
+def _create_with_settings(tmp_path: Path, pins: dict[str, object] | None = None) -> Path:
+    state = tmp_path / "logs" / "run-state.json"
+    pin_file = tmp_path / "pins.json"
+    pin_file.parent.mkdir(parents=True, exist_ok=True)
+    pin_file.write_text(json.dumps(PINS if pins is None else pins), encoding="utf-8")
+    created = _run(
+        "create", "--file", str(state), "--run-id", "run-1",
+        "--repo", "example/repository", "--issue", "7",
+        "--issue-title-sha256", TITLE_HASH, "--issue-body-sha256", BODY_HASH,
+        "--base-branch", "main", "--branch", "agent-loop/issue-7-run-1",
+        "--worktree", str(tmp_path / "worktree"), "--log-dir", str(tmp_path / "logs"),
+        "--pr", "9", "--pr-url", "https://example.invalid/pr/9",
+        "--base-sha", BASE, "--head-sha", HEAD,
+        "--review-settings-file", str(pin_file),
+    )
+    assert created.returncode == 0, created.stderr
+    return state
+
+
+def test_state_records_pinned_settings_and_keeps_them_across_updates(tmp_path: Path) -> None:
+    state = _create_with_settings(tmp_path)
+    assert json.loads(state.read_text(encoding="utf-8"))["reviewSettings"] == PINS
+    updated = _run("update", "--file", str(state), "--phase", "reviewing", "--review-engine", "codex")
+    assert updated.returncode == 0, updated.stderr
+    assert json.loads(state.read_text(encoding="utf-8"))["reviewSettings"] == PINS
+
+
+def test_state_rejects_malformed_pinned_settings(tmp_path: Path) -> None:
+    broken = json.loads(json.dumps(PINS))
+    broken["review_settings"]["claude"].pop("effort")
+    pin_file = tmp_path / "pins.json"
+    pin_file.write_text(json.dumps(broken), encoding="utf-8")
+    state = tmp_path / "run-state.json"
+    created = _run(
+        "create", "--file", str(state), "--run-id", "run-1",
+        "--repo", "example/repository", "--issue", "7",
+        "--issue-title-sha256", TITLE_HASH, "--issue-body-sha256", BODY_HASH,
+        "--base-branch", "main", "--branch", "b", "--worktree", str(tmp_path / "w"),
+        "--log-dir", str(tmp_path / "l"), "--pr", "9", "--pr-url", "u",
+        "--base-sha", BASE, "--head-sha", HEAD, "--review-settings-file", str(pin_file),
+    )
+    assert created.returncode != 0
+    assert "reviewSettings" in created.stderr
+    assert not state.exists()
+
+    switched_without_fallback = json.loads(json.dumps(PINS))
+    switched_without_fallback["fallback_engines"] = ["claude"]
+    good = _create_with_settings(tmp_path / "ok")
+    pin_file.write_text(json.dumps(switched_without_fallback), encoding="utf-8")
+    saved = _run("settings-save", "--file", str(good), "--pin-file", str(pin_file))
+    assert saved.returncode != 0
+    assert "missing fallback" in saved.stderr
+
+
+def test_settings_save_accepts_a_fallback_switch_but_never_a_changed_pin(tmp_path: Path) -> None:
+    state = _create_with_settings(tmp_path)
+    pin_file = tmp_path / "pins.json"
+
+    changed = json.loads(json.dumps(PINS))
+    changed["review_settings"]["codex"]["model"] = "gpt-other"
+    pin_file.write_text(json.dumps(changed), encoding="utf-8")
+    refused = _run("settings-save", "--file", str(state), "--pin-file", str(pin_file))
+    assert refused.returncode != 0
+    assert "already pinned" in refused.stderr
+
+    switched = json.loads(json.dumps(PINS))
+    switched["fallback_engines"] = ["codex"]
+    pin_file.write_text(json.dumps(switched), encoding="utf-8")
+    saved = _run("settings-save", "--file", str(state), "--pin-file", str(pin_file))
+    assert saved.returncode == 0, saved.stderr
+    assert json.loads(state.read_text(encoding="utf-8"))["reviewSettings"] == switched
+
+    pin_file.write_text(json.dumps(PINS), encoding="utf-8")
+    undone = _run("settings-save", "--file", str(state), "--pin-file", str(pin_file))
+    assert undone.returncode != 0
+
+
+def test_settings_restore_writes_the_recorded_pins_for_a_resume(tmp_path: Path) -> None:
+    state = _create_with_settings(tmp_path)
+    pin_file = tmp_path / "logs" / "review-settings.json"
+
+    restored = _run("settings-restore", "--file", str(state), "--pin-file", str(pin_file))
+    assert restored.returncode == 0, restored.stderr
+    assert json.loads(pin_file.read_text(encoding="utf-8")) == PINS
+    assert stat.S_IMODE(pin_file.stat().st_mode) == 0o600
+
+    # A pin file that disagrees with the run state is replaced by it.
+    conflicting = json.loads(json.dumps(PINS))
+    conflicting["worker_settings"]["claude"]["model"] = "edited"
+    pin_file.write_text(json.dumps(conflicting), encoding="utf-8")
+    assert _run("settings-restore", "--file", str(state), "--pin-file", str(pin_file)).returncode == 0
+    assert json.loads(pin_file.read_text(encoding="utf-8")) == PINS
+
+    # A switch recorded in the pin file just before an interruption is kept.
+    switched = json.loads(json.dumps(PINS))
+    switched["fallback_engines"] = ["codex"]
+    pin_file.write_text(json.dumps(switched), encoding="utf-8")
+    assert _run("settings-restore", "--file", str(state), "--pin-file", str(pin_file)).returncode == 0
+    assert json.loads(pin_file.read_text(encoding="utf-8")) == switched
+    assert json.loads(state.read_text(encoding="utf-8"))["reviewSettings"] == switched
+
+
+def test_settings_restore_leaves_a_state_without_pins_to_the_profile(tmp_path: Path) -> None:
+    state = tmp_path / "run-state.json"
+    created = _run(
+        "create", "--file", str(state), "--run-id", "run-1",
+        "--repo", "example/repository", "--issue", "7",
+        "--issue-title-sha256", TITLE_HASH, "--issue-body-sha256", BODY_HASH,
+        "--base-branch", "main", "--branch", "b", "--worktree", str(tmp_path / "w"),
+        "--log-dir", str(tmp_path / "l"), "--pr", "9", "--pr-url", "u",
+        "--base-sha", BASE, "--head-sha", HEAD,
+    )
+    assert created.returncode == 0, created.stderr
+    pin_file = tmp_path / "review-settings.json"
+    assert _run("settings-restore", "--file", str(state), "--pin-file", str(pin_file)).returncode == 0
+    assert not pin_file.exists()
+
+
+def test_capacity_recognizer_reads_only_the_terminal_codex_event(tmp_path: Path) -> None:
+    log = tmp_path / "hook.log"
+    rejection = json.dumps(
+        {"type": "turn.failed", "error": {"message": "Selected model is at capacity. Please try a different model."}}
+    )
+
+    def recognized(text: str) -> bool:
+        log.write_text(text, encoding="utf-8")
+        return _run("capacity-rejected", "--log", str(log)).returncode == 0
+
+    assert recognized(f'{{"type":"thread.started"}}\n{rejection}\n')
+    assert recognized(
+        '{"type":"error","message":"Selected model is at capacity. Please try a different model."}\n'
+    )
+    assert not recognized(f'{rejection}\n{{"type":"turn.started"}}\n')
+    assert not recognized("Selected model is at capacity. Please try a different model.\n")
+    assert not recognized('{"type":"turn.failed","error":{"message":"rate limited"}}\n')
+    log.unlink()
+    assert _run("capacity-rejected", "--log", str(log)).returncode == 1
