@@ -16,10 +16,15 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$engine" in
-    gemini) model="gemini-3.7-flash-high"; effort="high" ;;
-    claude) model="claude-sonnet-4-6"; effort="low" ;;
+    gemini|claude) ;;
     *) usage ;;
 esac
+
+# Agy launches Claude from its own model catalogue, so a profile model such as
+# `opus` — a Claude CLI alias — is not a model id Agy accepts. Until the
+# profile carries an explicit Agy model id, this engine keeps a pinned one and
+# takes only its effort from the profile.
+AGY_CLAUDE_MODEL="claude-sonnet-4-6"
 
 review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
 [[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
@@ -28,6 +33,7 @@ review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
     exit 2
 }
 
+: "${GH_REPO:?GH_REPO is required}"
 : "${AGENT_LOOP_REVIEW_ENGINE:?AGENT_LOOP_REVIEW_ENGINE is required}"
 : "${AGENT_LOOP_REVIEW_BASE_SHA:?AGENT_LOOP_REVIEW_BASE_SHA is required}"
 : "${AGENT_LOOP_REVIEW_ROUND:?AGENT_LOOP_REVIEW_ROUND is required}"
@@ -93,6 +99,29 @@ prompt="Read ${trusted_root}/skills/deepcritique/SKILL.md completely, then follo
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=run-agy-launch.sh
 source "$SCRIPT_DIR/run-agy-launch.sh"
+
+# Reviewer settings come from the review profile, so a model change there
+# reaches this launcher instead of rotting in a literal. Gemini's profile model
+# is already an Agy model id; Claude's is not, so only its effort is taken.
+profile_helper="$SCRIPT_DIR/../../review-setup/scripts/review-profile.py"
+[ -f "$profile_helper" ] && [ ! -L "$profile_helper" ] || {
+    echo "review profile helper is missing from the packaged skills: $profile_helper" >&2
+    exit 1
+}
+profile_settings="$(python3 -I "$profile_helper" launch-args --engine "$engine" --repo "$GH_REPO")" || {
+    echo "the review profile does not provide $engine reviewer settings" >&2
+    exit 1
+}
+profile_model="${profile_settings%%$'\n'*}"
+effort="${profile_settings#*$'\n'}"
+case "$engine" in
+    gemini) model="$profile_model" ;;
+    claude) model="$AGY_CLAUDE_MODEL" ;;
+esac
+[ -n "$model" ] && [ -n "$effort" ] || {
+    echo "resolved $engine reviewer settings are incomplete" >&2
+    exit 1
+}
 
 # claude-cli-invocations:start
 run_agy_and_parse "agy review" \

@@ -1207,3 +1207,145 @@ def test_run_state_records_restores_and_only_extends_worker_pins(tmp_path: Path)
     assert restored.returncode == 0, restored.stderr
     assert json.loads(pins.read_text())["worker_fallback_engines"] == ["gemini"]
     assert json.loads(pins.read_text())["worker_settings"]["gemini"] == worker
+
+
+# The built-in Agy review launcher's reviewer settings.
+
+
+REVIEW_LAUNCHER = SKILL / "scripts/run-agy-review.sh"
+REVIEW_SURFACE_FILES = (
+    "REVIEW_WORKFLOW.md",
+    "references/local-review-ledger.md",
+    "references/roles/code-reviewer.md",
+    "references/roles/silent-failure-hunter.md",
+    "references/roles/type-design-analyzer.md",
+    "references/roles/comment-analyzer.md",
+    "references/roles/pr-test-analyzer.md",
+    "references/roles/security-reviewer.md",
+    "skills/deepcritique/SKILL.md",
+    "skills/critique/SKILL.md",
+    "skills/critique/scripts/review-ledger.js",
+    "skills/refactorpass/SKILL.md",
+)
+
+
+def _review_launcher_fixture(tmp_path: Path, profile: dict[str, Any]) -> dict[str, Any]:
+    """A committed trusted surface, the packaged helper, a stub agy, and a profile."""
+    source = tmp_path / "source"
+    surface = source / ".agents"
+    scripts = surface / "skills/agent-loop/scripts"
+    scripts.mkdir(parents=True)
+    for name in ("run-agy-review.sh", "run-agy-launch.sh"):
+        shutil.copy2(SKILL / "scripts" / name, scripts / name)
+    (scripts / "run-agy-review.sh").chmod(0o755)
+    profile_scripts = surface / "skills/review-setup/scripts"
+    profile_scripts.mkdir(parents=True)
+    for name in ("review-profile.py", "review-profile.defaults.json"):
+        shutil.copy2(SETTINGS_SCRIPTS / name, profile_scripts / name)
+    for relative in REVIEW_SURFACE_FILES:
+        target = surface / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("surface\n", encoding="utf-8")
+
+    _run_git("init", "-q", "-b", "main", str(source))
+    _run_git("config", "user.email", "test@example.com", cwd=source)
+    _run_git("config", "user.name", "Test", cwd=source)
+    _run_git("config", "commit.gpgsign", "false", cwd=source)
+    _run_git("add", "-A", cwd=source)
+    _run_git("commit", "-qm", "surface", cwd=source)
+    base_ref = _run_git("rev-parse", "HEAD", cwd=source).stdout.strip()
+
+    profile_path = tmp_path / "review-profile.json"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    argv_log = tmp_path / "agy-argv.log"
+    agy = tmp_path / "agy"
+    _write_executable(
+        agy,
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$@" > "$AGY_ARGV_LOG"\n'
+        "printf '{\"status\":\"SUCCESS\",\"response\":\"reviewed\"}\\n'\n",
+    )
+    workdir = tmp_path / "issue-worktree"
+    workdir.mkdir()
+    return {
+        "launcher": scripts / "run-agy-review.sh",
+        "surface": surface,
+        "workdir": workdir,
+        "argv_log": argv_log,
+        "env": {
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))
+            },
+            "GH_REPO": "loomantix/activeloom",
+            "ACTIVELOOM_REVIEW_PROFILE": str(profile_path),
+            "AGY_CLI": str(agy),
+            "AGY_ARGV_LOG": str(argv_log),
+            "AGENT_LOOP_REVIEW_BASE_SHA": "b" * 40,
+            "AGENT_LOOP_REVIEW_ROUND": "1",
+            "AGENT_LOOP_PR_NUMBER": "7",
+            "AGENT_LOOP_PR_HEAD_SHA": "c" * 40,
+            "AGENT_LOOP_REVIEW_RESULT_FILE": str(tmp_path / "result.json"),
+            "AGENT_LOOP_REVIEW_PUSH_HELPER": str(tmp_path / "review-push.sh"),
+            "AGENT_LOOP_TRUSTED_AGENTS_ROOT": str(surface),
+            "AGENT_LOOP_TRUSTED_BASE_REF": base_ref,
+        },
+    }
+
+
+def _run_review_launcher(
+    fixture: dict[str, Any], engine: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(fixture["launcher"]), "--engine", engine],
+        cwd=fixture["workdir"],
+        env={**fixture["env"], "AGENT_LOOP_REVIEW_ENGINE": engine},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_review_launcher_takes_the_gemini_model_and_effort_from_the_profile(
+    tmp_path: Path,
+) -> None:
+    fixture = _review_launcher_fixture(
+        tmp_path,
+        _profile(gemini={"model": "gemini-from-profile", "effort": "medium"}),
+    )
+
+    result = _run_review_launcher(fixture, "gemini")
+
+    assert result.returncode == 0, result.stderr
+    argv = fixture["argv_log"].read_text(encoding="utf-8").splitlines()
+    assert argv[argv.index("--model") + 1] == "gemini-from-profile"
+    assert argv[argv.index("--effort") + 1] == "medium"
+
+
+def test_review_launcher_keeps_a_pinned_agy_model_for_claude_but_takes_its_effort(
+    tmp_path: Path,
+) -> None:
+    """Agy cannot launch a Claude CLI alias, so only the effort is profile-driven."""
+    fixture = _review_launcher_fixture(
+        tmp_path, _profile(claude={"model": "opus", "effort": "medium"})
+    )
+
+    result = _run_review_launcher(fixture, "claude")
+
+    assert result.returncode == 0, result.stderr
+    argv = fixture["argv_log"].read_text(encoding="utf-8").splitlines()
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-4-6"
+    assert argv[argv.index("--effort") + 1] == "medium"
+
+
+def test_review_launcher_fails_closed_when_the_profile_lacks_the_engine(
+    tmp_path: Path,
+) -> None:
+    fixture = _review_launcher_fixture(tmp_path, _profile(gemini=None))
+
+    result = _run_review_launcher(fixture, "gemini")
+
+    assert result.returncode != 0
+    assert "gemini reviewer settings" in result.stderr
+    assert not fixture["argv_log"].exists()
