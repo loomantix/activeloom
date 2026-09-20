@@ -85,14 +85,10 @@ _CODEX_CONFIG_FIELDS = {"model": "model", "model_reasoning_effort": "effort"}
 
 @dataclass(frozen=True)
 class HookLiteral:
-    key: str
     engine: str
     field: str
     flag: str
     value: str
-    start: int
-    end: int
-    replacement: str
 
     @property
     def variable(self) -> str:
@@ -142,30 +138,21 @@ def _hook_literals(key: str, hook: str) -> list[HookLiteral]:
         launch = program.search(segment)
         if launch is None:
             continue
-        # (field, flag, start, end, raw value, replacement for [start, end))
-        found: list[tuple[str, str, int, int, str, str]] = []
+        # (field, flag, start of the value, raw value)
+        found: list[tuple[str, str, int, str]] = []
         for field, pattern in _FLAG_PATTERNS[engine]:
-            variable = f"AGENT_LOOP_{engine.upper()}_{field.upper()}"
             for match in pattern.finditer(segment, launch.end()):
-                start, end = match.span("value")
                 flag = match["flag"].strip().rstrip("=")
-                found.append((field, flag, start, end, match["value"], f'"${variable}"'))
+                found.append((field, flag, match.start("value"), match["value"]))
         if engine == "codex":
             for match in _CODEX_CONFIG.finditer(segment, launch.end()):
                 field = _CODEX_CONFIG_FIELDS[match["key"]]
-                variable = f"AGENT_LOOP_CODEX_{field.upper()}"
-                start, end = match.span("token")
-                replacement = f'{match["key"]}="${variable}"'
-                found.append((field, f"-c {match['key']}", start, end, match["value"], replacement))
-        for field, flag, start, end, raw, replacement in sorted(found, key=lambda item: item[2]):
+                found.append((field, f"-c {match['key']}", match.start("token"), match["value"]))
+        for field, flag, _start, raw in sorted(found, key=lambda item: item[2]):
             value = _unquote(raw)
             if not value or "$" in value or "`" in value:
                 continue
-            literals.append(
-                HookLiteral(
-                    key, engine, field, flag, value, seg_start + start, seg_start + end, replacement
-                )
-            )
+            literals.append(HookLiteral(engine, field, flag, value))
     return literals
 
 
