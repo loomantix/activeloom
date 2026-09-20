@@ -78,7 +78,7 @@ _FLAG_PATTERNS = {
 _CODEX_CONFIG = re.compile(
     r"""(?<![\w-])(?:-c|--config)(?:=|\s+)"""
     r"""(?P<token>(?P<q>['"]?)(?P<key>model|model_reasoning_effort)="""
-    r"""(?P<value>"[^"]*"|'[^']*'|[^\s'"<>()]+)(?P=q))"""
+    r"""(?P<value>\\"[^"\\]*\\"|"[^"]*"|'[^']*'|[^\s'"<>()\\]+)(?P=q))"""
 )
 _CODEX_CONFIG_FIELDS = {"model": "model", "model_reasoning_effort": "effort"}
 
@@ -95,31 +95,46 @@ class HookLiteral:
         return f"AGENT_LOOP_{self.engine.upper()}_{self.field.upper()}"
 
 
-def _command_segments(hook: str) -> list[tuple[int, int]]:
-    """Spans of the simple commands in a hook, split at unquoted ; & | and newlines."""
+def _command_segments(hook: str) -> tuple[list[tuple[int, int]], set[int]]:
+    """Spans of the simple commands in a hook, and the offsets inside quotes.
+
+    Commands split at unquoted ; & | and newlines outside `$(...)`.
+    """
     segments: list[tuple[int, int]] = []
+    quoted: set[int] = set()
     start = 0
     quote = ""
+    depth = 0
     index = 0
     while index < len(hook):
         char = hook[index]
         if char == "\\" and quote != "'":
+            if quote:
+                quoted.update((index, index + 1))
             index += 2
             continue
         if quote:
+            quoted.add(index)
             if char == quote:
                 quote = ""
         elif char in "'\"":
             quote = char
-        elif char in ";&|\n":
+        elif hook.startswith("$(", index):
+            depth += 1
+            index += 1
+        elif char == ")" and depth:
+            depth -= 1
+        elif char in ";&|\n" and not depth:
             segments.append((start, index))
             start = index + 1
         index += 1
     segments.append((start, len(hook)))
-    return segments
+    return segments, quoted
 
 
 def _unquote(word: str) -> str:
+    if len(word) >= 4 and word.startswith('\\"') and word.endswith('\\"'):
+        return word[2:-2]
     if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"":
         return word[1:-1]
     return word
@@ -132,25 +147,33 @@ def _hook_literals(key: str, hook: str) -> list[HookLiteral]:
     """
     engine = REVIEW_HOOK_ENGINES[key]
     program = re.compile(rf"(?:^|(?<=[\s(]))(?:[^\s'\"]*/)?{engine}(?=\s|$)")
+    segments, quoted = _command_segments(hook)
     literals: list[HookLiteral] = []
-    for seg_start, seg_end in _command_segments(hook):
+    for seg_start, seg_end in segments:
         segment = hook[seg_start:seg_end]
-        launch = program.search(segment)
+        launch = next(
+            (m for m in program.finditer(segment) if seg_start + m.start() not in quoted),
+            None,
+        )
         if launch is None:
             continue
-        # (field, flag, start of the value, raw value)
+        # (field, flag, start of the match, raw value)
         found: list[tuple[str, str, int, str]] = []
         for field, pattern in _FLAG_PATTERNS[engine]:
             for match in pattern.finditer(segment, launch.end()):
                 flag = match["flag"].strip().rstrip("=")
-                found.append((field, flag, match.start("value"), match["value"]))
+                found.append((field, flag, match.start(), match["value"]))
         if engine == "codex":
             for match in _CODEX_CONFIG.finditer(segment, launch.end()):
                 field = _CODEX_CONFIG_FIELDS[match["key"]]
-                found.append((field, f"-c {match['key']}", match.start("token"), match["value"]))
-        for field, flag, _start, raw in sorted(found, key=lambda item: item[2]):
+                found.append((field, f"-c {match['key']}", match.start(), match["value"]))
+        for field, flag, start, raw in sorted(found, key=lambda item: item[2]):
             value = _unquote(raw)
-            if not value or "$" in value or "`" in value:
+            # Flag-like text inside a quoted argument — a prompt, typically — is
+            # not a flag on the command line.
+            if seg_start + start in quoted:
+                continue
+            if not value or any(char in value for char in "$`\\"):
                 continue
             literals.append(HookLiteral(engine, field, flag, value))
     return literals

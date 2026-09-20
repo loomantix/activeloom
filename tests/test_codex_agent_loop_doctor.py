@@ -235,3 +235,70 @@ def test_template_ships_without_retired_keys_or_literals() -> None:
             r"(?:--model|--effort|-m|-c model=|-c model_reasoning_effort=)\s*(\S+)", value
         ):
             assert "$AGENT_LOOP_" in flag_value, f"{key} passes a literal: {flag_value}"
+
+
+CODEX_VARIABLE_HOOK = (
+    'codex exec -m "$AGENT_LOOP_CODEX_MODEL" '
+    '-c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT"' + TAIL
+)
+
+
+def test_escaped_quote_literal_is_read_as_its_value(tmp_path: Path) -> None:
+    """`-c key=\\"value\\"` is the form `worker_command`'s `printf %q` emits.
+
+    Reading the value as `\\` instead of `high` made the doctor refuse a hook
+    that agrees with the profile, naming a value the developer never wrote.
+    """
+    project = _project(
+        tmp_path,
+        claude_hook="claude --effort $AGENT_LOOP_CLAUDE_EFFORT" + TAIL,
+        codex_hook='codex exec -c model_reasoning_effort=\\"high\\"' + TAIL,
+    )
+    result = _run(project, "--settings-from-env", env_settings=PINNED)
+    # `high` is the pinned effort, so this agrees: a warning, not a refusal.
+    assert result.returncode == 0, result.stderr
+    assert "passes -c model_reasoning_effort high literally" in result.stderr
+    assert "\\" not in result.stderr.split("passes -c model_reasoning_effort")[1][:20]
+
+
+def test_escaped_quote_literal_that_disagrees_is_still_refused(tmp_path: Path) -> None:
+    project = _project(
+        tmp_path,
+        claude_hook="claude --effort $AGENT_LOOP_CLAUDE_EFFORT" + TAIL,
+        codex_hook='codex exec -c model_reasoning_effort=\\"low\\"' + TAIL,
+    )
+    result = _run(project, "--settings-from-env", env_settings=PINNED)
+    assert result.returncode == 1
+    assert "passes -c model_reasoning_effort low" in result.stderr
+    assert "AGENT_LOOP_CODEX_EFFORT" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "claude_hook",
+    [
+        'claude --print "run deepcritique --effort high now"',
+        "claude --print 'mention --model opus in the prompt'",
+    ],
+)
+def test_flag_text_inside_a_quoted_argument_is_not_a_literal(
+    tmp_path: Path, claude_hook: str
+) -> None:
+    """Prompt text naming a review flag is not a flag on the command line."""
+    project = _project(
+        tmp_path, claude_hook=claude_hook + TAIL, codex_hook=CODEX_VARIABLE_HOOK
+    )
+    result = _run(project, "--settings-from-env", env_settings=PINNED)
+    assert result.returncode == 0, result.stderr
+    assert "Edit the hook so it reads" not in result.stderr
+
+
+def test_a_real_literal_outside_quotes_is_still_caught(tmp_path: Path) -> None:
+    """The quoted-span exclusion must not swallow an actual command-line flag."""
+    project = _project(
+        tmp_path,
+        claude_hook='claude --effort low --print "a quoted --effort high prompt"' + TAIL,
+        codex_hook=CODEX_VARIABLE_HOOK,
+    )
+    result = _run(project, "--settings-from-env", env_settings=PINNED)
+    assert result.returncode == 1
+    assert "passes --effort low" in result.stderr

@@ -306,8 +306,9 @@ else
         # claude-cli-invocations:start
         claude_model_args=()
         [ "$review_model" = inherit ] || claude_model_args=(--model "$review_model")
-        # The Claude CLI gives this variable precedence over --effort,
-        # including an inherited value.
+        # Set both from the same pinned value, so the launch does not depend on
+        # which one the CLI prefers; the export also replaces any inherited
+        # CLAUDE_CODE_EFFORT_LEVEL. Keep the two identical.
         export CLAUDE_CODE_EFFORT_LEVEL="$review_effort"
         "$review_cli" "${claude_model_args[@]}" --effort "$review_effort" \
             --permission-mode bypassPermissions --no-session-persistence \

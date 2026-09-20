@@ -1093,6 +1093,9 @@ pin_review_settings() {
             return "$EXIT_SETTINGS_UNAVAILABLE"
             ;;
         1)
+            # Exit 1 also covers a pinned-blob integrity failure, which carries no
+            # `review settings: ` prefix. Never discard that diagnostic.
+            [ -n "$reason" ] || cat "$errors" >&2
             rm -f -- "$errors"
             echo "agent-loop: ${reason:-a required engine is unavailable}; then rerun agent-loop." >&2
             return "$EXIT_SETTINGS_UNAVAILABLE"
@@ -1115,7 +1118,12 @@ switch_review_settings_fallback() {
     SETTINGS_FALLBACK_REASON="$(sed -n '1s/^review settings: //p' "$errors")"
     case "$status" in
         0) ;;
-        1) rm -f -- "$errors"; return 1 ;;
+        1)
+            # As in pin_review_settings: an unrecognized exit 1 keeps its stderr.
+            [ -n "$SETTINGS_FALLBACK_REASON" ] || cat "$errors" >&2
+            rm -f -- "$errors"
+            return 1
+            ;;
         *) cat "$errors" >&2; rm -f -- "$errors"; return 2 ;;
     esac
     sed 's/^/   /' "$errors"
