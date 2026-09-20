@@ -1,10 +1,14 @@
-"""Failure fixtures for the non-mutating agent-loop config doctor."""
+"""Failure fixtures for the agent-loop config doctor and its --migrate mode."""
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
+import sys
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
@@ -12,6 +16,15 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCTOR = ROOT / ".claude/skills/agent-loop/scripts/config-doctor.py"
+TEMPLATE = ROOT / ".claude/skills/agent-loop/agent-loop.config.template"
+CRITIQUE_SCRIPTS = ROOT / ".claude/skills/critique/scripts"
+PINNED = {
+    "AGENT_LOOP_CLAUDE_MODEL": "claude-review",
+    "AGENT_LOOP_CLAUDE_EFFORT": "high",
+    "AGENT_LOOP_CODEX_MODEL": "codex-review",
+    "AGENT_LOOP_CODEX_EFFORT": "medium",
+}
+TAIL = " $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE"
 
 
 def _project(tmp_path: Path) -> Path:
@@ -23,7 +36,8 @@ def _project(tmp_path: Path) -> Path:
     ledger_dir.mkdir(parents=True)
     shutil.copy2(ROOT / ".claude/skills/agent-loop/scripts/agent-loop-state.py", scripts)
     shutil.copy2(ROOT / ".claude/skills/agent-loop/scripts/review-push.sh", scripts)
-    shutil.copy2(ROOT / ".claude/skills/critique/scripts/review-ledger.js", ledger_dir)
+    for name in ("review-ledger.js", "review-profile.py", "review-profile.defaults.json"):
+        shutil.copy2(CRITIQUE_SCRIPTS / name, ledger_dir)
     # See tests/test_agent_loop.py: sync ships the sibling ESM manifest, and a
     # CommonJS consumer root is the context that needs it.
     shutil.copy2(ROOT / ".claude/skills/critique/scripts/package.json", ledger_dir)
@@ -42,14 +56,18 @@ def _project(tmp_path: Path) -> Path:
     (skill / "agent-loop.config").write_text(
         "review_contract_version = 3\n"
         "codex_review_hook = deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n"
-        "claude_review_hook = claude --effort low /deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n",
+        'claude_review_hook = claude --effort "$AGENT_LOOP_CLAUDE_EFFORT" /deepcritique $AGENT_LOOP_PR_NUMBER; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE\n',
         encoding="utf-8",
     )
     return project
 
 
 def _run(
-    project: Path, *, path_stubs: tuple[str, ...] = ("deepcritique", "claude")
+    project: Path,
+    *,
+    path_stubs: tuple[str, ...] = ("deepcritique", "claude"),
+    args: tuple[str, ...] = (),
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     # The doctor resolves each review hook's program on PATH. Stub the fixture
     # hooks' programs outside the project tree so the no-mutation assertion and
@@ -69,10 +87,16 @@ def _run(
         stub = bin_dir / name
         stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         stub.chmod(0o755)
-    env = os.environ.copy()
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("AGENT_LOOP_", "ACTIVELOOM_REVIEW_"))
+    }
     env["PATH"] = str(bin_dir)
+    env["ACTIVELOOM_REVIEW_PROFILE"] = str(project.parent / "review-profile.json")
+    env.update(extra_env or {})
     return subprocess.run(
-        ["python3", str(DOCTOR), "--project-dir", str(project), "--claude-effort", "low"],
+        ["python3", str(DOCTOR), "--project-dir", str(project), *args],
         capture_output=True,
         text=True,
         check=False,
@@ -101,7 +125,6 @@ def test_doctor_accepts_current_contract_without_mutation(tmp_path: Path) -> Non
         ("review_contract_version = 3", "review_contract_version = 2", "must be 3"),
         ("write-result", "AGENT_LOOP_REVIEW_OUTCOME_FILE", "obsolete review ownership"),
         ("/deepcritique", "/deepgrill", "must invoke deepcritique"),
-        ("--effort low", "--effort medium", "literal --effort low"),
         ("AGENT_LOOP_REVIEW_PUSH_HELPER", "git push", "review push helper"),
     ],
 )
@@ -257,15 +280,432 @@ def test_doctor_warns_when_a_hook_overrides_foreground_tasks(
     ) == warns
 
 
-def test_doctor_leaves_the_ignored_worker_keys_to_the_wrapper(tmp_path: Path) -> None:
+def _set_hooks(project: Path, *, claude: str | None = None, codex: str | None = None) -> Path:
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    lines = []
+    for line in config.read_text(encoding="utf-8").splitlines():
+        if claude is not None and line.startswith("claude_review_hook ="):
+            line = f"claude_review_hook = {claude}{TAIL}"
+        if codex is not None and line.startswith("codex_review_hook ="):
+            line = f"codex_review_hook = {codex}{TAIL}"
+        lines.append(line)
+    config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return config
+
+
+def _write_profile(project: Path, **overrides: str) -> None:
+    engines: dict[str, dict[str, object]] = {
+        "claude": {"model": "claude-review", "effort": "high"},
+        "codex": {"model": "codex-review", "effort": "medium"},
+    }
+    for name, value in overrides.items():
+        engine, field = name.split("_")
+        engines[engine][field] = value
+    for settings in engines.values():
+        settings["worker"] = dict(settings)
+    defaults = json.loads(
+        (CRITIQUE_SCRIPTS / "review-profile.defaults.json").read_text(encoding="utf-8")
+    )
+    (project.parent / "review-profile.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "defaults_version": defaults["defaults_version"],
+                "confirmed_at": "2026-01-01T00:00:00Z",
+                "engines": engines,
+                "order": defaults["order"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+# Realistic literal shapes: (hook key, hook command, flag the error names, literal value).
+CONFLICTING_LITERALS = [
+    ("claude", "claude --print --effort low /deepcritique", "--effort", "low"),
+    ("claude", "claude --effort=low /deepcritique", "--effort", "low"),
+    ("claude", "claude -p --model claude-other /deepcritique", "--model", "claude-other"),
+    ("claude", "claude -p --model='claude-other' /deepcritique", "--model", "claude-other"),
+    ("claude", 'timeout 3600 claude -p --model "claude-other" /deepcritique', "--model", "claude-other"),
+    ("codex", "codex exec -m gpt-other /deepcritique", "-m", "gpt-other"),
+    ("codex", "codex exec --model gpt-other /deepcritique", "--model", "gpt-other"),
+    ("codex", "codex exec -c model=gpt-other /deepcritique", "-c model", "gpt-other"),
+    (
+        "codex",
+        "codex exec -c model_reasoning_effort=high /deepcritique",
+        "-c model_reasoning_effort",
+        "high",
+    ),
+    (
+        "codex",
+        "codex exec -c 'model_reasoning_effort=\"xhigh\"' /deepcritique",
+        "-c model_reasoning_effort",
+        "xhigh",
+    ),
+    ("codex", 'codex exec -c "model=\\"gpt-other\\"" /deepcritique', "-c model", "gpt-other"),
+    (
+        "codex",
+        'codex exec -c "model_reasoning_effort=\\"xhigh\\"" /deepcritique',
+        "-c model_reasoning_effort",
+        "xhigh",
+    ),
+]
+
+
+@pytest.mark.parametrize(("engine", "command", "flag", "value"), CONFLICTING_LITERALS)
+def test_doctor_refuses_a_hook_literal_that_conflicts_with_the_pinned_settings(
+    tmp_path: Path, engine: str, command: str, flag: str, value: str
+) -> None:
+    project = _project(tmp_path)
+    _set_hooks(project, **{engine: command})
+    result = _run(
+        project,
+        path_stubs=("deepcritique", "claude", "codex", "timeout"),
+        args=("--settings-from-env",),
+        extra_env=PINNED,
+    )
+    assert result.returncode == 1
+    field = "effort" if "effort" in flag else "model"
+    expected = PINNED[f"AGENT_LOOP_{engine.upper()}_{field.upper()}"]
+    assert f"{engine}_review_hook passes {flag} {value}" in result.stderr
+    assert f"{engine} {field} {expected}" in result.stderr
+    assert "--migrate" in result.stderr
+    assert f"$AGENT_LOOP_{engine.upper()}_{field.upper()}" in result.stderr
+
+
+def test_doctor_resolves_the_profile_when_run_standalone(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _set_hooks(project, claude="claude -p --effort low /deepcritique")
+
+    _write_profile(project, claude_effort="low")
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+    assert "matches the user profile" in result.stderr
+
+    _write_profile(project, claude_effort="high")
+    result = _run(project)
+    assert result.returncode == 1
+    assert "passes --effort low, but the user profile set claude effort high" in result.stderr
+    assert "--migrate" in result.stderr
+
+    # A repository override is honoured for the repository named by --repo.
+    subprocess.run(
+        [
+            "python3",
+            str(project / ".claude/skills/critique/scripts/review-profile.py"),
+            "set",
+            "--repo",
+            "fixture/consumer",
+            "claude.effort=low",
+        ],
+        env={**os.environ, "ACTIVELOOM_REVIEW_PROFILE": str(tmp_path / "review-profile.json")},
+        check=True,
+        capture_output=True,
+    )
+    result = _run(project, args=("--repo", "fixture/consumer"))
+    assert result.returncode == 0, result.stderr
+    assert "matches the repository override" in result.stderr
+
+
+def test_doctor_accepts_a_matching_literal_with_a_migration_warning(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _set_hooks(project, claude="claude -p --model claude-review --effort high /deepcritique")
+    result = _run(project, args=("--settings-from-env",), extra_env=PINNED)
+    assert result.returncode == 0, result.stderr
+    assert "claude_review_hook passes --model claude-review literally" in result.stderr
+    assert "claude_review_hook passes --effort high literally" in result.stderr
+    assert "--migrate" in result.stderr
+
+
+def test_doctor_needs_no_profile_for_hooks_that_read_the_variables(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _set_hooks(
+        project,
+        claude='claude -p --model "$AGENT_LOOP_CLAUDE_MODEL" --effort="${AGENT_LOOP_CLAUDE_EFFORT}" /deepcritique',
+    )
+    assert not (tmp_path / "review-profile.json").exists()
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+    assert "literally" not in result.stderr
+
+
+def test_doctor_names_review_setup_when_a_literal_cannot_be_checked(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _set_hooks(project, claude="claude -p --effort low /deepcritique")
+    result = _run(project)
+    assert result.returncode == 1
+    assert "cannot resolve claude reviewer settings" in result.stderr
+    assert "review-setup" in result.stderr
+    assert "--migrate" in result.stderr
+
+
+def test_doctor_settings_from_env_requires_the_pinned_variables(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _set_hooks(project, claude="claude -p --effort low /deepcritique")
+    result = _run(project, args=("--settings-from-env",))
+    assert result.returncode == 1
+    assert "needs AGENT_LOOP_CLAUDE_MODEL and AGENT_LOOP_CLAUDE_EFFORT" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("engine", "hook"),
+    [
+        # Another program's -m, flags in a command before or after the
+        # engine's, and prose.
+        ("claude", "python3 -m deepcritique; claude -p /deepcritique"),
+        ("claude", "echo --effort low; claude -p /deepcritique"),
+        ("claude", "claude -p /deepcritique now; echo --effort low --model x"),
+        ("claude", "claude -p /deepcritique && echo --model x | cat"),
+        ("codex", "codex exec deepcritique now; python3 -m pytest -c model=x"),
+        ("codex", "codex exec deepcritique || echo --model x"),
+        ("claude", "claude -p '/deepcritique' && echo '--model x'"),
+    ],
+)
+def test_doctor_reads_literals_only_from_the_engine_command(
+    tmp_path: Path, engine: str, hook: str
+) -> None:
+    project = _project(tmp_path)
+    _set_hooks(project, **{engine: hook})
+    # No profile exists, so any literal the doctor found would fail resolution.
+    result = _run(project, path_stubs=("deepcritique", "claude", "codex", "echo"))
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("key", ["claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort"])
+def test_doctor_refuses_retired_keys_and_points_at_migrate(tmp_path: Path, key: str) -> None:
     project = _project(tmp_path)
     config = project / ".claude/skills/agent-loop/agent-loop.config"
     base = config.read_text(encoding="utf-8")
 
-    # Worker model and effort come from the review profile, so the doctor
-    # neither warns about an empty worker_effort nor enforces a stale one.
-    for extra in ("", "worker_effort = high\n", "worker_effort = medium --foo\n"):
-        config.write_text(base + extra, encoding="utf-8")
-        result = _run(project)
+    config.write_text(base + f"{key} = low\n", encoding="utf-8")
+    result = _run(project)
+    assert result.returncode == 1
+    assert f"{key} is retired" in result.stderr
+    assert "--migrate" in result.stderr
+
+    # An empty key has no effect, so it is reported rather than refused.
+    config.write_text(base + f"{key} =\n", encoding="utf-8")
+    result = _run(project)
+    assert result.returncode == 0, result.stderr
+    assert f"warning: {key} is retired and has no effect" in result.stderr
+
+
+def test_doctor_no_longer_accepts_the_claude_effort_option(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    result = _run(project, args=("--claude-effort", "low"))
+    assert result.returncode == 2
+    assert "unrecognized arguments: --claude-effort" in result.stderr
+
+
+LEGACY_CONFIG = """\
+# Consumer-owned settings.
+base_branch =
+setup_hook = pnpm install --frozen-lockfile
+# The gate runs the model tests.
+validation_hook = pnpm test -- --model fixture --effort low
+review_contract_version = 3
+config_doctor = true
+claude_effort_policy = low
+review_max_rounds = 4
+review_timeout_seconds = 7200
+claude_review_hook = claude --print --effort low --model claude-old /deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
+codex_review_hook = codex exec -m gpt-old -c model_reasoning_effort=medium -c 'model_reasoning_effort="high"' deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
+worker_hook =
+# Worker model keys.
+worker_model = claude-old
+worker_fallback_model =
+worker_effort = low
+worker_retries = 1
+hook_timeout_seconds = 3600
+"""
+
+MIGRATED_CONFIG = """\
+# Consumer-owned settings.
+base_branch =
+setup_hook = pnpm install --frozen-lockfile
+# The gate runs the model tests.
+validation_hook = pnpm test -- --model fixture --effort low
+review_contract_version = 3
+config_doctor = true
+review_max_rounds = 4
+review_timeout_seconds = 7200
+claude_review_hook = claude --print --effort "$AGENT_LOOP_CLAUDE_EFFORT" $([ "$AGENT_LOOP_CLAUDE_MODEL" = inherit ] || printf -- '--model %s' "$AGENT_LOOP_CLAUDE_MODEL") /deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
+codex_review_hook = codex exec $([ "$AGENT_LOOP_CODEX_MODEL" = inherit ] || printf -- '-m %s' "$AGENT_LOOP_CODEX_MODEL") -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" deepcritique "$AGENT_LOOP_PR_NUMBER"; $AGENT_LOOP_REVIEW_PUSH_HELPER; review-ledger.js write-result --result-file $AGENT_LOOP_REVIEW_RESULT_FILE </dev/null
+worker_hook =
+# Worker model keys.
+worker_retries = 1
+hook_timeout_seconds = 3600
+"""
+
+
+def _migrate(project: Path) -> subprocess.CompletedProcess[str]:
+    return _run(project, path_stubs=(), args=("--migrate",))
+
+
+def test_migrate_rewrites_literals_and_removes_retired_keys_once(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    config.write_text(LEGACY_CONFIG, encoding="utf-8")
+    config.chmod(0o640)
+    prompt = project / ".claude/skills/agent-loop/prompt.txt"
+    prompt_before = prompt.read_bytes()
+
+    result = _migrate(project)
+    assert result.returncode == 0, result.stderr
+    assert config.read_text(encoding="utf-8") == MIGRATED_CONFIG
+    assert config.stat().st_mode & 0o777 == 0o640
+    assert prompt.read_bytes() == prompt_before
+    assert "migrated claude_review_hook: --effort low -> $AGENT_LOOP_CLAUDE_EFFORT" in result.stdout
+    assert "migrated codex_review_hook: -m gpt-old -> $AGENT_LOOP_CODEX_MODEL" in result.stdout
+    for key in ("claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort"):
+        assert f"migrated removed {key}" in result.stdout
+
+    migrated = config.read_bytes()
+    result = _migrate(project)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "agent-loop config doctor: nothing to migrate"
+    assert config.read_bytes() == migrated
+
+    # The migrated hooks pass the doctor on any profile.
+    result = _run(
+        project,
+        path_stubs=("claude", "codex", "pnpm"),
+        args=("--settings-from-env",),
+        extra_env=PINNED,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "retired" not in result.stderr
+
+
+def test_migrate_leaves_a_config_without_literals_byte_identical(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    config.write_text(config.read_text(encoding="utf-8") + "# trailing comment\r\n", encoding="utf-8")
+    before = config.read_bytes()
+    result = _migrate(project)
+    assert result.returncode == 0, result.stderr
+    assert "nothing to migrate" in result.stdout
+    assert config.read_bytes() == before
+
+
+def test_migrate_keeps_crlf_line_endings_on_a_config_it_changes(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    config.write_bytes(b"review_contract_version = 3\r\nworker_model = x\r\n# kept\r\n")
+    result = _migrate(project)
+    assert result.returncode == 0, result.stderr
+    assert config.read_bytes() == b"review_contract_version = 3\r\n# kept\r\n"
+
+
+def test_migrated_model_flag_is_dropped_for_inherit_and_quoted_text_is_kept(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    prompt = '"commit with git commit -m fix; run python3 -m pytest --model x"'
+    hooks = {
+        "claude_review_hook": f"claude --print --model opus --effort low {prompt} /deepcritique"
+        + TAIL,
+        "codex_review_hook": (
+            f'codex exec -m gpt-old -c model=gpt-old -c "model=\\"gpt-old\\"" '
+            f'-c "model_reasoning_effort=\\"low\\"" {prompt} deepcritique'
+        )
+        + TAIL,
+    }
+    lines = [
+        line
+        for line in config.read_text(encoding="utf-8").splitlines()
+        if not line.startswith(tuple(hooks))
+    ]
+    config.write_text(
+        "\n".join(lines + [f"{key} = {hook}" for key, hook in hooks.items()]) + "\n",
+        encoding="utf-8",
+    )
+    result = _migrate(project)
+    assert result.returncode == 0, result.stderr
+    assert "-m fix" not in result.stdout and "-m pytest" not in result.stdout
+    migrated = dict(
+        line.split(" = ", 1)
+        for line in config.read_text(encoding="utf-8").splitlines()
+        if line.startswith(tuple(hooks))
+    )
+    for hook in migrated.values():
+        assert prompt in hook
+    # Escaped-quote tokens are replaced whole, leaving no stray quote behind.
+    assert '\\"' not in migrated["codex_review_hook"]
+
+    inherit = {**PINNED, "AGENT_LOOP_CLAUDE_MODEL": "inherit", "AGENT_LOOP_CODEX_MODEL": "inherit"}
+    for pinned in (PINNED, inherit):
+        result = _run(
+            project, path_stubs=("claude", "codex"), args=("--settings-from-env",), extra_env=pinned
+        )
         assert result.returncode == 0, result.stderr
-        assert "worker_effort" not in result.stderr
+        for key, engine in (("claude_review_hook", "claude"), ("codex_review_hook", "codex")):
+            # Run the hook's engine command with the CLI replaced by an argv printer.
+            shell = subprocess.run(
+                ["bash", "-c", f'{engine}() {{ printf "%s\\n" "$@"; exit; }}; {migrated[key]}'],
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, **pinned},
+            )
+            argv = shell.stdout.splitlines()
+            model = pinned[f"AGENT_LOOP_{engine.upper()}_MODEL"]
+            if model == "inherit":
+                assert not any(arg in ("--model", "-m") or "model=" in arg for arg in argv)
+            else:
+                assert model in argv or f"model={model}" in argv
+            effort = pinned[f"AGENT_LOOP_{engine.upper()}_EFFORT"]
+            if engine == "codex":
+                assert f"model_reasoning_effort={effort}" in argv
+            else:
+                assert argv[argv.index("--effort") + 1] == effort
+            assert prompt.strip('"') in argv
+
+
+def test_migrate_refuses_an_unparseable_config(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    config.write_text("claude_effort_policy = low\nnot a config line\n", encoding="utf-8")
+    result = _migrate(project)
+    assert result.returncode == 1
+    assert "invalid config line" in result.stderr
+    assert config.read_text(encoding="utf-8").startswith("claude_effort_policy")
+
+
+def test_template_ships_in_the_migrated_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = TEMPLATE.read_text(encoding="utf-8")
+    keys = {
+        line.split("=", 1)[0].strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert keys.isdisjoint(
+        {"claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort"}
+    )
+    spec = spec_from_file_location("config_doctor", DOCTOR)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    examples = re.findall(r"^#\s+((claude|codex)_review_hook)\s+=(.*)$", text, re.MULTILINE)
+    assert [engine for _, engine, _ in examples] == ["claude", "codex"]
+    for key, engine, hook in examples:
+        flag = "--model" if engine == "claude" else "-m"
+        model_variable = f"AGENT_LOOP_{engine.upper()}_MODEL"
+        assert (
+            f'$([ "${model_variable}" = inherit ] || '
+            f"printf -- '{flag} %s' \"${model_variable}\")"
+        ) in hook
+        assert f'"$AGENT_LOOP_{engine.upper()}_EFFORT"' in hook
+        assert module._hook_literals(key, hook) == []
+
+    project = _project(tmp_path)
+    config = project / ".claude/skills/agent-loop/agent-loop.config"
+    config.write_text(text, encoding="utf-8")
+    result = _migrate(project)
+    assert result.returncode == 0, result.stderr
+    assert "nothing to migrate" in result.stdout
+    assert config.read_text(encoding="utf-8") == text

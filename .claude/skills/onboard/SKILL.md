@@ -55,16 +55,15 @@ config is `.claude/skills/agent-loop/agent-loop.config`.
 
 Worker and reviewer models and efforts come from the per-user review
 profile, not this config; if none exists, point the user at the
-review-setup skill. Ask which Claude effort policy, if any, they selected.
+review-setup skill.
 
 Fill only these currently empty keys, following the template comments for
 hook flags and required environment variables:
 
-| Key                    | Value                                                       |
-| ---------------------- | ----------------------------------------------------------- |
-| `claude_review_hook`   | Literal Claude reviewer command from the template contract. |
-| `codex_review_hook`    | Literal Codex reviewer command from the template contract.  |
-| `claude_effort_policy` | Literal effort selected by the user.                        |
+| Key                  | Value                                                       |
+| -------------------- | ----------------------------------------------------------- |
+| `claude_review_hook` | Literal Claude reviewer command from the template contract. |
+| `codex_review_hook`  | Literal Codex reviewer command from the template contract.  |
 
 If either CLI is unavailable, say `agent-loop` cannot run and leave the
 review configuration empty. Do not write half a roster.
