@@ -329,7 +329,7 @@ def test_retired_effort_policy_is_refused_by_the_doctor(tmp_path: Path) -> None:
     result = consumer.run("--issues", "5")
     assert result.returncode == 1
     assert "claude_effort_policy is retired" in result.stderr
-    assert "--migrate" in result.stderr
+    assert "Remove it from the config" in result.stderr
     _assert_nothing_claimed(consumer)
 
 
@@ -345,7 +345,7 @@ def test_conflicting_hook_literal_is_refused_before_claim(tmp_path: Path) -> Non
     result = consumer.run("--issues", "5")
     assert result.returncode == 1
     assert "passes --effort low" in result.stderr and "effort medium" in result.stderr
-    assert "--migrate" in result.stderr
+    assert "Edit the hook so it reads $AGENT_LOOP_CLAUDE_EFFORT" in result.stderr
     _assert_nothing_claimed(consumer)
 
 

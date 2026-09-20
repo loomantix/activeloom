@@ -1,9 +1,10 @@
-"""The Codex-root agent-loop config doctor: retired keys, hook literals, and --migrate."""
+"""The Codex-root agent-loop config doctor: retired keys and hook literals."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -159,16 +160,17 @@ def test_conflicting_hook_literal_is_refused(
     assert f"passes {flag} {literal}" in result.stderr
     assert f" {pinned}. " in result.stderr
     assert variable in result.stderr
-    assert "--migrate" in result.stderr
+    assert "Edit the hook so it reads" in result.stderr
 
 
-def test_matching_literal_is_accepted_with_a_migrate_warning(tmp_path: Path) -> None:
+def test_matching_literal_is_accepted_with_a_warning(tmp_path: Path) -> None:
     project = _project(
         tmp_path, claude_hook="claude --effort medium" + TAIL, codex_hook=CODEX_VARIABLES
     )
     result = _run(project, "--settings-from-env", env_settings=PINNED)
     assert result.returncode == 0, result.stderr
-    assert "warning" in result.stderr and "--migrate" in result.stderr
+    assert "warning" in result.stderr
+    assert "Edit the hook so it reads" in result.stderr
 
 
 def test_standalone_run_checks_literals_against_the_review_profile(tmp_path: Path) -> None:
@@ -203,7 +205,8 @@ def test_retired_key_is_refused_when_set_and_warned_when_empty(tmp_path: Path, k
     )
     refused = _run(project, "--settings-from-env", env_settings=PINNED)
     assert refused.returncode == 1
-    assert f"{key} is retired" in refused.stderr and "--migrate" in refused.stderr
+    assert f"{key} is retired" in refused.stderr
+    assert "Remove it from the config" in refused.stderr
 
     config = project / ".codex/skills/agent-loop/agent-loop.config"
     config.write_text(
@@ -214,52 +217,21 @@ def test_retired_key_is_refused_when_set_and_warned_when_empty(tmp_path: Path, k
     assert f"warning: {key} is retired" in warned.stderr
 
 
-def test_migrate_rewrites_literals_removes_retired_keys_and_is_idempotent(
-    tmp_path: Path,
-) -> None:
-    project = _project(
-        tmp_path,
-        claude_hook="claude --print --model opus --effort low" + TAIL,
-        codex_hook="codex exec -m gpt-6-astra -c model_reasoning_effort=max" + TAIL,
-        extra=(
-            "claude_effort_policy = low\n"
-            "worker_model = gpt-6-astra\n"
-            "worker_fallback_model =\n"
-            "worker_timeout_seconds = 3600\n"
-        ),
-    )
-    config = project / ".codex/skills/agent-loop/agent-loop.config"
-    first = _run(project, "--migrate")
-    assert first.returncode == 0, first.stderr
-    migrated = config.read_text(encoding="utf-8")
-    assert migrated == (
-        "# consumer settings\n"
-        "review_contract_version = 3\n"
-        "config_doctor = true\n"
-        'claude_review_hook = claude --print --model "$AGENT_LOOP_CLAUDE_MODEL" '
-        '--effort "$AGENT_LOOP_CLAUDE_EFFORT"' + TAIL + "\n"
-        'codex_review_hook = codex exec -m "$AGENT_LOOP_CODEX_MODEL" '
-        '-c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT"' + TAIL + "\n"
-        "review_max_rounds = 4\n"
-        "worker_timeout_seconds = 3600\n"
-    )
-    assert "removed claude_effort_policy" in first.stdout
-
-    second = _run(project, "--migrate")
-    assert second.returncode == 0
-    assert "nothing to migrate" in second.stdout
-    assert config.read_text(encoding="utf-8") == migrated
-
-    checked = _run(project, "--settings-from-env", env_settings=PINNED)
-    assert checked.returncode == 0, checked.stderr
-
-
-def test_template_ships_in_the_migrated_form(tmp_path: Path) -> None:
+def test_template_ships_without_retired_keys_or_literals() -> None:
     text = TEMPLATE.read_text(encoding="utf-8")
     for key in ("claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort"):
         assert not any(line.startswith(f"{key} ") for line in text.splitlines())
-    project = _project(tmp_path, claude_hook=CLAUDE_VARIABLES, codex_hook=CODEX_VARIABLES)
-    shutil.copy2(TEMPLATE, project / ".codex/skills/agent-loop/agent-loop.config")
-    result = _run(project, "--migrate")
-    assert result.returncode == 0
-    assert "nothing to migrate" in result.stdout
+    hooks = {
+        "claude_review_hook": ("AGENT_LOOP_CLAUDE_MODEL", "AGENT_LOOP_CLAUDE_EFFORT"),
+        "codex_review_hook": ("AGENT_LOOP_CODEX_MODEL", "AGENT_LOOP_CODEX_EFFORT"),
+    }
+    for line in text.splitlines():
+        key = line.split("=", 1)[0].strip()
+        if key not in hooks:
+            continue
+        value = line.split("=", 1)[1]
+        # Every model and effort flag must read a pinned variable, never a literal.
+        for flag_value in re.findall(
+            r"(?:--model|--effort|-m|-c model=|-c model_reasoning_effort=)\s*(\S+)", value
+        ):
+            assert "$AGENT_LOOP_" in flag_value, f"{key} passes a literal: {flag_value}"

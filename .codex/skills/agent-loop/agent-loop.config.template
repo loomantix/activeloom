@@ -24,8 +24,8 @@ config_doctor = true
 # $AGENT_LOOP_CODEX_MODEL, $AGENT_LOOP_CODEX_EFFORT, $AGENT_LOOP_CLAUDE_MODEL,
 # $AGENT_LOOP_CLAUDE_EFFORT, $AGENT_LOOP_CODEX_WORKER_MODEL, and
 # $AGENT_LOOP_CODEX_WORKER_EFFORT; the contract-v4 launcher passes the reviewer
-# values to each CLI. `config-doctor.py --project-dir <repo> --migrate` removes
-# the retired claude_effort_policy and worker model keys from an existing config.
+# values to each CLI. An existing config keeps working once the retired
+# claude_effort_policy and worker model keys are removed; the doctor names them.
 
 # Contract v4 pins both review hooks to the upstream-owned trusted launcher. The
 # wrapper runs Codex first, then Claude, and
