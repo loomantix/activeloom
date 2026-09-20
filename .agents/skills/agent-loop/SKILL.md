@@ -78,11 +78,11 @@ with the issue worktree as the current directory.
 | `gemini_review_hook`                                     | Required fresh local Gemini `deepcritique` on the draft PR against `$AGENT_LOOP_REVIEW_BASE_SHA`, with the same thread contract.                                                                            |
 | `review_contract_version`                                | Required hook contract. New and migrated consumers use `3`; version `2` remains accepted temporarily for staged sync compatibility.                                                                         |
 | `config_doctor`                                          | Run the consumer compatibility doctor after settings are pinned and before selection or claim. Current contract-v3 consumers set `true`.                                                                    |
-| `claude_effort_policy`                                   | Retired. The doctor refuses a non-empty value; `config-doctor.py --migrate` removes it.                                                                                                                     |
+| `claude_effort_policy`                                   | Retired. The doctor refuses a non-empty value; remove the key from the config.                                                                                                                              |
 | `review_max_rounds`                                      | Review-round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the worktree and blocks publication.                                                                              |
 | `review_timeout_seconds`                                 | Positive wall-clock budget for the complete review run, persisted across resume. Default `7200`; each pass is capped at the remaining budget.                                                               |
 | `worker_hook`                                            | Optional worker command override (e.g. `agy`, `gemini`, or custom CLI invocation).                                                                                                                          |
-| `worker_model`, `worker_fallback_model`, `worker_effort` | Retired. The default worker's model, effort, and fallback come from the review profile; the doctor refuses a non-empty value and `--migrate` removes the keys.                                              |
+| `worker_model`, `worker_fallback_model`, `worker_effort` | Retired. The default worker's model, effort, and fallback come from the review profile; the doctor refuses a non-empty value, so remove the keys from the config.                                           |
 | `worker_retries`                                         | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                 |
 | `worker_timeout_seconds`, `hook_timeout_seconds`         | Positive bounded execution time; zero is rejected because GNU `timeout 0` disables the bound.                                                                                                               |
 | `retry_on_timeout`, `retry_delay_seconds`                | Timeout retry policy.                                                                                                                                                                                       |
@@ -183,10 +183,9 @@ discard those runs under their original wrapper before migrating.
    every accepted contract version, including an existing version 3 config.
 2. Leave `worker_hook` empty so the default Agy worker launcher runs on the
    pinned worker settings; a hard-coded nonempty hook cannot change models
-   during a capacity retry. Run `config-doctor.py --project-dir <repo> --migrate`
-   to remove the retired `worker_model`, `worker_fallback_model`,
-   `worker_effort`, and `claude_effort_policy` keys; every other line is kept,
-   and a second run changes nothing.
+   during a capacity retry. Remove the retired `worker_model`,
+   `worker_fallback_model`, `worker_effort`, and `claude_effort_policy` keys;
+   the doctor names each one it finds.
 3. Configure a non-mutating `validation_hook`, add
    `review_contract_version = 3`, enable `config_doctor = true`, and optionally
    override `review_max_rounds = 4` with another value from `1` through `4`.

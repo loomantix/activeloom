@@ -1104,20 +1104,20 @@ def test_doctor_accepts_a_config_without_worker_model_keys(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     "key", ["claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort"]
 )
-def test_doctor_refuses_a_non_empty_retired_key_and_points_at_migrate(
+def test_doctor_refuses_a_non_empty_retired_key_and_names_it(
     tmp_path: Path, key: str
 ) -> None:
     result = _doctor(_doctor_project(tmp_path, f"{key} = gemini-3.7-flash-high\n"))
     assert result.returncode == 1
     assert f"{key} is retired" in result.stderr
-    assert "--migrate" in result.stderr
+    assert "Remove it from the config" in result.stderr
 
 
 def test_doctor_warns_about_an_empty_retired_key(tmp_path: Path) -> None:
     result = _doctor(_doctor_project(tmp_path, "worker_model =\n"))
     assert result.returncode == 0, result.stderr
     assert "warning: worker_model is retired and has no effect" in result.stderr
-    assert "--migrate" in result.stderr
+    assert "remove it from the config" in result.stderr
 
 
 def test_the_config_template_passes_the_doctor(tmp_path: Path) -> None:
@@ -1128,29 +1128,6 @@ def test_the_config_template_passes_the_doctor(tmp_path: Path) -> None:
     result = _doctor(project)
     assert result.returncode == 0, result.stderr
     assert "warning" not in result.stderr
-
-
-def test_migrate_removes_retired_keys_and_keeps_every_other_line(tmp_path: Path) -> None:
-    retired = (
-        "claude_effort_policy = low\n"
-        "worker_model = gemini-3.7-flash-high\n"
-        "worker_fallback_model = gemini-3.1-pro-high\n"
-        "  worker_effort =\n"
-    )
-    project = _doctor_project(tmp_path, retired + "worker_retries = 1\n")
-    config = project / ".agents/skills/agent-loop/agent-loop.config"
-    before = config.read_text(encoding="utf-8")
-    result = _doctor(project, "--migrate")
-    assert result.returncode == 0, result.stderr
-    for key in ("claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort"):
-        assert f"migrated removed {key}" in result.stdout
-    assert config.read_text(encoding="utf-8") == before.replace(retired, "")
-    assert _doctor(project).returncode == 0
-
-    again = _doctor(project, "--migrate")
-    assert again.returncode == 0
-    assert "nothing to migrate" in again.stdout
-    assert config.read_text(encoding="utf-8") == before.replace(retired, "")
 
 
 # The run-state helper.
