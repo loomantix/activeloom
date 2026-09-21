@@ -1,6 +1,7 @@
 import { defineConfig } from 'tsup';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 // Read at build time so the version travels inside the artifact. The
 // single-file build is vendored away from this package.json, so nothing can
@@ -9,10 +10,17 @@ const { version } = createRequire(import.meta.url)('./package.json') as {
   version: string;
 };
 const define = { __PACKAGE_VERSION__: JSON.stringify(version) };
-const parserLicense = readFileSync(
-  createRequire(import.meta.url).resolve('@babel/parser/LICENSE'),
-  'utf8',
+// Resolve through the manifest: @babel/parser's `exports` map does not expose
+// ./LICENSE, so only ./package.json gives us a fixed point inside its directory.
+const parserDir = path.dirname(
+  createRequire(import.meta.url).resolve('@babel/parser/package.json'),
 );
+const parserLicense = readFileSync(path.join(parserDir, 'LICENSE'), 'utf8');
+if (!parserLicense.trim()) {
+  throw new Error(
+    `Empty @babel/parser LICENSE at ${parserDir}; the bundle inlines the parser and must carry its licence.`,
+  );
+}
 
 export default defineConfig([
   {

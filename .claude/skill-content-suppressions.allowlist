@@ -55,13 +55,13 @@ aaeaf3ba081d352d0cdac34e8da9371f2277df76ea30564b694989dfb8308d3a  .codex/skills/
 # @babel/parser bundled in review-ledger.js formats AST/parser error messages
 # containing `${token}`. This is a JavaScript template literal inside the vendored
 # bundle, not a shell environment variable dereference.
-5fa4277139ae9fac1d7dc83de41d7812a9c98ce9b2dc324a263295cb2389c909  .agents/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
-5fa4277139ae9fac1d7dc83de41d7812a9c98ce9b2dc324a263295cb2389c909  .claude/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
-5fa4277139ae9fac1d7dc83de41d7812a9c98ce9b2dc324a263295cb2389c909  .codex/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
-d8820626846608072995c005df565368eebec88677a708892984e0b70d5965aa  .agents/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
-d8820626846608072995c005df565368eebec88677a708892984e0b70d5965aa  .claude/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
-d8820626846608072995c005df565368eebec88677a708892984e0b70d5965aa  .codex/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
-292cf686e863ab9d7818d8be8582d29fa90864d101a502a11df6d6e6840cf609  .agents/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
-292cf686e863ab9d7818d8be8582d29fa90864d101a502a11df6d6e6840cf609  .claude/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
-292cf686e863ab9d7818d8be8582d29fa90864d101a502a11df6d6e6840cf609  .codex/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+49ec7d7fcfb8de222197d01cabd075d51d384032d04120e1486927642bf37a5e  .agents/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+49ec7d7fcfb8de222197d01cabd075d51d384032d04120e1486927642bf37a5e  .claude/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+49ec7d7fcfb8de222197d01cabd075d51d384032d04120e1486927642bf37a5e  .codex/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+00b2baaa013b994f9b0f098c85d10203889c61fef343c15c9daebf93f3c9234a  .agents/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+00b2baaa013b994f9b0f098c85d10203889c61fef343c15c9daebf93f3c9234a  .claude/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+00b2baaa013b994f9b0f098c85d10203889c61fef343c15c9daebf93f3c9234a  .codex/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+92dfa733970404a6176e572d4c11fa1ce2465b32956443013c2fad8f1d9e2451  .agents/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+92dfa733970404a6176e572d4c11fa1ce2465b32956443013c2fad8f1d9e2451  .claude/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
+92dfa733970404a6176e572d4c11fa1ce2465b32956443013c2fad8f1d9e2451  .codex/skills/critique/scripts/review-ledger.js  cred-env-deref  JavaScript template literal `${token}` in bundled @babel/parser error message; not a shell dereference.
 
