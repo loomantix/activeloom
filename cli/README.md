@@ -1,6 +1,6 @@
 # ActiveLoom CLI
 
-Install ActiveLoom engineering skills and supporting files for Claude Code, Codex, and Gemini/Agy, personally or into a repository. This CLI handles installation and detection; the agent clients execute the installed workflows.
+Install ActiveLoom engineering skills, multi-harness review protocols, and repository configuration for Claude Code, Codex, and Gemini/Agy across Anthropic, OpenAI, and Google models, personally or into a repository. This CLI handles installation, detection, and review profile configuration; the agent clients execute the installed workflows.
 
 For what ActiveLoom is and is not, read the [project README](https://github.com/loomantix/activeloom/blob/main/README.md). To route an agent task, use the [agent entry guide](https://github.com/loomantix/activeloom/blob/main/docs/agent-guide.md).
 
@@ -37,6 +37,8 @@ node cli/bin/activeloom.js add diagnosing-bugs issues --harness codex --dry-run
 node cli/bin/activeloom.js detect --consumer-dir /path/to/your-repo
 node cli/bin/activeloom.js init --harness codex --consumer-dir /path/to/your-repo --dry-run
 node cli/bin/activeloom.js init --sync --harness codex --consumer-dir /path/to/your-repo
+node cli/bin/activeloom.js review-config defaults
+node cli/bin/activeloom.js review-config set --repo owner/repo order.lean=codex,claude
 ```
 
 `detect` reports facts without installing files. `init` leaves `TODO(activeloom)` markers where project judgment is needed; run the `onboard` skill in your agent to draft those values for confirmation. On a fresh consumer, `init --dry-run` cannot render the complete harness trees until its configuration exists and reports the skipped render.

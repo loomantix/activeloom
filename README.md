@@ -1,27 +1,30 @@
 # ActiveLoom
 
-**Reusable engineering workflows for coding agents, distributed from one upstream to many repositories.**
+**Reusable, multi-harness engineering workflows and review protocols for coding agents, distributed from one upstream to many repositories.**
 
-ActiveLoom supplies skills, review protocols, supporting scripts, and repository configuration for Claude Code, Codex, and Gemini through Antigravity/Agy. It helps an existing agent plan work, investigate bugs, implement bounded tasks, and review pull requests with traceable findings. Its installer and sync engine keep those workflows consistent while each repository owns its project context.
+ActiveLoom supplies portable skills, adversarial review protocols, supporting scripts, and repository configuration across multiple coding agent harnesses and frontier model families. It natively supports **Claude Code** (Anthropic Claude 3.7/3.5 Sonnet, Opus), **OpenAI Codex** (OpenAI o1, o3-mini, GPT-4o, Sol), and **Google Gemini** through Antigravity/Agy (Gemini 2.5 Pro/Flash, Gemini 3.x), alongside hosted review integration for **GitHub Copilot**.
 
-This is the unified project formerly named **claude-platform**. New consumers use `loomantix/activeloom`, one `.activeloom-config.yml`, and the harnesses they select. Separate engine upstreams are not required.
+It helps an existing agent plan work, investigate bugs, implement bounded tasks, and review pull requests with traceable, ledger-backed findings. Its installer and sync engine keep those workflows consistent while each repository owns its project context.
+
+This is the unified project formerly named **claude-platform**. New consumers use `loomantix/activeloom`, one `.activeloom-config.yml`, and the harnesses and models they select. Separate engine upstreams are not required.
 
 **Point an agent here:** [Agent entry guide](docs/agent-guide.md). It contains a copyable session prompt, a task-to-skill map, prerequisites, and a source ownership map. For installation, use [Getting started](docs/getting-started.md).
 
 ## What it provides
 
-| Capability              | What you get                                                                                                                                   |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Engineering skills      | Instructions and helpers for design, diagnosis, implementation, issue management, and review. Load the skill relevant to the task.             |
-| PR review protocol      | Draft-PR-first review, verified findings recorded before fixes, and a shared ledger tying review evidence to a specific commit.                |
-| Bounded automation      | A deterministic runner for explicitly requested automatic review chains, plus a separate `agent-loop` workflow for an allowlisted issue queue. |
-| Multiple harnesses      | Harness-specific prompts and tools under `.claude/`, `.codex/`, and `.agents/`; shared skills are rendered where their behavior can be shared. |
-| Repository distribution | A CLI for personal or repository installation, and a sync engine that proposes downstream changes through pull requests.                       |
-| Local customization     | Consumer-owned configuration and review addenda for project rules, validation commands, and domain knowledge.                                  |
+| Capability                 | What you get                                                                                                                                                                                                            |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Engineering skills         | Instructions and helpers for design, diagnosis, implementation, issue management, and review. Load the skill relevant to the task.                                                                                      |
+| Multi-harness & models     | First-class support for Claude Code (`.claude/`), OpenAI Codex (`.codex/`), and Antigravity/Agy (`.agents/`), running across Anthropic, OpenAI, and Google model families. Shared skills are rendered across harnesses. |
+| Cross-model PR review      | Draft-PR-first adversarial review where independent models critique code to eliminate single-model blind spots, with a shared ledger tying review evidence to a specific commit.                                        |
+| Model & role configuration | Configure separate worker and reviewer models, adjust reasoning effort tiers (`low`, `medium`, `high`), and enable automatic model fallbacks via `review-setup` and `review-config`.                                    |
+| Bounded automation         | A deterministic runner for explicitly requested automatic review chains, plus a separate `agent-loop` workflow for an allowlisted issue queue.                                                                          |
+| Repository distribution    | A CLI for personal or repository installation, and a sync engine that proposes downstream changes through pull requests.                                                                                                |
+| Local customization        | Consumer-owned configuration and review addenda for project rules, validation commands, and domain knowledge.                                                                                                           |
 
 ## What it does not provide
 
-- **An agent runtime or model service.** Bring the supported agent clients, model access, and tools required by the selected skill. Installing prompts does not install or authenticate reviewers.
+- **An agent runtime or hosted model service.** Bring your own agent clients, model subscriptions, and API keys (Anthropic, OpenAI, Google). ActiveLoom supplies the prompt architectures, skills, and review protocols executed by those tools.
 - **A hosted engineering platform.** The repository ships files and local/CI tooling, not a hosted workspace, dashboard, or managed execution service.
 - **A general-purpose agent application SDK.** Its focus is engineering work in repositories; it is not an application framework for building arbitrary agents.
 - **Identical behavior across engines.** Review prompts deliberately differ by harness. Skill availability, launch requirements, and telemetry support also differ.
@@ -31,15 +34,16 @@ This is the unified project formerly named **claude-platform**. New consumers us
 
 ## Choose a starting point
 
-| Your task                                 | Start with                                                    | Read next                                                                        |
-| ----------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Decide whether this fits an agent session | The agent entry guide                                         | [Task selection and boundaries](docs/agent-guide.md)                             |
-| Try a workflow personally                 | CLI `add <skill> --harness <id>`                              | [Personal installation](docs/getting-started.md#tier-0-try-it)                   |
-| Give a repository a shared setup          | CLI `init --harness <id>` and the `onboard` skill             | [Repository installation](docs/getting-started.md#tier-1)                        |
-| Keep multiple repositories current        | CLI `init --sync`                                             | [Sync setup](docs/getting-started.md#tier-2) and [sync contract](docs/sync.md)   |
-| Review an existing PR                     | The installed harness's `REVIEW_WORKFLOW.md` and review skill | [Review entry points](docs/agent-guide.md#review-an-existing-pr)                 |
-| Run an automatic review chain             | The deterministic review runner                               | [Runner requirements and outcomes](.codex/references/review-chain-runner.md)     |
-| Improve the toolkit itself                | Source ownership map and contribution guide                   | [Contributing](CONTRIBUTING.md) and [prompt rendering](docs/prompt-rendering.md) |
+| Your task                                  | Start with                                                    | Read next                                                                        |
+| ------------------------------------------ | ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Decide whether this fits an agent session  | The agent entry guide                                         | [Task selection and boundaries](docs/agent-guide.md)                             |
+| Try a workflow personally                  | CLI `add <skill> --harness <id>`                              | [Personal installation](docs/getting-started.md#tier-0-try-it)                   |
+| Give a repository a shared setup           | CLI `init --harness <id>` and the `onboard` skill             | [Repository installation](docs/getting-started.md#tier-1)                        |
+| Keep multiple repositories current         | CLI `init --sync`                                             | [Sync setup](docs/getting-started.md#tier-2) and [sync contract](docs/sync.md)   |
+| Configure models, effort, and review order | CLI `review-config` or `review-setup` skill                   | [Review profile setup](docs/getting-started.md#referencing-the-synced-docs)      |
+| Review an existing PR                      | The installed harness's `REVIEW_WORKFLOW.md` and review skill | [Review entry points](docs/agent-guide.md#review-an-existing-pr)                 |
+| Run an automatic review chain              | The deterministic review runner                               | [Runner requirements and outcomes](.codex/references/review-chain-runner.md)     |
+| Improve the toolkit itself                 | Source ownership map and contribution guide                   | [Contributing](CONTRIBUTING.md) and [prompt rendering](docs/prompt-rendering.md) |
 
 ## Run the installer today
 
@@ -70,15 +74,27 @@ Tier 2 is the recommended tier for scheduled repository updates (`init --sync`);
 
 These are adoption tiers, not the **Lean/Deep review tiers**. Choose personal or manual installation for evaluation; choose scheduled sync when maintaining shared repository workflows is the objective.
 
-## Harnesses and review
+## Supported harnesses and models
 
-| CLI/config ID | Distributed root | Entry document                                           |
-| ------------- | ---------------- | -------------------------------------------------------- |
-| `claude`      | `.claude/`       | [Claude review workflow](.claude/REVIEW_WORKFLOW.md)     |
-| `codex`       | `.codex/`        | [Codex review workflow](.codex/REVIEW_WORKFLOW.md)       |
-| `gemini`      | `.agents/`       | [Gemini/Agy review workflow](.agents/REVIEW_WORKFLOW.md) |
+ActiveLoom provides unified engineering workflows across distinct agent environments, CLIs, and model families:
+
+| CLI/config ID | Agent harness / client       | Supported model families                          | Distributed root | Entry document                                           |
+| ------------- | ---------------------------- | ------------------------------------------------- | ---------------- | -------------------------------------------------------- |
+| `claude`      | Anthropic Claude Code        | Claude 3.7 Sonnet, Claude 3.5 Sonnet, Claude Opus | `.claude/`       | [Claude review workflow](.claude/REVIEW_WORKFLOW.md)     |
+| `codex`       | OpenAI Codex CLI             | OpenAI o1, o3-mini, GPT-4o, Sol, reasoning models | `.codex/`        | [Codex review workflow](.codex/REVIEW_WORKFLOW.md)       |
+| `gemini`      | Google Antigravity / Agy CLI | Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 3.x      | `.agents/`       | [Gemini/Agy review workflow](.agents/REVIEW_WORKFLOW.md) |
 
 Use the selected harness's actual skill files as the authority for invocation and prerequisites. A `gemini` selection refers to this project's Agy integration; it is not a promise of compatibility with every Gemini client.
+
+### Cross-model review and role orchestration
+
+ActiveLoom's review protocols are built on the principle that no single model grades its own homework:
+
+- **Adversarial review relays**: An authoring worker (e.g. Claude) implements a feature, and an independent reviewer from another model family (e.g. Codex or Gemini) performs adversarial critique. Findings are posted inline on the draft PR and recorded in an append-only ledger before any fix is applied.
+- **Worker vs. reviewer model tuning**: Pair fast or code-optimized models for drafting and implementation with high-effort reasoning models for code review and verification.
+- **Per-developer and per-repo profiles**: Configure reviewer models, worker models, reasoning effort levels (`low`, `medium`, `high`), and engine review order (e.g. `order.lean=codex,claude`) via the `review-setup` skill or `activeloom review-config`.
+- **Capacity and rate-limit fallbacks**: Configure fallback model-and-effort pairs so automatic review runs handle upstream API capacity or rate-limit rejections without aborting the review run.
+- **Hosted reviewer integration**: The `copilot-review` and `reviewit` skills incorporate GitHub Copilot and hosted multi-model reviews on pull requests alongside local review passes where repository policy permits.
 
 Local review starts from a draft PR and resolves Lean or Deep before reviewers run. Cleanup changes the code's shape; adversarial review examines the resulting code for defects. Independent engines share a ledger protocol, while retaining different review prompts. Material fixes require fresh evidence under that protocol.
 

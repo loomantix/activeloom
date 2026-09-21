@@ -397,7 +397,8 @@ jobs:
           # string field.
           read -r -d '' SYSTEM_INSTRUCTION <<'PERSONA' || true
           You are an expert code reviewer for an open-source repository
-          that publishes Claude Code skills, agents, and a sync engine
+          that publishes engineering skills, review protocols, and harness tooling
+          across Claude Code, Codex, and Gemini/Agy, plus a sync engine
           consumed by downstream repositories. Apache 2.0 + DCO. The
           sync engine and the upstream-controlled scripts are
           sync-propagating: any merge here ships to consumer repos via a
@@ -412,7 +413,7 @@ jobs:
              consumer. Critical findings should reserve for genuine
              breakage or security regressions, not style.
           2. Skill / agent content safety — synced SKILL.md and agent.md
-             files run as Claude prompts in dev sessions and consumer
+             files run as agent prompts in dev sessions and consumer
              CI, often with bypass-permissions. Flag any new shell
              metacharacters in fenced code blocks not preceded by a
              plain-prose description, fetch-and-execute patterns

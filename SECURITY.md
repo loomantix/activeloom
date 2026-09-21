@@ -1,6 +1,6 @@
 # Security
 
-This repo ships Claude Code skills, agents, and a sync engine. The skills do not handle secrets directly, but the sync engine and `create-signed-commit.py` execute inside CI runners with privileged GitHub App tokens. A vulnerability in this repo could affect every downstream consumer that runs the sync workflow.
+This repo ships engineering skills, review protocols, and harness tooling across Claude Code, Codex, and Gemini/Agy, plus a sync engine. The skills do not handle secrets directly, but the sync engine and `create-signed-commit.py` execute inside CI runners with privileged GitHub App tokens. A vulnerability in this repo could affect every downstream consumer that runs the sync workflow.
 
 ## Reporting a vulnerability
 
@@ -21,7 +21,7 @@ In scope:
 
 - Vulnerabilities in `scripts/sync-engine.py` or `scripts/create-signed-commit.py` that could allow path traversal, arbitrary file write, token exfiltration, or supply-chain compromise of downstream consumers.
 - Vulnerabilities in `.github/workflows/sync-from-upstream.yml.template` (the canonical consumer-side workflow) that could leak secrets, escalate permissions, or weaken the App-token boundary.
-- Skill instructions that could be weaponized to drive Claude into destructive actions (e.g. unintended `git push --force`, secret disclosure, mass-modification beyond stated scope) when the skill is invoked under its documented contract.
+- Skill instructions that could be weaponized to drive an agent (Claude, Codex, Gemini/Agy) into destructive actions (e.g. unintended `git push --force`, secret disclosure, mass-modification beyond stated scope) when the skill is invoked under its documented contract.
 - CI/build supply-chain vulnerabilities affecting this repo's own pipelines.
 
 Out of scope:
