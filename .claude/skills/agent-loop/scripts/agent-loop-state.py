@@ -24,8 +24,11 @@ STATE_VERSION = 2
 # The batch schema is versioned independently of the run state above. Only the
 # run-state schema gained `reviewSettings`, so bumping STATE_VERSION for it must
 # not invalidate batch checkpoints for a schema that did not change. This number
-# is the value this root's batch schema has carried from the start; move it only
-# when the batch schema itself changes.
+# is the value every helper on disk writes today -- here and in consumers, whose
+# sync tag predates that bump. It is NOT necessarily the batch schema's original
+# number: a run-state-only bump moved the shared constant once before, so a root
+# may have written a lower value earlier in its history. Move this only when the
+# batch schema itself changes.
 BATCH_STATE_VERSION = 1
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -381,10 +384,15 @@ def _capacity_rejected(args: argparse.Namespace) -> None:
 
 def _validate_batch(value: dict[str, Any]) -> None:
     required = {"version", "kind", "runId", "repo", "baseBranch", "allowlist", "cursor", "issues"}
-    if set(value) != required or value.get("kind") != "batch":
+    if set(value) != required:
         _fail("batch state has missing or unknown fields")
+    if value.get("kind") != "batch":
+        _fail("batch state kind must be 'batch'")
     if type(value["version"]) is not int or value["version"] != BATCH_STATE_VERSION:
-        _fail("unsupported batch state version")
+        _fail(
+            "unsupported batch state version: found "
+            f"{value['version']!r}, this harness writes {BATCH_STATE_VERSION}"
+        )
     for key in ("runId", "repo", "baseBranch"):
         if not isinstance(value[key], str) or not value[key]:
             _fail(f"batch state {key} must be a non-empty string")
