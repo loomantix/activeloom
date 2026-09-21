@@ -8,6 +8,7 @@ import os
 import stat
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -742,3 +743,208 @@ def test_detect_suggests_unavailability_but_never_writes_it(
         "unavailable"
     }
     assert profile.read_bytes() == before
+
+
+# --- version skew between synced copies of this helper -----------------------
+#
+# The profile is one machine-global file, but the helper that reads it ships as
+# a per-repository copy, so at any moment some checkouts are behind. That makes
+# the file a wire protocol between helper versions rather than a local config,
+# and these pin the parts of that contract a reader cannot re-derive: read
+# forward, refuse to write what you cannot represent, and say so when a write
+# raises the floor for everyone else.
+
+
+def newer_profile(profile: Path, capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+    """A valid current profile relabelled as the next schema, with future content."""
+    run(capsys, "init", "--accept-defaults", "--replace")
+    document: dict[str, Any] = json.loads(profile.read_text())
+    module = load()
+    document["schema_version"] = module.SCHEMA_VERSION + 1
+    document["telemetry"] = {"enabled": True}
+    document["engines"]["claude"]["reasoning"] = "extended"
+    document["engines"]["claude"].setdefault("worker", {})["concurrency"] = 4
+    document["engines"]["qwen"] = {"model": "q", "effort": "high"}
+    profile.write_text(json.dumps(document, indent=2))
+    return document
+
+
+def test_a_newer_profile_still_resolves_the_settings_this_helper_models(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    newer_profile(profile, capsys)
+
+    status, out, _ = run(capsys, "resolve", "--engine", "claude")
+
+    # The unknown engine, the unknown engine key and the unknown top-level key
+    # are all set aside; the reviewer pair this helper does understand resolves.
+    assert status == 0
+    assert json.loads(out)["engine"] == "claude"
+
+
+def test_a_newer_profile_is_never_written_back(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    newer_profile(profile, capsys)
+    before = profile.read_bytes()
+
+    status, _, err = run(capsys, "set", "claude.effort=high")
+
+    # Writing would serialize only the modelled subset and silently delete the
+    # rest, which is worse than refusing: the settings lost belong to a checkout
+    # that is ahead, not behind.
+    assert status == 1
+    assert "sync this checkout" in err
+    assert profile.read_bytes() == before
+
+
+def test_a_profile_that_declares_a_reader_floor_is_refused_outright(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    document = newer_profile(profile, capsys)
+    module = load()
+    document["min_reader_version"] = module.SCHEMA_VERSION + 1
+    profile.write_text(json.dumps(document, indent=2))
+
+    status, _, err = run(capsys, "resolve", "--engine", "claude")
+
+    # Forward tolerance assumes a newer schema only ADDED content. This is the
+    # escape hatch for a change that does not hold that promise, so it must not
+    # be read on a best-effort basis.
+    assert status == 2
+    assert "min_reader_version" not in err  # the message names the remedy, not the field
+    assert "sync this checkout" in err
+
+
+def test_raising_the_stored_version_warns_that_older_checkouts_lose_the_profile(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run(capsys, "init", "--accept-defaults", "--replace")
+    # The recommended defaults already carry worker pairs, which is itself a
+    # version 2 profile. Strip them to get the version 1 shape an older
+    # checkout would have written.
+    document = json.loads(profile.read_text())
+    for settings in document["engines"].values():
+        settings.pop("worker", None)
+    document["schema_version"] = 1
+    profile.write_text(json.dumps(document, indent=2))
+    assert json.loads(profile.read_text())["schema_version"] == 1
+
+    status, _, err = run(
+        capsys, "set", "claude.worker.model=opus", "claude.worker.effort=medium"
+    )
+
+    # The only moment a human is present and the consequence is still cheap to
+    # avoid. Storing a worker pair is what forces version 2, and every checkout
+    # on a version 1 helper stops being able to read the file.
+    assert status == 0
+    assert json.loads(profile.read_text())["schema_version"] == 2
+    assert "schema_version 2 (was 1)" in err
+    assert "sync" in err
+
+
+def test_tolerance_does_not_extend_to_the_current_schema(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run(capsys, "init", "--accept-defaults", "--replace")
+    document = json.loads(profile.read_text())
+    document["telemetry"] = {"enabled": True}
+    profile.write_text(json.dumps(document, indent=2))
+
+    # At or below this helper's version an unrecognized key is a typo or a
+    # corrupted file, not content from the future. Guards the forward rule
+    # against widening into "ignore anything unexpected".
+    assert run(capsys, "show")[0] == 2
+
+
+def run_with_reader_version(
+    capsys: pytest.CaptureFixture[str], version: int, *argv: str
+) -> tuple[int, str, str]:
+    """Drive a reader that models an older schema than the writer on disk.
+
+    `load()` returns a fresh module per call, so lowering SCHEMA_VERSION on one
+    instance simulates a checkout that has not synced yet without vendoring a
+    second copy of the helper that would rot on its own schedule.
+    """
+    module = load()
+    # setattr rather than attribute assignment: `load()` is typed ModuleType,
+    # whose attributes mypy --strict will not let us assign to by name.
+    setattr(module, "SCHEMA_VERSION", version)
+    status = module.main(list(argv))
+    captured = capsys.readouterr()
+    return status, captured.out, captured.err
+
+
+def test_the_current_writers_output_is_readable_by_an_older_reader(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The forward rule has to hold for real writer output, not only synthetic documents.
+
+    Every other forward-tolerance test here builds the newer profile by hand. That
+    proves the reader honours the rule but not that the writer stays inside it, so
+    an additive change to the writer alone would pass them all and still break every
+    checkout that has not synced — the exact failure this tolerance exists to stop.
+    """
+    run(capsys, "init", "--accept-defaults", "--replace")
+    stored = json.loads(profile.read_text())["schema_version"]
+    assert stored >= 2, "writer must store a version an older reader can be behind"
+
+    status, out, _ = run_with_reader_version(
+        capsys, stored - 1, "resolve", "--engine", "claude"
+    )
+
+    assert status == 0
+    assert json.loads(out)["engine"] == "claude"
+
+
+def test_an_older_reader_that_models_everything_present_may_still_write(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Forward tolerance must not refuse more than it has to.
+
+    The write refusal is keyed on content this reader cannot represent, not on
+    the version number alone. A reader that is merely behind, and models every
+    setting the profile actually holds, loses nothing by saving it — refusing
+    there would strand a checkout that is perfectly capable of the edit. The
+    truncation case, where content really would be dropped, is covered by
+    test_a_newer_profile_is_never_written_back.
+    """
+    run(capsys, "init", "--accept-defaults", "--replace")
+    stored = json.loads(profile.read_text())["schema_version"]
+    engines_before = json.loads(profile.read_text())["engines"]
+
+    status, _, err = run_with_reader_version(
+        capsys, stored - 1, "set", "claude.effort=high"
+    )
+
+    assert status == 0, err
+    after = json.loads(profile.read_text())
+    assert after["engines"]["claude"]["effort"] == "high"
+    # Every engine and every setting that was there is still there.
+    assert set(after["engines"]) == set(engines_before)
+    for engine, settings in engines_before.items():
+        assert set(after["engines"][engine]) >= set(settings)
+
+
+def test_every_key_the_current_writer_emits_is_modelled_by_the_reader(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Hold the shared key constants to the writer.
+
+    `prune_foreign` keeps exactly the modelled keys and `validate_profile`
+    rejects everything else. A key the writer emits but neither constant names
+    would be pruned out of a newer profile silently, so this fails at the moment
+    the writer gains it rather than when somebody's checkout stops reading.
+    """
+    run(capsys, "init", "--accept-defaults", "--replace")
+    module = load()
+    document = json.loads(profile.read_text())
+
+    assert set(document) <= module.PROFILE_KEYS
+    for engine, settings in document.get("engines", {}).items():
+        assert set(settings) <= module.engine_settings_keys(engine)
+        worker = settings.get("worker")
+        if isinstance(worker, dict):
+            assert set(worker) <= module.ENGINE_WORKER_KEYS
+    for override in document.get("repos", {}).values():
+        assert set(override) <= module.REPO_OVERRIDE_KEYS
