@@ -54,6 +54,25 @@ TIERS = ("lean", "deep")
 ROLES = ("reviewer", "worker")
 PAIR = ("model", "effort")
 AVAILABILITY = ("available", "unavailable")
+
+# Every key this helper models, in one place. `prune_foreign` keeps exactly
+# these from a newer profile and `validate_profile` rejects anything else in a
+# profile at or below this version. The two must agree by construction: if they
+# drift, a newer profile's added key is silently pruned instead of kept, which
+# is the same silent-drop this forward-tolerance exists to prevent — only
+# harder to see, because nothing fails.
+PROFILE_REQUIRED_KEYS = frozenset({"schema_version", "defaults_version", "confirmed_at"})
+PROFILE_OPTIONAL_KEYS = frozenset({"engines", "order", "repos", "min_reader_version"})
+PROFILE_KEYS = PROFILE_REQUIRED_KEYS | PROFILE_OPTIONAL_KEYS
+ENGINE_WORKER_KEYS = frozenset({*PAIR, "fallback"})
+REPO_OVERRIDE_KEYS = frozenset({"engines", "order"})
+
+
+def engine_settings_keys(engine: str) -> frozenset[str]:
+    """Settings keys one engine accepts. `fallback` is codex-only."""
+    keys = frozenset({*PAIR, "worker", "availability"})
+    return keys | {"fallback"} if engine == "codex" else keys
+
 CLIS = {"claude": "claude", "codex": "codex", "gemini": "agy"}
 # Values each engine CLI accepts for its effort flag.
 EFFORTS = {
@@ -166,7 +185,7 @@ def validate_worker(engine: str, worker: Any) -> None:
     label = f"{engine}.worker"
     if not isinstance(worker, dict):
         _fail(f"{label}: settings must be an object")
-    unknown = set(worker) - {*PAIR, "fallback"}
+    unknown = set(worker) - ENGINE_WORKER_KEYS
     if unknown:
         _fail(f"{label}: unknown keys {sorted(unknown)}")
     validate_pair(engine, label, worker)
@@ -180,10 +199,7 @@ def validate_engine_settings(
         _fail(f"unknown engine {engine!r}; expected one of {', '.join(ENGINES)}")
     if not isinstance(settings, dict):
         _fail(f"{engine}: settings must be an object")
-    allowed = {*PAIR, "worker", "availability"}
-    if engine == "codex":
-        allowed.add("fallback")
-    unknown = set(settings) - allowed
+    unknown = set(settings) - engine_settings_keys(engine)
     if unknown:
         _fail(f"{engine}: unknown keys {sorted(unknown)}")
     if not partial and not set(PAIR) <= set(settings):
@@ -244,7 +260,7 @@ def prune_foreign(document: dict[str, Any]) -> dict[str, Any]:
     pruned = {
         key: value
         for key, value in document.items()
-        if key in {"schema_version", "defaults_version", "confirmed_at", "engines", "order", "repos", "min_reader_version"}
+        if key in PROFILE_KEYS
     }
     _foreign("", set(document) - set(pruned))
 
@@ -259,9 +275,7 @@ def prune_foreign(document: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(settings, dict):
                 kept[engine] = settings
                 continue
-            allowed = {*PAIR, "worker", "availability"}
-            if engine == "codex":
-                allowed.add("fallback")
+            allowed = engine_settings_keys(engine)
             settings = dict(settings)
             _foreign(f"{label}engines.{engine}.", set(settings) - allowed)
             settings = {k: v for k, v in settings.items() if k in allowed}
@@ -269,10 +283,10 @@ def prune_foreign(document: dict[str, Any]) -> dict[str, Any]:
             if isinstance(worker, dict):
                 _foreign(
                     f"{label}engines.{engine}.worker.",
-                    set(worker) - {*PAIR, "fallback"},
+                    set(worker) - ENGINE_WORKER_KEYS,
                 )
                 settings["worker"] = {
-                    k: v for k, v in worker.items() if k in {*PAIR, "fallback"}
+                    k: v for k, v in worker.items() if k in ENGINE_WORKER_KEYS
                 }
             kept[engine] = settings
         return kept
@@ -285,9 +299,9 @@ def prune_foreign(document: dict[str, Any]) -> dict[str, Any]:
         for repo, override in repos.items():
             if isinstance(override, dict):
                 override = dict(override)
-                _foreign(f"repos.{repo}.", set(override) - {"engines", "order"})
+                _foreign(f"repos.{repo}.", set(override) - REPO_OVERRIDE_KEYS)
                 override = {
-                    k: v for k, v in override.items() if k in {"engines", "order"}
+                    k: v for k, v in override.items() if k in REPO_OVERRIDE_KEYS
                 }
                 if "engines" in override:
                     override["engines"] = prune_engines(
@@ -314,10 +328,8 @@ def validate_profile(
     )
     if tolerate_foreign and written_by_newer:
         document = prune_foreign(document)
-    required = {"schema_version", "defaults_version", "confirmed_at"}
-    unknown = (
-        set(document) - required - {"engines", "order", "repos", "min_reader_version"}
-    )
+    required = PROFILE_REQUIRED_KEYS
+    unknown = set(document) - PROFILE_KEYS
     if unknown:
         _fail(f"profile has unknown keys {sorted(unknown)}")
     missing = required - set(document)
@@ -409,6 +421,13 @@ def load_defaults() -> dict[str, Any]:
 
 
 def load_profile() -> dict[str, Any] | None:
+    # Both module globals describe the profile read by THIS call, and a save
+    # decides what to do from them. Clear them first so a second load in one
+    # process cannot inherit the first's verdict — stale FOREIGN_CONTENT would
+    # refuse a save of a profile that is perfectly representable.
+    global STORED_SCHEMA_VERSION
+    FOREIGN_CONTENT.clear()
+    STORED_SCHEMA_VERSION = None
     path = profile_path()
     if path.is_symlink():
         _fail(f"review profile cannot be a symlink: {path}")
@@ -419,7 +438,6 @@ def load_profile() -> dict[str, Any] | None:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         _fail(f"review profile is unreadable: {path}: {error}")
     profile = validate_profile(document, tolerate_foreign=True)
-    global STORED_SCHEMA_VERSION
     if isinstance(document, dict):
         stored = document.get("schema_version")
         STORED_SCHEMA_VERSION = stored if isinstance(stored, int) else None

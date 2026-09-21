@@ -854,3 +854,94 @@ def test_tolerance_does_not_extend_to_the_current_schema(
     # corrupted file, not content from the future. Guards the forward rule
     # against widening into "ignore anything unexpected".
     assert run(capsys, "show")[0] == 2
+
+
+def run_with_reader_version(
+    capsys: pytest.CaptureFixture[str], version: int, *argv: str
+) -> tuple[int, str, str]:
+    """Drive a reader that models an older schema than the writer on disk.
+
+    `load()` returns a fresh module per call, so lowering SCHEMA_VERSION on one
+    instance simulates a checkout that has not synced yet without vendoring a
+    second copy of the helper that would rot on its own schedule.
+    """
+    module = load()
+    module.SCHEMA_VERSION = version
+    status = module.main(list(argv))
+    captured = capsys.readouterr()
+    return status, captured.out, captured.err
+
+
+def test_the_current_writers_output_is_readable_by_an_older_reader(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The forward rule has to hold for real writer output, not only synthetic documents.
+
+    Every other forward-tolerance test here builds the newer profile by hand. That
+    proves the reader honours the rule but not that the writer stays inside it, so
+    an additive change to the writer alone would pass them all and still break every
+    checkout that has not synced — the exact failure this tolerance exists to stop.
+    """
+    run(capsys, "init", "--accept-defaults", "--replace")
+    stored = json.loads(profile.read_text())["schema_version"]
+    assert stored >= 2, "writer must store a version an older reader can be behind"
+
+    status, out, _ = run_with_reader_version(
+        capsys, stored - 1, "resolve", "--engine", "claude"
+    )
+
+    assert status == 0
+    assert json.loads(out)["engine"] == "claude"
+
+
+def test_an_older_reader_that_models_everything_present_may_still_write(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Forward tolerance must not refuse more than it has to.
+
+    The write refusal is keyed on content this reader cannot represent, not on
+    the version number alone. A reader that is merely behind, and models every
+    setting the profile actually holds, loses nothing by saving it — refusing
+    there would strand a checkout that is perfectly capable of the edit. The
+    truncation case, where content really would be dropped, is covered by
+    test_a_newer_profile_is_never_written_back.
+    """
+    run(capsys, "init", "--accept-defaults", "--replace")
+    stored = json.loads(profile.read_text())["schema_version"]
+    engines_before = json.loads(profile.read_text())["engines"]
+
+    status, _, err = run_with_reader_version(
+        capsys, stored - 1, "set", "claude.effort=high"
+    )
+
+    assert status == 0, err
+    after = json.loads(profile.read_text())
+    assert after["engines"]["claude"]["effort"] == "high"
+    # Every engine and every setting that was there is still there.
+    assert set(after["engines"]) == set(engines_before)
+    for engine, settings in engines_before.items():
+        assert set(after["engines"][engine]) >= set(settings)
+
+
+def test_every_key_the_current_writer_emits_is_modelled_by_the_reader(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Hold the shared key constants to the writer.
+
+    `prune_foreign` keeps exactly the modelled keys and `validate_profile`
+    rejects everything else. A key the writer emits but neither constant names
+    would be pruned out of a newer profile silently, so this fails at the moment
+    the writer gains it rather than when somebody's checkout stops reading.
+    """
+    run(capsys, "init", "--accept-defaults", "--replace")
+    module = load()
+    document = json.loads(profile.read_text())
+
+    assert set(document) <= module.PROFILE_KEYS
+    for engine, settings in document.get("engines", {}).items():
+        assert set(settings) <= module.engine_settings_keys(engine)
+        worker = settings.get("worker")
+        if isinstance(worker, dict):
+            assert set(worker) <= module.ENGINE_WORKER_KEYS
+    for override in document.get("repos", {}).values():
+        assert set(override) <= module.REPO_OVERRIDE_KEYS
