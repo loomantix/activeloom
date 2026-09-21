@@ -449,9 +449,11 @@ new families.
   consume it.
 - The engine-identity skew between `SUPPORTED_ENGINES` in `src/constants.ts`
   (which includes `antigravity`) and `ENGINES` in the controller (which does
-  not, and aliases `antigravity` to `gemini` inside `_sequence_decision`). It is
-  pre-existing and nothing here touches it; whether the assurance work is
-  affected was not established.
+  not, and folds `antigravity` into `gemini` in four places). It is pre-existing
+  and nothing here touches it; whether the assurance work is affected was not
+  established. Tracked separately, because it lets `verify-coverage` report
+  `full` for one engine reviewing twice — which would also be the tier a
+  `human-accepted` run's shortfall is measured against.
 - Consumer-side vendored copies at versions older than the ones in this tree.
   Step 2 of the rollout exists because that set cannot be established from here.
 
