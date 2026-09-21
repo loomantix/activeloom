@@ -1181,6 +1181,12 @@ harnesses:
         destination: .agents/skills/diagnosing-bugs/SKILL.md
         substitutions: []
 
+      # docs-pass — report-only clarity pass over a prose document. Agy-surface
+      # only: the two regression classes it guards against were observed there.
+      - source: .agents/skills/docs-pass/SKILL.md
+        destination: .agents/skills/docs-pass/SKILL.md
+        substitutions: []
+
       # simplify-comments — comment-density audit and a comment-only editorial
       # pass. The helper is executed from the skill, so it ships executable.
       - source: .agents/skills/simplify-comments/SKILL.md
