@@ -58,6 +58,23 @@ Codex's optional reviewer fallback is a complete, explicit model-and-effort pair
 
 When `show` reports a `defaults_version` older than `current_defaults_version`, tell the user the recommendations changed and show where `defaults` now differs from their stored values. Change nothing unless they choose to.
 
+## A profile newer than this checkout
+
+The profile is one file per machine, but this helper ships as a copy in every
+repository, so a profile written by a newer copy is a normal state, not damage.
+Reads still work: the settings this copy models resolve, and anything newer is
+set aside.
+
+Writes are refused, because saving would drop the settings this copy cannot
+represent. The message says to sync this checkout. Do that — do not edit the
+profile by hand to remove the unrecognized keys, and do not tell the user their
+profile is corrupt. A refusal naming `min_reader_version` means the newer
+format is not merely additive, so syncing is the only route.
+
+When a write raises the stored `schema_version`, the helper warns that
+checkouts on an older copy can no longer read the profile. Pass that on: the
+setting is saved, and those checkouts need a sync before their next review.
+
 ## Scope
 
 - An automatic review run already in progress keeps the settings it started with; a change applies to the next run.

@@ -16,6 +16,13 @@ The profile is shared by every repository's synced copy of this helper, so a
 profile that stores no version 2 setting is still written as version 1, which
 older copies can read.
 
+Those copies are version-skewed by design, so reads are forward-tolerant and
+writes are not. A profile newer than this helper is read for the settings this
+helper models, and anything else is set aside rather than rejected; a write is
+then refused, because serializing the pruned document would delete settings a
+newer checkout depends on. A change that genuinely breaks older readers sets
+`min_reader_version`, which they refuse explicitly instead of misreading.
+
 Exit status: 0 success, 1 refused operation (including an unavailable engine),
 2 invalid input or profile, 3 no profile or missing keys. When keys are missing,
 stdout carries JSON with a `missing` list of dotted keys such as
@@ -36,7 +43,12 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 SCHEMA_VERSION = 2
-READABLE_SCHEMA_VERSIONS = (1, 2)
+# The oldest schema this reader still understands. A profile NEWER than
+# SCHEMA_VERSION is read rather than rejected: the writer below stores the
+# lowest version that fits, so a bump means new content exists, not that old
+# content changed meaning. A future version that genuinely breaks older readers
+# says so with `min_reader_version` instead of relying on the number alone.
+OLDEST_READABLE_SCHEMA_VERSION = 1
 ENGINES = ("claude", "codex", "gemini")
 TIERS = ("lean", "deep")
 ROLES = ("reviewer", "worker")
@@ -85,6 +97,30 @@ def profile_path() -> Path:
         return path
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "activeloom" / "review-profile.json"
+
+
+# Keys a newer writer stored that this reader does not model. Reads tolerate
+# them and drop them from the working document; writes refuse, because writing
+# back a document this reader cannot represent would silently delete settings a
+# newer checkout is relying on.
+FOREIGN_CONTENT: list[str] = []
+
+# The schema_version as it sat on disk. validate_profile relabels the working
+# document to SCHEMA_VERSION, so the stored value has to be kept here to tell
+# whether a save raises it. None when no profile was read.
+STORED_SCHEMA_VERSION: int | None = None
+
+
+def _foreign(label: str, keys: set[str]) -> None:
+    FOREIGN_CONTENT.extend(f"{label}{key}" for key in sorted(keys))
+
+
+def _sync_remedy() -> str:
+    return (
+        "this checkout's review-profile helper is older than the profile it "
+        "read; sync this checkout to the current upstream before changing "
+        "review settings"
+    )
 
 
 def _fail(message: str, status: int = EXIT_INVALID) -> NoReturn:
@@ -196,19 +232,113 @@ def validate_engines_and_orders(
         validate_order(tier, engines_in_order)
 
 
-def validate_profile(document: Any) -> dict[str, Any]:
+def prune_foreign(document: dict[str, Any]) -> dict[str, Any]:
+    """Drop content a newer writer stored, recording it in FOREIGN_CONTENT.
+
+    Only ever applied to a profile whose schema_version is newer than this
+    helper's. Unknown keys are otherwise a typo or corruption and stay an error,
+    but in a newer profile the same strictness turns any additive upstream
+    change into a hard failure for every checkout that has not synced yet, so
+    the unknown parts are set aside and the known ones still resolve.
+    """
+    pruned = {
+        key: value
+        for key, value in document.items()
+        if key in {"schema_version", "defaults_version", "confirmed_at", "engines", "order", "repos", "min_reader_version"}
+    }
+    _foreign("", set(document) - set(pruned))
+
+    def prune_engines(engines: Any, label: str) -> dict[str, Any]:
+        if not isinstance(engines, dict):
+            return engines
+        kept = {}
+        for engine, settings in engines.items():
+            if engine not in ENGINES:
+                _foreign(f"{label}engines.", {engine})
+                continue
+            if not isinstance(settings, dict):
+                kept[engine] = settings
+                continue
+            allowed = {*PAIR, "worker", "availability"}
+            if engine == "codex":
+                allowed.add("fallback")
+            settings = dict(settings)
+            _foreign(f"{label}engines.{engine}.", set(settings) - allowed)
+            settings = {k: v for k, v in settings.items() if k in allowed}
+            worker = settings.get("worker")
+            if isinstance(worker, dict):
+                _foreign(
+                    f"{label}engines.{engine}.worker.",
+                    set(worker) - {*PAIR, "fallback"},
+                )
+                settings["worker"] = {
+                    k: v for k, v in worker.items() if k in {*PAIR, "fallback"}
+                }
+            kept[engine] = settings
+        return kept
+
+    if "engines" in pruned:
+        pruned["engines"] = prune_engines(pruned["engines"], "")
+    repos = pruned.get("repos")
+    if isinstance(repos, dict):
+        kept_repos = {}
+        for repo, override in repos.items():
+            if isinstance(override, dict):
+                override = dict(override)
+                _foreign(f"repos.{repo}.", set(override) - {"engines", "order"})
+                override = {
+                    k: v for k, v in override.items() if k in {"engines", "order"}
+                }
+                if "engines" in override:
+                    override["engines"] = prune_engines(
+                        override["engines"], f"repos.{repo}."
+                    )
+            kept_repos[repo] = override
+        pruned["repos"] = kept_repos
+    return pruned
+
+
+def validate_profile(
+    document: Any, *, tolerate_foreign: bool = False
+) -> dict[str, Any]:
     """Validate structure and values; absent settings are reported by missing_keys."""
     if not isinstance(document, dict):
         _fail("profile must be a JSON object")
+    # Tolerance is scoped to profiles a NEWER writer produced. At or below this
+    # helper's version an unrecognized key is a typo or corruption, not content
+    # from the future, and it stays an error.
+    written_by_newer = (
+        isinstance(document.get("schema_version"), int)
+        and not isinstance(document.get("schema_version"), bool)
+        and document["schema_version"] > SCHEMA_VERSION
+    )
+    if tolerate_foreign and written_by_newer:
+        document = prune_foreign(document)
     required = {"schema_version", "defaults_version", "confirmed_at"}
-    unknown = set(document) - required - {"engines", "order", "repos"}
+    unknown = (
+        set(document) - required - {"engines", "order", "repos", "min_reader_version"}
+    )
     if unknown:
         _fail(f"profile has unknown keys {sorted(unknown)}")
     missing = required - set(document)
     if missing:
         _fail(f"profile is missing {sorted(missing)}")
-    if document["schema_version"] not in READABLE_SCHEMA_VERSIONS:
-        _fail(f"unsupported profile schema_version {document['schema_version']!r}")
+    stored = document["schema_version"]
+    if not isinstance(stored, int) or isinstance(stored, bool) or stored < 1:
+        _fail(f"unsupported profile schema_version {stored!r}")
+    if stored < OLDEST_READABLE_SCHEMA_VERSION:
+        _fail(f"unsupported profile schema_version {stored!r}")
+    # A newer writer sets this only when its change genuinely breaks older
+    # readers. Absent it, a higher schema_version means additional content,
+    # which prune_foreign has already set aside.
+    floor = document.get("min_reader_version", 1)
+    if not isinstance(floor, int) or isinstance(floor, bool) or floor < 1:
+        _fail(f"invalid min_reader_version {floor!r}")
+    if floor > SCHEMA_VERSION:
+        _fail(
+            f"profile requires a reader of at least version {floor} and this one "
+            f"is version {SCHEMA_VERSION}: {_sync_remedy()}"
+        )
     for key in ("defaults_version", "confirmed_at"):
         if not isinstance(document[key], str) or not document[key]:
             _fail(f"profile {key} must be a nonempty string")
@@ -288,7 +418,12 @@ def load_profile() -> dict[str, Any] | None:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         _fail(f"review profile is unreadable: {path}: {error}")
-    return validate_profile(document)
+    profile = validate_profile(document, tolerate_foreign=True)
+    global STORED_SCHEMA_VERSION
+    if isinstance(document, dict):
+        stored = document.get("schema_version")
+        STORED_SCHEMA_VERSION = stored if isinstance(stored, int) else None
+    return profile
 
 
 def require_profile() -> dict[str, Any]:
@@ -323,9 +458,29 @@ def storage_schema_version(document: dict[str, Any]) -> int:
 
 
 def save_profile(document: dict[str, Any]) -> Path:
+    if FOREIGN_CONTENT:
+        # Read tolerance stops at the write. Saving now would serialize only the
+        # parts this reader models and drop the rest, turning a recoverable
+        # version skew into deleted settings.
+        _fail(
+            f"profile holds settings this helper does not model "
+            f"({', '.join(sorted(set(FOREIGN_CONTENT)))}): {_sync_remedy()}",
+            EXIT_REFUSED,
+        )
     document = validate_profile(document)
     require_consistent_orders(document)
     document["schema_version"] = storage_schema_version(document)
+    previous = STORED_SCHEMA_VERSION
+    if previous is not None and document["schema_version"] > previous:
+        # The moment a human is present and the consequence is still cheap to
+        # avoid. The profile is shared by every checkout's copy of this helper,
+        # and a checkout older than this schema cannot read what is about to be
+        # written.
+        sys.stderr.write(
+            f"review profile: storing schema_version "
+            f"{document['schema_version']} (was {previous}); checkouts whose "
+            f"helper predates it cannot read this profile until they sync\n"
+        )
     path = profile_path()
     if path.is_symlink() or path.parent.is_symlink():
         _fail(f"review profile path cannot be a symlink: {path}")

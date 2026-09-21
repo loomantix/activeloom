@@ -742,3 +742,115 @@ def test_detect_suggests_unavailability_but_never_writes_it(
         "unavailable"
     }
     assert profile.read_bytes() == before
+
+
+# --- version skew between synced copies of this helper -----------------------
+#
+# The profile is one machine-global file, but the helper that reads it ships as
+# a per-repository copy, so at any moment some checkouts are behind. That makes
+# the file a wire protocol between helper versions rather than a local config,
+# and these pin the parts of that contract a reader cannot re-derive: read
+# forward, refuse to write what you cannot represent, and say so when a write
+# raises the floor for everyone else.
+
+
+def newer_profile(profile: Path, capsys: pytest.CaptureFixture[str]) -> dict:
+    """A valid current profile relabelled as the next schema, with future content."""
+    run(capsys, "init", "--accept-defaults", "--replace")
+    document = json.loads(profile.read_text())
+    module = load()
+    document["schema_version"] = module.SCHEMA_VERSION + 1
+    document["telemetry"] = {"enabled": True}
+    document["engines"]["claude"]["reasoning"] = "extended"
+    document["engines"]["claude"].setdefault("worker", {})["concurrency"] = 4
+    document["engines"]["qwen"] = {"model": "q", "effort": "high"}
+    profile.write_text(json.dumps(document, indent=2))
+    return document
+
+
+def test_a_newer_profile_still_resolves_the_settings_this_helper_models(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    newer_profile(profile, capsys)
+
+    status, out, _ = run(capsys, "resolve", "--engine", "claude")
+
+    # The unknown engine, the unknown engine key and the unknown top-level key
+    # are all set aside; the reviewer pair this helper does understand resolves.
+    assert status == 0
+    assert json.loads(out)["engine"] == "claude"
+
+
+def test_a_newer_profile_is_never_written_back(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    newer_profile(profile, capsys)
+    before = profile.read_bytes()
+
+    status, _, err = run(capsys, "set", "claude.effort=high")
+
+    # Writing would serialize only the modelled subset and silently delete the
+    # rest, which is worse than refusing: the settings lost belong to a checkout
+    # that is ahead, not behind.
+    assert status == 1
+    assert "sync this checkout" in err
+    assert profile.read_bytes() == before
+
+
+def test_a_profile_that_declares_a_reader_floor_is_refused_outright(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    document = newer_profile(profile, capsys)
+    module = load()
+    document["min_reader_version"] = module.SCHEMA_VERSION + 1
+    profile.write_text(json.dumps(document, indent=2))
+
+    status, _, err = run(capsys, "resolve", "--engine", "claude")
+
+    # Forward tolerance assumes a newer schema only ADDED content. This is the
+    # escape hatch for a change that does not hold that promise, so it must not
+    # be read on a best-effort basis.
+    assert status == 2
+    assert "min_reader_version" not in err  # the message names the remedy, not the field
+    assert "sync this checkout" in err
+
+
+def test_raising_the_stored_version_warns_that_older_checkouts_lose_the_profile(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run(capsys, "init", "--accept-defaults", "--replace")
+    # The recommended defaults already carry worker pairs, which is itself a
+    # version 2 profile. Strip them to get the version 1 shape an older
+    # checkout would have written.
+    document = json.loads(profile.read_text())
+    for settings in document["engines"].values():
+        settings.pop("worker", None)
+    document["schema_version"] = 1
+    profile.write_text(json.dumps(document, indent=2))
+    assert json.loads(profile.read_text())["schema_version"] == 1
+
+    status, _, err = run(
+        capsys, "set", "claude.worker.model=opus", "claude.worker.effort=medium"
+    )
+
+    # The only moment a human is present and the consequence is still cheap to
+    # avoid. Storing a worker pair is what forces version 2, and every checkout
+    # on a version 1 helper stops being able to read the file.
+    assert status == 0
+    assert json.loads(profile.read_text())["schema_version"] == 2
+    assert "schema_version 2 (was 1)" in err
+    assert "sync" in err
+
+
+def test_tolerance_does_not_extend_to_the_current_schema(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run(capsys, "init", "--accept-defaults", "--replace")
+    document = json.loads(profile.read_text())
+    document["telemetry"] = {"enabled": True}
+    profile.write_text(json.dumps(document, indent=2))
+
+    # At or below this helper's version an unrecognized key is a typo or a
+    # corrupted file, not content from the future. Guards the forward rule
+    # against widening into "ignore anything unexpected".
+    assert run(capsys, "show")[0] == 2
