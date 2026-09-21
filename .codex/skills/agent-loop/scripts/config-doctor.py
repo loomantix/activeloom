@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Non-mutating compatibility preflight for consumer agent-loop configuration."""
+"""Compatibility preflight for consumer agent-loop configuration.
+
+The check is non-mutating: it names every line to change and never edits the
+config itself.
+"""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -44,6 +50,137 @@ def _git(project: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
         capture_output=True,
         check=False,
     )
+
+
+# Keys whose settings now come from the per-user review profile.
+RETIRED_KEYS = ("claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort")
+# Review hooks whose model and effort flags read the pinned reviewer settings.
+REVIEW_HOOK_ENGINES = {"claude_review_hook": "claude", "codex_review_hook": "codex"}
+PROFILE_HELPER = ".codex/skills/critique/scripts/review-profile.py"
+
+# One shell word: a quoted string or an unquoted run up to whitespace,
+# quotes, redirection, or grouping.
+_WORD = r"""(?:"[^"]*"|'[^']*'|[^\s'"<>()]+)"""
+_FLAG_PATTERNS = {
+    "claude": (
+        ("model", re.compile(rf"(?<![\w-])(?P<flag>--model)(?:=|\s+)(?P<value>{_WORD})")),
+        ("effort", re.compile(rf"(?<![\w-])(?P<flag>--effort)(?:=|\s+)(?P<value>{_WORD})")),
+    ),
+    "codex": (
+        (
+            "model",
+            re.compile(rf"(?<![\w-])(?P<flag>-m\s+|--model(?:=|\s+))(?P<value>{_WORD})"),
+        ),
+    ),
+}
+# `codex -c key=value`, with the token optionally quoted and the TOML value
+# optionally quoted inside it.
+_CODEX_CONFIG = re.compile(
+    r"""(?<![\w-])(?:-c|--config)(?:=|\s+)"""
+    r"""(?P<token>(?P<q>['"]?)(?P<key>model|model_reasoning_effort)="""
+    r"""(?P<value>\\"[^"\\]*\\"|"[^"]*"|'[^']*'|[^\s'"<>()\\]+)(?P=q))"""
+)
+_CODEX_CONFIG_FIELDS = {"model": "model", "model_reasoning_effort": "effort"}
+
+
+@dataclass(frozen=True)
+class HookLiteral:
+    engine: str
+    field: str
+    flag: str
+    value: str
+
+    @property
+    def variable(self) -> str:
+        return f"AGENT_LOOP_{self.engine.upper()}_{self.field.upper()}"
+
+
+def _command_segments(hook: str) -> tuple[list[tuple[int, int]], set[int]]:
+    """Spans of the simple commands in a hook, and the offsets inside quotes.
+
+    Commands split at unquoted ; & | and newlines outside `$(...)`.
+    """
+    segments: list[tuple[int, int]] = []
+    quoted: set[int] = set()
+    start = 0
+    quote = ""
+    depth = 0
+    index = 0
+    while index < len(hook):
+        char = hook[index]
+        if char == "\\" and quote != "'":
+            if quote:
+                quoted.update((index, index + 1))
+            index += 2
+            continue
+        if quote:
+            quoted.add(index)
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif hook.startswith("$(", index):
+            depth += 1
+            index += 1
+        elif char == ")" and depth:
+            depth -= 1
+        elif char in ";&|\n" and not depth:
+            segments.append((start, index))
+            start = index + 1
+        index += 1
+    segments.append((start, len(hook)))
+    return segments, quoted
+
+
+def _unquote(word: str) -> str:
+    if len(word) >= 4 and word.startswith('\\"') and word.endswith('\\"'):
+        return word[2:-2]
+    if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"":
+        return word[1:-1]
+    return word
+
+
+def _hook_literals(key: str, hook: str) -> list[HookLiteral]:
+    """Model and effort flags with a literal value, in commands that run the hook's engine CLI.
+
+    A value that expands a variable is not a literal and is left alone.
+    """
+    engine = REVIEW_HOOK_ENGINES[key]
+    program = re.compile(rf"(?:^|(?<=[\s(]))(?:[^\s'\"]*/)?{engine}(?=\s|$)")
+    segments, quoted = _command_segments(hook)
+    literals: list[HookLiteral] = []
+    for seg_start, seg_end in segments:
+        segment = hook[seg_start:seg_end]
+        launch = next(
+            (m for m in program.finditer(segment) if seg_start + m.start() not in quoted),
+            None,
+        )
+        if launch is None:
+            continue
+        # (field, flag, start of the match, raw value)
+        found: list[tuple[str, str, int, str]] = []
+        for field, pattern in _FLAG_PATTERNS[engine]:
+            for match in pattern.finditer(segment, launch.end()):
+                flag = match["flag"].strip().rstrip("=")
+                found.append((field, flag, match.start(), match["value"]))
+        if engine == "codex":
+            for match in _CODEX_CONFIG.finditer(segment, launch.end()):
+                field = _CODEX_CONFIG_FIELDS[match["key"]]
+                found.append((field, f"-c {match['key']}", match.start(), match["value"]))
+        for field, flag, start, raw in sorted(found, key=lambda item: item[2]):
+            value = _unquote(raw)
+            # Flag-like text inside a quoted argument — a prompt, typically — is
+            # not a flag on the command line.
+            if seg_start + start in quoted:
+                continue
+            if not value or any(char in value for char in "$`\\"):
+                continue
+            literals.append(HookLiteral(engine, field, flag, value))
+    return literals
+
+
+def _warn(message: str) -> None:
+    print(f"agent-loop config doctor: warning: {message}", file=sys.stderr)
 
 
 def _config(path: Path) -> dict[str, str]:
@@ -159,7 +296,127 @@ def _verify_protocols(ledger: Path, state: Path, review_push: Path) -> None:
         raise DoctorError("review-push protocol is incompatible")
 
 
-def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> None:
+@dataclass(frozen=True)
+class ReviewerSettings:
+    model: str
+    effort: str
+    source: str
+
+
+def _origin_repo(root: Path) -> str | None:
+    """owner/name of a GitHub origin remote, or None."""
+    try:
+        result = subprocess.run(
+            [os.environ.get("AGENT_LOOP_REAL_GIT") or "git", "-C", str(root), "remote", "get-url", "origin"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    match = re.search(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$", result.stdout.strip())
+    return match.group(1) if result.returncode == 0 and match else None
+
+
+class _SettingsResolver:
+    """The reviewer settings a hook's literals are checked against.
+
+    The wrapper passes `--settings-from-env` after pinning the run, so the
+    doctor checks the values the run launches with. A standalone run resolves
+    the per-user review profile the way the wrapper's pin step does.
+    """
+
+    def __init__(self, root: Path, repo: str | None, from_env: bool) -> None:
+        self.root = root
+        self.repo = repo
+        self.from_env = from_env
+        self.cache: dict[str, ReviewerSettings] = {}
+
+    def get(self, engine: str) -> ReviewerSettings:
+        if engine not in self.cache:
+            self.cache[engine] = self._env(engine) if self.from_env else self._profile(engine)
+        return self.cache[engine]
+
+    @staticmethod
+    def _env(engine: str) -> ReviewerSettings:
+        prefix = f"AGENT_LOOP_{engine.upper()}"
+        model = os.environ.get(f"{prefix}_MODEL", "")
+        effort = os.environ.get(f"{prefix}_EFFORT", "")
+        if not model or not effort:
+            raise DoctorError(
+                f"--settings-from-env needs {prefix}_MODEL and {prefix}_EFFORT, "
+                "which the wrapper exports after pinning the run"
+            )
+        return ReviewerSettings(model, effort, "the run's pinned settings")
+
+    def _profile(self, engine: str) -> ReviewerSettings:
+        helper = self.root / PROFILE_HELPER
+        if not helper.is_file():
+            raise DoctorError(f"required review profile helper is missing: {PROFILE_HELPER}")
+        command = [sys.executable, "-I", str(helper), "resolve", "--engine", engine]
+        repo = self.repo or _origin_repo(self.root)
+        if repo:
+            command += ["--repo", repo]
+        # The profile is what a new run pins; a review-chain run pin in this
+        # shell does not describe it.
+        env = {
+            name: value
+            for name, value in os.environ.items()
+            if name not in ("ACTIVELOOM_REVIEW_MODEL", "ACTIVELOOM_REVIEW_EFFORT")
+        }
+        result = subprocess.run(command, capture_output=True, text=True, check=False, env=env)
+        if result.returncode != 0:
+            detail = result.stderr.strip().splitlines()
+            reason = detail[-1] if detail else f"exit {result.returncode}"
+            raise DoctorError(
+                f"cannot resolve {engine} reviewer settings to check the review hook literals "
+                f"against ({reason}); run the review-setup skill, or edit the hooks so they "
+                "read the pinned settings instead"
+            )
+        try:
+            resolved = json.loads(result.stdout)
+            source = f"the {resolved['source']}"
+            return ReviewerSettings(resolved["model"], resolved["effort"], source)
+        except (ValueError, KeyError, TypeError) as error:
+            raise DoctorError(f"review profile helper printed unexpected output: {error}") from error
+
+
+def _check_retired_keys(values: dict[str, str]) -> None:
+    for key in RETIRED_KEYS:
+        if key not in values:
+            continue
+        if values[key]:
+            raise DoctorError(
+                f"{key} is retired: reviewer and worker settings come from the per-user review "
+                "profile. Remove it from the config"
+            )
+        _warn(f"{key} is retired and has no effect; remove it from the config")
+
+
+def _check_hook_literals(values: dict[str, str], resolver: _SettingsResolver) -> None:
+    """Refuse a review-hook model or effort literal that differs from the resolved settings."""
+    for key in REVIEW_HOOK_ENGINES:
+        for literal in _hook_literals(key, values.get(key, "")):
+            settings = resolver.get(literal.engine)
+            expected = settings.model if literal.field == "model" else settings.effort
+            if literal.value != expected:
+                raise DoctorError(
+                    f"{key} passes {literal.flag} {literal.value}, but {settings.source} set "
+                    f"{literal.engine} {literal.field} {expected}. Edit the hook so it reads "
+                    f"${literal.variable}"
+                )
+            _warn(
+                f"{key} passes {literal.flag} {literal.value} literally; it matches "
+                f"{settings.source}, but a developer whose profile differs is refused. "
+                f"Edit the hook so it reads ${literal.variable}"
+            )
+
+
+def doctor(
+    project: Path,
+    base_ref: str | None,
+    *,
+    repo: str | None = None,
+    settings_from_env: bool = False,
+) -> None:
     root = project.resolve()
     skill = root / ".codex/skills/agent-loop"
     config_path = skill / "agent-loop.config"
@@ -183,6 +440,7 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
                 f"required agent-loop file is missing: {path.relative_to(root)}"
             )
     values = _config(config_path)
+    _check_retired_keys(values)
     contract = values.get("review_contract_version")
     if contract not in {"3", "4"}:
         raise DoctorError("review_contract_version must be 3 or 4")
@@ -233,11 +491,6 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
             != "4"
         ):
             raise DoctorError("review launcher is incompatible with contract v4")
-        launcher_effort = _version(
-            [str(review_launcher), "--claude-effort-policy"], "review launcher"
-        )
-        if claude_effort and launcher_effort != claude_effort:
-            raise DoctorError(f"review launcher must pin Claude effort {claude_effort}")
         wrapper_paths = _version(
             [str(review_launcher), "--wrapper-paths"], "wrapper review tools"
         ).splitlines()
@@ -331,21 +584,28 @@ def doctor(project: Path, claude_effort: str | None, base_ref: str | None) -> No
             # `deepcritique`-prefixed word), not to enumerate separators.
             if not re.search(r"(?:^|[ /])deepcritique(?![\w-])", hook):
                 raise DoctorError(f"{engine}_review_hook must invoke deepcritique")
-        if claude_effort:
-            efforts = re.findall(r"(?:^|\s)--effort(?:=|\s+)([^\s;]+)", hooks["claude"])
-            if efforts != [claude_effort]:
-                raise DoctorError(
-                    f"claude_review_hook must use exactly one literal --effort {claude_effort}"
-                )
+    _check_hook_literals(values, _SettingsResolver(root, repo, settings_from_env))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-dir", required=True)
-    parser.add_argument("--claude-effort")
     parser.add_argument("--base-ref")
+    parser.add_argument(
+        "--repo", help="owner/name for repository overrides; default: the origin remote"
+    )
+    parser.add_argument(
+        "--settings-from-env",
+        action="store_true",
+        help="check hook literals against the AGENT_LOOP_* settings the wrapper pinned",
+    )
     args = parser.parse_args()
-    doctor(Path(args.project_dir), args.claude_effort, args.base_ref)
+    doctor(
+        Path(args.project_dir),
+        args.base_ref,
+        repo=args.repo,
+        settings_from_env=args.settings_from_env,
+    )
     print("agent-loop config doctor: compatible")
     return 0
 

@@ -2,7 +2,6 @@
 # Pinned-base, fail-closed launcher for contract-v4 agent-loop reviewers.
 set -euo pipefail
 
-CLAUDE_EFFORT_POLICY=low
 CODEX_REQUIRED_PATHS=(
     .codex/REVIEW_WORKFLOW.md
     .codex/references/local-review-ledger.md
@@ -42,7 +41,6 @@ unset COVERAGE_PROCESS_START COV_CORE_SOURCE COV_CORE_CONFIG \
 usage() { echo "usage: $0 --engine codex|claude" >&2; exit 2; }
 case "${1:-}" in
     --contract-version) [ "$#" -eq 1 ] || usage; echo 4; exit 0 ;;
-    --claude-effort-policy) [ "$#" -eq 1 ] || usage; echo "$CLAUDE_EFFORT_POLICY"; exit 0 ;;
     --required-paths)
         [ "$#" -eq 2 ] || usage
         case "$2" in
@@ -82,6 +80,27 @@ case "$engine" in codex|claude) ;; *) usage ;; esac
 : "${AGENT_LOOP_REVIEW_INSTALL_SHA256:?AGENT_LOOP_REVIEW_INSTALL_SHA256 is required}"
 [ "$AGENT_LOOP_REVIEW_ENGINE" = "$engine" ] || {
     echo "review engine does not match the configured launcher" >&2
+    exit 1
+}
+
+# The reviewer's model and effort are the run's pinned settings, which the
+# wrapper exports. A model of `inherit` omits the model flag. Each value becomes
+# exactly one argv element, so it must be a single flag-safe word.
+if [ "$engine" = codex ]; then
+    review_model="${AGENT_LOOP_CODEX_MODEL:-}"
+    review_effort="${AGENT_LOOP_CODEX_EFFORT:-}"
+else
+    review_model="${AGENT_LOOP_CLAUDE_MODEL:-}"
+    review_effort="${AGENT_LOOP_CLAUDE_EFFORT:-}"
+fi
+model_pattern='^[A-Za-z0-9][]A-Za-z0-9._:[-]{0,79}$'
+effort_pattern='^[a-z][a-z0-9]{0,31}$'
+[[ "$review_model" =~ $model_pattern ]] || {
+    echo "pinned $engine reviewer model is missing or invalid" >&2
+    exit 1
+}
+[[ "$review_effort" =~ $effort_pattern ]] || {
+    echo "pinned $engine reviewer effort is missing or invalid" >&2
     exit 1
 }
 
@@ -259,9 +278,12 @@ actual_install_sha="$(review_install_digest "$review_install_root")" || {
 review_status=0
 if [ "$engine" = codex ]; then
     # claude-cli-invocations:start
+    codex_model_args=()
+    [ "$review_model" = inherit ] || codex_model_args=(-m "$review_model")
     "$review_cli" exec --dangerously-bypass-approvals-and-sandbox --ephemeral \
         --ignore-rules --ignore-user-config --skip-git-repo-check -C "$launch_root" \
-        --add-dir "$review_worktree" "$prompt" || review_status="$?"
+        --add-dir "$review_worktree" "${codex_model_args[@]}" \
+        -c "model_reasoning_effort=\"$review_effort\"" "$prompt" || review_status="$?"
     # claude-cli-invocations:end
 else
     (
@@ -282,7 +304,13 @@ else
         unset CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
         export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
         # claude-cli-invocations:start
-        "$review_cli" --effort "$CLAUDE_EFFORT_POLICY" \
+        claude_model_args=()
+        [ "$review_model" = inherit ] || claude_model_args=(--model "$review_model")
+        # Set both from the same pinned value, so the launch does not depend on
+        # which one the CLI prefers; the export also replaces any inherited
+        # CLAUDE_CODE_EFFORT_LEVEL. Keep the two identical.
+        export CLAUDE_CODE_EFFORT_LEVEL="$review_effort"
+        "$review_cli" "${claude_model_args[@]}" --effort "$review_effort" \
             --permission-mode bypassPermissions --no-session-persistence \
             --disable-slash-commands --safe-mode \
             --add-dir "$review_worktree" --print "$prompt"
