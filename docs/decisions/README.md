@@ -1,9 +1,10 @@
 # Decision records
 
-Records of deliberate divergence between the Claude review chain (this repo)
-and its sibling engine trees (`codex-platform`, `gemini-platform`). Each record
-names the divergent files, states the behavioural difference concretely, and
-says why it stands.
+Decisions that more than one prompt root has to agree on. Most are deliberate
+divergences between the Claude review chain (this repo) and its sibling engine
+trees (`codex-platform`, `gemini-platform`): each of those names the divergent
+files, states the behavioural difference concretely, and says why it stands. A
+few fix a shared vocabulary instead.
 
 [`parity-allowlist.yml`](parity-allowlist.yml) is where those records are
 cashed in. `scripts/lint-prompt-parity.py` diffs every shared unrendered skill
@@ -22,6 +23,14 @@ presumed accidental.
 | 0006 | [Review chains never converge](0006-review-chains-never-converge.md) — the standing record the others point at                                                      |
 | 0007 | [agent-loop is per-harness](0007-agent-loop-per-harness-launch.md) — three launch models, three supervision models                                                  |
 | 0008 | [Proportionate Codex review](0008-proportionate-review.md) — lens selection and delegation chosen from risk, not from the skill name                                |
+| 0009 | [Repository assurance facts](0009-repository-assurance-facts.md) — seven orthogonal repository fact domains, not a scalar assurance tier                            |
 
-New records take the next number, use the same shape (Status / Date, divergent
-files, the behavioural difference, why it stands), and stay a few paragraphs.
+Most records here are parity divergences, and those are the ones
+`parity-allowlist.yml` cites. A record may also fix a vocabulary that several
+skills and tools are written against, in which case it is recorded here for the
+same reason — one written source, so the harnesses cannot drift apart on it —
+and simply never appears in the allowlist.
+
+New records take the next number, use the same shape (Status / Date, the
+decision, why it stands), and stay a few paragraphs — a record defining a
+shared vocabulary is longer, because the vocabulary is the deliverable.
