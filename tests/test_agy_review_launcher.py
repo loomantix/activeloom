@@ -402,6 +402,74 @@ def test_launcher_rejects_stale_backup_skill_before_review(tmp_path: Path) -> No
     assert not argv_file.exists()
 
 
+def test_launcher_names_the_swept_surface_behind_a_dangling_skill_link(
+    tmp_path: Path,
+) -> None:
+    # Worktree cleanup removing the pinned surface leaves every installed skill
+    # link dangling at once. The bare ENOENT that produced named neither the
+    # link nor the pin, so the failure read as a launcher bug for a whole
+    # session. Assert the message carries what it takes to restore the surface.
+    missing_surface = tmp_path / "swept-surface" / ".agents"
+    link = tmp_path / "installed-skills" / "deepcritique"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(missing_surface / "skills/deepcritique", target_is_directory=True)
+    payload = json.dumps(
+        {
+            "status": "SUCCESS",
+            "command": {"data": {"skills": [
+                {"name": "deepcritique", "path": str(link / "SKILL.md")}
+            ]}},
+        }
+    )
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _ = _fake_agy(tmp_path, skills_payload=payload)
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = _run(environment)
+
+    assert result.returncode == 1
+    assert "cannot be resolved" in result.stderr
+    assert str(link) in result.stderr
+    assert str(missing_surface / "skills/deepcritique") in result.stderr
+    assert AGY_SURFACE_SHA in result.stderr
+    assert "git worktree add" in result.stderr
+    assert not argv_file.exists()
+
+
+def test_launcher_explains_a_surface_that_offers_no_deepcritique_skill(
+    tmp_path: Path,
+) -> None:
+    # The installer prunes dangling links it owns, so a swept surface can also
+    # present as the skill simply being absent rather than unresolvable.
+    payload = json.dumps(
+        {
+            "status": "SUCCESS",
+            "command": {"data": {"skills": [
+                {"name": "critique", "path": str(tmp_path / "gone/skills/critique/SKILL.md")}
+            ]}},
+        }
+    )
+    argv_file = tmp_path / "argv.json"
+    fake_agy, _ = _fake_agy(tmp_path, skills_payload=payload)
+    environment = {
+        **_trusted_environment(tmp_path),
+        "AGY_ARGV_FILE": str(argv_file),
+        "AGY_REVIEW_CLI": str(fake_agy),
+    }
+
+    result = _run(environment)
+
+    assert result.returncode == 1
+    assert "must resolve exactly one deepcritique skill" in result.stderr
+    assert AGY_SURFACE_SHA in result.stderr
+    assert "git worktree add" in result.stderr
+    assert not argv_file.exists()
+
+
 def test_launcher_rejects_ambiguous_skill_resolution(tmp_path: Path) -> None:
     argv_file = tmp_path / "argv.json"
     fake_agy, surface = _fake_agy(tmp_path)

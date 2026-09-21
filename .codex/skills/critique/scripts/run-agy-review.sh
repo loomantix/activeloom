@@ -163,7 +163,7 @@ run_agy_managed "$skills_file" 2m \
     --print '/skills'
 fi
 
-agy_surface_root="$(python3 - "$skills_file" <<'PY'
+agy_surface_root="$(python3 - "$skills_file" "$agy_surface_sha" <<'PY'
 import json
 import os
 import pathlib
@@ -185,15 +185,48 @@ else:
 if payload.get("status") != "SUCCESS":
     raise SystemExit(f"agy skill preflight did not succeed: {payload.get('status', 'missing status')}")
 
+pinned_surface_sha = sys.argv[2]
+
+def surface_restore_hint(reported: str) -> str:
+    # A swept trusted-surface checkout is the usual cause of an unresolvable
+    # skill: the installed skill links still point into a directory that no
+    # longer exists, so every relay path breaks at once. Name the dangling
+    # link and the pin that rebuilds its target rather than surfacing a bare
+    # ENOENT the reader has to work backwards from.
+    lines = []
+    if reported:
+        lines.append(f"The reviewer reported the deepcritique skill at {reported}.")
+        candidate = pathlib.Path(reported)
+        for part in [candidate, *candidate.parents]:
+            if part.is_symlink():
+                lines.append(f"{part} links to {os.readlink(part)}, which does not resolve.")
+                break
+        else:
+            missing = next((p for p in reversed(candidate.parents) if not p.exists()), None)
+            if missing is not None:
+                lines.append(f"The first missing directory on that path is {missing}.")
+    lines.append(
+        f"The pinned relay surface is activeloom commit {pinned_surface_sha}. If its "
+        "checkout was removed, recreate it from an activeloom clone with "
+        f"`git worktree add <checkout-dir> {pinned_surface_sha}`, then re-run the skill "
+        "installer so the links resolve again."
+    )
+    return "\n".join(lines)
+
+
 skills = payload.get("command", {}).get("data", {}).get("skills", [])
 matches = [row for row in skills if row.get("name") == "deepcritique"]
 if len(matches) != 1:
-    raise SystemExit("agy must resolve exactly one deepcritique skill")
+    detail = "" if matches else f"\n{surface_restore_hint('')}"
+    raise SystemExit(f"agy must resolve exactly one deepcritique skill{detail}")
 
 try:
     path = pathlib.Path(str(matches[0].get("path", ""))).resolve(strict=True)
 except OSError as error:
-    raise SystemExit(f"agy deepcritique skill path cannot be resolved: {error}")
+    raise SystemExit(
+        f"agy deepcritique skill path cannot be resolved: {error}\n"
+        + surface_restore_hint(str(matches[0].get("path", "")))
+    )
 if path.name != "SKILL.md" or path.parent.name != "deepcritique" or any(".bak." in part for part in path.parts):
     raise SystemExit(f"agy resolved a stale or unexpected deepcritique skill: {path}")
 
