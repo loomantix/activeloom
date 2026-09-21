@@ -63,10 +63,19 @@ def test_doctor_pins_the_version_its_own_state_helper_reports(root: str) -> None
     assert _doctor_pin(root) == _state_version(root)
 
 
+# The version each root's run-state schema reached when `reviewSettings` was
+# versioned. A root may move past its floor; falling back to or below it is what
+# a coordinated revert of a constant and its doctor pin looks like, and the
+# doctor-parity test above cannot see that on its own. Raise a floor deliberately
+# as part of each future bump.
+REVIEW_SETTINGS_FLOOR = {".claude": 2, ".codex": 2, ".agents": 3}
+
+
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
-def test_review_settings_bearing_schema_is_past_version_one(root: str) -> None:
-    """`reviewSettings` landed in all three roots, so none may still read as v1."""
+def test_review_settings_bearing_schema_meets_its_version_floor(root: str) -> None:
+    """`reviewSettings` landed in all three roots, so none may drop below its floor."""
     helper = _script(root, "agent-loop-state.py").read_text(encoding="utf-8")
-    if "reviewSettings" not in helper:
-        pytest.skip(f"{root} does not carry reviewSettings")
-    assert int(_state_version(root)) > 1
+    assert "reviewSettings" in helper, (
+        f"{root} no longer carries reviewSettings; its floor needs revisiting"
+    )
+    assert int(_state_version(root)) >= REVIEW_SETTINGS_FLOOR[root]
