@@ -54,7 +54,11 @@ def capacity_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
         return dict(env)
 
     def managed(
-        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+        argv: list[str],
+        log: Path,
+        env: dict[str, str],
+        timeout: int = 3600,
+        **_: Any,
     ) -> None:
         if (
             "AGENT_LOOP_REVIEW_RESULT_FILE" in env
@@ -332,6 +336,521 @@ def test_recovery_snapshot_survives_process_termination(
     assert len(resumed.state["attempts"]) == 5
 
 
+AGY_IDLE_LINES = (
+    "I0919 10:00:00.000 root agent idle; waiting up to 5s for 2 background task(s)\n"
+    "I0919 10:00:05.000 terminating 2 background task(s) on exit\n"
+)
+
+
+@pytest.fixture
+def idle_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Agy ends its print turn with review lanes still in the background."""
+    module = harness.module
+    harness.args.chain = "codex,gemini,codex,gemini"
+    wrapped = module.managed
+    controls = SimpleNamespace(
+        idle=1, engine="gemini", side_effect=None, with_result=False, exit_code=0
+    )
+    idle_launches: list[str] = []
+
+    def managed(
+        argv: list[str],
+        log: Path,
+        env: dict[str, str],
+        timeout: int = 3600,
+        **_: Any,
+    ) -> None:
+        if (
+            "AGENT_LOOP_REVIEW_RESULT_FILE" in env
+            and env["AGENT_LOOP_REVIEW_ENGINE"] == controls.engine
+            and controls.idle
+        ):
+            controls.idle -= 1
+            idle_launches.append(env["AGENT_LOOP_REVIEW_ENGINE"])
+            module.save(
+                Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+                {
+                    "version": 1,
+                    "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                    "phase": "execution",
+                    "review_started": None,
+                },
+            )
+            if controls.with_result:
+                wrapped(argv, log, env, timeout)
+            with log.open("a") as stream:
+                stream.write("Waiting for lane results.\n" + AGY_IDLE_LINES)
+            if controls.side_effect:
+                controls.side_effect(log.parent)
+            if controls.exit_code:
+                raise module.ProcessFailure("agy exited", controls.exit_code)
+            return
+        wrapped(argv, log, env, timeout)
+
+    monkeypatch.setattr(module, "managed", managed)
+    return SimpleNamespace(
+        harness=harness, controls=controls, idle_launches=idle_launches
+    )
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (AGY_IDLE_LINES, True),
+        (
+            "root agent idle; waiting up to 5s for 1 background task(s)\n"
+            "other output\n"
+            "terminating 1 background task(s) on exit\n",
+            True,
+        ),
+        (AGY_IDLE_LINES.splitlines(keepends=True)[0], False),
+        (AGY_IDLE_LINES.splitlines(keepends=True)[1], False),
+        ("".join(reversed(AGY_IDLE_LINES.splitlines(keepends=True))), False),
+        (
+            "root agent idle; waiting up to 5s for 0 background task(s)\n"
+            "terminating 0 background task(s) on exit\n",
+            False,
+        ),
+        (
+            "The log said root agent idle; waiting up to 5s for 2 background task(s) here.\n"
+            "It then said terminating 2 background task(s) on exit, as quoted.\n",
+            False,
+        ),
+    ],
+)
+def test_agy_idle_exit_recognition_is_specific(
+    tmp_path: Path, text: str, expected: bool
+) -> None:
+    log = tmp_path / "worker.log"
+    log.write_text(text)
+    assert load("review-chain-runner").agy_idle_exit(log) is expected
+
+
+def test_agy_idle_exit_retries_the_same_round_once(
+    idle_harness: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    h = idle_harness.harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert idle_harness.idle_launches == ["gemini"]
+    assert h.launches == ["codex", "gemini", "codex", "gemini"]
+    assert len(runner.state["completed"]) == 4
+    assert [(p["engine"], p["round"]) for p in runner.state["completed"]] == [
+        ("codex", 1),
+        ("gemini", 1),
+        ("codex", 2),
+        ("gemini", 2),
+    ]
+    assert len(runner.state["attempts"]) == 5
+    failed, retry = runner.state["attempts"][1:3]
+    assert failed["phase"] == "idle_exit_failed"
+    assert failed["failure_reason"] == "agy_idle_exit"
+    assert failed["exit_status"] == 0
+    assert (failed["engine"], failed["round"]) == (retry["engine"], retry["round"])
+    assert retry["folder"] == failed["folder"] + "/idle-retry"
+    assert (h.directory / failed["folder"] / "worker.log").is_file()
+    assert f"Agy idle exit: retrying gemini pass 1 once at {HEAD}" in (
+        capsys.readouterr().out
+    )
+
+
+def test_second_agy_idle_exit_blocks(idle_harness: Any) -> None:
+    h = idle_harness.harness
+    idle_harness.controls.idle = 2
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        runner.run()
+    assert idle_harness.idle_launches == ["gemini", "gemini"]
+    assert len(runner.state["completed"]) == 1
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        h.runner(h.args, h.directory).run()
+    assert idle_harness.idle_launches == ["gemini", "gemini"]
+    assert h.launches == ["codex"]
+
+
+@pytest.mark.parametrize(
+    "case", ["head", "threads", "comments", "result", "partial", "exit"]
+)
+def test_unsafe_agy_idle_exit_is_not_retried(
+    idle_harness: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    h = idle_harness.harness
+    controls = idle_harness.controls
+    runner = h.runner(h.args, h.directory)
+    if case == "head":
+        controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, "boundary", lambda: "f" * 40
+        )
+    elif case in ("threads", "comments"):
+        controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, case, lambda path: h.module.save(path, ["changed"])
+        )
+    elif case == "result":
+        controls.side_effect = lambda folder: (folder / "result.json").write_text("{}")
+    elif case == "partial":
+        controls.side_effect = lambda folder: (
+            folder / "result.json.recovery.json"
+        ).write_text("{}")
+    else:
+        controls.exit_code = 1
+    # The fake ledger helper reports an invalid result as a failed node call.
+    with pytest.raises((h.module.Blocked, subprocess.CalledProcessError)):
+        runner.run()
+    assert idle_harness.idle_launches == ["gemini"]
+    assert h.launches == ["codex"]
+    assert len(runner.state["completed"]) == 1
+    assert len(runner.state["attempts"]) == 2
+
+
+@pytest.mark.parametrize(
+    "evidence", ["comments", "threads", "result", "partial", "log", "unchanged"]
+)
+def test_prepared_idle_retry_rechecks_evidence_before_launch(
+    idle_harness: Any, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    h = idle_harness.harness
+    runner = h.runner(h.args, h.directory)
+    recover = runner.recover_idle_exit
+
+    def interrupt(pending: dict[str, Any]) -> None:
+        recover(pending)
+        raise OSError("interrupted after idle-retry preparation")
+
+    monkeypatch.setattr(runner, "recover_idle_exit", interrupt)
+    with pytest.raises(OSError, match="after idle-retry preparation"):
+        runner.run()
+    before = h.module.read(h.directory / "state.json")
+    assert before["pending"]["phase"] == "prepared"
+    assert before["pending"]["folder"].endswith("/idle-retry")
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    if evidence in ("comments", "threads"):
+        monkeypatch.setattr(
+            resumed, evidence, lambda path: h.module.save(path, ["changed"])
+        )
+    elif evidence in ("result", "partial", "log"):
+        origin = h.directory / before["attempts"][1]["folder"]
+        name = {
+            "result": "result.json",
+            "partial": "result.json.recovery.json",
+            "log": "worker.log",
+        }[evidence]
+        (origin / name).write_text("{}")
+    if evidence == "unchanged":
+        assert resumed.run() == "converged"
+        assert resumed.state["run_id"] == before["run_id"]
+        assert idle_harness.idle_launches == ["gemini"]
+    else:
+        with pytest.raises(h.module.Blocked, match="evidence changed"):
+            resumed.run()
+        assert idle_harness.idle_launches == ["gemini"]
+        assert len(resumed.state["completed"]) == 1
+
+
+def test_agy_idle_lines_after_a_written_result_are_ordinary_success(
+    idle_harness: Any,
+) -> None:
+    h = idle_harness.harness
+    idle_harness.controls.with_result = True
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert idle_harness.idle_launches == ["gemini"]
+    assert len(runner.state["attempts"]) == 4
+    assert all(a["phase"] == "returned" for a in runner.state["attempts"])
+
+
+def test_idle_text_from_another_engine_is_not_retried(idle_harness: Any) -> None:
+    h = idle_harness.harness
+    idle_harness.controls.engine = "codex"
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="returned no result"):
+        runner.run()
+    assert idle_harness.idle_launches == ["codex"]
+    assert runner.state["attempts"][0]["phase"] == "returned"
+    assert runner.state["pending"]["phase"] == "returned"
+
+
+STDIN_BANNER = "Reading additional input from stdin...\n"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (STDIN_BANNER, True),
+        ("", True),
+        (STDIN_BANNER + 'thread.started {"type": "thread.started"} as text\n', True),
+        (STDIN_BANNER + json.dumps({"type": "error", "message": "x"}) + "\n", True),
+        (STDIN_BANNER + json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n", False),
+        (json.dumps({"type": "turn.started"}) + "\n" + json.dumps({"type": "thread.started"}), False),
+    ],
+)
+def test_codex_startup_stall_recognition_needs_the_json_event(
+    tmp_path: Path, text: str, expected: bool
+) -> None:
+    log = tmp_path / "worker.log"
+    log.write_text(text)
+    assert load("review-chain-runner").codex_startup_stalled(log) is expected
+
+
+def test_codex_startup_stall_requires_a_regular_log(tmp_path: Path) -> None:
+    module = load("review-chain-runner")
+    assert module.codex_startup_stalled(tmp_path / "missing.log") is False
+    target = tmp_path / "target.log"
+    target.write_text(STDIN_BANNER)
+    link = tmp_path / "link.log"
+    link.symlink_to(target)
+    assert module.codex_startup_stalled(link) is False
+
+
+def test_managed_worker_never_inherits_an_open_stdin_pipe(tmp_path: Path) -> None:
+    module = load("review-chain-runner")
+    program = (
+        "import os, sys\n"
+        "data = sys.stdin.read()\n"
+        "a, b = os.fstat(0), os.stat(os.devnull)\n"
+        "print((a.st_dev, a.st_ino) == (b.st_dev, b.st_ino), repr(data))\n"
+    )
+    read_end, write_end = os.pipe()
+    saved = os.dup(0)
+    os.dup2(read_end, 0)
+    try:
+        # The write end stays open: a worker inheriting this stdin never sees EOF.
+        module.managed(
+            [sys.executable, "-c", program],
+            tmp_path / "worker.log",
+            dict(os.environ),
+            10,
+        )
+    finally:
+        os.dup2(saved, 0)
+        for fd in (saved, read_end, write_end):
+            os.close(fd)
+    assert (tmp_path / "worker.log").read_text() == "True ''\n"
+
+
+def test_managed_stops_a_worker_that_never_starts(tmp_path: Path) -> None:
+    module = load("review-chain-runner")
+    log = tmp_path / "worker.log"
+    marker = tmp_path / "survived"
+    program = (
+        "import pathlib, sys, time\n"
+        f"print({STDIN_BANNER.strip()!r}, flush=True)\n"
+        "time.sleep(20)\n"
+        f"pathlib.Path({str(marker)!r}).write_text('late')\n"
+    )
+    with pytest.raises(module.StartupStalled, match="no thread.started event"):
+        module.managed(
+            [sys.executable, "-c", program],
+            log,
+            dict(os.environ),
+            30,
+            startup_event="thread.started",
+            startup_seconds=0.5,
+        )
+    assert not marker.exists()
+
+
+def test_managed_keeps_a_worker_that_started(tmp_path: Path) -> None:
+    module = load("review-chain-runner")
+    started = json.dumps({"type": "thread.started", "thread_id": "t"})
+    program = f"import time; print({started!r}, flush=True); time.sleep(1.5)"
+    module.managed(
+        [sys.executable, "-c", program],
+        tmp_path / "worker.log",
+        dict(os.environ),
+        30,
+        startup_event="thread.started",
+        startup_seconds=0.3,
+    )
+
+
+def test_managed_without_a_startup_event_never_stalls(tmp_path: Path) -> None:
+    module = load("review-chain-runner")
+    module.managed(
+        [sys.executable, "-c", "import time; time.sleep(1)"],
+        tmp_path / "worker.log",
+        dict(os.environ),
+        30,
+        startup_seconds=0.1,
+    )
+
+
+def test_codex_launcher_detaches_stdin_before_execution() -> None:
+    lines = [
+        line.strip()
+        for line in (SCRIPTS / "run-codex-review.py").read_text().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    marker = lines.index('launch_state("execution")')
+    assert lines[marker - 3 : marker] == [
+        "devnull = os.open(os.devnull, os.O_RDONLY)",
+        "os.dup2(devnull, 0)",
+        "os.close(devnull)",
+    ]
+
+
+@pytest.fixture
+def stall_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Codex hangs before thread.started and the watchdog stops it."""
+    module = harness.module
+    wrapped = module.managed
+    controls = SimpleNamespace(
+        stalls=1, engine="codex", side_effect=None, started=False, cleanup_denied=False
+    )
+    stalled: list[str | None] = []
+
+    def managed(
+        argv: list[str],
+        log: Path,
+        env: dict[str, str],
+        timeout: int = 3600,
+        **kwargs: Any,
+    ) -> None:
+        if (
+            "AGENT_LOOP_REVIEW_RESULT_FILE" in env
+            and env["AGENT_LOOP_REVIEW_ENGINE"] == controls.engine
+            and controls.stalls
+        ):
+            controls.stalls -= 1
+            stalled.append(kwargs.get("startup_event"))
+            module.save(
+                Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+                {
+                    "version": 1,
+                    "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                    "phase": "execution",
+                    "review_started": None,
+                },
+            )
+            text = STDIN_BANNER
+            if controls.started:
+                text += json.dumps({"type": "thread.started"}) + "\n"
+            log.write_text(text)
+            if controls.side_effect:
+                controls.side_effect(log.parent)
+            if controls.cleanup_denied:
+                raise module.CleanupBlocked(
+                    "codex exit not confirmed; process-group cleanup denied",
+                    4242,
+                    None,
+                    False,
+                )
+            raise module.StartupStalled("codex emitted no thread.started event")
+        wrapped(argv, log, env, timeout)
+
+    monkeypatch.setattr(module, "managed", managed)
+    return SimpleNamespace(harness=harness, controls=controls, stalled=stalled)
+
+
+def test_codex_startup_stall_retries_the_same_round_once(
+    stall_harness: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    h = stall_harness.harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    # The runner armed the watchdog for the Codex launch.
+    assert stall_harness.stalled == ["thread.started"]
+    assert h.launches == ["codex", "claude", "codex", "claude"]
+    assert [(p["engine"], p["round"]) for p in runner.state["completed"]] == [
+        ("codex", 1),
+        ("claude", 1),
+        ("codex", 2),
+        ("claude", 2),
+    ]
+    assert len(runner.state["attempts"]) == 5
+    failed, retry = runner.state["attempts"][:2]
+    assert failed["phase"] == "startup_stall_failed"
+    assert failed["failure_reason"] == "codex_startup_stall"
+    assert failed["exit_status"] is None
+    assert (failed["engine"], failed["round"]) == (retry["engine"], retry["round"])
+    assert retry["folder"] == failed["folder"] + "/stall-retry"
+    assert (h.directory / failed["folder"] / "worker.log").is_file()
+    assert f"Codex startup stall: retrying codex pass 1 once at {HEAD}" in (
+        capsys.readouterr().out
+    )
+
+
+def test_second_codex_startup_stall_blocks(stall_harness: Any) -> None:
+    h = stall_harness.harness
+    stall_harness.controls.stalls = 2
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        runner.run()
+    assert len(stall_harness.stalled) == 2
+    assert runner.state["completed"] == []
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        h.runner(h.args, h.directory).run()
+    assert len(stall_harness.stalled) == 2
+    assert h.launches == []
+
+
+@pytest.mark.parametrize(
+    "case", ["head", "threads", "comments", "result", "partial", "started", "cleanup"]
+)
+def test_unsafe_codex_startup_stall_is_not_retried(
+    stall_harness: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    h = stall_harness.harness
+    controls = stall_harness.controls
+    runner = h.runner(h.args, h.directory)
+    if case == "head":
+        controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, "boundary", lambda: "f" * 40
+        )
+    elif case in ("threads", "comments"):
+        controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, case, lambda path: h.module.save(path, ["changed"])
+        )
+    elif case == "result":
+        controls.side_effect = lambda folder: (folder / "result.json").write_text("{}")
+    elif case == "partial":
+        controls.side_effect = lambda folder: (
+            folder / "result.json.recovery.json"
+        ).write_text("{}")
+    elif case == "started":
+        controls.started = True
+    else:
+        controls.cleanup_denied = True
+    with pytest.raises(h.module.Blocked):
+        runner.run()
+    assert len(stall_harness.stalled) == 1
+    assert h.launches == []
+    assert runner.state["completed"] == []
+    assert len(runner.state["attempts"]) == 1
+
+
+def test_another_engine_stall_is_not_retried(stall_harness: Any) -> None:
+    h = stall_harness.harness
+    stall_harness.controls.engine = "claude"
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="no thread.started"):
+        runner.run()
+    # Only Codex arms the watchdog; this fake stall stands in for any failure.
+    assert stall_harness.stalled == [None]
+    assert runner.state["attempts"][1]["phase"] == "execution_failed"
+
+
+def test_checkpoint_blocked_without_result_stays_blocked_on_resume(
+    idle_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = idle_harness.harness
+    # A checkpoint written before idle-exit classification existed.
+    recognize = h.module.agy_idle_exit
+    monkeypatch.setattr(h.module, "agy_idle_exit", lambda log: False)
+    with pytest.raises(h.module.Blocked, match="returned no result"):
+        h.runner(h.args, h.directory).run()
+    saved = h.module.read(h.directory / "state.json")
+    assert saved["pending"]["phase"] == "returned"
+    monkeypatch.setattr(h.module, "agy_idle_exit", recognize)
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="returned no result"):
+        h.runner(h.args, h.directory).run()
+    assert idle_harness.idle_launches == ["gemini"]
+    assert h.launches == ["codex"]
+
+
 def load(name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
     assert spec and spec.loader
@@ -425,7 +944,11 @@ sys.exit(int(sys.argv[2]))
 """)
 
     def managed(
-        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+        argv: list[str],
+        log: Path,
+        env: dict[str, str],
+        timeout: int = 3600,
+        **_: Any,
     ) -> None:
         if "AGENT_LOOP_REVIEW_RESULT_FILE" in env:
             if controls.preflight:
@@ -1384,7 +1907,11 @@ def test_preflight_recovery_keeps_completed_passes_and_budget(
     rejected = False
 
     def managed(
-        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+        argv: list[str],
+        log: Path,
+        env: dict[str, str],
+        timeout: int = 3600,
+        **_: Any,
     ) -> None:
         nonlocal rejected
         if env.get("AGENT_LOOP_REVIEW_ENGINE") == "gemini" and not rejected:
@@ -1434,7 +1961,11 @@ def test_all_engines_preflight_before_any_review(
     monkeypatch.setattr(harness.runner, "preflight", harness.module.Runner.preflight)
 
     def managed(
-        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+        argv: list[str],
+        log: Path,
+        env: dict[str, str],
+        timeout: int = 3600,
+        **_: Any,
     ) -> None:
         assert argv[-1] == "--preflight-only"
         engine = next(
@@ -1463,7 +1994,11 @@ def test_resume_never_retries_an_unrecorded_exit(
     original = harness.module.managed
 
     def interrupted(
-        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+        argv: list[str],
+        log: Path,
+        env: dict[str, str],
+        timeout: int = 3600,
+        **_: Any,
     ) -> None:
         if "AGENT_LOOP_REVIEW_ENGINE" not in env:
             original(argv, log, env, timeout)
@@ -1504,7 +2039,11 @@ def test_preflight_cleanup_denial_cannot_retry_a_surviving_launcher(
         real_killpg(pid, sig)
 
     def stalled_preflight(
-        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+        argv: list[str],
+        log: Path,
+        env: dict[str, str],
+        timeout: int = 3600,
+        **_: Any,
     ) -> None:
         if "AGENT_LOOP_REVIEW_ENGINE" not in env:
             ordinary(argv, log, env, timeout)
@@ -1581,7 +2120,11 @@ def test_caught_failure_after_preflight_is_never_recoverable(
     original = harness.module.managed
 
     def failed(
-        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600
+        argv: list[str],
+        log: Path,
+        env: dict[str, str],
+        timeout: int = 3600,
+        **_: Any,
     ) -> None:
         if "AGENT_LOOP_REVIEW_ENGINE" not in env:
             original(argv, log, env, timeout)

@@ -292,7 +292,8 @@ resolved threads and prior attestations. Post verified findings inline before
 edits, then validate, push, reply, resolve, and publish the normal review result.
 This invocation owns exactly one Gemini pass: do not invoke Codex, Claude,
 another reviewer, or any review launcher. Return control to the calling
-session when the Gemini pass is complete."
+session when the Gemini pass is complete.
+Wait for every command, test, and review lane you start to finish inside this turn; running them in parallel is fine, leaving any of them unfinished is not. The session ends when this turn ends and discards unfinished background work, so end the turn only after the canonical result is written."
 if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
     prompt="Read ${agy_surface_root}/skills/deepcritique/SKILL.md and follow it for this pass.
 ${prompt#*$'\n'}"

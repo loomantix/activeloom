@@ -26,6 +26,18 @@ LEDGER_VERSION = LEDGER_VERSION_FILE.read_text(encoding="utf-8").strip()
 # Continuation flags start a fresh one-shot only by their absence, so the
 # launcher is asserted against the CLI's complete resume surface.
 CONTINUATION_FLAGS = {"--continue", "-c", "--conversation", "--prompt-interactive", "-i"}
+# Agy's print mode ends the session with its turn and discards background work.
+FOREGROUND_INSTRUCTION = (
+    "Wait for every command, test, and review lane you start to finish inside this turn; "
+    "running them in parallel is fine, leaving any of them unfinished is not. The session "
+    "ends when this turn ends and discards unfinished background work, so end the turn "
+    "only after the canonical result is written."
+)
+AGY_REVIEW_LAUNCHERS = (
+    ".claude/skills/critique/scripts/run-agy-review.sh",
+    ".codex/skills/critique/scripts/run-agy-review.sh",
+    ".agents/skills/agent-loop/scripts/run-agy-review.sh",
+)
 
 
 def _trusted_environment(
@@ -657,8 +669,59 @@ def test_both_launchers_require_the_canonical_activeloom_surface(
     )
     assert (result.returncode == 0) is accepted, result.stderr
     assert argv_file.exists() is accepted
+    if accepted:
+        prompt = json.loads(argv_file.read_text(encoding="utf-8"))["argv"][-1]
+        assert FOREGROUND_INSTRUCTION in prompt
     if not accepted:
         assert "untrusted Git remote" in result.stderr
+
+
+@pytest.mark.parametrize("launcher", AGY_REVIEW_LAUNCHERS)
+def test_every_agy_review_prompt_keeps_background_work_in_the_turn(launcher: str) -> None:
+    source = (ROOT / launcher).read_text(encoding="utf-8")
+    prompt = source[source.index('prompt="') : source.index("# claude-cli-invocations:start")]
+    assert FOREGROUND_INSTRUCTION in prompt
+
+
+# The source assertion above spans both prompt assignments, so it passes on the
+# base prompt alone. The runner always nominates a surface, which takes the
+# second assignment's rebuild of the prompt -- assert that path at argv.
+@pytest.mark.parametrize("harness", [".claude", ".codex"])
+def test_nominated_surface_prompt_reaches_argv_with_the_turn_instruction(
+    tmp_path: Path, harness: str
+) -> None:
+    scripts = tmp_path / "launcher"
+    scripts.mkdir()
+    launcher = scripts / "run-agy-review.sh"
+    launcher.write_bytes((ROOT / harness / "skills/critique/scripts/run-agy-review.sh").read_bytes())
+    launcher.chmod(0o755)
+    for name in ("review-launch-state.py", "review-profile.py", "review-profile.defaults.json"):
+        (scripts / name).write_bytes((ROOT / ".codex/skills/critique/scripts" / name).read_bytes())
+    (scripts / "review-ledger.version").write_text(LEDGER_VERSION, encoding="utf-8")
+    (scripts / "local-review-handoff.py").write_text(
+        '"""Run admission is outside this prompt-delivery test."""\n', encoding="utf-8"
+    )
+    argv_file = tmp_path / "argv.json"
+    fake_agy, surface = _fake_agy(tmp_path)
+    command = _command()
+    command[0] = str(launcher)
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            **_trusted_environment(tmp_path),
+            "AGY_ARGV_FILE": str(argv_file),
+            "AGY_REVIEW_CLI": str(fake_agy),
+            "ACTIVELOOM_REVIEW_SURFACE": str(surface),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    prompt = json.loads(argv_file.read_text(encoding="utf-8"))["argv"][-1]
+    assert prompt.startswith(f"Read {surface}/skills/deepcritique/SKILL.md and follow it")
+    assert FOREGROUND_INSTRUCTION in prompt
 
 
 # --------------------------------------------------------------------------

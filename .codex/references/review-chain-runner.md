@@ -159,6 +159,35 @@ For compatibility with the vendored run-end grammar, an un-converged completed
 fixed plan records `exhausted` as its terminal marker; checkpoint/output retain
 the more precise `plan-complete` reason. Neither grants extra passes.
 
+Agy's print mode ends the session when the root agent ends its turn, and
+discards background lanes or tests that are still running. The Agy launchers
+therefore tell Gemini to finish every command, test and review lane inside the
+turn. When a Gemini worker still exits 0 without a result and its log shows
+Agy's idle-termination lines, the runner verifies the same unchanged evidence as
+the capacity fallback and relaunches that pass once, with the same round, budget
+and pinned settings. A second idle exit, any partial result, changed evidence, or
+a failed exit blocks.
+
+Recognizing that log is plain text matching, not the structured-event parse the
+Codex capacity check uses, and it is not the whole gate: an idle exit whose
+launch marker is missing or is not in the execution phase blocks rather than
+retrying, and what authorizes the relaunch is the unchanged-evidence
+re-verification rather than the strength of the log match.
+
+Workers never inherit the runner's stdin: the runner starts them on `/dev/null`,
+and the Codex launcher detaches its own stdin as well. `codex exec` reads a
+non-TTY stdin to end of file before it starts, so a caller holding a pipe open
+would otherwise hang the pass indefinitely. Codex also emits `thread.started`
+about a second after launch. If a Codex worker has not written that event after
+three minutes, the runner stops its process group instead of waiting out the
+pass timeout. Nothing that can post, commit or push runs before that event. So,
+after cleanup completes, the runner verifies the same unchanged evidence as the
+capacity fallback and relaunches the pass once in `<pass>/stall-retry`, with
+the same round, budget and pinned settings. A second stall, a log that did
+record `thread.started`, a partial result, changed evidence or denied cleanup
+blocks. Other engines have no startup watchdog: they emit no comparable early
+event.
+
 The runner never marks ready or merges, even on success. It reports the evidence
 to the caller, who follows the repository's finalization policy.
 
@@ -184,7 +213,8 @@ process-group cleanup; a preflight marker alone cannot authorize a retry.
 Recovery rechecks the live head and ledger, preserves the run ID,
 round, completed passes, original comment snapshots and attempt history, and
 launches only the owed pass. The retry has its own directory. It consumes the
-same remaining run budget. Outside the configured Codex capacity fallback above,
+same remaining run budget. Outside the Codex capacity fallback, the Codex
+startup-stall retry and the Agy idle-exit retry above,
 a missing result, a blocked result without a sealed completed candidate, unknown
 exit, interrupted reviewer, changed head or changed evidence still requires
 reconciliation; none is silently retried or converted into passing evidence.
