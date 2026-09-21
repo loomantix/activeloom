@@ -363,7 +363,7 @@ def doctor(project: Path, *, repo: str | None = None, settings_from_env: bool = 
         raise DoctorError("review_contract_version must be 3")
     if _version(["node", str(ledger), "--protocol-version"], "review ledger") != "3":
         raise DoctorError("review-ledger protocol is incompatible with contract v3")
-    if _version([sys.executable, str(state), "--state-version"], "run state") != "1":
+    if _version([sys.executable, str(state), "--state-version"], "run state") != "2":
         raise DoctorError("agent-loop state protocol is incompatible")
     if _version([str(review_push), "--protocol-version"], "review push") != "1":
         raise DoctorError("review-push protocol is incompatible")
