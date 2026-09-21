@@ -384,7 +384,7 @@ def test_state_rejects_permissive_or_unknown_content(tmp_path: Path) -> None:
 def test_state_rejects_json_booleans_for_integer_fields(tmp_path: Path) -> None:
     state = tmp_path / "run-state.json"
     value = {
-        "version": 1,
+        "version": 2,
         "runId": "run-1",
         "repo": "example/repository",
         "issue": True,

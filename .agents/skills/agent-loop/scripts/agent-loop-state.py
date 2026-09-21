@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Iterator, NoReturn
 
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
