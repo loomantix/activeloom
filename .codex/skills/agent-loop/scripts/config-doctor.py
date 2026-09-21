@@ -292,6 +292,14 @@ def _verify_protocols(ledger: Path, state: Path, review_push: Path) -> None:
         != "2"
     ):
         raise DoctorError("agent-loop state protocol is incompatible")
+    if (
+        _version(
+            [sys.executable, "-I", str(state), "--batch-state-version"],
+            "batch state",
+        )
+        != "1"
+    ):
+        raise DoctorError("agent-loop batch state protocol is incompatible")
     if _version([str(review_push), "--protocol-version"], "review push") != "2":
         raise DoctorError("review-push protocol is incompatible")
 
