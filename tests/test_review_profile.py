@@ -8,6 +8,7 @@ import os
 import stat
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -754,10 +755,10 @@ def test_detect_suggests_unavailability_but_never_writes_it(
 # raises the floor for everyone else.
 
 
-def newer_profile(profile: Path, capsys: pytest.CaptureFixture[str]) -> dict:
+def newer_profile(profile: Path, capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     """A valid current profile relabelled as the next schema, with future content."""
     run(capsys, "init", "--accept-defaults", "--replace")
-    document = json.loads(profile.read_text())
+    document: dict[str, Any] = json.loads(profile.read_text())
     module = load()
     document["schema_version"] = module.SCHEMA_VERSION + 1
     document["telemetry"] = {"enabled": True}
@@ -866,7 +867,9 @@ def run_with_reader_version(
     second copy of the helper that would rot on its own schedule.
     """
     module = load()
-    module.SCHEMA_VERSION = version
+    # setattr rather than attribute assignment: `load()` is typed ModuleType,
+    # whose attributes mypy --strict will not let us assign to by name.
+    setattr(module, "SCHEMA_VERSION", version)
     status = module.main(list(argv))
     captured = capsys.readouterr()
     return status, captured.out, captured.err
