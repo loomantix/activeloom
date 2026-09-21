@@ -13,6 +13,7 @@ validator that rejects unknown fields.
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
 import sys
@@ -24,18 +25,20 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS_ROOTS = (".claude", ".codex", ".agents")
 
-# Tolerates the formatter wrapping the comparison onto its own line, which is
-# how `.codex` carries it.
-PIN_RE = re.compile(
-    r'"--state-version"\][^)]*,\s*"run state"\)\s*\)?\s*!=\s*"(\d+)"',
-    re.DOTALL,
-)
+# `[^)]*` and `\s*` span newlines on their own, which is what lets this match the
+# formatter-wrapped form `.codex` carries. No `.` appears in the pattern, so no
+# DOTALL is needed.
+PIN_RE = re.compile(r'"--state-version"\][^)]*,\s*"run state"\)\s*\)?\s*!=\s*"(\d+)"')
 
 
+def _script(root: str, name: str) -> Path:
+    return ROOT / root / "skills/agent-loop/scripts" / name
+
+
+@functools.lru_cache(maxsize=None)
 def _state_version(root: str) -> str:
-    helper = ROOT / root / "skills/agent-loop/scripts/agent-loop-state.py"
     result = subprocess.run(
-        [sys.executable, str(helper), "--state-version"],
+        [sys.executable, str(_script(root, "agent-loop-state.py")), "--state-version"],
         capture_output=True,
         text=True,
         check=False,
@@ -45,12 +48,14 @@ def _state_version(root: str) -> str:
 
 
 def _doctor_pin(root: str) -> str:
-    doctor = (ROOT / root / "skills/agent-loop/scripts/config-doctor.py").read_text(
-        encoding="utf-8"
+    doctor = _script(root, "config-doctor.py").read_text(encoding="utf-8")
+    pins: list[str] = PIN_RE.findall(doctor)
+    # Exactly one, so a second `--state-version` call site cannot leave this
+    # asserting against the wrong pin while staying green.
+    assert len(pins) == 1, (
+        f"{root} doctor has {len(pins)} run-state version pins, want 1"
     )
-    match = PIN_RE.search(doctor)
-    assert match is not None, f"{root} doctor has no run-state version pin"
-    return match.group(1)
+    return pins[0]
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
@@ -61,9 +66,7 @@ def test_doctor_pins_the_version_its_own_state_helper_reports(root: str) -> None
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
 def test_review_settings_bearing_schema_is_past_version_one(root: str) -> None:
     """`reviewSettings` landed in all three roots, so none may still read as v1."""
-    helper = (ROOT / root / "skills/agent-loop/scripts/agent-loop-state.py").read_text(
-        encoding="utf-8"
-    )
+    helper = _script(root, "agent-loop-state.py").read_text(encoding="utf-8")
     if "reviewSettings" not in helper:
         pytest.skip(f"{root} does not carry reviewSettings")
     assert int(_state_version(root)) > 1
