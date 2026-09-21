@@ -22,6 +22,12 @@ from typing import Any, Iterator, NoReturn
 
 
 STATE_VERSION = 3
+# The batch schema is versioned independently of the run state above. Only the
+# run-state schema gained `reviewSettings`, so bumping STATE_VERSION for it must
+# not invalidate batch checkpoints for a schema that did not change. This number
+# is the value this root's batch schema has carried from the start; move it only
+# when the batch schema itself changes.
+BATCH_STATE_VERSION = 2
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
@@ -367,8 +373,10 @@ def _settings_restore(args: argparse.Namespace) -> None:
 
 def _validate_batch(value: dict[str, Any]) -> None:
     required = {"version", "kind", "runId", "repo", "baseBranch", "allowlist", "cursor", "issues"}
-    if set(value) != required or value.get("version") != STATE_VERSION or value.get("kind") != "batch":
-        _fail("batch state has missing, unknown, or unsupported fields")
+    if set(value) != required or value.get("kind") != "batch":
+        _fail("batch state has missing or unknown fields")
+    if type(value["version"]) is not int or value["version"] != BATCH_STATE_VERSION:
+        _fail("unsupported batch state version")
     for key in ("runId", "repo", "baseBranch"):
         if not isinstance(value[key], str) or not value[key]:
             _fail(f"batch state {key} must be a non-empty string")
@@ -469,7 +477,7 @@ def _batch_lock(path: Path) -> Iterator[None]:
 def _batch_create(args: argparse.Namespace) -> None:
     allowlist = [int(value) for value in args.issues.split(",")]
     value = {
-        "version": STATE_VERSION,
+        "version": BATCH_STATE_VERSION,
         "kind": "batch",
         "runId": args.run_id,
         "repo": args.repo,
@@ -527,6 +535,9 @@ def _batch_show(args: argparse.Namespace) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-version", action="version", version=str(STATE_VERSION))
+    parser.add_argument(
+        "--batch-state-version", action="version", version=str(BATCH_STATE_VERSION)
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     create = commands.add_parser("create")
     create.add_argument("--file", required=True)
