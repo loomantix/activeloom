@@ -19,7 +19,6 @@ class DoctorError(RuntimeError):
 
 # Keys whose settings now come from the per-user review profile.
 RETIRED_KEYS = ("claude_effort_policy", "worker_model", "worker_fallback_model", "worker_effort")
-CONFIG_PATH = ".agents/skills/agent-loop/agent-loop.config"
 
 
 def _warn(message: str) -> None:

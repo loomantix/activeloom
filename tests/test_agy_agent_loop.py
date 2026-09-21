@@ -1186,10 +1186,6 @@ def test_run_state_records_restores_and_only_extends_worker_pins(tmp_path: Path)
     assert json.loads(pins.read_text())["worker_settings"]["gemini"] == worker
 
 
-# The built-in Agy review launcher's reviewer settings.
-
-
-REVIEW_LAUNCHER = SKILL / "scripts/run-agy-review.sh"
 REVIEW_SURFACE_FILES = (
     "REVIEW_WORKFLOW.md",
     "references/local-review-ledger.md",

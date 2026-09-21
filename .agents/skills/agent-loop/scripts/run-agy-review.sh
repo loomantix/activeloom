@@ -20,12 +20,6 @@ case "$engine" in
     *) usage ;;
 esac
 
-# Agy launches Claude from its own model catalogue, so a profile model such as
-# `opus` — a Claude CLI alias — is not a model id Agy accepts. Until the
-# profile carries an explicit Agy model id, this engine keeps a pinned one and
-# takes only its effort from the profile.
-AGY_CLAUDE_MODEL="claude-sonnet-4-6"
-
 review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
 [[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
     [ "$review_timeout_seconds" -le 3600 ] || {
@@ -114,9 +108,15 @@ profile_settings="$(python3 -I "$profile_helper" launch-args --engine "$engine" 
 }
 profile_model="${profile_settings%%$'\n'*}"
 effort="${profile_settings#*$'\n'}"
+# Agy launches Claude from its own model catalogue, so a profile model such as
+# `opus` — a Claude CLI alias — is not a model id Agy accepts. Until the
+# profile carries an explicit Agy model id (tracked in #303), this engine keeps
+# a pinned one and takes only its effort from the profile. Expect this literal
+# to go stale: the gemini pin it replaces rotted the same way.
+agy_claude_model="claude-sonnet-4-6"
 case "$engine" in
     gemini) model="$profile_model" ;;
-    claude) model="$AGY_CLAUDE_MODEL" ;;
+    claude) model="$agy_claude_model" ;;
 esac
 [ -n "$model" ] && [ -n "$effort" ] || {
     echo "resolved $engine reviewer settings are incomplete" >&2

@@ -730,12 +730,11 @@ switch_review_settings_fallback() {
     output="$(python3 "$SETTINGS_HELPER" fallback --pin-file "$SETTINGS_PIN_FILE" \
         --engine "$engine" --role "$role" --format env 2>"$errors")" || status=$?
     SETTINGS_FALLBACK_REASON="$(sed -n '1s/^review settings: //p' "$errors")"
-    if [ "$status" -ne 0 ]; then
-        [ "$status" -eq 1 ] || cat "$errors" >&2
-        rm -f -- "$errors"
-        [ "$status" -eq 1 ] && return 1
-        return 2
-    fi
+    case "$status" in
+        0) ;;
+        1) rm -f -- "$errors"; return 1 ;;
+        *) cat "$errors" >&2; rm -f -- "$errors"; return 2 ;;
+    esac
     sed 's/^/   /' "$errors"
     rm -f -- "$errors"
     apply_review_settings "$output" || return 2
