@@ -60,7 +60,7 @@ share a value with anything that stays machine-governed.
 | `review.blocking_severity`   | `blocking < blocking+major`          | `blocking`             | `worst_effect_recovery = not_fully_reversible`; `credible_failure_impacts ∋ financial_assets \| care_delivery \| physical_safety`                                                                                                                                                     | yes           |
 | `review.minimum_coverage`    | `solo < cross < full`                | `solo`                 | `distributed_artifact_consumers = unbounded_external`; `owned_security_boundaries ∋ authentication \| authorization \| tenant_isolation`                                                                                                                                              | yes           |
 | `review.acceptance_floor`    | `human-glance < solo < cross < lean` | `human-glance`, always | **No fact.** Only an organization lock.                                                                                                                                                                                                                                               | yes           |
-| `review.evidence_retention`  | `standard < extended`                | `standard`             | `data_classes` non-empty; `frameworks` non-empty _(retention only; see below)_                                                                                                                                                                                                        | yes           |
+| `review.evidence_retention`  | `standard < extended`                | `standard`             | `data_classes` non-empty                                                                                                                                                                                                                                                              | yes           |
 
 Two rows deliberately read no fact, and they are the load-bearing ones.
 
@@ -80,15 +80,17 @@ not about the repository, and the facts carry no information about it. An
 organization may lock the floor upward; that is a deliberate registry act with
 an accountable owner and an audit trail, not a resolver inference.
 
-`frameworks` appears once, on `review.evidence_retention`, and this record is
-explicit that it is an **exception carved here, not an amendment to 0009's rule
-that frameworks are not resolver primitives**. The distinction that makes it
-safe: retention selects how long an evidence record is kept and where it is
-routed. It selects no check, no lens, no severity, and no plan. Removing every
-framework name changes no control in the sense 0009 means — the same passes run,
-the same findings block, the same plan resolves — and changes only the lifetime
-of the record they produce. An implementation that cannot keep that boundary
-should drop the row and retain on facts alone.
+**`frameworks` is not an input to any control here**, including this one. An
+earlier draft of this record carved an exception for `review.evidence_retention`
+on the argument that retention selects lifetime and routing rather than a check,
+lens, severity, or plan. The exception is withdrawn. Two accepted records —
+0009 on the taxonomy and
+[0011](0011-assurance-setup-interaction.md) on setup — state the rule without
+qualification, and a third record quietly holding a narrow exception is how a
+rule stops being enforceable: the next reader has to discover which of the three
+governs. Retention resolves from `data_classes` alone. Framework names are still
+echoed in the explanation and the evidence record, which is what makes a claimed
+audit scope enumerable — echoing is not an input.
 
 **Evidence, per setting.** `standard` retention preserves the resolver
 explanation, the policy marker, the resolved plan, the triggers that fired, and
@@ -567,5 +569,6 @@ Rejected here, and recorded so they are not re-proposed: a repository-wide deep
 floor derived from facts; a fact-derived cap on what a human may accept; line
 count as an automatic exemption at any gate; acceptance reaching merge,
 deployment, publication, signing, scanner, or branch controls; an agent grading
-human rationale; lens sets that substitute rather than union; and any aggregate
+human rationale; a framework name as an input to any control, retention
+included; lens sets that substitute rather than union; and any aggregate
 that reduces a control vector to a level.
