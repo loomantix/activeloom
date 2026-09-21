@@ -249,13 +249,16 @@ collapses it twice, at both `finish-run` call sites, with
 roster and a spent budget are recorded today as the same outcome. `covered` is
 not a new concept; it is an existing one that has no way to be written down.
 
-**The terminal marker is the protocol's only unauthenticated record.**
-`RUN_END_V1_RE` is matched with `fullmatch` against a marker-only body, with no
-`content-sha256`, while `local-review-run:v1`, both roster versions, both
-attestation markers, findings, and dispositions all bind a content digest.
-`human-accepted` is the most authority-bearing outcome in the vocabulary.
-Adding it to the one grammar that authenticates nothing would put the record a
-human's merge decision rests on below every record an engine writes.
+**The terminal marker carries no content digest.** `RUN_END_V1_RE` is matched
+with `fullmatch` against a marker-only body, while every record that carries a
+decision another pass has to trust — `local-review-run:v1`, both roster
+versions, both attestation markers, findings, dispositions, and the handoff
+marker — binds one. The two exceptions besides this marker are the
+`local-review-tier:v1` and `local-review-refactor:v1` latches, which record a
+resolved classification rather than a terminal judgement.
+`human-accepted` is the most authority-bearing outcome in the vocabulary, and
+putting it on an undigested grammar would leave the record a human's merge
+decision rests on weaker than every record an engine writes.
 
 ```
 <!-- local-review-run-end:v2 id=<64-hex>
