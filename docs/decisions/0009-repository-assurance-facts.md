@@ -340,10 +340,15 @@ Requirements:
 1. **Deterministic.** Identical inputs produce byte-identical output. Facts
    appear in schema order; controls appear in a stable order; sets are sorted.
 2. **Complete and minimal.** Every fact appears with its resolved value and its
-   provenance. Every resolved control appears with the facts that selected it,
-   and only those. Nothing that did not participate is listed.
+   provenance. Every resolved control appears with its **origin** and, when its
+   origin is `resolved`, with the facts that selected it and only those. A
+   control whose origin is `locked` or `maximum` was selected by no fact and
+   lists none. Nothing that did not participate is listed.
 3. **Attributed.** A value raised by an organization assertion, or defaulted
-   because a fact is `unknown`, says so on its own line.
+   because a fact is `unknown`, says so on its own line. A control held by an
+   organization lock reads origin `locked` and names the assertion digest; a
+   control raised because maximum mode was active reads origin `maximum`. Both
+   are attributions, not facts, and neither may be inferred from the value.
 4. **Versioned.** Schema version and policy version appear in the header, since
    the same facts under a later policy may resolve differently.
 5. **Reproducible offline** from the recorded declaration and the named policy
@@ -353,7 +358,7 @@ Requirements:
 The shape:
 
 ```
-assurance: schema 1, policy 3
+assurance: schema 1, policy 3, mode normal
 facts
   data_classes                    health, personal            declared
   runtime_access_modes            external_authenticated      declared
@@ -365,10 +370,20 @@ facts
 frameworks
   <names, echoed, no control effect>
 controls
-  <domain>.<control>              <value>   <- <facts that selected it>
+  <domain>.<control>              <value>   resolved   <- <facts that selected it>
+  <domain>.<control>              <value>   locked     <- registry <assertion-digest>
+  <domain>.<control>              <value>   maximum
 warnings
   - <one line per warning, including detection contradictions>
 ```
+
+The header's `mode` token is `normal` or `maximum` — the two spellings
+`LOOM_ASSURANCE_MODE` can produce — and is always present, so the header is one
+fixed shape rather than two. The origin column is `resolved`, `locked`, or
+`maximum`, and it exists because a locked control and a maximum-raised control
+have no selecting facts to list. The control section is the region a policy
+marker digests, so origin and mode are bound by that digest and two resolutions
+differing only in a lock cannot collide.
 
 ## What the setup agent may read
 
@@ -457,10 +472,11 @@ clinical, and safety impacts are carried as an unordered set rather than
 competing for one rung on a ladder.
 
 What this record does **not** do, and what remains for the work that reads it:
-the control matrix that maps facts to review, autonomy, telemetry, supply-chain,
-and governance decisions; the resolver implementation; the setup skill; ledger
-and marker compatibility; and the organization registry and its failure
-behavior. Those are separate decisions, and each is free to add controls that
+the resolver implementation; and the organization registry and its failure
+behavior. The control matrix is
+[0010](0010-assurance-control-matrix.md), the setup skill is
+[0011](0011-assurance-setup-interaction.md), and ledger and marker
+compatibility is [0012](0012-assurance-ledger-compatibility.md). Those are separate decisions, and each is free to add controls that
 read these facts — but none of them may add a fact domain without amending this
 record and the schema version with it.
 

@@ -52,15 +52,24 @@ Owner: the review entry points (`critique`, `deepcritique`, `refactorpass`,
 depth is the only control a human may lower for a single head, so it must not
 share a value with anything that stays machine-governed.
 
-| Control                      | Order / values                       | Default                | Raised by                                                                                                                                                                                                                                                                             | Lock-eligible |
-| ---------------------------- | ------------------------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `review.plan_floor`          | `lean < deep`                        | `lean`, always         | **No fact.** Only an organization lock.                                                                                                                                                                                                                                               | yes           |
-| `review.trigger_sensitivity` | set of armed trigger extensions      | base trigger list      | `owned_security_boundaries` (extends trigger 1 to the boundary's own implementation); `distributed_artifact_consumers ≥ known_external` (extends trigger 2 and 3 to publication surfaces); `data_classes` non-empty (extends trigger 1 to the stores and transports of those classes) | yes           |
-| `review.required_lenses`     | set, union only                      | `{}`                   | `owned_security_boundaries` → security lens; `data_classes` → data-safety lens; `credible_failure_impacts ∋ financial_assets \| care_delivery \| physical_safety` → correctness/calculation lens; `runtime_access_modes ∋ unauthenticated` → pre-auth surface lens                    | yes           |
-| `review.blocking_severity`   | `blocking < blocking+major`          | `blocking`             | `worst_effect_recovery = not_fully_reversible`; `credible_failure_impacts ∋ financial_assets \| care_delivery \| physical_safety`                                                                                                                                                     | yes           |
-| `review.minimum_coverage`    | `solo < cross < full`                | `solo`                 | `distributed_artifact_consumers = unbounded_external`; `owned_security_boundaries ∋ authentication \| authorization \| tenant_isolation`                                                                                                                                              | yes           |
-| `review.acceptance_floor`    | `human-glance < solo < cross < lean` | `human-glance`, always | **No fact.** Only an organization lock.                                                                                                                                                                                                                                               | yes           |
-| `review.evidence_retention`  | `standard < extended`                | `standard`             | `data_classes` non-empty                                                                                                                                                                                                                                                              | yes           |
+| Control                      | Order / values                                      | Default                | Raised by                                                                                                                                                                                                                                                                             | Lock-eligible |
+| ---------------------------- | --------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `review.plan_floor`          | `lean < deep`                                       | `lean`, always         | **No fact.** Only an organization lock.                                                                                                                                                                                                                                               | yes           |
+| `review.trigger_sensitivity` | set of armed trigger extensions                     | base trigger list      | `owned_security_boundaries` (extends trigger 1 to the boundary's own implementation); `distributed_artifact_consumers ≥ known_external` (extends trigger 2 and 3 to publication surfaces); `data_classes` non-empty (extends trigger 1 to the stores and transports of those classes) | yes           |
+| `review.required_lenses`     | set, union only                                     | `{}`                   | `owned_security_boundaries` → security lens; `data_classes` → data-safety lens; `credible_failure_impacts ∋ financial_assets \| care_delivery \| physical_safety` → correctness/calculation lens; `runtime_access_modes ∋ unauthenticated` → pre-auth surface lens                    | yes           |
+| `review.blocking_severity`   | `blocking < blocking+major`                         | `blocking`             | `worst_effect_recovery = not_fully_reversible`; `credible_failure_impacts ∋ financial_assets \| care_delivery \| physical_safety`                                                                                                                                                     | yes           |
+| `review.minimum_coverage`    | `solo < cross < full`                               | `solo`                 | `distributed_artifact_consumers = unbounded_external`; `owned_security_boundaries ∋ authentication \| authorization \| tenant_isolation`                                                                                                                                              | yes           |
+| `review.acceptance_floor`    | `human-glance < single-engine < all-engines < lean` | `human-glance`, always | **No fact.** Only an organization lock.                                                                                                                                                                                                                                               | yes           |
+| `review.evidence_retention`  | `standard < extended`                               | `standard`             | `data_classes` non-empty                                                                                                                                                                                                                                                              | yes           |
+
+**`review.minimum_coverage` is a reported expectation, not something an
+acceptance lowers.** Coverage is measured from the attestations posted at the
+exact head, so nothing may raise it without an attestation behind it. An
+acceptance therefore leaves the resolved vector — this row included — unchanged
+and recorded, and a run that finishes under a valid acceptance with the minimum
+unmet finishes `human-accepted` with the shortfall recorded. The comparison
+between the expected minimum and the measured tier follows the same
+report-and-observe pattern the `governance` rows use.
 
 Two rows deliberately read no fact, and they are the load-bearing ones.
 
@@ -146,10 +155,14 @@ of how the change was reviewed and survives every acceptance.
 | Control                          | Order / values                        | Default             | Raised by                                                                                                                                                | Lock-eligible |
 | -------------------------------- | ------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | `data.egress_policy`             | `default_deny`                        | `default_deny`      | Nothing. Universal baseline.                                                                                                                             | no            |
-| `data.evidence_deidentification` | `paths_only < paths_and_shapes_only`  | `paths_only`        | `data_classes` non-empty; `data_classes = unknown`                                                                                                       | yes           |
+| `data.evidence_deidentification` | `paths_only < paths_and_shapes_only`  | `paths_only`        | `data_classes` non-empty                                                                                                                                 | yes           |
 | `data.finding_quotation`         | `quotation_allowed < structural_only` | `quotation_allowed` | `data_classes ∋ personal \| health \| payment_card \| financial_account \| authentication_credentials \| customer_confidential \| government_controlled` | yes           |
 | `data.rationale_copying`         | `never`                               | `never`             | Nothing. Universal baseline.                                                                                                                             | no            |
 | `data.measurement_emission`      | `required`                            | `required`          | Nothing. Universal baseline.                                                                                                                             | no            |
+
+M3 supplies the `unknown` case for every row in this table that reads a fact:
+an `unknown` fact resolves the controls reading it at that fact's most
+conservative value. No row restates it, here or in any other domain table.
 
 Three rows are universal baselines with no fact input and no lock. Default-deny
 egress, never copying human rationale prose out of the PR into telemetry, and
@@ -184,7 +197,7 @@ to satisfy one.
 | `supply.secret_scanning`           | `required`                                           | `required`          | Nothing. Universal baseline.                                                                                                                                                                                          | no            |
 | `supply.dependency_audit`          | `required`                                           | `required`          | Nothing. Universal baseline.                                                                                                                                                                                          | no            |
 | `supply.credential_leak_detection` | `required`                                           | `required`          | Nothing. Universal baseline.                                                                                                                                                                                          | no            |
-| `supply.audit_blocking_severity`   | `advisory < high < moderate`                         | `advisory`          | `distributed_artifact_consumers ≥ known_external`; `data_classes` non-empty; `runtime_access_modes ∋ unauthenticated`                                                                                                 | yes           |
+| `supply.audit_blocking_severity`   | `advisory < high < moderate`                         | `advisory`          | `distributed_artifact_consumers ≥ known_external`; `data_classes` non-empty; `runtime_access_modes ∋ unauthenticated` _(a lower blocking threshold blocks more findings; the order is on strength, not on the value)_ | yes           |
 | `supply.artifact_provenance`       | `none < attested < attested_and_signed`              | `none`              | `distributed_artifact_consumers ≥ organization_only` → `attested`; `= unbounded_external` → `attested_and_signed`                                                                                                     | yes           |
 | `supply.dependency_pinning`        | `range_allowed < lockfile_enforced < pinned_digests` | `lockfile_enforced` | `distributed_artifact_consumers = unbounded_external`; `owned_security_boundaries ∋ cryptographic_protection \| secret_management`                                                                                    | yes           |
 | `supply.specialized_scanners`      | set, union only                                      | `{}`                | `owned_security_boundaries ∋ cryptographic_protection` → crypto-misuse scanner; `∋ authorization \| tenant_isolation` → access-control scanner; `data_classes ∋ payment_card \| health` → protected-data flow scanner | yes           |
@@ -315,14 +328,22 @@ rejected — the rationale is required for the record, not for evaluation.
 
 ### The four plans
 
-| Plan           | Means                                                                  |
-| -------------- | ---------------------------------------------------------------------- |
-| `human-glance` | No agent review. The human reads the diff and merges.                  |
-| `solo`         | One engine, one adversarial pass.                                      |
-| `cross`        | One adversarial pass from each available engine, with no return cycle. |
-| `lean`         | The normal Lean plan.                                                  |
+| Plan            | Means                                                                  |
+| --------------- | ---------------------------------------------------------------------- |
+| `human-glance`  | No agent review. The human reads the diff and merges.                  |
+| `single-engine` | One engine, one adversarial pass.                                      |
+| `all-engines`   | One adversarial pass from each available engine, with no return cycle. |
+| `lean`          | The normal Lean plan.                                                  |
 
-`solo` and `cross` cap **adversarial discovery passes**. They do not cap
+These names are deliberately **not** `solo` and `cross`. Those two belong to
+`review.minimum_coverage`, which is a measurement of how many distinct
+non-author engines attested an exact head, and the two sets do not agree: an
+accepted `single-engine` plan measures as coverage `solo` when the engine is the
+author and `cross` when it is not.
+[0012](0012-assurance-ledger-compatibility.md) records the collision and this
+resolution.
+
+`single-engine` and `all-engines` cap **adversarial discovery passes**. They do not cap
 narrowed exact-head verification that a material fix makes necessary. A plan
 that forbade re-checking a fix would convert a review budget into a correctness
 hazard, which is the opposite of what a human accepting less review is asking
@@ -465,6 +486,12 @@ that does not read it.
 > _Violated by:_ a `human-glance` acceptance that also skips the dependency
 > audit because "no agent review runs". The audit is a `supply` control on a
 > separate owner and runs on the push, not on the plan.
+>
+> _And violated in the other direction by:_ an acceptance that satisfies
+> `review.minimum_coverage` because a human approved less review. M5 permits
+> lowering a `review` control, and this is the row where doing so would
+> manufacture evidence rather than reduce work: the minimum is compared against
+> a measured coverage tier, so an acceptance leaves it unmet and recorded.
 
 **M6 — Environment monotonicity.** `LOOM_ASSURANCE_MODE=maximum` raises every
 domain to its strictest supported setting. No environment value lowers a
@@ -557,8 +584,7 @@ are universal baselines and say why they cannot be locked. Acceptance reaches tw
 domains and is enumerated against the ones it does not reach.
 
 What this record does **not** do, and what remains for the work that reads it:
-the resolver implementation and its policy versioning; the controller and ledger
-changes that carry policy and acceptance markers; the setup wizard; the
+the resolver implementation and its policy versioning; the setup wizard; the
 organization registry and its failure behaviour; and the environment-surface
 audit that M6 depends on. Each is free to add controls that read 0009's facts —
 but none may add a fact domain without amending 0009 and its schema version, and
