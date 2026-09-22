@@ -99,7 +99,7 @@ the launcher owns those settings, taking model and effort from the confirmed
 review profile or the run's pinned settings. Do not set
 `CLAUDE_REVIEW_CLI` outside launcher tests. A missing, incompatible, or failed
 launcher is a blocker, not permission to fall back to the raw CLI.
-The launcher also owns a 60-minute pass timeout. Operators may lower it with
+The launcher also owns a 45-minute pass timeout. Operators may lower it with
 `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the hard 3600-second ceiling
 are rejected.
 
