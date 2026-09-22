@@ -91,7 +91,9 @@ Standalone launchers do not perform this model fallback.
 A Claude reviewer that reached execution and then exits 1 with only the CLI's
 `API Error: 500 Internal server error.` diagnostic may retry once in
 `<pass>/provider-retry`. A 500 taken while the launch marker still reads
-`preflight` is a preflight failure and takes that path instead. The runner first
+`preflight` is a preflight failure and takes that path instead, and a 500 whose
+launch marker is missing or does not match this attempt blocks rather than
+retrying. The runner first
 confirms process cleanup, the unchanged local/remote/PR head, clean worktree,
 unchanged comments and review threads, no result or recovery sidecar, and the
 same owed pass. It keeps the run, round, model, and original attempt evidence.

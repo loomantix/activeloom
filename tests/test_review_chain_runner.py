@@ -1359,6 +1359,11 @@ def provider_500_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     [
         (PROVIDER_500, True),
         ("bash: warning: setlocale: LC_ALL: unavailable\n" + PROVIDER_500, True),
+        (
+            "bash: warning: setlocale: LC_ALL: unavailable\n"
+            "bash: warning: setlocale: LC_CTYPE: unavailable\n" + PROVIDER_500,
+            True,
+        ),
         ("reviewer output\n" + PROVIDER_500, False),
         (PROVIDER_500 + "reviewer output\n", False),
         ("API Error: 401 Unauthorized\n", False),
@@ -1376,13 +1381,18 @@ def test_claude_provider_500_recognition_requires_sole_diagnostic(
 def test_claude_provider_500_recognition_rejects_large_or_linked_logs(
     tmp_path: Path,
 ) -> None:
-    log = tmp_path / "worker.log"
-    log.write_text(PROVIDER_500 + "x" * 4096)
     recognize = load("review-chain-runner").claude_provider_500
-    assert recognize(log) is False
+    # One line, so only the size cap can reject it.
+    oversized = tmp_path / "worker.log"
+    oversized.write_text(PROVIDER_500.rstrip("\n") + "x" * 4096 + "\n")
+    assert recognize(oversized) is False
+    # Content that would otherwise match, so only the symlink check can reject it.
+    target = tmp_path / "target.log"
+    target.write_text(PROVIDER_500)
     link = tmp_path / "linked.log"
-    link.symlink_to(log)
+    link.symlink_to(target)
     assert recognize(link) is False
+    assert recognize(tmp_path / "missing.log") is False
 
 
 def test_claude_provider_500_retries_same_pass_without_spending_a_round(

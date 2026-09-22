@@ -109,7 +109,8 @@ def claude_provider_500(log: Path) -> bool:
     if log.stat().st_size > 4096:
         return False
     lines = log.read_text(errors="replace").splitlines()
-    if lines and lines[0].startswith("bash: warning: setlocale:"):
+    # bash emits one setlocale warning per LC_* variable it cannot honour.
+    while lines and lines[0].startswith("bash: warning: setlocale:"):
         lines = lines[1:]
     return len(lines) == 1 and lines[0].startswith(
         "API Error: 500 Internal server error."
