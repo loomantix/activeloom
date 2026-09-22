@@ -2,7 +2,7 @@
 
 This file is synced from the upstream repo to every consumer repo. Edits in a consumer repo will be overwritten on next sync — make changes upstream.
 
-[MODEL_NOTES.md](MODEL_NOTES.md) covers **what the current model does differently** — the phrasings that suppress findings or burn tokens on this generation. This file covers **how to structure the document** — where material sits, when a step is done, what to cut. The two are independent: a skill can be perfectly calibrated to Opus 5 and still be an unfollowable wall of text.
+[MODEL_NOTES.md](MODEL_NOTES.md) covers **what the current model does differently** — the phrasings that suppress findings or burn tokens on this generation. This file covers **how to structure the document** — where material sits, when a step is done, what to cut. The two are independent: a skill can be perfectly calibrated to the current model and still be an unfollowable wall of text.
 
 Read both before writing or editing anything under `.claude/skills/` or `.claude/agents/`.
 
