@@ -20,7 +20,7 @@ This is the unified project formerly named **claude-platform**. New consumers us
 | Model & role configuration | Configure separate worker and reviewer models, adjust reasoning effort tiers (`low`, `medium`, `high`), and enable automatic model fallbacks via `review-setup` and `review-config`.                                    |
 | Bounded automation         | A deterministic runner for explicitly requested automatic review chains, plus a separate `agent-loop` workflow for an allowlisted issue queue.                                                                          |
 | Repository distribution    | A CLI for personal or repository installation, and a sync engine that proposes downstream changes through pull requests.                                                                                                |
-| Local customization        | Consumer-owned configuration and review addenda for project rules, validation commands, and domain knowledge.                                                                                                           |
+| Local customization        | Consumer-owned configuration, deterministic validation contracts, and review addenda for project rules and domain knowledge.                                                                                            |
 
 ## What it does not provide
 
