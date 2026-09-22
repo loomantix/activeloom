@@ -1307,6 +1307,209 @@ def test_worker_failure_never_starts_next_engine(harness: Any, failure: str) -> 
     assert harness.events == []
 
 
+PROVIDER_500 = (
+    "API Error: 500 Internal server error. This is a server-side issue, "
+    "usually temporary — try again in a moment.\n"
+)
+
+
+@pytest.fixture
+def provider_500_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    original = harness.module.managed
+    controls = SimpleNamespace(
+        failures=1, side_effect=None, log=PROVIDER_500, exit_status=1,
+        marker_phase="execution", engine="claude",
+    )
+    failures_seen: list[str] = []
+
+    def managed(
+        argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600,
+        **kwargs: Any,
+    ) -> None:
+        if (
+            "AGENT_LOOP_REVIEW_RESULT_FILE" in env
+            and env["AGENT_LOOP_REVIEW_ENGINE"] == controls.engine
+            and controls.failures
+        ):
+            controls.failures -= 1
+            failures_seen.append(env["ACTIVELOOM_ATTEMPT_ID"])
+            harness.module.save(
+                Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+                {
+                    "version": 1,
+                    "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                    "phase": controls.marker_phase,
+                    "review_started": None,
+                },
+            )
+            log.write_text(controls.log)
+            if controls.side_effect:
+                controls.side_effect(log.parent)
+            raise harness.module.ProcessFailure(
+                f"{controls.engine} exited", controls.exit_status
+            )
+        original(argv, log, env, timeout, **kwargs)
+
+    monkeypatch.setattr(harness.module, "managed", managed)
+    return SimpleNamespace(harness=harness, controls=controls, failures_seen=failures_seen)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (PROVIDER_500, True),
+        ("bash: warning: setlocale: LC_ALL: unavailable\n" + PROVIDER_500, True),
+        (
+            "bash: warning: setlocale: LC_ALL: unavailable\n"
+            "bash: warning: setlocale: LC_CTYPE: unavailable\n" + PROVIDER_500,
+            True,
+        ),
+        ("reviewer output\n" + PROVIDER_500, False),
+        (PROVIDER_500 + "reviewer output\n", False),
+        ("API Error: 401 Unauthorized\n", False),
+        ("API Error: 500 Internal server error.\n" * 2, False),
+    ],
+)
+def test_claude_provider_500_recognition_requires_sole_diagnostic(
+    tmp_path: Path, text: str, expected: bool
+) -> None:
+    log = tmp_path / "worker.log"
+    log.write_text(text)
+    assert load("review-chain-runner").claude_provider_500(log) is expected
+
+
+def test_claude_provider_500_recognition_rejects_large_or_linked_logs(
+    tmp_path: Path,
+) -> None:
+    recognize = load("review-chain-runner").claude_provider_500
+    # One line, so only the size cap can reject it.
+    oversized = tmp_path / "worker.log"
+    oversized.write_text(PROVIDER_500.rstrip("\n") + "x" * 4096 + "\n")
+    assert recognize(oversized) is False
+    # Content that would otherwise match, so only the symlink check can reject it.
+    target = tmp_path / "target.log"
+    target.write_text(PROVIDER_500)
+    link = tmp_path / "linked.log"
+    link.symlink_to(target)
+    assert recognize(link) is False
+    assert recognize(tmp_path / "missing.log") is False
+
+
+def test_claude_provider_500_retries_same_pass_without_spending_a_round(
+    provider_500_harness: Any,
+) -> None:
+    h = provider_500_harness.harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert [(p["engine"], p["round"]) for p in runner.state["completed"]] == [
+        ("codex", 1), ("claude", 1), ("codex", 2), ("claude", 2),
+    ]
+    assert len(runner.state["attempts"]) == 5
+    failed, retry = runner.state["attempts"][1:3]
+    assert failed["phase"] == "provider_500_failed"
+    assert failed["failure_reason"] == "claude_provider_500"
+    assert (failed["engine"], failed["round"]) == (retry["engine"], retry["round"])
+    assert retry["folder"] == failed["folder"] + "/provider-retry"
+
+
+def test_another_engine_provider_500_is_not_retried(
+    provider_500_harness: Any,
+) -> None:
+    h = provider_500_harness.harness
+    provider_500_harness.controls.engine = "codex"
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="codex exited"):
+        runner.run()
+    assert len(provider_500_harness.failures_seen) == 1
+    assert runner.state["attempts"][0]["phase"] == "execution_failed"
+    assert runner.state["completed"] == []
+
+
+def test_second_claude_provider_500_blocks(provider_500_harness: Any) -> None:
+    h = provider_500_harness.harness
+    provider_500_harness.controls.failures = 2
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        runner.run()
+    assert len(provider_500_harness.failures_seen) == 2
+    assert len(runner.state["completed"]) == 1
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        h.runner(h.args, h.directory).run()
+    assert len(provider_500_harness.failures_seen) == 2
+
+
+@pytest.mark.parametrize(
+    "case", ["head", "threads", "comments", "result", "partial", "log", "timeout", "marker"]
+)
+def test_unsafe_claude_provider_500_does_not_retry(
+    provider_500_harness: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    h = provider_500_harness.harness
+    runner = h.runner(h.args, h.directory)
+    if case == "head":
+        provider_500_harness.controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, "boundary", lambda: "f" * 40
+        )
+    elif case in ("threads", "comments"):
+        provider_500_harness.controls.side_effect = lambda folder: monkeypatch.setattr(
+            runner, case, lambda path: h.module.save(path, ["changed"])
+        )
+    elif case in ("result", "partial"):
+        filename = "result.json" if case == "result" else "result.json.recovery.json"
+        provider_500_harness.controls.side_effect = lambda folder: (
+            folder / filename
+        ).write_text("{}")
+    else:
+        if case == "log":
+            provider_500_harness.controls.log = "reviewer output\n" + PROVIDER_500
+        elif case == "timeout":
+            provider_500_harness.controls.exit_status = 124
+        else:
+            provider_500_harness.controls.marker_phase = "ready"
+    with pytest.raises(h.module.Blocked):
+        runner.run()
+    assert len(provider_500_harness.failures_seen) == 1
+    assert len(runner.state["completed"]) == 1
+
+
+@pytest.mark.parametrize("evidence", ["unchanged", "log", "threads", "result"])
+def test_prepared_provider_retry_rechecks_evidence_on_resume(
+    provider_500_harness: Any, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    h = provider_500_harness.harness
+    runner = h.runner(h.args, h.directory)
+    recover = runner.recover_provider_500
+
+    def interrupt(pending: dict[str, Any]) -> None:
+        recover(pending)
+        raise OSError("interrupted after provider-retry preparation")
+
+    monkeypatch.setattr(runner, "recover_provider_500", interrupt)
+    with pytest.raises(OSError, match="after provider-retry preparation"):
+        runner.run()
+    before = h.module.read(h.directory / "state.json")
+    assert before["pending"]["phase"] == "prepared"
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    origin = h.directory / before["attempts"][1]["folder"]
+    if evidence == "log":
+        (origin / "worker.log").write_text(PROVIDER_500 + "changed\n")
+    elif evidence == "threads":
+        monkeypatch.setattr(
+            resumed, "threads", lambda path: h.module.save(path, ["changed"])
+        )
+    elif evidence == "result":
+        (origin / "result.json").write_text("{}")
+    if evidence == "unchanged":
+        assert resumed.run() == "converged"
+        assert resumed.state["run_id"] == before["run_id"]
+    else:
+        with pytest.raises(h.module.Blocked, match="evidence changed"):
+            resumed.run()
+        assert len(provider_500_harness.failures_seen) == 1
+
+
 def test_resume_reconciles_attestation_without_rerunning_worker(harness: Any) -> None:
     harness.controls.fail_attest = True
     with pytest.raises(harness.module.Blocked, match="after remote attestation"):

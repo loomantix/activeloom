@@ -86,7 +86,21 @@ pinned fallback for the remainder of the run. The failed attempt and snapshots
 remain in the checkpoint; the retry uses the same round and remaining budget.
 Attestations name the fallback model and effort. A second capacity rejection,
 changed evidence, unknown failure, authentication error, or timeout blocks.
-Standalone launchers and other engines do not retry.
+Standalone launchers do not perform this model fallback.
+
+A Claude reviewer that reached execution and then exits 1 with only the CLI's
+`API Error: 500 Internal server error.` diagnostic may retry once in
+`<pass>/provider-retry`. A 500 taken while the launch marker still reads
+`preflight` is a preflight failure and takes that path instead, and a 500 whose
+launch marker is missing or does not match this attempt blocks rather than
+retrying. The runner first
+confirms process cleanup, the unchanged local/remote/PR head, clean worktree,
+unchanged comments and review threads, no result or recovery sidecar, and the
+same owed pass. It keeps the run, round, model, and original attempt evidence.
+The retry rechecks that evidence immediately before launch and survives an
+interrupted preparation via `--resume`. A second 500, other output, any partial
+review evidence, a timeout, or an unknown exit blocks for reconciliation.
+Standalone launchers do not retry.
 
 The Codex one-pass launcher uses ephemeral noninteractive execution; its provider
 remains the Codex CLI configuration. Its unattended
@@ -213,11 +227,11 @@ process-group cleanup; a preflight marker alone cannot authorize a retry.
 Recovery rechecks the live head and ledger, preserves the run ID,
 round, completed passes, original comment snapshots and attempt history, and
 launches only the owed pass. The retry has its own directory. It consumes the
-same remaining run budget. Outside the Codex capacity fallback, the Codex
-startup-stall retry and the Agy idle-exit retry above,
-a missing result, a blocked result without a sealed completed candidate, unknown
-exit, interrupted reviewer, changed head or changed evidence still requires
-reconciliation; none is silently retried or converted into passing evidence.
+same remaining run budget. Outside the Codex capacity fallback, Claude provider-500
+retry, Codex startup-stall retry, and Agy idle-exit retry above, a missing result,
+a blocked result without a sealed completed candidate, unknown exit, interrupted
+reviewer, changed head, or changed evidence still requires reconciliation; none
+is silently retried or converted into passing evidence.
 
 Recovery preparation records its intent before staging files so an interruption
 can resume the same transaction. Each launch rechecks the saved run and owed
