@@ -2,13 +2,16 @@
 
 This file is synced from the upstream repo to every consumer repo. Edits in a consumer repo will be overwritten on next sync — make changes upstream.
 
-**Current default model: Claude Opus 5.** Last reviewed against Anthropic's published guidance on 2026-07-24.
+**Current default model: Claude Opus 5.5.** Last reviewed against Anthropic's published guidance on 2026-09-22.
 
-Everything under `.claude/skills/` and `.claude/agents/` is a prompt. A skill body, an agent definition, and the instruction string a skill tells Claude to pass to `Agent(...)` are all read by the model as instructions, so a phrasing that helped on one model generation can actively hurt on the next. Opus 5 runs existing Opus 4.8-era prompts well out of the box, but a handful of patterns that were _good practice_ on 4.x now either suppress findings or burn tokens. This file records those deltas so skill and agent authors do not have to re-derive them.
+Everything under `.claude/skills/` and `.claude/agents/` is a prompt. A skill body, an agent definition, and the instruction string a skill tells Claude to pass to `Agent(...)` are all read by the model as instructions, so a phrasing that helped on one model generation can actively hurt on the next. Opus 5 ran Opus 4.8-era prompts well out of the box, but a handful of patterns that were _good practice_ on 4.x started to suppress findings or burn tokens. This file records those deltas so skill and agent authors do not have to re-derive them.
+
+**Opus 5.5 is a smaller step than Opus 5 was.** Anthropic's guidance is that Opus 5 prompts perform well on it unchanged, and that the Opus 5 prompting patterns remain the starting point. What moved is effort calibration (§6) and thinking control (§7). §2, §4, and §5 were written against Opus 5 behavior; keep them until a measured regression says otherwise, rather than deleting them on the strength of a release note.
 
 Primary sources (public Anthropic docs):
 
-- <https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5>
+- <https://platform.claude.com/docs/en/about-claude/models/migration-guide> — the Opus 5.5 section
+- <https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5> — still the prompting baseline
 - <https://platform.claude.com/docs/en/build-with-claude/effort>
 
 When a new default model ships, re-read those pages and update this file rather than patching individual skills ad hoc.
@@ -27,16 +30,16 @@ When a new default model ships, re-read those pages and update this file rather 
 
 **A cutoff value is fine; a cutoff _inside the finder_ is not.** Anthropic's own official `code-review` plugin is the reference implementation and still filters at 80 — but it gets there by running finder agents that return everything, then a **separate** scorer agent per issue, and only then applying the ≥ 80 cut in the orchestrator. Same number, opposite placement. That is the distinction to preserve when you add a review lens.
 
-**The model-specific reason (Opus 5, stacked on the above).** Opus 5 follows a suppression instruction literally, while reviewing with high precision _and_ high recall — its additional findings are mostly real rather than false positives. So on Opus 5 a self-suppression instruction is close to a pure loss: the model obeys, reports less, and gives up little false-positive noise in exchange. This makes the architecture rule urgent rather than merely tidy, but the architecture rule is what to cite when refactoring a prompt.
+**The model-specific reason (Opus 5 and 5.5, stacked on the above).** Opus 5 follows a suppression instruction literally, while reviewing with high precision _and_ high recall — its additional findings are mostly real rather than false positives. Opus 5.5 widens that gap: Anthropic reports it catches more bugs in code review with fewer false alarms. So a self-suppression instruction is close to a pure loss: the model obeys, reports less, and gives up little false-positive noise in exchange. This makes the architecture rule urgent rather than merely tidy, but the architecture rule is what to cite when refactoring a prompt.
 
-**Scope carefully — the model-specific reason travels less far than the architecture.** The architecture applies to every reviewer in the chain. The Opus 5 empirical claim applies only where Opus 5 actually runs, which is not everywhere:
+**Scope carefully — the model-specific reason travels less far than the architecture.** The architecture applies to every reviewer in the chain. The Opus empirical claim applies only where an Opus model actually runs, which is not everywhere:
 
-- Agents pinned to another model (this repo's three `.claude/agents/` definitions pin `model: sonnet`, inherited verbatim from the official `feature-dev` plugin) are governed by the architecture, not by the Opus 5 measurement. Don't cite an Opus 5 release note as evidence about a Sonnet-pinned agent.
+- Agents pinned to another model (this repo's three `.claude/agents/` definitions pin `model: sonnet`, inherited verbatim from the official `feature-dev` plugin) are governed by the architecture, not by the Opus measurement. Don't cite an Opus release note as evidence about a Sonnet-pinned agent.
 - Other model families are governed by neither. `/codex-review` deliberately asks Codex for "only high-confidence material findings", and that stays: Codex's job is a terse cross-check against a Claude pass that already reported everything. Don't retune another vendor's prompt from a Claude release note — measure first.
 
 ## 2. Do not add verification scaffolding
 
-Opus 5 verifies its own work without being asked. Instructions like these now cause **over-verification** — extra tool calls and tokens with no quality gain:
+Opus 5 verifies its own work without being asked. Anthropic's Opus 5.5 guidance keeps the Opus 5 over-verification advice as the starting point, to be re-tested rather than dropped. Instructions like these now cause **over-verification** — extra tool calls and tokens with no quality gain:
 
 - "Include a final verification step for any non-trivial task."
 - "Use a subagent to verify the result."
@@ -49,7 +52,7 @@ Remove them from skills and agent definitions, and do not add them to new ones. 
 
 ## 3. Cap subagent delegation explicitly
 
-Opus 5 delegates to subagents more readily than prior models. That pays off on genuinely independent, sizeable tracks of work and wastes money on everything else. Skills in this repo that spawn agents should state their ceiling:
+Opus 5 delegates to subagents more readily than prior models; nothing in the Opus 5.5 guidance changes that. That pays off on genuinely independent, sizeable tracks of work and wastes money on everything else. Skills in this repo that spawn agents should state their ceiling:
 
 - Delegate only for large, genuinely independent, parallelizable work.
 - Do not delegate what the session can finish in a handful of tool calls.
@@ -67,6 +70,8 @@ Two separate behaviors, both longer on Opus 5 than on prior models:
 
 The `effort` parameter controls how much the model _thinks_, not how much it _says_. Lowering effort does not reliably shorten a response. If a skill's output has a length that matters (a PR body, a findings table, a status line), state the length in the prompt. The existing "Under 300 words" ceilings in the `Agent(...)` prompts in `/critique` are exactly the right pattern — keep them, and add them to new agent prompts.
 
+Opus 5.5 reports on agentic work more plainly — what it did, what it found, what it needs — with fewer stock phrases. That improves what a length ceiling gets filled with; it is not a reason to drop the ceiling.
+
 For documents Claude authors, calibrate rather than truncate:
 
 > Match the length of written documents to what the task needs: cover the substance, but do not pad with filler sections, redundant summaries, or boilerplate.
@@ -79,29 +84,31 @@ Do not restate those rules in skills or agent definitions. Duplicating them adds
 
 ## 6. Effort levels
 
-`high` is the API and Claude Code default, and it is the right starting point on Opus 5. Adjust from there against real results:
+**Effort names are not comparable across models.** On Opus 5.5 the API default is `medium`, one level below Opus 5's `high`, and in Anthropic's testing Opus 5.5 at `medium` beats Opus 5 at `high` on coding and knowledge work. On several coding evaluations, `low` comes close at much lower cost. Start at `medium` and adjust against real results:
 
-| Level    | Use for                                                                                                        |
-| -------- | -------------------------------------------------------------------------------------------------------------- |
-| `low`    | Cheap mechanical stages, simple lookups, high-volume subagents. Quality holds far better than on prior models. |
-| `medium` | Balanced default for routine agentic work where you have checked that quality holds.                           |
-| `high`   | Default. Complex reasoning, difficult coding, agentic tasks.                                                   |
-| `xhigh`  | Demanding coding and long-horizon agentic work. Set a large `max_tokens` (start ~64k) so it has room to think. |
-| `max`    | Reserve for genuinely frontier problems where a task justifies unconstrained spend.                            |
+| Level    | Use for                                                                                             |
+| -------- | --------------------------------------------------------------------------------------------------- |
+| `low`    | Cheap mechanical stages, simple lookups, high-volume subagents, latency-sensitive routes.           |
+| `medium` | Default. Start here for agentic work and review, then test the neighboring levels.                  |
+| `high`   | Work where you have measured a quality gain over `medium`.                                          |
+| `xhigh`  | Demanding long-horizon agentic work, only on measured gains. Set a large `max_tokens` (start ~64k). |
+| `max`    | Uncapped. Reserve for genuinely frontier problems where a task justifies unconstrained spend.       |
 
-**If you carried an effort default over from Opus 4.7 or 4.8, it is stale.** Those models' guidance was "start at `xhigh` for coding and agentic work"; Opus 5's is "start at `high` and use `low`/`medium` liberally as the primary cost and latency control". Re-check rather than reusing the old setting.
+**If you carried an effort setting over from an earlier model, it is stale.** Opus 4.7/4.8 guidance was "start at `xhigh`"; Opus 5's was "start at `high`". At a given level, Opus 5.5 also thinks more per turn than Opus 5 did, most of all at `xhigh` and `max`, so a setting kept from Opus 5 buys longer turns and more output tokens, not the same work. Set effort explicitly where it matters rather than relying on a default, and re-check any pinned value.
 
-Two practical notes: review accuracy holds up at lower effort on Opus 5, which makes a cheap fast pass genuinely useful ahead of a thorough one; and effort shapes the rendered prompt, so changing it mid-conversation invalidates prompt caching — pick a level per workload, not per turn.
+To get less thinking, **lower effort before adding "think less" instructions** — effort cuts thinking, cost, and latency more reliably than prompting does.
 
-## 7. Keep thinking enabled
+Two practical notes: review accuracy holds up at lower effort, which makes a cheap fast pass genuinely useful ahead of a thorough one; and effort shapes the rendered prompt, so changing it mid-conversation invalidates prompt caching — pick a level per workload, not per turn.
 
-Thinking is on by default and cannot be disabled at `xhigh` or `max` effort. Prefer **low effort with thinking on** over disabling thinking — it performs better at comparable cost. With thinking disabled, two artifacts can leak into visible output: a tool call written as prose instead of a structured call (which then never runs, and poisons later turns in an agentic loop), and stray internal XML tags.
+## 7. Thinking is always on
 
-Never write a rule telling the model not to think or not to reason. That phrasing measurably increases tag leakage.
+On Opus 5.5 thinking cannot be disabled at any effort level; effort is the only control over how much the model thinks. (Opus 5 allowed disabling it at `high` or below, which leaked tool calls as prose and stray internal XML tags into visible output.) Where a route needs to be fast or cheap, lower effort instead.
+
+Never write a rule telling the model not to think or not to reason. It cannot comply, and that phrasing measurably increases tag leakage. Likewise, never ask it to reproduce its reasoning in the response text — Opus 5.5 can decline such requests outright.
 
 ## 8. A bigger context window is not a reason to review in the authoring session
 
-Opus 5 carries a 1M-token context window as both default and maximum, and holds its instruction-following and reasoning quality across it. It is tempting to read that as retiring the pre-flight gates that send `/critique` and `/deepcritique` to a fresh session. **It does not, and this is the one delta in this file that runs the opposite way to "the new model needs less scaffolding".**
+Opus 5 and 5.5 carry a 1M-token context window as both default and maximum, and hold its instruction-following and reasoning quality across it. It is tempting to read that as retiring the pre-flight gates that send `/critique` and `/deepcritique` to a fresh session. **It does not, and this is the one delta in this file that runs the opposite way to "the new model needs less scaffolding".**
 
 Two separate reasons, and the second is the load-bearing one:
 
@@ -109,6 +116,13 @@ Two separate reasons, and the second is the load-bearing one:
 - **Review quality.** That history was almost never useful to the review, and sometimes actively unhelpful. A session that just wrote the code re-reads its own diff already holding the rationale that produced it — anchored on why the code is right rather than looking for why it is wrong. That is the opposite of the fresh-eyes stance the adversarial pass exists to provide. No context window fixes it, because the problem is what the context contains, not whether it fits.
 
 **The general lesson for this file: capacity to hold context is not evidence the context is worth holding.** When a new model relaxes a limit, check whether the guardrail was actually about the limit before removing it. Some guardrails were about relevance, and those get _stronger_ as the limit rises — a bigger window means more irrelevant history survives to pollute the pass.
+
+## 9. Visual inputs and frontend defaults
+
+Two Opus 5.5 changes that matter to skills producing or reading visual material:
+
+- **Reading charts, diagrams, and screenshots is much more accurate out of the box.** Steps a skill added to help an earlier model read a visual input (crop-and-zoom passes, "describe the image before answering") may now be dead weight. Re-test them before keeping them. For the densest inputs, higher-resolution images and image tools still help.
+- **Frontend output falls back on a few default styles**, and "avoid a generic AI look" mostly swaps one default for another. When a skill wants a distinct design, name the specific patterns to avoid (a cream background, numbered section labels, pill-shaped buttons), and extend that list from what the first result actually used.
 
 ---
 
@@ -122,7 +136,8 @@ Two separate reasons, and the second is the load-bearing one:
 - [ ] A skill that fans the changeset out to agents scopes each to the files it reviews, and does not hand every agent the same whole-diff artifact — see the diff-delivery rules in [`references/local-review-ledger.md`](references/local-review-ledger.md).
 - [ ] Every `Agent(...)` prompt states an output length (§4).
 - [ ] No generic model-behavior boilerplate about scope, corrections, or task completion (§5).
-- [ ] Effort overrides, if any, are justified against Opus 5's scale rather than inherited from 4.x (§6).
+- [ ] Effort overrides, if any, are justified against Opus 5.5's scale rather than inherited from an earlier model (§6).
+- [ ] No rule telling the model not to think, and none asking it to write its reasoning into the response (§7).
 - [ ] No pre-flight fresh-session gate weakened on the grounds that the context window grew (§8).
 
 ## Cross-references
