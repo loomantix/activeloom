@@ -17,7 +17,16 @@ Every question is worded for the person answering it, so settle three things abo
 - **Technical fluency** — they read and write code regularly, read it sometimes, or don't read it.
 - **Backlog context** — they know the open issues and past decisions in this area, know them roughly, or are new to it.
 
-Infer what you can from the invocation and the conversation, then ask what remains as an opening round in the usual question format, with your inference as the recommended answer. When the inference is clear on all three, state it in one line, invite correction, and go on to the first product round. Skip this when the idea looks settled enough to finish in two or three questions. This step is done when all three are answered, confirmed, or skipped.
+**Assume the interviewee does not read code until they say otherwise.** This is a product-discovery skill, so that is the default. Being inside a code repository, a git identity, a terminal, or a memory or instruction file describing the machine's usual user is not evidence of the interviewee's role or fluency — the person running this skill is often not the person who set the machine up.
+
+**Role and fluency persist between sessions** in `$XDG_CONFIG_HOME/activeloom/product-grill.json`, or `~/.config/activeloom/product-grill.json` when that variable is unset: a JSON object with a `role` string and a `fluency` of `regularly`, `sometimes`, or `never`. Read it before the opening round.
+
+- **Saved and valid** — use it. State it in one line, invite correction, and do not ask again.
+- **Missing or unreadable** — ask role and fluency in the opening round, in the usual question format. Recommend "doesn't read code" for fluency unless the invocation or conversation says otherwise.
+
+When the interviewee confirms or corrects their role or fluency, at the start or later in the session, write both to that file, creating the directory if needed, and say in one line that they will be remembered. Save only confirmed values, never the default. If the write fails, say so in one line and continue. What the interviewee says in this session always outranks the saved file.
+
+Backlog context depends on the area, so it is never saved. Infer it from the invocation and the conversation, and ask it in the opening round when unclear, with your inference as the recommended answer. When it is clear, state it in one line and invite correction. Skip the opening round when the idea looks settled enough to finish in two or three questions; the saved profile or the non-coder default still sets the wording. This step is done when role, fluency, and backlog context are each answered, confirmed, loaded from the saved file, or skipped.
 
 The answers change how you ask, not how hard you push:
 
@@ -107,7 +116,7 @@ When engineering finds that an assumption does not hold, preserve the original p
 
 ## Scope
 
-- No code, no branches, no commits, no PRs.
+- No code, no branches, no commits, no PRs. The saved interviewee profile is the only file this skill writes.
 - No technical design — those questions are listed for engineering, not answered here.
 - If the frontier empties after two or three questions, say so. The idea was already clear, and there is nothing here to earn a session.
 
