@@ -17,7 +17,24 @@ Every question is worded for the person answering it, so settle three things abo
 - **Technical fluency** — they read and write code regularly, read it sometimes, or don't read it.
 - **Backlog context** — they know the open issues and past decisions in this area, know them roughly, or are new to it.
 
-Infer what you can from the invocation and the conversation, then ask what remains as an opening round in the usual question format, with your inference as the recommended answer. When the inference is clear on all three, state it in one line, invite correction, and go on to the first product round. Skip this when the idea looks settled enough to finish in two or three questions. This step is done when all three are answered, confirmed, or skipped.
+**Assume the interviewee does not read code until they say otherwise.** This is a product-discovery skill, so that is the default. Being inside a code repository, a git identity, a terminal, or a memory or instruction file describing the machine's usual user is not evidence of the interviewee's role or fluency — the person running this skill is often not the person who set the machine up.
+
+**Role and fluency persist between sessions** in a saved profile at `<config>/activeloom/product-grill.json`, where `<config>` is the value of the `XDG_CONFIG_HOME` environment variable, or `~/.config` when that is unset or empty. Resolve it to an absolute path in the user's home configuration; never read or write a copy inside the repository. The file is a JSON object:
+
+```json
+{ "role": "product manager", "fluency": "never" }
+```
+
+`role` is a short job label, never a name or other personal detail. `fluency` is exactly one of `regularly`, `sometimes`, or `never`. Ignore any other keys.
+
+Read the saved profile at the start of every session, before the first question, even when you skip the opening round. Treat each key on its own:
+
+- **A saved key with a valid value** — use it. State what you loaded in one line, invite correction, and do not ask it again.
+- **A key that is missing or invalid, or a file that is absent or unparseable** — ask that item in the opening round, in the usual question format. Recommend "doesn't read code" for fluency and "product manager" for role, unless the invocation or conversation says otherwise.
+
+When the interviewee confirms or corrects their role or fluency, at the start or later in the session, save the profile. First say in one line that you are saving it so they are not asked next time, since the harness may ask permission to write outside the repository. Then write the confirmed values, creating the directory if needed, and keep any other keys already in the file. Write only values the interviewee confirmed or stated; leave out a key that is still only the default. If the write fails or permission is refused, say so in one line, do not retry it this session, and continue. What the interviewee says in this session always outranks the saved profile.
+
+Backlog context depends on the area, so it is never saved. Infer it from the invocation and the conversation, and ask it in the opening round when unclear, with your inference as the recommended answer. When it is clear, state it in one line and invite correction. Skip the opening round when the idea looks settled enough to finish in two or three questions; the saved profile or the non-coder default still sets the wording. This step is done when role, fluency, and backlog context are each answered, confirmed, loaded from the saved profile, or skipped.
 
 The answers change how you ask, not how hard you push:
 
@@ -107,7 +124,7 @@ When engineering finds that an assumption does not hold, preserve the original p
 
 ## Scope
 
-- No code, no branches, no commits, no PRs.
+- No code, no branches, no commits, no PRs. The saved interviewee profile is the only file this skill writes.
 - No technical design — those questions are listed for engineering, not answered here.
 - If the frontier empties after two or three questions, say so. The idea was already clear, and there is nothing here to earn a session.
 
