@@ -1,7 +1,7 @@
 {
   "name": "activeloom",
   "version": "0.1.0",
-  "description": "One agent toolkit for many repositories — install the skills, or wire a repo to receive them.",
+  "description": "Cross-model engineering skills, multi-harness review protocols, and repo sync for Claude, Codex, and Gemini.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -15,6 +15,10 @@
   "keywords": [
     "claude",
     "codex",
+    "gemini",
+    "antigravity",
+    "multi-model",
+    "cross-model",
     "agents",
     "skills",
     "code-review",
