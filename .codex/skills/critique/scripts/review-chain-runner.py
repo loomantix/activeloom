@@ -149,6 +149,9 @@ AGY_IDLE = re.compile(
     r"root agent idle; waiting up to \d+s for [1-9]\d* background task\(s\)\s*$"
 )
 AGY_TERMINATE = re.compile(r"terminating [1-9]\d* background task\(s\) on exit\s*$")
+AGY_SUBAGENT_WAIT = re.compile(
+    r"^I will wait for .*\bsubagents?\b.*\bfinish\b.*\.\s*$"
+)
 
 
 def agy_idle_exit(log: Path) -> bool:
@@ -156,13 +159,20 @@ def agy_idle_exit(log: Path) -> bool:
     if log.is_symlink() or not log.is_file():
         return False
     idle = False
+    subagent_waits = 0
     with log.open(errors="replace") as stream:
         for line in stream:
             if AGY_IDLE.search(line):
                 idle = True
             elif idle and AGY_TERMINATE.search(line):
                 return True
-    return False
+            if AGY_SUBAGENT_WAIT.search(line):
+                subagent_waits += 1
+    # Some Agy builds omit their runtime idle diagnostics and expose only the
+    # root agent repeatedly yielding while delegated reviewers remain pending.
+    # Missing result, clean evidence, exit 0 and execution-phase admission are
+    # verified separately before this classification can authorize one retry.
+    return subagent_waits >= 2
 
 
 def digest(path: Path) -> str:

@@ -416,6 +416,18 @@ def idle_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
             "It then said terminating 2 background task(s) on exit, as quoted.\n",
             False,
         ),
+        (
+            "I will wait for the three review subagents to finish analyzing the diff.\n"
+            "I will wait for the remaining two subagents to finish.\n"
+            "I will wait for the final reviewer subagent to finish.\n",
+            True,
+        ),
+        ("I will wait for the final reviewer subagent to finish.\n", False),
+        (
+            "A log quoted: I will wait for two subagents to finish.\n"
+            "Another quoted wait for one subagent to finish.\n",
+            False,
+        ),
     ],
 )
 def test_agy_idle_exit_recognition_is_specific(
