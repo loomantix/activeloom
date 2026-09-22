@@ -1318,7 +1318,7 @@ def provider_500_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     original = harness.module.managed
     controls = SimpleNamespace(
         failures=1, side_effect=None, log=PROVIDER_500, exit_status=1,
-        marker_phase="execution",
+        marker_phase="execution", engine="claude",
     )
     failures_seen: list[str] = []
 
@@ -1326,7 +1326,11 @@ def provider_500_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
         argv: list[str], log: Path, env: dict[str, str], timeout: int = 3600,
         **kwargs: Any,
     ) -> None:
-        if env.get("AGENT_LOOP_REVIEW_ENGINE") == "claude" and controls.failures:
+        if (
+            "AGENT_LOOP_REVIEW_RESULT_FILE" in env
+            and env["AGENT_LOOP_REVIEW_ENGINE"] == controls.engine
+            and controls.failures
+        ):
             controls.failures -= 1
             failures_seen.append(env["ACTIVELOOM_ATTEMPT_ID"])
             harness.module.save(
@@ -1342,7 +1346,7 @@ def provider_500_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
             if controls.side_effect:
                 controls.side_effect(log.parent)
             raise harness.module.ProcessFailure(
-                "claude exited", controls.exit_status
+                f"{controls.engine} exited", controls.exit_status
             )
         original(argv, log, env, timeout, **kwargs)
 
@@ -1396,6 +1400,19 @@ def test_claude_provider_500_retries_same_pass_without_spending_a_round(
     assert failed["failure_reason"] == "claude_provider_500"
     assert (failed["engine"], failed["round"]) == (retry["engine"], retry["round"])
     assert retry["folder"] == failed["folder"] + "/provider-retry"
+
+
+def test_another_engine_provider_500_is_not_retried(
+    provider_500_harness: Any,
+) -> None:
+    h = provider_500_harness.harness
+    provider_500_harness.controls.engine = "codex"
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="codex exited"):
+        runner.run()
+    assert len(provider_500_harness.failures_seen) == 1
+    assert runner.state["attempts"][0]["phase"] == "execution_failed"
+    assert runner.state["completed"] == []
 
 
 def test_second_claude_provider_500_blocks(provider_500_harness: Any) -> None:

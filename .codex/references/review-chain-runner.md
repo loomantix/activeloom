@@ -88,14 +88,17 @@ Attestations name the fallback model and effort. A second capacity rejection,
 changed evidence, unknown failure, authentication error, or timeout blocks.
 Standalone launchers do not perform this model fallback.
 
-A Claude reviewer that exits 1 with only the CLI's `API Error: 500 Internal server
-error.` diagnostic may retry once in `<pass>/provider-retry`. The runner first
+A Claude reviewer that reached execution and then exits 1 with only the CLI's
+`API Error: 500 Internal server error.` diagnostic may retry once in
+`<pass>/provider-retry`. A 500 taken while the launch marker still reads
+`preflight` is a preflight failure and takes that path instead. The runner first
 confirms process cleanup, the unchanged local/remote/PR head, clean worktree,
 unchanged comments and review threads, no result or recovery sidecar, and the
 same owed pass. It keeps the run, round, model, and original attempt evidence.
 The retry rechecks that evidence immediately before launch and survives an
 interrupted preparation via `--resume`. A second 500, other output, any partial
 review evidence, a timeout, or an unknown exit blocks for reconciliation.
+Standalone launchers do not retry.
 
 The Codex one-pass launcher uses ephemeral noninteractive execution; its provider
 remains the Codex CLI configuration. Its unattended
