@@ -102,6 +102,20 @@ def capacity_rejected(log: Path) -> bool:
     return rejected
 
 
+def claude_provider_500(log: Path) -> bool:
+    """Recognize Claude's sole provider diagnostic, never reviewer output."""
+    if log.is_symlink() or not log.is_file():
+        return False
+    if log.stat().st_size > 4096:
+        return False
+    lines = log.read_text(errors="replace").splitlines()
+    if lines and lines[0].startswith("bash: warning: setlocale:"):
+        lines = lines[1:]
+    return len(lines) == 1 and lines[0].startswith(
+        "API Error: 500 Internal server error."
+    )
+
+
 # Codex emits thread.started within about a second of launch; a worker still
 # silent after this bound stalled before contacting the model.
 CODEX_STARTUP_SECONDS = 180
@@ -923,6 +937,14 @@ class Runner:
             if len(attempts) != 1:
                 raise Blocked("startup-stall retry origin changed")
             self.verify_retry_evidence(pending, attempts[0], "startup_stall")
+        if origin := pending.get("provider_500_origin"):
+            attempts = [
+                item for item in self.state["attempts"]
+                if item["attempt_id"] == origin
+            ]
+            if len(attempts) != 1:
+                raise Blocked("provider-error retry origin changed")
+            self.verify_retry_evidence(pending, attempts[0], "provider_500")
         attempt = {
             "attempt_id": uuid.uuid4().hex,
             "engine": pending["engine"],
@@ -1045,6 +1067,19 @@ class Runner:
                                 log_sha256=digest(folder / "worker.log"),
                             )
                             pending["phase"] = "startup_stall_failed"
+                        elif (
+                            pending["engine"] == "claude"
+                            and isinstance(caught, ProcessFailure)
+                            and caught.exit_status == 1
+                            and claude_provider_500(folder / "worker.log")
+                        ):
+                            attempt.update(
+                                review_started=True,
+                                phase="provider_500_failed",
+                                failure_reason="claude_provider_500",
+                                log_sha256=digest(folder / "worker.log"),
+                            )
+                            pending["phase"] = "provider_500_failed"
             if isinstance(caught, CleanupBlocked):
                 attempt.update(
                     failure_reason="cleanup_denied",
@@ -1061,7 +1096,9 @@ class Runner:
                     pending.update(phase="cleanup_blocked", **seal)
         finally:
             self.persist()
-        if error and pending["phase"] not in ("capacity_failed", "startup_stall_failed"):
+        if error and pending["phase"] not in (
+            "capacity_failed", "startup_stall_failed", "provider_500_failed"
+        ):
             raise error
 
     def seal_completed(self, folder: Path) -> dict[str, Any] | None:
@@ -1161,6 +1198,7 @@ class Runner:
     ) -> None:
         """Verify the original failure both during recovery and at the retry launch."""
         exit_status: int | None
+        outputs: tuple[str, ...]
         if kind == "capacity":
             label, failure, exit_status = "capacity fallback", "capacity failure", 1
             proven, outputs = capacity_rejected, ("result.json",)
@@ -1169,6 +1207,12 @@ class Runner:
                 "startup-stall retry", "Codex startup stall", None
             )
             proven = codex_startup_stalled
+            outputs = ("result.json", "result.json.recovery.json")
+        elif kind == "provider_500":
+            label, failure, exit_status = (
+                "provider-error retry", "Claude provider 500", 1
+            )
+            proven = claude_provider_500
             outputs = ("result.json", "result.json.recovery.json")
         else:
             label, failure, exit_status = "idle-exit retry", "Agy idle exit", 0
@@ -1267,7 +1311,7 @@ class Runner:
         label: str,
     ) -> Path:
         """Copy the pre-pass snapshots into a fresh retry folder, resumably."""
-        folder = self.directory / pending["folder"]
+        folder = self.directory / str(pending["folder"])
         retry = folder / directory
         recovery = pending.get(key)
         if recovery is None:
@@ -1350,6 +1394,31 @@ class Runner:
         print(
             f"Agy idle exit: retrying {pending['engine']} pass {pending['round']} "
             f"once at {pending['before']}",
+            flush=True,
+        )
+
+    def recover_provider_500(self, pending: dict[str, Any]) -> None:
+        """Retry a clean Claude provider failure once at the same head and round."""
+        self.verify_control()
+        if pending["engine"] != "claude" or pending.get("provider_500_origin"):
+            raise Blocked("Claude provider 500 recurred; no further retry")
+        attempt = self.state["attempts"][-1]
+        if attempt.get("attempt_id") != pending.get("attempt_id"):
+            raise Blocked("provider-error retry transaction changed")
+        self.verify_retry_evidence(pending, attempt, "provider_500")
+        retry = self.stage_retry(
+            pending, attempt, "provider_500_recovery", "provider-retry",
+            "provider-error retry",
+        )
+        pending.update(
+            folder=str(retry.relative_to(self.directory)), phase="prepared",
+            provider_500_origin=attempt["attempt_id"],
+        )
+        pending.pop("provider_500_recovery")
+        self.persist()
+        print(
+            f"Claude provider 500: retrying pass {pending['round']} once "
+            f"at {pending['before']}",
             flush=True,
         )
 
@@ -1887,6 +1956,8 @@ class Runner:
                     self.recover_idle_exit(pending)
                 elif pending["phase"] == "startup_stall_failed":
                     self.recover_startup_stall(pending)
+                elif pending["phase"] == "provider_500_failed":
+                    self.recover_provider_500(pending)
                 elif pending["phase"] == "cleanup_blocked":
                     self.recover_cleanup(pending)
                 elif pending["phase"] == "prepared":
