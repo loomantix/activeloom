@@ -15,13 +15,75 @@ that exceeds the selected cap is rejected, never silently promoted.
 
 Place the user's authorization, scope and tier rationale in a public-safe text
 file outside the worktree. Its contents are posted to the PR. Do not include
-credentials or confidential context. Pass each required unfiltered test/build
-command with `--check`; these run without a shell, in the review worktree, after
-each worker and before attestation. Include coverage thresholds and other
-repository-required gates explicitly. Commands are published in pass summaries,
-so do not embed credentials in them. Scoped tests are not a substitute.
+credentials or confidential context. Prefer the repository-declared validation
+contract below. Its selected commands run without a shell, in the review
+worktree, after each worker and before attestation. Commands are published in
+pass summaries, so they must not contain credentials. Scoped tests are not a
+substitute for the declared gate.
 
-Example for a repository whose required baseline is `pnpm check`:
+### Repository-declared validation
+
+An opted-in consumer owns `.activeloom-review.json` at its repository root. For
+a new run, the runner pins that policy from the pull request's current target
+commit and separately verifies that `--base` is the merge base of the target and
+head. A stale feature branch therefore receives policy newly adopted on its
+target, while the pull request cannot supply or weaken its own contract. After
+each reviewer the runner matches every path changed between the merge base and
+the exact reviewed head. All matching gates are additive. If any path is
+unmatched, or the diff is empty, the mandatory fallback gate is added.
+
+```json
+{
+  "schema_version": 1,
+  "fallback_gate": "full",
+  "gates": {
+    "baseline": {
+      "always": true,
+      "commands": [{ "argv": ["just", "typecheck"] }]
+    },
+    "backend": {
+      "paths": ["apps/backend/**", "packages/shared/**"],
+      "environment": { "NODE_ENV": "development" },
+      "commands": [{ "argv": ["just", "test", "backend"] }]
+    },
+    "full": { "commands": [{ "argv": ["just", "test"] }] }
+  }
+}
+```
+
+The fallback gate has neither `paths` nor `always`. Every other gate declares
+either at least one path or `"always": true`, never both. Always gates run
+alongside selected path gates but do not claim ownership of paths, so an
+unmatched file still selects the fallback. Commands are nonempty argv arrays,
+never shell strings. Gate environments accept only explicit, one-line values.
+Common credential-like names and controller variables are refused as defense in
+depth, but name filtering cannot prove a value is safe: this committed public
+file must never contain a secret. The runner starts from a small allowlist of
+local process values (`PATH`, home/user/shell, locale and timezone), pins those
+values in the checkpoint, and adds the gate's declared environment. Other
+ambient values do not reach validation commands. A resume with different
+allowlisted values blocks instead of silently changing the gate.
+
+The contract is consumer-owned and is not created or rewritten by ActiveLoom
+sync. A pull request that first adds or changes it continues to use the pinned
+target policy; the new contract takes effect after it reaches the target branch.
+Validate the proposed worktree copy in that pull request before merging it:
+
+```bash
+python3 .codex/skills/critique/scripts/review-chain-runner.py --validate-contract
+```
+
+Repositories without this file retain the legacy interface: pass every required
+unfiltered command with repeatable `--check`. Legacy commands retain their
+historical ambient environment and should be migrated to the contract. Once the
+pinned target policy contains the contract, the runner rejects `--check` instead of
+allowing an ad hoc gate to bypass repository policy.
+
+Start the runner from the repository worktree root. It refuses a package or
+subdirectory working directory so a repository command cannot silently acquire
+narrower package-manager semantics.
+
+Legacy example for a repository that has not adopted the contract:
 
 ```bash
 python3 .codex/skills/critique/scripts/review-chain-runner.py \\
@@ -157,8 +219,10 @@ State, private logs and result files live under the Git common directory's
 `activeloom-review/<owner>-<repo>-<pr>/`. A per-PR lock prevents concurrent
 runners in linked worktrees. Keep this directory for recovery; do not delete
 it to obtain another budget. Plans, actor, tier, base and control hashes are
-checked on resume. Changes to the pinned runner require deliberate migration,
-not execution from an unverified replacement.
+checked on resume. Repository-declared validation also pins the target policy
+revision, resolved schema, and allowlisted execution environment. Changes to the
+pinned runner require deliberate migration, not execution from an unverified
+replacement.
 
 Exit outcomes:
 

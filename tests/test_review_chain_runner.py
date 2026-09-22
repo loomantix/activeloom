@@ -913,6 +913,7 @@ def harness(
     )
     events: list[dict[str, Any]] = []
     launches: list[str] = []
+    check_launches: list[tuple[list[str], dict[str, str]]] = []
     controls = SimpleNamespace(
         outcome="clean",
         exit_code=0,
@@ -999,6 +1000,7 @@ sys.exit(int(sys.argv[2]))
         elif controls.fail_check:
             raise module.Blocked("synthetic gate failure")
         else:
+            check_launches.append((argv, env))
             real_managed(argv, log, env, 10)
 
     monkeypatch.setattr(module, "managed", managed)
@@ -1006,6 +1008,18 @@ sys.exit(int(sys.argv[2]))
     class FakeRunner(module.Runner):  # type: ignore[misc, name-defined]
         def preflight(self) -> None:
             pass
+
+        def repository_root(self) -> Path:
+            return Path.cwd().resolve()
+
+        def target_revision(self) -> str:
+            return BASE
+
+        def merge_base(self, target: str, head: str) -> str:
+            return BASE
+
+        def validation_contract(self, revision: str) -> dict[str, Any] | None:
+            return None
 
         def environment(self, engine: str) -> dict[str, str]:
             return {
@@ -1092,6 +1106,7 @@ sys.exit(int(sys.argv[2]))
         controls=controls,
         events=events,
         launches=launches,
+        check_launches=check_launches,
         real_managed=real_managed,
     )
 
@@ -1544,6 +1559,354 @@ def test_resume_rejects_changed_plan_and_tampered_snapshot(harness: Any) -> None
     with pytest.raises(harness.module.Blocked, match="launcher changed"):
         harness.runner(harness.args, harness.directory).run()
     assert len(harness.launches) == 1
+
+
+def validation_contract(
+    module: ModuleType,
+    *,
+    base_environment: dict[str, str] | None = None,
+    policy_revision: str = BASE,
+) -> dict[str, Any]:
+    document = {
+        "schema_version": 1,
+        "fallback_gate": "full",
+        "gates": {
+            "backend": {
+                "paths": ["apps/backend/**", "packages/shared/**"],
+                "commands": [{"argv": [sys.executable, "-c", "pass"]}],
+                "environment": {"NODE_ENV": "development"},
+            },
+            "full": {
+                "commands": [{"argv": [sys.executable, "-c", "pass"]}],
+                "environment": {"CI": "true"},
+            },
+        },
+    }
+    raw = json.dumps(document).encode()
+    return {
+        "mode": "contract-v1",
+        "path": module.VALIDATION_CONTRACT,
+        "policy_revision": policy_revision,
+        "manifest_sha256": module.hashlib.sha256(raw).hexdigest(),
+        "contract": module.parse_validation_contract(raw),
+        "base_environment": base_environment or {"PATH": "/test/bin"},
+    }
+
+
+def test_repository_contract_selects_gate_and_scrubs_ambient_environment(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = harness
+    contract = validation_contract(h.module, policy_revision=HEAD)
+    revisions: list[str] = []
+    h.args.check = None
+    monkeypatch.setenv("VITEST_MAX_WORKERS", "99")
+    monkeypatch.setenv("EXAMPLE_SECRET", "must-not-leak")
+    monkeypatch.setattr(h.runner, "target_revision", lambda self: HEAD)
+
+    def contract_for_revision(self: Any, revision: str) -> dict[str, Any]:
+        revisions.append(revision)
+        return contract
+
+    monkeypatch.setattr(
+        h.runner,
+        "validation_contract",
+        contract_for_revision,
+    )
+    monkeypatch.setattr(
+        h.runner, "changed_paths", lambda self, base, head: ["apps/backend/api.py"]
+    )
+
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert runner.state["config"]["checks"] == []
+    assert runner.state["config"]["validation"] == contract
+    assert runner.state["config"]["validation_policy_revision"] == HEAD
+    assert revisions == [HEAD]
+    assert len(h.check_launches) == 4
+    for argv, environment in h.check_launches:
+        assert argv == [sys.executable, "-c", "pass"]
+        assert environment == {"PATH": "/test/bin", "NODE_ENV": "development"}
+    for number in range(1, 5):
+        receipt = h.module.read(h.directory / f"pass-{number}" / "validated.json")
+        assert receipt["mode"] == "contract-v1"
+        assert receipt["gates"] == ["backend"]
+        assert receipt["manifest_sha256"] == contract["manifest_sha256"]
+
+
+def test_repository_contract_adds_fallback_for_unmatched_paths(harness: Any) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+    runner.state = {
+        "base": BASE,
+        "config": {
+            "checks": [],
+            "validation": validation_contract(harness.module),
+        },
+    }
+    runner.changed_paths = lambda base, head: [
+        "apps/backend/api.py",
+        "docs/operator.md",
+    ]
+    resolved = runner.resolved_validation(HEAD)
+    assert resolved["gates"] == ["backend", "full"]
+    assert [command["environment"] for command in resolved["commands"]] == [
+        {"PATH": "/test/bin", "NODE_ENV": "development"},
+        {"PATH": "/test/bin", "CI": "true"},
+    ]
+
+
+def test_always_gate_does_not_claim_fallback_path_coverage(harness: Any) -> None:
+    contract = validation_contract(harness.module)
+    contract["contract"]["gates"] = {
+        "baseline": {
+            "paths": [],
+            "always": True,
+            "commands": [["just", "lint"]],
+            "environment": {},
+        },
+        **contract["contract"]["gates"],
+    }
+    runner = harness.runner(harness.args, harness.directory)
+    runner.state = {
+        "base": BASE,
+        "config": {"checks": [], "validation": contract},
+    }
+    runner.changed_paths = lambda base, head: ["docs/operator.md"]
+
+    resolved = runner.resolved_validation(HEAD)
+    assert resolved["gates"] == ["baseline", "full"]
+
+
+def test_repository_contract_rejects_legacy_checks_after_opt_in(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contract = validation_contract(harness.module)
+    monkeypatch.setattr(
+        harness.runner, "validation_contract", lambda self, base: contract
+    )
+    with pytest.raises(harness.module.Blocked, match="remove --check"):
+        harness.runner(harness.args, harness.directory).run()
+    assert harness.launches == []
+
+
+def test_new_run_requires_the_pull_request_merge_base(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        harness.runner, "merge_base", lambda self, target, head: HEAD
+    )
+    with pytest.raises(harness.module.Blocked, match="pull request merge base"):
+        harness.runner(harness.args, harness.directory).run()
+    assert harness.launches == []
+
+
+def test_runner_requires_the_repository_worktree_root(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        harness.runner, "repository_root", lambda self: Path.cwd().parent
+    )
+    with pytest.raises(harness.module.Blocked, match="worktree root"):
+        harness.runner(harness.args, harness.directory).run()
+    assert harness.launches == []
+
+
+def test_legacy_repository_still_requires_a_check(harness: Any) -> None:
+    harness.args.check = None
+    with pytest.raises(harness.module.Blocked, match="pass --check"):
+        harness.runner(harness.args, harness.directory).run()
+    assert harness.launches == []
+
+
+def test_repository_contract_rejects_environment_drift_on_resume(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness.args.check = None
+    harness.controls.fail_check = True
+    monkeypatch.setenv("HOME", "/first/home")
+    monkeypatch.setattr(
+        harness.runner,
+        "validation_contract",
+        lambda self, base: validation_contract(
+            harness.module, base_environment={"HOME": os.environ["HOME"]}
+        ),
+    )
+    monkeypatch.setattr(
+        harness.runner, "changed_paths", lambda self, base, head: ["docs/change.md"]
+    )
+    with pytest.raises(harness.module.Blocked, match="synthetic gate failure"):
+        harness.runner(harness.args, harness.directory).run()
+    assert harness.launches == ["codex"]
+
+    harness.args.resume = True
+    harness.controls.fail_check = False
+    monkeypatch.setenv("HOME", "/second/home")
+    with pytest.raises(harness.module.Blocked, match="same plan"):
+        harness.runner(harness.args, harness.directory).run()
+    assert harness.launches == ["codex"]
+
+
+def test_validation_contract_is_loaded_from_pinned_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load("review-chain-runner")
+    repository = tmp_path / "repo"
+    repository.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=repository, capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Test User")
+    git("config", "user.email", "test@example.com")
+    manifest = repository / module.VALIDATION_CONTRACT
+    valid = {
+        "schema_version": 1,
+        "fallback_gate": "full",
+        "gates": {"full": {"commands": [{"argv": ["true"]}]}},
+    }
+    manifest.write_text(json.dumps(valid))
+    git("add", module.VALIDATION_CONTRACT)
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    manifest.write_text('{"schema_version": 999}')
+    git("add", module.VALIDATION_CONTRACT)
+    git("commit", "-qm", "head changes its own contract")
+    monkeypatch.chdir(repository)
+
+    runner = module.Runner(SimpleNamespace(), tmp_path / "state")
+    contract = runner.validation_contract(base)
+    assert contract is not None
+    assert contract["contract"] == module.parse_validation_contract(
+        json.dumps(valid).encode()
+    )
+    assert contract["manifest_sha256"] == module.hashlib.sha256(
+        json.dumps(valid).encode()
+    ).hexdigest()
+
+
+def test_standalone_contract_validation_supports_adoption_prs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = load("review-chain-runner")
+    document = {
+        "schema_version": 1,
+        "fallback_gate": "full",
+        "gates": {"full": {"commands": [{"argv": ["true"]}]}},
+    }
+    path = tmp_path / module.VALIDATION_CONTRACT
+    path.write_text(json.dumps(document))
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / module.VALIDATION_CONTRACT).write_text(json.dumps(document))
+    monkeypatch.chdir(nested)
+    assert module.main(["--validate-contract"]) == 2
+    assert "worktree root" in capsys.readouterr().err
+    monkeypatch.chdir(tmp_path)
+
+    assert module.main(["--validate-contract"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "valid"
+    assert output["gates"] == ["full"]
+    assert output["sha256"] == module.digest(path)
+
+
+def test_standalone_contract_validation_rejects_invalid_or_linked_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = load("review-chain-runner")
+    path = tmp_path / module.VALIDATION_CONTRACT
+    path.write_text('{"schema_version": true}')
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    monkeypatch.chdir(tmp_path)
+    assert module.main(["--validate-contract"]) == 2
+    assert "validation contract invalid" in capsys.readouterr().err
+
+    target = tmp_path / "target.json"
+    target.write_text(
+        '{"schema_version":1,"fallback_gate":"full","gates":'
+        '{"full":{"commands":[{"argv":["true"]}]}}}'
+    )
+    path.unlink()
+    path.symlink_to(target)
+    assert module.main(["--validate-contract"]) == 2
+    assert "expected a regular file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "mutate,message",
+    [
+        (lambda value: value.update(schema_version=2), "schema_version"),
+        (lambda value: value.update(schema_version=True), "schema_version"),
+        (lambda value: value.update(extra=True), "unknown contract field"),
+        (
+            lambda value: value["gates"]["backend"].update(environment={"API_TOKEN": "x"}),
+            "forbidden environment name",
+        ),
+        (
+            lambda value: value["gates"]["backend"].update(commands=[{"argv": "test"}]),
+            "argv arrays",
+        ),
+        (
+            lambda value: value["gates"]["backend"].update(paths=[]),
+            "paths or always true",
+        ),
+        (
+            lambda value: value["gates"]["backend"].update(always=True),
+            "not both",
+        ),
+    ],
+)
+def test_validation_contract_rejects_unsafe_or_ambiguous_schema(
+    mutate: Any, message: str
+) -> None:
+    module = load("review-chain-runner")
+    document = {
+        "schema_version": 1,
+        "fallback_gate": "full",
+        "gates": {
+            "backend": {
+                "paths": ["apps/backend/**"],
+                "commands": [{"argv": ["just", "test", "backend"]}],
+            },
+            "full": {"commands": [{"argv": ["just", "test"]}]},
+        },
+    }
+    mutate(document)
+    with pytest.raises(module.Blocked, match=message):
+        module.parse_validation_contract(json.dumps(document).encode())
+
+
+def test_validation_contract_rejects_duplicate_json_keys() -> None:
+    module = load("review-chain-runner")
+    raw = b'{"schema_version":1,"schema_version":1,"fallback_gate":"full","gates":{}}'
+    with pytest.raises(module.Blocked, match="duplicate validation contract key"):
+        module.parse_validation_contract(raw)
+
+
+@pytest.mark.parametrize(
+    "path,pattern,expected",
+    [
+        ("apps/backend/api.py", "apps/backend/**", True),
+        ("apps/backend/services/api.py", "apps/backend/**", True),
+        ("apps/backend/services/api.py", "apps/*", False),
+        ("README.md", "**/*.md", True),
+        ("docs/guide.md", "**/*.md", True),
+        ("docs/guide.rst", "**/*.md", False),
+    ],
+)
+def test_validation_path_matching_is_slash_aware(
+    path: str, pattern: str, expected: bool
+) -> None:
+    assert load("review-chain-runner").validation_path_matches(path, pattern) is expected
 
 
 def test_resume_cannot_promote_unknown_worker_exit(harness: Any) -> None:

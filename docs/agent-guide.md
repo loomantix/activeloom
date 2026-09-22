@@ -34,22 +34,22 @@ If ActiveLoom is absent, use [Getting started](getting-started.md) to prepare th
 
 Names below identify skills; use the invocation supported by the current harness. Availability must be checked in that harness's directory or the CLI's `add --harness <id>` listing.
 
-| Need                                         | Entry point                                | Boundary                                                                                                |
-| -------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| Clarify a design before code                 | `grill`                                    | An interview and design exercise; does not implement the feature                                        |
-| Validate a product problem or user value     | `product-grill`                            | Product discovery regardless of job title; can conclude don't build or gather evidence first            |
-| Investigate a reproducible bug               | `diagnosing-bugs`                          | Establish the symptom and a tight reproduction before changing code                                     |
-| Reduce comment bloat without changing code   | `simplify-comments`                        | Comments and docstrings only; the code fingerprint and repository gates must pass before the PR         |
-| Build a feature with architectural discovery | `feature-dev`                              | Requires a concrete user objective and repository context                                               |
-| Fill project-specific onboarding fields      | `onboard`                                  | Draft evidence-based values for confirmation; do not invent domain rules                                |
-| Manage issue dependencies and readiness      | `issues`                                   | Uses GitHub issue state; follow the command's read/write scope                                          |
-| Prepare issues for autonomous work           | `backlog-refinement`                       | Curates the queue; does not authorize implementing every open issue                                     |
-| Implement a bounded issue queue              | `agent-loop`                               | Requires an explicit issue allowlist, harness-specific worker/review setup, and its own launch contract |
-| Execute a supplied implementation packet     | `task-packet`                              | Follow the packet's acceptance criteria and action boundaries                                           |
-| Choose reviewer models, effort, and order    | `review-setup`                             | Confirm settings with the user; the helper is the profile's only writer                                 |
-| Clean up or review an existing PR            | `refactorpass`, `critique`, `deepcritique` | Read the review workflow and ledger first; resolve the tier before running                              |
-| Automate a local review relay                | `review-chain-runner.py`                   | Requires an authorized plan, clean dedicated worktree, draft PR, reviewers, and validation commands     |
-| Handle hosted review comments                | `copilot-review` or `reviewit`             | Only when the task and repository policy permit that hosted workflow                                    |
+| Need                                         | Entry point                                | Boundary                                                                                                                            |
+| -------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Clarify a design before code                 | `grill`                                    | An interview and design exercise; does not implement the feature                                                                    |
+| Validate a product problem or user value     | `product-grill`                            | Product discovery regardless of job title; can conclude don't build or gather evidence first                                        |
+| Investigate a reproducible bug               | `diagnosing-bugs`                          | Establish the symptom and a tight reproduction before changing code                                                                 |
+| Reduce comment bloat without changing code   | `simplify-comments`                        | Comments and docstrings only; the code fingerprint and repository gates must pass before the PR                                     |
+| Build a feature with architectural discovery | `feature-dev`                              | Requires a concrete user objective and repository context                                                                           |
+| Fill project-specific onboarding fields      | `onboard`                                  | Draft evidence-based values for confirmation; do not invent domain rules                                                            |
+| Manage issue dependencies and readiness      | `issues`                                   | Uses GitHub issue state; follow the command's read/write scope                                                                      |
+| Prepare issues for autonomous work           | `backlog-refinement`                       | Curates the queue; does not authorize implementing every open issue                                                                 |
+| Implement a bounded issue queue              | `agent-loop`                               | Requires an explicit issue allowlist, harness-specific worker/review setup, and its own launch contract                             |
+| Execute a supplied implementation packet     | `task-packet`                              | Follow the packet's acceptance criteria and action boundaries                                                                       |
+| Choose reviewer models, effort, and order    | `review-setup`                             | Confirm settings with the user; the helper is the profile's only writer                                                             |
+| Clean up or review an existing PR            | `refactorpass`, `critique`, `deepcritique` | Read the review workflow and ledger first; resolve the tier before running                                                          |
+| Automate a local review relay                | `review-chain-runner.py`                   | Requires an authorized plan, clean dedicated worktree, draft PR, reviewers, and a repository validation contract or legacy commands |
+| Handle hosted review comments                | `copilot-review` or `reviewit`             | Only when the task and repository policy permit that hosted workflow                                                                |
 
 Specialized skills also exist, such as Actions usage auditing, mobile installation, accessibility review, and package publication. Their presence varies by harness; inspect their requirements rather than treating the toolkit as a uniform menu.
 
