@@ -230,7 +230,7 @@ Recovery rechecks the live head and ledger, preserves the run ID,
 round, completed passes, original comment snapshots and attempt history, and
 launches only the owed pass. The retry has its own directory. It consumes the
 same remaining run budget. Outside the Codex capacity fallback, Claude provider-500
-retry, Codex startup-stall retry, and Agy idle-exit retry above, a missing result,
+retry, Codex startup-stall retry, and Agy idle-exit or incomplete-exit retry above, a missing result,
 a blocked result without a sealed completed candidate, unknown exit, interrupted
 reviewer, changed head, or changed evidence still requires reconciliation; none
 is silently retried or converted into passing evidence.

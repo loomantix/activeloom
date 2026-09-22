@@ -193,7 +193,7 @@ def allowed_agy_incomplete_comments(
     body = row.get("body")
     if not isinstance(body, str) or not body:
         return False
-    match = AGY_NOOP_REFACTOR.fullmatch(body.splitlines()[0].strip())
+    match = AGY_NOOP_REFACTOR.fullmatch(body.lstrip().splitlines()[0].strip())
     return bool(match and match.group("head") == head)
 
 
@@ -1438,7 +1438,11 @@ class Runner:
     def recover_idle_exit(self, pending: dict[str, Any]) -> None:
         """Relaunch the same pinned Agy pass once without changing round or budget."""
         self.verify_control()
-        if pending["engine"] != "gemini" or pending.get("idle_exit_origin"):
+        if (
+            pending["engine"] != "gemini"
+            or pending.get("idle_exit_origin")
+            or pending.get("incomplete_exit_origin")
+        ):
             raise Blocked(
                 "Agy ended its turn again before writing a result; no further retry"
             )
@@ -1464,7 +1468,11 @@ class Runner:
     def recover_incomplete_exit(self, pending: dict[str, Any]) -> None:
         """Relaunch one clean Agy exit that omitted its canonical result."""
         self.verify_control()
-        if pending["engine"] != "gemini" or pending.get("incomplete_exit_origin"):
+        if (
+            pending["engine"] != "gemini"
+            or pending.get("incomplete_exit_origin")
+            or pending.get("idle_exit_origin")
+        ):
             raise Blocked(
                 "Agy ended its turn again before writing a result; no further retry"
             )

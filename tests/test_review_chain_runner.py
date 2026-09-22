@@ -520,6 +520,11 @@ def test_second_agy_partial_lane_exit_blocks(idle_harness: Any) -> None:
         runner.run()
     assert idle_harness.idle_launches == ["gemini", "gemini"]
     assert len(runner.state["completed"]) == 1
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        h.runner(h.args, h.directory).run()
+    assert idle_harness.idle_launches == ["gemini", "gemini"]
+    assert h.launches == ["codex"]
 
 
 def test_agy_partial_lane_exit_with_unrelated_comment_blocks(
@@ -577,9 +582,55 @@ def test_agy_incomplete_comment_exception_is_exact(change: str) -> None:
     )
 
 
+def test_agy_incomplete_comment_leading_whitespace_allowed() -> None:
+    module = load("review-chain-runner")
+    marker: dict[str, Any] = {
+        "id": 17,
+        "author": "test-actor",
+        "body": (
+            "\n\n<!-- local-review-refactor:v1 engine=gemini "
+            f"head={HEAD} outcome=no-op -->\n\nCleanup completed with no changes."
+        ),
+    }
+    assert module.allowed_agy_incomplete_comments(
+        [], [marker], "test-actor", HEAD
+    )
+
+
 def test_second_agy_idle_exit_blocks(idle_harness: Any) -> None:
     h = idle_harness.harness
     idle_harness.controls.idle = 2
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        runner.run()
+    assert idle_harness.idle_launches == ["gemini", "gemini"]
+    assert len(runner.state["completed"]) == 1
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        h.runner(h.args, h.directory).run()
+    assert idle_harness.idle_launches == ["gemini", "gemini"]
+    assert h.launches == ["codex"]
+
+
+@pytest.mark.parametrize(
+    "first_log,second_log",
+    [
+        (AGY_IDLE_LINES, AGY_PARTIAL_LANE_PROGRESS),
+        (AGY_PARTIAL_LANE_PROGRESS, AGY_IDLE_LINES),
+    ],
+    ids=["idle-then-partial", "partial-then-idle"],
+)
+def test_mixed_agy_incomplete_exits_block_on_second_exit(
+    idle_harness: Any, first_log: str, second_log: str
+) -> None:
+    h = idle_harness.harness
+    idle_harness.controls.idle = 2
+    idle_harness.controls.log_text = first_log
+
+    def switch_log(_: Path) -> None:
+        idle_harness.controls.log_text = second_log
+
+    idle_harness.controls.side_effect = switch_log
     runner = h.runner(h.args, h.directory)
     with pytest.raises(h.module.Blocked, match="no further retry"):
         runner.run()
