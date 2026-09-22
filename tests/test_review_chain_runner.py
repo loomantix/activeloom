@@ -341,6 +341,11 @@ AGY_IDLE_LINES = (
     "I0919 10:00:05.000 terminating 2 background task(s) on exit\n"
 )
 
+AGY_PARTIAL_LANE_PROGRESS = (
+    "Security reviewer lane completed with no findings.\n"
+    "Test analyzer reported findings. Awaiting the final comment/docs lane.\n"
+)
+
 
 @pytest.fixture
 def idle_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -349,7 +354,12 @@ def idle_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     harness.args.chain = "codex,gemini,codex,gemini"
     wrapped = module.managed
     controls = SimpleNamespace(
-        idle=1, engine="gemini", side_effect=None, with_result=False, exit_code=0
+        idle=1,
+        engine="gemini",
+        side_effect=None,
+        with_result=False,
+        exit_code=0,
+        log_text="Waiting for lane results.\n" + AGY_IDLE_LINES,
     )
     idle_launches: list[str] = []
 
@@ -379,7 +389,7 @@ def idle_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
             if controls.with_result:
                 wrapped(argv, log, env, timeout)
             with log.open("a") as stream:
-                stream.write("Waiting for lane results.\n" + AGY_IDLE_LINES)
+                stream.write(controls.log_text)
             if controls.side_effect:
                 controls.side_effect(log.parent)
             if controls.exit_code:
@@ -454,6 +464,119 @@ def test_agy_idle_exit_retries_the_same_round_once(
     )
 
 
+@pytest.mark.parametrize(
+    "log_text,failure_reason,retry_dir",
+    [
+        (AGY_PARTIAL_LANE_PROGRESS, "agy_incomplete_exit", "incomplete-retry"),
+        (AGY_IDLE_LINES, "agy_idle_exit", "idle-retry"),
+    ],
+    ids=["partial-lane-progress", "cli-idle-lines"],
+)
+def test_agy_incomplete_exit_with_noop_marker_retries_once(
+    idle_harness: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    log_text: str,
+    failure_reason: str,
+    retry_dir: str,
+) -> None:
+    h = idle_harness.harness
+    runner = h.runner(h.args, h.directory)
+    idle_harness.controls.log_text = log_text
+
+    def post_noop_marker(_: Path) -> None:
+        monkeypatch.setattr(
+            runner,
+            "comments",
+            lambda path: h.module.save(
+                path,
+                [
+                    {
+                        "id": 17,
+                        "author": "test-actor",
+                        "body": (
+                            "<!-- local-review-refactor:v1 engine=gemini "
+                            f"head={HEAD} outcome=no-op -->\n\n"
+                            "Cleanup completed with no changes."
+                        ),
+                    }
+                ],
+            ),
+        )
+
+    idle_harness.controls.side_effect = post_noop_marker
+    assert runner.run() == "converged"
+    assert idle_harness.idle_launches == ["gemini"]
+    failed, retry = runner.state["attempts"][1:3]
+    assert failed["failure_reason"] == failure_reason
+    assert retry["folder"] == failed["folder"] + f"/{retry_dir}"
+
+
+def test_second_agy_partial_lane_exit_blocks(idle_harness: Any) -> None:
+    h = idle_harness.harness
+    idle_harness.controls.idle = 2
+    idle_harness.controls.log_text = AGY_PARTIAL_LANE_PROGRESS
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked, match="no further retry"):
+        runner.run()
+    assert idle_harness.idle_launches == ["gemini", "gemini"]
+    assert len(runner.state["completed"]) == 1
+
+
+def test_agy_partial_lane_exit_with_unrelated_comment_blocks(
+    idle_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = idle_harness.harness
+    runner = h.runner(h.args, h.directory)
+    idle_harness.controls.log_text = AGY_PARTIAL_LANE_PROGRESS
+
+    def post_unrelated_comment(_: Path) -> None:
+        monkeypatch.setattr(
+            runner,
+            "comments",
+            lambda path: h.module.save(
+                path,
+                [{"id": 18, "author": "test-actor", "body": "Ordinary comment"}],
+            ),
+        )
+
+    idle_harness.controls.side_effect = post_unrelated_comment
+    with pytest.raises(h.module.Blocked, match="review evidence changed"):
+        runner.run()
+    assert idle_harness.idle_launches == ["gemini"]
+    assert len(runner.state["completed"]) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["wrong-actor", "wrong-engine", "wrong-head", "extra-comment"],
+)
+def test_agy_incomplete_comment_exception_is_exact(change: str) -> None:
+    module = load("review-chain-runner")
+    marker: dict[str, Any] = {
+        "id": 17,
+        "author": "test-actor",
+        "body": (
+            "<!-- local-review-refactor:v1 engine=gemini "
+            f"head={HEAD} outcome=no-op -->\n\nCleanup completed with no changes."
+        ),
+    }
+    current = [marker]
+    if change == "wrong-actor":
+        marker = {**marker, "author": "someone-else"}
+        current = [marker]
+    elif change == "wrong-engine":
+        marker = {**marker, "body": marker["body"].replace("gemini", "codex")}
+        current = [marker]
+    elif change == "wrong-head":
+        marker = {**marker, "body": marker["body"].replace(HEAD, BASE)}
+        current = [marker]
+    else:
+        current.append({"id": 18, "author": "test-actor", "body": "extra"})
+    assert not module.allowed_agy_incomplete_comments(
+        [], current, "test-actor", HEAD
+    )
+
+
 def test_second_agy_idle_exit_blocks(idle_harness: Any) -> None:
     h = idle_harness.harness
     idle_harness.controls.idle = 2
@@ -472,11 +595,18 @@ def test_second_agy_idle_exit_blocks(idle_harness: Any) -> None:
 @pytest.mark.parametrize(
     "case", ["head", "threads", "comments", "result", "partial", "exit"]
 )
-def test_unsafe_agy_idle_exit_is_not_retried(
-    idle_harness: Any, monkeypatch: pytest.MonkeyPatch, case: str
+@pytest.mark.parametrize(
+    "log_text", [AGY_IDLE_LINES, AGY_PARTIAL_LANE_PROGRESS], ids=["idle", "partial"]
+)
+def test_unsafe_agy_incomplete_exit_is_not_retried(
+    idle_harness: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    log_text: str,
 ) -> None:
     h = idle_harness.harness
     controls = idle_harness.controls
+    controls.log_text = log_text
     runner = h.runner(h.args, h.directory)
     if case == "head":
         controls.side_effect = lambda folder: monkeypatch.setattr(
@@ -836,14 +966,17 @@ def test_checkpoint_blocked_without_result_stays_blocked_on_resume(
     idle_harness: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h = idle_harness.harness
-    # A checkpoint written before idle-exit classification existed.
-    recognize = h.module.agy_idle_exit
+    # A checkpoint written before either Agy incomplete-exit classifier existed.
+    recognize_idle = h.module.agy_idle_exit
+    recognize_incomplete = h.module.agy_incomplete_exit
     monkeypatch.setattr(h.module, "agy_idle_exit", lambda log: False)
+    monkeypatch.setattr(h.module, "agy_incomplete_exit", lambda log: False)
     with pytest.raises(h.module.Blocked, match="returned no result"):
         h.runner(h.args, h.directory).run()
     saved = h.module.read(h.directory / "state.json")
     assert saved["pending"]["phase"] == "returned"
-    monkeypatch.setattr(h.module, "agy_idle_exit", recognize)
+    monkeypatch.setattr(h.module, "agy_idle_exit", recognize_idle)
+    monkeypatch.setattr(h.module, "agy_incomplete_exit", recognize_incomplete)
     h.args.resume = True
     with pytest.raises(h.module.Blocked, match="returned no result"):
         h.runner(h.args, h.directory).run()

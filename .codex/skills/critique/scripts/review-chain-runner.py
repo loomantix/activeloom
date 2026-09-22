@@ -165,6 +165,38 @@ def agy_idle_exit(log: Path) -> bool:
     return False
 
 
+def agy_incomplete_exit(log: Path) -> bool:
+    """An Agy worker returned normally but left no canonical result."""
+    return log.is_file() and not log.is_symlink()
+
+
+AGY_NOOP_REFACTOR = re.compile(
+    r"^<!-- local-review-refactor:v1 engine=gemini "
+    r"head=(?P<head>[0-9a-f]{40}) outcome=no-op -->$"
+)
+
+
+def allowed_agy_incomplete_comments(
+    before: Any, current: Any, actor: str, head: str
+) -> bool:
+    """Allow only the idempotent Gemini cleanup marker from the incomplete pass."""
+    if (
+        not isinstance(before, list)
+        or not isinstance(current, list)
+        or current[: len(before)] != before
+        or len(current) != len(before) + 1
+    ):
+        return False
+    row = current[-1]
+    if not isinstance(row, dict) or row.get("author") != actor:
+        return False
+    body = row.get("body")
+    if not isinstance(body, str) or not body:
+        return False
+    match = AGY_NOOP_REFACTOR.fullmatch(body.splitlines()[0].strip())
+    return bool(match and match.group("head") == head)
+
+
 def digest(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         raise Blocked(f"expected a regular file: {path.name}")
@@ -930,6 +962,14 @@ class Runner:
             if len(attempts) != 1:
                 raise Blocked("idle-exit retry origin changed")
             self.verify_retry_evidence(pending, attempts[0], "idle_exit")
+        if origin := pending.get("incomplete_exit_origin"):
+            attempts = [
+                item for item in self.state["attempts"]
+                if item["attempt_id"] == origin
+            ]
+            if len(attempts) != 1:
+                raise Blocked("incomplete-exit retry origin changed")
+            self.verify_retry_evidence(pending, attempts[0], "incomplete_exit")
         if origin := pending.get("startup_stall_origin"):
             attempts = [
                 item for item in self.state["attempts"]
@@ -1005,7 +1045,7 @@ class Runner:
                 digest(recovery) if recovery.exists() else None
             )
             if pending["engine"] == "gemini":
-                self.classify_idle_exit(pending, attempt, folder)
+                self.classify_incomplete_exit(pending, attempt, folder)
         except (
             Blocked,
             OSError,
@@ -1160,10 +1200,10 @@ class Runner:
         attempt["cleanup_reconciled"] = True
         self.persist()
 
-    def classify_idle_exit(
+    def classify_incomplete_exit(
         self, pending: dict[str, Any], attempt: dict[str, Any], folder: Path
     ) -> None:
-        """Mark a returned Agy pass that wrote nothing because its turn ended early."""
+        """Mark a returned Agy pass that ended without its canonical result."""
         marker = folder / "launch.json"
         if (
             any(
@@ -1172,7 +1212,7 @@ class Runner:
             )
             or marker.is_symlink()
             or not marker.is_file()
-            or not agy_idle_exit(folder / "worker.log")
+            or not agy_incomplete_exit(folder / "worker.log")
         ):
             return
         try:
@@ -1186,13 +1226,15 @@ class Runner:
             or evidence.get("phase") != "execution"
         ):
             return
+        idle = agy_idle_exit(folder / "worker.log")
+        phase = "idle_exit_failed" if idle else "incomplete_exit_failed"
         attempt.update(
-            phase="idle_exit_failed",
-            failure_reason="agy_idle_exit",
+            phase=phase,
+            failure_reason="agy_idle_exit" if idle else "agy_incomplete_exit",
             launch_sha256=digest(marker),
             log_sha256=digest(folder / "worker.log"),
         )
-        pending["phase"] = "idle_exit_failed"
+        pending["phase"] = phase
 
     def verify_retry_evidence(
         self, pending: dict[str, Any], attempt: dict[str, Any], kind: str
@@ -1215,10 +1257,20 @@ class Runner:
             )
             proven = claude_provider_500
             outputs = ("result.json", "result.json.recovery.json")
-        else:
+        elif kind == "idle_exit":
             label, failure, exit_status = "idle-exit retry", "Agy idle exit", 0
             proven = agy_idle_exit
             outputs = ("result.json", "result.json.recovery.json")
+        elif kind == "incomplete_exit":
+            label, failure, exit_status = (
+                "incomplete-exit retry",
+                "Agy incomplete exit",
+                0,
+            )
+            proven = agy_incomplete_exit
+            outputs = ("result.json", "result.json.recovery.json")
+        else:
+            raise Blocked(f"unknown retry evidence kind: {kind}")
         if (
             self.boundary() != pending["before"]
             or self.state["head"] != pending["before"]
@@ -1258,6 +1310,17 @@ class Runner:
             current = folder / f"{prefix}-{name}.json"
             capture(current)
             if digest(current) != digest(before):
+                if (
+                    kind in ("idle_exit", "incomplete_exit")
+                    and name == "comments"
+                    and allowed_agy_incomplete_comments(
+                        read(before),
+                        read(current),
+                        str(self.state["actor"]),
+                        pending["before"],
+                    )
+                ):
+                    continue
                 raise Blocked(
                     f"review evidence changed; {label} requires reconciliation"
                 )
@@ -1395,6 +1458,37 @@ class Runner:
         print(
             f"Agy idle exit: retrying {pending['engine']} pass {pending['round']} "
             f"once at {pending['before']}",
+            flush=True,
+        )
+
+    def recover_incomplete_exit(self, pending: dict[str, Any]) -> None:
+        """Relaunch one clean Agy exit that omitted its canonical result."""
+        self.verify_control()
+        if pending["engine"] != "gemini" or pending.get("incomplete_exit_origin"):
+            raise Blocked(
+                "Agy ended its turn again before writing a result; no further retry"
+            )
+        attempt = self.state["attempts"][-1]
+        if attempt.get("attempt_id") != pending.get("attempt_id"):
+            raise Blocked("incomplete-exit retry transaction changed")
+        self.verify_retry_evidence(pending, attempt, "incomplete_exit")
+        retry = self.stage_retry(
+            pending,
+            attempt,
+            "incomplete_exit_recovery",
+            "incomplete-retry",
+            "incomplete-exit retry",
+        )
+        pending.update(
+            folder=str(retry.relative_to(self.directory)),
+            phase="prepared",
+            incomplete_exit_origin=attempt["attempt_id"],
+        )
+        pending.pop("incomplete_exit_recovery")
+        self.persist()
+        print(
+            f"Agy incomplete exit: retrying {pending['engine']} pass "
+            f"{pending['round']} once at {pending['before']}",
             flush=True,
         )
 
@@ -1955,6 +2049,8 @@ class Runner:
                     self.recover_capacity(pending)
                 elif pending["phase"] == "idle_exit_failed":
                     self.recover_idle_exit(pending)
+                elif pending["phase"] == "incomplete_exit_failed":
+                    self.recover_incomplete_exit(pending)
                 elif pending["phase"] == "startup_stall_failed":
                     self.recover_startup_stall(pending)
                 elif pending["phase"] == "provider_500_failed":

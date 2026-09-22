@@ -176,17 +176,19 @@ the more precise `plan-complete` reason. Neither grants extra passes.
 Agy's print mode ends the session when the root agent ends its turn, and
 discards background lanes or tests that are still running. The Agy launchers
 therefore tell Gemini to finish every command, test and review lane inside the
-turn. When a Gemini worker still exits 0 without a result and its log shows
-Agy's idle-termination lines, the runner verifies the same unchanged evidence as
-the capacity fallback and relaunches that pass once, with the same round, budget
-and pinned settings. A second idle exit, any partial result, changed evidence, or
-a failed exit blocks.
+turn. When a Gemini worker still exits 0 without a result, the runner verifies
+the execution-phase launch marker, unchanged head and owed pass, absent result
+and recovery sidecar, unchanged review threads, and unchanged issue comments.
+It then relaunches that pass once with the same round, budget and pinned
+settings. A single exact-head Gemini no-op cleanup marker is the only permitted
+comment delta because cleanup precedes the review lanes and that marker is
+idempotent. A second incomplete exit, any other changed evidence, a partial
+result, or a failed exit blocks.
 
-Recognizing that log is plain text matching, not the structured-event parse the
-Codex capacity check uses, and it is not the whole gate: an idle exit whose
-launch marker is missing or is not in the execution phase blocks rather than
-retrying, and what authorizes the relaunch is the unchanged-evidence
-re-verification rather than the strength of the log match.
+Agy's idle-termination lines remain useful diagnostic evidence, but recovery no
+longer depends on model or CLI prose. The structured launch boundary and live
+evidence re-verification authorize the one retry; a missing or preflight-only
+launch marker never does.
 
 Workers never inherit the runner's stdin: the runner starts them on `/dev/null`,
 and the Codex launcher detaches its own stdin as well. `codex exec` reads a
