@@ -54,6 +54,9 @@ These are alternative plans, not consecutive commands for the same active run.
 - `--scope-decision keep|split` records the decision `start-run` requires when
   its scope checkpoint fires (see REVIEW_WORKFLOW.md). It becomes part of the
   saved plan, so pass the same value with `--resume`.
+- `--restart` explicitly authorizes a fresh run after the prior authenticated
+  run has ended. It is recorded in the checkpoint and forwarded to `start-run`;
+  it does not revive or erase the earlier run.
 
 ## Reviewer settings
 

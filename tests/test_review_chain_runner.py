@@ -952,6 +952,7 @@ def harness(
         preflight=False,
         finalization_failure=False,
         fail_recovery=False,
+        start_restart=False,
     )
     monkeypatch.setattr(
         module, "command", lambda argv: BASE if argv[0] == "git" else "test-actor"
@@ -1059,7 +1060,11 @@ sys.exit(int(sys.argv[2]))
 
         def helper(self, name: str, *parts: str) -> dict[str, Any]:
             operation = parts[0]
-            options = dict(zip(parts[1::2], parts[2::2], strict=True))
+            arguments = list(parts[1:])
+            if "--restart" in arguments:
+                arguments.remove("--restart")
+                controls.start_restart = True
+            options = dict(zip(arguments[::2], arguments[1::2], strict=True))
             plan = {
                 "comment_id": 1,
                 "run_id": "d" * 64,
@@ -1131,6 +1136,14 @@ def test_one_invocation_runs_all_fixed_steps(harness: Any) -> None:
     assert runner.run() == "converged"
     assert harness.launches == ["codex", "claude", "codex", "claude"]
     assert len(runner.state["completed"]) == 4
+
+
+def test_restart_authorization_reaches_start_run(harness: Any) -> None:
+    harness.args.restart = True
+    runner = harness.runner(harness.args, harness.directory)
+    assert runner.run() == "converged"
+    assert harness.controls.start_restart is True
+    assert runner.state["config"]["restart"] is True
 
 
 def test_completed_result_recovery_keeps_the_run_and_owed_pass(harness: Any) -> None:

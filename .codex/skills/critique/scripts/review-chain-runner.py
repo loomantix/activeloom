@@ -505,6 +505,8 @@ class Runner:
         scope_decision = getattr(self.args, "scope_decision", None)
         if scope_decision:
             config["scope_decision"] = scope_decision
+        if getattr(self.args, "restart", False):
+            config["restart"] = True
         if self.state:
             if self.state.get("version") not in (1, 2):
                 raise Blocked("unsupported checkpoint version")
@@ -1877,6 +1879,7 @@ class Runner:
                 config["plan"],
                 "--authorization-file",
                 str(self.directory / "authorization.txt"),
+                *(["--restart"] if config.get("restart") else []),
                 *(
                     ["--scope-decision", config["scope_decision"]]
                     if config.get("scope_decision")
@@ -2080,6 +2083,11 @@ def main(argv: list[str] | None = None) -> int:
         help="scope decision forwarded to start-run when its scope checkpoint fires",
     )
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="explicitly authorize a new run after the prior run has ended",
+    )
     parser.add_argument(
         "--recover-preflight",
         action="store_true",
