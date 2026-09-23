@@ -326,7 +326,7 @@ edits, then validate, push, reply, resolve, and publish the normal review result
 This invocation owns exactly one Gemini pass: do not invoke Codex, Claude,
 another reviewer, or any review launcher. Return control to the calling
 session when the Gemini pass is complete.
-Subagents and background delegation are not permitted in headless mode: do not delegate to subagents or spawn background review lanes. Execute all review lanes sequentially as separate local passes in the primary session. Execute all commands and tests synchronously; do not yield the turn or emit intermediate waiting text while waiting for background tasks. End the turn only after the canonical result is written."
+Do not spawn subagents or background review lanes in this Agy print-mode pass. Run each review lane as a separate local pass in the primary session. Foreground commands may run concurrently, but wait for every command and test to finish and write the canonical result before returning."
 if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
     prompt="Read ${agy_surface_root}/skills/deepcritique/SKILL.md and follow it for this pass.
 ${prompt#*$'\n'}"

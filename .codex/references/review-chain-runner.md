@@ -242,10 +242,11 @@ the more precise `plan-complete` reason. Neither grants extra passes.
 
 Agy's print mode ends the session when the root agent ends its turn, and
 discards background lanes or tests that are still running. The Agy launchers
-therefore instruct Gemini that subagents are not permitted in headless mode:
-all review lanes must execute sequentially within the primary session, with
-commands and tests executed synchronously. When a Gemini worker still exits 0
-without a result, the runner verifies
+therefore prohibit subagents and background review lanes during print-mode
+passes. Each review lane runs as a separate local pass in the primary session.
+Foreground commands may run concurrently, but every command and test must
+finish before the canonical result is written. When a Gemini worker still exits
+0 without a result, the runner verifies
 the execution-phase launch marker, unchanged head and owed pass, absent result
 and recovery sidecar, unchanged review threads, and unchanged issue comments.
 It then relaunches that pass once with the same round, budget and pinned
