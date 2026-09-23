@@ -230,10 +230,14 @@ verify their hypotheses, apply any fixes, then run one consolidated validation
 pass against the final head. Do not multiply the same validation across parallel
 lanes.
 
-In an Agy print-mode pass, do not spawn subagents or background review lanes.
-Use the local-pass fallback for the resolved tier and its existing review-depth
-label. Foreground commands may run concurrently, but wait for all of them before
-returning.
+In an Agy print-mode pass, parallel review subagents are permitted and recommended
+for independent review lanes. Keep subagents read-only, tightly bounded to their
+assigned diff and focus files, and instructed to return findings promptly without
+unbounded git history or repo-wide searches. Run all shell commands and test suites
+synchronously in the foreground; do not leave background shell tasks running. Wait
+for all subagents and commands to complete, run validation, and write the canonical
+result before ending the turn. If subagents are unavailable or fail, fall back to
+sequential local passes in the primary session.
 
 Read the repo-local review addendum first. Check for
 `.review/addendum.local.md` in the repository under review; if it exists, read it

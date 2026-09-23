@@ -26,12 +26,14 @@ LEDGER_VERSION = LEDGER_VERSION_FILE.read_text(encoding="utf-8").strip()
 # Continuation flags start a fresh one-shot only by their absence, so the
 # launcher is asserted against the CLI's complete resume surface.
 CONTINUATION_FLAGS = {"--continue", "-c", "--conversation", "--prompt-interactive", "-i"}
-# Agy's print mode ends the session with its turn and discards background work.
+# Agy's print mode terminates detached background commands and drains idle subagents.
 FOREGROUND_INSTRUCTION = (
-    "Do not spawn subagents or background review lanes in this Agy print-mode pass. Run each "
-    "review lane as a separate local pass in the primary session. Foreground commands may run "
-    "concurrently, but wait for every command and test to finish and write the canonical result "
-    "before returning."
+    "In this Agy print-mode pass, parallel review subagents are permitted: keep subagents "
+    "read-only, tightly bounded to their assigned diff and focus files, and instructed to return "
+    "findings promptly without unbounded git history or repo-wide searches. Run all commands and "
+    "tests synchronously in the foreground; never leave background tasks running. Wait for all "
+    "subagents and commands to complete, run validation, and write the canonical result before "
+    "ending the turn."
 )
 AGY_REVIEW_LAUNCHERS = (
     ".claude/skills/critique/scripts/run-agy-review.sh",

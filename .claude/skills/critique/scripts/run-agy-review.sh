@@ -339,7 +339,7 @@ edits, then validate, push, reply, resolve, and publish the normal review result
 Write every scratch artifact under your own agent artifact directory rather than
 a path outside it. Do not invoke Claude Code or Codex; return control to the
 calling session when the Gemini pass is complete.
-Do not spawn subagents or background review lanes in this Agy print-mode pass. Run each review lane as a separate local pass in the primary session. Foreground commands may run concurrently, but wait for every command and test to finish and write the canonical result before returning."
+In this Agy print-mode pass, parallel review subagents are permitted: keep subagents read-only, tightly bounded to their assigned diff and focus files, and instructed to return findings promptly without unbounded git history or repo-wide searches. Run all commands and tests synchronously in the foreground; never leave background tasks running. Wait for all subagents and commands to complete, run validation, and write the canonical result before ending the turn."
 
 if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
     prompt="Read ${agy_surface_root}/skills/deepcritique/SKILL.md and follow it for this pass.

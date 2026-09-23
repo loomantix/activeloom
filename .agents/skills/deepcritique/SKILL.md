@@ -128,8 +128,12 @@ six core review lanes, plus the conditional tenant-coupling lane when signaled,
 whenever the active runtime exposes subagent/delegation tools.
 Do not require the user to separately say "use subagents" before spawning those lane reviewers.
 
-In an Agy print-mode pass, do not spawn subagents or background review lanes;
-`refactorpass` and `critique` use their local-pass fallbacks.
+In an Agy print-mode pass, parallel review subagents are permitted: keep subagents
+read-only, tightly bounded to their assigned diff and focus files, and instructed to
+return findings promptly without unbounded git history or repo-wide searches. Run all
+commands and tests synchronously in the foreground; do not leave background tasks running.
+Wait for all subagents and commands to complete, run validation, and write the canonical
+result before ending the turn.
 
 Every deep lane must use an adversarial stance: assume the diff contains
 defects, search for the highest-impact failure modes first, and require code,
