@@ -40,7 +40,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 launch_state() { python3 -I "$script_dir/review-launch-state.py" "$@"; }
 launch_state preflight missing_tool
 
-review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
+review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-3600}"
 [[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
     [ "$review_timeout_seconds" -le 3600 ] || {
     echo "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
