@@ -242,13 +242,14 @@ the more precise `plan-complete` reason. Neither grants extra passes.
 
 Agy's print mode ends the session when the root agent ends its turn, and
 terminates background shell commands after a short drain timeout (5 seconds).
-The Agy launchers therefore permit parallel review subagents with tight bounding
-(read-only, scoped strictly to assigned focus files and diffs, avoiding unbounded
-git walks), while requiring all shell commands and test suites to execute
-synchronously in the foreground. The root agent must wait for all subagents and
-commands to complete, run validation, and write the canonical result before ending
-its turn. When a Gemini worker still exits 0 without a result (for example, due to
-idle termination if a subagent stalls), the runner verifies
+The Agy launchers therefore prohibit subagents and background review lanes during
+print-mode passes. Each review lane runs sequentially in series within the primary
+session. In each lane pass, the worker posts verified findings inline, applies
+justified fixes, and validates before proceeding to the next lane, ensuring subsequent
+lanes evaluate the updated code and prior findings without wasted repetition. Every
+shell command and test suite executes synchronously in the foreground. The worker
+writes the canonical result and ends the turn only after all lanes and validation
+finish. When a Gemini worker still exits 0 without a result, the runner verifies
 the execution-phase launch marker, unchanged head and owed pass, absent result
 and recovery sidecar, unchanged review threads, and unchanged issue comments.
 It then relaunches that pass once with the same round, budget and pinned
