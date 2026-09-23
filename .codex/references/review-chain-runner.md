@@ -242,24 +242,27 @@ the more precise `plan-complete` reason. Neither grants extra passes.
 
 Agy's print mode ends the session when the root agent ends its turn, and
 discards background lanes or tests that are still running. The Agy launchers
-therefore instruct Gemini that subagents are not permitted in headless mode and
-that all review lanes must execute sequentially within the primary session,
-with commands and tests executed synchronously. When a Gemini worker still exits
-0 without a result and its log shows Agy's idle-termination lines, the runner
-verifies the same unchanged evidence as the capacity fallback and relaunches that
-pass once, with the same round, budget and pinned settings. A second idle exit,
-any partial result, changed evidence, or a failed exit blocks.
+therefore instruct Gemini that subagents are not permitted in headless mode:
+all review lanes must execute sequentially within the primary session, with
+commands and tests executed synchronously. When a Gemini worker still exits 0
+without a result, the runner verifies
+the execution-phase launch marker, unchanged head and owed pass, absent result
+and recovery sidecar, unchanged review threads, and unchanged issue comments.
+It then relaunches that pass once with the same round, budget and pinned
+settings. A single exact-head Gemini no-op cleanup marker is the only permitted
+comment delta because cleanup precedes the review lanes and that marker is
+idempotent. A second incomplete exit, any other changed evidence, a partial
+result, or a failed exit blocks.
 
-Recognizing that log is plain text matching, not the structured-event parse the
-Codex capacity check uses, and it is not the whole gate: an idle exit whose
-launch marker is missing or is not in the execution phase blocks rather than
-retrying, and what authorizes the relaunch is the unchanged-evidence
-re-verification rather than the strength of the log match.
-Some Agy builds omit the runtime idle diagnostics and instead leave only
+Agy's idle-termination lines remain useful for classifying the incomplete exit,
+but recovery no longer depends on model or CLI prose. Recognizing those lines is
+plain text matching, not the structured-event parse the Codex capacity check
+uses. Some Agy builds omit the runtime diagnostics and instead leave only
 repeated root-agent messages that they will wait for unfinished subagents. The
 runner recognizes two or more of those anchored messages as the same idle-exit
-class; a single mention is insufficient, and every unchanged-evidence and
-execution-phase requirement above still applies.
+class; a single mention is insufficient. In every case, the structured launch
+boundary and live evidence re-verification authorize the one retry; a missing
+or preflight-only launch marker never does.
 
 Workers never inherit the runner's stdin: the runner starts them on `/dev/null`,
 and the Codex launcher detaches its own stdin as well. `codex exec` reads a
@@ -301,7 +304,7 @@ Recovery rechecks the live head and ledger, preserves the run ID,
 round, completed passes, original comment snapshots and attempt history, and
 launches only the owed pass. The retry has its own directory. It consumes the
 same remaining run budget. Outside the Codex capacity fallback, Claude provider-500
-retry, Codex startup-stall retry, and Agy idle-exit retry above, a missing result,
+retry, Codex startup-stall retry, and Agy idle-exit or incomplete-exit retry above, a missing result,
 a blocked result without a sealed completed candidate, unknown exit, interrupted
 reviewer, changed head, or changed evidence still requires reconciliation; none
 is silently retried or converted into passing evidence.
