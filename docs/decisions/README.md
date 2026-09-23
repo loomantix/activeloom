@@ -27,6 +27,7 @@ presumed accidental.
 | 0010 | [Assurance control matrix](0010-assurance-control-matrix.md) — five independent control domains, trigger composition, and exact-head human review acceptance               |
 | 0011 | [Assurance setup interaction](0011-assurance-setup-interaction.md) — context-first one-accept setup; the agent recommends facts and the resolver alone computes controls   |
 | 0012 | [Assurance ledger compatibility](0012-assurance-ledger-compatibility.md) — two new marker families, versioned finish and telemetry records, and an expand-then-use rollout |
+| 0013 | [Proportionate review sizing](0013-proportionate-review-sizing.md) — review sizing triage, single-reviewer Lean default, and human glance recommendations                  |
 
 Most records here are parity divergences, and those are the ones
 `parity-allowlist.yml` cites. A record may also fix a vocabulary that several

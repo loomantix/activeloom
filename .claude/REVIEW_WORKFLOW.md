@@ -23,8 +23,11 @@ Before starting a run, read it with
 When it reports `"configured": false`, run `review-setup` with the user first;
 never start a run on settings the user has not confirmed. Unless the user names a
 plan, read the tier's order from `review-profile.py order --tier <lean|deep> --repo <owner/repo>`.
-Use `--chain` for a one-engine order and `--cycle --until-converged` for two or
-three engines. A one-engine chain reports plan completion; it cannot establish
+Size the chain proportionately before launching the runner: apply [review sizing triage](#review-sizing-and-proportionality-triage).
+For Lean changes, default to a single second-model reviewer using `--chain <engine>` or
+a finite non-cyclic `--chain <engine1>,<engine2>`. Reserve `--cycle --until-converged` strictly
+for Deep tier triggers or complex multi-actor changes where independent multi-engine convergence
+is justified. A one-engine chain reports plan completion; it cannot establish
 independent convergence. The runner pins each engine's settings when the run
 starts, so a profile change applies to the next run, not the one in progress.
 
@@ -123,7 +126,10 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
 
 - **Explicit request.** A human who directly asks for this change to be reviewed
   anyway overrides the gate. That request is trigger 6: the chain runs and the
-  tier marker records it. Typing a review skill's name is not that request.
+  tier marker records it. Typing a review skill's name or casual requests like
+  "run review on PR #X" or "please run an auto review chain" are not that
+  request; they invoke the review tooling, which must then apply review sizing
+  triage.
 - **Controller-scheduled passes.** When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set,
   the controller that scheduled the pass owns the gate, and the pass reviews the
   range it was given. `agent-loop` classifies before its first review round, and
@@ -134,6 +140,51 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
 - **The label.** Where the synced `review-glance-label.yml` workflow runs, the
   `review: human-glance` label marks a PR whose latest push classified the same
   way. It is a hint; the gate's own classification decides.
+
+### Review sizing and proportionality triage
+
+Review effort must be proportionate to the risk and reach of a missed defect.
+Before launching a review chain or executing an adversarial pass, evaluate the
+changed diff against the sizing ladder below:
+
+1. **Human glance (0 AI passes)**
+   - **Programmatic gate**: Ranges where `classify-changeset` returns
+     `"skip": true` (docs, inert configs, fixtures).
+   - **Trivial-diff recommendation**: When a diff modifies only non-runtime
+     tooling (such as test execution scripts, local developer tools, build
+     configurations, or documentation) or minor non-behavioral edits without
+     security, public contract, or runtime implications, interactive agents must
+     evaluate the actual delta. Even if a file heuristic (such as `package.json`
+     in `CONFIG_BASENAMES`) causes the programmatic classifier to report
+     `"skip": false`, recommend human glance:
+     `Trivial diff: N lines of [test scripts/tooling/docs] with no runtime risk — recommend human glance review and merge. No AI chain required.`
+     Do not reflexively start an AI review pass or chain.
+2. **Single second-model review (1 AI pass)**
+   - The standard Lean default. A single independent non-author reviewer
+     reading the diff cold (via `pr-critique` or `--chain <single-reviewer>`)
+     catches the vast majority of reachable defects in one pass.
+   - Lean reviews do not require and must not default to open-ended convergence
+     cycles.
+3. **Finite multi-reviewer chain (`--chain <rev1>,<rev2>`)**
+   - When two distinct reviewer perspectives are genuinely beneficial, use an
+     exact, finite step sequence without cycle repeats.
+4. **Cyclic multi-engine relay (`--cycle --until-converged`)**
+   - Strictly reserved for **Deep** tier triggers (sensitive paths,
+     irreversible migrations/artifacts, public contract fan-out, non-obvious
+     deployed runtime concurrency/state machines, recent incident areas) or
+     complex multi-party changes.
+   - A cyclic chain requires strictly more than one full cycle (minimum 3 passes:
+     initiator → reviewer → initiator return pass) to converge. Launching a
+     cyclic chain on a Lean or trivial change is prohibited.
+
+**Operational prompts are not risk escalations.** Casual user prompts such as
+`run review`, `review this PR`, or `please run an auto review chain of engine-a
+and engine-b` are operational task requests to execute the review workflow.
+They do **not** select Deep trigger 6, do **not** override human glance, and do
+**not** justify an expensive multi-engine cyclic relay for a trivial or Lean diff.
+The agent or controller must size the review first and recommend the proportionate
+plan. Trigger 6 applies only when a human explicitly requests a _deep_ review or
+insists on an expanded chain after being presented with the proportionate sizing.
 
 ### What sets the tier
 
@@ -409,9 +460,12 @@ otherwise. The rules below never name an engine, so adding a fourth changes
 nothing here.
 
 **One non-author reviewer is the recommended floor**, and covers the great
-majority of changes. A second reviewer earns its cost mainly where a defect is
-expensive and hard to see — the Deep triggers above are the same signals. Solo
-review is permitted but must be declared with a reason; see step 2.
+majority of changes. A single second-model pass (via `pr-critique` or
+`--chain <reviewer>`) is the standard Lean default. A second reviewer earns
+its cost mainly where a defect is expensive and hard to see — the Deep triggers
+above are the same signals. Cyclic relay (`--cycle --until-converged`) is strictly
+reserved for Deep tier changes. Solo review is permitted but must be declared
+with a reason; see step 2.
 
 1. Make the change, validate it, create a clean commit, and open a draft PR.
 2. Declare the roster with the ledger helper's `post-roster`, naming the author

@@ -27,6 +27,7 @@ recorded:
       - 0002-reviewer-precision-postures.md
       - 0006-review-chains-never-converge.md
       - 0008-proportionate-review.md
+      - 0013-proportionate-review-sizing.md
     reason: >-
       Where the precision filter runs is per-model calibration — Claude finders
       report everything scored and the orchestrator cuts; the Codex and Gemini
