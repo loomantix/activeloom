@@ -794,6 +794,23 @@ share keys. Never regenerate a standalone key to retry publication. If key
 creation fails, report telemetry failure rather than falling back to a key
 that may identify a different pass. This works with existing ledger bundles.
 
+### Runner-owned boundary
+
+When `$AGENT_LOOP_TELEMETRY_DIR` is set, the review-chain runner that launched
+this pass has already opened the review pass's boundary there. Reuse it rather
+than opening another: take the idempotency key from the `idempotencyKey` field
+of `pass-key.json`, and when `usage-start.json` exists, pass it as `--start` to
+`delta` instead of taking a snapshot of your own. Keep every other working file
+where this section puts it, and never write into that directory. When either
+file is absent, open that part of the boundary as described here.
+
+The boundary belongs to the `review` pass only. A cleanup lane in the same
+worker is a separate `refactor` pass and keeps its own key and snapshot.
+
+The runner's key is the one this section would mint, and the runner publishes
+the record itself when a pass it launched returns without one, so a pass that
+cannot emit reports that and moves on.
+
 Every pass records what it cost, as a `local-review-telemetry:v1` marker in its
 own PR comment. The record carries token buckets per exact model, classified
 line churn, finding dispositions, and the pass identity needed to ask whether

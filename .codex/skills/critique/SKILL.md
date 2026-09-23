@@ -277,7 +277,8 @@ role references needed for the selected lenses.
    the steps below do is part of what the pass costs, so a snapshot taken later
    would quietly under-report it. The helper is a no-op when extraction is not
    enabled for this repository, and it reports the separate emission gate that
-   decides whether this pass may publish a record at all.
+   decides whether this pass may publish a record at all. When the runner opened
+   the boundary, reuse its key and snapshot per "Runner-owned boundary" instead.
 2. Resolve the PR number, verify it is open and its head is the current branch,
    and require local HEAD, remote head, and PR head to match. If the branch has
    no PR, push it and open a draft PR before reviewing.

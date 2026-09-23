@@ -65,8 +65,36 @@ CONTROL_FILES = [
     "review-profile.py",
     "review-profile.defaults.json",
     "review-settings.py",
+    "telemetry-pass-key.js",
     *LAUNCHERS.values(),
 ]
+TELEMETRY_MARKER = "<!-- local-review-telemetry:v1 -->"
+# Launched workers run without session persistence, so no usage log exists for
+# them. The boundary snapshot names this never-created log, which makes every
+# delta read from it report unavailable usage instead of measuring whichever
+# other session discovery would find.
+EPHEMERAL_SESSION_LOG = "ephemeral-session.jsonl"
+FINDING_MARKER = re.compile(
+    r"<!-- local-review:v3 engine=(?P<engine>codex|claude|gemini|antigravity) "
+    r"round=(?P<round>[1-9][0-9]*) head=[0-9a-f]{40} "
+    r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) "
+    r"occurrence=(?P<occurrence>[1-9][0-9]*) "
+    r"severity=(?P<severity>blocking|major|minor|nit) lens=[A-Za-z0-9._:/-]+ "
+    r"content-sha256=[0-9a-f]{64} -->\Z"
+)
+DISPOSITION_MARKER = re.compile(
+    r"<!-- local-review-disposition:v3 engine=(?P<engine>codex|claude|gemini|antigravity) "
+    r"round=(?P<round>[1-9][0-9]*) head=[0-9a-f]{40} "
+    r"fingerprint=(?P<fingerprint>[A-Za-z0-9._:/-]+) "
+    r"occurrence=(?P<occurrence>[1-9][0-9]*) "
+    r"outcome=(?P<outcome>fixed|dismissed|deferred) content-sha256=[0-9a-f]{64} -->\Z"
+)
+REFACTOR_MARKER = re.compile(r"<!-- local-review-refactor:v1 engine=(?P<engine>[a-z]+) ")
+OUTCOME_BUCKETS = {
+    "fixed": "validFixed",
+    "deferred": "validDeferred",
+    "dismissed": "invalidDismissed",
+}
 # Only this inspected v1 pair supports legacy reconciliation. Git diagnostics
 # also need the controller's terminal log to distinguish exit 128 from review
 # stderr followed by an interrupted or failed invocation.
@@ -1448,6 +1476,8 @@ class Runner:
             AGENT_LOOP_REVIEW_ENGINE=pending["engine"],
             AGENT_LOOP_LOG_DIR=str(folder),
         )
+        if telemetry := self.telemetry_directory(pending):
+            env["AGENT_LOOP_TELEMETRY_DIR"] = str(telemetry)
         error: BaseException | None = None
         try:
             print(
@@ -1570,6 +1600,10 @@ class Runner:
         if error and pending["phase"] not in (
             "capacity_failed", "startup_stall_failed", "provider_500_failed"
         ):
+            # Retryable and preflight failures relaunch under the same key, so
+            # only a worker that failed mid-review settles as blocked here.
+            if pending["phase"] == "execution_failed":
+                self.emit_fallback_telemetry(pending, "blocked")
             raise error
 
     def seal_completed(self, folder: Path) -> dict[str, Any] | None:
@@ -2115,7 +2149,10 @@ class Runner:
         if (
             digest(log) != expected_log
             or not allowed <= present
-            or present - allowed - ({"launch.json"} if intent else set())
+            or present
+            - allowed
+            - ({"launch.json"} if intent else set())
+            - ({"telemetry-boundary"} if pending.get("telemetry") else set())
         ):
             raise Blocked("legacy log does not prove a preflight-only failure")
         failure = self.legacy_failure(pending, log)
@@ -2242,6 +2279,7 @@ class Runner:
             raise Blocked("pre-pass comment snapshot changed")
         result_path = folder / "result.json"
         if not result_path.exists():
+            self.emit_fallback_telemetry(pending, "blocked")
             raise Blocked(
                 "reviewer returned no result; pass not counted, explicit recovery required"
             )
@@ -2262,6 +2300,7 @@ class Runner:
         result = self.helper("ledger", "validate-result", *fields)
         # A late failure after result creation must not be silently accepted.
         if pending["phase"] != "returned":
+            self.emit_fallback_telemetry(pending, "blocked")
             raise Blocked(
                 "worker exit is unknown; reconcile before accepting its saved result"
             )
@@ -2285,6 +2324,7 @@ class Runner:
             )
             result = self.helper("ledger", "validate-result", *fields)
         if result["status"] == "blocked":
+            self.emit_fallback_telemetry(pending, "blocked")
             raise Blocked(
                 "reviewer reported blocked without recoverable completed evidence; "
                 "inspect saved result and recover the owed pass"
@@ -2381,8 +2421,382 @@ class Runner:
             passes[-1]["head"],
         ) != (pending["engine"], pending["round"], head):
             raise Blocked("ledger did not advance by exactly the authorized pass")
+        self.emit_fallback_telemetry(pending, result["status"], head)
         self.state.update(head=head, completed=passes, pending=None, status="running")
         self.persist()
+
+    def telemetry_script(self, engine: str, name: str) -> Path | None:
+        """Locate the worker engine's own telemetry helper in the pinned installation."""
+        installation = self.directory / "installation"
+        if engine == "gemini":
+            path = installation / "agy/.agents/skills/critique/scripts" / name
+            return path if path.is_file() and not path.is_symlink() else None
+        relative = (
+            f"{'.codex' if engine == 'codex' else '.claude'}"
+            f"/skills/critique/scripts/{name}"
+        )
+        manifest = installation / "manifest.json"
+        recorded = (self.state.get("installation") or {}).get("manifest_sha256")
+        path = installation / "native" / relative
+        if (
+            not recorded
+            or not manifest.is_file()
+            or digest(manifest) != recorded
+            or path.is_symlink()
+            or not path.is_file()
+            or read(manifest)["files"].get(relative) != digest(path)
+        ):
+            return None
+        return path
+
+    def telemetry_json(self, argv: list[str]) -> dict[str, Any] | None:
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("AGENT_LOOP_", "ACTIVELOOM_"))
+        }
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode:
+            return None
+        try:
+            value = json.loads(result.stdout)
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def telemetry_boundary(
+        self, engine: str, number: int, head: str, folder: Path
+    ) -> dict[str, Any]:
+        """Mint the pass key and take the start snapshot before any worker runs.
+
+        Telemetry never blocks a pass: a failure leaves the boundary without a
+        key or snapshot, and the reviewer falls back to opening its own.
+        """
+        directory = folder / "telemetry-boundary"
+        boundary: dict[str, Any] = {
+            "directory": str(directory.relative_to(self.directory)),
+            "key": None,
+            "snapshot_sha256": None,
+        }
+        try:
+            self.verify_control()
+            if directory.is_symlink():
+                raise Blocked("telemetry directory cannot be a symlink")
+            # Only an interrupted preparation, which launched nothing, leaves one.
+            if directory.exists():
+                shutil.rmtree(directory)
+            directory.mkdir(mode=0o700)
+            minted = self.telemetry_json(
+                [
+                    "node",
+                    str(self.control / "telemetry-pass-key.js"),
+                    self.args.repo,
+                    str(self.args.pr),
+                    str(self.state["run_id"]),
+                    str(self.state["actor"]),
+                    engine,
+                    "review",
+                    str(number),
+                    head,
+                ]
+            )
+            key = (minted or {}).get("idempotencyKey")
+            if not isinstance(key, str):
+                raise Blocked("pass key unavailable")
+            save(directory / "pass-key.json", {"idempotencyKey": key})
+            boundary["key"] = key
+            start = directory / "usage-start.json"
+            usage = self.telemetry_script(engine, "usage-snapshot.js")
+            if usage is not None:
+                self.telemetry_json(
+                    [
+                        "node",
+                        str(usage),
+                        "snapshot",
+                        "--out",
+                        str(start),
+                        "--session-log",
+                        str(directory / EPHEMERAL_SESSION_LOG),
+                    ]
+                )
+            # Agy's helper and a disabled extraction gate write no snapshot.
+            if start.is_file() and not start.is_symlink():
+                boundary["snapshot_sha256"] = digest(start)
+        except (Blocked, OSError, ValueError, subprocess.SubprocessError) as error:
+            print(f"Telemetry boundary incomplete: {error}", file=sys.stderr, flush=True)
+        return boundary
+
+    def telemetry_intact(self, boundary: dict[str, Any]) -> bool:
+        directory = self.directory / boundary["directory"]
+        start = directory / "usage-start.json"
+        recorded = boundary.get("snapshot_sha256")
+        try:
+            return read(directory / "pass-key.json") == {
+                "idempotencyKey": boundary["key"]
+            } and (
+                digest(start) == recorded
+                if recorded
+                else not (start.exists() or start.is_symlink())
+            )
+        except (Blocked, OSError, ValueError):
+            return False
+
+    def telemetry_directory(self, pending: dict[str, Any]) -> Path | None:
+        """The boundary a worker may reuse, or None when it must open its own."""
+        boundary = pending.get("telemetry")
+        # A checkpoint written before the runner owned this boundary has none.
+        if not boundary or not boundary.get("key"):
+            return None
+        if not self.telemetry_intact(boundary):
+            print(
+                "Telemetry boundary changed before launch; the reviewer opens its own",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
+        return self.directory / boundary["directory"]
+
+    def issue_comments(self) -> list[dict[str, Any]]:
+        pages = json.loads(
+            command(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{self.args.repo}/issues/{self.args.pr}/comments",
+                    "--paginate",
+                    "--slurp",
+                ]
+            )
+        )
+        return [
+            {"id": c["id"], "body": c["body"] or "", "author": c["user"]["login"]}
+            for page in pages
+            for c in page
+        ]
+
+    def telemetry_recorded(self, key: str, rows: list[dict[str, Any]]) -> bool:
+        """Whether a record already carries this key. Only the key is read."""
+        for row in rows:
+            if row["author"] != self.state["actor"] or TELEMETRY_MARKER not in row["body"]:
+                continue
+            payload = row["body"].split(TELEMETRY_MARKER, 1)[1].strip()
+            payload = payload.removeprefix("```json").removesuffix("```")
+            try:
+                record = json.loads(payload)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("idempotencyKey") == key:
+                return True
+        return False
+
+    def telemetry_stance(self, pending: dict[str, Any]) -> str:
+        adversarial = 2 if self.state["config"]["tier"] == "deep" else 1
+        first_read = not any(
+            item.get("engine") == pending["engine"] for item in self.state["completed"]
+        )
+        if pending["round"] <= adversarial or first_read:
+            return "adversarial"
+        return "convergence"
+
+    def telemetry_findings(
+        self, pending: dict[str, Any], rows: list[dict[str, Any]], output: Path
+    ) -> dict[str, Any] | str:
+        """Derive this pass's finding counts from the ledger, or say why not.
+
+        Unknown counts are never zero, so any gap returns a reason instead.
+        """
+        folder = self.directory / pending["folder"]
+        if digest(folder / "historical.json") != pending["historical_sha256"]:
+            return "pre-pass comment snapshot changed"
+        historical = set(read(folder / "historical.json"))
+        engines = {pending["engine"]} | (
+            {"antigravity"} if pending["engine"] == "gemini" else set()
+        )
+        actor = self.state["actor"]
+
+        # A cleanup lane in the same pass posts findings the ledger cannot
+        # attribute to either lane, so its presence must be known.
+        before = folder / "before-comments.json"
+        recorded = pending.get("before_comments_sha256")
+        if not recorded or not before.is_file() or digest(before) != recorded:
+            return "pre-pass issue comments unavailable"
+        earlier = {row["id"] for row in read(before)}
+        cleanup = False
+        for row in rows:
+            marker = REFACTOR_MARKER.match(row["body"])
+            if marker and row["id"] not in earlier and row["author"] == actor:
+                cleanup |= marker["engine"] in engines
+
+        self.threads(output / "threads.json")
+        severity: dict[tuple[str, int], str] = {}
+        prior_fingerprints: set[str] = set()
+        prior_fix = False
+        posted_findings: set[tuple[str, int]] = set()
+        outcomes: dict[tuple[str, int], str] = {}
+        for page in read(output / "threads.json"):
+            threads = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+            for thread in threads["nodes"]:
+                for comment in thread["comments"]["nodes"]:
+                    if (comment.get("author") or {}).get("login") != actor:
+                        continue
+                    line = str(comment.get("body") or "").split("\n", 1)[0]
+                    prior = comment["databaseId"] in historical
+                    match = FINDING_MARKER.fullmatch(line) or DISPOSITION_MARKER.fullmatch(
+                        line
+                    )
+                    if not match:
+                        continue
+                    ident = (match["fingerprint"], int(match["occurrence"]))
+                    own = (
+                        not prior
+                        and match["engine"] in engines
+                        and int(match["round"]) == pending["round"]
+                    )
+                    if "severity" in match.groupdict():
+                        severity[ident] = match["severity"]
+                        if prior:
+                            prior_fingerprints.add(match["fingerprint"])
+                        elif own:
+                            posted_findings.add(ident)
+                    elif prior:
+                        prior_fix |= match["outcome"] == "fixed"
+                    elif own:
+                        outcomes[ident] = match["outcome"]
+        posted = posted_findings | set(outcomes)
+        if cleanup and posted:
+            return "cleanup and review findings share this pass"
+        if prior_fix and {f for f, _ in posted_findings} - prior_fingerprints:
+            return "chain-induced regressions need a blame trace"
+        ladder = {
+            name: {bucket: 0 for bucket in OUTCOME_BUCKETS.values()}
+            for name in ("blocking", "major", "minor", "nit")
+        }
+        for ident, outcome in outcomes.items():
+            if ident not in severity:
+                return "a disposition has no finding severity"
+            ladder[severity[ident]][OUTCOME_BUCKETS[outcome]] += 1
+        return {
+            "posted": len(posted),
+            "bySeverityAndOutcome": ladder,
+            "chainInducedRegressions": 0,
+        }
+
+    def fallback_telemetry(
+        self, pending: dict[str, Any], status: str, head: str
+    ) -> str:
+        boundary = pending.get("telemetry")
+        if not boundary or not boundary.get("key"):
+            return "not emitted: this pass has no runner-owned boundary"
+        engine = pending["engine"]
+        usage = self.telemetry_script(engine, "usage-snapshot.js")
+        if usage is None:
+            return "not emitted: the engine's usage helper is unavailable"
+        rows = self.issue_comments()
+        if self.telemetry_recorded(boundary["key"], rows):
+            return "the reviewer already emitted this pass's record"
+        directory = self.directory / boundary["directory"]
+        output = directory / ("runner-" + uuid.uuid4().hex)
+        output.mkdir(mode=0o700)
+        start = (
+            directory / "usage-start.json"
+            if self.telemetry_intact(boundary)
+            else output / "no-start.json"
+        )
+        delta = self.telemetry_json(
+            [
+                "node",
+                str(usage),
+                "delta",
+                "--start",
+                str(start),
+                "--out-dir",
+                str(output),
+                "--session-log",
+                str(directory / EPHEMERAL_SESSION_LOG),
+            ]
+        )
+        if delta is None or not isinstance(delta.get("tokenSource"), str):
+            return "not emitted: the usage helper failed"
+        if delta.get("emit") is not True:
+            return "not emitted: emission is disabled"
+        findings = self.telemetry_findings(pending, rows, output)
+        if isinstance(findings, str):
+            return f"not emitted: findings measurement unavailable ({findings})"
+        save(output / "findings.json", findings)
+        arguments = [
+            "--repo",
+            self.args.repo,
+            "--pr",
+            str(self.args.pr),
+            "--engine",
+            engine,
+            "--base",
+            self.state["base"],
+            "--head",
+            head,
+            "--pass-type",
+            "review",
+            "--review-tier",
+            self.state["config"]["tier"],
+            "--trigger",
+            "autonomous",
+            "--round",
+            str(pending["round"]),
+            "--stance",
+            self.telemetry_stance(pending),
+            "--status",
+            status,
+            "--token-source",
+            delta["tokenSource"],
+            "--idempotency-key",
+            boundary["key"],
+            "--telemetry-run-id",
+            str(self.state["run_id"]),
+            "--findings-file",
+            str(output / "findings.json"),
+        ]
+        stack_helper = self.telemetry_script(engine, "prompt-stack-hash.js")
+        stack = (
+            self.telemetry_json(
+                ["node", str(stack_helper), "--repo-root", str(self.repository_root())]
+            )
+            if stack_helper
+            else None
+        ) or {}
+        for flag, source, field in (
+            ("--engine-version", delta, "engineVersion"),
+            ("--duration-seconds", delta, "durationSeconds"),
+            ("--tokens-file", delta, "tokensFile"),
+            ("--lanes-file", delta, "lanesFile"),
+            ("--prompt-stack-sha256", stack, "promptStackSha256"),
+            ("--prompt-stack-version", stack, "promptStackVersion"),
+            ("--repo-instructions-sha256", stack, "repoInstructionsSha256"),
+        ):
+            if source.get(field) is not None:
+                arguments += [flag, str(source[field])]
+        outcome = self.helper("ledger", "emit-telemetry", *arguments)
+        if outcome.get("emitted") is True:
+            return f"emitted {status} record"
+        return "not emitted: the ledger declined the record"
+
+    def emit_fallback_telemetry(
+        self, pending: dict[str, Any], status: str, head: str | None = None
+    ) -> None:
+        """Publish the pass's record when its reviewer did not. Never raises."""
+        try:
+            outcome = self.fallback_telemetry(pending, status, head or pending["before"])
+        except Blocked as error:
+            outcome = f"not emitted: {error}"
+        except Exception as error:  # A telemetry defect must never fail the pass.
+            outcome = f"not emitted: {type(error).__name__}"
+        print(f"Runner telemetry: {outcome}", file=sys.stderr, flush=True)
 
     def settings_line(self, engine: str) -> str:
         settings = self.settings_call("selected", self.state, engine, "reviewer")
@@ -2566,14 +2980,18 @@ class Runner:
                 raise Blocked("pass directory cannot be a symlink")
             folder.mkdir(mode=0o700, exist_ok=True)
             if any(
-                p.name
-                not in (
-                    "before-threads.json",
-                    "before-comments.json",
-                    "historical.json",
+                p.is_symlink()
+                or not (
+                    p.is_file()
+                    and p.name
+                    in (
+                        "before-threads.json",
+                        "before-comments.json",
+                        "historical.json",
+                    )
+                    or p.is_dir()
+                    and p.name == "telemetry-boundary"
                 )
-                or p.is_symlink()
-                or not p.is_file()
                 for p in folder.iterdir()
             ):
                 raise Blocked(
@@ -2594,6 +3012,7 @@ class Runner:
                 "historical_sha256": digest(folder / "historical.json"),
                 "before_threads_sha256": digest(folder / "before-threads.json"),
                 "before_comments_sha256": digest(folder / "before-comments.json"),
+                "telemetry": self.telemetry_boundary(engine, number, head, folder),
             }
             self.state["pending"] = pending
             self.persist()
