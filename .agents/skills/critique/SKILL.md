@@ -230,6 +230,17 @@ verify their hypotheses, apply any fixes, then run one consolidated validation
 pass against the final head. Do not multiply the same validation across parallel
 lanes.
 
+In an Agy print-mode pass or automated review pass, do not spawn subagents or
+background review lanes. Execute the review lanes sequentially in series within
+the primary session. In each lane pass, inspect the assigned scope, post verified
+findings inline to the PR ledger, apply justified fixes, and validate before
+proceeding to the next lane. Subsequent lanes review the updated code along with
+prior lane findings and fixes, avoiding redundant analysis of resolved defects.
+Run all shell commands and test suites synchronously in the foreground; never leave
+background tasks running. Write the canonical result and end the turn only after all
+lanes and validation are complete. Report review depth using the appropriate local
+multi-pass fallback label.
+
 Read the repo-local review addendum first. Check for
 `.review/addendum.local.md` in the repository under review; if it exists, read it
 before selecting lenses and fold each of its sections into the brief of the lens

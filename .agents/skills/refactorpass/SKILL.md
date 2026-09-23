@@ -73,6 +73,7 @@ Refactorpass must cover three lanes:
 Run these lanes as independently as the active runtime permits:
 
 - If subagents/delegation are available and permitted by the active instructions, spawn independent cleanup reviewers for the three lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the cleanup lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to suggest behavior-preserving cleanup and avoid broad rewrites.
+- In an Agy print-mode pass, do not spawn subagents or background cleanup lanes. Run the cleanup lanes sequentially in series within the primary session. In each lane, verify suggestions, apply behavior-preserving cleanup, and validate before proceeding to the next lane so subsequent lanes review the updated code. Run all commands and tests synchronously in the foreground; never leave background tasks running. Wait for all lanes to complete before writing the canonical result.
 - If subagents are unavailable or not permitted, perform three separate local passes using the lane prompts above. Do not present that as equivalent to independent subagents.
 - If refactorpass could not use independent subagents, explicitly say so in the output under `cleanup depth`.
 

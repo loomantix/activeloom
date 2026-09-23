@@ -125,8 +125,15 @@ Deep critique is not a single generalized review. If the active Antigravity/Gemi
 
 Invoking `deepcritique` is an explicit request to use independent subagents for the
 six core review lanes, plus the conditional tenant-coupling lane when signaled,
-whenever the active runtime exposes subagent/delegation tools. Do not require the
-user to separately say "use subagents" before spawning those lane reviewers.
+whenever the active runtime exposes subagent/delegation tools.
+Do not require the user to separately say "use subagents" before spawning those lane reviewers.
+
+In an Agy print-mode pass, do not spawn subagents or background review lanes.
+Execute review lanes sequentially in series within the primary session. In each lane pass,
+post verified findings inline, apply fixes, and validate before proceeding to the next lane
+so subsequent lanes review the updated code and prior findings. Run all commands and tests
+synchronously in the foreground; never leave background tasks running. Write the canonical
+result and end the turn only after all lanes and validation are complete.
 
 Every deep lane must use an adversarial stance: assume the diff contains
 defects, search for the highest-impact failure modes first, and require code,

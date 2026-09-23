@@ -241,9 +241,15 @@ fixed plan records `exhausted` as its terminal marker; checkpoint/output retain
 the more precise `plan-complete` reason. Neither grants extra passes.
 
 Agy's print mode ends the session when the root agent ends its turn, and
-discards background lanes or tests that are still running. The Agy launchers
-therefore tell Gemini to finish every command, test and review lane inside the
-turn. When a Gemini worker still exits 0 without a result, the runner verifies
+terminates background shell commands after a short drain timeout (5 seconds).
+The Agy launchers therefore prohibit subagents and background review lanes during
+print-mode passes. Each review lane runs sequentially in series within the primary
+session. In each lane pass, the worker posts verified findings inline, applies
+justified fixes, and validates before proceeding to the next lane, ensuring subsequent
+lanes evaluate the updated code and prior findings without wasted repetition. Every
+shell command and test suite executes synchronously in the foreground. The worker
+writes the canonical result and ends the turn only after all lanes and validation
+finish. When a Gemini worker still exits 0 without a result, the runner verifies
 the execution-phase launch marker, unchanged head and owed pass, absent result
 and recovery sidecar, unchanged review threads, and unchanged issue comments.
 It then relaunches that pass once with the same round, budget and pinned

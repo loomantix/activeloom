@@ -28,10 +28,12 @@ LEDGER_VERSION = LEDGER_VERSION_FILE.read_text(encoding="utf-8").strip()
 CONTINUATION_FLAGS = {"--continue", "-c", "--conversation", "--prompt-interactive", "-i"}
 # Agy's print mode ends the session with its turn and discards background work.
 FOREGROUND_INSTRUCTION = (
-    "Wait for every command, test, and review lane you start to finish inside this turn; "
-    "running them in parallel is fine, leaving any of them unfinished is not. The session "
-    "ends when this turn ends and discards unfinished background work, so end the turn "
-    "only after the canonical result is written."
+    "Do not spawn subagents or background review lanes in this Agy print-mode pass. Run each "
+    "review lane sequentially in series within the primary session. In each lane pass, post "
+    "verified findings inline, apply fixes, and validate before proceeding to the next lane so "
+    "subsequent lanes review the updated code and prior findings. Run all commands and tests "
+    "synchronously in the foreground; never leave background tasks running. Write the canonical "
+    "result and end the turn only after all lanes and validation are complete."
 )
 AGY_REVIEW_LAUNCHERS = (
     ".claude/skills/critique/scripts/run-agy-review.sh",
