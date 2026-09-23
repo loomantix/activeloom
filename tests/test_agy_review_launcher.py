@@ -40,6 +40,12 @@ AGY_REVIEW_LAUNCHERS = (
 )
 
 
+@pytest.mark.parametrize("launcher", AGY_REVIEW_LAUNCHERS)
+def test_every_agy_review_launcher_defaults_to_sixty_minutes(launcher: str) -> None:
+    source = (ROOT / launcher).read_text(encoding="utf-8")
+    assert "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-3600" in source
+
+
 def _trusted_environment(
     tmp_path: Path,
     *,
@@ -277,7 +283,7 @@ def test_launcher_executes_the_pinned_model_effort_and_permission_contract(tmp_p
         "--output-format",
         "json",
         "--print-timeout",
-        "1800s",
+        "3600s",
     ]
     assert len(argv) == 15
     assert argv[13] == "--print"

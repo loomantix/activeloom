@@ -523,7 +523,7 @@ Auto mode is available for the `gemini` reviewer, launched through
 The launcher takes its model and effort from the review profile (recommended:
 `gemini-3.7-flash-high` at `high`) and pins accept-edits mode, unattended
 permissions, and structured JSON output. A pass defaults to a
-30-minute bound through `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the
+60-minute bound through `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the
 hard 3600-second ceiling are rejected. Under agent-loop the wrapper sets that
 variable itself, to the smallest of what remains of the run's
 `review_timeout_seconds` budget, the configured `hook_timeout_seconds`, and that

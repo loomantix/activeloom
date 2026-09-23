@@ -56,6 +56,15 @@ def review_settings(repo: str) -> tuple[str, str]:
     return lines[0], lines[1]
 
 
+def review_timeout_seconds() -> str:
+    value = os.environ.get("LOCAL_REVIEW_PASS_TIMEOUT_SECONDS", "3600")
+    if not re.fullmatch(r"[1-9][0-9]*", value) or int(value) > 3600:
+        raise ValueError(
+            "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600"
+        )
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
@@ -72,6 +81,7 @@ def main() -> int:
         or any(not re.fullmatch(r"[0-9a-f]{40}", v) for v in (args.head, args.base))
     ):
         parser.error("invalid repository, PR, SHA or round")
+    pass_timeout_seconds = review_timeout_seconds()
     launch_state("preflight", "missing_tool")
     cli = shutil.which("codex")
     timeout = shutil.which("timeout")
@@ -194,7 +204,7 @@ def main() -> int:
             timeout,
             "--signal=TERM",
             "--kill-after=30s",
-            "2700s",
+            f"{pass_timeout_seconds}s",
             cli,
             "exec",
             "--ephemeral",

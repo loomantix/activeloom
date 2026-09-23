@@ -416,6 +416,18 @@ def idle_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
             "It then said terminating 2 background task(s) on exit, as quoted.\n",
             False,
         ),
+        (
+            "I will wait for the three review subagents to finish analyzing the diff.\n"
+            "I will wait for the remaining two subagents to finish.\n"
+            "I will wait for the final reviewer subagent to finish.\n",
+            True,
+        ),
+        ("I will wait for the final reviewer subagent to finish.\n", False),
+        (
+            "A log quoted: I will wait for two subagents to finish.\n"
+            "Another quoted wait for one subagent to finish.\n",
+            False,
+        ),
     ],
 )
 def test_agy_idle_exit_recognition_is_specific(
@@ -690,6 +702,36 @@ def test_codex_launcher_detaches_stdin_before_execution() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, "3600"), ("1", "1"), ("3599", "3599"), ("3600", "3600")],
+)
+def test_codex_launcher_accepts_bounded_review_timeout(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: str
+) -> None:
+    module = load("run-codex-review")
+    if value is None:
+        monkeypatch.delenv("LOCAL_REVIEW_PASS_TIMEOUT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("LOCAL_REVIEW_PASS_TIMEOUT_SECONDS", value)
+    assert module.review_timeout_seconds() == expected
+
+
+@pytest.mark.parametrize("value", ["", "0", "3601", "1.5", "no"])
+def test_codex_launcher_rejects_invalid_review_timeout(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    module = load("run-codex-review")
+    monkeypatch.setenv("LOCAL_REVIEW_PASS_TIMEOUT_SECONDS", value)
+    with pytest.raises(ValueError, match="integer from 1 through 3600"):
+        module.review_timeout_seconds()
+
+
+def test_codex_gemini_launcher_defaults_to_sixty_minutes() -> None:
+    launcher = (SCRIPTS / "run-agy-review.sh").read_text()
+    assert "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-3600" in launcher
+
+
 @pytest.fixture
 def stall_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Codex hangs before thread.started and the watchdog stops it."""
@@ -923,6 +965,7 @@ def harness(
         preflight=False,
         finalization_failure=False,
         fail_recovery=False,
+        start_restart=False,
     )
     monkeypatch.setattr(
         module, "command", lambda argv: BASE if argv[0] == "git" else "test-actor"
@@ -1043,7 +1086,11 @@ sys.exit(int(sys.argv[2]))
 
         def helper(self, name: str, *parts: str) -> dict[str, Any]:
             operation = parts[0]
-            options = dict(zip(parts[1::2], parts[2::2], strict=True))
+            arguments = list(parts[1:])
+            if "--restart" in arguments:
+                arguments.remove("--restart")
+                controls.start_restart = True
+            options = dict(zip(arguments[::2], arguments[1::2], strict=True))
             plan = {
                 "comment_id": 1,
                 "run_id": "d" * 64,
@@ -1116,6 +1163,14 @@ def test_one_invocation_runs_all_fixed_steps(harness: Any) -> None:
     assert runner.run() == "converged"
     assert harness.launches == ["codex", "claude", "codex", "claude"]
     assert len(runner.state["completed"]) == 4
+
+
+def test_restart_authorization_reaches_start_run(harness: Any) -> None:
+    harness.args.restart = True
+    runner = harness.runner(harness.args, harness.directory)
+    assert runner.run() == "converged"
+    assert harness.controls.start_restart is True
+    assert runner.state["config"]["restart"] is True
 
 
 def test_completed_result_recovery_keeps_the_run_and_owed_pass(harness: Any) -> None:
@@ -2289,7 +2344,9 @@ if name == "gh":
 elif name == "git":
     if args[0] == "rev-parse": print("a"*40)
     elif args[0] == "ls-remote": print(("e" if os.environ["STALE"] == "1" else "a")*40 + "\\trefs/heads/fix/example")
-elif name == "timeout": os.execvp(args[3], args[3:])
+elif name == "timeout":
+    pathlib.Path(os.environ["TIMEOUT_CAPTURE"]).write_text(json.dumps(args[:3]))
+    os.execvp(args[3], args[3:])
 else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
 """
     for name in ("gh", "git", "timeout", "codex"):
@@ -2297,6 +2354,7 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         path.write_text(f"#!{sys.executable}\n" + tool)
         path.chmod(0o700)
     capture = tmp_path / "captured.json"
+    timeout_capture = tmp_path / "timeout.json"
     result = subprocess.run(
         [
             sys.executable,
@@ -2321,6 +2379,7 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
             },
             "PATH": str(bindir) + os.pathsep + os.environ["PATH"],
             "CAPTURE": str(capture),
+            "TIMEOUT_CAPTURE": str(timeout_capture),
             "STALE": "1" if stale else "0",
             "ACTIVELOOM_REVIEW_MODEL": "inherit",
             "ACTIVELOOM_REVIEW_EFFORT": "high",
@@ -2333,6 +2392,11 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         assert not capture.exists()
     else:
         assert result.returncode == 0, result.stderr
+        assert json.loads(timeout_capture.read_text()) == [
+            "--signal=TERM",
+            "--kill-after=30s",
+            "3600s",
+        ]
         argv = json.loads(capture.read_text())
         assert argv[:2] == ["exec", "--ephemeral"]
         assert "--json" in argv

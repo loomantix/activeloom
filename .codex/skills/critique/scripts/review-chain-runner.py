@@ -171,6 +171,9 @@ AGY_IDLE = re.compile(
     r"root agent idle; waiting up to \d+s for [1-9]\d* background task\(s\)\s*$"
 )
 AGY_TERMINATE = re.compile(r"terminating [1-9]\d* background task\(s\) on exit\s*$")
+AGY_SUBAGENT_WAIT = re.compile(
+    r"^I will wait for .*\bsubagents?\b.*\bfinish\b.*\.\s*$"
+)
 
 
 def agy_idle_exit(log: Path) -> bool:
@@ -178,13 +181,20 @@ def agy_idle_exit(log: Path) -> bool:
     if log.is_symlink() or not log.is_file():
         return False
     idle = False
+    subagent_waits = 0
     with log.open(errors="replace") as stream:
         for line in stream:
             if AGY_IDLE.search(line):
                 idle = True
             elif idle and AGY_TERMINATE.search(line):
                 return True
-    return False
+            if AGY_SUBAGENT_WAIT.search(line):
+                subagent_waits += 1
+    # Some Agy builds omit their runtime idle diagnostics and expose only the
+    # root agent repeatedly yielding while delegated reviewers remain pending.
+    # Missing result, clean evidence, exit 0 and execution-phase admission are
+    # verified separately before this classification can authorize one retry.
+    return subagent_waits >= 2
 
 
 def digest(path: Path) -> str:
@@ -911,6 +921,8 @@ class Runner:
         scope_decision = getattr(self.args, "scope_decision", None)
         if scope_decision:
             config["scope_decision"] = scope_decision
+        if getattr(self.args, "restart", False):
+            config["restart"] = True
         if self.state:
             if self.state.get("version") not in (1, 2):
                 raise Blocked("unsupported checkpoint version")
@@ -2301,6 +2313,7 @@ class Runner:
                 config["plan"],
                 "--authorization-file",
                 str(self.directory / "authorization.txt"),
+                *(["--restart"] if config.get("restart") else []),
                 *(
                     ["--scope-decision", config["scope_decision"]]
                     if config.get("scope_decision")
@@ -2513,6 +2526,11 @@ def main(argv: list[str] | None = None) -> int:
         help="scope decision forwarded to start-run when its scope checkpoint fires",
     )
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="explicitly authorize a new run after the prior run has ended",
+    )
     parser.add_argument(
         "--recover-preflight",
         action="store_true",

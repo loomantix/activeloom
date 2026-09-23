@@ -20,7 +20,7 @@ case "$engine" in
     *) usage ;;
 esac
 
-review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-1800}"
+review_timeout_seconds="${LOCAL_REVIEW_PASS_TIMEOUT_SECONDS:-3600}"
 [[ "$review_timeout_seconds" =~ ^[1-9][0-9]*$ ]] && \
     [ "$review_timeout_seconds" -le 3600 ] || {
     echo "LOCAL_REVIEW_PASS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2

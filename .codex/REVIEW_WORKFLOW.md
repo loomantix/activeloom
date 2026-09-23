@@ -125,7 +125,7 @@ modes silently in the middle of a round.
   launcher takes its model and effort from the confirmed review profile or the
   run's pinned settings (recommended: `gemini-3.7-flash-high` at `high`) and pins
   accept-edits mode, unattended permissions, structured output, and the same
-  30-minute default / 3600-second hard pass bound;
+  60-minute default / 3600-second hard pass bound;
   callers cannot supply or override them. It also requires Agy to resolve the
   current `deepcritique` skill, resolves its real target, and validates a
   structurally compatible relay surface from a clean, exact-commit companion

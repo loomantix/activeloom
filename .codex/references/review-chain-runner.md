@@ -116,6 +116,9 @@ These are alternative plans, not consecutive commands for the same active run.
 - `--scope-decision keep|split` records the decision `start-run` requires when
   its scope checkpoint fires (see REVIEW_WORKFLOW.md). It becomes part of the
   saved plan, so pass the same value with `--resume`.
+- `--restart` explicitly authorizes a fresh run after the prior authenticated
+  run has ended. It is recorded in the checkpoint and forwarded to `start-run`;
+  it does not revive or erase the earlier run.
 
 ## Reviewer settings
 
@@ -251,6 +254,11 @@ Codex capacity check uses, and it is not the whole gate: an idle exit whose
 launch marker is missing or is not in the execution phase blocks rather than
 retrying, and what authorizes the relaunch is the unchanged-evidence
 re-verification rather than the strength of the log match.
+Some Agy builds omit the runtime idle diagnostics and instead leave only
+repeated root-agent messages that they will wait for unfinished subagents. The
+runner recognizes two or more of those anchored messages as the same idle-exit
+class; a single mention is insufficient, and every unchanged-evidence and
+execution-phase requirement above still applies.
 
 Workers never inherit the runner's stdin: the runner starts them on `/dev/null`,
 and the Codex launcher detaches its own stdin as well. `codex exec` reads a
