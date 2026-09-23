@@ -1648,6 +1648,30 @@ def validation_contract(
     }
 
 
+def test_target_revision_pins_the_live_base_tip_not_a_stale_base_ref_oid(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = "c" * 40
+    calls: list[list[str]] = []
+
+    def command(argv: list[str]) -> str:
+        calls.append(argv)
+        if argv[:2] == ["gh", "pr"]:
+            assert "baseRefOid" not in argv
+            return "staging"
+        if argv[:2] == ["git", "ls-remote"]:
+            assert argv[-1] == "refs/heads/staging"
+            return f"{live}\trefs/heads/staging"
+        if argv[:2] == ["git", "fetch"]:
+            return ""
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(harness.module, "command", command)
+    runner = harness.runner(harness.args, harness.directory)
+    assert harness.module.Runner.target_revision(runner) == live
+    assert calls[-1] == ["git", "fetch", "--quiet", "--no-tags", "origin", live]
+
+
 def test_repository_contract_selects_gate_and_scrubs_ambient_environment(
     harness: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
