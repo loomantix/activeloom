@@ -191,9 +191,10 @@ def allowed_agy_incomplete_comments(
     if not isinstance(row, dict) or row.get("author") != actor:
         return False
     body = row.get("body")
-    if not isinstance(body, str) or not body:
+    lines = body.strip().splitlines() if isinstance(body, str) else []
+    if not lines:
         return False
-    match = AGY_NOOP_REFACTOR.fullmatch(body.lstrip().splitlines()[0].strip())
+    match = AGY_NOOP_REFACTOR.fullmatch(lines[0].strip())
     return bool(match and match.group("head") == head)
 
 
