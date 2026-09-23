@@ -614,7 +614,14 @@ class Runner:
         return Path(command(["git", "rev-parse", "--show-toplevel"])).resolve()
 
     def target_revision(self) -> str:
-        return command(
+        """Pin the live tip of the PR's base branch as the policy revision.
+
+        GitHub's ``baseRefOid`` is refreshed lazily and can trail the base
+        branch by several merges, which hides a validation contract that has
+        already landed there. Resolve the branch tip from the remote instead
+        and fetch it so ``git ls-tree`` can read the contract locally.
+        """
+        branch = command(
             [
                 "gh",
                 "pr",
@@ -623,11 +630,16 @@ class Runner:
                 "--repo",
                 self.args.repo,
                 "--json",
-                "baseRefOid",
+                "baseRefName",
                 "--jq",
-                ".baseRefOid",
+                ".baseRefName",
             ]
         )
+        revision = command(
+            ["git", "ls-remote", "--exit-code", "origin", "refs/heads/" + branch]
+        ).split()[0]
+        command(["git", "fetch", "--quiet", "--no-tags", "origin", revision])
+        return revision
 
     def merge_base(self, target: str, head: str) -> str:
         return command(["git", "merge-base", target, head])
