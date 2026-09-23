@@ -242,12 +242,13 @@ the more precise `plan-complete` reason. Neither grants extra passes.
 
 Agy's print mode ends the session when the root agent ends its turn, and
 discards background lanes or tests that are still running. The Agy launchers
-therefore tell Gemini to finish every command, test and review lane inside the
-turn. When a Gemini worker still exits 0 without a result and its log shows
-Agy's idle-termination lines, the runner verifies the same unchanged evidence as
-the capacity fallback and relaunches that pass once, with the same round, budget
-and pinned settings. A second idle exit, any partial result, changed evidence, or
-a failed exit blocks.
+therefore instruct Gemini that subagents are not permitted in headless mode and
+that all review lanes must execute sequentially within the primary session,
+with commands and tests executed synchronously. When a Gemini worker still exits
+0 without a result and its log shows Agy's idle-termination lines, the runner
+verifies the same unchanged evidence as the capacity fallback and relaunches that
+pass once, with the same round, budget and pinned settings. A second idle exit,
+any partial result, changed evidence, or a failed exit blocks.
 
 Recognizing that log is plain text matching, not the structured-event parse the
 Codex capacity check uses, and it is not the whole gate: an idle exit whose

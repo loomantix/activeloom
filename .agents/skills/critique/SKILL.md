@@ -250,6 +250,7 @@ Lean mode must cover two independent lanes:
 Run these lanes as independently as the active runtime permits:
 
 - If subagents/delegation are available and permitted by the active instructions, spawn independent reviewers for both lanes using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from the other lane.
+- In headless non-interactive mode (`agy --print`, `AGENT_LOOP_NONINTERACTIVE=1`, or automated review passes), subagents and background delegation are not permitted because headless runners enforce conversation-idle timeouts that terminate background subagents prematurely mid-pass. Execute both lanes as separate local passes in-sequence within the primary session.
 - If subagents are unavailable or not permitted, perform two separate local passes using the lane prompts above. Do not present that as equivalent to independent subagents.
 - If lean mode was requested but independent subagents could not be used, explicitly say so in the output under `review depth`.
 
@@ -268,9 +269,10 @@ Deep mode must cover six core independent lanes, plus the conditional tenant-cou
 Run these lanes as independently as the active runtime permits:
 
 - Invoking `critique deep` is an explicit request to use independent subagents for
-  every applicable lane whenever the active runtime exposes subagent/delegation tools.
+  every applicable lane whenever the active runtime exposes subagent/delegation tools and interactive execution permits it.
   Do not require the user to separately say "use subagents" before spawning
   those lane reviewers.
+- In headless non-interactive mode (`agy --print`, `AGENT_LOOP_NONINTERACTIVE=1`, or automated review passes where a launcher or controller started the pass), subagents and background delegation are not permitted because headless runners enforce conversation-idle timeouts that terminate background subagents prematurely mid-pass. Execute all review lanes sequentially as separate local passes in the primary session, and report review depth as `deep local multi-pass fallback (subagents not permitted in headless mode)`.
 - If subagents/delegation are available and permitted by the active instructions, spawn independent reviewers using the ledger's immutable review packet and scoped diff-delivery contract. Keep the packet prefix byte-identical, append only the disjoint lens and exact file scope, use no inherited conversation history when supported, and impose a concise output ceiling. Tell each reviewer to return only actionable findings with file/line evidence and avoid relying on conclusions from other lanes.
 - If subagents are unavailable or not permitted, perform a separate local pass for every applicable lane using the prompts above. Do not present that as equivalent to independent subagents.
 - If deep mode was requested but independent subagents could not be used, explicitly say so in the output under `review depth`.

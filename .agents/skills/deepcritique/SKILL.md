@@ -125,8 +125,10 @@ Deep critique is not a single generalized review. If the active Antigravity/Gemi
 
 Invoking `deepcritique` is an explicit request to use independent subagents for the
 six core review lanes, plus the conditional tenant-coupling lane when signaled,
-whenever the active runtime exposes subagent/delegation tools. Do not require the
-user to separately say "use subagents" before spawning those lane reviewers.
+whenever the active runtime exposes subagent/delegation tools and interactive execution permits it.
+Do not require the user to separately say "use subagents" before spawning those lane reviewers.
+
+In headless non-interactive mode (`agy --print`, `AGENT_LOOP_NONINTERACTIVE=1`, or automated review passes where a launcher or controller started the pass), subagents and background delegation are **not permitted**. Headless execution enforces a conversation-idle timeout once the root agent yields its turn, which terminates background subagents prematurely mid-pass. In headless mode, execute all review lanes sequentially as separate local passes within the primary session, and report review depth as `deep local multi-pass fallback (subagents not permitted in headless mode)`.
 
 Every deep lane must use an adversarial stance: assume the diff contains
 defects, search for the highest-impact failure modes first, and require code,

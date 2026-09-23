@@ -339,7 +339,7 @@ edits, then validate, push, reply, resolve, and publish the normal review result
 Write every scratch artifact under your own agent artifact directory rather than
 a path outside it. Do not invoke Claude Code or Codex; return control to the
 calling session when the Gemini pass is complete.
-Wait for every command, test, and review lane you start to finish inside this turn; running them in parallel is fine, leaving any of them unfinished is not. The session ends when this turn ends and discards unfinished background work, so end the turn only after the canonical result is written."
+Subagents and background delegation are not permitted in headless mode: do not delegate to subagents or spawn background review lanes. Execute all review lanes sequentially as separate local passes in the primary session. Execute all commands and tests synchronously; do not yield the turn or emit intermediate waiting text while waiting for background tasks. End the turn only after the canonical result is written."
 
 if [ -n "${ACTIVELOOM_REVIEW_SURFACE:-}" ]; then
     prompt="Read ${agy_surface_root}/skills/deepcritique/SKILL.md and follow it for this pass.
