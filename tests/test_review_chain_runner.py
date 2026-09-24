@@ -3840,3 +3840,401 @@ def test_worker_environment_exports_the_selected_settings(
     runner.state["fallback_engines"] = ["codex"]
     assert pinned("codex") == ("gpt-5.6-sol", "medium")
     assert pinned("claude") == ("opus", "medium")
+
+
+@pytest.fixture
+def telemetry_harness(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Any:
+    """Real engine usage helpers and key minting; GitHub reads and writes faked."""
+    module = harness.module
+    sessions = tmp_path / "codex-sessions"
+    sessions.mkdir()
+    monkeypatch.setenv("CODEX_SESSIONS_DIR", str(sessions))
+    for name in ("LOOM_REVIEW_TELEMETRY", "LOOM_REVIEW_TELEMETRY_EXTRACT"):
+        monkeypatch.delenv(name, raising=False)
+    controls = SimpleNamespace(
+        comments=[],
+        reviewer_emits=False,
+        comments_failure=None,
+        usage_helper=None,
+    )
+    emissions: list[dict[str, str]] = []
+    boundaries: list[dict[str, Any]] = []
+
+    def telemetry_script(self: Any, engine: str, name: str) -> Path | None:
+        if name == "usage-snapshot.js" and controls.usage_helper is not None:
+            return Path(controls.usage_helper)
+        root = ".codex" if engine == "codex" else ".claude"
+        return ROOT / root / "skills/critique/scripts" / name
+
+    def issue_comments(self: Any) -> list[dict[str, Any]]:
+        if controls.comments_failure:
+            raise controls.comments_failure
+        return list(controls.comments)
+
+    def marker(key: str, status: str) -> dict[str, Any]:
+        record = {"idempotencyKey": key, "status": status}
+        return {
+            "id": 1000 + len(controls.comments),
+            "author": "test-actor",
+            "body": f"{module.TELEMETRY_MARKER}\n\n```json\n{json.dumps(record)}\n```",
+        }
+
+    original_helper = harness.runner.helper
+
+    def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        if parts and parts[0] == "emit-telemetry":
+            options = dict(zip(parts[1::2], parts[2::2], strict=True))
+            options["findings"] = module.read(Path(options["--findings-file"]))
+            emissions.append(options)
+            controls.comments.append(
+                marker(options["--idempotency-key"], options["--status"])
+            )
+            return {"emitted": True, "error": None}
+        return dict(original_helper(self, name, *parts))
+
+    worker_managed = module.managed
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *a: Any, **k: Any) -> None:
+        if "AGENT_LOOP_REVIEW_RESULT_FILE" in env:
+            directory = env.get("AGENT_LOOP_TELEMETRY_DIR")
+            boundary: dict[str, Any] = {"directory": directory}
+            if directory:
+                boundary["key"] = module.read(Path(directory) / "pass-key.json")
+                start = Path(directory) / "usage-start.json"
+                boundary["snapshot"] = start.is_file()
+            boundaries.append(boundary)
+            if controls.reviewer_emits and directory:
+                controls.comments.append(
+                    marker(boundary["key"]["idempotencyKey"], "clean")
+                )
+        worker_managed(argv, log, env, *a, **k)
+
+    monkeypatch.setattr(harness.runner, "telemetry_script", telemetry_script)
+    monkeypatch.setattr(harness.runner, "issue_comments", issue_comments)
+    monkeypatch.setattr(harness.runner, "helper", helper)
+    monkeypatch.setattr(module, "managed", managed)
+    return SimpleNamespace(
+        harness=harness,
+        controls=controls,
+        emissions=emissions,
+        boundaries=boundaries,
+    )
+
+
+def test_runner_opens_the_boundary_before_launch(telemetry_harness: Any) -> None:
+    h = telemetry_harness.harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    boundaries = telemetry_harness.boundaries
+    assert len(boundaries) == 4
+    assert all(item["snapshot"] for item in boundaries)
+    keys = [item["key"]["idempotencyKey"] for item in boundaries]
+    assert len(set(keys)) == 4
+    # The snapshot names a log that never exists, so no other session is measured.
+    snapshot = h.module.read(
+        Path(boundaries[0]["directory"]) / "usage-start.json"
+    )
+    assert snapshot["sessionLog"].endswith(h.module.EPHEMERAL_SESSION_LOG)
+    assert not Path(snapshot["sessionLog"]).exists()
+
+
+def test_reviewer_that_skips_its_snapshot_still_yields_one_record(
+    telemetry_harness: Any,
+) -> None:
+    h = telemetry_harness.harness
+    assert h.runner(h.args, h.directory).run() == "converged"
+    emissions = telemetry_harness.emissions
+    assert [e["--engine"] for e in emissions] == ["codex", "claude", "codex", "claude"]
+    assert [e["--stance"] for e in emissions] == ["adversarial"] * 4
+    assert {e["--idempotency-key"] for e in emissions} == {
+        b["key"]["idempotencyKey"] for b in telemetry_harness.boundaries
+    }
+    for emission in emissions:
+        assert emission["--status"] == "clean"
+        assert emission["--pass-type"] == "review"
+        assert emission["--trigger"] == "autonomous"
+        assert emission["--token-source"] == "unavailable"
+        assert "--tokens-file" not in emission
+        assert emission["findings"]["posted"] == 0
+
+
+def test_runner_never_duplicates_a_reviewer_record(telemetry_harness: Any) -> None:
+    h = telemetry_harness.harness
+    telemetry_harness.controls.reviewer_emits = True
+    assert h.runner(h.args, h.directory).run() == "converged"
+    assert telemetry_harness.emissions == []
+
+
+@pytest.mark.parametrize("failure", ["blocked", "missing"])
+def test_unsettled_result_emits_blocked(telemetry_harness: Any, failure: str) -> None:
+    h = telemetry_harness.harness
+    if failure == "missing":
+        h.controls.missing = True
+    else:
+        h.controls.outcome = "blocked"
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
+    assert [e["--status"] for e in telemetry_harness.emissions] == ["blocked"]
+    # A resume that blocks again finds the record and emits nothing more.
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
+    assert len(telemetry_harness.emissions) == 1
+
+
+@pytest.mark.parametrize("cleanup_denied", [False, True])
+def test_worker_failure_mid_review_emits_blocked(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, cleanup_denied: bool
+) -> None:
+    h = telemetry_harness.harness
+    h.controls.exit_code = 1
+
+    original = h.module.managed
+
+    def execution(argv: list[str], log: Path, env: dict[str, str], *a: Any, **k: Any) -> None:
+        if "ACTIVELOOM_LAUNCH_STATE" in env:
+            h.module.save(
+                Path(env["ACTIVELOOM_LAUNCH_STATE"]),
+                {
+                    "version": 1,
+                    "attempt_id": env["ACTIVELOOM_ATTEMPT_ID"],
+                    "phase": "execution",
+                    "review_started": True,
+                },
+            )
+            if cleanup_denied:
+                raise h.module.CleanupBlocked("cleanup denied", 4242, None, False)
+        original(argv, log, env, *a, **k)
+
+    monkeypatch.setattr(h.module, "managed", execution)
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
+    state = h.module.read(h.directory / "state.json")
+    assert state["pending"]["phase"] == "execution_failed"
+    # A denied cleanup may leave the worker alive to publish under this key.
+    expected = [] if cleanup_denied else ["blocked"]
+    assert [e["--status"] for e in telemetry_harness.emissions] == expected
+
+
+@pytest.mark.parametrize("wrote_result", [False, True])
+def test_unknown_worker_exit_emits_nothing(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, wrote_result: bool
+) -> None:
+    h = telemetry_harness.harness
+    original = h.module.managed
+
+    def interrupted(
+        argv: list[str], log: Path, env: dict[str, str], *a: Any, **k: Any
+    ) -> None:
+        if "AGENT_LOOP_REVIEW_ENGINE" not in env:
+            original(argv, log, env, *a, **k)
+            return
+        if wrote_result:
+            original(argv, log, env, *a, **k)
+        raise h.module.ProcessFailure("synthetic runner loss", 1)
+
+    monkeypatch.setattr(h.module, "managed", interrupted)
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
+    state = h.module.read(h.directory / "state.json")
+    assert state["pending"]["phase"] == "launching"
+    # The worker may still publish its own record under this key.
+    h.args.resume = True
+    monkeypatch.setattr(h.module, "managed", original)
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
+    assert telemetry_harness.emissions == []
+
+
+@pytest.mark.parametrize("failure", ["comments", "usage-helper"])
+def test_telemetry_failure_never_fails_the_pass(
+    telemetry_harness: Any, tmp_path: Path, failure: str
+) -> None:
+    h = telemetry_harness.harness
+    if failure == "comments":
+        telemetry_harness.controls.comments_failure = RuntimeError("synthetic")
+    else:
+        broken = tmp_path / "usage-snapshot.js"
+        broken.write_text("process.exit(1);\n")
+        telemetry_harness.controls.usage_helper = broken
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert len(runner.state["completed"]) == 4
+    assert telemetry_harness.emissions == []
+
+
+def test_changed_snapshot_is_not_handed_to_the_reviewer(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = telemetry_harness.harness
+    original = h.runner.launch
+
+    def tamper(self: Any, pending: dict[str, Any]) -> None:
+        if pending["round"] == 1 and pending["engine"] == "codex":
+            start = self.directory / pending["telemetry"]["directory"] / "usage-start.json"
+            start.write_text("{}\n")
+        original(self, pending)
+
+    monkeypatch.setattr(h.runner, "launch", tamper)
+    assert h.runner(h.args, h.directory).run() == "converged"
+    assert telemetry_harness.boundaries[0]["directory"] is None
+    assert all(b["directory"] for b in telemetry_harness.boundaries[1:])
+    # The runner still records the pass, without trusting the changed snapshot.
+    assert len(telemetry_harness.emissions) == 4
+    assert telemetry_harness.emissions[0]["--token-source"] == "unavailable"
+
+
+def test_checkpoint_without_a_boundary_still_resumes(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = telemetry_harness.harness
+    original = h.runner.launch
+
+    def interrupted(self: Any, pending: dict[str, Any]) -> None:
+        raise h.module.Blocked("synthetic interruption before launch")
+
+    monkeypatch.setattr(h.runner, "launch", interrupted)
+    with pytest.raises(h.module.Blocked, match="interruption before launch"):
+        h.runner(h.args, h.directory).run()
+    # Rewrite the pending pass as a runner without this boundary would have.
+    state = h.module.read(h.directory / "state.json")
+    assert state["pending"]["phase"] == "prepared"
+    del state["pending"]["telemetry"]
+    h.module.save(h.directory / "state.json", state)
+    monkeypatch.setattr(h.runner, "launch", original)
+    h.args.resume = True
+    assert h.runner(h.args, h.directory).run() == "converged"
+    assert telemetry_harness.boundaries[0]["directory"] is None
+    assert len(telemetry_harness.emissions) == 3
+
+
+def finding_pages(*comments: tuple[int, str]) -> list[dict[str, Any]]:
+    nodes = [
+        {"databaseId": identifier, "body": body, "author": {"login": "test-actor"}}
+        for identifier, body in comments
+    ]
+    thread = {"comments": {"nodes": nodes, "pageInfo": {"hasNextPage": False}}}
+    return [
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [thread],
+                            "pageInfo": {"hasNextPage": False},
+                        }
+                    }
+                }
+            }
+        }
+    ]
+
+
+def finding(fingerprint: str, severity: str, round: int = 1) -> str:
+    return (
+        f"<!-- local-review:v3 engine=codex round={round} head={HEAD} "
+        f"fingerprint={fingerprint} occurrence=1 severity={severity} lens=bugs "
+        f"content-sha256={'c' * 64} -->\nBody"
+    )
+
+
+def disposition(fingerprint: str, outcome: str, round: int = 1) -> str:
+    return (
+        f"<!-- local-review-disposition:v3 engine=codex round={round} head={HEAD} "
+        f"fingerprint={fingerprint} occurrence=1 outcome={outcome} "
+        f"content-sha256={'c' * 64} -->\nBody"
+    )
+
+
+@pytest.mark.parametrize(
+    "historical,comments,expected",
+    [
+        (
+            [],
+            [(1, finding("f1", "major")), (2, disposition("f1", "fixed")),
+             (3, finding("f2", "nit"))],
+            {"posted": 2, "major": {"validFixed": 1}},
+        ),
+        (
+            # An earlier pass's thread dispositioned now also counts as posted.
+            [1],
+            [(1, finding("f1", "minor", 1)), (2, disposition("f1", "deferred", 2))],
+            {"posted": 1, "minor": {"validDeferred": 1}},
+        ),
+        (
+            [1, 2],
+            [(1, finding("f1", "major")), (2, disposition("f1", "fixed")),
+             (3, finding("f2", "nit", 2))],
+            "chain-induced regressions need a blame trace",
+        ),
+    ],
+)
+def test_finding_counts_come_from_this_passs_threads(
+    harness: Any,
+    tmp_path: Path,
+    historical: list[int],
+    comments: list[tuple[int, str]],
+    expected: Any,
+) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+    runner.state = {"actor": "test-actor"}
+    folder = harness.directory / "pass-1"
+    folder.mkdir()
+    harness.module.save(folder / "historical.json", historical)
+    harness.module.save(folder / "before-comments.json", [])
+    round = 2 if historical else 1
+    pending = {
+        "engine": "codex",
+        "round": round,
+        "folder": "pass-1",
+        "historical_sha256": harness.module.digest(folder / "historical.json"),
+        "before_comments_sha256": harness.module.digest(folder / "before-comments.json"),
+    }
+    runner.threads = lambda path: harness.module.save(path, finding_pages(*comments))
+    output = tmp_path / "output"
+    output.mkdir()
+    counted = runner.telemetry_findings(pending, [], output)
+    if isinstance(expected, str):
+        assert counted == expected
+        return
+    assert counted["posted"] == expected["posted"]
+    assert counted["chainInducedRegressions"] == 0
+    for severity, row in counted["bySeverityAndOutcome"].items():
+        for bucket, count in row.items():
+            assert count == expected.get(severity, {}).get(bucket, 0)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<!-- local-review-refactor:v1 engine=codex head={head} outcome=committed -->",
+        "Cleanup lane ran.\n\n<!-- local-review-refactor:v1 engine=codex "
+        "head={head} outcome=committed -->",
+    ],
+)
+def test_cleanup_latch_anywhere_in_the_comment_withholds_counts(
+    harness: Any, tmp_path: Path, body: str
+) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+    runner.state = {"actor": "test-actor"}
+    folder = harness.directory / "pass-1"
+    folder.mkdir()
+    harness.module.save(folder / "historical.json", [])
+    harness.module.save(folder / "before-comments.json", [])
+    pending = {
+        "engine": "codex",
+        "round": 1,
+        "folder": "pass-1",
+        "historical_sha256": harness.module.digest(folder / "historical.json"),
+        "before_comments_sha256": harness.module.digest(folder / "before-comments.json"),
+    }
+    runner.threads = lambda path: harness.module.save(
+        path, finding_pages((1, finding("f1", "minor")))
+    )
+    rows = [{"id": 7, "author": "test-actor", "body": body.format(head=HEAD)}]
+    output = tmp_path / "output"
+    output.mkdir()
+    counted = runner.telemetry_findings(pending, rows, output)
+    assert counted == "cleanup and review findings share this pass"

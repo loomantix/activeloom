@@ -227,6 +227,29 @@ revision, resolved schema, and allowlisted execution environment. Changes to the
 pinned runner require deliberate migration, not execution from an unverified
 replacement.
 
+### Pass telemetry
+
+The runner owns each launched pass's telemetry boundary. Before the launcher
+starts, it mints the `review` pass key and takes the start snapshot with the
+worker engine's own usage helper into `<pass>/telemetry-boundary/`, records the
+key and snapshot digest in the checkpoint, and hands the directory to the worker
+as `$AGENT_LOOP_TELEMETRY_DIR`. Workers run in ephemeral sessions with no usage
+log, so the snapshot deliberately names a log that never exists. Every delta
+that passes that log as `--session-log` then reports `unavailable` rather than
+measuring another session.
+
+When the pass settles, the runner publishes the record itself if no marker
+carries that key yet. A counted pass reports its result's status. A pass whose
+worker returned without a result or with a blocked one, or failed mid-review,
+reports `blocked`. Launches that the runner retries automatically, and workers
+whose exit is unknown, are not settled and emit nothing: the worker may still
+publish under the key. The runner derives finding counts from this pass's own threads.
+It emits nothing when a count is unknowable: cleanup findings sharing the pass,
+or a new fingerprint on a PR that already has a `fixed` disposition, which
+needs the reviewer's blame trace. Telemetry failures are logged and never
+block or fail a pass. A checkpoint written before this boundary existed has no
+key, so its pending pass leaves telemetry to the reviewer.
+
 Exit outcomes:
 
 | Outcome       | Exit | Meaning                                                                                   |

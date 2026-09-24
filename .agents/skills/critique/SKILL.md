@@ -50,7 +50,8 @@ finding and disposition in the PR.
 
 Follow "Pass Telemetry" in `.agents/REVIEW_WORKFLOW.md`. After resolving the
 mandatory pass identity and before diff classification, run the usage helper's
-`snapshot`. On every terminal path, including skip and blocked, finalize the
+`snapshot`, or reuse the runner's key and snapshot per "Runner-owned boundary"
+when it opened the boundary. On every terminal path, including skip and blocked, finalize the
 review result first, then run `delta` and attempt emission only when `emit` is
 true. Report publication failures and unavailable usage explicitly. A failure
 before identity resolution reports `telemetry not emitted: boundary unresolved`.
