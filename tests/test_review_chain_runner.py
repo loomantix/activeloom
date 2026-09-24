@@ -3984,8 +3984,9 @@ def test_unsettled_result_emits_blocked(telemetry_harness: Any, failure: str) ->
     assert len(telemetry_harness.emissions) == 1
 
 
+@pytest.mark.parametrize("cleanup_denied", [False, True])
 def test_worker_failure_mid_review_emits_blocked(
-    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, cleanup_denied: bool
 ) -> None:
     h = telemetry_harness.harness
     h.controls.exit_code = 1
@@ -4003,6 +4004,8 @@ def test_worker_failure_mid_review_emits_blocked(
                     "review_started": True,
                 },
             )
+            if cleanup_denied:
+                raise h.module.CleanupBlocked("cleanup denied", 4242, None, False)
         original(argv, log, env, *a, **k)
 
     monkeypatch.setattr(h.module, "managed", execution)
@@ -4010,7 +4013,9 @@ def test_worker_failure_mid_review_emits_blocked(
         h.runner(h.args, h.directory).run()
     state = h.module.read(h.directory / "state.json")
     assert state["pending"]["phase"] == "execution_failed"
-    assert [e["--status"] for e in telemetry_harness.emissions] == ["blocked"]
+    # A denied cleanup may leave the worker alive to publish under this key.
+    expected = [] if cleanup_denied else ["blocked"]
+    assert [e["--status"] for e in telemetry_harness.emissions] == expected
 
 
 @pytest.mark.parametrize("wrote_result", [False, True])
@@ -4199,3 +4204,37 @@ def test_finding_counts_come_from_this_passs_threads(
     for severity, row in counted["bySeverityAndOutcome"].items():
         for bucket, count in row.items():
             assert count == expected.get(severity, {}).get(bucket, 0)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<!-- local-review-refactor:v1 engine=codex head={head} outcome=committed -->",
+        "Cleanup lane ran.\n\n<!-- local-review-refactor:v1 engine=codex "
+        "head={head} outcome=committed -->",
+    ],
+)
+def test_cleanup_latch_anywhere_in_the_comment_withholds_counts(
+    harness: Any, tmp_path: Path, body: str
+) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+    runner.state = {"actor": "test-actor"}
+    folder = harness.directory / "pass-1"
+    folder.mkdir()
+    harness.module.save(folder / "historical.json", [])
+    harness.module.save(folder / "before-comments.json", [])
+    pending = {
+        "engine": "codex",
+        "round": 1,
+        "folder": "pass-1",
+        "historical_sha256": harness.module.digest(folder / "historical.json"),
+        "before_comments_sha256": harness.module.digest(folder / "before-comments.json"),
+    }
+    runner.threads = lambda path: harness.module.save(
+        path, finding_pages((1, finding("f1", "minor")))
+    )
+    rows = [{"id": 7, "author": "test-actor", "body": body.format(head=HEAD)}]
+    output = tmp_path / "output"
+    output.mkdir()
+    counted = runner.telemetry_findings(pending, rows, output)
+    assert counted == "cleanup and review findings share this pass"

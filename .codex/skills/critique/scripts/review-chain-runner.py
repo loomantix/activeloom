@@ -89,7 +89,9 @@ DISPOSITION_MARKER = re.compile(
     r"occurrence=(?P<occurrence>[1-9][0-9]*) "
     r"outcome=(?P<outcome>fixed|dismissed|deferred) content-sha256=[0-9a-f]{64} -->\Z"
 )
-REFACTOR_MARKER = re.compile(r"<!-- local-review-refactor:v1 engine=(?P<engine>[a-z]+) ")
+REFACTOR_MARKER = re.compile(
+    r"^<!-- local-review-refactor:v1 engine=(?P<engine>[a-z]+) ", re.M
+)
 OUTCOME_BUCKETS = {
     "fixed": "validFixed",
     "deferred": "validDeferred",
@@ -1588,9 +1590,12 @@ class Runner:
         if error and pending["phase"] not in (
             "capacity_failed", "startup_stall_failed", "provider_500_failed"
         ):
-            # Retryable and preflight failures relaunch under the same key, so
-            # only a worker that failed mid-review settles as blocked here.
-            if pending["phase"] == "execution_failed":
+            # Retryable and preflight failures relaunch under the same key, and
+            # a denied cleanup may leave the worker alive, so only a worker that
+            # failed mid-review and was cleaned up settles as blocked here.
+            if pending["phase"] == "execution_failed" and not isinstance(
+                error, CleanupBlocked
+            ):
                 self.emit_fallback_telemetry(pending, "blocked")
             raise error
 
@@ -2620,7 +2625,7 @@ class Runner:
         earlier = {row["id"] for row in read(before)}
         cleanup = False
         for row in rows:
-            marker = REFACTOR_MARKER.match(row["body"])
+            marker = REFACTOR_MARKER.search(row["body"])
             if marker and row["id"] not in earlier and row["author"] == actor:
                 cleanup |= marker["engine"] in engines
 
