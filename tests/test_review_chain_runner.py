@@ -4013,6 +4013,36 @@ def test_worker_failure_mid_review_emits_blocked(
     assert [e["--status"] for e in telemetry_harness.emissions] == ["blocked"]
 
 
+@pytest.mark.parametrize("wrote_result", [False, True])
+def test_unknown_worker_exit_emits_nothing(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, wrote_result: bool
+) -> None:
+    h = telemetry_harness.harness
+    original = h.module.managed
+
+    def interrupted(
+        argv: list[str], log: Path, env: dict[str, str], *a: Any, **k: Any
+    ) -> None:
+        if "AGENT_LOOP_REVIEW_ENGINE" not in env:
+            original(argv, log, env, *a, **k)
+            return
+        if wrote_result:
+            original(argv, log, env, *a, **k)
+        raise h.module.ProcessFailure("synthetic runner loss", 1)
+
+    monkeypatch.setattr(h.module, "managed", interrupted)
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
+    state = h.module.read(h.directory / "state.json")
+    assert state["pending"]["phase"] == "launching"
+    # The worker may still publish its own record under this key.
+    h.args.resume = True
+    monkeypatch.setattr(h.module, "managed", original)
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
+    assert telemetry_harness.emissions == []
+
+
 @pytest.mark.parametrize("failure", ["comments", "usage-helper"])
 def test_telemetry_failure_never_fails_the_pass(
     telemetry_harness: Any, tmp_path: Path, failure: str

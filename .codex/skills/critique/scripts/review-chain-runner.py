@@ -2267,7 +2267,10 @@ class Runner:
             raise Blocked("pre-pass comment snapshot changed")
         result_path = folder / "result.json"
         if not result_path.exists():
-            self.emit_fallback_telemetry(pending, "blocked")
+            # An unknown exit may still belong to a live worker that publishes
+            # under this key, so only an observed return settles as blocked.
+            if pending["phase"] == "returned":
+                self.emit_fallback_telemetry(pending, "blocked")
             raise Blocked(
                 "reviewer returned no result; pass not counted, explicit recovery required"
             )
@@ -2288,7 +2291,6 @@ class Runner:
         result = self.helper("ledger", "validate-result", *fields)
         # A late failure after result creation must not be silently accepted.
         if pending["phase"] != "returned":
-            self.emit_fallback_telemetry(pending, "blocked")
             raise Blocked(
                 "worker exit is unknown; reconcile before accepting its saved result"
             )

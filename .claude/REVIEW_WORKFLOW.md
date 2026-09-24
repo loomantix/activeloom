@@ -682,23 +682,6 @@ share keys. Never regenerate a standalone key to retry publication. If key
 creation fails, report telemetry failure rather than falling back to a key
 that may identify a different pass. This works with existing ledger bundles.
 
-### Runner-owned boundary
-
-When `$AGENT_LOOP_TELEMETRY_DIR` is set, the review-chain runner that launched
-this pass has already opened the review pass's boundary there. Reuse it rather
-than opening another: take the idempotency key from the `idempotencyKey` field
-of `pass-key.json`, and when `usage-start.json` exists, pass it as `--start` to
-`delta` instead of taking a snapshot of your own. Keep every other working file
-where this section puts it, and never write into that directory. When either
-file is absent, open that part of the boundary as described here.
-
-The boundary belongs to the `review` pass only. A cleanup lane in the same
-worker is a separate `refactor` pass and keeps its own key and snapshot.
-
-The runner's key is the one this section would mint, and the runner publishes
-the record itself when a pass it launched returns without one, so a pass that
-cannot emit reports that and moves on.
-
 Every pass records what it cost, as a `local-review-telemetry:v1` marker in its
 own PR comment. The record carries token buckets per exact model, classified
 line churn, finding dispositions, and the pass identity needed to ask whether
@@ -706,6 +689,26 @@ Deep earns its cost. It carries no prose, no file paths, no finding titles, and
 no money: rates move and a subscription's marginal cost is zero, so a stored
 dollar figure is wrong when written and unverifiable later. Counts keep the
 whole series re-priceable.
+
+### Runner-owned boundary
+
+When `$AGENT_LOOP_TELEMETRY_DIR` is set, the review-chain runner that launched
+this pass has already opened the review pass's boundary there. Reuse it rather
+than opening another: take the idempotency key from the `idempotencyKey` field
+of `pass-key.json`, and when `usage-start.json` exists, pass it as `--start` to
+`delta`, with `--session-log` set to the `sessionLog` path it names, instead of
+taking a snapshot of your own. That log never exists, so the delta reports
+`unavailable` rather than discovering another session's log. Keep every other
+working file where Pass Telemetry puts it, and never write into that directory.
+When either file is absent, open that part of the boundary as Pass Telemetry
+describes.
+
+The boundary belongs to the `review` pass only. A cleanup lane in the same
+worker is a separate `refactor` pass and keeps its own key and snapshot.
+
+The runner's key is the one Pass Telemetry would mint, and the runner publishes
+the record itself when a pass it launched returns without one, so a pass that
+cannot emit reports that and moves on.
 
 ### Two gates: measuring and publishing
 
