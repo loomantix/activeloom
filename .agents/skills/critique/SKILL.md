@@ -19,15 +19,6 @@ explicitly asked for this change to be reviewed anyway, or when
 `$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
 pass owns the gate.
 
-### Review sizing triage
-
-Before proceeding to review execution, apply review sizing triage from `.agents/REVIEW_WORKFLOW.md`:
-
-- When `skip: false` is triggered only by non-runtime developer tooling (such as test scripts, dev dependencies, build configurations, or documentation) with minor churn and no runtime or security risk, recommend human glance:
-  `Trivial diff: N lines of [test scripts/tooling/docs] with no runtime risk — recommend human glance review and merge. No AI chain required.`
-  In interactive sessions, advise the user that human glance is recommended before spending review tokens.
-- For Lean changes, default to a single second-model review (`pr-critique` or `--chain <engine>`). Do not recommend or launch a multi-engine cyclic relay (`--cycle`) unless the tier resolved to Deep.
-
 ## Review profile preflight
 
 Run this before launching any reviewer, worker, or runner. When

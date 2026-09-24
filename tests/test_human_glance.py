@@ -59,9 +59,7 @@ def _skill(root: str, skill: str) -> str:
 
 
 @pytest.mark.parametrize("root,skill", ENTRY_POINTS, ids=lambda v: str(v))
-def test_the_gate_is_the_first_section_of_every_entry_point(
-    root: str, skill: str
-) -> None:
+def test_the_gate_is_the_first_section_of_every_entry_point(root: str, skill: str) -> None:
     body = _skill(root, skill)
     first = re.search(r"^## .*$", body, re.M)
     assert first is not None, f"{root}/{skill} has no sections"
@@ -107,28 +105,14 @@ def test_the_workflow_defines_human_glance_ahead_of_the_tier(root: str) -> None:
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
-def test_the_workflow_defines_review_sizing_proportionality_triage(root: str) -> None:
-    body = (ROOT / root / "REVIEW_WORKFLOW.md").read_text(encoding="utf-8")
-    assert "### Review sizing and proportionality triage" in body
-    sizing_idx = body.index("### Review sizing and proportionality triage")
-    assert (
-        body.index("### Human glance")
-        < sizing_idx
-        < body.index("### What sets the tier")
-    )
-    assert "Human glance (0 AI passes)" in body
-    assert "Single second-model review (1 AI pass)" in body
-    assert "Finite multi-reviewer chain" in body
-    assert "Cyclic multi-engine relay" in body
-    assert "Operational prompts are not risk escalations" in body
-
-
-@pytest.mark.parametrize("root", HARNESS_ROOTS)
-def test_critique_skills_include_review_sizing_triage(root: str) -> None:
-    body = _skill(root, "critique")
-    assert "### Review sizing triage" in body
-    assert "recommend human glance" in body
-    assert "single second-model review" in body
+def test_invoking_a_review_is_not_trigger_6(root: str) -> None:
+    body = " ".join((ROOT / root / "REVIEW_WORKFLOW.md").read_text(encoding="utf-8").split())
+    gate = body.split("### Human glance", 1)[1].split("### What sets the tier", 1)[0]
+    assert 'or asking to "review this PR" or "run the review chain", is not that request' in gate
+    # A session never argues its way past "skip": false; the classifier rule is fixed instead.
+    assert 'A session does not overrule `"skip": false`' in gate
+    assert "without asking for Deep is not this trigger" in body
+    assert "so it adds no engines, repeats no steps, and does not select the Deep order" in body
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
@@ -157,7 +141,7 @@ def test_agent_loop_classifies_before_its_first_review_round(root: str) -> None:
     assert gate < script.index("\n    run_review_convergence 1"), (
         f"{root} agent-loop runs a review round before classifying the range"
     )
-    assert script.index('open_draft_pr "$SELECTED_ID"') < gate, (
+    assert script.index("open_draft_pr \"$SELECTED_ID\"") < gate, (
         f"{root} agent-loop must leave the human a draft PR to read"
     )
     # An unreadable classification reviews rather than silently merging.
@@ -207,9 +191,7 @@ def test_label_workflow_holds_only_the_permissions_it_uses() -> None:
 
 def test_label_workflow_checks_out_the_base_and_never_the_head() -> None:
     checkout = next(
-        step
-        for step in _label_steps()
-        if step.get("uses", "").startswith("actions/checkout@")
+        step for step in _label_steps() if step.get("uses", "").startswith("actions/checkout@")
     )
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
     assert checkout["with"]["persist-credentials"] == "false"
@@ -228,9 +210,7 @@ def test_label_workflow_pins_every_action_to_a_sha() -> None:
     ]
     assert uses_lines
     for line in uses_lines:
-        assert re.search(r"@[0-9a-f]{40} # \S", line), (
-            f"{line} is not SHA-pinned with its version"
-        )
+        assert re.search(r"@[0-9a-f]{40} # \S", line), f"{line} is not SHA-pinned with its version"
 
 
 def test_label_workflow_interpolates_no_pull_request_authored_text() -> None:
@@ -269,8 +249,6 @@ def test_label_workflow_fails_closed_on_every_unclassified_path() -> None:
 
 
 def test_label_workflow_is_synced_to_consumers_with_an_opt_out() -> None:
-    manifest = yaml.safe_load(
-        (ROOT / "scripts/sync-targets.yml").read_text(encoding="utf-8")
-    )
+    manifest = yaml.safe_load((ROOT / "scripts/sync-targets.yml").read_text(encoding="utf-8"))
     destinations = {target["destination"] for target in manifest["shared"]["targets"]}
     assert ".github/workflows/review-glance-label.yml" in destinations
