@@ -24,7 +24,9 @@ When it reports `"configured": false`, run `review-setup` with the user first;
 never start a run on settings the user has not confirmed. Unless the user names a
 plan, read the tier's order from `review-profile.py order --tier <lean|deep> --repo <owner/repo>`.
 Use `--chain` for a one-engine order and `--cycle --until-converged` for two or
-three engines. A one-engine chain reports plan completion; it cannot establish
+three engines. Run the order as returned: a request to run "the review chain"
+names the runner, not a plan, so it adds no engines, repeats no steps, and does
+not select the Deep order. A one-engine chain reports plan completion; it cannot establish
 independent convergence. The runner pins each engine's settings when the run
 starts, so a profile change applies to the next run, not the one in progress.
 
@@ -208,7 +210,9 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
 
 - **Explicit request.** A human who directly asks for this change to be reviewed
   anyway overrides the gate. That request is trigger 6: the chain runs and the
-  tier marker records it. Typing a review skill's name is not that request.
+  tier marker records it. Typing a review skill's name, or asking to "review
+  this PR" or "run the review chain", is not that request: it invokes the entry
+  point, which applies this gate and resolves the tier as usual.
 - **Controller-scheduled passes.** When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set,
   the controller that scheduled the pass owns the gate, and the pass reviews the
   range it was given. `agent-loop` classifies before its first review round, and
@@ -219,6 +223,11 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
 - **The label.** Where the synced `review-glance-label.yml` workflow runs, the
   `review: human-glance` label marks a PR whose latest push classified the same
   way. It is a hint; the gate's own classification decides.
+- **Misclassification.** When the classifier marks a file review-significant
+  that has no runtime, contract, or security effect, the classifier rule is
+  what is wrong. Continue the entry point, and open an issue naming the path
+  and the rule that matched it. A session does not overrule `"skip": false` on
+  its own reading of the diff.
 
 ### What sets the tier
 
@@ -248,7 +257,8 @@ Resolve the changed-file list once with
    revert, or hotfix commit you can name; an active path with ordinary commit
    traffic is not evidence.
 6. **Explicitly requested** — a human directly asked for a deep review.
-   Novelty alone does not select this trigger; assess the actual risk under
+   Asking for a review, or for the automatic chain, without asking for Deep
+   is not this trigger. Novelty alone does not select this trigger; assess the actual risk under
    triggers 1–5. An internal
    `deep` argument passed between tier-aware skills only asserts the recorded
    tier; it is not a new request.
