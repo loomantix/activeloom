@@ -14,11 +14,21 @@
     },
     "runner": {
       "paths": [
-        ".codex/skills/critique/scripts/review-chain-runner.py",
+        ".codex/skills/critique/scripts/**",
+        ".claude/skills/critique/scripts/**",
+        ".agents/skills/critique/scripts/**",
         ".codex/references/review-chain-runner.md",
-        "tests/test_review_chain_runner.py",
-        "tests/test_review_scope_checkpoint.py",
-        "tests/test_review_settings.py"
+        ".codex/skills/review-setup/**",
+        ".claude/skills/review-setup/**",
+        ".agents/skills/review-setup/**",
+        ".codex/skills/reviewit/**",
+        ".claude/skills/reviewit/**",
+        ".agents/skills/reviewit/**",
+        "tests/test_review_*.py",
+        "tests/test_agy_review_launcher.py",
+        "tests/test_claude_review_launcher.py",
+        "tests/test_codex_usage_discovery.py",
+        "tests/test_human_glance.py"
       ],
       "commands": [
         {
@@ -29,6 +39,15 @@
             "tests/test_review_chain_runner.py",
             "tests/test_review_scope_checkpoint.py",
             "tests/test_review_settings.py",
+            "tests/test_review_profile.py",
+            "tests/test_review_push.py",
+            "tests/test_review_restart_rounds.py",
+            "tests/test_review_sequence.py",
+            "tests/test_review_setup_preflight.py",
+            "tests/test_agy_review_launcher.py",
+            "tests/test_claude_review_launcher.py",
+            "tests/test_codex_usage_discovery.py",
+            "tests/test_human_glance.py",
             "-n",
             "4"
           ]
@@ -65,10 +84,15 @@
         "scripts/render-prompts.py",
         "scripts/lint-prompt-parity.py",
         "scripts/create-signed-commit.py",
+        "PROMPT_STACK_VERSION",
+        ".claude/prompt-stack.json",
+        ".codex/prompt-stack.json",
         "prompts/**",
         "tests/test_render_prompts.py",
-        "tests/test_prompt_*.py",
-        "tests/test_create_signed_commit.py"
+        "tests/test_prompt_parity_lint.py",
+        "tests/test_prompt_stack_hash.py",
+        "tests/test_create_signed_commit.py",
+        "tests/fixtures/**"
       ],
       "commands": [
         {
@@ -92,7 +116,8 @@
       "paths": [
         "scripts/sync-engine.py",
         "scripts/sync-targets.yml",
-        "tests/test_sync_*.py"
+        "tests/test_sync_*.py",
+        "tests/fixtures/**"
       ],
       "commands": [
         {
@@ -139,15 +164,121 @@
         }
       ]
     },
+    "issues": {
+      "paths": [
+        ".agents/skills/issues/**",
+        ".claude/skills/issues/**",
+        ".codex/skills/issues/**",
+        "tests/test_ready.py",
+        "tests/test_link.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_ready.py",
+            "tests/test_link.py",
+            "-n",
+            "4"
+          ]
+        }
+      ]
+    },
+    "backlog_refinement": {
+      "paths": [
+        ".agents/skills/backlog-refinement/**",
+        ".claude/skills/backlog-refinement/**",
+        ".codex/skills/backlog-refinement/**",
+        "tests/test_backlog_refinement.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_backlog_refinement.py",
+            "-n",
+            "4"
+          ]
+        }
+      ]
+    },
+    "cli": {
+      "paths": ["cli/**", "tests/cli/**", "tests/test_cli_init_equivalence.py"],
+      "commands": [
+        {
+          "argv": [
+            "node",
+            "--test",
+            "tests/cli/cli.test.js",
+            "tests/cli/harness-table.test.js",
+            "tests/cli/onboard-profiles.test.js",
+            "tests/cli/package-smoke.test.js",
+            "tests/cli/review-config.test.js",
+            "tests/cli/tiers-docs.test.js",
+            "tests/cli/workflow-templates.test.js"
+          ]
+        },
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_cli_init_equivalence.py",
+            "-n",
+            "4"
+          ]
+        }
+      ]
+    },
+    "packages_review_ledger": {
+      "paths": ["packages/review-ledger/**"],
+      "commands": [
+        { "argv": ["pnpm", "--dir", "packages/review-ledger", "test"] },
+        { "argv": ["pnpm", "--dir", "packages/review-ledger", "build"] }
+      ]
+    },
+    "ci": {
+      "paths": [
+        ".github/**",
+        "tests/test_ci_workflows.py",
+        "tests/test_pr_commit_signatures.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_ci_workflows.py",
+            "tests/test_pr_commit_signatures.py",
+            "-n",
+            "4"
+          ]
+        }
+      ]
+    },
     "docs": {
       "paths": [
         "docs/**",
+        "imports/**",
         "*.md",
         ".agents/**/*.md",
         ".claude/**/*.md",
         ".codex/**/*.md",
+        "LICENSE",
+        "NOTICE",
+        "scripts/lint-collapse-sites.py",
+        ".agents/skills/simplify-comments/**",
+        ".claude/skills/simplify-comments/**",
+        ".codex/skills/simplify-comments/**",
         "tests/test_comment_density.py",
-        "tests/test_skill_frontmatter.py"
+        "tests/test_skill_frontmatter.py",
+        "tests/test_skill_content_suppressions.py",
+        "tests/test_lint_collapse_sites.py"
       ],
       "commands": [
         {
@@ -157,8 +288,51 @@
             "pytest",
             "tests/test_comment_density.py",
             "tests/test_skill_frontmatter.py",
+            "tests/test_skill_content_suppressions.py",
+            "tests/test_lint_collapse_sites.py",
             "-n",
             "4"
+          ]
+        }
+      ]
+    },
+    "skills": {
+      "paths": [
+        ".agents/skills/**",
+        ".claude/skills/**",
+        ".codex/skills/**",
+        "tests/review-accessibility-asset.test.js"
+      ],
+      "commands": [
+        { "argv": ["node", "tests/review-accessibility-asset.test.js"] }
+      ]
+    },
+    "config": {
+      "paths": [
+        ".activeloom-review.json",
+        ".gitignore",
+        ".prettierignore",
+        ".prettierrc",
+        "recommended-prettierignore.txt",
+        "pyproject.toml",
+        ".claude/*.py",
+        ".claude/*.allowlist",
+        ".claude/*.json",
+        ".claude/*.template",
+        ".claude/references/**",
+        "scripts/install-skills.sh",
+        "scripts/check-action-pin-drift.sh",
+        "scripts/review-telemetry.json.template",
+        "claude/**",
+        "tests/__init__.py",
+        "tests/conftest.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            ".codex/skills/critique/scripts/review-chain-runner.py",
+            "--validate-contract"
           ]
         }
       ]
