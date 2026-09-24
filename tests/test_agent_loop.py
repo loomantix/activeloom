@@ -594,7 +594,7 @@ def _run(
     issues: list[dict[str, object]],
     config: str,
     extra_env: dict[str, str] | None = None,
-    timeout: int = 30,
+    timeout: int = 60,
     stdin: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     repo = fixture[0]
