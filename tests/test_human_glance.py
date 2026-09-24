@@ -105,6 +105,17 @@ def test_the_workflow_defines_human_glance_ahead_of_the_tier(root: str) -> None:
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_invoking_a_review_is_not_trigger_6(root: str) -> None:
+    body = " ".join((ROOT / root / "REVIEW_WORKFLOW.md").read_text(encoding="utf-8").split())
+    gate = body.split("### Human glance", 1)[1].split("### What sets the tier", 1)[0]
+    assert 'or asking to "review this PR" or "run the review chain", is not that request' in gate
+    # A session never argues its way past "skip": false; the classifier rule is fixed instead.
+    assert 'A session does not overrule `"skip": false`' in gate
+    assert "without asking for Deep is not this trigger" in body
+    assert "so it adds no engines, repeats no steps, and does not select the Deep order" in body
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
 def test_no_workflow_still_emits_a_skipped_pass(root: str) -> None:
     body = (ROOT / root / "REVIEW_WORKFLOW.md").read_text(encoding="utf-8")
     assert "Docs/config-only skip" not in body
