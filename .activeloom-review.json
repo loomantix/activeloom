@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "fallback_gate": "full",
+  "gates": {
+    "baseline": {
+      "always": true,
+      "commands": [
+        { "argv": ["python3", "-m", "mypy"] },
+        { "argv": ["ruff", "check", "."] },
+        { "argv": ["npx", "--yes", "prettier@3.8.3", "--check", "."] },
+        { "argv": ["python3", ".claude/lint-skill-content.py", "--self-test"] },
+        { "argv": ["python3", ".claude/lint-skill-content.py"] }
+      ]
+    },
+    "runner": {
+      "paths": [
+        ".codex/skills/critique/scripts/review-chain-runner.py",
+        ".codex/references/review-chain-runner.md",
+        "tests/test_review_chain_runner.py",
+        "tests/test_review_scope_checkpoint.py",
+        "tests/test_review_settings.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_review_chain_runner.py",
+            "tests/test_review_scope_checkpoint.py",
+            "tests/test_review_settings.py",
+            "-n",
+            "4"
+          ]
+        }
+      ]
+    },
+    "telemetry": {
+      "paths": [
+        ".codex/skills/critique/scripts/usage-snapshot.js",
+        ".codex/skills/critique/scripts/review-telemetry-gates.js",
+        ".codex/skills/critique/scripts/telemetry-pass-key.js",
+        ".claude/skills/critique/scripts/usage-snapshot.js",
+        ".claude/skills/critique/scripts/prompt-stack-hash.js",
+        "tests/test_telemetry_*.py",
+        "tests/test_usage_snapshot.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_telemetry_gates.py",
+            "tests/test_telemetry_pass_key.py",
+            "tests/test_usage_snapshot.py",
+            "-n",
+            "4"
+          ]
+        }
+      ]
+    },
+    "prompts": {
+      "paths": [
+        "scripts/render-prompts.py",
+        "scripts/lint-prompt-parity.py",
+        "scripts/create-signed-commit.py",
+        "prompts/**",
+        "tests/test_render_prompts.py",
+        "tests/test_prompt_*.py",
+        "tests/test_create_signed_commit.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_render_prompts.py",
+            "tests/test_prompt_parity_lint.py",
+            "tests/test_prompt_stack_hash.py",
+            "tests/test_create_signed_commit.py",
+            "-n",
+            "4"
+          ]
+        },
+        { "argv": ["python3", "scripts/render-prompts.py", "--check"] },
+        { "argv": ["python3", "scripts/lint-prompt-parity.py"] }
+      ]
+    },
+    "sync_engine": {
+      "paths": [
+        "scripts/sync-engine.py",
+        "scripts/sync-targets.yml",
+        "tests/test_sync_*.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_sync_engine.py",
+            "tests/test_sync_config_v2.py",
+            "tests/test_sync_engine_integration.py",
+            "-n",
+            "4"
+          ]
+        }
+      ]
+    },
+    "agent_loop": {
+      "paths": [
+        ".claude/skills/agent-loop/**",
+        ".codex/skills/agent-loop/**",
+        ".agents/skills/agent-loop/**",
+        "tests/test_agent_loop*.py",
+        "tests/test_agy_agent_loop.py",
+        "tests/test_codex_agent_loop*.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_agent_loop.py",
+            "tests/test_agent_loop_doctor.py",
+            "tests/test_agent_loop_state_version_parity.py",
+            "tests/test_agent_loop_state.py",
+            "tests/test_agent_loop_gating_contract.py",
+            "tests/test_agy_agent_loop.py",
+            "tests/test_codex_agent_loop.py",
+            "tests/test_codex_agent_loop_doctor.py",
+            "tests/test_codex_agent_loop_review_launcher.py",
+            "-n",
+            "4"
+          ]
+        }
+      ]
+    },
+    "docs": {
+      "paths": [
+        "docs/**",
+        "*.md",
+        ".agents/**/*.md",
+        ".claude/**/*.md",
+        ".codex/**/*.md",
+        "tests/test_comment_density.py",
+        "tests/test_skill_frontmatter.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_comment_density.py",
+            "tests/test_skill_frontmatter.py",
+            "-n",
+            "4"
+          ]
+        }
+      ]
+    },
+    "full": {
+      "commands": [{ "argv": ["python3", "-m", "pytest", "tests/", "-n", "4"] }]
+    }
+  }
+}

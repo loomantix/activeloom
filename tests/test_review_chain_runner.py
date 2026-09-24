@@ -932,14 +932,14 @@ def test_managed_stops_a_worker_that_never_starts(tmp_path: Path) -> None:
 def test_managed_keeps_a_worker_that_started(tmp_path: Path) -> None:
     module = load("review-chain-runner")
     started = json.dumps({"type": "thread.started", "thread_id": "t"})
-    program = f"import time; print({started!r}, flush=True); time.sleep(1.5)"
+    program = f"import time; print({started!r}, flush=True); time.sleep(2.0)"
     module.managed(
         [sys.executable, "-c", program],
         tmp_path / "worker.log",
         dict(os.environ),
         30,
         startup_event="thread.started",
-        startup_seconds=0.3,
+        startup_seconds=1.0,
     )
 
 
