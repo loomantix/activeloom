@@ -756,24 +756,12 @@ class Runner:
         return ids
 
     def comments(self, path: Path) -> None:
-        pages = json.loads(
-            command(
-                [
-                    "gh",
-                    "api",
-                    f"repos/{self.args.repo}/issues/{self.args.pr}/comments",
-                    "--paginate",
-                    "--slurp",
-                ]
-            )
-        )
         save(
             path,
             [
-                {"id": c["id"], "body": c["body"], "author": c["user"]["login"]}
-                for page in pages
-                for c in page
-                if not c["body"].lstrip().startswith("<!-- local-review-telemetry:")
+                row
+                for row in self.issue_comments()
+                if not row["body"].lstrip().startswith("<!-- local-review-telemetry:")
             ],
         )
 

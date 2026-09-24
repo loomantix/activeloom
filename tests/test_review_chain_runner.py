@@ -3984,7 +3984,9 @@ def test_unsettled_result_emits_blocked(telemetry_harness: Any, failure: str) ->
     assert len(telemetry_harness.emissions) == 1
 
 
-def test_worker_failure_mid_review_emits_blocked(telemetry_harness: Any) -> None:
+def test_worker_failure_mid_review_emits_blocked(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     h = telemetry_harness.harness
     h.controls.exit_code = 1
 
@@ -4003,12 +4005,9 @@ def test_worker_failure_mid_review_emits_blocked(telemetry_harness: Any) -> None
             )
         original(argv, log, env, *a, **k)
 
-    h.module.managed = execution
-    try:
-        with pytest.raises(h.module.Blocked):
-            h.runner(h.args, h.directory).run()
-    finally:
-        h.module.managed = original
+    monkeypatch.setattr(h.module, "managed", execution)
+    with pytest.raises(h.module.Blocked):
+        h.runner(h.args, h.directory).run()
     state = h.module.read(h.directory / "state.json")
     assert state["pending"]["phase"] == "execution_failed"
     assert [e["--status"] for e in telemetry_harness.emissions] == ["blocked"]
