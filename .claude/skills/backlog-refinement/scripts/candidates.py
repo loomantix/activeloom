@@ -149,10 +149,11 @@ def backfill_gaps(issue: dict[str, Any], *, decomposed: bool = False) -> list[st
     gaps = []
     if CONFIG.priority_labels and not any(n in CONFIG.priority_labels for n in labels):
         gaps.append("priority")
-    grill_class = [n for n in labels if n in GRILL_CLASS_BAILS]
-    if decomposed and grill_class == [EPIC_BAIL]:
-        grill_class = []
-    if grill_class and not any(n in GRILL_NEEDS_LABELS for n in labels):
+    if (
+        any(n in GRILL_CLASS_BAILS for n in labels)
+        and not any(n in GRILL_NEEDS_LABELS for n in labels)
+        and not (decomposed and needs_sub_issue_check(issue))
+    ):
         gaps.append("needs")
     return gaps
 
