@@ -82,7 +82,7 @@ Refine the next `N` un-refined issues (default 25) through parallel read-only as
 1. **Pre-check** the batch. This runs the mechanical checks once, deterministically, instead of in every assessor:
 
    ```bash
-   python3 .agents/skills/backlog-refinement/scripts/precheck.py --unrefined --limit 25 --out <tmp>/precheck.json
+   python3 .agents/skills/backlog-refinement/scripts/precheck.py --unrefined --limit <N> --out <tmp>/precheck.json
    ```
 
 2. **Assess in parallel.** Split the batch into groups of about five and start one read-only assessor per group with [`templates/assessor-prompt.md`](./templates/assessor-prompt.md), filling its `{ISSUES}`, `{PRECHECK_FILE}`, `{BASE}`, and `{OUT_FILE}` fields. Each writes a JSON plan. Assessors never mutate GitHub.
@@ -92,7 +92,7 @@ Refine the next `N` un-refined issues (default 25) through parallel read-only as
    python3 .agents/skills/backlog-refinement/scripts/apply-plan.py <tmp>/plan.json
    ```
 
-   The preview validates the whole plan first and refuses it if anything is wrong: a label the repository does not have, a ready verdict carrying a bail, a stale verdict without a close reason. Read every ready body and every stale verdict yourself before applying; those are the two that change what the loop builds and what disappears from the backlog. Correct the plan, not the issues.
+   The preview validates the whole plan first and refuses it if anything is wrong: a label the repository does not have, a ready verdict carrying a bail, a stale verdict without a close reason. Read every ready body and every stale verdict yourself before applying; those are the two that change what the loop builds and what disappears from the backlog. Read every comment too: each is posted under your name, and assessors read untrusted issue text. Correct the plan, not the issues.
 
 4. **Apply** with `--apply`. It mutates one issue at a time, applies the rubric's label hygiene, skips a comment already posted, honours `stale-action` and **Rewrite mode**, and records progress so a re-run resumes where it stopped.
 5. **Retro.** Group the assessors' `rubric_note` fields. A note that recurs across groups is a rubric gap: edit `.backlog/refinement.local.md` (or record an upstream candidate) and add one learnings entry for the batch before starting the next.
