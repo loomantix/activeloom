@@ -47,6 +47,8 @@ Write `{OUT_FILE}` as JSON, exactly this shape, with one entry per issue:
 }
 ```
 
-Use an empty list, never placeholder text, when there is nothing to add or remove: `apply-plan.py` rejects any label the repository does not have. `evidence` and `rubric_note` are for the reviewer and the refinement retro; the applier ignores them.
+Add a priority label only when the issue carries none; an existing one stands. Use `refined-only` for a human-reserved (assigned) issue: add at most a priority, and name in the comment the category it would get if unassigned.
+
+Use an empty list, never placeholder text, when there is nothing to add or remove: `apply-plan.py` rejects any label the repository does not have, and any label outside the refinement families above. `evidence` and `rubric_note` are for the reviewer and the refinement retro; the applier ignores them.
 
 Then reply with one line per issue: number, verdict, priority.

@@ -76,6 +76,15 @@ def gh(args: list[str], *, stdin: str | None = None) -> str:
 # --- validation (pure) ------------------------------------------------------
 
 
+def refinement_label(label: str, priority_labels: tuple[str, ...]) -> bool:
+    """Whether ``label`` belongs to a family the core rubric lets refinement set."""
+    return (
+        label in (REFINED, READY, BLOCKED)
+        or label.startswith((BAIL_PREFIX, NEEDS_PREFIX))
+        or label in priority_labels
+    )
+
+
 def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...]) -> list[str]:
     """Every problem with the plan; empty means it is safe to apply."""
     if not isinstance(plan, dict) or not isinstance(plan.get("issues"), list):
@@ -108,6 +117,8 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
             # that an assessor wrote where it meant an empty list.
             if label not in repo_labels:
                 errors.append(f"{where}: label {label!r} does not exist in this repository")
+            elif not refinement_label(label, priority_labels):
+                errors.append(f"{where}: label {label!r} is not one refinement sets")
         if set(add) & set(remove):
             errors.append(f"{where}: a label is both added and removed")
         comment = entry.get("comment")
@@ -147,19 +158,25 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
     return errors
 
 
-def label_changes(entry: dict[str, Any], current: set[str]) -> tuple[list[str], list[str]]:
+def label_changes(
+    entry: dict[str, Any], current: set[str], priority_labels: tuple[str, ...] = ()
+) -> tuple[list[str], list[str]]:
     """Labels to add and remove, including the rubric's hygiene rules."""
     add = list(dict.fromkeys([*entry.get("add_labels", []), REFINED]))
     remove = set(entry.get("remove_labels", []))
+    # An existing priority stands: never stack a second one on it.
+    if (current - remove) & set(priority_labels):
+        add = [x for x in add if x not in priority_labels or x in current]
     if entry["verdict"] == "ready":
         remove |= {x for x in current if x.startswith((BAIL_PREFIX, NEEDS_PREFIX))} | {BLOCKED}
     else:
         remove.add(READY)
     if entry["verdict"] == "stale":
         remove.add(BLOCKED)
-    # Replace an earlier assessment's bail/needs rather than stacking a second.
+    # Replace an earlier assessment's bail/needs rather than stacking a second;
+    # a needs: label only ever accompanies the bail it was set with.
     if any(x.startswith(BAIL_PREFIX) for x in add):
-        remove |= {x for x in current if x.startswith(BAIL_PREFIX)}
+        remove |= {x for x in current if x.startswith((BAIL_PREFIX, NEEDS_PREFIX))}
     if any(x.startswith(NEEDS_PREFIX) for x in add):
         remove |= {x for x in current if x.startswith(NEEDS_PREFIX)}
     to_add = [x for x in add if x not in current]
@@ -211,7 +228,7 @@ def apply_entry(entry: dict[str, Any], config: RubricConfig) -> str:
             finally:
                 os.unlink(tmp)
             notes.append("body rewritten")
-    add, remove = label_changes(entry, current)
+    add, remove = label_changes(entry, current, config.priority_labels)
     if add or remove:
         args = ["issue", "edit", number]
         if add:

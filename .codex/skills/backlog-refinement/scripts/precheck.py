@@ -183,11 +183,24 @@ def reference_states(owner: str, name: str, numbers: list[int]) -> dict[str, dic
             for n in chunk
         )
         query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {fields} }} }}'
-        out = run(["gh", "api", "graphql", "-f", f"query={query}"], check=False)
+        # gh exits non-zero on any per-alias NOT_FOUND (`#333333`, a deleted
+        # issue) while stdout still carries every node that did resolve.
         try:
-            repo = (json.loads(out or "{}").get("data") or {}).get("repository") or {}
+            result = subprocess.run(
+                ["gh", "api", "graphql", "-f", f"query={query}"],
+                capture_output=True, text=True, timeout=TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            fail(f"Timed out after {TIMEOUT}s: gh api graphql")
+        except OSError as exc:
+            fail(f"Could not run gh: {exc}")
+        try:
+            data = json.loads(result.stdout or "{}").get("data")
         except json.JSONDecodeError:
-            repo = {}
+            data = None
+        if data is None:
+            fail(result.stderr or f"gh api graphql exited {result.returncode}")
+        repo = data.get("repository") or {}
         for n in chunk:
             node = repo.get(f"n{n}")
             if node:

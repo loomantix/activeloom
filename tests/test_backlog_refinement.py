@@ -522,6 +522,30 @@ def test_precheck_resolves_package_relative_paths(precheck_mod: ModuleType) -> N
     assert precheck_mod.resolve_path("gone/file.ts", tree) == []
 
 
+def test_precheck_keeps_resolved_references_past_a_not_found(
+    precheck_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gh exits 1 on a partial NOT_FOUND but still prints the resolved nodes.
+    out = json.dumps({
+        "data": {"repository": {"n5": {"__typename": "Issue", "state": "CLOSED", "title": "t"}, "n333333": None}},
+        "errors": [{"type": "NOT_FOUND"}],
+    })
+    monkeypatch.setattr(
+        precheck_mod.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout=out, stderr="gh: not found"),
+    )
+    assert precheck_mod.reference_states("o", "r", [5, 333333]) == {
+        "5": {"type": "Issue", "state": "CLOSED", "title": "t"},
+    }
+
+    monkeypatch.setattr(
+        precheck_mod.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr="HTTP 401"),
+    )
+    with pytest.raises(SystemExit):
+        precheck_mod.reference_states("o", "r", [5])
+
+
 def _facts(**overrides: Any) -> dict[str, Any]:
     facts: dict[str, Any] = {
         "sub_issues": {"total": 0, "open": [], "closed": []},
@@ -567,7 +591,7 @@ def apply_mod() -> ModuleType:
 REPO_LABELS = {
     "dev: agent", "agent: refined", "agent-bail: stale", "agent-bail: epic",
     "agent-bail: open-decision", "agent-bail: sensitive-domain", "needs: grill",
-    "needs: product-grill", "status: blocked", *PRIORITIES.split(", "),
+    "needs: product-grill", "status: blocked", "release: ship", *PRIORITIES.split(", "),
 }
 PRIORITY_TUPLE = tuple(PRIORITIES.split(", "))
 
@@ -610,6 +634,8 @@ def test_apply_plan_accepts_a_well_formed_plan(apply_mod: ModuleType) -> None:
         (_entry(comment="  "), "comment is required"),
         (_entry(add_labels=["agent-bail: epic", "priority: low", "priority: high"]), "more than one priority"),
         (_entry(add_labels=["agent-bail: epic", "dev: agent"]), "only a ready verdict"),
+        (_entry(add_labels=["agent-bail: epic", "release: ship"]), "not one refinement sets"),
+        (_entry(remove_labels=["release: ship"]), "not one refinement sets"),
     ],
 )
 def test_apply_plan_refuses_unsafe_entries(apply_mod: ModuleType, entry: dict[str, Any], message: str) -> None:
@@ -635,6 +661,20 @@ def test_apply_plan_label_hygiene(apply_mod: ModuleType) -> None:
 
     stale = _entry(verdict="stale", add_labels=["agent-bail: stale"], close_reason="completed")
     assert apply_mod.label_changes(stale, {"status: blocked"})[1] == ["status: blocked"]
+
+    # A new bail without a needs: label drops the earlier assessment's needs:.
+    remove = apply_mod.label_changes(stale, {"agent-bail: spec-gap", "needs: grill"})[1]
+    assert remove == ["agent-bail: spec-gap", "needs: grill"]
+
+
+def test_apply_plan_never_stacks_a_second_priority(apply_mod: ModuleType) -> None:
+    add, _ = apply_mod.label_changes(_entry(), {"priority: low"}, PRIORITY_TUPLE)
+    assert "priority: medium" not in add
+    # Replacing the existing priority on purpose still works.
+    add, remove = apply_mod.label_changes(
+        _entry(remove_labels=["priority: low"]), {"priority: low"}, PRIORITY_TUPLE
+    )
+    assert "priority: medium" in add and "priority: low" in remove
 
 
 class FakeGh:
@@ -706,3 +746,42 @@ def test_apply_plan_records_progress(apply_mod: ModuleType, tmp_path: Path) -> N
     assert apply_mod.load_progress(path) == set()
     apply_mod.save_progress(path, {3, 1})
     assert apply_mod.load_progress(path) == {1, 3}
+
+
+def _run_main(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    plan: dict[str, Any], *flags: str,
+) -> tuple[FakeGh, str]:
+    fake = FakeGh()
+    labels = json.dumps([{"name": n} for n in REPO_LABELS])
+
+    def gh(args: list[str], *, stdin: str | None = None) -> str:
+        return labels if args[:2] == ["label", "list"] else fake(args, stdin=stdin)
+
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan), encoding="utf-8")
+    monkeypatch.setattr(apply_mod, "gh", gh)
+    monkeypatch.setattr(apply_mod, "repo_root", lambda: str(tmp_path))
+    monkeypatch.setattr(apply_mod, "load_config", lambda root: _config(apply_mod))
+    monkeypatch.setattr("sys.argv", ["apply-plan.py", str(path), *flags])
+    return fake, str(path)
+
+
+def test_apply_plan_main_mutates_only_a_valid_plan_with_apply(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {"issues": [_entry(add_labels=None)]}, "--apply")
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert fake.calls == []
+
+    plan = {"issues": [_entry(), _entry(number=8)]}
+    fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, plan)
+    assert apply_mod.main() == 0
+    assert fake.calls == []
+
+    fake, path = _run_main(apply_mod, monkeypatch, tmp_path, plan, "--apply")
+    apply_mod.save_progress(path + ".applied.json", {7})
+    assert apply_mod.main() == 0
+    assert {c[2] for c in fake.calls} == {"8"}
+    assert apply_mod.load_progress(path + ".applied.json") == {7, 8}
