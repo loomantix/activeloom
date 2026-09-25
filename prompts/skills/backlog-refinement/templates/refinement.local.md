@@ -17,6 +17,14 @@ Labels on issues a scheduled workflow opens and closes; refinement skips them en
 
 <!-- auto-managed-labels: -->
 
+Title prefixes that record a priority someone already set, highest first and one per priority label above (e.g. `[P0], [P1], [P2], [P3]`). Refinement treats a matching prefix as an existing priority. Empty means titles carry none. Keep exactly one marker line.
+
+<!-- priority-title-prefixes: -->
+
+What refinement does with a verified-stale issue: `recommend` a close for a human, or `close` it itself, after its evidence comment. Choose `close` when reopening a wrongly closed issue is cheap. Keep exactly one marker line.
+
+<!-- stale-action: recommend -->
+
 ## Priority definitions
 
 _Optional. Leave empty to use the core rubric's tier table, or replace it with this repository's wording._

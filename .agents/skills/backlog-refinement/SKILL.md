@@ -60,7 +60,7 @@ Default refines the next un-refined issue; `--limit N` a batch; `--all` the whol
 2. **Set priority** (core rubric, _Priority_). Skip when the issue already carries one of the local file's priority labels — a priority a human set stands. Otherwise apply exactly one, judged from impact and urgency alone. Readiness does not change priority: an excluded issue gets one too.
 3. **Early-exit excludes** — if the title/body matches a Bucket-B disqualifier on its face (core §3 or a local one), apply `agent: refined` + the `agent-bail:` label + for a grill-class category the `needs:` label the core rubric maps it to, comment one line citing the clause, and move on.
 4. **Verify against HEAD** (core §2). Fetch the integration branch the local file names:
-   - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit / PR / `file:line`) and recommend close. Closing is the human's call.
+   - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit / PR / `file:line`) and recommend close. Closing is the human's call, unless the local file's `stale-action` marker is `close`: then close it yourself as `completed` or `not planned`, after the evidence comment.
    - **Partially shipped** → rewrite the body to the residual and assess the residual.
    - **Still open** → continue.
 5. **External-dependency check** (core §2) — a dependency that is not published and consumable from this repo → `status: blocked` + `agent-bail: cross-repo`, comment, stop.
@@ -116,7 +116,7 @@ An RCA over a run that produced bails is complete when every bail has a learning
 ## Boundaries
 
 - Synced files — this skill, `core-rubric.md`, the `agent-loop` skill and scripts, shared instruction files — are edited upstream. Repo changes go in `.backlog/` or `agent-loop-instructions.md`.
-- Refinement labels and recommends; closing and reassigning issues stay with humans.
+- Refinement labels and recommends; closing and reassigning issues stay with humans. The one exception is a verified-stale issue in a repository whose local file sets `stale-action: close`.
 - Bucket-B work — synced-surface, credential-gated, open-decision, cross-repo, or a local sensitive path — is excluded by definition, never tagged `dev: agent`.
 
 `issues` is the day-to-day workflow (ready queue, claim, link); this skill decides what earns the `dev: agent` label `issues ready --agent` and `agent-loop` key on, and which interview — `grill` or `product-grill` — each excluded issue needs next.

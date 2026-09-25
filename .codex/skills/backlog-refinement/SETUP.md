@@ -16,6 +16,8 @@ Report all of this to the user before asking anything:
 - `gh label list --limit 500 --json name,description` — which of the labels in the core rubric's label model and §3 already exist, and every existing label that looks like a priority scheme (a `priority` prefix, `P0`–`P3`, `urgent`, `critical`).
 - `agent-loop-instructions.md` at the repository root, if present, and whether it names a legacy rubric path.
 - The default branch, and whether the repo ships through a separate integration branch (a `staging` or `develop` branch that PRs target).
+- The repository's deeper-review triggers: the _Review Tier_ section of `REVIEW_WORKFLOW.md` under any harness root, and any review-tier or sensitive-area list in `CLAUDE.md` or `AGENTS.md`. These are the draft for the sensitive paths.
+- Priority set in issue titles: `gh issue list --state open --limit 500 --json title --jq '.[].title'`, scanned for a recurring prefix such as `[P0]`–`[P3]`. Count how many titles carry one.
 
 If both local files exist with no `TODO(backlog):` markers, no legacy file remains, and every label exists, say the repository is already set up and stop.
 
@@ -39,11 +41,13 @@ Then continue with step 3 for anything the legacy rubric did not answer.
 
 Ask the open questions in one round, numbered, each with your recommended answer and the evidence behind it. Ask only what step 1 and step 2 left open:
 
-1. **Integration branch** — the branch the loop's PRs target, and so the branch verify-against-HEAD fetches.
-2. **Sensitive paths** — the parts of this repository where a non-trivial change needs a human reviewer even with green CI (regulated data, money movement, authentication, production access, audit trails), and the `agent-bail:` label to use for them. Draft candidates from the code and from any existing review addendum; the user decides.
+1. **Integration branch** — the branch the loop's PRs target, and so the branch verify-against-HEAD fetches. When it _is_ the default branch, a PR's `Closes #N` closes the issue on merge, so there is no merged-but-unpromoted state to track: say so in the drafted file's _Settings_. When it is not, issues stay open until promotion, and the local file needs a rule for work merged to the integration branch but not yet promoted.
+2. **Sensitive paths** — the parts of this repository where a non-trivial change needs a human reviewer even with green CI (regulated data, money movement, authentication, production access, audit trails), and the `agent-bail:` label to use for them. Draft them from the review-tier triggers step 1 found: turn each trigger into named paths and the invariant they protect. Add candidates from the code only where the triggers are silent. The user decides.
 3. **Priority labels** — the four label names, highest first. When the repo already has a priority scheme, recommend reusing it rather than creating a parallel one; when it has two, recommend one and point out that the other should be retired. Ask whether the core tier definitions fit or the repo wants its own wording.
-4. **Auto-managed labels** — labels on issues that a scheduled workflow opens and closes. Look for them in `.github/workflows/` before asking.
-5. **Rewrite mode** — `edit` (refinement rewrites the issue body) or `suggest` (it posts the rewrite as a comment for a human to apply).
+4. **Title-prefix priorities** — when step 1 found a recurring prefix, propose the `priority-title-prefixes` marker mapping each prefix to a priority label, highest first. Ask whether any family of issues — the children of one epic, say — carries its parent's prefix on purpose while each child is labelled separately; record that family as a local exception, so the mismatch is not reported as a conflict.
+5. **Auto-managed labels** — labels on issues that a scheduled workflow opens and closes. Look for them in `.github/workflows/` before asking.
+6. **Rewrite mode** — `edit` (refinement rewrites the issue body) or `suggest` (it posts the rewrite as a comment for a human to apply).
+7. **Stale action** — `recommend` (refinement recommends a close for a human) or `close` (it closes a verified-stale issue itself, after the evidence comment). Recommend `close` when reopening a wrongly closed issue is cheap, as it is in most repositories.
 
 ## 4. Write the files
 
@@ -51,10 +55,32 @@ Create `.backlog/refinement.local.md` from the template — or, when it already 
 
 ## 5. Create the labels
 
-List the labels that do not exist yet — `dev: agent`, `agent: refined`, `status: blocked`, each core and local `agent-bail:` category, `needs: grill`, `needs: product-grill`, and the four priority labels — and create them once the user agrees:
+List the labels that do not exist yet — `dev: agent`, `agent: refined`, `status: blocked`, each core and local `agent-bail:` category, `needs: grill`, `needs: product-grill`, and the four priority labels — and create them in one step once the user agrees. Edit the block first: replace the priority names with the settled ones, add a line per local `agent-bail:` category, and drop nothing else. It skips every label that already exists.
 
 ```bash
-gh label create "<name>" --color <hex> --description "<one line from the core rubric>"
+existing=$(gh label list --limit 500 --json name --jq '.[].name')
+while IFS='|' read -r name color desc; do
+  if grep -Fxq -- "$name" <<<"$existing"; then echo "exists: $name"; continue; fi
+  gh label create "$name" --color "$color" --description "$desc"
+done <<'LABELS'
+dev: agent|0e8a16|Ready for agent-loop
+agent: refined|c5def5|Assessed by backlog refinement
+status: blocked|b60205|Waiting on something outside this repository
+agent-bail: stale|cfd3d7|Excluded: already shipped or out of date
+agent-bail: spec-gap|fbca04|Excluded: under-specified
+agent-bail: loop-mechanics|fbca04|Bailed: avoidable loop or tooling failure
+agent-bail: cross-repo|d93f0b|Excluded: needs another repository or unmerged upstream
+agent-bail: open-decision|d93f0b|Excluded: unresolved design, product, or policy question
+agent-bail: credential-gate|d93f0b|Excluded: needs a credential-gated build or action
+agent-bail: synced-surface|d93f0b|Excluded: change belongs upstream
+agent-bail: epic|d93f0b|Excluded: tracking issue, not a bounded task
+needs: grill|5319e7|Needs a technical interview before it is buildable
+needs: product-grill|5319e7|Needs a product interview before it is buildable
+priority: critical|b60205|Security, data loss, or production down
+priority: high|d93f0b|User-facing bug, obligation, or blocking other work
+priority: medium|fbca04|Worthwhile improvement or bug with a workaround
+priority: low|0e8a16|Polish, nice-to-have, or speculative
+LABELS
 ```
 
 Never rename or delete an existing label as part of setup; migrating issues off a retired scheme is a separate, confirmed step.

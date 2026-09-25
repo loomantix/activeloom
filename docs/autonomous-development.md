@@ -18,7 +18,7 @@ Start by telling the user, in plain terms:
 - **What the pipeline does.** `backlog-refinement` sorts the issue backlog into work an unattended agent can finish and work that needs a person, and says which interview (`grill` or `product-grill`) each excluded issue needs next. `agent-loop` then implements an explicit list of ready issues, one worktree and one draft PR per issue, each reviewed locally by more than one model.
 - **What it needs from them.** An authenticated `gh`; the Claude **and** Codex CLIs for `agent-loop`, with their own model access; the repository's toolchain on this machine. Say which of these are missing now.
 - **What it will change, and when it asks first.** Repository files arrive through a reviewed PR. `backlog-refinement` creates labels, and during `refine` it edits issue bodies, labels, and comments. `agent-loop` claims issues, pushes branches, and opens draft PRs. Get a yes before each of those three.
-- **What it never does.** Merge, deploy, close issues, mark a PR ready on its own authority, or trigger hosted reviewers. Closing and merging stay with people.
+- **What it never does.** Merge, deploy, close issues, mark a PR ready on its own authority, or trigger hosted reviewers. Closing and merging stay with people. The one exception is opt-in: a repository whose rubric sets `stale-action: close` lets refinement close issues it has verified as already shipped.
 
 Then establish the current state (next section) and resume from the first incomplete stage. Report the stage you found before doing anything else, so the user knows whether this is a fresh install or a repair.
 
@@ -60,6 +60,7 @@ Ask these in one round, each with a recommended answer and the evidence behind i
 - **Sensitive paths.** Where a non-trivial change needs a human reviewer even with green CI. Draft them from the repository's own review-tier triggers — whatever already selects its deeper review path usually belongs here — and name real paths, not categories.
 - **Priority scheme.** Reuse what exists rather than creating a parallel one. Look at existing labels _and_ issue titles: a `[P0]`–`[P3]` title prefix is a priority someone already set, and the local rubric can map it to the label scheme.
 - **Rewrite mode.** `edit` lets refinement rewrite issue bodies (the original is preserved in a blockquote); `suggest` posts the rewrite as a comment instead.
+- **Stale action.** `recommend` leaves closing a verified-stale issue to a person; `close` lets refinement close it after posting the evidence. Recommend `close` when reopening a wrongly closed issue is cheap.
 - **Harnesses and reviewer models.** Which harness trees to commit, and the reviewer and worker model and effort for `review-setup`. `agent-loop` needs both Claude and Codex regardless of which harness starts it.
 
 ## What real setups have taught
@@ -68,6 +69,13 @@ Ask these in one round, each with a recommended answer and the evidence behind i
 - **Per-harness copies drift.** Repositories that predate `.backlog/` kept a `RUBRIC.md` and `LEARNINGS.md` under each harness root, and the copies diverged in wording. `backlog-refinement setup` migrates them to the single repository-root layer; delete the old copies once migrated.
 - **Excluded work needs a way back.** An exclusion without a next step just sits there. The `needs: grill` and `needs: product-grill` labels are the queues that turn excluded issues into ready ones: run the interview, then re-refine.
 - **Repository-specific rules stay local.** Sensitive paths, label names, and incident history go in `.backlog/refinement.local.md`. A rule that would hold in any repository is an upstream candidate for `core-rubric.md`; record it under _Upstream candidates_ in the local file and propose it here.
+
+## What to expect from the first refinement
+
+- **Most issues end up excluded in an early, product-heavy repository, and that is correct.** One such repository came out of its first full refinement with 8 of 131 open issues ready. Its main output was a ranked grill queue — about 36 product interviews and 48 technical ones. A low ready count means refinement is working, not failing.
+- **Each outcome feeds a different next step.** The ready queue feeds `agent-loop`. The `needs: grill` and `needs: product-grill` queues feed `grill` and `product-grill`, highest priority first; `backlog-refinement queue` counts them. `status: blocked` and `cross-repo` issues wait on something outside the repository.
+- **Sample, then batch.** Refine about 5 issues and review every result, then run batches of about 25 with [`refine --batch`](../.claude/skills/backlog-refinement/SKILL.md), folding each batch's lessons into `.backlog/refinement.local.md` before the next. In practice every batch surfaces rules that make the next one cleaner.
+- **Budget for it.** Parallel assessment of 131 issues used about 2.6M subagent tokens. The batch mode's `precheck.py` runs the mechanical stale checks once, deterministically, so assessors spend their tokens on judgement.
 
 ## Report the result
 

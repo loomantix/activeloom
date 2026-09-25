@@ -4,7 +4,7 @@
 >
 > This file is synced from upstream and overwritten on every sync. A rule that names this repository's paths, labels, or past incidents belongs in `.backlog/refinement.local.md`; a rule that would hold in any repository belongs here, proposed upstream.
 >
-> **Core rubric version: 3.** (v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
+> **Core rubric version: 4.** (v4: bail precedence, the stale-action setting, verify-against-HEAD sub-checks, the child-closure check, decomposed epics without a `needs:` label, and rules for assigned issues, split recommendations, orphaned decisions, `[Decision]`/`[Spike]` titles, index issues, and body drift. v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
 
 ## The two questions (the continuous-improvement contract)
 
@@ -53,9 +53,11 @@ A `needs:` label names the one interview that would turn an excluded issue into 
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `open-decision`        | `needs: product-grill` when the open question is about users, value, scope, or policy toward them; `needs: grill` when it is about how to build it.        |
 | `spec-gap`             | `needs: product-grill` when the missing piece is what the user needs from it; `needs: grill` when it is what done looks like technically.                 |
-| `epic`                 | `needs: grill` to break it into bounded children; `needs: product-grill` instead when the epic's premise itself is undecided.                             |
+| `epic`                 | Only an epic not yet split into child issues: `needs: grill` to break it into bounded children; `needs: product-grill` instead when its premise is undecided. |
 
-Choose one — the interview that has to happen **first**. A product question outranks a technical one, because its answer can make the technical question moot. Every other bail category is unblocked by something other than an interview (a credential, another repository, a human review, an upstream change, a close) and gets no `needs:` label.
+Choose one — the interview that has to happen **first**. A product question outranks a technical one, because its answer can make the technical question moot. Every other bail category is unblocked by something other than an interview (a credential, another repository, a human review, an upstream change, a close) and gets no `needs:` label — except that an open decision keeps its `needs:` label when a permanent category wins precedence (§3, _Choosing the category_).
+
+An epic already split into child issues — listed in its body or a comment, or as GitHub sub-issues — gets no `needs:` label. No interview is owed; the children are what refinement assesses. Name them in the comment.
 
 ## §1 — What makes an issue agent-intelligible
 
@@ -75,13 +77,24 @@ When an issue is _shaped_ like agent work but fails §1, refinement transforms i
 
 | Transformation                 | Trigger                                     | Action                                                                                                                                                                                                                  |
 | ------------------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Verify-against-HEAD**        | Always, at tag time                         | Check the described bug/behavior against the freshly fetched integration branch. Already fixed → `agent-bail: stale`, recommend close, do not tag. Partially shipped → re-scope the body to the **residual** and re-assess. |
+| **Verify-against-HEAD**        | Always, at tag time                         | Check the described bug/behavior against the freshly fetched integration branch, running every sub-check below. Already fixed → `agent-bail: stale` and the stale action (§3), do not tag. Partially shipped → re-scope the body to the **residual** and re-assess. |
 | **Re-verify pre-tagged queue** | A `dev: agent` issue lacks `agent: refined` | It was tagged by something else and never verified against HEAD, yet it is exactly what the loop consumes. Run the full refine over the `candidates.py` **re-verify** bucket before trusting the queue.                 |
 | **External-dep availability**  | The issue names a package/service dependency | Confirm it is published and consumable from this repo. If not → `status: blocked` + `agent-bail: cross-repo`, do not tag.                                                                                               |
 | **Add acceptance criteria**    | §1.2 fails                                  | Derive a concrete verifiable check: which test file, which command, which observable.                                                                                                                                   |
 | **Add file pointers**          | §1.6 fails                                  | Grep the repo; list the files/symbols the agent will touch.                                                                                                                                                             |
 | **Add out-of-scope guardrails** | Scope is fuzzy at the edges                | List what is _not_ in scope so the agent does not wander.                                                                                                                                                               |
+| **Child-closure check**        | The work is split into children (a task list, "broken out into", sub-issues), before choosing `epic` | Check every child's state. All closed → verify the parent's own acceptance criteria against HEAD: nothing left is `stale`, a residual is re-assessed as the issue. Only open children keep it an `epic`. |
 | **Split**                      | §1.1 fails (multi-change)                   | Propose child issues; tag only the bounded ones. The parent gets `agent-bail: epic` and its `needs:` label.                                                                                                             |
+| **Split recommendation**       | A residual holds independent parts, and one would be agent-ready alone | Keep the dominant bail on the issue and name the proposed child and its scope in the comment. Create child issues only with a human's go-ahead.                                                                |
+
+### Verify-against-HEAD sub-checks
+
+Run all four on every verify-against-HEAD.
+
+- **(a) Re-run the check yourself.** Counts, version pins, and "X still exists" claims go stale — in the body and in every comment. Run the grep or command rather than trusting either. A close condition stated only in a comment is still the close condition.
+- **(b) Cited anchors still exist.** Every named file, symbol, test block, or `file:line` is still present at HEAD.
+- **(c) Side-item closure.** Search merged PRs for the issue number, in their bodies and closing references. A merged PR that names the issue without closing it may have shipped the work.
+- **(d) Cited foundation merged.** A PR the issue's design stands on actually merged, and was not closed unmerged.
 
 ## §3 — Disqualifiers (INHERENT — exclude, never tag `dev: agent`)
 
@@ -89,7 +102,7 @@ Each maps to an `agent-bail:` label. Refinement applies these at prep time; the 
 
 ### Bucket A — preventable by prep (a loop bail here means **refinement missed something** → improve §2)
 
-- **`agent-bail: stale`** — work already shipped, or the issue is out of date vs HEAD. Recommend close.
+- **`agent-bail: stale`** — work already shipped, or the issue is out of date vs HEAD. Also stale: an index or coordination issue once every piece of work it tracks has landed or moved to its own issue — name any tracked item with no home yet before closing it; and an issue whose residual a recorded deferral moved into another open issue — say where it went, and comment on the receiving issue so it inherits the items. Take the stale action below.
 - **`agent-bail: spec-gap`** — under-specified; the agent cannot determine done-ness. _Refinement should have added acceptance criteria and file pointers, or excluded it when the gap needs a human's knowledge._ Grill-class.
 - **`agent-bail: loop-mechanics`** — the issue _was_ agent-shaped but the run hit an avoidable mechanical failure (sibling-revert race, env/tooling gap, prompt ambiguity, transient infra). _The fix lives in `agent-loop-instructions.md` or the upstream script, not the rubric._
 
@@ -100,6 +113,29 @@ Each maps to an `agent-bail:` label. Refinement applies these at prep time; the 
 - **`agent-bail: credential-gate`** — requires a credential-gated build or action (store submission, a physical device, secret/ruleset/key mutation).
 - **`agent-bail: synced-surface`** — acceptance requires editing a file synced from upstream; the change belongs upstream.
 - **`agent-bail: epic`** — a tracking/coordination issue, not a bounded task. Grill-class.
+
+### Choosing the category
+
+§4 and refinement both label one dominant category. When several apply:
+
+1. **A permanent category beats a grill-class one.** No amount of prep removes the local file's sensitive-path category, `credential-gate`, `cross-repo`, or `synced-surface`, so each wins over `open-decision`, `spec-gap`, or `epic`. Among the permanent ones, prefer them in that order.
+2. **An open decision keeps its `needs:` label** even when a permanent category wins, so the question still reaches a grill queue instead of hiding behind the bail.
+3. **Between two grill-class reasons,** take the one whose interview has to happen first.
+4. Name every other category that applies in the comment.
+
+### Assessment rules
+
+- **`[Decision]` and `[Spike]` titles** are presumed `open-decision` — once you have confirmed the decision was not already made in the repository's decision records, specs, or code at HEAD. A made decision is `stale`. A spike that needs dashboards, billing, vendor accounts, or real third-party data is `credential-gate` on sight, however bounded it looks.
+- **Assigned issues** are reserved by a human: apply `agent: refined` and no bail label, and never `dev: agent`. Say in the comment which category the issue _would_ get if unassigned, so an unassignment does not drop a sensitive residual back into the pool unmarked.
+- **Orphaned decisions.** An open decision found only in a comment, belonging to no issue, is named in the refinement comment as needing its own `[Decision]` issue.
+- **Drift in any body.** When an issue's header contradicts its own history — a retitled priority, a superseded outcome, a scope later comments changed — flag it in the comment.
+
+### The stale action
+
+The local file's `<!-- stale-action: recommend | close -->` marker sets what refinement does with a verified-stale issue. It defaults to `recommend`.
+
+- **`recommend`** — apply `agent: refined` + `agent-bail: stale`, comment with the evidence (commit, PR, or `file:line`), and recommend close. A human closes it.
+- **`close`** — post the evidence comment first, apply the same labels, then close the issue as `completed` when the work shipped or `not planned` when it is obsolete or superseded. Remove any state label whose premise the close resolves, such as `status: blocked`. Every other close — a duplicate, a won't-fix — stays a recommendation.
 
 ### Workflow-auto-managed issues (skipped entirely — not even labelled)
 
@@ -126,6 +162,8 @@ When an `<<INVOKE>>agent-loop` iteration exits **without a PR**, the inner agent
 The loop does not set `needs:` or priority labels; the next refinement pass adds them through the **backfill** bucket.
 
 ## §5 — Agent-ready issue-body template (rewrite target)
+
+A rewrite quotes only the user-facing wording the original report specifies. It never invents new copy — labels, messages, onboarding text; that stays out of scope as a product call.
 
 ```markdown
 > **Refined for agent-loop** (core rubric v<N>, local rubric v<M>, <date>). Original report preserved below.
