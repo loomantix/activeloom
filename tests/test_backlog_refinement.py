@@ -513,7 +513,9 @@ def test_precheck_finds_merged_prs_that_never_closed_the_issue(precheck_mod: Mod
 def test_precheck_resolves_package_relative_paths(precheck_mod: ModuleType) -> None:
     tree = ["apps/api/src/auth/guard.ts", "apps/web/src/auth/guard.ts", "apps/api/src/main.ts", "README.md"]
     assert precheck_mod.resolve_path("README.md", tree) == ["README.md"]
+    assert precheck_mod.resolve_path("./README.md", tree) == ["README.md"]
     assert precheck_mod.resolve_path("src/main.ts", tree) == ["apps/api/src/main.ts"]
+    assert precheck_mod.resolve_path("./src/main.ts", tree) == ["apps/api/src/main.ts"]
     assert precheck_mod.resolve_path("auth/guard.ts", tree) == [
         "apps/api/src/auth/guard.ts", "apps/web/src/auth/guard.ts",
     ]
@@ -598,6 +600,8 @@ def test_apply_plan_accepts_a_well_formed_plan(apply_mod: ModuleType) -> None:
     ("entry", "message"),
     [
         (_entry(remove_labels=["none (no label present)"]), "does not exist"),
+        (_entry(add_labels=None), "must be lists of label names"),
+        (_entry(remove_labels=None), "must be lists of label names"),
         (_entry(verdict="ready", add_labels=["dev: agent"]), "needs the rewritten body"),
         (_entry(add_labels=["agent-bail: epic", "agent-bail: open-decision"]), "exactly one agent-bail"),
         (_entry(verdict="stale", add_labels=["agent-bail: stale"]), "close_reason"),

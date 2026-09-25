@@ -100,7 +100,7 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
             errors.append(f"{where}: verdict must be one of {', '.join(VERDICTS)}")
             continue
         add, remove = entry.get("add_labels", []), entry.get("remove_labels", [])
-        if not all(isinstance(x, str) for x in [*add, *remove]) or not isinstance(add, list) or not isinstance(remove, list):
+        if not isinstance(add, list) or not isinstance(remove, list) or not all(isinstance(x, str) for x in [*add, *remove]):
             errors.append(f"{where}: add_labels and remove_labels must be lists of label names")
             continue
         for label in [*add, *remove]:

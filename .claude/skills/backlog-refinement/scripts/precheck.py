@@ -216,6 +216,7 @@ def resolve_path(path: str, tree: list[str]) -> list[str]:
     Issues often cite paths relative to a package (`auth/guard.ts` for
     `apps/api/src/auth/guard.ts`); a bare existence check would call those missing.
     """
+    path = path.removeprefix("./")
     if path in tree:
         return [path]
     return [f for f in tree if f.endswith("/" + path)]
@@ -228,7 +229,12 @@ def check_anchors(anchors: list[dict[str, Any]], base: str, tree: list[str]) -> 
         resolved = matches[0] if len(matches) == 1 else None
         line_count = None
         if resolved and anchor["line"]:
-            line_count = run(["git", "show", f"origin/{base}:{resolved}"], check=False).count("\n")
+            res = subprocess.run(
+                ["git", "show", f"origin/{base}:{resolved}"],
+                capture_output=True, text=True, timeout=TIMEOUT,
+            )
+            if res.returncode == 0:
+                line_count = len(res.stdout.splitlines())
         checked.append({
             **anchor,
             "exists": bool(matches),
