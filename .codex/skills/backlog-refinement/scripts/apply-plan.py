@@ -90,6 +90,8 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
     if not isinstance(plan, dict) or not isinstance(plan.get("issues"), list):
         return ['The plan must be an object with an "issues" list.']
     errors: list[str] = []
+    if REFINED not in repo_labels:
+        errors.append(f"label {REFINED!r} does not exist in this repository; every entry adds it")
     seen: set[int] = set()
     for index, entry in enumerate(plan["issues"]):
         where = f"issues[{index}]"
@@ -141,8 +143,8 @@ def validate(plan: Any, repo_labels: set[str], priority_labels: tuple[str, ...])
         if verdict == "ready":
             if READY not in add:
                 errors.append(f"{where}: ready must add {READY!r}")
-            if bails or needs:
-                errors.append(f"{where}: ready cannot carry agent-bail: or needs: labels")
+            if bails or needs or BLOCKED in add:
+                errors.append(f"{where}: ready cannot carry agent-bail:, needs: or {BLOCKED!r} labels")
             if body is None:
                 errors.append(f"{where}: ready needs the rewritten body")
         elif READY in add:

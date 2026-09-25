@@ -404,7 +404,7 @@ def test_rubric_reads_every_setting(tmp_path: Path) -> None:
     assert mod.title_priority("Rotate keys [P1]", config) is None
 
 
-def test_rubric_defaults_are_conservative(tmp_path: Path) -> None:
+def test_rubric_defaults_are_conservative(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _, config = _load_rubric_config(
         tmp_path,
         "- **Integration branch:** `TODO(backlog): the branch loop PRs target`\n"
@@ -413,6 +413,7 @@ def test_rubric_defaults_are_conservative(tmp_path: Path) -> None:
     assert config.integration_branch is None
     assert config.stale_action == "recommend"
     assert config.rewrite_mode == "edit"
+    assert "no Rewrite mode setting" in capsys.readouterr().err
     assert config.title_prefixes == ()
 
 
@@ -636,11 +637,17 @@ def test_apply_plan_accepts_a_well_formed_plan(apply_mod: ModuleType) -> None:
         (_entry(add_labels=["agent-bail: epic", "dev: agent"]), "only a ready verdict"),
         (_entry(add_labels=["agent-bail: epic", "release: ship"]), "not one refinement sets"),
         (_entry(remove_labels=["release: ship"]), "not one refinement sets"),
+        (_entry(verdict="ready", add_labels=["dev: agent", "status: blocked"], body="b"), "ready cannot carry"),
     ],
 )
 def test_apply_plan_refuses_unsafe_entries(apply_mod: ModuleType, entry: dict[str, Any], message: str) -> None:
     errors = apply_mod.validate({"issues": [entry]}, REPO_LABELS, PRIORITY_TUPLE)
     assert any(message in e for e in errors), errors
+
+
+def test_apply_plan_refuses_a_repo_without_the_refined_label(apply_mod: ModuleType) -> None:
+    errors = apply_mod.validate({"issues": [_entry()]}, REPO_LABELS - {"agent: refined"}, PRIORITY_TUPLE)
+    assert any("'agent: refined' does not exist" in e for e in errors), errors
 
 
 def test_apply_plan_refuses_duplicate_issues(apply_mod: ModuleType) -> None:
@@ -725,6 +732,24 @@ def test_apply_plan_suggest_mode_posts_the_body_as_a_comment(
     apply_mod.apply_entry(ready, _config(apply_mod, rewrite_mode="suggest"))
     assert not any("--body-file" in c and c[1] == "edit" for c in fake.calls)
     assert fake.verbs().count("issue comment") == 2
+
+
+def test_apply_plan_edit_mode_replaces_the_body(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeGh()
+    written: list[str] = []
+
+    def gh(args: list[str], *, stdin: str | None = None) -> str:
+        if args[:2] == ["issue", "edit"] and "--body-file" in args:
+            written.append(Path(args[args.index("--body-file") + 1]).read_text(encoding="utf-8"))
+        return fake(args, stdin=stdin)
+
+    monkeypatch.setattr(apply_mod, "gh", gh)
+    ready = _entry(verdict="ready", add_labels=["dev: agent"], body="## Goal\n\nShip it.\n\n")
+    assert "body rewritten" in apply_mod.apply_entry(ready, _config(apply_mod))
+    assert written == ["## Goal\n\nShip it.\n"]
+    assert fake.verbs().count("issue comment") == 1
 
 
 def test_apply_plan_skips_posted_comments_and_closed_issues(

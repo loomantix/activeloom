@@ -148,7 +148,13 @@ def load_config(root: str) -> RubricConfig:
             f"{', '.join(STALE_ACTIONS)}.\n"
         )
         sys.exit(1)
-    rewrite_mode = _setting(_REWRITE_MODE, text) or "edit"
+    rewrite_mode = _setting(_REWRITE_MODE, text)
+    if rewrite_mode is None:
+        sys.stderr.write(
+            f"NOTE: no Rewrite mode setting in {path}; using `edit`, which rewrites "
+            "issue bodies. Write it as - **Rewrite mode:** `edit` or `suggest`.\n"
+        )
+        rewrite_mode = "edit"
     if rewrite_mode not in REWRITE_MODES:
         sys.stderr.write(
             f"Unknown rewrite mode {rewrite_mode!r} in {path}; expected one of "
