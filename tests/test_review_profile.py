@@ -948,3 +948,46 @@ def test_every_key_the_current_writer_emits_is_modelled_by_the_reader(
             assert set(worker) <= module.ENGINE_WORKER_KEYS
     for override in document.get("repos", {}).values():
         assert set(override) <= module.REPO_OVERRIDE_KEYS
+
+
+def test_reviewit_availability_can_be_set_and_checked(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(capsys, "init", "--accept-defaults")[0] == 0
+
+    # Initially reviewit is not configured; check --need reviewit succeeds.
+    status, out, _ = run(capsys, "check", "--need", "reviewit")
+    assert status == 0
+
+    # Marking reviewit unavailable succeeds and reflects in profile and show.
+    status, _, _ = run(capsys, "set", "reviewit.availability=unavailable")
+    assert status == 0
+    stored = json.loads(profile.read_text())
+    assert stored["reviewit"]["availability"] == "unavailable"
+
+    status, out, _ = run(capsys, "show")
+    assert status == 0
+    assert json.loads(out)["reviewit"]["availability"] == "unavailable"
+
+    # check --need reviewit now refuses with status 1.
+    status, out, err = run(capsys, "check", "--need", "reviewit")
+    assert status == 1
+    assert "marked unavailable: reviewit" in err
+    assert json.loads(out)["unavailable"] == ["reviewit"]
+
+    # General check without --need still succeeds.
+    assert run(capsys, "check")[0] == 0
+
+    # Setting reviewit back to available succeeds.
+    assert run(capsys, "set", "reviewit.availability=available")[0] == 0
+    assert run(capsys, "check", "--need", "reviewit")[0] == 0
+
+    # Invalid availability is rejected.
+    assert run(capsys, "set", "reviewit.availability=maybe")[0] == 2
+
+    # Repository override cannot set reviewit.
+    status, _, err = run(
+        capsys, "set", "--repo", "example/project", "reviewit.availability=unavailable"
+    )
+    assert status == 2
+    assert "global only" in err

@@ -28,6 +28,7 @@ presumed accidental.
 | 0011 | [Assurance setup interaction](0011-assurance-setup-interaction.md) — context-first one-accept setup; the agent recommends facts and the resolver alone computes controls                         |
 | 0012 | [Assurance ledger compatibility](0012-assurance-ledger-compatibility.md) — two new marker families, versioned finish and telemetry records, and an expand-then-use rollout                       |
 | 0013 | [Invoking a review is not an escalation](0013-review-invocation-is-not-escalation.md) — a review request is not trigger 6, the tier order runs as returned, and the classifier owns human glance |
+| 0014 | [Dependency review tier and hosted review boundaries](0014-dependency-review-tier-and-reviewit-boundaries.md) — dependency updates are Lean, and reviewit is never implicit or run on bot PRs    |
 
 Most records here are parity divergences, and those are the ones
 `parity-allowlist.yml` cites. A record may also fix a vocabulary that several

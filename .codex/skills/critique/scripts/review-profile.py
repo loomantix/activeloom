@@ -62,7 +62,9 @@ AVAILABILITY = ("available", "unavailable")
 # is the same silent-drop this forward-tolerance exists to prevent — only
 # harder to see, because nothing fails.
 PROFILE_REQUIRED_KEYS = frozenset({"schema_version", "defaults_version", "confirmed_at"})
-PROFILE_OPTIONAL_KEYS = frozenset({"engines", "order", "repos", "min_reader_version"})
+PROFILE_OPTIONAL_KEYS = frozenset(
+    {"engines", "order", "repos", "min_reader_version", "reviewit"}
+)
 PROFILE_KEYS = PROFILE_REQUIRED_KEYS | PROFILE_OPTIONAL_KEYS
 ENGINE_WORKER_KEYS = frozenset({*PAIR, "fallback"})
 REPO_OVERRIDE_KEYS = frozenset({"engines", "order"})
@@ -293,6 +295,10 @@ def prune_foreign(document: dict[str, Any]) -> dict[str, Any]:
 
     if "engines" in pruned:
         pruned["engines"] = prune_engines(pruned["engines"], "")
+    reviewit = pruned.get("reviewit")
+    if isinstance(reviewit, dict):
+        _foreign("reviewit.", set(reviewit) - {"availability"})
+        pruned["reviewit"] = {k: v for k, v in reviewit.items() if k == "availability"}
     repos = pruned.get("repos")
     if isinstance(repos, dict):
         kept_repos = {}
@@ -355,6 +361,19 @@ def validate_profile(
         if not isinstance(document[key], str) or not document[key]:
             _fail(f"profile {key} must be a nonempty string")
     validate_engines_and_orders(document, "profile", repo=False)
+    if "reviewit" in document:
+        reviewit = document["reviewit"]
+        if not isinstance(reviewit, dict):
+            _fail("profile reviewit must be an object")
+        unknown = set(reviewit) - {"availability"}
+        if unknown:
+            _fail(f"reviewit: unknown keys {sorted(unknown)}")
+        if "availability" in reviewit:
+            if reviewit["availability"] not in AVAILABILITY:
+                _fail(
+                    f"reviewit: invalid availability {reviewit['availability']!r}; "
+                    f"expected one of {', '.join(AVAILABILITY)}"
+                )
     repos = document.get("repos", {})
     if not isinstance(repos, dict):
         _fail("profile repos must be an object")
@@ -471,6 +490,7 @@ def storage_schema_version(document: dict[str, Any]) -> int:
             for scope in scopes
             for settings in scope.values()
         )
+        and "reviewit" not in document
     )
     return 1 if fits_v1 else SCHEMA_VERSION
 
@@ -561,8 +581,12 @@ def parse_need(text: str) -> Need:
         return ("worker", section)
     if section == "order" and field in TIERS:
         return ("order", field)
+    if text == "reviewit" or (
+        section == "reviewit" and (not dot or field == "availability")
+    ):
+        return ("hosted", "reviewit")
     _fail(
-        f"invalid need {text!r}; expected ENGINE, ENGINE.worker or order.TIER "
+        f"invalid need {text!r}; expected ENGINE, ENGINE.worker, order.TIER or reviewit "
         f"with ENGINE one of {', '.join(ENGINES)}"
     )
 
@@ -579,6 +603,8 @@ def missing_keys(merged: dict[str, Any], needs: list[Need]) -> list[str]:
         if kind == "order":
             if name not in merged["order"]:
                 missing.append(f"order.{name}")
+            continue
+        if kind == "hosted":
             continue
         settings = merged["engines"].get(name, {})
         if settings.get("availability") == "unavailable":
@@ -664,6 +690,16 @@ def apply_assignments(target: dict[str, Any], assignments: list[str]) -> None:
             validate_order(field, order)
             target.setdefault("order", {})[field] = order
             continue
+        if section == "reviewit":
+            if field != "availability":
+                _fail(f"unknown setting reviewit.{field}; expected reviewit.availability")
+            if value not in AVAILABILITY:
+                _fail(
+                    f"reviewit: invalid availability {value!r}; "
+                    f"expected one of {', '.join(AVAILABILITY)}"
+                )
+            target.setdefault("reviewit", {})["availability"] = value
+            continue
         if section not in ENGINES:
             _fail(f"unknown setting {section}.{field}")
         settings = target.setdefault("engines", {}).setdefault(section, {})
@@ -706,6 +742,8 @@ def command_show(args: argparse.Namespace) -> None:
             suggested=suggestions(merged, missing),
             **merged,
         )
+        if "reviewit" in document:
+            report["reviewit"] = document["reviewit"]
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
@@ -767,6 +805,13 @@ def propose_from_choices(document: dict[str, Any], assignments: list[str]) -> No
 def command_set(args: argparse.Namespace) -> None:
     document = require_profile()
     if args.repo is not None:
+        for assignment in args.assignments:
+            sec, _, _ = parse_assignment(assignment)
+            if sec == "reviewit":
+                _fail(
+                    "reviewit: availability is global only; "
+                    "a repository override cannot change it"
+                )
         repo = repository_key(args.repo)
         override = document.setdefault("repos", {}).setdefault(repo, {})
         apply_assignments(override, args.assignments)
@@ -859,8 +904,20 @@ def command_check(args: argparse.Namespace) -> None:
             name
             for kind, name in needs
             if explicit
-            and kind != "order"
-            and merged["engines"].get(name, {}).get("availability") == "unavailable"
+            and (
+                (
+                    kind != "order"
+                    and kind != "hosted"
+                    and merged["engines"].get(name, {}).get("availability")
+                    == "unavailable"
+                )
+                or (
+                    kind == "hosted"
+                    and name == "reviewit"
+                    and (document or {}).get("reviewit", {}).get("availability")
+                    == "unavailable"
+                )
+            )
         }
     )
     missing = missing_keys(merged, needs)
