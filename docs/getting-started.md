@@ -107,6 +107,8 @@ To fill them, run the **`onboard`** skill in your agent. It reads the repository
 
 **When to move up:** when re-running `init` by hand starts getting forgotten.
 
+Once the repository is installed, [Set up for autonomous development](autonomous-development.md) carries it on to a refined backlog and a first `agent-loop` run.
+
 <a id="tier-2"></a>
 
 ## Tier 2 — Automate it

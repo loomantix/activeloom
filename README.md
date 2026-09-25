@@ -2,13 +2,13 @@
 
 **Reusable, multi-harness engineering workflows and review protocols for coding agents, distributed from one upstream to many repositories.**
 
-ActiveLoom supplies portable skills, adversarial review protocols, supporting scripts, and repository configuration across multiple coding agent harnesses and frontier model families. It natively supports **Claude Code** (Anthropic Claude 3.7/3.5 Sonnet, Opus), **OpenAI Codex** (OpenAI o1, o3-mini, GPT-4o, Sol), and **Google Gemini** through Antigravity/Agy (Gemini 2.5 Pro/Flash, Gemini 3.x), alongside hosted review integration for **GitHub Copilot**.
+ActiveLoom supplies portable skills, adversarial review protocols, supporting scripts, and repository configuration across multiple coding agent harnesses and frontier model families. It natively supports **Claude Code** (Anthropic Claude models), **OpenAI Codex** (OpenAI GPT and reasoning models), and **Google Gemini** through Antigravity/Agy (Gemini models), alongside hosted review integration for **GitHub Copilot**.
 
 It helps an existing agent plan work, investigate bugs, implement bounded tasks, and review pull requests with traceable, ledger-backed findings. Its installer and sync engine keep those workflows consistent while each repository owns its project context.
 
 This is the unified project formerly named **claude-platform**. New consumers use `loomantix/activeloom`, one `.activeloom-config.yml`, and the harnesses and models they select. Separate engine upstreams are not required.
 
-**Point an agent here:** [Agent entry guide](docs/agent-guide.md). It contains a copyable session prompt, a task-to-skill map, prerequisites, and a source ownership map. For installation, use [Getting started](docs/getting-started.md).
+**Point an agent here:** [Agent entry guide](docs/agent-guide.md). It contains a copyable session prompt, a task-to-skill map, prerequisites, and a source ownership map. For installation, use [Getting started](docs/getting-started.md). To go from nothing installed to an agent working your backlog, use [Set up for autonomous development](docs/autonomous-development.md).
 
 ## What it provides
 
@@ -37,6 +37,7 @@ This is the unified project formerly named **claude-platform**. New consumers us
 | Your task                                  | Start with                                                    | Read next                                                                        |
 | ------------------------------------------ | ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | Decide whether this fits an agent session  | The agent entry guide                                         | [Task selection and boundaries](docs/agent-guide.md)                             |
+| Have agents work the backlog unattended    | The setup guide's session prompt                              | [Set up for autonomous development](docs/autonomous-development.md)              |
 | Try a workflow personally                  | CLI `add <skill> --harness <id>`                              | [Personal installation](docs/getting-started.md#tier-0-try-it)                   |
 | Give a repository a shared setup           | CLI `init --harness <id>` and the `onboard` skill             | [Repository installation](docs/getting-started.md#tier-1)                        |
 | Keep multiple repositories current         | CLI `init --sync`                                             | [Sync setup](docs/getting-started.md#tier-2) and [sync contract](docs/sync.md)   |
@@ -44,6 +45,19 @@ This is the unified project formerly named **claude-platform**. New consumers us
 | Review an existing PR                      | The installed harness's `REVIEW_WORKFLOW.md` and review skill | [Review entry points](docs/agent-guide.md#review-an-existing-pr)                 |
 | Run an automatic review chain              | The deterministic review runner                               | [Runner requirements and outcomes](.codex/references/review-chain-runner.md)     |
 | Improve the toolkit itself                 | Source ownership map and contribution guide                   | [Contributing](CONTRIBUTING.md) and [prompt rendering](docs/prompt-rendering.md) |
+
+## Set up for autonomous development
+
+Ask any agent, in any harness: _"Help me set up ActiveLoom for autonomous development in this repository."_ Point it at [the setup guide](docs/autonomous-development.md), which it follows stage by stage:
+
+```
+install + sync → onboard → review-setup → backlog-refinement setup → agent-loop config
+      → refine the backlog → agent-loop on an allowlist → rca feeds lessons back
+```
+
+The agent briefs you first: what the pipeline does, what it needs (`gh`, and both the Claude and Codex CLIs for `agent-loop`), and what it will change. It asks before creating labels, rewriting issues, or claiming them. It detects how far a repository already is and resumes from the first incomplete stage, so the same request repairs a partial setup. The decisions that steer an unattended agent — integration branch, sensitive paths, priority scheme — come to you as questions with a recommended answer, never as guesses.
+
+`backlog-refinement` decides which issues an agent can finish and routes the rest to the interview they need (`grill` or `product-grill`). `agent-loop` implements an explicit list of ready issues, one reviewed draft PR each. Neither merges, deploys, or closes anything.
 
 ## Run the installer today
 
@@ -78,11 +92,11 @@ These are adoption tiers, not the **Lean/Deep review tiers**. Choose personal or
 
 ActiveLoom provides unified engineering workflows across distinct agent environments, CLIs, and model families:
 
-| CLI/config ID | Agent harness / client       | Supported model families                          | Distributed root | Entry document                                           |
-| ------------- | ---------------------------- | ------------------------------------------------- | ---------------- | -------------------------------------------------------- |
-| `claude`      | Anthropic Claude Code        | Claude 3.7 Sonnet, Claude 3.5 Sonnet, Claude Opus | `.claude/`       | [Claude review workflow](.claude/REVIEW_WORKFLOW.md)     |
-| `codex`       | OpenAI Codex CLI             | OpenAI o1, o3-mini, GPT-4o, Sol, reasoning models | `.codex/`        | [Codex review workflow](.codex/REVIEW_WORKFLOW.md)       |
-| `gemini`      | Google Antigravity / Agy CLI | Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 3.x      | `.agents/`       | [Gemini/Agy review workflow](.agents/REVIEW_WORKFLOW.md) |
+| CLI/config ID | Agent harness / client       | Supported model families        | Distributed root | Entry document                                           |
+| ------------- | ---------------------------- | ------------------------------- | ---------------- | -------------------------------------------------------- |
+| `claude`      | Anthropic Claude Code        | Anthropic Claude                | `.claude/`       | [Claude review workflow](.claude/REVIEW_WORKFLOW.md)     |
+| `codex`       | OpenAI Codex CLI             | OpenAI GPT and reasoning models | `.codex/`        | [Codex review workflow](.codex/REVIEW_WORKFLOW.md)       |
+| `gemini`      | Google Antigravity / Agy CLI | Google Gemini                   | `.agents/`       | [Gemini/Agy review workflow](.agents/REVIEW_WORKFLOW.md) |
 
 Use the selected harness's actual skill files as the authority for invocation and prerequisites. A `gemini` selection refers to this project's Agy integration; it is not a promise of compatibility with every Gemini client.
 

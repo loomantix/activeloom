@@ -20,6 +20,8 @@ Proceed with implementation or review only within the task's existing scope.
 
 When the session already has an implementation or review task, append its concrete scope and completion criteria. The prompt above alone requests an assessment, not installation or a review run.
 
+When the user asks to be set up for development — "help me set up ActiveLoom", "get agents working our backlog" — follow [Set up for autonomous development](autonomous-development.md) instead. It briefs the user, finds the first incomplete stage, and carries the repository through `backlog-refinement` to a first allowlisted `agent-loop` run, asking before each change to GitHub state.
+
 ## Establish the local facts
 
 1. Read the consumer repository's `AGENTS.md`, `CLAUDE.md`, or equivalent. Preserve its provider choices, worktree rules, validation requirements, and action boundaries.
@@ -43,6 +45,7 @@ Names below identify skills; use the invocation supported by the current harness
 | Build a feature with architectural discovery | `feature-dev`                              | Requires a concrete user objective and repository context                                                                           |
 | Fill project-specific onboarding fields      | `onboard`                                  | Draft evidence-based values for confirmation; do not invent domain rules                                                            |
 | Manage issue dependencies and readiness      | `issues`                                   | Uses GitHub issue state; follow the command's read/write scope                                                                      |
+| Set up a repository for autonomous work      | [Setup guide](autonomous-development.md)   | Stage by stage with user confirmation; ends at a first allowlisted loop run, not at merge                                           |
 | Prepare issues for autonomous work           | `backlog-refinement`                       | Curates the queue; does not authorize implementing every open issue                                                                 |
 | Implement a bounded issue queue              | `agent-loop`                               | Requires an explicit issue allowlist, harness-specific worker/review setup, and its own launch contract                             |
 | Execute a supplied implementation packet     | `task-packet`                              | Follow the packet's acceptance criteria and action boundaries                                                                       |
