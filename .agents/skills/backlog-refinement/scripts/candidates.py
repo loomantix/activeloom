@@ -22,9 +22,12 @@ reads labels directly. `agent-loop` itself is not fooled: it selects through
 
 Assessed issues missing what the current core rubric sets — a priority label,
 or the `needs:` label a grill-class bail requires — are listed as "backfill"
-for `refine --backfill`. Repository settings (priority label names,
-auto-managed skip labels) come from `.backlog/refinement.local.md` at the
-repository root, falling back to a legacy per-harness `RUBRIC.md`.
+for `refine --backfill`. An epic already split into GitHub sub-issues owes no
+interview, so it is not listed for a missing `needs:` label. `--grill` lists the
+`needs: grill` and `needs: product-grill` queues, highest priority first.
+Repository settings (priority label names, title prefixes, auto-managed skip
+labels) come from `.backlog/refinement.local.md` at the repository root,
+falling back to a legacy per-harness `RUBRIC.md` (see `rubric.py`).
 
 Mirrors the gh-invocation conventions of `../../issues/scripts/ready.py`.
 """
@@ -33,10 +36,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
-from typing import Any, NamedTuple
+from typing import Any
 
 REFINED_LABEL = "agent: refined"
 READY_LABEL = "dev: agent"
@@ -47,113 +49,28 @@ GRILL_CLASS_BAILS = frozenset({
     "agent-bail: spec-gap",
     "agent-bail: epic",
 })
+EPIC_BAIL = "agent-bail: epic"
 GRILL_NEEDS_LABELS = frozenset({
     "needs: grill",
     "needs: product-grill",
 })
 # Surfaced but never auto-queued — these read as coordination, not bounded work.
-EPIC_TITLE_MARKERS = ("epic:",)
+EPIC_TITLE_MARKERS = ("epic:", "[epic]")
 LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "agent-bail:", "agent:", "status:", "needs:", "priority:")
 # `gh issue list` pages internally; the cap only guards against truncation.
 GH_LIST_LIMIT = 10000
 
-LOCAL_RUBRIC = os.path.join(".backlog", "refinement.local.md")
-LEGACY_HARNESS_ROOTS = (".claude", ".codex", ".agents")
+# Sibling module shared by every backlog-refinement script.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rubric import (  # noqa: E402
+    LOCAL_RUBRIC,
+    RubricConfig,
+    load_config,
+    repo_root,
+    title_priority,
+)
 
-
-def _marker(name: str) -> re.Pattern[str]:
-    return re.compile(rf"(?m)^[ \t]*<!--\s*{name}:\s*(.*?)\s*-->[ \t]*$")
-
-
-# Workflow-auto-managed labels: issues a scheduled workflow both OPENS and
-# CLOSES. They are never refinement tasks, and a refinement comment on one
-# resets its `updatedAt` — which can DELAY that auto-close.
-_AUTO_MANAGED_MARKER = _marker("auto-managed-labels")
-# The repository's four priority label names, highest first. Empty disables
-# priority-setting.
-_PRIORITY_MARKER = _marker("priority-labels")
-
-
-class RubricConfig(NamedTuple):
-    """Repository settings read from the local (or legacy) rubric."""
-
-    source: str | None
-    auto_managed_labels: tuple[str, ...]
-    priority_labels: tuple[str, ...]
-
-
-def repo_root() -> str:
-    """The repository the operator is refining — the working directory's checkout."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return os.getcwd()
-    return result.stdout.strip() if result.returncode == 0 else os.getcwd()
-
-
-def locate_rubric(root: str) -> tuple[str | None, bool]:
-    """Return (path, is_legacy) for the repository's local rubric, if any."""
-    local = os.path.join(root, LOCAL_RUBRIC)
-    if os.path.exists(local):
-        return local, False
-    for harness in LEGACY_HARNESS_ROOTS:
-        legacy = os.path.join(root, harness, "skills", "backlog-refinement", "RUBRIC.md")
-        if os.path.exists(legacy):
-            return legacy, True
-    return None, False
-
-
-def _read_marker(pattern: re.Pattern[str], name: str, text: str, path: str) -> tuple[str, ...] | None:
-    """Labels listed in a single-line marker; None when the marker is absent."""
-    matches = pattern.findall(text)
-    if not matches:
-        if f"{name}:" in text:
-            # Present but off-shape (indented under a bullet, trailing text on
-            # the line). Say so — silently dropping a marker the repo believes
-            # is live changes what refinement does without anyone noticing.
-            sys.stderr.write(
-                f"Found a {name} marker in {path} that is not on a line of its own; "
-                "ignoring it. Put the marker alone on one line.\n"
-            )
-        return None
-    if len(matches) > 1:
-        sys.stderr.write(f"Expected at most one {name} marker in {path}; found {len(matches)}\n")
-        sys.exit(1)
-    return tuple(label.strip() for label in matches[0].split(",") if label.strip())
-
-
-def load_config(root: str) -> RubricConfig:
-    """Repository settings, announcing on stderr whenever a default stands in."""
-    path, is_legacy = locate_rubric(root)
-    if path is None:
-        sys.stderr.write(
-            f"NOTE: {LOCAL_RUBRIC} not found; using core defaults (no skip labels, "
-            "priority off). Run `backlog-refinement setup` to configure this repository.\n"
-        )
-        return RubricConfig(None, (), ())
-    try:
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read()
-    except OSError as exc:
-        sys.stderr.write(f"Could not read backlog rubric {path}: {exc}\n")
-        sys.exit(1)
-    if is_legacy:
-        sys.stderr.write(
-            f"NOTE: reading legacy rubric {path}; run `backlog-refinement setup` "
-            f"to migrate it to {LOCAL_RUBRIC}.\n"
-        )
-    auto_managed = _read_marker(_AUTO_MANAGED_MARKER, "auto-managed-labels", text, path) or ()
-    priority = _read_marker(_PRIORITY_MARKER, "priority-labels", text, path)
-    if priority is None:
-        sys.stderr.write(
-            f"NOTE: no priority-labels marker in {path}; priority backfill is off.\n"
-        )
-        priority = ()
-    return RubricConfig(path, auto_managed, priority)
-
+__all__ = ["LOCAL_RUBRIC", "RubricConfig"]
 
 CONFIG = load_config(repo_root())
 
@@ -222,17 +139,61 @@ def classify(issue: dict[str, Any]) -> str:
     return "unrefined"
 
 
-def backfill_gaps(issue: dict[str, Any]) -> list[str]:
-    """What an assessed issue lacks under the current core rubric."""
+def backfill_gaps(issue: dict[str, Any], *, decomposed: bool = False) -> list[str]:
+    """What an assessed issue lacks under the current core rubric.
+
+    ``decomposed`` marks an epic already split into sub-issues: no interview is
+    owed there, so a missing ``needs:`` label is not a gap.
+    """
     labels = label_names(issue)
     gaps = []
     if CONFIG.priority_labels and not any(n in CONFIG.priority_labels for n in labels):
         gaps.append("priority")
-    if any(n in GRILL_CLASS_BAILS for n in labels) and not any(
-        n in GRILL_NEEDS_LABELS for n in labels
-    ):
+    grill_class = [n for n in labels if n in GRILL_CLASS_BAILS]
+    if decomposed and grill_class == [EPIC_BAIL]:
+        grill_class = []
+    if grill_class and not any(n in GRILL_NEEDS_LABELS for n in labels):
         gaps.append("needs")
     return gaps
+
+
+def needs_sub_issue_check(issue: dict[str, Any]) -> bool:
+    """An epic bail with no needs: label, whose backfill verdict depends on its children."""
+    labels = label_names(issue)
+    grill_class = [n for n in labels if n in GRILL_CLASS_BAILS]
+    return grill_class == [EPIC_BAIL] and not any(n in GRILL_NEEDS_LABELS for n in labels)
+
+
+def has_sub_issues(number: int) -> bool:
+    """Whether GitHub records sub-issues under this issue. Fails open to False."""
+    cmd = [
+        "gh", "api", f"repos/{{owner}}/{{repo}}/issues/{number}",
+        "--jq", ".sub_issues_summary.total // 0",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    try:
+        return result.returncode == 0 and int(result.stdout.strip() or "0") > 0
+    except ValueError:
+        return False
+
+
+def suggested_priority(issue: dict[str, Any]) -> str | None:
+    """The priority a recognised title prefix records, when no label is set yet."""
+    labels = label_names(issue)
+    if any(n in CONFIG.priority_labels for n in labels):
+        return None
+    return title_priority(issue["title"], CONFIG)
+
+
+def priority_rank(issue: dict[str, Any]) -> int:
+    """Position of the issue's priority label, highest first; unprioritised last."""
+    for index, label in enumerate(CONFIG.priority_labels):
+        if label in label_names(issue):
+            return index
+    return len(CONFIG.priority_labels)
 
 
 def priority_conflicted(issue: dict[str, Any]) -> bool:
@@ -273,6 +234,10 @@ def parse_args() -> argparse.Namespace:
         "--include-refined", action="store_true",
         help="also list issues already assessed (ready / excluded)",
     )
+    parser.add_argument(
+        "--grill", action="store_true",
+        help="list the needs: grill and needs: product-grill queues, highest priority first",
+    )
     return parser.parse_args()
 
 
@@ -291,9 +256,22 @@ def main() -> int:
         items.sort(key=lambda i: i["number"])
 
     assessed = buckets["ready"] + buckets["excluded"]
-    backfill = sorted(
-        (i for i in assessed if backfill_gaps(i)), key=lambda i: i["number"]
-    )
+    # One API call per epic bail that lacks a needs: label — few in practice.
+    decomposed = {
+        i["number"] for i in assessed if needs_sub_issue_check(i) and has_sub_issues(i["number"])
+    }
+
+    def gaps(issue: dict[str, Any]) -> list[str]:
+        return backfill_gaps(issue, decomposed=issue["number"] in decomposed)
+
+    backfill = sorted((i for i in assessed if gaps(i)), key=lambda i: i["number"])
+    grill_queues = {
+        label: sorted(
+            (i for i in issues if label in label_names(i)),
+            key=lambda i: (priority_rank(i), i["number"]),
+        )
+        for label in sorted(GRILL_NEEDS_LABELS)
+    }
     conflicted_priority = sorted(
         (i for i in issues if priority_conflicted(i)), key=lambda i: i["number"]
     )
@@ -306,6 +284,8 @@ def main() -> int:
         counts["backfill"] = len(backfill)
         counts["priority_conflicted"] = len(conflicted_priority)
         counts["conflicted"] = len(conflicted)
+        for label, queue in grill_queues.items():
+            counts[label] = len(queue)
         payload: dict[str, Any] = {
             "rubric": CONFIG.source,
             "counts": counts,
@@ -313,10 +293,15 @@ def main() -> int:
             "reverify": buckets["reverify"][: args.limit],
             "epic": buckets["epic"][: args.limit],
             "backfill": [
-                {**i, "gaps": backfill_gaps(i)} for i in backfill[: args.limit]
+                {**i, "gaps": gaps(i), "suggested_priority": suggested_priority(i)}
+                for i in backfill[: args.limit]
             ],
             "priority_conflicted": [i["number"] for i in conflicted_priority],
         }
+        if args.grill:
+            payload["grill_queues"] = {
+                label: queue[: args.limit] for label, queue in grill_queues.items()
+            }
         if args.include_refined:
             payload["ready"] = buckets["ready"][: args.limit]
             payload["excluded"] = buckets["excluded"][: args.limit]
@@ -331,7 +316,9 @@ def main() -> int:
         f"excluded (agent-bail:*): {c['excluded']}  |  epics: {c['epic']}  |  "
         # Only surface the auto-managed skip count when the repo actually uses it.
         + (f"skipped (auto-managed): {c['skipped']}  |  " if c["skipped"] else "")
-        + f"backfill: {len(backfill)}  |  UN-REFINED: {c['unrefined']}"
+        + f"backfill: {len(backfill)}  |  "
+        + "  |  ".join(f"{label}: {len(q)}" for label, q in grill_queues.items())
+        + f"  |  UN-REFINED: {c['unrefined']}"
     )
 
     def section(title: str, rows: list[dict[str, Any]]) -> None:
@@ -358,6 +345,9 @@ def main() -> int:
     section("Backfill — assessed, missing a priority or needs label (refine --backfill)",
             backfill)
     section("Epics / coordination (review manually, do not auto-queue)", buckets["epic"])
+    if args.grill:
+        for label, queue in grill_queues.items():
+            section(f"Grill queue — {label}, highest priority first", queue)
     if args.include_refined:
         section("Ready (dev: agent + refined)", buckets["ready"])
         section("Excluded (agent-bail:*)", buckets["excluded"])
