@@ -11,10 +11,10 @@ optional `fallback` pair), worker settings under `worker` (`model`, `effort`,
 optional `fallback` pair), and an optional global `availability`. An engine
 marked `unavailable` is never launched and cannot appear in an order. A key the
 profile does not hold yet is reported as missing rather than making the whole
-profile invalid; schema_version 1 profiles are read as version 2 unchanged.
-The profile is shared by every repository's synced copy of this helper, so a
-profile that stores no version 2 setting is still written as version 1, which
-older copies can read.
+profile invalid; older schema_version profiles are read unchanged. The
+profile is shared by every repository's synced copy of this helper, so it is
+written at the oldest version that holds it: 1 without version 2 settings, 2
+without the version 3 `reviewit` setting. Older copies can read those.
 
 Those copies are version-skewed by design, so reads are forward-tolerant and
 writes are not. A profile newer than this helper is read for the settings this
@@ -23,10 +23,10 @@ then refused, because serializing the pruned document would delete settings a
 newer checkout depends on. A change that genuinely breaks older readers sets
 `min_reader_version`, which they refuse explicitly instead of misreading.
 
-Exit status: 0 success, 1 refused operation (including an unavailable engine),
-2 invalid input or profile, 3 no profile or missing keys. When keys are missing,
-stdout carries JSON with a `missing` list of dotted keys such as
-`claude.worker.model`.
+Exit status: 0 success, 1 refused operation (including an unavailable engine
+or hosted review), 2 invalid input or profile, 3 no profile or missing keys.
+When keys are missing, stdout carries JSON with a `missing` list of dotted keys
+such as `claude.worker.model`.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # The oldest schema this reader still understands. A profile NEWER than
 # SCHEMA_VERSION is read rather than rejected: the writer below stores the
 # lowest version that fits, so a bump means new content exists, not that old
@@ -62,7 +62,9 @@ AVAILABILITY = ("available", "unavailable")
 # is the same silent-drop this forward-tolerance exists to prevent — only
 # harder to see, because nothing fails.
 PROFILE_REQUIRED_KEYS = frozenset({"schema_version", "defaults_version", "confirmed_at"})
-PROFILE_OPTIONAL_KEYS = frozenset({"engines", "order", "repos", "min_reader_version"})
+PROFILE_OPTIONAL_KEYS = frozenset(
+    {"engines", "order", "repos", "min_reader_version", "reviewit"}
+)
 PROFILE_KEYS = PROFILE_REQUIRED_KEYS | PROFILE_OPTIONAL_KEYS
 ENGINE_WORKER_KEYS = frozenset({*PAIR, "fallback"})
 REPO_OVERRIDE_KEYS = frozenset({"engines", "order"})
@@ -293,6 +295,10 @@ def prune_foreign(document: dict[str, Any]) -> dict[str, Any]:
 
     if "engines" in pruned:
         pruned["engines"] = prune_engines(pruned["engines"], "")
+    reviewit = pruned.get("reviewit")
+    if isinstance(reviewit, dict):
+        _foreign("reviewit.", set(reviewit) - {"availability"})
+        pruned["reviewit"] = {k: v for k, v in reviewit.items() if k == "availability"}
     repos = pruned.get("repos")
     if isinstance(repos, dict):
         kept_repos = {}
@@ -355,6 +361,19 @@ def validate_profile(
         if not isinstance(document[key], str) or not document[key]:
             _fail(f"profile {key} must be a nonempty string")
     validate_engines_and_orders(document, "profile", repo=False)
+    if "reviewit" in document:
+        reviewit = document["reviewit"]
+        if not isinstance(reviewit, dict):
+            _fail("profile reviewit must be an object")
+        unknown = set(reviewit) - {"availability"}
+        if unknown:
+            _fail(f"reviewit: unknown keys {sorted(unknown)}")
+        if "availability" in reviewit:
+            if reviewit["availability"] not in AVAILABILITY:
+                _fail(
+                    f"reviewit: invalid availability {reviewit['availability']!r}; "
+                    f"expected one of {', '.join(AVAILABILITY)}"
+                )
     repos = document.get("repos", {})
     if not isinstance(repos, dict):
         _fail("profile repos must be an object")
@@ -369,7 +388,7 @@ def validate_profile(
             _fail(f"repos.{repo}: only engines and order may be overridden")
         validate_engines_and_orders(override, f"repos.{repo}", repo=True)
         normalized_repos[key] = override
-    # Version 1 holds a subset of version 2, so migration only relabels it;
+    # Each version holds a subset of the next, so migration only relabels it;
     # every stored value is kept as confirmed.
     migrated = {**document, "schema_version": SCHEMA_VERSION}
     if "repos" in document:
@@ -457,7 +476,9 @@ def require_profile() -> dict[str, Any]:
 
 
 def storage_schema_version(document: dict[str, Any]) -> int:
-    """The oldest schema that holds the document: 1 while a version 1 reader accepts it."""
+    """The oldest schema that holds the document, so older readers keep accepting it."""
+    if "reviewit" in document:
+        return SCHEMA_VERSION
     engines = document.get("engines", {})
     scopes = [engines] + [
         override.get("engines", {}) for override in document.get("repos", {}).values()
@@ -472,7 +493,7 @@ def storage_schema_version(document: dict[str, Any]) -> int:
             for settings in scope.values()
         )
     )
-    return 1 if fits_v1 else SCHEMA_VERSION
+    return 1 if fits_v1 else 2
 
 
 def save_profile(document: dict[str, Any]) -> Path:
@@ -561,8 +582,12 @@ def parse_need(text: str) -> Need:
         return ("worker", section)
     if section == "order" and field in TIERS:
         return ("order", field)
+    if text == "reviewit" or (
+        section == "reviewit" and (not dot or field == "availability")
+    ):
+        return ("hosted", "reviewit")
     _fail(
-        f"invalid need {text!r}; expected ENGINE, ENGINE.worker or order.TIER "
+        f"invalid need {text!r}; expected ENGINE, ENGINE.worker, order.TIER or reviewit "
         f"with ENGINE one of {', '.join(ENGINES)}"
     )
 
@@ -579,6 +604,8 @@ def missing_keys(merged: dict[str, Any], needs: list[Need]) -> list[str]:
         if kind == "order":
             if name not in merged["order"]:
                 missing.append(f"order.{name}")
+            continue
+        if kind == "hosted":
             continue
         settings = merged["engines"].get(name, {})
         if settings.get("availability") == "unavailable":
@@ -664,6 +691,16 @@ def apply_assignments(target: dict[str, Any], assignments: list[str]) -> None:
             validate_order(field, order)
             target.setdefault("order", {})[field] = order
             continue
+        if section == "reviewit":
+            if field != "availability":
+                _fail(f"unknown setting reviewit.{field}; expected reviewit.availability")
+            if value not in AVAILABILITY:
+                _fail(
+                    f"reviewit: invalid availability {value!r}; "
+                    f"expected one of {', '.join(AVAILABILITY)}"
+                )
+            target.setdefault("reviewit", {})["availability"] = value
+            continue
         if section not in ENGINES:
             _fail(f"unknown setting {section}.{field}")
         settings = target.setdefault("engines", {}).setdefault(section, {})
@@ -706,6 +743,8 @@ def command_show(args: argparse.Namespace) -> None:
             suggested=suggestions(merged, missing),
             **merged,
         )
+        if "reviewit" in document:
+            report["reviewit"] = document["reviewit"]
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
@@ -767,6 +806,13 @@ def propose_from_choices(document: dict[str, Any], assignments: list[str]) -> No
 def command_set(args: argparse.Namespace) -> None:
     document = require_profile()
     if args.repo is not None:
+        for assignment in args.assignments:
+            sec, _, _ = parse_assignment(assignment)
+            if sec == "reviewit":
+                _fail(
+                    "reviewit: availability is global only; "
+                    "a repository override cannot change it"
+                )
         repo = repository_key(args.repo)
         override = document.setdefault("repos", {}).setdefault(repo, {})
         apply_assignments(override, args.assignments)
@@ -859,8 +905,20 @@ def command_check(args: argparse.Namespace) -> None:
             name
             for kind, name in needs
             if explicit
-            and kind != "order"
-            and merged["engines"].get(name, {}).get("availability") == "unavailable"
+            and (
+                (
+                    kind != "order"
+                    and kind != "hosted"
+                    and merged["engines"].get(name, {}).get("availability")
+                    == "unavailable"
+                )
+                or (
+                    kind == "hosted"
+                    and name == "reviewit"
+                    and (document or {}).get("reviewit", {}).get("availability")
+                    == "unavailable"
+                )
+            )
         }
     )
     missing = missing_keys(merged, needs)

@@ -411,7 +411,7 @@ def test_defaults_prefill_worker_settings_from_reviewer_values(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     defaults = json.loads(run(capsys, "defaults")[1])
-    assert defaults["schema_version"] == 2
+    assert defaults["schema_version"] == 3
     for settings in defaults["engines"].values():
         assert settings["worker"] == {
             "model": settings["model"],
@@ -948,3 +948,78 @@ def test_every_key_the_current_writer_emits_is_modelled_by_the_reader(
             assert set(worker) <= module.ENGINE_WORKER_KEYS
     for override in document.get("repos", {}).values():
         assert set(override) <= module.REPO_OVERRIDE_KEYS
+
+
+def test_reviewit_availability_can_be_set_and_checked(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(capsys, "init", "--accept-defaults")[0] == 0
+
+    # Initially reviewit is not configured; check --need reviewit succeeds.
+    status, out, _ = run(capsys, "check", "--need", "reviewit")
+    assert status == 0
+
+    # Marking reviewit unavailable succeeds and reflects in profile and show.
+    status, _, _ = run(capsys, "set", "reviewit.availability=unavailable")
+    assert status == 0
+    stored = json.loads(profile.read_text())
+    assert stored["reviewit"]["availability"] == "unavailable"
+
+    status, out, _ = run(capsys, "show")
+    assert status == 0
+    assert json.loads(out)["reviewit"]["availability"] == "unavailable"
+
+    # check --need reviewit now refuses with status 1.
+    status, out, err = run(capsys, "check", "--need", "reviewit")
+    assert status == 1
+    assert "marked unavailable: reviewit" in err
+    assert json.loads(out)["unavailable"] == ["reviewit"]
+
+    # General check without --need still succeeds.
+    assert run(capsys, "check")[0] == 0
+
+    # Setting reviewit back to available succeeds.
+    assert run(capsys, "set", "reviewit.availability=available")[0] == 0
+    assert run(capsys, "check", "--need", "reviewit")[0] == 0
+
+    # Invalid availability is rejected.
+    assert run(capsys, "set", "reviewit.availability=maybe")[0] == 2
+
+    # Repository override cannot set reviewit.
+    status, _, err = run(
+        capsys, "set", "--repo", "example/project", "reviewit.availability=unavailable"
+    )
+    assert status == 2
+    assert "global only" in err
+
+
+def test_a_profile_holding_reviewit_stays_readable_by_a_reader_without_it(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Storing `reviewit` must raise the stored version past readers that lack it.
+
+    Stored at their own version, those readers treat the key as corruption and
+    fail every preflight on the machine; stored above it, they read what they
+    model and refuse only the write.
+    """
+    assert run(capsys, "init", "--accept-defaults", "--replace")[0] == 0
+    status, _, err = run(capsys, "set", "reviewit.availability=unavailable")
+    assert status == 0, err
+    stored = json.loads(profile.read_text())["schema_version"]
+    assert stored == load().SCHEMA_VERSION
+    assert f"storing schema_version {stored}" in err
+
+    def older_reader(*argv: str) -> tuple[int, str]:
+        module = load()
+        setattr(module, "SCHEMA_VERSION", stored - 1)
+        setattr(module, "PROFILE_KEYS", module.PROFILE_KEYS - {"reviewit"})
+        status = module.main(list(argv))
+        return status, capsys.readouterr().out
+
+    status, out = older_reader("resolve", "--engine", "claude")
+    assert status == 0
+    assert json.loads(out)["engine"] == "claude"
+
+    before = profile.read_bytes()
+    assert older_reader("set", "claude.effort=high")[0] == 1
+    assert profile.read_bytes() == before

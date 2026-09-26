@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "defaults_version": "2026.09.19",
   "engines": {
     "claude": {

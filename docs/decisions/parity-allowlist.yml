@@ -56,6 +56,7 @@ recorded:
     record:
       - 0004-reviewit-two-documents.md
       - 0006-review-chains-never-converge.md
+      - 0014-dependency-review-tier-and-reviewit-boundaries.md
     reason: >-
       Same two hosted reviewers and the same caps, structured for different
       session realities — a tier-authority and budget-interaction document on

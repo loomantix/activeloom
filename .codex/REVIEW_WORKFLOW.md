@@ -503,6 +503,11 @@ later phase. Run one whenever it is useful: before the relay, between rounds,
 after convergence, or as the only review on a change that does not warrant a
 local relay.
 
+Start the hosted lane only when the user asks for it. When a review request does
+not say which style to run and the review profile leaves hosted review available,
+ask the user whether to run the local chain (`critique` / `deepcritique`) or
+`reviewit` rather than choosing one.
+
 **The local relay is the default path here.** Coverage is expected to come from
 declared roster engines reading the change cold, and that is what
 `verify-coverage` measures. The hosted lane is an extension on top of that.
@@ -642,7 +647,9 @@ Resolve the changed-file list once with
 
 1. **Sensitive path** — authentication, authorization, cryptography, secret or
    credential handling, PHI/PII, tenant or customer isolation. Evaluate the
-   bounded-repair exception below before selecting this trigger.
+   bounded-repair exception below before selecting this trigger. Manifest or
+   lockfile-only dependency bumps do not select this trigger; see "What does not
+   set the tier".
 2. **Irreversible in production data or a published artifact** — migration,
    backfill, a published package's API or version: anything a revert cannot
    undo.
@@ -689,6 +696,18 @@ Subtlety does not: a change can be hard to reason about and still be Lean. Nor
 does diff size — a large mechanical refactor is Lean unless it also trips
 trigger 4. Nor does topic adjacency: code _about_ security that does not itself
 enforce a sensitive boundary is not trigger 1.
+
+**Dependency version updates (manifest and lockfile changes) do not select Deep.**
+Upgrading an external dependency (e.g. updating `package.json`, `pnpm-lock.yaml`,
+`pnpm-workspace.yaml`, `Cargo.lock`, `requirements.txt`, `go.sum`) does not trip
+Trigger 1 or Trigger 4 simply because the package itself handles authentication,
+cryptography, validation, networking, or concurrency. A multi-lane code review
+inspects code diffs in this repository; it cannot critique external package
+source from a version bump diff. Dependency risk is properly addressed through
+upfront research, release notes, security advisories, and running the consumer test
+suite—not through a multi-lane code review chain. Unless the dependency update is
+accompanied by material application code changes that touch sensitive boundaries
+or non-obvious runtime behaviour, dependency updates are Lean.
 
 **The dominant rule: when the worst outcome of a missed defect is a red CI run,
 a broken build, or a broken developer workflow, the change is Lean.** CI
