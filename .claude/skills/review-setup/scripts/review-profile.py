@@ -11,10 +11,10 @@ optional `fallback` pair), worker settings under `worker` (`model`, `effort`,
 optional `fallback` pair), and an optional global `availability`. An engine
 marked `unavailable` is never launched and cannot appear in an order. A key the
 profile does not hold yet is reported as missing rather than making the whole
-profile invalid; schema_version 1 profiles are read as version 2 unchanged.
-The profile is shared by every repository's synced copy of this helper, so a
-profile that stores no version 2 setting is still written as version 1, which
-older copies can read.
+profile invalid; older schema_version profiles are read unchanged. The
+profile is shared by every repository's synced copy of this helper, so it is
+written at the oldest version that holds it: 1 without version 2 settings, 2
+without the version 3 `reviewit` setting. Older copies can read those.
 
 Those copies are version-skewed by design, so reads are forward-tolerant and
 writes are not. A profile newer than this helper is read for the settings this
@@ -23,10 +23,10 @@ then refused, because serializing the pruned document would delete settings a
 newer checkout depends on. A change that genuinely breaks older readers sets
 `min_reader_version`, which they refuse explicitly instead of misreading.
 
-Exit status: 0 success, 1 refused operation (including an unavailable engine),
-2 invalid input or profile, 3 no profile or missing keys. When keys are missing,
-stdout carries JSON with a `missing` list of dotted keys such as
-`claude.worker.model`.
+Exit status: 0 success, 1 refused operation (including an unavailable engine
+or hosted review), 2 invalid input or profile, 3 no profile or missing keys.
+When keys are missing, stdout carries JSON with a `missing` list of dotted keys
+such as `claude.worker.model`.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # The oldest schema this reader still understands. A profile NEWER than
 # SCHEMA_VERSION is read rather than rejected: the writer below stores the
 # lowest version that fits, so a bump means new content exists, not that old
@@ -388,7 +388,7 @@ def validate_profile(
             _fail(f"repos.{repo}: only engines and order may be overridden")
         validate_engines_and_orders(override, f"repos.{repo}", repo=True)
         normalized_repos[key] = override
-    # Version 1 holds a subset of version 2, so migration only relabels it;
+    # Each version holds a subset of the next, so migration only relabels it;
     # every stored value is kept as confirmed.
     migrated = {**document, "schema_version": SCHEMA_VERSION}
     if "repos" in document:
@@ -476,7 +476,9 @@ def require_profile() -> dict[str, Any]:
 
 
 def storage_schema_version(document: dict[str, Any]) -> int:
-    """The oldest schema that holds the document: 1 while a version 1 reader accepts it."""
+    """The oldest schema that holds the document, so older readers keep accepting it."""
+    if "reviewit" in document:
+        return SCHEMA_VERSION
     engines = document.get("engines", {})
     scopes = [engines] + [
         override.get("engines", {}) for override in document.get("repos", {}).values()
@@ -490,9 +492,8 @@ def storage_schema_version(document: dict[str, Any]) -> int:
             for scope in scopes
             for settings in scope.values()
         )
-        and "reviewit" not in document
     )
-    return 1 if fits_v1 else SCHEMA_VERSION
+    return 1 if fits_v1 else 2
 
 
 def save_profile(document: dict[str, Any]) -> Path:

@@ -503,6 +503,11 @@ later phase. Run one whenever it is useful: before the relay, between rounds,
 after convergence, or as the only review on a change that does not warrant a
 local relay.
 
+Start the hosted lane only when the user asks for it. When a review request does
+not say which style to run and the review profile leaves hosted review available,
+ask the user whether to run the local chain (`critique` / `deepcritique`) or
+`reviewit` rather than choosing one.
+
 **The local relay is the default path here.** Coverage is expected to come from
 declared roster engines reading the change cold, and that is what
 `verify-coverage` measures. The hosted lane is an extension on top of that.

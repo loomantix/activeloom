@@ -411,7 +411,7 @@ def test_defaults_prefill_worker_settings_from_reviewer_values(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     defaults = json.loads(run(capsys, "defaults")[1])
-    assert defaults["schema_version"] == 2
+    assert defaults["schema_version"] == 3
     for settings in defaults["engines"].values():
         assert settings["worker"] == {
             "model": settings["model"],
@@ -991,3 +991,35 @@ def test_reviewit_availability_can_be_set_and_checked(
     )
     assert status == 2
     assert "global only" in err
+
+
+def test_a_profile_holding_reviewit_stays_readable_by_a_reader_without_it(
+    profile: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Storing `reviewit` must raise the stored version past readers that lack it.
+
+    Stored at their own version, those readers treat the key as corruption and
+    fail every preflight on the machine; stored above it, they read what they
+    model and refuse only the write.
+    """
+    assert run(capsys, "init", "--accept-defaults", "--replace")[0] == 0
+    status, _, err = run(capsys, "set", "reviewit.availability=unavailable")
+    assert status == 0, err
+    stored = json.loads(profile.read_text())["schema_version"]
+    assert stored == load().SCHEMA_VERSION
+    assert f"storing schema_version {stored}" in err
+
+    def older_reader(*argv: str) -> tuple[int, str]:
+        module = load()
+        setattr(module, "SCHEMA_VERSION", stored - 1)
+        setattr(module, "PROFILE_KEYS", module.PROFILE_KEYS - {"reviewit"})
+        status = module.main(list(argv))
+        return status, capsys.readouterr().out
+
+    status, out = older_reader("resolve", "--engine", "claude")
+    assert status == 0
+    assert json.loads(out)["engine"] == "claude"
+
+    before = profile.read_bytes()
+    assert older_reader("set", "claude.effort=high")[0] == 1
+    assert profile.read_bytes() == before
