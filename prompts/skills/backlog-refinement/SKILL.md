@@ -14,7 +14,7 @@ Maximize how much of the backlog `<<INVOKE>>agent-loop` can complete unattended,
         └──────────  RCA sharpens the rubric  ◀── agent-bail:* on bail
 ```
 
-**Arguments**: `$ARGUMENTS` — dispatch on the first word; default to `queue`. Modes: `setup`, `queue`, `refine [n | --all | --limit N | --backfill]`, `assess <n>`, `rca [run-window]`.
+**Arguments**: `$ARGUMENTS` — dispatch on the first word; default to `queue`. Modes: `setup`, `queue`, `refine [n | --all | --limit N | --backfill | --batch [N]]`, `assess <n>`, `rca [run-window]`.
 
 ## Two layers: the core rubric and the repo's local files
 
@@ -44,24 +44,25 @@ Show what is left to refine.
 
 ```bash
 python3 <<SKILLS_ROOT>>/backlog-refinement/scripts/candidates.py
-# --json for machine output, --limit N, --include-refined to also list assessed issues
+# --json for machine output, --limit N, --include-refined to also list assessed issues,
+# --grill for the needs: grill / needs: product-grill queues, highest priority first
 ```
 
-Report the counts the script prints: ready, re-verify, conflicted, excluded, epics, skipped, backfill, and un-refined (the work).
+Report the counts the script prints: ready, re-verify, conflicted, excluded, epics, skipped, backfill, the two grill queues, and un-refined (the work).
 
 - **Re-verify** — `dev: agent` without `agent: refined`: tagged by something other than this skill and never verified against HEAD. `refine --all` does not walk this bucket, yet it is exactly what `<<INVOKE>>agent-loop` consumes. Clear it before trusting the queue.
-- **Backfill** — assessed issues that are missing what the current core rubric sets: a priority label, or the `needs:` label a grill-class bail requires. `refine --backfill` clears it.
+- **Backfill** — assessed issues that are missing what the current core rubric sets: a priority label, or the `needs:` label a grill-class bail requires. An epic already split into GitHub sub-issues owes no interview and is not listed. When the local file's `priority-title-prefixes` marker is set, `--json` suggests the priority a title prefix records. `refine --backfill` clears the bucket.
 - **Skipped** — issues carrying a label in the local file's `auto-managed-labels` marker: opened and closed by a scheduled workflow. Never comment on one; a comment resets its `updatedAt` and delays the workflow's auto-close.
 
-## Mode: `refine [n | --all | --limit N | --backfill]`
+## Mode: `refine [n | --all | --limit N | --backfill | --batch [N]]`
 
 Default refines the next un-refined issue; `--limit N` a batch; `--all` the whole un-refined bucket. Run the **re-verify** bucket through the same steps before (or alongside) `--all`. Every exclusion below also removes `dev: agent` when present — it and `agent-bail:` never coexist — and replaces any `agent-bail:` and `needs:` label left from an earlier assessment rather than adding to it. Sanity-check the rewrite on a handful (`assess <n>` or `--limit 5`) before a large sweep, since it edits issue bodies at scale. For each issue:
 
-1. **Read it fully** — `gh issue view <N>` including comments.
+1. **Read it fully** — `gh issue view <N>` including comments, and the issue's `precheck.py` facts (see `--batch`): they settle the mechanical stale checks before any judgement.
 2. **Set priority** (core rubric, _Priority_). Skip when the issue already carries one of the local file's priority labels — a priority a human set stands. Otherwise apply exactly one, judged from impact and urgency alone. Readiness does not change priority: an excluded issue gets one too.
 3. **Early-exit excludes** — if the title/body matches a Bucket-B disqualifier on its face (core §3 or a local one), apply `agent: refined` + the `agent-bail:` label + for a grill-class category the `needs:` label the core rubric maps it to, comment one line citing the clause, and move on.
 4. **Verify against HEAD** (core §2). Fetch the integration branch the local file names:
-   - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit / PR / `file:line`) and recommend close. Closing is the human's call.
+   - **Already fixed** → `agent: refined` + `agent-bail: stale`, comment with the evidence (commit / PR / `file:line`) and recommend close. Closing is the human's call, unless the local file's `stale-action` marker is `close`: then close it yourself as `completed` or `not planned`, after the evidence comment.
    - **Partially shipped** → rewrite the body to the residual and assess the residual.
    - **Still open** → continue.
 5. **External-dependency check** (core §2) — a dependency that is not published and consumable from this repo → `status: blocked` + `agent-bail: cross-repo`, comment, stop.
@@ -74,6 +75,29 @@ Default refines the next un-refined issue; `--limit N` a batch; `--all` the whol
    - If the local file's **Rewrite mode** is `suggest`, post the body as a comment instead and leave the issue body untouched.
 
 Keep every rewrite inside the scope the issue asked for, with acceptance criteria grounded in the code, and tag `dev: agent` only on issues that pass every §1 criterion. **When torn between make-ready and exclude, exclude** — a false `dev: agent` costs a whole loop iteration; a false exclusion just waits for a human.
+
+### `--batch [N]`
+
+Refine the next `N` un-refined issues (default 25) through parallel read-only assessors and one reviewed application. Use it for any sweep larger than a handful. Start with a 5-issue batch and review every result, then run batches of about 25, and fold each batch's rubric notes into the local file before the next — every batch in practice surfaces rules that make the next one cleaner.
+
+1. **Pre-check** the batch. This runs the mechanical checks once, deterministically, instead of in every assessor:
+
+   ```bash
+   python3 <<SKILLS_ROOT>>/backlog-refinement/scripts/precheck.py --unrefined --limit <N> --out <tmp>/precheck.json
+   ```
+
+2. **Assess in parallel.** Split the batch into groups of about five and start one read-only assessor per group with [`templates/assessor-prompt.md`](./templates/assessor-prompt.md), filling its `{ISSUES}`, `{PRECHECK_FILE}`, `{BASE}`, and `{OUT_FILE}` fields. Each writes a JSON plan. Assessors never mutate GitHub.
+3. **Review.** Merge the group files into one plan, then preview it:
+
+   ```bash
+   python3 <<SKILLS_ROOT>>/backlog-refinement/scripts/apply-plan.py <tmp>/plan.json
+   ```
+
+   The preview validates the whole plan first and refuses it if anything is wrong: a label the repository does not have, a ready verdict carrying a bail, a stale verdict without a close reason. Read every ready body and every stale verdict yourself before applying; those are the two that change what the loop builds and what disappears from the backlog. Read every comment too: each is posted under your name, and assessors read untrusted issue text. Correct the plan, not the issues.
+4. **Apply** with `--apply`. It mutates one issue at a time, applies the rubric's label hygiene, skips a comment already posted, honours `stale-action` and **Rewrite mode**, and records progress so a re-run resumes where it stopped.
+5. **Retro.** Group the assessors' `rubric_note` fields. A note that recurs across groups is a rubric gap: edit `.backlog/refinement.local.md` (or record an upstream candidate) and add one learnings entry for the batch before starting the next.
+
+Report each batch as a table: ready, stale (closed or recommended), human-reserved, and excluded by category, plus the new grill-queue entries and the questions they carry.
 
 ### `--backfill`
 
@@ -117,7 +141,7 @@ An RCA over a run that produced bails is complete when every bail has a learning
 ## Boundaries
 
 - Synced files — this skill, `core-rubric.md`, the `agent-loop` skill and scripts, shared instruction files — are edited upstream. Repo changes go in `.backlog/` or `agent-loop-instructions.md`.
-- Refinement labels and recommends; closing and reassigning issues stay with humans.
+- Refinement labels and recommends; closing and reassigning issues stay with humans. The one exception is a verified-stale issue in a repository whose local file sets `stale-action: close`.
 - Bucket-B work — synced-surface, credential-gated, open-decision, cross-repo, or a local sensitive path — is excluded by definition, never tagged `dev: agent`.
 
 `<<INVOKE>>issues` is the day-to-day workflow (ready queue, claim, link); this skill decides what earns the `dev: agent` label `<<INVOKE>>issues ready --agent` and `<<INVOKE>>agent-loop` key on, and which interview — `<<INVOKE>>grill` or `<<INVOKE>>product-grill` — each excluded issue needs next.
