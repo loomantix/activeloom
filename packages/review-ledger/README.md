@@ -107,8 +107,11 @@ both files. A controller that observed the successful worker return can retry
 `recover-result` with the original identity arguments and
 `--expected-recovery-sha256 <digest-pinned-at-worker-return>`, reusing the
 original historical snapshot and omitting `--classification`. The command
-revalidates all live evidence and writes the completed result; ordinary
-validation and attestation still follow. It cannot recover an unfinished review
+promotes a saved `minor` label to `material` when the Git range is classified
+behavioral (including when proof of a non-behavioral edit is unavailable),
+retaining the original candidate in the pinned sidecar. It revalidates all live
+evidence and writes the completed result; ordinary validation and attestation
+still follow. It cannot recover an unfinished review
 or create a new run. An explicit successful `write-result` retry archives any
 obsolete recovery sidecar under its digest.
 

@@ -788,6 +788,39 @@ describe('completed result finalization recovery', () => {
     expect(runner.issueComments).toEqual([]);
   });
 
+  it('promotes a saved minor candidate when the reviewed range changes behavior', () => {
+    writeFileSync(params().historicalCommentIdsFile, '[]\n');
+    runner.threadNodes = [fixedThread('fp1', 'minor')];
+    runner.diffNameStatus = 'M\tsrc/identity.ts\n';
+    runner.sourceBlobs = {
+      [`${BEFORE}:src/identity.ts`]: 'const value = 1;',
+      [`${HEAD}:src/identity.ts`]: 'const value = 2;',
+    };
+    expect(() => writeResult({ ...params(), classification: 'minor' })).toThrow(
+      'minor classification requires a non-behavioral change range',
+    );
+    const blocked = readFileSync(resultPath(), 'utf8');
+    const receipt = readFileSync(receiptPath(), 'utf8');
+    expect(JSON.parse(receipt).candidate.classification).toBe('minor');
+    const recovery = {
+      ...params(),
+      expectedRecoverySha256: sha(receipt),
+    };
+
+    const result = recoverResult(recovery);
+    expect(result).toMatchObject({
+      status: 'changed',
+      classification: 'material',
+      findingFingerprints: ['fp1'],
+      finalLaneComplete: true,
+    });
+    expect(recoverResult(recovery)).toEqual(result);
+    expect(readResult(resultPath()).classification).toBe('material');
+    expect(readFileSync(resultPath(), 'utf8')).not.toBe(blocked);
+    expect(readFileSync(receiptPath(), 'utf8')).toBe(receipt);
+    expect(runner.issueComments).toEqual([]);
+  });
+
   it.each([
     'digest',
     'snapshot',
@@ -801,7 +834,6 @@ describe('completed result finalization recovery', () => {
     'result',
     'ledger',
     'live-head',
-    'source',
   ])('rejects changed %s evidence without rewriting the result', (change) => {
     const recovery = prepare();
     if (change === 'digest') recovery.expectedRecoverySha256 = '0'.repeat(64);
@@ -821,11 +853,17 @@ describe('completed result finalization recovery', () => {
       });
     if (change === 'ledger') runner.threadNodes = [];
     if (change === 'live-head') runner.prHead = OTHER;
-    if (change === 'source') runner.sourceBlobs = {};
     const original = readFileSync(resultPath(), 'utf8');
     expect(() => recoverResult(recovery)).toThrow();
     expect(readFileSync(resultPath(), 'utf8')).toBe(original);
     expect(runner.issueComments).toEqual([]);
+  });
+
+  it('conservatively promotes when source proof becomes unavailable', () => {
+    const recovery = prepare();
+    runner.sourceBlobs = {};
+    expect(recoverResult(recovery).classification).toBe('material');
+    expect(readResult(resultPath()).classification).toBe('material');
   });
 
   it('does not create a completed candidate for an unfinished review', () => {

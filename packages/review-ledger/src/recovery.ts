@@ -1,4 +1,5 @@
 import { HISTORICAL_COMMENT_IDS_ENV, SHA_64_RE } from './constants.js';
+import { classifyRangeEffect } from './effect.js';
 import { lstatSync, renameSync } from 'node:fs';
 import { fail } from './errors.js';
 import { sha256Bytes } from './hash.js';
@@ -121,13 +122,22 @@ export function readResultRecovery(
   const blocked = validateResultData(params, value['blockedResult']);
   if (blocked.status !== 'blocked')
     fail('result recovery must preserve a blocked result');
-  const candidate = validateResultData(
+  const savedCandidate = validateResultData(
     params,
     JSON.stringify(value['candidate']),
   );
-  if (candidate.status !== 'clean' && candidate.status !== 'changed') {
+  if (savedCandidate.status !== 'clean' && savedCandidate.status !== 'changed') {
     fail('result recovery requires a completed candidate');
   }
+  // The range classifier fails closed to behavioral when proof of a minor edit
+  // is unavailable. Promote only in this direction; the pinned receipt retains
+  // the original label.
+  const candidate =
+    savedCandidate.status === 'changed' &&
+    savedCandidate.classification === 'minor' &&
+    classifyRangeEffect(params.before, params.head) === 'behavioral'
+      ? { ...savedCandidate, classification: 'material' as const }
+      : savedCandidate;
   const current = Buffer.from(readResultBytes(params.resultFile)).toString(
     'utf8',
   );

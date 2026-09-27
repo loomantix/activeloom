@@ -844,9 +844,10 @@ export function writeResult(params: WriteResultParams): LedgerResult {
 }
 
 /**
- * Retry finalization of a saved completed review without running a reviewer or
- * changing its classification, identity, findings, or round. Ordinary attest
- * still verifies and publishes the result after the caller's validation gates.
+ * Retry finalization of a saved completed review without running a reviewer.
+ * A range classified behavioral may promote a saved minor label to material;
+ * identity, findings, and round remain pinned. Ordinary attest still verifies
+ * and publishes the result after the caller's validation gates.
  */
 export function recoverResult(params: RecoverResultParams): LedgerResult {
   const actor = assertActor(params.actor);
@@ -861,7 +862,10 @@ export function recoverResult(params: RecoverResultParams): LedgerResult {
     historicalCommentIds,
   });
   // Recheck the sealed local inputs after network verification, before writing.
-  readResultRecovery(params, actor);
+  const confirmed = readResultRecovery(params, actor);
+  if (confirmed.classification !== candidate.classification) {
+    fail('result recovery classification changed during finalization');
+  }
   verifyHead(params.repo, params.pr, params.head);
   writeResultFile(params.resultFile, { ...candidate });
   return {

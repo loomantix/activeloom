@@ -872,10 +872,13 @@ A controller that recorded a successful worker return may pin the sidecar's
 SHA-256 at that boundary and retry `recover-result` with the original
 `write-result` identity arguments and `--expected-recovery-sha256 <pinned-digest>`.
 Omit `--classification`: recovery reads it from the saved candidate. Reuse the
-original pre-pass snapshot. Recovery rechecks the live head, Git transition,
-complete disposition set, and range classification before writing a clean or
-changed result. Then run the ordinary validation and attestation steps. It
-neither launches a reviewer nor starts a run or spends another round.
+original pre-pass snapshot. Recovery may promote a saved `minor` classification
+to `material` when the Git range is classified behavioral, including when it
+cannot be proven non-behavioral. The digest-pinned sidecar retains the original
+candidate. Recovery rechecks the live head, Git transition, complete disposition
+set, and range classification before writing a
+clean or changed result. Then run the ordinary validation and attestation steps.
+It neither launches a reviewer nor starts a run or spends another round.
 
 Missing candidates, unknown worker exits, changed snapshots, altered blocked
 results, and unresolved review work require explicit reconciliation; they cannot
