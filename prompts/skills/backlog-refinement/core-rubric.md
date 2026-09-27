@@ -76,7 +76,7 @@ Each field contains one listed value. `rubric.py` parses the record and compares
 | Agent-ready | `settled; next: refine` | Rewrite the confirmed decisions into Goal and Acceptance criteria; apply `dev: agent` and remove previous bail/needs labels. |
 | Permanent bail remains | `settled; next: refine` | Keep the applicable permanent bail and remove the resolved `needs:` label. |
 | A new interview gap | `settled; next: grill` or `product-grill` | Set the new bail and matching `needs:` label, with a new fixed question line. Product then technical swaps to `needs: grill`; technical then product reopens only the affected product choices. |
-| More evidence needed | `provisional` | Keep the interview's `needs:` label and exclusion; name the blocking evidence/input. No ready rewrite or close. |
+| More evidence needed | `provisional; next: <same interview kind>` | Keep the interview's `needs:` label and exclusion; name the blocking evidence/input. No ready rewrite or close. A settled interview that discovers a gap for the other interview uses `settled` and that other kind instead. |
 | Do not build | `dont-build; next: none` | Offer to close as `not planned`; close only with explicit issue-specific confirmation. |
 | Bounded children | `split; next: refine` | Under a confirmed handback (or separate human split approval), create GitHub sub-issues and apply each child's assessment. Parent is `agent-bail: epic` with no `needs:` label. |
 

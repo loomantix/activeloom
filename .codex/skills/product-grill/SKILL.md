@@ -138,7 +138,7 @@ When engineering finds that an assumption does not hold, preserve the original p
 
 ## Record and hand back
 
-After the user confirms the summary, choose `settled`, `provisional`, `dont-build`, or `split`, and `next: refine`, `grill`, `product-grill`, or `none` using the [core outcome table](../backlog-refinement/core-rubric.md#interview-decisions). A settled interview is not automatically agent-ready. Unresolved Technical review questions feed `next: grill`; engineering findings that invalidate a product assumption return only the affected product choices to `next: product-grill`. A provisional record names the evidence or input blocking progress.
+After the user confirms the summary, choose `settled`, `provisional`, `dont-build`, or `split`, and `next: refine`, `grill`, `product-grill`, or `none` using the [core outcome table](../backlog-refinement/core-rubric.md#interview-decisions). A settled interview is not automatically agent-ready. When the product decisions are settled but unresolved Technical review questions remain, use `settled; next: grill`; engineering findings that invalidate a product assumption return only the affected product choices to `next: product-grill`. Use `provisional; next: product-grill` only while this product interview itself still needs evidence or input.
 
 Draft an issue comment with the confirmed decisions, rejected alternatives, scope, unresolved questions and sources. End it with exactly one marker (choose one value for each field):
 

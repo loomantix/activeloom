@@ -271,23 +271,50 @@ def latest_decision(
     return max(records, key=lambda item: comment_time(item[0]) or floor) if records else None
 
 
+def latest_refinement(comments: list[dict[str, Any]], kind: str) -> dict[str, Any] | None:
+    """Newest refinement that addresses this interview kind or no explicit kind."""
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    records = []
+    for comment in comments:
+        body = comment.get("body", "")
+        if parse_decision(body) is not None:
+            continue
+        lines = prose_lines(body)
+        if not any(
+            re.match(
+                r"^(?:#+\s*)?(?:\*\*)?(?:Backlog refinement|Refined for agent-loop)\b",
+                line,
+                re.I,
+            )
+            or QUESTION.match(line.lstrip("# -*").replace("**", ""))
+            for line in lines
+        ):
+            continue
+        question = parse_question(body, kind, legacy_tail=True)
+        if question is None or question["kind"] == kind:
+            records.append(comment)
+    return max(records, key=lambda item: comment_time(item) or floor) if records else None
+
+
+def decision_is_newer(
+    comments: list[dict[str, Any]], decision: dict[str, Any], kind: str
+) -> bool:
+    """Whether this exact decision is strictly newer than its refinement."""
+    decision_at = comment_time(decision)
+    refinement = latest_refinement(comments, kind)
+    refinement_at = comment_time(refinement) if refinement else None
+    return bool(decision_at and (not refinement or (refinement_at and decision_at > refinement_at)))
+
+
 def grill_context(body: str, comments: list[dict[str, Any]], kind: str = "grill") -> dict[str, Any]:
     """Question and decision evidence; a newer decision is not a readiness verdict."""
-    refinements = [c for c in comments if any(
-        re.match(r"^(?:#+\s*)?(?:\*\*)?(?:Backlog refinement|Refined for agent-loop)\b", line, re.I)
-        or QUESTION.match(line.lstrip("# -*").replace("**", ""))
-        for line in prose_lines(c.get("body", ""))
-    ) and parse_decision(c.get("body", "")) is None]
-    floor = datetime.min.replace(tzinfo=timezone.utc)
-    latest = max(refinements, key=lambda c: comment_time(c) or floor, default=None)
+    latest = latest_refinement(comments, kind)
     question = parse_question(latest.get("body", ""), kind, legacy_tail=True) if latest else None
     if question is None:
         question = parse_question(body, kind)
     record = latest_decision(comments, question["kind"] if question else kind)
     decision, parsed = record if record else (None, None)
-    decision_at = comment_time(decision) if decision else None
-    refinement_at = comment_time(latest) if latest else None
-    newer = bool(decision_at and (not latest or (refinement_at and decision_at > refinement_at)))
+    newer = decision_is_newer(comments, decision, parsed["kind"]) if decision and parsed else False
     return {
         "question": question,
         "decision": {**(parsed or {}), "url": decision.get("url"),

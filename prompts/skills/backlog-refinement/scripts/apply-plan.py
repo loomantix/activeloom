@@ -40,6 +40,7 @@ suggest`, a rewritten body is posted as a comment instead of replacing the body.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -48,12 +49,13 @@ import secrets
 import subprocess
 import sys
 import tempfile
-from typing import Any, NoReturn
+from contextlib import contextmanager
+from typing import Any, Iterator, NoReturn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rubric import (  # noqa: E402
     RubricConfig,
-    grill_context,
+    decision_is_newer,
     latest_decision,
     load_config,
     parse_decision,
@@ -67,6 +69,11 @@ STALE = "agent-bail: stale"
 BLOCKED = "status: blocked"
 BAIL_PREFIX = "agent-bail:"
 NEEDS_PREFIX = "needs:"
+GRILL_CLASS_BAILS = frozenset({
+    "agent-bail: open-decision",
+    "agent-bail: spec-gap",
+    "agent-bail: epic",
+})
 VERDICTS = ("ready", "exclude", "refined-only", "stale", "dont-build")
 CLOSE_REASONS = ("completed", "not planned")
 TIMEOUT = 60
@@ -190,6 +197,7 @@ def validate_handback(entry: dict[str, Any], labels: set[str], priorities: tuple
     if text is not None and decision is None:
         errors.append(f"{where}: decision_comment must end with a valid grill-decision marker")
     add = entry.get("add_labels", [])
+    bails = [x for x in add if x.startswith(BAIL_PREFIX)]
     needs = [x for x in add if x.startswith(NEEDS_PREFIX)]
     verdict = entry["verdict"]
     children = entry.get("children", [])
@@ -204,6 +212,13 @@ def validate_handback(entry: dict[str, Any], labels: set[str], priorities: tuple
             errors.append(f"{where}: settled must continue to refine, grill or product-grill")
         if outcome == 'settled' and next_step == 'refine' and needs:
             errors.append(f"{where}: settled with next: refine removes the resolved needs: label")
+        if outcome == 'settled' and next_step == 'refine' and not (
+            verdict in ('ready', 'stale')
+            or (verdict == 'exclude' and len(bails) == 1 and bails[0] not in GRILL_CLASS_BAILS)
+        ):
+            errors.append(
+                f"{where}: settled with next: refine requires ready, stale, or a permanent bail"
+            )
         if verdict == 'ready' and (outcome != 'settled' or next_step != 'refine'):
             errors.append(f"{where}: ready requires settled with next: refine")
         if outcome == 'provisional' and (
@@ -308,6 +323,25 @@ def save_progress(path: str, done: set[int]) -> None:
         json.dump(sorted(done), fh)
 
 
+@contextmanager
+def plan_apply_lock(plan_path: str) -> Iterator[None]:
+    """Serialize one plan's progress and child create-and-record transitions."""
+    lock_path = plan_path + ".apply.lock"
+    try:
+        descriptor = open(lock_path, "a+", encoding="utf-8")
+    except OSError as exc:
+        fail(f"Could not lock plan application {lock_path}: {exc}")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except OSError as exc:
+        descriptor.close()
+        fail(f"Could not lock plan application {lock_path}: {exc}")
+    try:
+        yield
+    finally:
+        descriptor.close()
+
+
 def child_recovery_path(plan_path: str) -> str:
     return plan_path + ".children.json"
 
@@ -333,13 +367,13 @@ def load_child_recovery(path: str, plan: dict[str, Any]) -> dict[str, Any] | Non
         for entry in plan["issues"]
         for child in entry.get("children", [])
     ]
-    if not keys:
-        return None
     digest = plan_digest(plan)
     try:
         with open(path, encoding="utf-8") as fh:
             state = json.load(fh)
     except FileNotFoundError:
+        if not keys:
+            return None
         created_state: dict[str, Any] = {
             "plan_sha256": digest,
             "children": {
@@ -388,12 +422,10 @@ def check_handback(entry: dict[str, Any], issue: dict[str, Any]) -> None:
         decision = parse_decision(text)
         comments = issue.get('comments', [])
         record = latest_decision(comments, decision['kind']) if decision else None
-        context = grill_context('', comments, decision['kind']) if decision else None
         if (
             not record
             or record[0].get('body', '').strip() != text.strip()
-            or not context
-            or not context['newer_decision']
+            or not decision_is_newer(comments, record[0], decision['kind'])
         ):
             fail(f"#{entry['number']}: post a current confirmed decision before applying")
         current = {x['name'] for x in issue.get('labels', []) if x['name'].startswith(NEEDS_PREFIX)}
@@ -449,7 +481,7 @@ def apply_children(
         assessment = {'number': created['number'], **child['assessment']}
         if assessment.get('body'):
             assessment['body'] = assessment['body'].rstrip()+'\n\n'+marker
-        apply_entry(assessment, config)
+        apply_entry(assessment, config, require_open=True)
 
 
 def apply_entry(
@@ -459,12 +491,15 @@ def apply_entry(
     close_confirmed: bool = False,
     child_recovery: dict[str, Any] | None = None,
     child_recovery_file: str | None = None,
+    require_open: bool = False,
 ) -> str:
     number = str(entry["number"])
     issue = json.loads(gh(["issue", "view", number, "--json", "state,labels,comments,assignees"]))
     current = {label["name"] for label in issue.get("labels") or []}
     existing = {c.get("body", "").strip() for c in issue.get("comments") or []}
     if issue["state"] != "OPEN":
+        if require_open or entry.get('decision_comment') or entry.get('children'):
+            fail(f"#{number}: required handback work cannot be applied to a closed issue")
         return "skipped: already closed"
     check_handback(entry, issue)
     if entry['verdict'] == 'dont-build' and not close_confirmed:
@@ -554,37 +589,39 @@ def main() -> int:
     if not args.apply:
         print("\nPreview only. Re-run with --apply to make these changes.")
         return 0
-    # Validate every confirmation and recorded decision before the first write.
-    for entry in plan['issues']:
-        if entry['number'] in done:
-            continue
-        if entry.get('decision_comment'):
-            if not args.confirm_summary:
-                fail('Handback requires --confirm-summary; auto never skips summary confirmation')
-            if config.grill_handback != 'auto' and not args.confirm_handback:
-                fail('Handback requires --confirm-handback (or local grill-handback: auto)')
-            if entry['verdict'] in ('dont-build', 'stale') and entry['number'] not in args.confirm_close:
-                fail(f"#{entry['number']}: handback close requires --confirm-close {entry['number']}")
-        elif entry.get('children') and entry['number'] not in args.confirm_split:
-            fail(f"#{entry['number']}: child creation requires --confirm-split {entry['number']}")
-        if entry.get('decision_comment') or entry.get('children'):
-            issue = json.loads(gh(['issue', 'view', str(entry['number']), '--json', 'state,labels,comments,assignees']))
-            check_handback(entry, issue)
-    recovery_file = child_recovery_path(args.plan)
-    child_recovery = load_child_recovery(recovery_file, plan)
-    for entry in plan["issues"]:
-        if entry["number"] in done:
-            continue
-        result = apply_entry(
-            entry,
-            config,
-            close_confirmed=entry['number'] in args.confirm_close,
-            child_recovery=child_recovery,
-            child_recovery_file=recovery_file if child_recovery else None,
-        )
-        done.add(entry["number"])
-        save_progress(progress, done)
-        print(f"#{entry['number']}: {result}")
+    with plan_apply_lock(args.plan):
+        done = load_progress(progress)
+        # Validate every confirmation and recorded decision before the first write.
+        for entry in plan['issues']:
+            if entry['number'] in done:
+                continue
+            if entry.get('decision_comment'):
+                if not args.confirm_summary:
+                    fail('Handback requires --confirm-summary; auto never skips summary confirmation')
+                if config.grill_handback != 'auto' and not args.confirm_handback:
+                    fail('Handback requires --confirm-handback (or local grill-handback: auto)')
+                if entry['verdict'] in ('dont-build', 'stale') and entry['number'] not in args.confirm_close:
+                    fail(f"#{entry['number']}: handback close requires --confirm-close {entry['number']}")
+            elif entry.get('children') and entry['number'] not in args.confirm_split:
+                fail(f"#{entry['number']}: child creation requires --confirm-split {entry['number']}")
+            if entry.get('decision_comment') or entry.get('children'):
+                issue = json.loads(gh(['issue', 'view', str(entry['number']), '--json', 'state,labels,comments,assignees']))
+                check_handback(entry, issue)
+        recovery_file = child_recovery_path(args.plan)
+        child_recovery = load_child_recovery(recovery_file, plan)
+        for entry in plan["issues"]:
+            if entry["number"] in done:
+                continue
+            result = apply_entry(
+                entry,
+                config,
+                close_confirmed=entry['number'] in args.confirm_close,
+                child_recovery=child_recovery,
+                child_recovery_file=recovery_file if child_recovery else None,
+            )
+            done.add(entry["number"])
+            save_progress(progress, done)
+            print(f"#{entry['number']}: {result}")
     return 0
 
 

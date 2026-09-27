@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import threading
 from datetime import timezone
 from pathlib import Path
 from types import ModuleType
@@ -993,6 +994,20 @@ def test_handback_invalid_outcome_routes_refused(
     assert apply_mod.validate({'issues': [entry]}, REPO_LABELS, PRIORITY_TUPLE)
 
 
+@pytest.mark.parametrize('entry', [
+    _entry(verdict='refined-only', add_labels=[], decision_comment=_decision()),
+    _entry(
+        verdict='exclude',
+        add_labels=['agent-bail: open-decision'],
+        decision_comment=_decision(),
+    ),
+])
+def test_handback_settled_refine_cannot_orphan_an_interview(
+    apply_mod: ModuleType, entry: dict[str, Any]
+) -> None:
+    assert apply_mod.validate({'issues': [entry]}, REPO_LABELS, PRIORITY_TUPLE)
+
+
 def test_handback_requires_record_before_mutation(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeGh()
     monkeypatch.setattr(apply_mod, 'gh', fake)
@@ -1011,6 +1026,30 @@ def test_handback_refuses_a_superseded_decision(
         'body': 'Backlog refinement: a new question.\nQuestion for /grill: Which source?',
         'createdAt': '2026-01-02T00:00:00Z',
     })
+    monkeypatch.setattr(apply_mod, 'gh', fake)
+    with pytest.raises(SystemExit):
+        apply_mod.apply_entry(entry, _config(apply_mod))
+    assert fake.verbs() == ['issue view']
+
+
+def test_handback_freshness_uses_the_exact_interview_decision(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = _handback_entry('ready')
+    entry['decision_comment'] = _decision(kind='product-grill')
+    fake = FakeGh(comments=())
+    fake.issue['comments'] = [
+        {'body': entry['decision_comment'], 'createdAt': '2026-01-01T00:00:00Z'},
+        {
+            'body': 'Backlog refinement: product question.\nQuestion for /product-grill: Who?',
+            'createdAt': '2026-01-02T00:00:00Z',
+        },
+        {
+            'body': 'Backlog refinement: technical question.\nQuestion for /grill: How?',
+            'createdAt': '2026-01-03T00:00:00Z',
+        },
+        {'body': _decision(kind='grill'), 'createdAt': '2026-01-04T00:00:00Z'},
+    ]
     monkeypatch.setattr(apply_mod, 'gh', fake)
     with pytest.raises(SystemExit):
         apply_mod.apply_entry(entry, _config(apply_mod))
@@ -1143,6 +1182,55 @@ def test_handback_child_recovery_is_bound_to_the_exact_plan(
     changed['issues'][0]['children'][0]['title'] = 'Changed after preview'
     with pytest.raises(SystemExit):
         apply_mod.load_child_recovery(path, changed)
+
+    without_children = json.loads(json.dumps(plan))
+    without_children['issues'][0].pop('children')
+    without_children['issues'][0].pop('decision_comment')
+    with pytest.raises(SystemExit):
+        apply_mod.load_child_recovery(path, without_children)
+
+
+def test_handback_plan_lock_serializes_applications(
+    apply_mod: ModuleType, tmp_path: Path
+) -> None:
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def first() -> None:
+        with apply_mod.plan_apply_lock(str(tmp_path / 'plan.json')):
+            first_entered.set()
+            assert release_first.wait(2)
+
+    def second() -> None:
+        assert first_entered.wait(2)
+        with apply_mod.plan_apply_lock(str(tmp_path / 'plan.json')):
+            second_entered.set()
+
+    first_thread = threading.Thread(target=first)
+    second_thread = threading.Thread(target=second)
+    first_thread.start()
+    second_thread.start()
+    assert first_entered.wait(2)
+    assert not second_entered.wait(0.1)
+    release_first.set()
+    first_thread.join(2)
+    second_thread.join(2)
+    assert second_entered.is_set()
+
+
+def test_handback_closed_split_work_fails_closed(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeGh()
+    fake.issue['state'] = 'CLOSED'
+    monkeypatch.setattr(apply_mod, 'gh', fake)
+    with pytest.raises(SystemExit):
+        apply_mod.apply_entry(_handback_entry('split'), _config(apply_mod))
+
+    child = _entry(verdict='ready', add_labels=['dev: agent'], body='bounded')
+    with pytest.raises(SystemExit):
+        apply_mod.apply_entry(child, _config(apply_mod), require_open=True)
 
 
 def test_handback_split_does_not_adopt_a_forged_public_marker(
