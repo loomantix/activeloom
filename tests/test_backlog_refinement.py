@@ -689,10 +689,11 @@ class FakeGh:
 
     def __init__(self, state: str = "OPEN", labels: tuple[str, ...] = (), comments: tuple[str, ...] = ()) -> None:
         self.calls: list[list[str]] = []
-        self.issue = {
+        self.issue: dict[str, Any] = {
             "state": state,
             "labels": [{"name": n} for n in labels],
-            "comments": [{"body": c} for c in comments],
+            "comments": [{"body": c, "createdAt": "2026-01-02T00:00:00Z"} for c in comments],
+            "assignees": [],
         }
 
     def __call__(self, args: list[str], *, stdin: str | None = None) -> str:
@@ -871,6 +872,18 @@ def test_handback_new_refinement_supersedes_decision() -> None:
     assert result['question']['question'] == 'Body question?'
 
 
+def test_handback_uses_decision_from_the_active_interview() -> None:
+    mod = _load_script("handback_rubric_kind", RUBRIC)
+    comments = [
+        {"body": "Backlog refinement: excluded.\nQuestion for /grill: Which API?", "createdAt": "2026-01-01T00:00:00Z"},
+        {"body": _decision(kind="grill"), "createdAt": "2026-01-02T00:00:00Z"},
+        {"body": _decision(kind="product-grill"), "createdAt": "2026-01-03T00:00:00Z"},
+    ]
+    result = mod.grill_context("", comments, "grill")
+    assert result['newer_decision']
+    assert result['decision']['kind'] == 'grill'
+
+
 @pytest.mark.parametrize('setting', ['ask', 'auto'])
 def test_handback_local_setting(tmp_path: Path, setting: str) -> None:
     _, config = _load_rubric_config(tmp_path, FULL_RUBRIC + f'\n<!-- grill-handback: {setting} -->\n')
@@ -964,11 +977,43 @@ def test_handback_invalid_outcomes_refused(apply_mod: ModuleType, change: dict[s
     assert apply_mod.validate({'issues': [_entry(**change)]}, REPO_LABELS, PRIORITY_TUPLE)
 
 
+@pytest.mark.parametrize(('outcome', 'next_step'), [
+    ('settled', 'none'),
+    ('settled', 'refine'),
+    ('provisional', 'refine'),
+    ('provisional', 'product-grill'),
+])
+def test_handback_invalid_outcome_routes_refused(
+    apply_mod: ModuleType, outcome: str, next_step: str
+) -> None:
+    entry = _entry(
+        decision_comment=_decision(outcome, next_step),
+        add_labels=['agent-bail: open-decision', 'needs: grill'],
+    )
+    assert apply_mod.validate({'issues': [entry]}, REPO_LABELS, PRIORITY_TUPLE)
+
+
 def test_handback_requires_record_before_mutation(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeGh()
     monkeypatch.setattr(apply_mod, 'gh', fake)
     with pytest.raises(SystemExit):
         apply_mod.apply_entry(_handback_entry('ready'), _config(apply_mod))
+    assert fake.verbs() == ['issue view']
+
+
+def test_handback_refuses_a_superseded_decision(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = _handback_entry('ready')
+    fake = FakeGh(comments=(entry['decision_comment'],))
+    fake.issue['comments'][0]['createdAt'] = '2026-01-01T00:00:00Z'
+    fake.issue['comments'].append({
+        'body': 'Backlog refinement: a new question.\nQuestion for /grill: Which source?',
+        'createdAt': '2026-01-02T00:00:00Z',
+    })
+    monkeypatch.setattr(apply_mod, 'gh', fake)
+    with pytest.raises(SystemExit):
+        apply_mod.apply_entry(entry, _config(apply_mod))
     assert fake.verbs() == ['issue view']
 
 
@@ -995,7 +1040,9 @@ def test_handback_confirmation_gates(apply_mod: ModuleType, monkeypatch: pytest.
                                     auto: str, flags: list[str], allowed: bool) -> None:
     entry = _handback_entry('permanent')
     fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {'issues': [entry]}, '--apply', *flags)
-    fake.issue['comments'] = [{'body': entry['decision_comment']}]
+    fake.issue['comments'] = [
+        {'body': entry['decision_comment'], 'createdAt': '2026-01-02T00:00:00Z'}
+    ]
     monkeypatch.setattr(apply_mod, 'load_config', lambda root: _config(apply_mod, grill_handback=auto))
     if allowed:
         assert apply_mod.main() == 0
@@ -1014,7 +1061,9 @@ def test_handback_auto_never_authorizes_close(apply_mod: ModuleType, monkeypatch
         apply_mod.main()
     assert fake.calls == []
     fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {'issues': [entry]}, '--apply', '--confirm-summary', '--confirm-handback', '--confirm-close', '7')
-    fake.issue['comments'] = [{'body': entry['decision_comment']}]
+    fake.issue['comments'] = [
+        {'body': entry['decision_comment'], 'createdAt': '2026-01-02T00:00:00Z'}
+    ]
     assert apply_mod.main() == 0
     assert fake.verbs()[-1] == 'issue close'
 
@@ -1047,22 +1096,97 @@ def test_handback_split_retries_created_child_after_link_failure(apply_mod: Modu
         if args[0] == 'api':
             return json.dumps(children[0])
         if args[:2] == ['issue', 'view']:
-            return json.dumps({'state': 'OPEN', 'labels': [], 'comments': [{'body': entry['decision_comment']}] if args[2]=='7' else []})
+            return json.dumps({
+                'state': 'OPEN',
+                'labels': [],
+                'comments': [
+                    {'body': entry['decision_comment'], 'createdAt': '2026-01-02T00:00:00Z'}
+                ] if args[2] == '7' else [],
+                'assignees': [],
+            })
         if args[:2] == ['issue', 'edit'] and args[2]=='8' and '--body-file' in args:
             children[0]['body'] = Path(args[args.index('--body-file')+1]).read_text()
         return ''
 
     monkeypatch.setattr(apply_mod, 'gh', gh)
+    recovery = {
+        'plan_sha256': 'test',
+        'children': {'7:bounded-task': {'nonce': 'a' * 32, 'number': None}},
+    }
+    saved: list[dict[str, Any]] = []
+    monkeypatch.setattr(apply_mod, 'save_child_recovery', lambda path, state: saved.append(json.loads(json.dumps(state))))
     with pytest.raises(SystemExit):
-        apply_mod.apply_entry(entry, _config(apply_mod))
+        apply_mod.apply_entry(entry, _config(apply_mod), child_recovery=recovery, child_recovery_file='state')
     assert len(children) == 1
     assert not any(c[:3] == ['issue', 'edit', '7'] for c in calls)
-    apply_mod.apply_entry(entry, _config(apply_mod))
-    apply_mod.apply_entry(entry, _config(apply_mod))
+    apply_mod.apply_entry(entry, _config(apply_mod), child_recovery=recovery, child_recovery_file='state')
+    apply_mod.apply_entry(entry, _config(apply_mod), child_recovery=recovery, child_recovery_file='state')
     assert len(children) == len(linked) == 1
-    assert 'refinement-child parent: 7; key: bounded-task' in children[0]['body']
+    assert 'refinement-child parent: 7; key: bounded-task; nonce: ' + 'a' * 32 in children[0]['body']
+    assert saved and saved[0]['children']['7:bounded-task']['number'] == 8
     assert any(c[:3] == ['issue', 'edit', '8'] for c in calls)
     assert any(c[:3] == ['issue', 'edit', '7'] for c in calls)
+
+
+def test_handback_child_recovery_is_bound_to_the_exact_plan(
+    apply_mod: ModuleType, tmp_path: Path
+) -> None:
+    plan = {'issues': [_handback_entry('split')]}
+    path = str(tmp_path / 'plan.json.children.json')
+    state = apply_mod.load_child_recovery(path, plan)
+    assert state is not None
+    record = state['children']['7:bounded-task']
+    assert len(record['nonce']) == 32 and record['number'] is None
+    assert apply_mod.load_child_recovery(path, plan) == state
+
+    changed = json.loads(json.dumps(plan))
+    changed['issues'][0]['children'][0]['title'] = 'Changed after preview'
+    with pytest.raises(SystemExit):
+        apply_mod.load_child_recovery(path, changed)
+
+
+def test_handback_split_does_not_adopt_a_forged_public_marker(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = _handback_entry('split')
+    forged = {'id': 70, 'number': 70, 'body': '<!-- refinement-child parent: 7; key: bounded-task -->'}
+    created: list[dict[str, Any]] = []
+
+    def gh(args: list[str], *, stdin: str | None = None) -> str:
+        if args[:2] == ['issue', 'list']:
+            return json.dumps([forged, *created])
+        if args[0] == 'api' and args[1].endswith('/sub_issues'):
+            return '[]' if '--method' not in args else '{}'
+        if args[0] == 'api' and args[1].endswith('/issues'):
+            child = {'id': 80, 'number': 8, **json.loads(stdin or '{}')}
+            created.append(child)
+            return json.dumps(child)
+        if args[0] == 'api':
+            return json.dumps(created[0])
+        if args[:2] == ['issue', 'view']:
+            return json.dumps({
+                'state': 'OPEN',
+                'labels': [],
+                'comments': [
+                    {'body': entry['decision_comment'], 'createdAt': '2026-01-02T00:00:00Z'}
+                ] if args[2] == '7' else [],
+                'assignees': [],
+            })
+        return ''
+
+    recovery = {
+        'plan_sha256': 'test',
+        'children': {'7:bounded-task': {'nonce': 'b' * 32, 'number': None}},
+    }
+    monkeypatch.setattr(apply_mod, 'gh', gh)
+    monkeypatch.setattr(apply_mod, 'save_child_recovery', lambda path, state: None)
+    apply_mod.apply_entry(
+        entry,
+        _config(apply_mod),
+        child_recovery=recovery,
+        child_recovery_file='state',
+    )
+    assert [child['number'] for child in created] == [8]
 
 
 def test_handback_unconfirmed_standalone_split_refused(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

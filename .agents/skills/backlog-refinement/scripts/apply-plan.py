@@ -6,7 +6,8 @@ issue, shape below), validates the whole plan before touching anything, prints
 what it would do, and only mutates with ``--apply``. Mutations run one issue at
 a time, in a fixed order — body, labels, comment, close — and each finished
 issue is recorded in ``<plan>.applied.json`` so a re-run resumes rather than
-double-posting.
+double-posting. Split recovery uses the private ``<plan>.children.json`` state
+to bind every created child to this exact plan before the first GitHub write.
 
 Interview handbacks add ``decision_comment`` (the exact posted record) and,
 for a split, ``children`` with stable keys, titles, bodies and assessments.
@@ -39,16 +40,26 @@ suggest`, a rewritten body is posted as a comment instead of replacing the body.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
+import secrets
 import subprocess
 import sys
 import tempfile
-import re
-from typing import Any
+from typing import Any, NoReturn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rubric import RubricConfig, load_config, repo_root, parse_decision, parse_question  # noqa: E402
+from rubric import (  # noqa: E402
+    RubricConfig,
+    grill_context,
+    latest_decision,
+    load_config,
+    parse_decision,
+    parse_question,
+    repo_root,
+)
 
 REFINED = "agent: refined"
 READY = "dev: agent"
@@ -61,7 +72,7 @@ CLOSE_REASONS = ("completed", "not planned")
 TIMEOUT = 60
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     sys.stderr.write(message.rstrip() + "\n")
     sys.exit(1)
 
@@ -189,10 +200,18 @@ def validate_handback(entry: dict[str, Any], labels: set[str], priorities: tuple
             errors.append(f"{where}: dont-build carries no bail, needs or blocked label")
     if decision:
         outcome, next_step = decision['outcome'], decision['next']
+        if outcome == 'settled' and next_step == 'none':
+            errors.append(f"{where}: settled must continue to refine, grill or product-grill")
+        if outcome == 'settled' and next_step == 'refine' and needs:
+            errors.append(f"{where}: settled with next: refine removes the resolved needs: label")
         if verdict == 'ready' and (outcome != 'settled' or next_step != 'refine'):
             errors.append(f"{where}: ready requires settled with next: refine")
-        if outcome == 'provisional' and (verdict != 'exclude' or needs != [f"needs: {decision['kind']}"]):
-            errors.append(f"{where}: provisional must stay excluded with its interview label")
+        if outcome == 'provisional' and (
+            verdict != 'exclude'
+            or next_step != decision['kind']
+            or needs != [f"needs: {decision['kind']}"]
+        ):
+            errors.append(f"{where}: provisional must stay excluded and return to its interview")
         if outcome == 'dont-build' and (verdict != 'dont-build' or next_step != 'none'):
             errors.append(f"{where}: dont-build requires its verdict and next: none")
         if outcome == 'split' and (not children or next_step != 'refine'):
@@ -289,6 +308,75 @@ def save_progress(path: str, done: set[int]) -> None:
         json.dump(sorted(done), fh)
 
 
+def child_recovery_path(plan_path: str) -> str:
+    return plan_path + ".children.json"
+
+
+def plan_digest(plan: dict[str, Any]) -> str:
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def save_child_recovery(path: str, state: dict[str, Any]) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    with tempfile.NamedTemporaryFile(
+        "w", dir=directory, prefix=".children-", delete=False, encoding="utf-8"
+    ) as fh:
+        json.dump(state, fh, sort_keys=True)
+        tmp = fh.name
+    os.replace(tmp, path)
+
+
+def load_child_recovery(path: str, plan: dict[str, Any]) -> dict[str, Any] | None:
+    keys = [
+        f"{entry['number']}:{child['key']}"
+        for entry in plan["issues"]
+        for child in entry.get("children", [])
+    ]
+    if not keys:
+        return None
+    digest = plan_digest(plan)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except FileNotFoundError:
+        created_state: dict[str, Any] = {
+            "plan_sha256": digest,
+            "children": {
+                key: {"nonce": secrets.token_hex(16), "number": None} for key in keys
+            },
+        }
+        save_child_recovery(path, created_state)
+        return created_state
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"Could not read child recovery state {path}: {exc}")
+    if not isinstance(state, dict):
+        fail(f"Child recovery state {path} does not match this plan; use a new plan path")
+    records = state.get("children")
+    valid = (
+        state.get("plan_sha256") == digest
+        and isinstance(records, dict)
+        and set(records) == set(keys)
+        and all(
+            isinstance(record, dict)
+            and isinstance(record.get("nonce"), str)
+            and re.fullmatch(r"[0-9a-f]{32}", record["nonce"])
+            and (
+                record.get("number") is None
+                or (
+                    isinstance(record.get("number"), int)
+                    and not isinstance(record.get("number"), bool)
+                    and record["number"] > 0
+                )
+            )
+            for record in records.values()
+        )
+    )
+    if not valid:
+        fail(f"Child recovery state {path} does not match this plan; use a new plan path")
+    return state
+
+
 def check_handback(entry: dict[str, Any], issue: dict[str, Any]) -> None:
     """A draft can be previewed; application needs the recorded, confirmed decision."""
     if not entry.get('decision_comment') and not entry.get('children'):
@@ -297,20 +385,34 @@ def check_handback(entry: dict[str, Any], issue: dict[str, Any]) -> None:
         fail(f"#{entry['number']}: assigned since assessment; reassess without reassigning")
     text = entry.get('decision_comment')
     if text:
-        existing = {c.get('body', '').strip() for c in issue.get('comments', [])}
-        if text.strip() not in existing:
-            fail(f"#{entry['number']}: post the confirmed decision comment before applying")
         decision = parse_decision(text)
+        comments = issue.get('comments', [])
+        record = latest_decision(comments, decision['kind']) if decision else None
+        context = grill_context('', comments, decision['kind']) if decision else None
+        if (
+            not record
+            or record[0].get('body', '').strip() != text.strip()
+            or not context
+            or not context['newer_decision']
+        ):
+            fail(f"#{entry['number']}: post a current confirmed decision before applying")
         current = {x['name'] for x in issue.get('labels', []) if x['name'].startswith(NEEDS_PREFIX)}
         if decision and decision['outcome'] == 'provisional' and current and current != {f"needs: {decision['kind']}"}:
             fail(f"#{entry['number']}: provisional handback must preserve the current needs: label")
 
 
-def apply_children(entry: dict[str, Any], config: RubricConfig) -> None:
+def apply_children(
+    entry: dict[str, Any],
+    config: RubricConfig,
+    recovery: dict[str, Any] | None,
+    recovery_path: str | None,
+) -> None:
     """Use durable child markers to resume creation/linking without relying on search indexing."""
     children = entry.get('children', [])
     if not children:
         return
+    if recovery is None or recovery_path is None:
+        fail(f"#{entry['number']}: child recovery state is required before creation")
     issues = json.loads(gh(['issue', 'list', '--state', 'all', '--limit', '10000', '--json', 'number,body']))
     if len(issues) >= 10000:
         fail('Child lookup reached its limit; refusing possible duplicate creation')
@@ -318,16 +420,28 @@ def apply_children(entry: dict[str, Any], config: RubricConfig) -> None:
     linked = json.loads(gh(['api', f'repos/{{owner}}/{{repo}}/issues/{parent}/sub_issues', '--paginate', '--slurp']))
     linked_ids = {item['id'] for page in linked for item in page}
     for child in children:
-        marker = f"<!-- refinement-child parent: {parent}; key: {child['key']} -->"
-        matches = [i for i in issues if marker in i.get('body', '')]
-        if len(matches) > 1:
-            fail(f"#{parent}: multiple children match {child['key']}; reconcile manually")
-        if matches:
-            created = json.loads(gh(['api', f"repos/{{owner}}/{{repo}}/issues/{matches[0]['number']}"]))
+        recovery_key = f"{parent}:{child['key']}"
+        record = recovery["children"][recovery_key]
+        marker = (
+            f"<!-- refinement-child parent: {parent}; key: {child['key']}; "
+            f"nonce: {record['nonce']} -->"
+        )
+        if record['number'] is not None:
+            created = json.loads(gh(['api', f"repos/{{owner}}/{{repo}}/issues/{record['number']}"]))
+            if marker not in created.get('body', ''):
+                fail(f"#{parent}: recorded child {child['key']} lost its recovery marker")
         else:
-            created = json.loads(gh(['api', 'repos/{owner}/{repo}/issues', '--method', 'POST', '--input', '-'],
-                                   stdin=json.dumps({'title': child['title'], 'body': child['body'].rstrip()+'\n\n'+marker})))
-            issues.append(created)
+            matches = [i for i in issues if marker in i.get('body', '')]
+            if len(matches) > 1:
+                fail(f"#{parent}: multiple children match {child['key']}; reconcile manually")
+            if matches:
+                created = json.loads(gh(['api', f"repos/{{owner}}/{{repo}}/issues/{matches[0]['number']}"]))
+            else:
+                created = json.loads(gh(['api', 'repos/{owner}/{repo}/issues', '--method', 'POST', '--input', '-'],
+                                       stdin=json.dumps({'title': child['title'], 'body': child['body'].rstrip()+'\n\n'+marker})))
+                issues.append(created)
+            record['number'] = created['number']
+            save_child_recovery(recovery_path, recovery)
         if created['id'] not in linked_ids:
             gh(['api', f'repos/{{owner}}/{{repo}}/issues/{parent}/sub_issues', '--method', 'POST', '--input', '-'],
                stdin=json.dumps({'sub_issue_id': created['id']}))
@@ -338,7 +452,14 @@ def apply_children(entry: dict[str, Any], config: RubricConfig) -> None:
         apply_entry(assessment, config)
 
 
-def apply_entry(entry: dict[str, Any], config: RubricConfig, *, close_confirmed: bool = False) -> str:
+def apply_entry(
+    entry: dict[str, Any],
+    config: RubricConfig,
+    *,
+    close_confirmed: bool = False,
+    child_recovery: dict[str, Any] | None = None,
+    child_recovery_file: str | None = None,
+) -> str:
     number = str(entry["number"])
     issue = json.loads(gh(["issue", "view", number, "--json", "state,labels,comments,assignees"]))
     current = {label["name"] for label in issue.get("labels") or []}
@@ -350,7 +471,7 @@ def apply_entry(entry: dict[str, Any], config: RubricConfig, *, close_confirmed:
         fail(f"#{number}: closing a dont-build decision requires explicit confirmation")
     if entry.get('decision_comment') and entry['verdict'] == 'stale' and not close_confirmed:
         fail(f"#{number}: handback closes require explicit confirmation")
-    apply_children(entry, config)
+    apply_children(entry, config, child_recovery, child_recovery_file)
     notes = []
     body = entry.get("body")
     if body:
@@ -449,10 +570,18 @@ def main() -> int:
         if entry.get('decision_comment') or entry.get('children'):
             issue = json.loads(gh(['issue', 'view', str(entry['number']), '--json', 'state,labels,comments,assignees']))
             check_handback(entry, issue)
+    recovery_file = child_recovery_path(args.plan)
+    child_recovery = load_child_recovery(recovery_file, plan)
     for entry in plan["issues"]:
         if entry["number"] in done:
             continue
-        result = apply_entry(entry, config, close_confirmed=entry['number'] in args.confirm_close)
+        result = apply_entry(
+            entry,
+            config,
+            close_confirmed=entry['number'] in args.confirm_close,
+            child_recovery=child_recovery,
+            child_recovery_file=recovery_file if child_recovery else None,
+        )
         done.add(entry["number"])
         save_progress(progress, done)
         print(f"#{entry['number']}: {result}")

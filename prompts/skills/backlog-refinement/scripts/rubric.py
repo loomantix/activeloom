@@ -257,6 +257,20 @@ def comment_time(comment: dict[str, Any]) -> datetime | None:
     return parsed.astimezone(timezone.utc) if parsed.tzinfo else None
 
 
+def latest_decision(
+    comments: list[dict[str, Any]], kind: str
+) -> tuple[dict[str, Any], dict[str, str]] | None:
+    """Newest valid decision from the interview that owns the active question."""
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    records = [
+        (comment, decision)
+        for comment in comments
+        if (decision := parse_decision(comment.get("body", "")))
+        and decision["kind"] == kind
+    ]
+    return max(records, key=lambda item: comment_time(item[0]) or floor) if records else None
+
+
 def grill_context(body: str, comments: list[dict[str, Any]], kind: str = "grill") -> dict[str, Any]:
     """Question and decision evidence; a newer decision is not a readiness verdict."""
     refinements = [c for c in comments if any(
@@ -269,14 +283,14 @@ def grill_context(body: str, comments: list[dict[str, Any]], kind: str = "grill"
     question = parse_question(latest.get("body", ""), kind, legacy_tail=True) if latest else None
     if question is None:
         question = parse_question(body, kind)
-    decisions = [c for c in comments if parse_decision(c.get("body", ""))]
-    decision = max(decisions, key=lambda c: comment_time(c) or floor, default=None)
+    record = latest_decision(comments, question["kind"] if question else kind)
+    decision, parsed = record if record else (None, None)
     decision_at = comment_time(decision) if decision else None
     refinement_at = comment_time(latest) if latest else None
     newer = bool(decision_at and (not latest or (refinement_at and decision_at > refinement_at)))
     return {
         "question": question,
-        "decision": {**(parse_decision(decision["body"]) or {}), "url": decision.get("url"),
+        "decision": {**(parsed or {}), "url": decision.get("url"),
                      "createdAt": decision.get("createdAt")} if decision else None,
         "newer_decision": newer,
     }
