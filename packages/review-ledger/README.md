@@ -344,8 +344,8 @@ caller that skips this step loses the record without ever failing. Update the
 callers that emit on these early-return paths before, or together with, the
 bundle update that carries this requirement.
 
-The marker is `local-review-telemetry:v1` followed by a JSON payload. Four
-properties are load-bearing:
+The marker is `local-review-telemetry:v1` or `local-review-telemetry:v3`, matching
+the JSON payload's version. Four properties are load-bearing:
 
 - **Numbers arrive as arguments.** This package never reads a session
   transcript, a home directory, or any other ambient state. Each engine
@@ -454,3 +454,21 @@ records with rather than relying on this suite.
 ## License
 
 Apache-2.0. Copyright 2026 Loomantix Inc.
+
+### Aggregate usage without model identity
+
+The writer emits telemetry v3 when a measured token bucket explicitly has
+`model: null`. Such records contain exactly one aggregate bucket with
+`effort: null`; model-attributed buckets cannot be mixed into the aggregate.
+The remaining fields and validation match v1. Known-model records continue to
+emit v1, and the reader accepts both versions, requiring marker/payload agreement.
+Telemetry v2 remains reserved for the assurance contract. Consumers must add v3
+support before rolling out producers of aggregate usage.
+A null model is unknown identity, never a model identifier or a zero-cost model.
+
+Managed Agy reviews consume the terminal JSON usage envelope documented in
+[Antigravity headless mode](https://antigravity.google/docs/cli/headless/).
+A fresh single-turn invocation supplies the pass interval; resumed cumulative
+sessions are deliberately excluded. Requested model settings are not observed
+model identity and are not copied into token buckets. These records use
+`tokenSource: "terminal-json"`; they are not session-log measurements.

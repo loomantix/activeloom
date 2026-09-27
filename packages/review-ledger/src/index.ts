@@ -244,6 +244,7 @@ export type {
   TelemetryStatus,
   TelemetryTokenSource,
   TelemetryTokenBucket,
+  AggregateTelemetryTokenBucket,
   TelemetryTokenBucketInput,
   TelemetryLane,
   TelemetryLaneInput,
