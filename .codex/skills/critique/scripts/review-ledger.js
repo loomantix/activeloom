@@ -1248,7 +1248,7 @@ function rowsHaveHistoricalMarkers(rows) {
   });
 }
 
-// ../../node_modules/.pnpm/@babel+parser@8.0.5/node_modules/@babel/parser/lib/index.js
+// ../../node_modules/.pnpm/@babel+parser@8.0.6/node_modules/@babel/parser/lib/index.js
 var Position = class {
   constructor(line, col, index) {
     this.line = void 0;
@@ -2604,10 +2604,10 @@ var types = {
   j_cTag: new TokContext("</tag"),
   j_expr: new TokContext("<tag>...</tag>", true)
 };
-var bmpIdentifierStart = /[\p{ID_Start}\u088f\u0c5c\u0cdc\ua7ce\ua7cf\ua7d2\ua7d4\ua7f1]/u;
-var bmpIdentifier = /[\p{ID_Continue}\u088f\u0c5c\u0cdc\ua7ce\ua7cf\ua7d2\ua7d4\ua7f1\u1acf-\u1add\u1ae0-\u1aeb]/u;
-var supplementaryIdentifierStartCodes = [2368, 25, 1388, 2, 3817, 43, 20677, 24, 3, 24, 287, 4, 6146, 7, 1290, 21, 98, 114, 22734, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 53307, 5, 5987, 11, 21763, 4297];
-var supplementaryIdentifierCodes = [3834, 1, 3173, 7, 633, 9, 51450, 0, 3, 0, 8, 1, 6, 0];
+var bmpIdentifierStart = /[\p{ID_Start}\u0558\u058b\u058c\u088f\u0c5c\u0cdc\u208f\u209d-\u209f\ua7ce\ua7cf\ua7d2\ua7d4\ua7dd\ua7e2\ua7f1\uab6c\uab6d]/u;
+var bmpIdentifier = /[\p{ID_Continue}\u0558\u058b\u058c\u088f\u0c5c\u0cdc\u208f\u209d-\u209f\ua7ce\ua7cf\ua7d2\ua7d4\ua7dd\ua7e2\ua7f1\uab6c\uab6d\u05c8\u05c9\u0b53\u0b54\u1acf-\u1af0]/u;
+var supplementaryIdentifierStartCodes = [1979, 4, 385, 25, 1388, 2, 18, 21, 3100, 0, 678, 43, 22, 0, 1662, 0, 6, 10, 209, 310, 18458, 24, 3, 24, 287, 4, 6146, 7, 1239, 4, 47, 23, 96, 114, 14, 913, 15, 50, 8017, 5, 64, 0, 9534, 0, 2169, 5, 7, 86, 15, 6, 55, 50, 1729, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 53307, 5, 223, 0, 5764, 11, 21763, 4297, 39815, 11327];
+var supplementaryIdentifierCodes = [3787, 4, 33, 11, 3173, 7, 633, 9, 7, 0, 45879, 1, 296, 2, 9, 1, 3, 0, 33, 1, 5218, 0, 3, 0, 8, 1, 6, 0];
 function isInSupplementarySet(code2, set) {
   let pos = 65536;
   for (let i = 0, length = set.length; i < length; i += 2) {
@@ -4206,13 +4206,15 @@ var flow = (superClass) => class FlowParserMixin extends superClass {
     const arrows = [];
     while (stack.length !== 0) {
       const node2 = stack.pop();
-      if (node2.type === "ArrowFunctionExpression" && node2.body.type !== "BlockStatement") {
+      if (node2.type === "ArrowFunctionExpression") {
         if (node2.typeParameters || !node2.returnType) {
           this.finishArrowValidation(node2);
         } else {
           arrows.push(node2);
         }
-        stack.push(node2.body);
+        if (node2.body.type !== "BlockStatement") {
+          stack.push(node2.body);
+        }
       } else if (node2.type === "ConditionalExpression") {
         stack.push(node2.consequent);
         stack.push(node2.alternate);
@@ -5498,8 +5500,7 @@ var entities = {
   hearts: "\u2665",
   diams: "\u2666"
 };
-var lineBreak = /\r\n|[\r\n\u2028\u2029]/;
-var lineBreakG = new RegExp(lineBreak.source, "g");
+var lineBreakG = /\r\n|[\r\n\u2028\u2029]/g;
 function isNewLine(code2) {
   switch (code2) {
     case 10:
@@ -6678,12 +6679,12 @@ function readInt(input, pos, lineStart, curLine, radix, len, forceLen, allowNumS
       val = Infinity;
     }
     if (val >= radix) {
-      if (val <= 9 && bailOnError) {
-        return {
+      if (val <= 9) {
+        if (bailOnError) return {
           n: null,
           pos
         };
-      } else if (val <= 9 && errors.invalidDigit(pos, lineStart, curLine, radix)) {
+        errors.invalidDigit(pos, lineStart, curLine, radix);
         val = 0;
       } else if (forceLen) {
         val = 0;
@@ -7692,11 +7693,9 @@ var Tokenizer = class extends CommentsParser {
   }
   errorHandlers_readInt = {
     invalidDigit: (pos, lineStart, curLine, radix) => {
-      if (!(this.optionFlags & 4096)) return false;
       this.raise(Errors.InvalidDigit, buildPosition(pos, lineStart, curLine), {
         radix
       });
-      return true;
     },
     numericSeparatorInEscapeSequence: this.errorBuilder(Errors.NumericSeparatorInEscapeSequence),
     unexpectedNumericSeparator: this.errorBuilder(Errors.UnexpectedNumericSeparator)
@@ -14822,6 +14821,9 @@ var typescript = (superClass) => class TypeScriptParserMixin extends superClass 
   }
   fillOptionalPropertiesForTSESLint(node) {
     switch (node.type) {
+      case "ImportDeclaration":
+        node.phase ??= null;
+        return;
       case "ExpressionStatement":
         node.directive ??= void 0;
         return;

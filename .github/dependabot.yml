@@ -34,6 +34,11 @@ updates:
     directory: /packages/review-ledger
     schedule:
       interval: weekly
+    # tsup's declaration bundler needs the TypeScript 5 compiler API.
+    # Revisit major updates when the declaration toolchain supports them.
+    ignore:
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
     groups:
       review-ledger:
         applies-to: version-updates
