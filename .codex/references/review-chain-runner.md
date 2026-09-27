@@ -238,6 +238,14 @@ log, so the snapshot deliberately names a log that never exists. Every delta
 that passes that log as `--session-log` then reports `unavailable` rather than
 measuring another session.
 
+For a worker observed returning successfully, the checkpoint also records its
+elapsed launcher time using a monotonic clock. Fallback telemetry uses that
+interval when extraction is enabled and no usage-derived duration exists. It
+includes launcher setup and cleanup, excludes later controller validation and
+operator waiting, and does not imply measured tokens or model identity. Older
+checkpoints and attempts without an observed successful return keep duration
+unavailable.
+
 When the pass settles, the runner publishes the record itself if no marker
 carries that key yet. A counted pass reports its result's status. A pass whose
 worker returned without a result or with a blocked one, or failed mid-review,

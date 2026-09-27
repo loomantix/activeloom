@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -1474,6 +1475,7 @@ class Runner:
                 f"Starting {pending['engine']} pass {pending['round']} at {pending['before']}",
                 flush=True,
             )
+            worker_started = time.monotonic()
             managed(
                 self.launcher_command(
                     pending["engine"], pending["before"], pending["round"]
@@ -1485,7 +1487,16 @@ class Runner:
                     "thread.started" if pending["engine"] == "codex" else None
                 ),
             )
-            attempt.update(exit_status=0, review_started=True, phase="returned")
+            attempt.update(
+                exit_status=0,
+                review_started=True,
+                phase="returned",
+                duration_seconds=(
+                    round(time.monotonic() - worker_started, 3)
+                    if (pending.get("telemetry") or {}).get("extraction_enabled") is True
+                    else None
+                ),
+            )
             pending["phase"] = "returned"
             # Bind completed-result recovery to the observed worker return.
             # A sidecar introduced later, or an unknown exit, is not proof of a
@@ -2479,6 +2490,7 @@ class Runner:
             "directory": str(directory.relative_to(self.directory)),
             "key": None,
             "snapshot_sha256": None,
+            "extraction_enabled": False,
         }
         try:
             self.verify_control()
@@ -2510,7 +2522,7 @@ class Runner:
             start = directory / "usage-start.json"
             usage = self.telemetry_script(engine, "usage-snapshot.js")
             if usage is not None:
-                self.telemetry_json(
+                measurement = self.telemetry_json(
                     [
                         "node",
                         str(usage),
@@ -2520,6 +2532,9 @@ class Runner:
                         "--session-log",
                         str(directory / EPHEMERAL_SESSION_LOG),
                     ]
+                )
+                boundary["extraction_enabled"] = (
+                    (measurement or {}).get("enabled") is True
                 )
             # Agy's helper and a disabled extraction gate write no snapshot.
             if start.is_file() and not start.is_symlink():
@@ -2721,6 +2736,25 @@ class Runner:
             return "not emitted: the usage helper failed"
         if delta.get("emit") is not True:
             return "not emitted: emission is disabled"
+        # The launcher interval is measured even when an ephemeral worker has
+        # no token log. Use only a settled, matching attempt; resumption must
+        # never include time spent waiting for an operator or invent a duration.
+        if delta.get("enabled") is True and delta.get("durationSeconds") is None:
+            attempts = [
+                item for item in self.state.get("attempts", [])
+                if item.get("attempt_id") == pending.get("attempt_id")
+            ]
+            if len(attempts) == 1:
+                attempt = attempts[0]
+                duration = attempt.get("duration_seconds")
+                if (
+                    attempt.get("exit_status") == 0
+                    and attempt.get("review_started") is True
+                    and type(duration) in (int, float)
+                    and math.isfinite(duration)
+                    and duration >= 0
+                ):
+                    delta["durationSeconds"] = duration
         findings = self.telemetry_findings(pending, rows, output)
         if isinstance(findings, str):
             return f"not emitted: findings measurement unavailable ({findings})"
