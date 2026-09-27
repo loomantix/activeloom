@@ -4281,7 +4281,7 @@ def test_cleanup_latch_anywhere_in_the_comment_withholds_counts(
     assert counted == "cleanup and review findings share this pass"
 
 
-@pytest.mark.parametrize("invalid", [None, "foreign", "tampered", "missing", "disabled"])
+@pytest.mark.parametrize("invalid", [None, "foreign", "tampered", "missing", "disabled", "unreadable"])
 def test_agy_invocation_usage_is_bound_to_the_successful_attempt(
     telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, invalid: str | None,
 ) -> None:
@@ -4291,6 +4291,15 @@ def test_agy_invocation_usage_is_bound_to_the_successful_attempt(
     if invalid == "disabled":
         monkeypatch.setenv("LOOM_REVIEW_TELEMETRY_EXTRACT", "off")
     original = h.module.managed
+    original_digest = h.module.digest
+
+    def receipt_digest(path: Path) -> str:
+        """Simulate an unreadable receipt without changing review result evidence."""
+        if invalid == "unreadable" and path.name == "agy-usage.json":
+            raise OSError("synthetic unreadable receipt")
+        return str(original_digest(path))
+
+    monkeypatch.setattr(h.module, "digest", receipt_digest)
 
     def worker(argv: Any, log: Any, env: Any, *args: Any, **kwargs: Any) -> None:
         """Model the real launcher's one numeric-only receipt, after worker return."""

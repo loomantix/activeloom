@@ -1515,8 +1515,12 @@ class Runner:
             )
             if pending["engine"] == "gemini":
                 receipt = folder / "agy-usage.json"
-                if receipt.is_file() and not receipt.is_symlink():
-                    attempt["usage_sha256"] = digest(receipt)
+                try:
+                    if receipt.is_file() and not receipt.is_symlink():
+                        attempt["usage_sha256"] = digest(receipt)
+                except (OSError, Blocked):
+                    # A missing measurement must not change the review verdict.
+                    attempt["usage_sha256"] = None
                 self.classify_incomplete_exit(pending, attempt, folder)
         except (
             Blocked,
