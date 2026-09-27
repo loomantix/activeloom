@@ -76,12 +76,30 @@ def test_receipt_rejects_unmeasured_or_resumed_usage(
     assert not target.exists()
 
 
-def test_receipt_never_overwrites_an_existing_attempt(receipt: Any) -> None:
-    """An existing file or symlink is not an authorized receipt destination."""
+@pytest.mark.parametrize("preseed", ["file", "symlink"])
+def test_receipt_replaces_an_untrusted_destination(receipt: Any, preseed: str) -> None:
+    """Child-created files and symlinks cannot win the post-exit receipt race."""
     module, source, target, payload = receipt
     source.write_text(json.dumps(payload))
-    target.symlink_to(source)
+    if preseed == "file":
+        target.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "attempt_id": "attempt-1",
+                    "usage": {"input_tokens": 999_999},
+                }
+            )
+        )
+    else:
+        target.symlink_to(source)
     module.record_usage(str(source))
+    assert not target.is_symlink()
+    assert json.loads(target.read_text()) == {
+        "version": 1,
+        "attempt_id": "attempt-1",
+        "usage": payload["usage"],
+    }
     assert json.loads(source.read_text()) == payload
 
 

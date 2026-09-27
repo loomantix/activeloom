@@ -33,11 +33,17 @@ def record_usage(filename: str | None) -> None:
                             for v in usage.values()):
             return
         value = {"version": 1, "attempt_id": attempt, "usage": usage}
-        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as stream:
-            json.dump(value, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
+        path = Path(destination)
+        fd, name = tempfile.mkstemp(dir=path.parent, prefix=".agy-usage-")
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump(value, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, path)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
     except (OSError, ValueError, TypeError):
         # Usage is best effort; never turn a completed review into a failed one.
         return
