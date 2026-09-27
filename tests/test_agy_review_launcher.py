@@ -218,6 +218,8 @@ def _fake_agy(
         "            'base': os.environ.get('AGENT_LOOP_REVIEW_BASE_SHA'),\n"
         "            'round': os.environ.get('AGENT_LOOP_REVIEW_ROUND'),\n"
         "            'engine': os.environ.get('AGENT_LOOP_REVIEW_ENGINE'),\n"
+        "            'usage_file': os.environ.get('ACTIVELOOM_AGY_USAGE_FILE'),\n"
+        "            'attempt_id': os.environ.get('ACTIVELOOM_ATTEMPT_ID'),\n"
         "        }}, out)\n"
         f"    sys.stdout.write({review_payload!r})\n"
         f"    raise SystemExit(int(os.environ.get('AGY_TEST_EXIT_CODE', '0')))\n",
@@ -296,7 +298,10 @@ def test_launcher_executes_the_pinned_model_effort_and_permission_contract(tmp_p
     assert HEAD in argv[14]
     assert "round 2" in argv[14]
     assert not CONTINUATION_FLAGS.intersection(argv)
-    assert invocation["env"] == {"base": HEAD, "engine": "gemini", "round": "2"}
+    assert invocation["env"] == {
+        "base": HEAD, "engine": "gemini", "round": "2",
+        "usage_file": None, "attempt_id": None,
+    }
     assert result.stdout == "review complete\n"
 
 
@@ -1376,6 +1381,9 @@ def test_launcher_captures_numeric_usage_after_success(tmp_path: Path) -> None:
                    "ACTIVELOOM_ATTEMPT_ID": "test-attempt",
                    "ACTIVELOOM_AGY_USAGE_FILE": str(destination)}
     _run(environment, check=True)
+    invocation = json.loads((tmp_path / "argv.json").read_text())
+    assert invocation["env"]["usage_file"] is None
+    assert invocation["env"]["attempt_id"] is None
     assert json.loads(destination.read_text()) == {
         "version": 1, "attempt_id": "test-attempt", "usage": usage,
     }

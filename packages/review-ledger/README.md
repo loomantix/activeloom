@@ -344,8 +344,8 @@ caller that skips this step loses the record without ever failing. Update the
 callers that emit on these early-return paths before, or together with, the
 bundle update that carries this requirement.
 
-The marker is `local-review-telemetry:v1` followed by a JSON payload. Four
-properties are load-bearing:
+The marker is `local-review-telemetry:v1` or `local-review-telemetry:v2`, matching
+the JSON payload's version. Four properties are load-bearing:
 
 - **Numbers arrive as arguments.** This package never reads a session
   transcript, a home directory, or any other ambient state. Each engine
@@ -469,4 +469,5 @@ Managed Agy reviews consume the terminal JSON usage envelope documented in
 [Antigravity headless mode](https://antigravity.google/docs/cli/headless/).
 A fresh single-turn invocation supplies the pass interval; resumed cumulative
 sessions are deliberately excluded. Requested model settings are not observed
-model identity and are not copied into token buckets.
+model identity and are not copied into token buckets. These records use
+`tokenSource: "terminal-json"`; they are not session-log measurements.

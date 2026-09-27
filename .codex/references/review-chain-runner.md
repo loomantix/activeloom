@@ -248,7 +248,8 @@ unavailable.
 
 For managed Gemini passes, the Agy launcher retains a numeric-only receipt from
 its successful single-turn JSON result. The runner binds the receipt to the
-attempt and its observed return hash, then publishes after the worker exits.
+attempt and its observed return hash, aggregates every invocation in an
+automatic retry of the same pass, then publishes after the worker exits.
 Worker emission is disabled for that managed boundary to avoid an earlier
 unavailable record consuming the same idempotency key. Extraction and emission
 opt-outs still apply independently. Missing, changed, resumed-session, or invalid
@@ -258,7 +259,8 @@ Agy's aggregate counts have no observed model or per-lens identity. They use a
 v2 telemetry record with one `model: null`, `effort: null` bucket. Input, output,
 cache reads and thinking remain separate; thinking is not added to output.
 The CLI total is preserved as `providerBuckets.total_tokens`; cache writes stay
-unknown. Existing known-model records remain v1. Analytics readers must support
+unknown. Its token source is `terminal-json`, not `session-log-delta`. Existing
+known-model records remain v1. Analytics readers must support
 v2 before enabling this producer; older pinned chains keep their old behavior.
 Standalone Gemini helpers without a managed receipt still report unavailable.
 

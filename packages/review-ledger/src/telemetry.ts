@@ -30,6 +30,7 @@ import {
 } from './github.js';
 import { parseJsonOrFail } from './io.js';
 import type {
+  AggregateTelemetryTokenBucket,
   BuildTelemetryParams,
   Changeset,
   ChangesetLines,
@@ -46,6 +47,10 @@ import type {
   TelemetryTokenBucketInput,
   TelemetryPassType,
 } from './types.js';
+
+type ValidatedTelemetryTokenBucket =
+  | TelemetryTokenBucket
+  | AggregateTelemetryTokenBucket;
 
 /** Report whether a comment body is a telemetry record of any version. */
 export function isTelemetryComment(body: string): boolean {
@@ -139,7 +144,7 @@ function validateProviderBuckets(value: unknown): Record<string, number> {
 function validateTokenBucket(
   value: unknown,
   allowUnknownModel = false,
-): TelemetryTokenBucket {
+): ValidatedTelemetryTokenBucket {
   const source = requireObject(value, 'tokens[]');
   const model = source['model'];
   if (
@@ -160,7 +165,7 @@ function validateTokenBucket(
     ),
     reasoning: requireNullableCount(source['reasoning'], 'tokens[].reasoning'),
     providerBuckets: validateProviderBuckets(source['providerBuckets']),
-  };
+  } as ValidatedTelemetryTokenBucket;
 }
 
 function validateLane(value: unknown): TelemetryLane {
@@ -430,8 +435,10 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
     validateTokenBucket(bucket, source['version'] === 2),
   );
   if (
-    tokens.some((bucket) => bucket.model === null) &&
-    (tokens.length !== 1 || tokens[0]?.effort !== null)
+    source['version'] === 2 &&
+    (tokens.length !== 1 ||
+      tokens[0]?.model !== null ||
+      tokens[0].effort !== null)
   ) {
     fail(
       'unattributed telemetry must be one aggregate bucket with unknown effort',
@@ -523,7 +530,7 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
 
 function tokenBucketFrom(
   bucket: TelemetryTokenBucketInput,
-): TelemetryTokenBucket {
+): ValidatedTelemetryTokenBucket {
   return validateTokenBucket(
     {
       model: bucket.model,
@@ -622,8 +629,7 @@ export function buildTelemetryRecord(
 /** Project a validated reader record onto the public-safe v1 writer schema. */
 function knownTelemetryRecord(value: unknown): TelemetryRecord {
   const record = validateTelemetryRecord(value);
-  return {
-    version: record.version,
+  const fields = {
     emittedAt: record.emittedAt,
     repo: record.repo,
     pr: record.pr,
@@ -649,6 +655,9 @@ function knownTelemetryRecord(value: unknown): TelemetryRecord {
     changeset: record.changeset,
     findings: record.findings,
   };
+  return record.version === 1
+    ? { ...fields, version: 1, tokens: record.tokens }
+    : { ...fields, version: 2, tokens: record.tokens };
 }
 
 /** Render a record as the comment body that carries it. */

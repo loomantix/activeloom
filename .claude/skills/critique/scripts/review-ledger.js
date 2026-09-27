@@ -115,6 +115,7 @@ var TELEMETRY_STATUSES = [
 var TELEMETRY_TOKEN_SOURCES = [
   "session-log-delta",
   "stream-json",
+  "terminal-json",
   "unscoped-session",
   "unavailable"
 ];
@@ -18064,7 +18065,7 @@ function validateTelemetryRecord(value) {
   const tokens = rawTokens.map(
     (bucket) => validateTokenBucket(bucket, source["version"] === 2)
   );
-  if (tokens.some((bucket) => bucket.model === null) && (tokens.length !== 1 || tokens[0]?.effort !== null)) {
+  if (source["version"] === 2 && (tokens.length !== 1 || tokens[0]?.model !== null || tokens[0].effort !== null)) {
     fail(
       "unattributed telemetry must be one aggregate bucket with unknown effort"
     );
@@ -18227,8 +18228,7 @@ function buildTelemetryRecord(params) {
 }
 function knownTelemetryRecord(value) {
   const record = validateTelemetryRecord(value);
-  return {
-    version: record.version,
+  const fields = {
     emittedAt: record.emittedAt,
     repo: record.repo,
     pr: record.pr,
@@ -18254,6 +18254,7 @@ function knownTelemetryRecord(value) {
     changeset: record.changeset,
     findings: record.findings
   };
+  return record.version === 1 ? { ...fields, version: 1, tokens: record.tokens } : { ...fields, version: 2, tokens: record.tokens };
 }
 function buildTelemetryBody(record) {
   const safeRecord = knownTelemetryRecord(record);

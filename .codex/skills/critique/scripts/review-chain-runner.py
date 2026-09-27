@@ -2714,36 +2714,62 @@ class Runner:
             "chainInducedRegressions": 0,
         }
 
+    def pass_attempts(self, pending: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return the current pass's automatic-retry attempts in launch order."""
+        identities = [pending.get("idle_exit_origin"),
+                      pending.get("incomplete_exit_origin"),
+                      pending.get("attempt_id")]
+        expected = [identity for identity in identities if identity is not None]
+        if len(expected) != len(set(expected)):
+            return []
+        by_id = {attempt.get("attempt_id"): attempt
+                 for attempt in self.state.get("attempts", [])
+                 if attempt.get("attempt_id") in expected}
+        return [by_id[identity] for identity in expected if identity in by_id]
+
     def agy_usage(self, pending: dict[str, Any], output: Path) -> Path | None:
-        """Project an unchanged receipt bound to the observed successful attempt."""
+        """Aggregate unchanged receipts bound to every invocation in this pass."""
         if pending["engine"] != "gemini" or not self.telemetry_intact(pending["telemetry"]):
             return None
-        attempts = [a for a in self.state.get("attempts", [])
-                    if a.get("attempt_id") == pending.get("attempt_id")]
-        if len(attempts) != 1:
+        attempts = self.pass_attempts(pending)
+        expected = 1 + int(bool(pending.get("idle_exit_origin")
+                                or pending.get("incomplete_exit_origin")))
+        if len(attempts) != expected:
             return None
-        attempt = attempts[0]
-        receipt = self.directory / pending["folder"] / "agy-usage.json"
-        if (attempt.get("exit_status") != 0 or attempt.get("review_started") is not True
-                or not attempt.get("usage_sha256") or receipt.is_symlink()
-                or not receipt.is_file() or digest(receipt) != attempt["usage_sha256"]):
-            return None
-        value = read(receipt)
-        if value.get("version") != 1 or value.get("attempt_id") != pending["attempt_id"]:
-            return None
-        raw = value.get("usage")
         fields = {"input_tokens", "output_tokens", "thinking_tokens",
                   "cache_read_tokens", "total_tokens"}
-        if (not isinstance(raw, dict) or not raw or not set(raw) <= fields
-                or any(type(v) is not int or not 0 <= v <= 2**53 - 1 for v in raw.values())):
-            return None
+        measurements: list[dict[str, int]] = []
+        for attempt in attempts:
+            receipt = self.directory / attempt["folder"] / "agy-usage.json"
+            if (attempt.get("exit_status") != 0 or attempt.get("review_started") is not True
+                    or not attempt.get("usage_sha256") or receipt.is_symlink()
+                    or not receipt.is_file() or digest(receipt) != attempt["usage_sha256"]):
+                return None
+            value = read(receipt)
+            if (not isinstance(value, dict) or value.get("version") != 1
+                    or value.get("attempt_id") != attempt["attempt_id"]):
+                return None
+            raw = value.get("usage")
+            if (not isinstance(raw, dict) or not raw or not set(raw) <= fields
+                    or any(type(v) is not int or not 0 <= v <= 2**53 - 1
+                           for v in raw.values())):
+                return None
+            measurements.append(raw)
+        aggregate: dict[str, int] = {}
+        for field in fields:
+            if all(field in measurement for measurement in measurements):
+                total = sum(measurement[field] for measurement in measurements)
+                if total > 2**53 - 1:
+                    return None
+                aggregate[field] = total
         # The CLI does not provide an observed model or per-lens attribution.
         tokens = [{"model": None, "effort": None,
-                   "input": raw.get("input_tokens"), "output": raw.get("output_tokens"),
-                   "cacheRead": raw.get("cache_read_tokens"), "cacheWrite": None,
-                   "reasoning": raw.get("thinking_tokens"),
-                   "providerBuckets": {"total_tokens": raw["total_tokens"]}
-                   if "total_tokens" in raw else {}}]
+                   "input": aggregate.get("input_tokens"),
+                   "output": aggregate.get("output_tokens"),
+                   "cacheRead": aggregate.get("cache_read_tokens"), "cacheWrite": None,
+                   "reasoning": aggregate.get("thinking_tokens"),
+                   "providerBuckets": {"total_tokens": aggregate["total_tokens"]}
+                   if "total_tokens" in aggregate else {}}]
         target = output / "telemetry-tokens.json"
         save(target, tokens)
         return target
@@ -2788,26 +2814,22 @@ class Runner:
             return "not emitted: emission is disabled"
         if delta.get("enabled") is True:
             if tokens := self.agy_usage(pending, output):
-                delta.update(tokenSource="session-log-delta", tokensFile=str(tokens))
+                delta.update(tokenSource="terminal-json", tokensFile=str(tokens))
         # The launcher interval is measured even when an ephemeral worker has
         # no token log. Use only a settled, matching attempt; resumption must
         # never include time spent waiting for an operator or invent a duration.
         if delta.get("enabled") is True and delta.get("durationSeconds") is None:
-            attempts = [
-                item for item in self.state.get("attempts", [])
-                if item.get("attempt_id") == pending.get("attempt_id")
-            ]
-            if len(attempts) == 1:
-                attempt = attempts[0]
-                duration = attempt.get("duration_seconds")
-                if (
-                    attempt.get("exit_status") == 0
-                    and attempt.get("review_started") is True
-                    and type(duration) in (int, float)
-                    and math.isfinite(duration)
-                    and duration >= 0
-                ):
-                    delta["durationSeconds"] = duration
+            attempts = self.pass_attempts(pending)
+            durations = [attempt.get("duration_seconds") for attempt in attempts]
+            if attempts and all(
+                attempt.get("exit_status") == 0
+                and attempt.get("review_started") is True
+                and type(duration) in (int, float)
+                and math.isfinite(duration)
+                and duration >= 0
+                for attempt, duration in zip(attempts, durations, strict=True)
+            ):
+                delta["durationSeconds"] = round(sum(durations), 3)
         findings = self.telemetry_findings(pending, rows, output)
         if isinstance(findings, str):
             return f"not emitted: findings measurement unavailable ({findings})"

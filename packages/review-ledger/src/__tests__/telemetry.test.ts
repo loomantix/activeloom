@@ -929,6 +929,19 @@ describe('unattributed invocation usage', () => {
       /model/,
     );
     expect(() =>
+      validateTelemetryRecord({
+        ...record,
+        tokens: [{ ...record.tokens[0], model: 'requested-model' }],
+      }),
+    ).toThrow(/aggregate/);
+    expect(() =>
+      validateTelemetryRecord({
+        ...record,
+        tokenSource: 'unavailable',
+        tokens: [],
+      }),
+    ).toThrow(/aggregate/);
+    expect(() =>
       matchTelemetry(
         buildTelemetryBody(record).replace('telemetry:v2', 'telemetry:v1'),
       ),

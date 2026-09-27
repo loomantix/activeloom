@@ -4337,12 +4337,52 @@ def test_agy_invocation_usage_is_bound_to_the_successful_attempt(
             assert emission["--token-source"] == "unavailable"
             assert "--tokens-file" not in emission
         else:
-            assert emission["--token-source"] == "session-log-delta"
+            assert emission["--token-source"] == "terminal-json"
             assert h.module.read(Path(emission["--tokens-file"])) == [{
                 "model": None, "effort": None, "input": 100, "output": 20,
                 "cacheRead": 40, "cacheWrite": None, "reasoning": 15,
                 "providerBuckets": {"total_tokens": 120},
             }]
+
+
+def test_agy_usage_aggregates_automatic_retry_receipts(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Both successful invocations belong to one pass and one aggregate bucket."""
+    h = telemetry_harness.harness
+    runner = h.runner(h.args, h.directory)
+    monkeypatch.setattr(runner, "telemetry_intact", lambda boundary: True)
+    attempts = []
+    for number, usage in enumerate((
+        {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+        {"input_tokens": 70, "output_tokens": 10, "total_tokens": 80},
+    ), start=1):
+        folder = h.directory / f"pass-1/retry-{number}"
+        folder.mkdir(parents=True)
+        receipt = folder / "agy-usage.json"
+        h.module.save(receipt, {"version": 1, "attempt_id": f"attempt-{number}",
+                                "usage": usage})
+        attempts.append({"attempt_id": f"attempt-{number}",
+                         "folder": str(folder.relative_to(h.directory)),
+                         "exit_status": 0, "review_started": True,
+                         "usage_sha256": h.module.digest(receipt),
+                         "duration_seconds": number + 0.5})
+    runner.state = {"attempts": attempts}
+    pending = {"engine": "gemini", "round": 1,
+               "idle_exit_origin": "attempt-1", "attempt_id": "attempt-2",
+               "telemetry": {}}
+    output = tmp_path / "output"
+    output.mkdir()
+
+    tokens = runner.agy_usage(pending, output)
+
+    assert tokens is not None
+    assert h.module.read(tokens) == [{
+        "model": None, "effort": None, "input": 170, "output": 30,
+        "cacheRead": None, "cacheWrite": None, "reasoning": None,
+        "providerBuckets": {"total_tokens": 200},
+    }]
+    assert runner.pass_attempts(pending) == attempts
 
 
 def test_agy_v2_record_is_recognized_on_resume(telemetry_harness: Any) -> None:
