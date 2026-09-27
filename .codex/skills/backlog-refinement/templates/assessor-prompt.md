@@ -19,7 +19,9 @@ Verify against the integration branch `{BASE}` with read-only commands only: `gi
 
 For each issue, apply the core and local rubrics in order: priority (an existing label stands; then a recognised title prefix; then the core tier table), early-exit disqualifiers, the issue's sub-issue states from the precheck file before any epic label, verify-against-HEAD (already fixed, partially shipped, or still open — including claims made in comments), external dependencies, every §1 criterion, and the local sensitive paths. When torn between ready and exclude, exclude. For a grill-class reason, choose exactly one `needs:` label and write the one question the interview must answer.
 
-For an issue that passes every §1 criterion, write the full rewritten body in the core §5 template, with acceptance criteria and `file:line` pointers grounded in what you actually read on the integration branch, and the original body preserved verbatim under `> ### Original report`. Never invent user-facing wording the original did not specify.
+Read a `grill-decision` newer than the latest refinement comment as settling that question, then assess all remaining criteria. A supplied draft decision is hypothetical input only. Use the core outcome table; provisional decisions remain excluded. End every comment leaving a new interview gap with exactly `Question for /grill: …` or `Question for /product-grill: …` on its own final line.
+
+For an issue that passes every §1 criterion, write the full rewritten body in the core §5 template, turning confirmed interview decisions into Goal and Acceptance criteria, with checks and `file:line` pointers grounded in what you actually read on the integration branch, and the original body preserved verbatim under `> ### Original report`. Never invent user-facing wording the original did not specify.
 
 Comments contain no secrets, personal data, or customer content: cite paths, commits, and issue or PR numbers only.
 

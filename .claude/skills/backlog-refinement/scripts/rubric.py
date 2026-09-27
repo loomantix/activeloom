@@ -12,6 +12,8 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
+from typing import Any
 from typing import NamedTuple
 
 LOCAL_RUBRIC = os.path.join(".backlog", "refinement.local.md")
@@ -37,6 +39,7 @@ TITLE_PREFIX_MARKER = marker("priority-title-prefixes")
 # `close` lets refinement close a verified-stale issue itself; `recommend`
 # (the default) only recommends it.
 STALE_ACTION_MARKER = marker("stale-action")
+GRILL_HANDBACK_MARKER = marker("grill-handback")
 
 # The template's settings bullets: "- **Integration branch:** `staging`".
 _SETTING = r"(?m)^\s*-\s*\*\*{label}:\*\*\s*`([^`]+)`"
@@ -54,6 +57,7 @@ class RubricConfig(NamedTuple):
     stale_action: str = "recommend"
     integration_branch: str | None = None
     rewrite_mode: str = "edit"
+    grill_handback: str = "ask"
 
 
 def repo_root() -> str:
@@ -161,6 +165,10 @@ def load_config(root: str) -> RubricConfig:
             f"{', '.join(REWRITE_MODES)}.\n"
         )
         sys.exit(1)
+    handback = read_marker(GRILL_HANDBACK_MARKER, "grill-handback", text, path)
+    if handback is not None and handback not in (("ask",), ("auto",)):
+        sys.stderr.write(f"Invalid grill-handback in {path}; expected ask or auto.\n")
+        sys.exit(1)
     return RubricConfig(
         path,
         auto_managed,
@@ -169,6 +177,7 @@ def load_config(root: str) -> RubricConfig:
         stale_action,
         _setting(_INTEGRATION_BRANCH, text),
         rewrite_mode,
+        handback[0] if handback else "ask",
     )
 
 
@@ -179,3 +188,95 @@ def title_priority(title: str, config: RubricConfig) -> str | None:
         if stripped.startswith(prefix):
             return label
     return None
+
+
+DECISION_MARKER = re.compile(
+    r"<!-- grill-decision kind: (?P<kind>grill|product-grill); "
+    r"outcome: (?P<outcome>settled|provisional|dont-build|split); "
+    r"next: (?P<next>refine|grill|product-grill|none) -->"
+)
+QUESTION = re.compile(
+    r"^Question for\s+(?:the\s+)?/?(?P<kind>product-grill|grill)\s*:?\s*(?P<question>.*)$",
+    re.IGNORECASE,
+)
+
+
+def prose_lines(text: str) -> list[str]:
+    """Ignore quoted and fenced examples when reading protocol records."""
+    lines = []
+    fence = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            if not fence:
+                fence = stripped[:3]
+            elif stripped.startswith(fence):
+                fence = ""
+            continue
+        if not fence and not stripped.startswith(">"):
+            lines.append(stripped)
+    return lines
+
+
+def parse_decision(text: str) -> dict[str, str] | None:
+    """A decision record ends with one valid marker outside a code example."""
+    lines = [line for line in prose_lines(text) if line]
+    if len(lines) < 2 or lines[-1] != text.strip().splitlines()[-1].strip():
+        return None
+    match = DECISION_MARKER.fullmatch(lines[-1])
+    if not match or sum("<!-- grill-decision" in line for line in lines) != 1:
+        return None
+    return match.groupdict()
+
+
+def parse_question(text: str, kind: str = "grill", *, legacy_tail: bool = False) -> dict[str, str] | None:
+    """Read the fixed line, older bold/heading shapes, or a refinement's final question."""
+    lines = [line for line in prose_lines(text) if line]
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index].lstrip("# -*").replace("**", "").replace("`", "")
+        match = QUESTION.fullmatch(line)
+        if match:
+            question = match["question"].strip()
+            if not question and index + 1 < len(lines):
+                question = lines[index + 1]
+            if question:
+                return {"kind": match["kind"].lower(), "question": question}
+    if legacy_tail and lines and lines[-1].endswith("?"):
+        return {"kind": kind, "question": lines[-1]}
+    return None
+
+
+def comment_time(comment: dict[str, Any]) -> datetime | None:
+    value = comment.get("updatedAt") or comment.get("createdAt")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else None
+
+
+def grill_context(body: str, comments: list[dict[str, Any]], kind: str = "grill") -> dict[str, Any]:
+    """Question and decision evidence; a newer decision is not a readiness verdict."""
+    refinements = [c for c in comments if any(
+        re.match(r"^(?:#+\s*)?(?:\*\*)?(?:Backlog refinement|Refined for agent-loop)\b", line, re.I)
+        or QUESTION.match(line.lstrip("# -*").replace("**", ""))
+        for line in prose_lines(c.get("body", ""))
+    ) and parse_decision(c.get("body", "")) is None]
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    latest = max(refinements, key=lambda c: comment_time(c) or floor, default=None)
+    question = parse_question(latest.get("body", ""), kind, legacy_tail=True) if latest else None
+    if question is None:
+        question = parse_question(body, kind)
+    decisions = [c for c in comments if parse_decision(c.get("body", ""))]
+    decision = max(decisions, key=lambda c: comment_time(c) or floor, default=None)
+    decision_at = comment_time(decision) if decision else None
+    refinement_at = comment_time(latest) if latest else None
+    newer = bool(decision_at and (not latest or (refinement_at and decision_at > refinement_at)))
+    return {
+        "question": question,
+        "decision": {**(parse_decision(decision["body"]) or {}), "url": decision.get("url"),
+                     "createdAt": decision.get("createdAt")} if decision else None,
+        "newer_decision": newer,
+    }

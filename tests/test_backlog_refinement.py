@@ -810,3 +810,265 @@ def test_apply_plan_main_mutates_only_a_valid_plan_with_apply(
     assert apply_mod.main() == 0
     assert {c[2] for c in fake.calls} == {"8"}
     assert apply_mod.load_progress(path + ".applied.json") == {7, 8}
+
+
+# --- interview handback -------------------------------------------------------
+
+
+def _decision(outcome: str = "settled", next_step: str = "refine", kind: str = "grill") -> str:
+    return f"Confirmed decisions and their evidence.\n<!-- grill-decision kind: {kind}; outcome: {outcome}; next: {next_step} -->"
+
+
+@pytest.mark.parametrize("text,kind,question", [
+    ("Question for /grill: Which source?", "grill", "Which source?"),
+    ("Question for /product-grill: Who needs this?", "product-grill", "Who needs this?"),
+    ("**Question for the grill:** Which source?", "grill", "Which source?"),
+    ("## Question for /product-grill\n\nWho needs this?", "product-grill", "Who needs this?"),
+    ("Backlog refinement: excluded.\nWhich source?", "grill", "Which source?"),
+])
+def test_handback_question_shapes(text: str, kind: str, question: str) -> None:
+    mod = _load_script("handback_rubric", RUBRIC)
+    assert mod.parse_question(text, legacy_tail=True) == {"kind": kind, "question": question}
+
+
+def test_handback_missing_question_and_quoted_examples() -> None:
+    mod = _load_script("handback_rubric", RUBRIC)
+    assert mod.parse_question("No interview question recorded.") is None
+    assert mod.parse_question("> Question for /grill: Quoted?\n```\nQuestion for /grill: Example?\n```") is None
+    assert mod.parse_decision(_decision()) == {"kind": "grill", "outcome": "settled", "next": "refine"}
+    for invalid in ("```\n" + _decision() + "\n```", _decision() + "\ntrailing", _decision().replace("settled", "ready"),
+                    _decision() + "\n" + _decision(), "> " + _decision().replace("\n", "\n> ")):
+        assert mod.parse_decision(invalid) is None
+
+
+@pytest.mark.parametrize("date,newer", [
+    ("2026-01-02T12:00:01Z", True),
+    ("2026-01-02T12:00:00Z", False),
+    ("2026-01-01T12:00:00Z", False),
+    ("2026-01-02T08:00:01-04:00", True),
+    ("invalid", False),
+    (None, False),
+])
+def test_handback_decision_ordering(date: str | None, newer: bool) -> None:
+    mod = _load_script("handback_rubric", RUBRIC)
+    comments = [
+        {"body": _decision(), "createdAt": date},
+        {"body": "Backlog refinement: excluded.\nQuestion for /grill: Which source?", "createdAt": "2026-01-02T12:00:00Z"},
+    ]
+    result = mod.grill_context("", comments)
+    assert result['newer_decision'] is newer
+    assert result['question']['question'] == "Which source?"
+    assert result['decision']['outcome'] == 'settled'
+
+
+def test_handback_new_refinement_supersedes_decision() -> None:
+    mod = _load_script("handback_rubric", RUBRIC)
+    result = mod.grill_context("## Question for the grill\nBody question?", [
+        {"body": _decision(), "createdAt": "2026-01-02T12:00:00Z"},
+        {"body": "Backlog refinement: a different blocker remains.", "createdAt": "2026-01-03T12:00:00Z"},
+    ])
+    assert not result['newer_decision']
+    assert result['question']['question'] == 'Body question?'
+
+
+@pytest.mark.parametrize('setting', ['ask', 'auto'])
+def test_handback_local_setting(tmp_path: Path, setting: str) -> None:
+    _, config = _load_rubric_config(tmp_path, FULL_RUBRIC + f'\n<!-- grill-handback: {setting} -->\n')
+    assert config.grill_handback == setting
+    _, default = _load_rubric_config(tmp_path, FULL_RUBRIC)
+    assert default.grill_handback == 'ask'
+
+
+@pytest.mark.parametrize('value', ['yes', 'ask, auto', ''])
+def test_handback_invalid_setting_refused(tmp_path: Path, value: str) -> None:
+    with pytest.raises(SystemExit):
+        _load_rubric_config(tmp_path, FULL_RUBRIC + f'\n<!-- grill-handback: {value} -->\n')
+
+
+def test_handback_grill_queue_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    mod = _load_candidates(tmp_path, monkeypatch)
+    issue = _issue('needs: grill', 'agent-bail: open-decision', 'priority: high')
+    monkeypatch.setattr(mod, 'fetch_open_issues', lambda: [issue])
+    monkeypatch.setattr('sys.argv', ['candidates.py', '--grill', '--json'])
+    detail = {'body': '', 'comments': [
+        {'body': 'Backlog refinement: excluded.\nQuestion for /grill: Which source?', 'createdAt': '2026-01-01T00:00:00Z'},
+        {'body': _decision(), 'createdAt': '2026-01-02T00:00:00Z'},
+    ]}
+    calls = []
+
+    def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, json.dumps(detail), '')
+
+    monkeypatch.setattr(mod.subprocess, 'run', run)
+    assert mod.main() == 0
+    row = json.loads(capsys.readouterr().out)['grill_queues']['needs: grill'][0]
+    assert row['question']['question'] == 'Which source?'
+    assert row['newer_decision'] and row['decision']['next'] == 'refine'
+    assert calls == [['gh', 'issue', 'view', '1', '--json', 'body,comments']]
+
+
+def _handback_entry(outcome: str) -> dict[str, Any]:
+    if outcome == 'ready':
+        return _entry(verdict='ready', add_labels=['dev: agent'], body='## Goal\nConfirmed goal.\n\n## Acceptance criteria\n- Verified.', decision_comment=_decision())
+    if outcome == 'permanent':
+        return _entry(add_labels=['agent-bail: sensitive-domain'], decision_comment=_decision())
+    if outcome in ('grill', 'product-grill'):
+        return _entry(add_labels=['agent-bail: open-decision', f'needs: {outcome}'],
+                      decision_comment=_decision(next_step=outcome, kind='product-grill' if outcome == 'grill' else 'grill'),
+                      comment=f'Backlog refinement: another question.\nQuestion for /{outcome}: What remains?')
+    if outcome == 'provisional':
+        return _entry(decision_comment=_decision('provisional', 'grill'), comment='Backlog refinement: blocked on evidence.')
+    if outcome == 'dont-build':
+        return _entry(verdict='dont-build', add_labels=[], decision_comment=_decision('dont-build', 'none'), close_reason='not planned')
+    child = _entry(verdict='ready', add_labels=['dev: agent'], body='## Goal\nBounded child.')
+    child.pop('number')
+    return _entry(add_labels=['agent-bail: epic'], decision_comment=_decision('split'),
+                  children=[{'key': 'bounded-task', 'title': 'A bounded task', 'body': 'Initial child scope', 'assessment': child}])
+
+
+@pytest.mark.parametrize('outcome', ['ready', 'permanent', 'grill', 'product-grill', 'provisional', 'dont-build', 'split'])
+def test_handback_valid_outcomes(apply_mod: ModuleType, outcome: str) -> None:
+    assert apply_mod.validate({'issues': [_handback_entry(outcome)]}, REPO_LABELS, PRIORITY_TUPLE) == []
+
+
+@pytest.mark.parametrize('outcome', ['ready', 'permanent', 'grill', 'product-grill', 'provisional', 'dont-build'])
+def test_handback_applies_outcomes(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+    entry = _handback_entry(outcome)
+    old_needs = 'needs: product-grill' if outcome == 'grill' else 'needs: grill'
+    fake = FakeGh(labels=('agent-bail: open-decision', old_needs), comments=(entry['decision_comment'],))
+    monkeypatch.setattr(apply_mod, 'gh', fake)
+    apply_mod.apply_entry(entry, _config(apply_mod), close_confirmed=outcome == 'dont-build')
+    edits = [call for call in fake.calls if call[:2] == ['issue', 'edit']]
+    add, remove = apply_mod.label_changes(entry, {'agent-bail: open-decision', old_needs})
+    for label in add:
+        assert any('--add-label' in call and label in call[call.index('--add-label')+1] for call in edits)
+    for label in remove:
+        assert any('--remove-label' in call and label in call[call.index('--remove-label')+1] for call in edits)
+    assert ('issue close' in fake.verbs()) == (outcome == 'dont-build')
+    if outcome == 'provisional':
+        assert old_needs not in remove
+    if outcome == 'permanent':
+        assert old_needs in remove
+
+
+@pytest.mark.parametrize('change', [
+    {'decision_comment': 'No marker'},
+    {'decision_comment': _decision('provisional'), 'verdict': 'ready', 'add_labels': ['dev: agent'], 'body': 'b'},
+    {'decision_comment': _decision(next_step='product-grill')},
+    {'decision_comment': _decision('split'), 'children': []},
+    {'decision_comment': _decision('dont-build', 'none')},
+    {'children': [{'key': '../unsafe', 'title': 'x', 'body': 'x', 'assessment': {}}]},
+])
+def test_handback_invalid_outcomes_refused(apply_mod: ModuleType, change: dict[str, Any]) -> None:
+    assert apply_mod.validate({'issues': [_entry(**change)]}, REPO_LABELS, PRIORITY_TUPLE)
+
+
+def test_handback_requires_record_before_mutation(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeGh()
+    monkeypatch.setattr(apply_mod, 'gh', fake)
+    with pytest.raises(SystemExit):
+        apply_mod.apply_entry(_handback_entry('ready'), _config(apply_mod))
+    assert fake.verbs() == ['issue view']
+
+
+def test_handback_preserves_assignment_and_provisional_label(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = _handback_entry('provisional')
+    fake = FakeGh(labels=('needs: product-grill',), comments=(entry['decision_comment'],))
+    monkeypatch.setattr(apply_mod, 'gh', fake)
+    with pytest.raises(SystemExit):
+        apply_mod.apply_entry(entry, _config(apply_mod))
+    assert fake.verbs() == ['issue view']
+    fake.issue['assignees'] = [{'login': 'owner'}]
+    with pytest.raises(SystemExit):
+        apply_mod.apply_entry(entry, _config(apply_mod))
+    assert fake.verbs() == ['issue view', 'issue view']
+
+
+@pytest.mark.parametrize('auto,flags,allowed', [
+    ('ask', [], False), ('auto', [], False),
+    ('ask', ['--confirm-summary'], False),
+    ('auto', ['--confirm-summary'], True),
+    ('ask', ['--confirm-summary', '--confirm-handback'], True),
+])
+def test_handback_confirmation_gates(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                    auto: str, flags: list[str], allowed: bool) -> None:
+    entry = _handback_entry('permanent')
+    fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {'issues': [entry]}, '--apply', *flags)
+    fake.issue['comments'] = [{'body': entry['decision_comment']}]
+    monkeypatch.setattr(apply_mod, 'load_config', lambda root: _config(apply_mod, grill_handback=auto))
+    if allowed:
+        assert apply_mod.main() == 0
+        assert 'issue edit' in fake.verbs()
+    else:
+        with pytest.raises(SystemExit):
+            apply_mod.main()
+        assert not any(call[1] in ('edit', 'comment', 'close') for call in fake.calls)
+
+
+def test_handback_auto_never_authorizes_close(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    entry = _handback_entry('dont-build')
+    fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {'issues': [entry]}, '--apply', '--confirm-summary')
+    monkeypatch.setattr(apply_mod, 'load_config', lambda root: _config(apply_mod, grill_handback='auto', stale_action='close'))
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert fake.calls == []
+    fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {'issues': [entry]}, '--apply', '--confirm-summary', '--confirm-handback', '--confirm-close', '7')
+    fake.issue['comments'] = [{'body': entry['decision_comment']}]
+    assert apply_mod.main() == 0
+    assert fake.verbs()[-1] == 'issue close'
+
+
+def test_handback_split_retries_created_child_after_link_failure(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = _handback_entry('split')
+    children: list[dict[str, Any]] = []
+    linked: list[dict[str, Any]] = []
+    calls: list[list[str]] = []
+    fail_link = True
+
+    def gh(args: list[str], *, stdin: str | None = None) -> str:
+        nonlocal fail_link
+        calls.append(args)
+        if args[:2] == ['issue', 'list']:
+            return json.dumps(children)
+        if args[0] == 'api' and args[1].endswith('/sub_issues'):
+            if '--method' not in args:
+                return json.dumps([linked])
+            if fail_link:
+                fail_link = False
+                raise SystemExit('simulated link failure')
+            linked.extend(children)
+            return '{}'
+        if args[0] == 'api' and args[1].endswith('/issues'):
+            assert stdin is not None
+            child = {'id': 80, 'number': 8, **json.loads(stdin)}
+            children.append(child)
+            return json.dumps(child)
+        if args[0] == 'api':
+            return json.dumps(children[0])
+        if args[:2] == ['issue', 'view']:
+            return json.dumps({'state': 'OPEN', 'labels': [], 'comments': [{'body': entry['decision_comment']}] if args[2]=='7' else []})
+        if args[:2] == ['issue', 'edit'] and args[2]=='8' and '--body-file' in args:
+            children[0]['body'] = Path(args[args.index('--body-file')+1]).read_text()
+        return ''
+
+    monkeypatch.setattr(apply_mod, 'gh', gh)
+    with pytest.raises(SystemExit):
+        apply_mod.apply_entry(entry, _config(apply_mod))
+    assert len(children) == 1
+    assert not any(c[:3] == ['issue', 'edit', '7'] for c in calls)
+    apply_mod.apply_entry(entry, _config(apply_mod))
+    apply_mod.apply_entry(entry, _config(apply_mod))
+    assert len(children) == len(linked) == 1
+    assert 'refinement-child parent: 7; key: bounded-task' in children[0]['body']
+    assert any(c[:3] == ['issue', 'edit', '8'] for c in calls)
+    assert any(c[:3] == ['issue', 'edit', '7'] for c in calls)
+
+
+def test_handback_unconfirmed_standalone_split_refused(apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    entry = _handback_entry('split')
+    entry.pop('decision_comment')
+    fake, _ = _run_main(apply_mod, monkeypatch, tmp_path, {'issues': [entry]}, '--apply')
+    with pytest.raises(SystemExit):
+        apply_mod.main()
+    assert fake.calls == []
