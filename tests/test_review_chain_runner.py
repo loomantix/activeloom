@@ -3967,14 +3967,32 @@ def test_runner_never_duplicates_a_reviewer_record(telemetry_harness: Any) -> No
     assert telemetry_harness.emissions == []
 
 
-def test_runner_records_duration_without_session_usage(telemetry_harness: Any) -> None:
+def test_runner_records_duration_without_session_usage(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An observed worker interval remains measured without persistent usage logs."""
     h = telemetry_harness.harness
+    clock = {"now": 100.0}
+    original_time = h.module.time
+    monkeypatch.setattr(h.module, "time", SimpleNamespace(
+        monotonic=lambda: clock["now"],
+        time=original_time.time,
+        sleep=original_time.sleep,
+    ))
+    original_managed = h.module.managed
+
+    def timed_worker(argv: Any, log: Any, env: Any, *args: Any, **kwargs: Any) -> None:
+        """Advance only the simulated worker interval, without a real sleep."""
+        original_managed(argv, log, env, *args, **kwargs)
+        if "AGENT_LOOP_REVIEW_RESULT_FILE" in env:
+            clock["now"] += 12.375
+
+    monkeypatch.setattr(h.module, "managed", timed_worker)
     assert h.runner(h.args, h.directory).run() == "converged"
     for emission in telemetry_harness.emissions:
         assert emission["--token-source"] == "unavailable"
         assert "--tokens-file" not in emission
-        assert float(emission["--duration-seconds"]) >= 0
+        assert float(emission["--duration-seconds"]) == 12.375
 
 
 def test_runner_does_not_measure_duration_when_extraction_is_off(
