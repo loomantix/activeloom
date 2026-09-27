@@ -25,6 +25,10 @@ What refinement does with a verified-stale issue: `recommend` a close for a huma
 
 <!-- stale-action: recommend -->
 
+Interview handback confirmation: `ask` shows one combined preview and asks before posting/applying; `auto` skips only that handback question. Both require the user to confirm the interview summary and each offered close. Keep exactly one marker line.
+
+<!-- grill-handback: ask -->
+
 ## Priority definitions
 
 _Optional. Leave empty to use the core rubric's tier table, or replace it with this repository's wording._

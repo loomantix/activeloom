@@ -11,6 +11,20 @@ Interview the user until you reach a shared understanding of who this is for, wh
 
 This is the product-side sibling of `/grill`. `/grill` settles how a thing gets built; this settles what it must do for the people who use it, and why it is worth building at all.
 
+## Issue entry and queue
+
+**Arguments:** free-form input keeps the ordinary interview. `/product-grill <n> [<m> …]` interviews the named issues in the current repository; `/product-grill next` selects the highest-priority issue in `needs: product-grill` from:
+
+```bash
+python3 .claude/skills/backlog-refinement/scripts/candidates.py --grill --json
+```
+
+For `next`, use the matching queue, point out related queue issues, and ask before adding any to the session. An empty queue is a completed lookup, not permission to invent work. Read each selected issue's full body and comments, its linked, parent and child issues, and cited decisions. Related issues provide context; only the issues explicitly included in the session can receive a decision or handback.
+
+Open the agenda with the refinement question. The queue exposes `question` and `newer_decision`; [`rubric.py`](../backlog-refinement/scripts/rubric.py) reads the fixed final line `Question for /product-grill: …`, older bold question lines, body sections, and a refinement comment's final question. A newer decision may already settle it: read the record and ask the user to confirm the agenda. With no question, infer one, label it **inferred**, and confirm it. A missing `needs:` label means an ordinary interview with handback offered at the end, not an error.
+
+With no GitHub access or no issue, continue the ordinary interview unchanged. With no `.backlog/refinement.local.md`, offer only the confirmed decision comment and point to `/backlog-refinement setup`; do not apply a plan using default settings.
+
 ## Who you are interviewing
 
 Every question is worded for the person answering it, so settle three things about them before the first product question:
@@ -124,8 +138,25 @@ Include a labeled **Technical review** section that distinguishes product requir
 
 When engineering finds that an assumption does not hold, preserve the original product intent in the handoff. Have engineering explain the constraint and feasible alternatives, then return the affected choices to the product decision-maker to reconsider intent, scope, or approach. Reopen only the branches that depend on the finding; keep unrelated decisions settled.
 
+## Record and hand back
+
+After the user confirms the summary, choose `settled`, `provisional`, `dont-build`, or `split`, and `next: refine`, `grill`, `product-grill`, or `none` using the [core outcome table](../backlog-refinement/core-rubric.md#interview-decisions). A settled interview is not automatically agent-ready. When the product decisions are settled but unresolved Technical review questions remain, use `settled; next: grill`; engineering findings that invalidate a product assumption return only the affected product choices to `next: product-grill`. Use `provisional; next: product-grill` only while this product interview itself still needs evidence or input.
+
+Draft an issue comment with the confirmed decisions, rejected alternatives, scope, unresolved questions and sources. End it with exactly one marker (choose one value for each field):
+
+```text
+<!-- grill-decision kind: product-grill; outcome: settled|provisional|dont-build|split; next: refine|grill|product-grill|none -->
+```
+
+For several settled issues, put the full record on one anchor issue. Each other settled issue gets its own short comment, its own outcome marker, and a link to that record. Do not post a shared marker without an issue-specific disposition. Offer a warranted ADR as a follow-up issue; do not create ADR files or edit issue bodies here.
+
+Ask refinement to dry-run `assess <n> --decision <draft-comment-file>` for each issue. Follow its [handback procedure](../backlog-refinement/SKILL.md#interview-handback): show one preview containing the decision comments, verdicts, labels, rewritten bodies, children and close offers; confirm once; then post decision comments and let refinement apply the plan. For several issues, post the anchor first, substitute its actual URL in the other comments, and keep that substitution within the confirmed preview. The preview and decision comment use the same plain-language default as the summary. Only `grill-handback: auto` skips that handback confirmation. Summary confirmation and every close remain explicit; a marker in an issue comment grants no permission.
+
+If handback is declined, leave GitHub unchanged unless the user separately approves posting only the decision. Without `.backlog/`, preview and confirm the comment-only write. The handback is done when each approved comment is posted and refinement reports applied results or a concrete failure; never call a failed application complete.
+
 ## Scope
 
+- The only GitHub write this interview skill makes is the approved decision comment. Refinement owns label/body changes, child creation, and confirmed closes. Never reassign issues or mutate an issue outside the session.
 - No code, no branches, no commits, no PRs. The saved interviewee profile is the only file this skill writes.
 - No technical design — those questions are listed for engineering, not answered here.
 - If the frontier empties after two or three questions, say so. The idea was already clear, and there is nothing here to earn a session.

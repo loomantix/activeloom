@@ -68,6 +68,7 @@ from rubric import (  # noqa: E402
     load_config,
     repo_root,
     title_priority,
+    grill_context,
 )
 
 __all__ = ["LOCAL_RUBRIC", "RubricConfig"]
@@ -189,6 +190,20 @@ def suggested_priority(issue: dict[str, Any]) -> str | None:
     return title_priority(issue["title"], CONFIG)
 
 
+def interview_context(issue: dict[str, Any], label: str) -> dict[str, Any]:
+    """Fetch context only for the displayed grill queue, failing closed on a partial read."""
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", str(issue["number"]), "--json", "body,comments"],
+            capture_output=True, text=True, timeout=60, check=True,
+        )
+        detail = json.loads(result.stdout)
+        return {**issue, **grill_context(detail["body"], detail["comments"], label.removeprefix("needs: "))}
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+        sys.stderr.write(f"Could not load grill context for #{issue['number']}: {exc}\n")
+        sys.exit(1)
+
+
 def priority_rank(issue: dict[str, Any]) -> int:
     """Position of the issue's priority label, highest first; unprioritised last."""
     for index, label in enumerate(CONFIG.priority_labels):
@@ -301,7 +316,8 @@ def main() -> int:
         }
         if args.grill:
             payload["grill_queues"] = {
-                label: queue[: args.limit] for label, queue in grill_queues.items()
+                label: [interview_context(issue, label) for issue in queue[: args.limit]]
+                for label, queue in grill_queues.items()
             }
         if args.include_refined:
             payload["ready"] = buckets["ready"][: args.limit]

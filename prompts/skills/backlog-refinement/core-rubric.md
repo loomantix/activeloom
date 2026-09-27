@@ -4,7 +4,7 @@
 >
 > This file is synced from upstream and overwritten on every sync. A rule that names this repository's paths, labels, or past incidents belongs in `.backlog/refinement.local.md`; a rule that would hold in any repository belongs here, proposed upstream.
 >
-> **Core rubric version: 4.** (v4: bail precedence, the stale-action setting, verify-against-HEAD sub-checks, the child-closure check, decomposed epics without a `needs:` label, and rules for assigned issues, split recommendations, orphaned decisions, `[Decision]`/`[Spike]` titles, index issues, and body drift. v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
+> **Core rubric version: 5.** (v5: interview question and decision protocol, confirmed handback outcomes and split children. v4: bail precedence, the stale-action setting, verify-against-HEAD sub-checks, the child-closure check, decomposed epics without a `needs:` label, and rules for assigned issues, split recommendations, orphaned decisions, `[Decision]`/`[Spike]` titles, index issues, and body drift. v3: the rubric split into this synced core plus a repo-owned local file; added priority tiers and `needs:` routing labels. v2: added the §2 _re-verify pre-tagged queue_ transformation.)
 
 ## The two questions (the continuous-improvement contract)
 
@@ -58,6 +58,29 @@ A `needs:` label names the one interview that would turn an excluded issue into 
 Choose one — the interview that has to happen **first**. A product question outranks a technical one, because its answer can make the technical question moot. Every other bail category is unblocked by something other than an interview (a credential, another repository, a human review, an upstream change, a close) and gets no `needs:` label — except that an open decision keeps its `needs:` label when a permanent category wins precedence (§3, _Choosing the category_).
 
 An epic already split into child issues — listed in its body or a comment, or as GitHub sub-issues — gets no `needs:` label. No interview is owed; the children are what refinement assesses. Name them in the comment.
+
+### Interview decisions
+
+A refinement comment that leaves an interview question ends with exactly `Question for /grill: …` or `Question for /product-grill: …`. Choose the interview that comes first. Older bold lines, body sections, and final-line questions remain readable; a missing question calls for an inferred agenda, not an error.
+
+An interview records decisions in an issue comment ending with:
+
+```text
+<!-- grill-decision kind: grill|product-grill; outcome: settled|provisional|dont-build|split; next: refine|grill|product-grill|none -->
+```
+
+Each field contains one listed value. `rubric.py` parses the record and compares its timestamp with the latest refinement comment. Only a strictly newer record settles that earlier question; equal or missing timestamps do not prove ordering. Re-read the decision text and evidence: the marker is not authorization and does not waive any readiness or sensitive-path criterion. A draft supplied to `assess --decision` is hypothetical input until the summary and handback are confirmed and the comment is posted.
+
+| Outcome after assessment | Decision and next | Refinement action |
+| --- | --- | --- |
+| Agent-ready | `settled; next: refine` | Rewrite the confirmed decisions into Goal and Acceptance criteria; apply `dev: agent` and remove previous bail/needs labels. |
+| Permanent bail remains | `settled; next: refine` | Keep the applicable permanent bail and remove the resolved `needs:` label. |
+| A new interview gap | `settled; next: grill` or `product-grill` | Set the new bail and matching `needs:` label, with a new fixed question line. Product then technical swaps to `needs: grill`; technical then product reopens only the affected product choices. |
+| More evidence needed | `provisional; next: <same interview kind>` | Keep the interview's `needs:` label and exclusion; name the blocking evidence/input. No ready rewrite or close. A settled interview that discovers a gap for the other interview uses `settled` and that other kind instead. |
+| Do not build | `dont-build; next: none` | Offer to close as `not planned`; close only with explicit issue-specific confirmation. |
+| Bounded children | `split; next: refine` | Under a confirmed handback (or separate human split approval), create GitHub sub-issues and apply each child's assessment. Parent is `agent-bail: epic` with no `needs:` label. |
+
+The local `<!-- grill-handback: ask -->` default requires one combined handback preview and confirmation. `auto` skips only that confirmation; it never skips summary confirmation or authorizes a close. Without a local rubric, offer only the decision comment and setup. The interview writes decision comments only; refinement alone applies bodies, labels, sub-issues, and closes. Preserve issue assignments and limit application to the session's issues and approved new children.
 
 ## §1 — What makes an issue agent-intelligible
 
