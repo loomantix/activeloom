@@ -29,6 +29,15 @@ A reviewer merges the PR; once merged, the next `git pull` on a developer's mach
 
 Migrated consumers track a tag (`sync-v2`), not `main`. So an unintended push to upstream main does NOT propagate. Ship reviewed content updates by advancing that tag. `sync-v1` is retained as a frozen historical pin; the cutover is complete and no consumer tracks it.
 
+The shared `.github/workflows/review-glance-label.yml` is synced verbatim from
+this repository. Its Node 26 selection is intentionally inline: the workflow
+runs against the consumer's base commit with a sparse checkout of classifier
+scripts, and cannot depend on a consumer runtime file. Consume updates through
+the normal sync PR after the approved distribution ref advances, with that
+workflow listed in `allow_sensitive_writes` and absent from `skip_targets`.
+Until the consumer PR merges, `pull_request_target` still executes the base
+workflow; a green label job on the update PR does not validate the new runtime.
+
 ```bash
 # in the upstream repo, on main, after merging changes you want to ship
 git tag -af sync-v2 -m "Retag sync-v2 to <reason>" <commit-sha>

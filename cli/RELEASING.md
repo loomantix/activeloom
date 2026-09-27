@@ -54,7 +54,7 @@ Because npm OIDC Trusted Publishing requires the package to exist on npm before
 package settings and OIDC trust can be configured, the initial release
 `activeloom@0.1.0` requires a tightly gated manual bootstrap publication:
 
-Use Node 24.18.0 and npm 11.16.0 for the local helpers as well as CI.
+Use Node 26.10.0 and npm 11.19.1 for the local helpers as well as CI.
 
 1. Confirm package absence on the registry:
    `npm view activeloom --registry=https://registry.npmjs.org` must return 404.
@@ -148,7 +148,7 @@ python3 .codex/skills/publish-npm-package/scripts/verify-published-package.py \
 
 ## Current upstream contracts
 
-- Node 24.18.0 includes npm 11.16.0; both build and stage assert that CLI version.
+- Node 26.10.0 includes npm 11.19.1; both build and stage assert that CLI version.
 - [npm staged publishing](https://docs.npmjs.com/staged-publishing/) requires an existing
   package, Node >=22.14.0 and npm >=11.15.0.
 - [Trusted publishing](https://docs.npmjs.com/trusted-publishers/) supports GitHub-hosted
