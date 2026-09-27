@@ -454,3 +454,19 @@ records with rather than relying on this suite.
 ## License
 
 Apache-2.0. Copyright 2026 Loomantix Inc.
+
+### Aggregate usage without model identity
+
+The writer emits telemetry v2 when a measured token bucket explicitly has
+`model: null`. Such records contain exactly one aggregate bucket with
+`effort: null`; model-attributed buckets cannot be mixed into the aggregate.
+The remaining fields and validation match v1. Known-model records continue to
+emit v1, and the reader accepts both versions, requiring marker/payload agreement.
+Consumers must add v2 support before rolling out producers of aggregate usage.
+A null model is unknown identity, never a model identifier or a zero-cost model.
+
+Managed Agy reviews consume the terminal JSON usage envelope documented in
+[Antigravity headless mode](https://antigravity.google/docs/cli/headless/).
+A fresh single-turn invocation supplies the pass interval; resumed cumulative
+sessions are deliberately excluded. Requested model settings are not observed
+model identity and are not copied into token buckets.

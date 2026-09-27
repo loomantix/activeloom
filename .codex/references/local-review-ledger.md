@@ -948,7 +948,7 @@ Result ownership depends on the caller:
 
 ## Record what the pass cost
 
-Every pass attempts to emit one `local-review-telemetry:v1` marker: adversarial reviews,
+Every pass attempts to emit one versioned `local-review-telemetry` marker: adversarial reviews,
 cleanup passes, hosted lanes, and passes that were blocked. A pass whose cost
 vanished from the record would have its churn attributed to nobody. A
 human-glance range is not a pass: it stops before the telemetry snapshot and
@@ -967,6 +967,12 @@ lane, version, and idempotency identifiers public-safe and non-sensitive before
 publishing the marker. It never carries money: rates move, and on a
 subscription plan the marginal cost of a pass is zero, so tokens are stored and
 priced downstream against a dated table.
+
+Known-model buckets use v1. Measured aggregate usage without an observed model
+uses v2 with exactly one `model: null`, `effort: null` bucket; all other fields
+retain the v1 contract. Readers accept both versions and require marker/payload
+agreement. Deploy v2 reader support before enabling aggregate-usage producers.
+Never replace unknown identity with the requested model or a synthetic model name.
 
 Two rules bind readers:
 

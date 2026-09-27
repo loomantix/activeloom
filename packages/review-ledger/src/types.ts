@@ -576,7 +576,7 @@ export type TelemetryTokenSource =
 
 /** Token counts for one model id; null indicates unmeasured buckets. */
 export interface TelemetryTokenBucket {
-  model: string;
+  model: string | null;
   effort: string | null;
   input: number | null;
   output: number | null;
@@ -615,7 +615,7 @@ export interface TelemetryFindings {
 
 /** Caller input for one token bucket; only measured fields may be omitted. */
 export interface TelemetryTokenBucketInput {
-  model: string;
+  model: string | null;
   effort?: string | null | undefined;
   input?: number | null | undefined;
   output?: number | null | undefined;
@@ -650,7 +650,7 @@ export interface TelemetryFindingsInput {
  * callers must supply public-safe, non-sensitive identifiers.
  */
 export interface TelemetryRecord {
-  version: 1;
+  version: 1 | 2;
   emittedAt: string;
   repo: string;
   pr: number;

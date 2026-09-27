@@ -1361,3 +1361,21 @@ def test_launcher_refuses_to_start_without_a_review_profile(tmp_path: Path) -> N
     assert result.returncode != 0
     assert "review-setup" in result.stderr
     assert not argv_file.exists()
+
+
+def test_launcher_captures_numeric_usage_after_success(tmp_path: Path) -> None:
+    """The actual launcher keeps usage while discarding its private final envelope."""
+    usage = {"input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 40}
+    fake_agy, _ = _fake_agy(tmp_path, review_payload=json.dumps({
+        "status": "SUCCESS", "response": "review complete", "num_turns": 1, "usage": usage,
+    }))
+    destination = tmp_path / "usage.json"
+    environment = {**_trusted_environment(tmp_path),
+                   "AGY_ARGV_FILE": str(tmp_path / "argv.json"),
+                   "AGY_REVIEW_CLI": str(fake_agy),
+                   "ACTIVELOOM_ATTEMPT_ID": "test-attempt",
+                   "ACTIVELOOM_AGY_USAGE_FILE": str(destination)}
+    _run(environment, check=True)
+    assert json.loads(destination.read_text()) == {
+        "version": 1, "attempt_id": "test-attempt", "usage": usage,
+    }

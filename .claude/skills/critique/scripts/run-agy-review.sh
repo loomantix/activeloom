@@ -410,3 +410,6 @@ if not isinstance(response, str) or not response.strip():
     raise SystemExit("the review succeeded without a text response")
 print(response)
 PY
+
+# The final envelope exists only after the worker can no longer emit telemetry.
+launch_state usage "$result_file"

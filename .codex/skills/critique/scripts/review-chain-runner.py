@@ -1469,6 +1469,14 @@ class Runner:
         )
         if telemetry := self.telemetry_directory(pending):
             env["AGENT_LOOP_TELEMETRY_DIR"] = str(telemetry)
+            if pending["engine"] == "gemini":
+                # Agy exposes totals only after the worker exits. Let the runner
+                # publish once, rather than accepting an earlier empty record.
+                env["LOOM_REVIEW_TELEMETRY"] = "off"
+                enabled = pending["telemetry"].get("extraction_enabled") is True
+                env["LOOM_REVIEW_TELEMETRY_EXTRACT"] = "on" if enabled else "off"
+                if enabled:
+                    env["ACTIVELOOM_AGY_USAGE_FILE"] = str(folder / "agy-usage.json")
         error: BaseException | None = None
         try:
             print(
@@ -1506,6 +1514,9 @@ class Runner:
                 digest(recovery) if recovery.exists() else None
             )
             if pending["engine"] == "gemini":
+                receipt = folder / "agy-usage.json"
+                if receipt.is_file() and not receipt.is_symlink():
+                    attempt["usage_sha256"] = digest(receipt)
                 self.classify_incomplete_exit(pending, attempt, folder)
         except (
             Blocked,
@@ -2594,9 +2605,10 @@ class Runner:
     def telemetry_recorded(self, key: str, rows: list[dict[str, Any]]) -> bool:
         """Whether a record already carries this key. Only the key is read."""
         for row in rows:
-            if row["author"] != self.state["actor"] or TELEMETRY_MARKER not in row["body"]:
+            marker = re.search(r"<!-- local-review-telemetry:v[12] -->", row["body"])
+            if row["author"] != self.state["actor"] or not marker:
                 continue
-            payload = row["body"].split(TELEMETRY_MARKER, 1)[1].strip()
+            payload = row["body"][marker.end():].strip()
             payload = payload.removeprefix("```json").removesuffix("```")
             try:
                 record = json.loads(payload)
@@ -2698,6 +2710,40 @@ class Runner:
             "chainInducedRegressions": 0,
         }
 
+    def agy_usage(self, pending: dict[str, Any], output: Path) -> Path | None:
+        """Project an unchanged receipt bound to the observed successful attempt."""
+        if pending["engine"] != "gemini" or not self.telemetry_intact(pending["telemetry"]):
+            return None
+        attempts = [a for a in self.state.get("attempts", [])
+                    if a.get("attempt_id") == pending.get("attempt_id")]
+        if len(attempts) != 1:
+            return None
+        attempt = attempts[0]
+        receipt = self.directory / pending["folder"] / "agy-usage.json"
+        if (attempt.get("exit_status") != 0 or attempt.get("review_started") is not True
+                or not attempt.get("usage_sha256") or receipt.is_symlink()
+                or not receipt.is_file() or digest(receipt) != attempt["usage_sha256"]):
+            return None
+        value = read(receipt)
+        if value.get("version") != 1 or value.get("attempt_id") != pending["attempt_id"]:
+            return None
+        raw = value.get("usage")
+        fields = {"input_tokens", "output_tokens", "thinking_tokens",
+                  "cache_read_tokens", "total_tokens"}
+        if (not isinstance(raw, dict) or not raw or not set(raw) <= fields
+                or any(type(v) is not int or not 0 <= v <= 2**53 - 1 for v in raw.values())):
+            return None
+        # The CLI does not provide an observed model or per-lens attribution.
+        tokens = [{"model": None, "effort": None,
+                   "input": raw.get("input_tokens"), "output": raw.get("output_tokens"),
+                   "cacheRead": raw.get("cache_read_tokens"), "cacheWrite": None,
+                   "reasoning": raw.get("thinking_tokens"),
+                   "providerBuckets": {"total_tokens": raw["total_tokens"]}
+                   if "total_tokens" in raw else {}}]
+        target = output / "telemetry-tokens.json"
+        save(target, tokens)
+        return target
+
     def fallback_telemetry(
         self, pending: dict[str, Any], status: str, head: str
     ) -> str:
@@ -2736,6 +2782,9 @@ class Runner:
             return "not emitted: the usage helper failed"
         if delta.get("emit") is not True:
             return "not emitted: emission is disabled"
+        if delta.get("enabled") is True:
+            if tokens := self.agy_usage(pending, output):
+                delta.update(tokenSource="session-log-delta", tokensFile=str(tokens))
         # The launcher interval is measured even when an ephemeral worker has
         # no token log. Use only a settled, matching attempt; resumption must
         # never include time spent waiting for an operator or invent a duration.

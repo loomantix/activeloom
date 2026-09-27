@@ -14,7 +14,6 @@ import {
   TELEMETRY_STATUSES,
   TELEMETRY_TOKEN_SOURCES,
   TELEMETRY_TRIGGERS,
-  TELEMETRY_V1_MARKER,
   TELEMETRY_VERSION,
   TOKEN_RE,
   UTC_TIMESTAMP_RE,
@@ -137,14 +136,20 @@ function validateProviderBuckets(value: unknown): Record<string, number> {
   return buckets;
 }
 
-function validateTokenBucket(value: unknown): TelemetryTokenBucket {
+function validateTokenBucket(
+  value: unknown,
+  allowUnknownModel = false,
+): TelemetryTokenBucket {
   const source = requireObject(value, 'tokens[]');
   const model = source['model'];
-  if (typeof model !== 'string' || !TOKEN_RE.test(model)) {
+  if (
+    !(allowUnknownModel && model === null) &&
+    (typeof model !== 'string' || !TOKEN_RE.test(model))
+  ) {
     fail('telemetry tokens[].model must be a protocol token');
   }
   return {
-    model,
+    model: model as string | null,
     effort: requireNullableToken(source['effort'], 'tokens[].effort'),
     input: requireNullableCount(source['input'], 'tokens[].input'),
     output: requireNullableCount(source['output'], 'tokens[].output'),
@@ -353,8 +358,8 @@ export function telemetryIdempotencyKey(fields: {
 export function validateTelemetryRecord(value: unknown): TelemetryRecord {
   const source = requireObject(value, 'record');
 
-  if (source['version'] !== TELEMETRY_VERSION) {
-    fail(`telemetry record version must be ${TELEMETRY_VERSION}`);
+  if (source['version'] !== TELEMETRY_VERSION && source['version'] !== 2) {
+    fail('telemetry record version must be 1 or 2');
   }
   const emittedAt = source['emittedAt'];
   if (
@@ -421,7 +426,17 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
   if (!Array.isArray(rawTokens)) {
     fail('telemetry tokens must be an array');
   }
-  const tokens = rawTokens.map(validateTokenBucket);
+  const tokens = rawTokens.map((bucket) =>
+    validateTokenBucket(bucket, source['version'] === 2),
+  );
+  if (
+    tokens.some((bucket) => bucket.model === null) &&
+    (tokens.length !== 1 || tokens[0]?.effort !== null)
+  ) {
+    fail(
+      'unattributed telemetry must be one aggregate bucket with unknown effort',
+    );
+  }
   const models = tokens.map((bucket) =>
     JSON.stringify([bucket.model, bucket.effort]),
   );
@@ -458,7 +473,7 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
 
   const validated: Record<string, unknown> = {
     ...source,
-    version: TELEMETRY_VERSION,
+    version: source['version'],
     emittedAt,
     repo,
     pr,
@@ -509,16 +524,19 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
 function tokenBucketFrom(
   bucket: TelemetryTokenBucketInput,
 ): TelemetryTokenBucket {
-  return validateTokenBucket({
-    model: bucket.model,
-    effort: bucket.effort ?? null,
-    input: bucket.input ?? null,
-    output: bucket.output ?? null,
-    cacheRead: bucket.cacheRead ?? null,
-    cacheWrite: bucket.cacheWrite ?? null,
-    reasoning: bucket.reasoning ?? null,
-    providerBuckets: bucket.providerBuckets ?? {},
-  });
+  return validateTokenBucket(
+    {
+      model: bucket.model,
+      effort: bucket.effort ?? null,
+      input: bucket.input ?? null,
+      output: bucket.output ?? null,
+      cacheRead: bucket.cacheRead ?? null,
+      cacheWrite: bucket.cacheWrite ?? null,
+      reasoning: bucket.reasoning ?? null,
+      providerBuckets: bucket.providerBuckets ?? {},
+    },
+    true,
+  );
 }
 
 function laneFrom(lane: TelemetryLaneInput): TelemetryLane {
@@ -571,7 +589,9 @@ export function buildTelemetryRecord(
     });
 
   return validateTelemetryRecord({
-    version: TELEMETRY_VERSION,
+    version: tokens.some((bucket) => bucket.model === null)
+      ? 2
+      : TELEMETRY_VERSION,
     emittedAt: params.emittedAt,
     repo: params.repo,
     pr: params.pr,
@@ -635,7 +655,7 @@ function knownTelemetryRecord(value: unknown): TelemetryRecord {
 export function buildTelemetryBody(record: TelemetryRecord): string {
   const safeRecord = knownTelemetryRecord(record);
   return [
-    TELEMETRY_V1_MARKER,
+    `<!-- local-review-telemetry:v${safeRecord.version} -->`,
     '',
     '```json',
     JSON.stringify(safeRecord, null, 2),
@@ -652,24 +672,27 @@ export function matchTelemetry(body: string): TelemetryRecord | null {
   if (prefixIndex !== body.lastIndexOf(TELEMETRY_MARKER_PREFIX)) {
     fail('a comment carries more than one local-review telemetry marker');
   }
-  const markerIndex = body.indexOf(TELEMETRY_V1_MARKER);
-  if (markerIndex === -1) {
+  const marker = body.match(/<!-- local-review-telemetry:v([12]) -->/);
+  if (!marker || marker.index === undefined) {
     fail('local-review telemetry record is of an unsupported version');
   }
   const payload = body
-    .slice(markerIndex + TELEMETRY_V1_MARKER.length)
+    .slice(marker.index + marker[0].length)
     .replace(/^\s*```(?:json)?\s*\n/, '')
     .replace(/\n```\s*$/, '')
     .trim();
   if (payload === '') {
     fail('local-review telemetry record carries no payload');
   }
-  return validateTelemetryRecord(
+  const record = validateTelemetryRecord(
     parseJsonOrFail(
       payload,
       'local-review telemetry payload is not valid JSON',
     ),
   );
+  if (record.version !== Number(marker[1]))
+    fail('telemetry marker and payload versions must match');
+  return record;
 }
 
 function canonicalJson(value: unknown): string {
@@ -723,7 +746,7 @@ export function prCommentSink(target: {
       const rows = getIssueComments(target.repo, target.pr, actor);
       for (const row of rows) {
         const existing = String(row['body'] ?? '');
-        if (!existing.includes(TELEMETRY_V1_MARKER)) {
+        if (!isTelemetryComment(existing)) {
           continue;
         }
         let parsed: TelemetryRecord | null;
