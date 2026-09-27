@@ -246,6 +246,24 @@ operator waiting, and does not imply measured tokens or model identity. Older
 checkpoints and attempts without an observed successful return keep duration
 unavailable.
 
+For managed Gemini passes, the Agy launcher retains a numeric-only receipt from
+its successful single-turn JSON result. The runner binds the receipt to the
+attempt and its observed return hash, aggregates every invocation in an
+automatic retry of the same pass, then publishes after the worker exits.
+Worker emission is disabled for that managed boundary to avoid an earlier
+unavailable record consuming the same idempotency key. Extraction and emission
+opt-outs still apply independently. Missing, changed, resumed-session, or invalid
+receipts remain unavailable; no transcript or response text is retained.
+
+Agy's aggregate counts have no observed model or per-lens identity. They use a
+v3 telemetry record with one `model: null`, `effort: null` bucket. Input, output,
+cache reads and thinking remain separate; thinking is not added to output.
+The CLI total is preserved as `providerBuckets.total_tokens`; cache writes stay
+unknown. Its token source is `terminal-json`, not `session-log-delta`. Existing
+known-model records remain v1; v2 remains reserved for the assurance contract.
+Analytics readers must support v3 before enabling this producer; older pinned chains keep their old behavior.
+Standalone Gemini helpers without a managed receipt still report unavailable.
+
 When the pass settles, the runner publishes the record itself if no marker
 carries that key yet. A counted pass reports its result's status. A pass whose
 worker returned without a result or with a blocked one, or failed mid-review,

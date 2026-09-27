@@ -134,7 +134,8 @@ run_agy_managed() {
     local limit="$2"
     shift 2
     set +e
-    setsid timeout --signal=TERM --kill-after=5s "$limit" "$agy_review_cli" "$@" >"$output_file" &
+    env -u ACTIVELOOM_AGY_USAGE_FILE -u ACTIVELOOM_ATTEMPT_ID \
+        setsid timeout --signal=TERM --kill-after=5s "$limit" "$agy_review_cli" "$@" >"$output_file" &
     agy_pid="$!"
     wait "$agy_pid"
     local child_exit="$?"
@@ -410,3 +411,6 @@ if not isinstance(response, str) or not response.strip():
     raise SystemExit("the review succeeded without a text response")
 print(response)
 PY
+
+# The final envelope exists only after the worker can no longer emit telemetry.
+launch_state usage "$result_file"

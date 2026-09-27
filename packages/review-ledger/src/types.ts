@@ -571,13 +571,27 @@ export type TelemetryStatus = 'clean' | 'changed' | 'blocked' | 'skipped';
 export type TelemetryTokenSource =
   | 'session-log-delta'
   | 'stream-json'
+  | 'terminal-json'
   | 'unscoped-session'
   | 'unavailable';
 
-/** Token counts for one model id; null indicates unmeasured buckets. */
+/** Token counts attributed to one observed model id. */
 export interface TelemetryTokenBucket {
   model: string;
   effort: string | null;
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
+  reasoning: number | null;
+  /** Provider-specific integer buckets not mapped to canonical buckets. */
+  providerBuckets: Record<string, number>;
+}
+
+/** Aggregate token counts whose model and effort were not observed. */
+export interface AggregateTelemetryTokenBucket {
+  model: null;
+  effort: null;
   input: number | null;
   output: number | null;
   cacheRead: number | null;
@@ -615,7 +629,7 @@ export interface TelemetryFindings {
 
 /** Caller input for one token bucket; only measured fields may be omitted. */
 export interface TelemetryTokenBucketInput {
-  model: string;
+  model: string | null;
   effort?: string | null | undefined;
   input?: number | null | undefined;
   output?: number | null | undefined;
@@ -649,8 +663,7 @@ export interface TelemetryFindingsInput {
  * One review pass, measured. Structured identifiers and counts only;
  * callers must supply public-safe, non-sensitive identifiers.
  */
-export interface TelemetryRecord {
-  version: 1;
+interface TelemetryRecordFields {
   emittedAt: string;
   repo: string;
   pr: number;
@@ -673,7 +686,6 @@ export interface TelemetryRecord {
   repoInstructionsSha256: string | null;
 
   tokenSource: TelemetryTokenSource;
-  tokens: TelemetryTokenBucket[];
   /** Absent, never empty, when per-lane spend is unattributable. */
   lanes?: TelemetryLane[];
 
@@ -683,6 +695,14 @@ export interface TelemetryRecord {
   changeset: Changeset;
   findings: TelemetryFindings;
 }
+
+/** Versioned telemetry wire record, discriminated by token attribution. */
+export type TelemetryRecord =
+  | (TelemetryRecordFields & { version: 1; tokens: TelemetryTokenBucket[] })
+  | (TelemetryRecordFields & {
+      version: 3;
+      tokens: [AggregateTelemetryTokenBucket];
+    });
 
 /** The fields `buildTelemetryRecord` needs to assemble a record. */
 export interface BuildTelemetryParams {

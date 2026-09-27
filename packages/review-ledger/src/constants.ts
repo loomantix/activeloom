@@ -181,6 +181,7 @@ export const TELEMETRY_STATUSES: readonly TelemetryStatus[] = [
 export const TELEMETRY_TOKEN_SOURCES: readonly TelemetryTokenSource[] = [
   'session-log-delta',
   'stream-json',
+  'terminal-json',
   'unscoped-session',
   'unavailable',
 ] as const;

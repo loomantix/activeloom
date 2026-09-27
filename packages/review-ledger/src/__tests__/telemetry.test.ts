@@ -292,7 +292,7 @@ describe('validateTelemetryRecord', () => {
         ...record,
         version: 2,
       } as unknown as TelemetryRecord),
-    ).toThrow(/version must be 1/);
+    ).toThrow(/version must be 1 or 3/);
   });
 
   it('rejects a timestamp that is not an RFC 3339 UTC second', () => {
@@ -564,6 +564,23 @@ describe('prCommentSink', () => {
 
   beforeEach(() => {
     resetGitHubRunner();
+  });
+
+  it('posts and replays an aggregate v3 record without duplication', () => {
+    const runner = new MockRunner();
+    setGitHubRunner(runner);
+    const aggregate = buildTelemetryRecord(
+      params({
+        engine: 'gemini',
+        tokens: [{ model: null, input: 100, output: 20 }],
+      }),
+    );
+    const sink = prCommentSink({ repo: 'owner/repo', pr: 123 });
+    const first = emitTelemetry({ record: aggregate, sink });
+    const replay = emitTelemetry({ record: aggregate, sink });
+    expect(first.emitted).toBe(true);
+    expect(replay.reference).toBe(first.reference);
+    expect(runner.posts).toBe(1);
   });
 
   it('posts one comment per pass and replays an identical key', () => {
@@ -894,5 +911,60 @@ describe('prCommentSink', () => {
     });
     expect(result.emitted).toBe(true);
     expect(runner.posts).toBe(1);
+  });
+});
+
+describe('unattributed invocation usage', () => {
+  it('uses v3 for measured tokens without inventing a model', () => {
+    const record = buildTelemetryRecord(
+      params({
+        engine: 'gemini',
+        tokens: [{ model: null, input: 100, output: 20 }],
+      }),
+    );
+    expect(record.version).toBe(3);
+    expect(record.tokens[0]?.model).toBeNull();
+    expect(matchTelemetry(buildTelemetryBody(record))).toEqual(record);
+    expect(() => validateTelemetryRecord({ ...record, version: 1 })).toThrow(
+      /model/,
+    );
+    expect(() =>
+      validateTelemetryRecord({
+        ...record,
+        tokens: [{ ...record.tokens[0], model: 'requested-model' }],
+      }),
+    ).toThrow(/aggregate/);
+    expect(() =>
+      validateTelemetryRecord({
+        ...record,
+        tokenSource: 'unavailable',
+        tokens: [],
+      }),
+    ).toThrow(/aggregate/);
+    expect(() =>
+      matchTelemetry(
+        buildTelemetryBody(record).replace('telemetry:v3', 'telemetry:v1'),
+      ),
+    ).toThrow(/versions must match/);
+  });
+  it('keeps existing known-model records on v1', () => {
+    expect(buildTelemetryRecord(params()).version).toBe(1);
+  });
+  it('rejects mixing aggregate usage with model-attributed buckets or effort', () => {
+    expect(() =>
+      buildTelemetryRecord(
+        params({ tokens: [{ model: null, effort: 'high', input: 1 }] }),
+      ),
+    ).toThrow(/aggregate/);
+    expect(() =>
+      buildTelemetryRecord(
+        params({
+          tokens: [
+            { model: null, input: 1 },
+            { model: 'gemini', input: 1 },
+          ],
+        }),
+      ),
+    ).toThrow(/aggregate/);
   });
 });

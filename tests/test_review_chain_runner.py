@@ -3865,7 +3865,7 @@ def telemetry_harness(
     def telemetry_script(self: Any, engine: str, name: str) -> Path | None:
         if name == "usage-snapshot.js" and controls.usage_helper is not None:
             return Path(controls.usage_helper)
-        root = ".codex" if engine == "codex" else ".claude"
+        root = {"codex": ".codex", "claude": ".claude", "gemini": ".agents"}[engine]
         return ROOT / root / "skills/critique/scripts" / name
 
     def issue_comments(self: Any) -> list[dict[str, Any]]:
@@ -4279,3 +4279,119 @@ def test_cleanup_latch_anywhere_in_the_comment_withholds_counts(
     output.mkdir()
     counted = runner.telemetry_findings(pending, rows, output)
     assert counted == "cleanup and review findings share this pass"
+
+
+@pytest.mark.parametrize("invalid", [None, "foreign", "tampered", "missing", "disabled", "unreadable"])
+def test_agy_invocation_usage_is_bound_to_the_successful_attempt(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, invalid: str | None,
+) -> None:
+    """A completed launcher receipt supplies counts without guessing model identity."""
+    h = telemetry_harness.harness
+    h.args.chain = "codex,gemini,codex,gemini"
+    if invalid == "disabled":
+        monkeypatch.setenv("LOOM_REVIEW_TELEMETRY_EXTRACT", "off")
+    original = h.module.managed
+    original_digest = h.module.digest
+
+    def receipt_digest(path: Path) -> str:
+        """Simulate an unreadable receipt without changing review result evidence."""
+        if invalid == "unreadable" and path.name == "agy-usage.json":
+            raise OSError("synthetic unreadable receipt")
+        return str(original_digest(path))
+
+    monkeypatch.setattr(h.module, "digest", receipt_digest)
+
+    def worker(argv: Any, log: Any, env: Any, *args: Any, **kwargs: Any) -> None:
+        """Model the real launcher's one numeric-only receipt, after worker return."""
+        original(argv, log, env, *args, **kwargs)
+        if env.get("AGENT_LOOP_REVIEW_ENGINE") != "gemini":
+            return
+        assert env["LOOM_REVIEW_TELEMETRY"] == "off"
+        if invalid == "disabled":
+            assert "ACTIVELOOM_AGY_USAGE_FILE" not in env
+            return
+        if invalid != "missing":
+            h.module.save(Path(env["ACTIVELOOM_AGY_USAGE_FILE"]), {
+                "version": 1,
+                "attempt_id": "foreign" if invalid == "foreign" else env["ACTIVELOOM_ATTEMPT_ID"],
+                "usage": {"input_tokens": 100, "output_tokens": 20, "thinking_tokens": 15,
+                          "cache_read_tokens": 40, "total_tokens": 120},
+            })
+
+    monkeypatch.setattr(h.module, "managed", worker)
+    original_usage = h.runner.agy_usage
+
+    def usage(self: Any, pending: Any, output: Any) -> Any:
+        """A changed receipt after capture cannot be accepted during recovery."""
+        if invalid == "tampered" and pending["engine"] == "gemini":
+            (self.directory / pending["folder"] / "agy-usage.json").write_text("{}")
+        return original_usage(self, pending, output)
+
+    monkeypatch.setattr(h.runner, "agy_usage", usage)
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    emissions = [e for e in telemetry_harness.emissions if e["--engine"] == "gemini"]
+    assert len(emissions) == 2
+    for emission in emissions:
+        if invalid:
+            assert emission["--token-source"] == "unavailable"
+            assert "--tokens-file" not in emission
+        else:
+            assert emission["--token-source"] == "terminal-json"
+            assert h.module.read(Path(emission["--tokens-file"])) == [{
+                "model": None, "effort": None, "input": 100, "output": 20,
+                "cacheRead": 40, "cacheWrite": None, "reasoning": 15,
+                "providerBuckets": {"total_tokens": 120},
+            }]
+
+
+def test_agy_usage_aggregates_automatic_retry_receipts(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Both successful invocations belong to one pass and one aggregate bucket."""
+    h = telemetry_harness.harness
+    runner = h.runner(h.args, h.directory)
+    monkeypatch.setattr(runner, "telemetry_intact", lambda boundary: True)
+    attempts = []
+    for number, usage in enumerate((
+        {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+        {"input_tokens": 70, "output_tokens": 10, "total_tokens": 80},
+    ), start=1):
+        folder = h.directory / f"pass-1/retry-{number}"
+        folder.mkdir(parents=True)
+        receipt = folder / "agy-usage.json"
+        h.module.save(receipt, {"version": 1, "attempt_id": f"attempt-{number}",
+                                "usage": usage})
+        attempts.append({"attempt_id": f"attempt-{number}",
+                         "folder": str(folder.relative_to(h.directory)),
+                         "exit_status": 0, "review_started": True,
+                         "usage_sha256": h.module.digest(receipt),
+                         "duration_seconds": number + 0.5})
+    runner.state = {"attempts": attempts}
+    pending = {"engine": "gemini", "round": 1,
+               "idle_exit_origin": "attempt-1", "attempt_id": "attempt-2",
+               "telemetry": {}}
+    output = tmp_path / "output"
+    output.mkdir()
+
+    tokens = runner.agy_usage(pending, output)
+
+    assert tokens is not None
+    assert h.module.read(tokens) == [{
+        "model": None, "effort": None, "input": 170, "output": 30,
+        "cacheRead": None, "cacheWrite": None, "reasoning": None,
+        "providerBuckets": {"total_tokens": 200},
+    }]
+    assert runner.pass_attempts(pending) == attempts
+
+
+def test_agy_v3_record_is_recognized_on_resume(telemetry_harness: Any) -> None:
+    """An existing aggregate record consumes the same pass key as v1."""
+    h = telemetry_harness.harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    key = telemetry_harness.emissions[0]["--idempotency-key"]
+    rows = [{"author": runner.state["actor"], "body":
+             '<!-- local-review-telemetry:v3 -->\n\n```json\n' +
+             json.dumps({"version": 3, "idempotencyKey": key}) + '\n```'}]
+    assert runner.telemetry_recorded(key, rows)
