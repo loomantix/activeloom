@@ -363,8 +363,8 @@ export function telemetryIdempotencyKey(fields: {
 export function validateTelemetryRecord(value: unknown): TelemetryRecord {
   const source = requireObject(value, 'record');
 
-  if (source['version'] !== TELEMETRY_VERSION && source['version'] !== 2) {
-    fail('telemetry record version must be 1 or 2');
+  if (source['version'] !== TELEMETRY_VERSION && source['version'] !== 3) {
+    fail('telemetry record version must be 1 or 3');
   }
   const emittedAt = source['emittedAt'];
   if (
@@ -432,10 +432,10 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
     fail('telemetry tokens must be an array');
   }
   const tokens = rawTokens.map((bucket) =>
-    validateTokenBucket(bucket, source['version'] === 2),
+    validateTokenBucket(bucket, source['version'] === 3),
   );
   if (
-    source['version'] === 2 &&
+    source['version'] === 3 &&
     (tokens.length !== 1 ||
       tokens[0]?.model !== null ||
       tokens[0].effort !== null)
@@ -597,7 +597,7 @@ export function buildTelemetryRecord(
 
   return validateTelemetryRecord({
     version: tokens.some((bucket) => bucket.model === null)
-      ? 2
+      ? 3
       : TELEMETRY_VERSION,
     emittedAt: params.emittedAt,
     repo: params.repo,
@@ -626,7 +626,7 @@ export function buildTelemetryRecord(
   });
 }
 
-/** Project a validated reader record onto the public-safe v1 writer schema. */
+/** Project a validated reader record onto its public-safe writer schema. */
 function knownTelemetryRecord(value: unknown): TelemetryRecord {
   const record = validateTelemetryRecord(value);
   const fields = {
@@ -657,7 +657,7 @@ function knownTelemetryRecord(value: unknown): TelemetryRecord {
   };
   return record.version === 1
     ? { ...fields, version: 1, tokens: record.tokens }
-    : { ...fields, version: 2, tokens: record.tokens };
+    : { ...fields, version: 3, tokens: record.tokens };
 }
 
 /** Render a record as the comment body that carries it. */
@@ -681,7 +681,7 @@ export function matchTelemetry(body: string): TelemetryRecord | null {
   if (prefixIndex !== body.lastIndexOf(TELEMETRY_MARKER_PREFIX)) {
     fail('a comment carries more than one local-review telemetry marker');
   }
-  const marker = body.match(/<!-- local-review-telemetry:v([12]) -->/);
+  const marker = body.match(/<!-- local-review-telemetry:v([13]) -->/);
   if (!marker || marker.index === undefined) {
     fail('local-review telemetry record is of an unsupported version');
   }

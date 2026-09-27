@@ -2609,7 +2609,7 @@ class Runner:
     def telemetry_recorded(self, key: str, rows: list[dict[str, Any]]) -> bool:
         """Whether a record already carries this key. Only the key is read."""
         for row in rows:
-            marker = re.search(r"<!-- local-review-telemetry:v[12] -->", row["body"])
+            marker = re.search(r"<!-- local-review-telemetry:v[13] -->", row["body"])
             if row["author"] != self.state["actor"] or not marker:
                 continue
             payload = row["body"][marker.end():].strip()

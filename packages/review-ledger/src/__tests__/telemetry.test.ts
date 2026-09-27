@@ -290,9 +290,9 @@ describe('validateTelemetryRecord', () => {
     expect(() =>
       buildTelemetryBody({
         ...record,
-        version: 99,
+        version: 2,
       } as unknown as TelemetryRecord),
-    ).toThrow(/version must be 1/);
+    ).toThrow(/version must be 1 or 3/);
   });
 
   it('rejects a timestamp that is not an RFC 3339 UTC second', () => {
@@ -431,7 +431,7 @@ describe('marker body', () => {
 
   it('fails on an unsupported telemetry version', () => {
     expect(() =>
-      matchTelemetry('<!-- local-review-telemetry:v99 -->\n\n{}'),
+      matchTelemetry('<!-- local-review-telemetry:v2 -->\n\n{}'),
     ).toThrow(/unsupported version/);
   });
 
@@ -566,7 +566,7 @@ describe('prCommentSink', () => {
     resetGitHubRunner();
   });
 
-  it('posts and replays an aggregate v2 record without duplication', () => {
+  it('posts and replays an aggregate v3 record without duplication', () => {
     const runner = new MockRunner();
     setGitHubRunner(runner);
     const aggregate = buildTelemetryRecord(
@@ -915,14 +915,14 @@ describe('prCommentSink', () => {
 });
 
 describe('unattributed invocation usage', () => {
-  it('uses v2 for measured tokens without inventing a model', () => {
+  it('uses v3 for measured tokens without inventing a model', () => {
     const record = buildTelemetryRecord(
       params({
         engine: 'gemini',
         tokens: [{ model: null, input: 100, output: 20 }],
       }),
     );
-    expect(record.version).toBe(2);
+    expect(record.version).toBe(3);
     expect(record.tokens[0]?.model).toBeNull();
     expect(matchTelemetry(buildTelemetryBody(record))).toEqual(record);
     expect(() => validateTelemetryRecord({ ...record, version: 1 })).toThrow(
@@ -943,7 +943,7 @@ describe('unattributed invocation usage', () => {
     ).toThrow(/aggregate/);
     expect(() =>
       matchTelemetry(
-        buildTelemetryBody(record).replace('telemetry:v2', 'telemetry:v1'),
+        buildTelemetryBody(record).replace('telemetry:v3', 'telemetry:v1'),
       ),
     ).toThrow(/versions must match/);
   });

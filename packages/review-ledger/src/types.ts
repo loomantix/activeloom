@@ -700,7 +700,7 @@ interface TelemetryRecordFields {
 export type TelemetryRecord =
   | (TelemetryRecordFields & { version: 1; tokens: TelemetryTokenBucket[] })
   | (TelemetryRecordFields & {
-      version: 2;
+      version: 3;
       tokens: [AggregateTelemetryTokenBucket];
     });
 

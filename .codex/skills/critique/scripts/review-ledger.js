@@ -18011,8 +18011,8 @@ function telemetryIdempotencyKey(fields) {
 }
 function validateTelemetryRecord(value) {
   const source = requireObject(value, "record");
-  if (source["version"] !== TELEMETRY_VERSION && source["version"] !== 2) {
-    fail("telemetry record version must be 1 or 2");
+  if (source["version"] !== TELEMETRY_VERSION && source["version"] !== 3) {
+    fail("telemetry record version must be 1 or 3");
   }
   const emittedAt = source["emittedAt"];
   if (typeof emittedAt !== "string" || !UTC_TIMESTAMP_RE.test(emittedAt) || Number.isNaN(Date.parse(emittedAt)) || new Date(emittedAt).toISOString().replace(".000Z", "Z") !== emittedAt) {
@@ -18063,9 +18063,9 @@ function validateTelemetryRecord(value) {
     fail("telemetry tokens must be an array");
   }
   const tokens = rawTokens.map(
-    (bucket) => validateTokenBucket(bucket, source["version"] === 2)
+    (bucket) => validateTokenBucket(bucket, source["version"] === 3)
   );
-  if (source["version"] === 2 && (tokens.length !== 1 || tokens[0]?.model !== null || tokens[0].effort !== null)) {
+  if (source["version"] === 3 && (tokens.length !== 1 || tokens[0]?.model !== null || tokens[0].effort !== null)) {
     fail(
       "unattributed telemetry must be one aggregate bucket with unknown effort"
     );
@@ -18199,7 +18199,7 @@ function buildTelemetryRecord(params) {
     runId: params.runId
   });
   return validateTelemetryRecord({
-    version: tokens.some((bucket) => bucket.model === null) ? 2 : TELEMETRY_VERSION,
+    version: tokens.some((bucket) => bucket.model === null) ? 3 : TELEMETRY_VERSION,
     emittedAt: params.emittedAt,
     repo: params.repo,
     pr: params.pr,
@@ -18254,7 +18254,7 @@ function knownTelemetryRecord(value) {
     changeset: record.changeset,
     findings: record.findings
   };
-  return record.version === 1 ? { ...fields, version: 1, tokens: record.tokens } : { ...fields, version: 2, tokens: record.tokens };
+  return record.version === 1 ? { ...fields, version: 1, tokens: record.tokens } : { ...fields, version: 3, tokens: record.tokens };
 }
 function buildTelemetryBody(record) {
   const safeRecord = knownTelemetryRecord(record);
@@ -18274,7 +18274,7 @@ function matchTelemetry(body) {
   if (prefixIndex !== body.lastIndexOf(TELEMETRY_MARKER_PREFIX)) {
     fail("a comment carries more than one local-review telemetry marker");
   }
-  const marker = body.match(/<!-- local-review-telemetry:v([12]) -->/);
+  const marker = body.match(/<!-- local-review-telemetry:v([13]) -->/);
   if (!marker || marker.index === void 0) {
     fail("local-review telemetry record is of an unsupported version");
   }

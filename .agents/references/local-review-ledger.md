@@ -969,9 +969,10 @@ subscription plan the marginal cost of a pass is zero, so tokens are stored and
 priced downstream against a dated table.
 
 Known-model buckets use v1. Measured aggregate usage without an observed model
-uses v2 with exactly one `model: null`, `effort: null` bucket; all other fields
+uses v3 with exactly one `model: null`, `effort: null` bucket; all other fields
 retain the v1 contract. Readers accept both versions and require marker/payload
-agreement. Deploy v2 reader support before enabling aggregate-usage producers.
+agreement. Telemetry v2 remains reserved for the assurance contract. Deploy v3
+reader support before enabling aggregate-usage producers.
 Never replace unknown identity with the requested model or a synthetic model name.
 
 Two rules bind readers:

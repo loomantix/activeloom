@@ -4385,13 +4385,13 @@ def test_agy_usage_aggregates_automatic_retry_receipts(
     assert runner.pass_attempts(pending) == attempts
 
 
-def test_agy_v2_record_is_recognized_on_resume(telemetry_harness: Any) -> None:
+def test_agy_v3_record_is_recognized_on_resume(telemetry_harness: Any) -> None:
     """An existing aggregate record consumes the same pass key as v1."""
     h = telemetry_harness.harness
     runner = h.runner(h.args, h.directory)
     assert runner.run() == "converged"
     key = telemetry_harness.emissions[0]["--idempotency-key"]
     rows = [{"author": runner.state["actor"], "body":
-             '<!-- local-review-telemetry:v2 -->\n\n```json\n' +
-             json.dumps({"version": 2, "idempotencyKey": key}) + '\n```'}]
+             '<!-- local-review-telemetry:v3 -->\n\n```json\n' +
+             json.dumps({"version": 3, "idempotencyKey": key}) + '\n```'}]
     assert runner.telemetry_recorded(key, rows)
