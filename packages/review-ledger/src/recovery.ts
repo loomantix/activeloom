@@ -135,7 +135,7 @@ export function readResultRecovery(
   // The range classifier fails closed to behavioral when proof of a minor edit
   // is unavailable. Promote only in this direction; the pinned receipt retains
   // the original label.
-  const candidate =
+  let candidate =
     savedCandidate.status === 'changed' &&
     savedCandidate.classification === 'minor' &&
     classifyRangeEffect(params.before, params.head) === 'behavioral'
@@ -144,6 +144,22 @@ export function readResultRecovery(
   const current = Buffer.from(readResultBytes(params.resultFile)).toString(
     'utf8',
   );
+  const promotedCandidate =
+    savedCandidate.status === 'changed' &&
+    savedCandidate.classification === 'minor'
+      ? { ...savedCandidate, classification: 'material' as const }
+      : null;
+  const canonicalPromotion = promotedCandidate
+    ? JSON.stringify(promotedCandidate, Object.keys(promotedCandidate).sort()) +
+      '\n'
+    : null;
+  if (
+    promotedCandidate !== null &&
+    canonicalPromotion !== null &&
+    current === canonicalPromotion
+  ) {
+    candidate = promotedCandidate;
+  }
   // Exact candidate replay supports a crash after the atomic result write but
   // before the controller records completion. Do not adopt a different result.
   const canonicalCandidate =

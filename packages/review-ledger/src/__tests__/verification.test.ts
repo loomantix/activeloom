@@ -863,6 +863,16 @@ describe('completed result finalization recovery', () => {
     expect(readResult(resultPath()).classification).toBe('material');
   });
 
+  it('replays a conservative promotion after source proof becomes available', () => {
+    const recovery = prepare();
+    const sourceBlobs = runner.sourceBlobs;
+    runner.sourceBlobs = {};
+    expect(recoverResult(recovery).classification).toBe('material');
+    runner.sourceBlobs = sourceBlobs;
+    expect(recoverResult(recovery).classification).toBe('material');
+    expect(readResult(resultPath()).classification).toBe('material');
+  });
+
   it('does not create a completed candidate for an unfinished review', () => {
     writeFileSync(params().historicalCommentIdsFile, '[]\n');
     expect(() => writeResult({ ...params(), classification: 'minor' })).toThrow(

@@ -16237,10 +16237,15 @@ function readResultRecovery(params, actor) {
   if (savedCandidate.status !== "clean" && savedCandidate.status !== "changed") {
     fail("result recovery requires a completed candidate");
   }
-  const candidate = savedCandidate.status === "changed" && savedCandidate.classification === "minor" && classifyRangeEffect(params.before, params.head) === "behavioral" ? { ...savedCandidate, classification: "material" } : savedCandidate;
+  let candidate = savedCandidate.status === "changed" && savedCandidate.classification === "minor" && classifyRangeEffect(params.before, params.head) === "behavioral" ? { ...savedCandidate, classification: "material" } : savedCandidate;
   const current = Buffer.from(readResultBytes(params.resultFile)).toString(
     "utf8"
   );
+  const promotedCandidate = savedCandidate.status === "changed" && savedCandidate.classification === "minor" ? { ...savedCandidate, classification: "material" } : null;
+  const canonicalPromotion = promotedCandidate ? JSON.stringify(promotedCandidate, Object.keys(promotedCandidate).sort()) + "\n" : null;
+  if (promotedCandidate !== null && canonicalPromotion !== null && current === canonicalPromotion) {
+    candidate = promotedCandidate;
+  }
   const canonicalCandidate = JSON.stringify(candidate, Object.keys(candidate).sort()) + "\n";
   if (current !== value["blockedResult"] && current !== canonicalCandidate) {
     fail("result recovery no longer matches the saved result");
