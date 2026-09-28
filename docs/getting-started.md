@@ -2,19 +2,22 @@
 
 ActiveLoom distributes engineering skills and supporting tools to existing agent clients. For scope and task selection, start with the [README](../README.md) or [agent entry guide](agent-guide.md).
 
-## Run the CLI from source
+## Run the CLI
 
-As of September 10, 2026, the public npm registry does not serve the `activeloom` package. Use the checked-in CLI. In a Bash or compatible shell:
+The installer is published on npm as [`activeloom`](https://www.npmjs.com/package/activeloom). Run it with `npx`:
+
+```bash
+npx activeloom tiers
+```
+
+The commands below are written as `activeloom …`. Run each one as `npx activeloom …`, or install the CLI once with `npm install -g activeloom` and run it directly. Either way, the package contains only the installer: it downloads skill content from this repository at `sync-v2` by default.
+
+To run an unpublished revision of the CLI, use a clone instead:
 
 ```bash
 git clone https://github.com/loomantix/activeloom.git
-cd activeloom
-export ACTIVELOOM_CHECKOUT="$PWD"
-activeloom() { node "$ACTIVELOOM_CHECKOUT/cli/bin/activeloom.js" "$@"; }
-activeloom tiers
+node activeloom/cli/bin/activeloom.js tiers
 ```
-
-Keep this shell open for the commands below. The `activeloom` function invokes the local installer; it still downloads content from `sync-v2` by default. After npm publication, `npx activeloom` will be the equivalent package invocation. Source examples do not require publication or a global npm install.
 
 Requirements: Node 18.17+; Python 3.9+ with PyYAML for `init`; network access to fetch upstream content. Installation does not supply an agent client, model access, GitHub authentication, or the additional tools a skill needs to run.
 
@@ -107,7 +110,7 @@ To fill them, run the **`onboard`** skill in your agent. It reads the repository
 
 **When to move up:** when re-running `init` by hand starts getting forgotten.
 
-Once the repository is installed, [Set up for autonomous development](autonomous-development.md) carries it on to a refined backlog and a first `agent-loop` run.
+Once the repository is installed, [Everyday workflows](workflows.md) shows how to use `issues`, `diagnosing-bugs`, `backlog-refinement`, `grill`, `product-grill`, `agent-loop`, `critique`, `deepcritique`, and the automatic review chain in it. [Set up for autonomous development](autonomous-development.md) carries it on to a refined backlog and a first `agent-loop` run.
 
 <a id="tier-2"></a>
 
