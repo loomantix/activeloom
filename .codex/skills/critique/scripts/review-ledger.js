@@ -26,7 +26,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.5.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.5.1" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -16230,16 +16230,22 @@ function readResultRecovery(params, actor) {
   const blocked = validateResultData(params, value["blockedResult"]);
   if (blocked.status !== "blocked")
     fail("result recovery must preserve a blocked result");
-  const candidate = validateResultData(
+  const savedCandidate = validateResultData(
     params,
     JSON.stringify(value["candidate"])
   );
-  if (candidate.status !== "clean" && candidate.status !== "changed") {
+  if (savedCandidate.status !== "clean" && savedCandidate.status !== "changed") {
     fail("result recovery requires a completed candidate");
   }
+  let candidate = savedCandidate.status === "changed" && savedCandidate.classification === "minor" && classifyRangeEffect(params.before, params.head) === "behavioral" ? { ...savedCandidate, classification: "material" } : savedCandidate;
   const current = Buffer.from(readResultBytes(params.resultFile)).toString(
     "utf8"
   );
+  const promotedCandidate = savedCandidate.status === "changed" && savedCandidate.classification === "minor" ? { ...savedCandidate, classification: "material" } : null;
+  const canonicalPromotion = promotedCandidate ? JSON.stringify(promotedCandidate, Object.keys(promotedCandidate).sort()) + "\n" : null;
+  if (promotedCandidate !== null && canonicalPromotion !== null && current === canonicalPromotion) {
+    candidate = promotedCandidate;
+  }
   const canonicalCandidate = JSON.stringify(candidate, Object.keys(candidate).sort()) + "\n";
   if (current !== value["blockedResult"] && current !== canonicalCandidate) {
     fail("result recovery no longer matches the saved result");
@@ -16703,7 +16709,10 @@ function recoverResult(params) {
     data: candidate,
     historicalCommentIds
   });
-  readResultRecovery(params, actor);
+  const confirmed = readResultRecovery(params, actor);
+  if (confirmed.classification !== candidate.classification) {
+    fail("result recovery classification changed during finalization");
+  }
   verifyHead(params.repo, params.pr, params.head);
   writeResultFile(params.resultFile, { ...candidate });
   return {
