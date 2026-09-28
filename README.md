@@ -8,7 +8,7 @@ It helps an existing agent plan work, investigate bugs, implement bounded tasks,
 
 This is the unified project formerly named **claude-platform**. New consumers use `loomantix/activeloom`, one `.activeloom-config.yml`, and the harnesses and models they select. Separate engine upstreams are not required.
 
-**Point an agent here:** [Agent entry guide](docs/agent-guide.md). It contains a copyable session prompt, a task-to-skill map, prerequisites, and a source ownership map. For installation, use [Getting started](docs/getting-started.md). To go from nothing installed to an agent working your backlog, use [Set up for autonomous development](docs/autonomous-development.md).
+**Point an agent here:** [Agent entry guide](docs/agent-guide.md). It contains a copyable session prompt, a task-to-skill map, prerequisites, and a source ownership map. For installation, use [Getting started](docs/getting-started.md). For the skills most teams use day to day — `issues`, `diagnosing-bugs`, `backlog-refinement`, `grill`, `product-grill`, `agent-loop`, `critique`, `deepcritique`, and the automatic review chain — use [Everyday workflows](docs/workflows.md). To go from nothing installed to an agent working your backlog, use [Set up for autonomous development](docs/autonomous-development.md).
 
 ## What it provides
 
@@ -34,17 +34,20 @@ This is the unified project formerly named **claude-platform**. New consumers us
 
 ## Choose a starting point
 
-| Your task                                  | Start with                                                    | Read next                                                                        |
-| ------------------------------------------ | ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Decide whether this fits an agent session  | The agent entry guide                                         | [Task selection and boundaries](docs/agent-guide.md)                             |
-| Have agents work the backlog unattended    | The setup guide's session prompt                              | [Set up for autonomous development](docs/autonomous-development.md)              |
-| Try a workflow personally                  | CLI `add <skill> --harness <id>`                              | [Personal installation](docs/getting-started.md#tier-0-try-it)                   |
-| Give a repository a shared setup           | CLI `init --harness <id>` and the `onboard` skill             | [Repository installation](docs/getting-started.md#tier-1)                        |
-| Keep multiple repositories current         | CLI `init --sync`                                             | [Sync setup](docs/getting-started.md#tier-2) and [sync contract](docs/sync.md)   |
-| Configure models, effort, and review order | CLI `review-config` or `review-setup` skill                   | [Review profile setup](docs/getting-started.md#referencing-the-synced-docs)      |
-| Review an existing PR                      | The installed harness's `REVIEW_WORKFLOW.md` and review skill | [Review entry points](docs/agent-guide.md#review-an-existing-pr)                 |
-| Run an automatic review chain              | The deterministic review runner                               | [Runner requirements and outcomes](.codex/references/review-chain-runner.md)     |
-| Improve the toolkit itself                 | Source ownership map and contribution guide                   | [Contributing](CONTRIBUTING.md) and [prompt rendering](docs/prompt-rendering.md) |
+| Your task                                  | Start with                                                    | Read next                                                                                |
+| ------------------------------------------ | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Decide whether this fits an agent session  | The agent entry guide                                         | [Task selection and boundaries](docs/agent-guide.md)                                     |
+| Have agents work the backlog unattended    | The setup guide's session prompt                              | [Set up for autonomous development](docs/autonomous-development.md)                      |
+| Try a workflow personally                  | CLI `add <skill> --harness <id>`                              | [Personal installation](docs/getting-started.md#tier-0-try-it)                           |
+| Give a repository a shared setup           | CLI `init --harness <id>` and the `onboard` skill             | [Repository installation](docs/getting-started.md#tier-1)                                |
+| Keep multiple repositories current         | CLI `init --sync`                                             | [Sync setup](docs/getting-started.md#tier-2) and [sync contract](docs/sync.md)           |
+| Configure models, effort, and review order | CLI `review-config` or `review-setup` skill                   | [Review profile setup](docs/getting-started.md#referencing-the-synced-docs)              |
+| Work an issue from ready queue to draft PR | `issues ready`, then `issues start <n>`                       | [The issues workflow](docs/workflows.md#issues--the-day-to-day-issue-workflow)           |
+| Make the backlog agent-ready               | `backlog-refinement setup`, then `queue` and `refine`         | [Backlog refinement](docs/workflows.md#backlog-refinement--make-the-backlog-agent-ready) |
+| Decide what or how to build before coding  | `product-grill` (what and whether), `grill` (how)             | [Interviews](docs/workflows.md#grill-and-product-grill--settle-the-open-questions)       |
+| Review an existing PR                      | The installed harness's `REVIEW_WORKFLOW.md` and review skill | [Review entry points](docs/agent-guide.md#review-an-existing-pr)                         |
+| Run an automatic review chain              | Ask the agent to "run the automatic review chain on PR #N"    | [Automatic review chain](docs/workflows.md#the-automatic-review-chain)                   |
+| Improve the toolkit itself                 | Source ownership map and contribution guide                   | [Contributing](CONTRIBUTING.md) and [prompt rendering](docs/prompt-rendering.md)         |
 
 ## Set up for autonomous development
 
@@ -59,21 +62,19 @@ The agent briefs you first: what the pipeline does, what it needs (`gh`, and bot
 
 `backlog-refinement` decides which issues an agent can finish and routes the rest to the interview they need (`grill` or `product-grill`). `agent-loop` implements an explicit list of ready issues, one reviewed draft PR each. Neither merges, deploys, or closes anything.
 
-## Run the installer today
+## Install
 
-**Publication status, verified September 10, 2026:** the public npm registry does not currently serve the `activeloom` package. The CLI implementation is in [`cli/`](cli/). Use it from a source checkout; `npx activeloom` is the intended invocation after publication, not a working prerequisite today.
+The installer is published on npm as [`activeloom`](https://www.npmjs.com/package/activeloom). Run it with `npx`; no clone or global install is needed.
 
 ```bash
-git clone https://github.com/loomantix/activeloom.git
-cd activeloom
-node cli/bin/activeloom.js tiers
-node cli/bin/activeloom.js add --harness codex
-node cli/bin/activeloom.js add diagnosing-bugs --harness codex --dry-run
+npx activeloom tiers
+npx activeloom add --harness codex
+npx activeloom add diagnosing-bugs --harness codex --dry-run
 ```
 
-The last command previews a personal installation. Remove `--dry-run` to install it. Choose `claude`, `codex`, or `gemini` explicitly to avoid relying on machine detection. `add` also installs supporting harness files; it does more than copy one `SKILL.md`.
+The first command prints the adoption tiers, the second lists the skills available for a harness, and the last previews a personal installation. Remove `--dry-run` to install it. Choose `claude`, `codex`, or `gemini` explicitly to avoid relying on machine detection. `add` also installs supporting harness files; it does more than copy one `SKILL.md`.
 
-The CLI requires Node 18.17 or later; `init` also requires Python 3.9 or later with PyYAML. Fetching upstream content requires network access. Running a skill has additional requirements described in that skill, such as an authenticated agent client and GitHub CLI for PR operations.
+The CLI requires Node 18.17 or later; `init` also requires Python 3.9 or later with PyYAML. The npm package contains only the installer. It downloads skill content from this repository when it runs, so it needs network access. To run the CLI from a clone instead, use `node cli/bin/activeloom.js` in place of `npx activeloom`. Running a skill has additional requirements described in that skill, such as an authenticated agent client and GitHub CLI for PR operations.
 
 For repository setup, run the CLI against the **consumer repository**, not the ActiveLoom checkout. The [full walkthrough](docs/getting-started.md) provides commands and explains the four adoption tiers:
 
@@ -112,7 +113,7 @@ ActiveLoom's review protocols are built on the principle that no single model gr
 
 Local review starts from a draft PR and resolves Lean or Deep before reviewers run. Cleanup changes the code's shape; adversarial review examines the resulting code for defects. Independent engines share a ledger protocol, while retaining different review prompts. Material fixes require fresh evidence under that protocol.
 
-For explicitly requested automatic chains, the checked-in [review runner](.codex/references/review-chain-runner.md) controls pass order, validation, checkpoints, and termination. Its Codex control surface must be installed even when another engine starts the chain. A completed fixed plan, an exhausted budget, and convergence are different outcomes. The separate `agent-loop` implements issues; it is not the same controller.
+For explicitly requested automatic chains, the checked-in [review runner](.codex/references/review-chain-runner.md) controls pass order, validation, checkpoints, and termination. Its Codex control surface must be installed even when another engine starts the chain. A completed fixed plan, an exhausted budget, and convergence are different outcomes. The separate `agent-loop` implements issues; it is not the same controller. [Everyday workflows](docs/workflows.md#the-automatic-review-chain) covers setting up and starting a chain.
 
 The hosted `reviewit` skill remains an explicit option where repository policy permits it. Installation does not trigger hosted reviewers, and hosted review is not a prerequisite for the local chain.
 

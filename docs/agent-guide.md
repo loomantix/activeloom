@@ -34,7 +34,7 @@ If ActiveLoom is absent, use [Getting started](getting-started.md) to prepare th
 
 ## Select by task
 
-Names below identify skills; use the invocation supported by the current harness. Availability must be checked in that harness's directory or the CLI's `add --harness <id>` listing.
+Names below identify skills; use the invocation supported by the current harness. Availability must be checked in that harness's directory or the CLI's `npx activeloom add --harness <id>` listing. [Everyday workflows](workflows.md) shows how the most common ones — `issues`, `diagnosing-bugs`, `backlog-refinement`, `grill`, `product-grill`, `agent-loop`, `critique`, `deepcritique`, and the automatic review chain — are started and how they hand off to each other.
 
 | Need                                         | Entry point                                | Boundary                                                                                                                            |
 | -------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -45,6 +45,7 @@ Names below identify skills; use the invocation supported by the current harness
 | Build a feature with architectural discovery | `feature-dev`                              | Requires a concrete user objective and repository context                                                                           |
 | Fill project-specific onboarding fields      | `onboard`                                  | Draft evidence-based values for confirmation; do not invent domain rules                                                            |
 | Manage issue dependencies and readiness      | `issues`                                   | Uses GitHub issue state; follow the command's read/write scope                                                                      |
+| Implement one issue to a draft PR            | `issues start <n>`                         | Stops on a failed scope check, blocker, or existing PR; ends at a draft PR, with review in a fresh session                          |
 | Set up a repository for autonomous work      | [Setup guide](autonomous-development.md)   | Stage by stage with user confirmation; ends at a first allowlisted loop run, not at merge                                           |
 | Prepare issues for autonomous work           | `backlog-refinement`                       | Curates the queue; does not authorize implementing every open issue                                                                 |
 | Implement a bounded issue queue              | `agent-loop`                               | Requires an explicit issue allowlist, harness-specific worker/review setup, and its own launch contract                             |
@@ -66,7 +67,7 @@ The protocol uses a draft PR as shared review context. Reviewers record verified
 
 Lean and Deep describe review scope and budgets. Resolve them from the installed workflow's triggers; the size of a diff or the presence of a `deepcritique` skill is not sufficient to choose a tier. The workflow defines how explicit deep-review requests are handled.
 
-For automatic chains, follow the [runner reference](../.codex/references/review-chain-runner.md). The runner lives in the Codex control surface and can coordinate the supported engines. Selecting only Claude or Gemini at installation does not install that controller. A skill copied with `add` is also not proof that all peer reviewers and their supporting skills are installed.
+For automatic chains, follow the [runner reference](../.codex/references/review-chain-runner.md); [Everyday workflows](workflows.md#the-automatic-review-chain) summarizes setup and outcomes for the user. The runner lives in the Codex control surface and can coordinate the supported engines. Selecting only Claude or Gemini at installation does not install that controller. A skill copied with `add` is also not proof that all peer reviewers and their supporting skills are installed.
 
 Use checked-in launchers and the required validation commands. Launcher failure, missing evidence, and exhausted budgets must be reported as such. A fixed plan can complete without independent convergence. Success does not authorize merge, deployment, or a new run with a reset budget.
 
