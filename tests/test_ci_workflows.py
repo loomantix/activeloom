@@ -24,7 +24,7 @@ WORKFLOW_DIR = ROOT / ".github/workflows"
 # is posted by an off-repo scanner and has no job here; the other two are job
 # `name:` values in this repository, and renaming one silently disables a
 # required gate.
-REQUIRED_CHECK_JOB_NAMES = frozenset({"Static checks", "DCO sign-off check"})
+REQUIRED_CHECK_JOB_NAMES = frozenset({"Static checks", "DCO sign-off check", "Python types + tests"})
 
 
 def _workflow_paths() -> list[Path]:
@@ -220,7 +220,7 @@ def test_pytest_run_pins_coverage_and_names_the_branch_config() -> None:
     is what turned that mismatch from a silent merge into a hard `DataError`,
     and an unpinned floor lets a future release move the failure again.
     """
-    steps = _workflow("ci.yml")["jobs"]["python-types-and-tests"]["steps"]
+    steps = _workflow("ci.yml")["jobs"]["python-tests"]["steps"]
     install = next(s for s in steps if s.get("name") == "Install pinned tooling")
     assert "'coverage==7.16.0'" in install["run"]
     assert "'pytest-xdist==3.8.0'" in install["run"]
@@ -256,7 +256,7 @@ def test_python_suite_skip_filter_matches_only_inert_paths(path: str, skips: boo
     directory prefix that stops matching silently re-runs the suite on every
     docs PR, and one that widens silently skips tests a change needed.
     """
-    steps = _workflow("ci.yml")["jobs"]["python-types-and-tests"]["steps"]
+    steps = _workflow("ci.yml")["jobs"]["python-plan"]["steps"]
     script = next(s for s in steps if s.get("id") == "filter")["run"]
     match = re.search(r'ignore = re\.compile\(r"(.+)"\)', script)
     assert match, "skip filter pattern not found in the filter step"

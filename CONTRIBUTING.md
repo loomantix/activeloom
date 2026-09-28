@@ -48,6 +48,34 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 4. **Run CI locally** — see CI workflow for the exact commands.
 5. **Open a PR** against `main`. CI must pass.
 
+### Batch work on a draft PR
+
+Keep the PR in draft while iterating and push related commits together. A PR
+push triggers one workflow run for the updated head, not one per commit in the
+push. Drafts run the cheap preflight and review-ledger build; the heavy static
+and Python gates run automatically once the PR is ready. New PR updates cancel
+obsolete PR runs.
+
+To validate a completed batch while keeping the PR draft, run the CI workflow
+manually on its branch:
+
+```bash
+gh workflow run ci.yml --ref <branch>
+```
+
+Manual runs execute the full suite, including four Python shards, regardless of
+draft status or the docs-only filter. Check the run's commit SHA before treating
+it as evidence: later pushes need a new checkpoint. Ready PR updates and every
+merge to `main` still run automatic CI. Manual runs do not mark a PR ready or
+merge it.
+
+Python shards use `pytest-split` with `least_duration` and four xdist workers per
+runner. Without stored durations, cases are balanced by count across shards;
+three-day JUnit artifacts expose timings for tuning. The combined
+`Python types + tests` check requires all four shards, verifies complete and
+disjoint test selection, and enforces the existing per-file coverage floors
+after combining their coverage data.
+
 ## Find the source before editing
 
 Use the [agent entry guide](docs/agent-guide.md#know-which-source-to-edit) to identify ownership. Shared rendered skills live in `prompts/skills/` with vocabulary in `prompts/profiles/`; edit those sources and regenerate rather than hand-editing outputs. Harness-specific review prompts remain separate by design. The root harness trees and `scripts/sync-targets.yml` are the unified consumer distribution surface; imported engine trees are not additional installation sources.

@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+  workflow_dispatch:
   pull_request:
     branches: [main]
     # `edited` fires when a stacked PR is auto-retargeted to main as its parent
@@ -81,7 +82,7 @@ jobs:
     # when that one fails: a job skipped by a failed `needs` reports as skipped,
     # and a skipped required check does not block a merge.
     needs: review-ledger
-    if: ${{ !cancelled() && (github.event_name == 'push' || github.event.pull_request.draft == false) }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -466,11 +467,13 @@ jobs:
             echo "::error::Review-ledger package job result is '$RESULT'"
             exit 1
           }
-  python-types-and-tests:
-    name: Python types + tests
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+  python-plan:
+    name: Python test selection
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.filter.outputs.skip }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -483,13 +486,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" != "pull_request" ]; then
-            echo "Push event on main — running full suite."
+            echo "Main push or manual checkpoint — running full suite."
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           git fetch --no-tags origin "$BASE_REF"
-          export CHANGED_FILES="$(git diff --name-only "origin/$BASE_REF...HEAD")"
+          CHANGED_FILES="$(git diff --name-only "origin/$BASE_REF...HEAD")"
+          export CHANGED_FILES
           echo "Changed files in PR:"
           echo "$CHANGED_FILES"
 
@@ -511,8 +515,20 @@ jobs:
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write("skip=false\n")
           PY
+
+  python-tests:
+    name: Python tests (shard ${{ matrix.shard }}/4)
+    needs: python-plan
+    if: needs.python-plan.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7
-        if: steps.filter.outputs.skip != 'true'
         with:
           python-version: '3.12'
           # Cache the resolved wheel cohort against the pinned-tool list
@@ -525,11 +541,9 @@ jobs:
       # `format`, `accessibility-asset`, and `render-check`.
       # Same pin as `static-checks` above, for the reason recorded there.
       - uses: actions/setup-node@v7
-        if: steps.filter.outputs.skip != 'true'
         with:
           node-version-file: .nvmrc
       - name: Install pinned tooling
-        if: steps.filter.outputs.skip != 'true'
         run: |
           python3 -m pip install \
             'mypy==1.13.0' \
@@ -538,47 +552,100 @@ jobs:
             'pytest==8.3.4' \
             'pytest-cov==6.0.0' \
             'pytest-xdist==3.8.0' \
+            'pytest-split==0.11.0' \
             'coverage==7.16.0'
       - name: mypy --strict (config from pyproject.toml)
-        if: steps.filter.outputs.skip != 'true'
+        if: matrix.shard == 1
         run: python3 -m mypy
       - name: Configure git identity (parse_status tests use a fixture git repo)
-        if: steps.filter.outputs.skip != 'true'
         run: |
           git config --global user.email "ci@example.invalid"
           git config --global user.name "CI"
           git config --global init.defaultBranch main
-      # Four workers fully utilize the 4 vCPUs on the standard ubuntu-latest
-      # runner. The agent-loop timeout probe was tuned to 2s to eliminate
-      # local-load starvation flakiness under concurrency.
-      # `--cov-config` is load-bearing, not decoration. pytest-cov only
-      # exports `COV_CORE_CONFIG` (the config path every auto-started
-      # subprocess reads) when `--cov-config` names a file that exists;
-      # its default is `.coveragerc`, which this repo does not ship, so
-      # the variable degrades to `:` and subprocess coverage runs with no
-      # config at all — statement-only, because `branch = true` lives in
-      # pyproject.toml. The in-process workers still see the branch flag
-      # via coverage's own default-file search, so the two halves disagree
-      # and `coverage combine` fails with "Can't combine statement
-      # coverage data with branch data" as soon as any subprocess records
-      # a line. coverage <7.16.0 merged the mismatch silently.
+      # least_duration distributes individual cases, including the expensive
+      # agent-loop cases, across runners. Without a timing baseline it balances
+      # counts; JUnit artifacts provide timings for subsequent tuning.
+      - name: Record full and selected collections
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p shard-results
+          python3 -m pytest tests/ --collect-only -q > shard-results/full.txt
+          python3 -m pytest tests/ --collect-only -q --splits 4 --group "$SHARD" \
+            --splitting-algorithm least_duration > shard-results/selected.txt
+      # Explicit --cov-config also gives subprocesses branch coverage settings.
       - name: Run pytest with four workers + write coverage data
-        if: steps.filter.outputs.skip != 'true'
+        env:
+          SHARD: ${{ matrix.shard }}
         run: >-
           python3 -m pytest tests/ --cov --cov-config=pyproject.toml
           --cov-report=term-missing -ra --durations=30 -n 4 --dist worksteal
+          --splits 4 --group "$SHARD" --splitting-algorithm least_duration
+          --junitxml=shard-results/junit.xml
+      - name: Collect coverage
+        if: '!cancelled()'
+        run: cp .coverage shard-results/.coverage
+      - name: Upload shard results
+        if: '!cancelled()'
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-shard-${{ matrix.shard }}
+          path: shard-results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  python-types-and-tests:
+    name: Python types + tests
+    needs: [python-plan, python-tests]
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful selection and all shards
+        env:
+          PLAN_RESULT: ${{ needs.python-plan.result }}
+          SKIP: ${{ needs.python-plan.outputs.skip }}
+          TEST_RESULT: ${{ needs.python-tests.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          if [ "$SKIP" = true ]; then
+            test "$TEST_RESULT" = skipped
+          else
+            test "$SKIP" = false
+            test "$TEST_RESULT" = success
+          fi
+      - uses: actions/checkout@v7.0.1
+        if: needs.python-plan.outputs.skip != 'true'
+      - uses: actions/setup-python@v7
+        if: needs.python-plan.outputs.skip != 'true'
+        with:
+          python-version: '3.12'
+      - name: Install coverage
+        if: needs.python-plan.outputs.skip != 'true'
+        run: python3 -m pip install 'coverage==7.16.0'
+      - uses: actions/download-artifact@v8
+        if: needs.python-plan.outputs.skip != 'true'
+        with:
+          pattern: python-shard-*
+          path: python-results
+      - name: Verify complete partition and combine coverage
+        if: needs.python-plan.outputs.skip != 'true'
+        run: |
+          python3 scripts/verify-pytest-shards.py python-results
+          python3 -m coverage combine python-results/python-shard-*/.coverage
       # Per-file gate matches the security contract: a future refactor
       # that spikes one file's coverage can't paper over a regression
       # in the other. The `test -f` precondition is load-bearing —
       # `coverage report --include=<missing>` exits 0 with "No data to
       # report", silently passing the gate if a file gets renamed.
       - name: Coverage gate — sync-engine.py >=80%
-        if: steps.filter.outputs.skip != 'true'
+        if: needs.python-plan.outputs.skip != 'true'
         run: |
           test -f scripts/sync-engine.py
           python3 -m coverage report --include='scripts/sync-engine.py' --fail-under=80
       - name: Coverage gate — create-signed-commit.py >=80%
-        if: steps.filter.outputs.skip != 'true'
+        if: needs.python-plan.outputs.skip != 'true'
         run: |
           test -f scripts/create-signed-commit.py
           python3 -m coverage report --include='scripts/create-signed-commit.py' --fail-under=80
@@ -588,7 +655,7 @@ jobs:
       # exits 0 with "No data to report", so a rename would otherwise pass this
       # gate silently.
       - name: Coverage gate — render-prompts.py >=80%
-        if: steps.filter.outputs.skip != 'true'
+        if: needs.python-plan.outputs.skip != 'true'
         run: |
           test -f scripts/render-prompts.py
           python3 -m coverage report --include='scripts/render-prompts.py' --fail-under=80
@@ -596,7 +663,7 @@ jobs:
       # unrendered divergence is accounted for. Same floor, same `test -f`
       # precondition, for the same reason.
       - name: Coverage gate — lint-prompt-parity.py >=80%
-        if: steps.filter.outputs.skip != 'true'
+        if: needs.python-plan.outputs.skip != 'true'
         run: |
           test -f scripts/lint-prompt-parity.py
           python3 -m coverage report --include='scripts/lint-prompt-parity.py' --fail-under=80

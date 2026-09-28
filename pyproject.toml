@@ -25,6 +25,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
+relative_files = true
 source = ["scripts"]
 omit = [
     "tests/*",
