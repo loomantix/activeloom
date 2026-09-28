@@ -802,10 +802,7 @@ describe('completed result finalization recovery', () => {
     const blocked = readFileSync(resultPath(), 'utf8');
     const receipt = readFileSync(receiptPath(), 'utf8');
     expect(JSON.parse(receipt).candidate.classification).toBe('minor');
-    const recovery = {
-      ...params(),
-      expectedRecoverySha256: sha(receipt),
-    };
+    const recovery = { ...params(), expectedRecoverySha256: sha(receipt) };
 
     const result = recoverResult(recovery);
     expect(result).toMatchObject({

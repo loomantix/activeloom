@@ -126,7 +126,10 @@ export function readResultRecovery(
     params,
     JSON.stringify(value['candidate']),
   );
-  if (savedCandidate.status !== 'clean' && savedCandidate.status !== 'changed') {
+  if (
+    savedCandidate.status !== 'clean' &&
+    savedCandidate.status !== 'changed'
+  ) {
     fail('result recovery requires a completed candidate');
   }
   // The range classifier fails closed to behavioral when proof of a minor edit
