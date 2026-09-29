@@ -16,6 +16,7 @@ is what fails here.
 from __future__ import annotations
 
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -27,23 +28,48 @@ CONTROLLER_SOURCE = ROOT / "packages/review-ledger/protocol/local-review-handoff
 ROOT_RELATIVE = "skills/critique/scripts/local-review-handoff.py"
 HARNESS_ROOTS = (".claude", ".codex", ".agents")
 
+# Which target set owns which root. Presence alone is not the invariant: a set
+# delivering another set's root reinstates the coupling record 0015 removes.
+ROOT_BY_TARGET_SET = {"claude": ".claude", "codex": ".codex", "gemini": ".agents"}
+
 # Every prompt that resolves the controller by path. Each must name its own root.
+# `.codex/skills/{critique,deepcritique}/SKILL.md` name it by bare filename
+# rather than by path, so they cannot satisfy the positive half below.
 CONTROLLER_CALLERS = (
     ".claude/REVIEW_WORKFLOW.md",
     ".claude/skills/critique/SKILL.md",
     ".claude/skills/deepcritique/SKILL.md",
+    ".codex/REVIEW_WORKFLOW.md",
     ".agents/REVIEW_WORKFLOW.md",
     ".agents/skills/critique/SKILL.md",
     ".agents/skills/deepcritique/SKILL.md",
 )
 
 
+def _tracked_files() -> list[str]:
+    """Repository-relative paths Git tracks, as POSIX strings.
+
+    Not `rglob`: a linked worktree under `.claude/worktrees/` is an untracked
+    nested checkout carrying the source and every root's copy, so walking the
+    filesystem counts those too and fails for a reason unrelated to any
+    invariant here — green in CI, red in the checkout the work happens in.
+    """
+    listing = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return [entry for entry in listing.split("\0") if entry]
+
+
 def test_the_controller_has_exactly_one_source() -> None:
     assert CONTROLLER_SOURCE.is_file(), CONTROLLER_SOURCE
     found = sorted(
-        path.relative_to(ROOT).as_posix()
-        for path in ROOT.rglob("local-review-handoff.py")
-        if "imports/" not in path.relative_to(ROOT).as_posix()
+        path
+        for path in _tracked_files()
+        if Path(path).name == "local-review-handoff.py" and "imports/" not in path
     )
     expected = sorted(
         [CONTROLLER_SOURCE.relative_to(ROOT).as_posix()]
@@ -85,14 +111,23 @@ def test_every_target_set_delivers_the_controller_to_its_own_root(
         }
         for harness, block in document["harnesses"].items()
     }
-    owning = [
+    assert set(destinations) == set(ROOT_BY_TARGET_SET), (
+        "a target set was added or renamed; map it to its root so this test "
+        f"still covers every one: {sorted(destinations)}"
+    )
+    owning = sorted(
         harness
         for harness, paths in destinations.items()
         if f"{harness_root}/{ROOT_RELATIVE}" in paths
-    ]
-    assert owning, (
-        f"no harness target set delivers {harness_root}/{ROOT_RELATIVE}; a "
-        "repository selecting that harness alone could not run a review pass"
+    )
+    expected = sorted(
+        harness for harness, root in ROOT_BY_TARGET_SET.items() if root == harness_root
+    )
+    assert owning == expected, (
+        f"{harness_root}/{ROOT_RELATIVE} must be delivered by {expected} and by "
+        f"no other target set; found {owning}. Missing, and a repository "
+        "selecting that harness alone could not run a review pass; delivered "
+        "from elsewhere, and it is the cross-root coupling record 0015 removed"
     )
 
 

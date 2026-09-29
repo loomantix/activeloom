@@ -105,13 +105,15 @@ itself is not: it holds hand-authored prompts in two roots, and a destination
 directory is never swept the way a rendered skill directory is.
 
 A destination inside a **rendered** skill's directory is rejected. That
-directory is wholly owned by the skill render — `unowned_files` deletes anything
-in it the render did not write — so a vendored file there would be emitted and
-swept by the same run. An **unrendered** skill's directory has no such owner and
-is never swept, so one shared file may be vendored in beside its hand-maintained
-siblings; that is how the run controller reaches `skills/critique/scripts/`. The
-rest of that directory stays hand-maintained, and only the vendored path is
-renderer-owned.
+directory is wholly owned by the skill render, and `render_documents` runs after
+it, so a colliding destination would overwrite a rendered file with the source
+bytes and nothing would report it: the path is in the written set, so
+`unowned_files` skips it, the manifest dedupes the double entry, and `--check`
+compares staging against a repository already holding those bytes. An
+**unrendered** skill's directory has no render to collide with, so one shared
+file may be vendored in beside its hand-maintained siblings; that is how the run
+controller reaches `skills/critique/scripts/`. The rest of that directory stays
+hand-maintained, and only the vendored path is renderer-owned.
 
 ## The prompt stack manifest
 

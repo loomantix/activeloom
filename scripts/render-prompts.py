@@ -517,12 +517,14 @@ def _document_source(source_relative: str, root_relative: str) -> Path:
             f"{STACK_MANIFEST_NAME!r}: {root_relative!r}"
         )
     if root_path.parts[0] == "skills":
-        # A *rendered* skill's directory is wholly owned by the skill render —
-        # `unowned_files` deletes anything in it the render did not write, so a
-        # vendored file there would be produced and swept by the same run. An
-        # unrendered skill has no such owner and no sweep, so vendoring one
-        # shared file beside its hand-maintained copies is well defined. The
-        # guard therefore names the collision instead of the parent directory.
+        # A *rendered* skill's directory is wholly owned by the skill render, and
+        # `render_documents` runs after it, so a colliding vendored destination
+        # would overwrite a rendered file with the source bytes and nothing would
+        # say so: the path is in `written`, so `unowned_files` skips it,
+        # `_manifest_text` dedupes the double entry, and `--check` compares
+        # staging against a repo already holding those bytes. An unrendered skill
+        # has no render to collide with, so the guard rejects the rendered
+        # roster's directories rather than all of `skills/`.
         owned_skills = set(rendered_roster()) | set(RETIRED_SKILLS)
         if len(root_path.parts) < 2 or root_path.parts[1] in owned_skills:
             raise ValueError(
