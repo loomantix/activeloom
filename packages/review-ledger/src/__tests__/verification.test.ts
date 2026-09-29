@@ -1051,6 +1051,48 @@ describe('attestation identity is one per engine and round', () => {
     ).toBe(true);
   });
 
+  it('applies both writeResult convergence guards from Lean round 2', () => {
+    const write = (severity: string, classification: 'minor' | 'material') => {
+      runner.threadNodes = [fixedThread('fp1', severity, 2)];
+      return writeResult({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 2,
+        base: BASE,
+        before: BEFORE,
+        resultFile: resultPath(),
+        classification,
+      });
+    };
+    declareRun('lean', BASE);
+    expect(() => write('blocking', 'minor')).toThrow(
+      'convergence changed review results require material classification',
+    );
+    expect(() => write('minor', 'material')).toThrow(
+      'convergence review results cannot fix non-blocking findings',
+    );
+  });
+
+  it('leaves writeResult at Deep round 2 adversarial', () => {
+    runner.threadNodes = [fixedThread('fp1', 'minor', 2)];
+    declareRun('deep', BASE);
+    expect(
+      writeResult({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 2,
+        base: BASE,
+        before: BEFORE,
+        resultFile: resultPath(),
+        classification: 'minor',
+      }).status,
+    ).toBe('changed');
+  });
+
   it('rolls back an attestation when the run changes during finalization', () => {
     const [file, digest] = seal(changedResult());
     const original = runner.runGh.bind(runner);
