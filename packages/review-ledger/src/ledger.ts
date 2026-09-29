@@ -1,10 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import {
+  COMPLETE_V3_RE,
   DISPOSITION_V1,
   DISPOSITION_V1_RE,
   FINDING_V1,
   FINDING_V1_RE,
   LEGACY_THREAD_MARKER_RE,
+  PASS_V3_RE,
   PROTOCOL_THREAD_MARKER_RE,
   PR_V1_MARKERS,
   PROTOCOL_VERSION,
@@ -660,6 +662,36 @@ export function transitionHeads(params: {
   return heads;
 }
 
+function isConvergenceRound(params: {
+  repo: string;
+  pr: number;
+  base: string;
+  engine: SupportedEngine;
+  round: number;
+}): boolean {
+  const comments = getIssueComments(params.repo, params.pr);
+  const run = reviewRuns(comments).at(-1);
+  if (!run) return params.round >= 3;
+  if (run.base !== params.base || params.round > run.maxRounds) {
+    fail(
+      'saved review result does not belong to the current run base and round budget',
+    );
+  }
+  const firstConvergenceRound = run.maxRounds === 2 ? 2 : 3;
+  if (params.round < firstConvergenceRound) return false;
+
+  // A reviewer joining late gets one adversarial cold read, even in a
+  // convergence-numbered round. Count only authenticated prior attestations.
+  return comments.some((row) => {
+    const body = String(row['body'] ?? '');
+    const pass = PASS_V3_RE.exec(body);
+    const complete = COMPLETE_V3_RE.exec(body);
+    const match =
+      pass?.index === 0 ? pass : complete?.index === 0 ? complete : null;
+    return match?.groups?.['engine'] === params.engine;
+  });
+}
+
 /**
  * Verify that a review result is exactly backed by this round's ledger evidence.
  */
@@ -730,8 +762,12 @@ export function verifyResultEvidence(
   if (!evidence.some(([, hasFix]) => hasFix)) {
     fail('changed review results require a fixed ledger finding');
   }
+  const convergence = isConvergenceRound(args);
+  if (convergence && data.classification !== 'material') {
+    fail('convergence changed review results require material classification');
+  }
   if (
-    args.round >= 3 &&
+    convergence &&
     evidence.some(([, , , hasNonblockingFix]) => hasNonblockingFix)
   ) {
     fail('convergence review results cannot fix non-blocking findings');
@@ -783,12 +819,9 @@ export function writeResult(params: WriteResultParams): LedgerResult {
   if (!changed && params.classification !== undefined) {
     fail('clean review result cannot have a classification');
   }
-  // A consequence of the convergence rule below, not an independent judgement:
-  // a convergence round may only fix a `blocking` finding, and no `blocking`
-  // defect can be cleared by a comment or test edit, so any legitimate round-3+
-  // fix moves behavior. Re-derive this if the blocking-only rule ever relaxes.
-  if (changed && params.round >= 3 && params.classification !== 'material') {
-    fail('round 3+ changed review results require material classification');
+  const convergence = changed && isConvergenceRound(params);
+  if (convergence && params.classification !== 'material') {
+    fail('convergence changed review results require material classification');
   }
   if (changed && dispositions.length === 0) {
     fail('changed review results require ledger evidence');
@@ -798,12 +831,9 @@ export function writeResult(params: WriteResultParams): LedgerResult {
   }
   // This one reads severity on purpose. It enforces a disposition rule — what a
   // convergence round may change — not a classification, so decoupling
-  // classification from severity leaves it alone. A convergence round therefore
-  // still cannot fix a wrong comment; that is intended, because round 3+ exists
-  // to land the change.
+  // classification from severity leaves it alone.
   if (
-    changed &&
-    params.round >= 3 &&
+    convergence &&
     dispositions.some(([, , , hasNonblockingFix]) => hasNonblockingFix)
   ) {
     fail('convergence review results cannot fix non-blocking findings');

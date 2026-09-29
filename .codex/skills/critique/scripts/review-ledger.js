@@ -26,7 +26,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.5.1" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.5.2" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -16582,6 +16582,25 @@ function transitionHeads(params) {
   });
   return heads;
 }
+function isConvergenceRound(params) {
+  const comments = getIssueComments(params.repo, params.pr);
+  const run = reviewRuns(comments).at(-1);
+  if (!run) return params.round >= 3;
+  if (run.base !== params.base || params.round > run.maxRounds) {
+    fail(
+      "saved review result does not belong to the current run base and round budget"
+    );
+  }
+  const firstConvergenceRound = run.maxRounds === 2 ? 2 : 3;
+  if (params.round < firstConvergenceRound) return false;
+  return comments.some((row) => {
+    const body = String(row["body"] ?? "");
+    const pass = PASS_V3_RE.exec(body);
+    const complete = COMPLETE_V3_RE.exec(body);
+    const match = pass?.index === 0 ? pass : complete?.index === 0 ? complete : null;
+    return match?.groups?.["engine"] === params.engine;
+  });
+}
 function verifyResultEvidence(args, threads, options) {
   const data = options?.data ?? validateResultData(args, readResultBytes(args.resultFile));
   if (data.status !== "clean" && data.status !== "changed") {
@@ -16618,7 +16637,11 @@ function verifyResultEvidence(args, threads, options) {
   if (!evidence.some(([, hasFix]) => hasFix)) {
     fail("changed review results require a fixed ledger finding");
   }
-  if (args.round >= 3 && evidence.some(([, , , hasNonblockingFix]) => hasNonblockingFix)) {
+  const convergence = isConvergenceRound(args);
+  if (convergence && data.classification !== "material") {
+    fail("convergence changed review results require material classification");
+  }
+  if (convergence && evidence.some(([, , , hasNonblockingFix]) => hasNonblockingFix)) {
     fail("convergence review results cannot fix non-blocking findings");
   }
   return data;
@@ -16653,8 +16676,9 @@ function writeResult(params) {
   if (!changed && params.classification !== void 0) {
     fail("clean review result cannot have a classification");
   }
-  if (changed && params.round >= 3 && params.classification !== "material") {
-    fail("round 3+ changed review results require material classification");
+  const convergence = changed && isConvergenceRound(params);
+  if (convergence && params.classification !== "material") {
+    fail("convergence changed review results require material classification");
   }
   if (changed && dispositions.length === 0) {
     fail("changed review results require ledger evidence");
@@ -16662,7 +16686,7 @@ function writeResult(params) {
   if (changed && !dispositions.some(([, hasFix]) => hasFix)) {
     fail("changed review results require a fixed ledger finding");
   }
-  if (changed && params.round >= 3 && dispositions.some(([, , , hasNonblockingFix]) => hasNonblockingFix)) {
+  if (convergence && dispositions.some(([, , , hasNonblockingFix]) => hasNonblockingFix)) {
     fail("convergence review results cannot fix non-blocking findings");
   }
   const value = {

@@ -50,6 +50,34 @@ const OTHER = 'c'.repeat(40);
 const sha = (value: string): string =>
   createHash('sha256').update(value, 'utf8').digest('hex');
 
+function declareRun(tier: 'lean' | 'deep', base = BASE): void {
+  const content = 'Run the bounded review.\n';
+  const maxRounds = tier === 'deep' ? 4 : 2;
+  const id = sha(
+    JSON.stringify({
+      base,
+      content,
+      max_rounds: maxRounds,
+      start_head: HEAD,
+      supersedes: null,
+      tier,
+    }),
+  );
+  runner.issueComments.push({
+    id: runner.commentIdSeq++,
+    user: { login: ACTOR },
+    body: `<!-- local-review-run:v1 id=${id} tier=${tier} max-rounds=${maxRounds} base=${base} start-head=${HEAD} supersedes=none content-sha256=${id} -->\n${content}`,
+  });
+}
+
+function recordPriorPass(engine = 'claude'): void {
+  runner.issueComments.push({
+    id: runner.commentIdSeq++,
+    user: { login: ACTOR },
+    body: `<!-- local-review-pass:v3 engine=${engine} round=1 base=${BASE} head=${BEFORE} result-sha256=${'d'.repeat(64)} -->\nReviewed.\n`,
+  });
+}
+
 function findingMarker(o: {
   fingerprint: string;
   occurrence?: number;
@@ -528,6 +556,78 @@ describe('result evidence is matched against real ledger evidence', () => {
     ).toThrow('convergence review results cannot fix non-blocking findings');
   });
 
+  it('rejects a Lean round-2 non-blocking fix after the reviewer has read the PR', () => {
+    declareRun('lean');
+    recordPriorPass();
+    runner.threadNodes = [fixedThread('fp1', 'minor', 2)];
+    const file = writeResultJson(changedResult({ round: 2 }));
+    expect(() =>
+      verifyLedger({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 2,
+        base: BASE,
+        before: BEFORE,
+        resultFile: file,
+      }),
+    ).toThrow('convergence review results cannot fix non-blocking findings');
+  });
+
+  it('allows a Lean round-2 blocking fix', () => {
+    declareRun('lean');
+    recordPriorPass();
+    runner.threadNodes = [fixedThread('fp1', 'blocking', 2)];
+    const file = writeResultJson(changedResult({ round: 2 }));
+    expect(() =>
+      verifyLedger({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 2,
+        base: BASE,
+        before: BEFORE,
+        resultFile: file,
+      }),
+    ).not.toThrow();
+  });
+
+  it('allows a Deep round-2 non-blocking fix and a late reviewer cold read', () => {
+    runner.threadNodes = [fixedThread('fp1', 'minor', 2)];
+    const file = writeResultJson(changedResult({ round: 2 }));
+    declareRun('deep');
+    recordPriorPass();
+    expect(() =>
+      verifyLedger({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 2,
+        base: BASE,
+        before: BEFORE,
+        resultFile: file,
+      }),
+    ).not.toThrow();
+
+    runner.issueComments = [];
+    declareRun('lean');
+    expect(() =>
+      verifyLedger({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 2,
+        base: BASE,
+        before: BEFORE,
+        resultFile: file,
+      }),
+    ).not.toThrow();
+  });
+
   it('rejects a transition whose revision walk does not reach the head', () => {
     runner.revList = [OTHER];
     const file = writeResultJson(changedResult());
@@ -619,7 +719,16 @@ describe('writeResult rejects results its evidence does not support', () => {
     expect(() =>
       writeResult(params({ round: 3, classification: 'minor' })),
     ).toThrow(
-      'round 3+ changed review results require material classification',
+      'convergence changed review results require material classification',
+    );
+  });
+
+  it('rejects a Lean round-2 non-blocking write result', () => {
+    declareRun('lean');
+    recordPriorPass();
+    runner.threadNodes = [fixedThread('fp1', 'minor', 2)];
+    expect(() => writeResult(params({ round: 2 }))).toThrow(
+      'convergence review results cannot fix non-blocking findings',
     );
   });
 
@@ -972,29 +1081,6 @@ describe('attestation identity is one per engine and round', () => {
     );
     expect(runner.issueComments).toHaveLength(1);
   });
-
-  const declareRun = (
-    tier: 'lean' | 'deep',
-    base: string,
-    content = 'Run the bounded review.\n',
-  ): void => {
-    const maxRounds = tier === 'deep' ? 4 : 2;
-    const runId = sha(
-      JSON.stringify({
-        base,
-        content,
-        max_rounds: maxRounds,
-        start_head: HEAD,
-        supersedes: null,
-        tier,
-      }),
-    );
-    runner.issueComments.push({
-      id: runner.commentIdSeq++,
-      user: { login: ACTOR },
-      body: `<!-- local-review-run:v1 id=${runId} tier=${tier} max-rounds=${maxRounds} base=${base} start-head=${HEAD} supersedes=none content-sha256=${runId} -->\n${content}`,
-    });
-  };
 
   it('refuses a result whose base is not the current run base', () => {
     declareRun('deep', OTHER);
