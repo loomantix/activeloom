@@ -8,6 +8,7 @@ control snapshot is independent of worker commits; resumption checks its hashes.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import fcntl
 import hashlib
 import io
@@ -3123,6 +3124,32 @@ class Runner:
             self.launch(pending)
 
 
+def archive_terminal_checkpoint(directory: Path) -> bool:
+    checkpoint = directory / "state.json"
+    if checkpoint.is_symlink():
+        raise Blocked("checkpoint file cannot be a symlink")
+    if not checkpoint.exists():
+        return False
+    state = read(checkpoint)
+    if (
+        state.get("status") not in ("converged", "plan-complete", "exhausted")
+        or state.get("pending") is not None
+        or state.get("finishing")
+    ):
+        raise Blocked("cannot restart a nonterminal review checkpoint; use --resume")
+    run_id = state.get("run_id")
+    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{64}", run_id):
+        raise Blocked("terminal checkpoint has no valid run id")
+    archive = directory.with_name(directory.name + "-run-" + run_id)
+    if archive.exists() or archive.is_symlink():
+        raise Blocked(
+            "terminal checkpoint archive already exists; reconcile before restart"
+        )
+    directory.rename(archive)
+    directory.mkdir(mode=0o700)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     if arguments == ["--validate-contract"]:
@@ -3232,45 +3259,71 @@ def main(argv: list[str] | None = None) -> int:
     directory = (
         common / "activeloom-review" / f"{args.repo.replace('/', '-')}-{args.pr}"
     )
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if directory.is_symlink():
-        raise Blocked("checkpoint directory cannot be a symlink")
-    with (directory / "runner.lock").open("a") as lock:
+    directory.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    parent_lock_path = directory.parent / (directory.name + ".lock")
+    if parent_lock_path.is_symlink():
+        raise Blocked("review lock cannot be a symlink")
+    with parent_lock_path.open("a") as parent_lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(parent_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise Blocked("another runner owns this PR") from error
-        runner = Runner(args, directory)
-        try:
-            status = runner.run()
-        except (
-            Blocked,
-            OSError,
-            ValueError,
-            KeyError,
-            subprocess.TimeoutExpired,
-            KeyboardInterrupt,
-        ) as error:
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink():
+            raise Blocked("checkpoint directory cannot be a symlink")
+        with ExitStack() as locks:
+            lock = locks.enter_context((directory / "runner.lock").open("a"))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise Blocked("another runner owns this PR") from error
+            if args.restart and not args.resume:
+                try:
+                    archived = archive_terminal_checkpoint(directory)
+                except (Blocked, OSError, ValueError, KeyError) as error:
+                    print(
+                        f"review-chain blocked: {error}; checkpoint: {directory}",
+                        file=sys.stderr,
+                    )
+                    return 2
+                if archived:
+                    lock = locks.enter_context((directory / "runner.lock").open("a"))
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            runner = Runner(args, directory)
+            return run_with_checkpoint(runner, directory)
+
+
+def run_with_checkpoint(runner: Runner, directory: Path) -> int:
+    try:
+        status = runner.run()
+    except (
+        Blocked,
+        OSError,
+        ValueError,
+        KeyError,
+        subprocess.TimeoutExpired,
+        KeyboardInterrupt,
+    ) as error:
+        print(
+            f"review-chain blocked: {error}; checkpoint: {directory}",
+            file=sys.stderr,
+        )
+        if runner.state:
             print(
-                f"review-chain blocked: {error}; checkpoint: {directory}",
+                f"After reconciliation, in {runner.state['config']['worktree']}:\n{runner.recovery_command()}",
                 file=sys.stderr,
             )
-            if runner.state:
-                print(
-                    f"After reconciliation, in {runner.state['config']['worktree']}:\n{runner.recovery_command()}",
-                    file=sys.stderr,
-                )
-            return 2
-        print(
-            json.dumps(
-                {
-                    "status": status,
-                    "passes": runner.state["completed"],
-                    "head": runner.state["head"],
-                }
-            )
+        return 2
+    print(
+        json.dumps(
+            {
+                "status": status,
+                "passes": runner.state["completed"],
+                "head": runner.state["head"],
+            }
         )
-        return 0 if status == "converged" else 3
+    )
+    return 0 if status == "converged" else 3
 
 
 if __name__ == "__main__":
