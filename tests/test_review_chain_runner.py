@@ -1442,6 +1442,88 @@ def test_restart_authorization_reaches_start_run(harness: Any) -> None:
     assert runner.state["config"]["restart"] is True
 
 
+@pytest.mark.parametrize("terminal", ["converged", "plan-complete", "exhausted"])
+def test_restart_archives_completed_checkpoint_and_starts_fresh_run(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, terminal: str
+) -> None:
+    module = harness.module
+    common = tmp_path / "git"
+    directory = common / "activeloom-review" / "example-repo-1"
+    original_command = module.command
+
+    def command(argv: list[str]) -> str:
+        if argv == ["git", "rev-parse", "--git-common-dir"]:
+            return str(common)
+        return str(original_command(argv))
+
+    monkeypatch.setattr(module, "command", command)
+    monkeypatch.setattr(module, "Runner", harness.runner)
+    arguments = [
+        "--repo",
+        "example/repo",
+        "--pr",
+        "1",
+        "--base",
+        BASE,
+        "--tier",
+        "deep",
+        "--trigger",
+        "3",
+        "--author",
+        "codex",
+        "--chain",
+        "codex,claude,codex,claude",
+        "--check",
+        harness.args.check[0],
+        "--authorization-file",
+        harness.args.authorization_file,
+    ]
+    assert module.main(arguments) == 0
+    first = module.read(directory / "state.json")
+    first["status"] = terminal
+    module.save(directory / "state.json", first)
+    harness.events.clear()  # The fake ledger does not scope attestations by run ID.
+
+    assert module.main(arguments) == 2
+    assert module.read(directory / "state.json") == first
+    assert module.main([*arguments, "--restart"]) == 0
+    archive = directory.with_name(directory.name + "-run-" + first["run_id"])
+    assert module.read(archive / "state.json") == first
+    assert module.read(directory / "state.json")["config"]["restart"] is True
+    assert harness.controls.start_restart is True
+
+
+@pytest.mark.parametrize("status", ["prepared", "running", "blocked"])
+def test_restart_preserves_nonterminal_checkpoint(
+    harness: Any, tmp_path: Path, status: str
+) -> None:
+    directory = harness.directory
+    state = {"status": status, "run_id": "d" * 64, "pending": None}
+    harness.module.save(directory / "state.json", state)
+
+    with pytest.raises(harness.module.Blocked, match="nonterminal"):
+        harness.module.archive_terminal_checkpoint(directory)
+
+    assert harness.module.read(directory / "state.json") == state
+    assert not directory.with_name(directory.name + "-run-" + state["run_id"]).exists()
+
+
+def test_restart_preserves_checkpoint_when_archive_already_exists(
+    harness: Any, tmp_path: Path
+) -> None:
+    directory = harness.directory
+    state = {"status": "exhausted", "run_id": "d" * 64, "pending": None}
+    harness.module.save(directory / "state.json", state)
+    archive = tmp_path / (directory.name + "-run-" + state["run_id"])
+    archive.mkdir()
+
+    with pytest.raises(harness.module.Blocked, match="archive already exists"):
+        harness.module.archive_terminal_checkpoint(directory)
+
+    assert harness.module.read(directory / "state.json") == state
+    assert archive.is_dir()
+
+
 def test_completed_result_recovery_keeps_the_run_and_owed_pass(harness: Any) -> None:
     harness.controls.finalization_failure = True
     harness.controls.fail_recovery = True

@@ -117,8 +117,11 @@ These are alternative plans, not consecutive commands for the same active run.
   its scope checkpoint fires (see REVIEW_WORKFLOW.md). It becomes part of the
   saved plan, so pass the same value with `--resume`.
 - `--restart` explicitly authorizes a fresh run after the prior authenticated
-  run has ended. It is recorded in the checkpoint and forwarded to `start-run`;
-  it does not revive or erase the earlier run.
+  run has ended. The runner archives the terminal checkpoint beside its old
+  location under a name containing the full run ID, then creates a fresh
+  checkpoint and forwards `--restart` to `start-run`. It refuses to archive an
+  active or incomplete checkpoint, or overwrite an existing archive. The old
+  evidence remains available for inspection.
 
 ## Reviewer settings
 
