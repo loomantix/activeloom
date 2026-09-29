@@ -26,7 +26,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.5.1" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.5.2" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -16149,7 +16149,13 @@ function reviewRuns(rows) {
       fail("local-review run supersession chain is incomplete or forked");
     }
     seen.set(id, { body, commentId });
-    runs.push({ id, commentId, base, maxRounds });
+    runs.push({
+      id,
+      commentId,
+      base,
+      tier,
+      maxRounds
+    });
   }
   return runs;
 }
@@ -16582,6 +16588,9 @@ function transitionHeads(params) {
   });
   return heads;
 }
+function convergenceStartRound(repo, pr) {
+  return reviewRuns(getIssueComments(repo, pr)).at(-1)?.tier === "lean" ? 2 : 3;
+}
 function verifyResultEvidence(args, threads, options) {
   const data = options?.data ?? validateResultData(args, readResultBytes(args.resultFile));
   if (data.status !== "clean" && data.status !== "changed") {
@@ -16618,7 +16627,7 @@ function verifyResultEvidence(args, threads, options) {
   if (!evidence.some(([, hasFix]) => hasFix)) {
     fail("changed review results require a fixed ledger finding");
   }
-  if (args.round >= 3 && evidence.some(([, , , hasNonblockingFix]) => hasNonblockingFix)) {
+  if (args.round >= convergenceStartRound(args.repo, args.pr) && evidence.some(([, , , hasNonblockingFix]) => hasNonblockingFix)) {
     fail("convergence review results cannot fix non-blocking findings");
   }
   return data;
@@ -16653,8 +16662,9 @@ function writeResult(params) {
   if (!changed && params.classification !== void 0) {
     fail("clean review result cannot have a classification");
   }
-  if (changed && params.round >= 3 && params.classification !== "material") {
-    fail("round 3+ changed review results require material classification");
+  const convergence = params.round >= convergenceStartRound(params.repo, params.pr);
+  if (changed && convergence && params.classification !== "material") {
+    fail("convergence changed review results require material classification");
   }
   if (changed && dispositions.length === 0) {
     fail("changed review results require ledger evidence");
@@ -16662,7 +16672,7 @@ function writeResult(params) {
   if (changed && !dispositions.some(([, hasFix]) => hasFix)) {
     fail("changed review results require a fixed ledger finding");
   }
-  if (changed && params.round >= 3 && dispositions.some(([, , , hasNonblockingFix]) => hasNonblockingFix)) {
+  if (changed && convergence && dispositions.some(([, , , hasNonblockingFix]) => hasNonblockingFix)) {
     fail("convergence review results cannot fix non-blocking findings");
   }
   const value = {

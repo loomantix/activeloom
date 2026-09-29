@@ -668,6 +668,48 @@ def test_round_equal_to_cap_authorizes(
         handoff._authorize_pass(args)
 
 
+@pytest.mark.parametrize(
+    ("tier", "cap", "stances"),
+    [
+        ("lean", 2, ["adversarial", "convergence"]),
+        ("deep", 4, ["adversarial", "adversarial", "convergence", "convergence"]),
+    ],
+)
+def test_authorization_reports_the_round_stance(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tier: str,
+    cap: int,
+    stances: list[str],
+) -> None:
+    run = {
+        "comment_id": 20,
+        "run_id": "d" * 64,
+        "base": "b" * 40,
+        "tier": tier,
+        "max_rounds": cap,
+    }
+    monkeypatch.setattr(handoff, "_run_records", lambda rows: [run])
+    for round_number, stance in enumerate(stances, start=1):
+        rows = [
+            {"id": 30 + index, "body": marker("codex", index + 1)}
+            for index in range(round_number - 1)
+        ]
+        monkeypatch.setattr(handoff, "_issue_comments", lambda *args: rows)
+        handoff._authorize_pass(
+            SimpleNamespace(
+                repo="example/repo",
+                pr=7,
+                base="b" * 40,
+                head="a" * 40,
+                engine="claude",
+                round=round_number,
+            )
+        )
+        assert json.loads(capsys.readouterr().out)["stance"] == stance
+
+
 def run_comment(
     handoff: ModuleType,
     *,

@@ -661,6 +661,15 @@ export function transitionHeads(params: {
 }
 
 /**
+ * First convergence round for the PR's current run. Lean spends its second and
+ * final round in convergence mode; Deep and legacy PRs without a run marker
+ * start convergence at round 3.
+ */
+function convergenceStartRound(repo: string, pr: number): number {
+  return reviewRuns(getIssueComments(repo, pr)).at(-1)?.tier === 'lean' ? 2 : 3;
+}
+
+/**
  * Verify that a review result is exactly backed by this round's ledger evidence.
  */
 export function verifyResultEvidence(
@@ -731,7 +740,7 @@ export function verifyResultEvidence(
     fail('changed review results require a fixed ledger finding');
   }
   if (
-    args.round >= 3 &&
+    args.round >= convergenceStartRound(args.repo, args.pr) &&
     evidence.some(([, , , hasNonblockingFix]) => hasNonblockingFix)
   ) {
     fail('convergence review results cannot fix non-blocking findings');
@@ -783,12 +792,15 @@ export function writeResult(params: WriteResultParams): LedgerResult {
   if (!changed && params.classification !== undefined) {
     fail('clean review result cannot have a classification');
   }
+  const convergence =
+    params.round >= convergenceStartRound(params.repo, params.pr);
   // A consequence of the convergence rule below, not an independent judgement:
   // a convergence round may only fix a `blocking` finding, and no `blocking`
-  // defect can be cleared by a comment or test edit, so any legitimate round-3+
-  // fix moves behavior. Re-derive this if the blocking-only rule ever relaxes.
-  if (changed && params.round >= 3 && params.classification !== 'material') {
-    fail('round 3+ changed review results require material classification');
+  // defect can be cleared by a comment or test edit, so any legitimate
+  // convergence fix moves behavior. Re-derive this if the blocking-only rule
+  // ever relaxes.
+  if (changed && convergence && params.classification !== 'material') {
+    fail('convergence changed review results require material classification');
   }
   if (changed && dispositions.length === 0) {
     fail('changed review results require ledger evidence');
@@ -803,7 +815,7 @@ export function writeResult(params: WriteResultParams): LedgerResult {
   // to land the change.
   if (
     changed &&
-    params.round >= 3 &&
+    convergence &&
     dispositions.some(([, , , hasNonblockingFix]) => hasNonblockingFix)
   ) {
     fail('convergence review results cannot fix non-blocking findings');

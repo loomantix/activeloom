@@ -619,7 +619,7 @@ describe('writeResult rejects results its evidence does not support', () => {
     expect(() =>
       writeResult(params({ round: 3, classification: 'minor' })),
     ).toThrow(
-      'round 3+ changed review results require material classification',
+      'convergence changed review results require material classification',
     );
   });
 
@@ -1013,6 +1013,42 @@ describe('attestation identity is one per engine and round', () => {
       'saved review result does not belong to the current run base and round budget',
     );
     expect(runner.issueComments).toHaveLength(1);
+  });
+
+  it('treats Lean round 2 as a convergence round', () => {
+    declareRun('lean', BASE);
+    runner.threadNodes = [fixedThread('fp1', 'minor', 2)];
+    const file = writeResultJson(changedResult({ round: 2 }));
+    expect(() =>
+      verifyLedger({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 2,
+        base: BASE,
+        before: BEFORE,
+        resultFile: file,
+      }),
+    ).toThrow('convergence review results cannot fix non-blocking findings');
+  });
+
+  it('keeps Deep round 2 adversarial', () => {
+    declareRun('deep', BASE);
+    runner.threadNodes = [fixedThread('fp1', 'minor', 2)];
+    const file = writeResultJson(changedResult({ round: 2 }));
+    expect(
+      verifyLedger({
+        repo: REPO,
+        pr: PR,
+        head: HEAD,
+        engine: 'claude',
+        round: 2,
+        base: BASE,
+        before: BEFORE,
+        resultFile: file,
+      }).verified,
+    ).toBe(true);
   });
 
   it('rolls back an attestation when the run changes during finalization', () => {
