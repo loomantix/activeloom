@@ -12,6 +12,7 @@
 .agents/skills/backlog-refinement/templates/learnings.local.md
 .agents/skills/backlog-refinement/templates/refinement.local.md
 .agents/skills/critique/SKILL.md
+.agents/skills/critique/scripts/local-review-handoff.py
 .agents/skills/deepcritique/SKILL.md
 .agents/skills/diagnosing-bugs/SKILL.md
 .agents/skills/feature-dev/SKILL.md
@@ -50,6 +51,7 @@
 .claude/skills/backlog-refinement/templates/refinement.local.md
 .claude/skills/codex-review/SKILL.md
 .claude/skills/critique/SKILL.md
+.claude/skills/critique/scripts/local-review-handoff.py
 .claude/skills/deepcritique/SKILL.md
 .claude/skills/diagnosing-bugs/SKILL.md
 .claude/skills/feature-dev/SKILL.md
@@ -86,6 +88,7 @@
 .codex/skills/backlog-refinement/templates/learnings.local.md
 .codex/skills/backlog-refinement/templates/refinement.local.md
 .codex/skills/critique/SKILL.md
+.codex/skills/critique/scripts/local-review-handoff.py
 .codex/skills/deepcritique/SKILL.md
 .codex/skills/diagnosing-bugs/SKILL.md
 .codex/skills/feature-dev/SKILL.md
