@@ -65,7 +65,7 @@ authenticated `local-review-run:v1` (1 when it has none), using only pass/comple
 comments after that run marker. Resolve Agy as `gemini`, including historical
 `antigravity` aliases in that engine's evidence; use `codex` only for a Codex pass.
 Honor the run's cap and confirm the round with the shared run controller at
-`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
+`.agents/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
 it is absent from the checkout, report that and stop rather than running
 unauthorized. An ended run, including an aborted one, requires fresh restart
 authorization: this controller has no budget-preserving resume command.

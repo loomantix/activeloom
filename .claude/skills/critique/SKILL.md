@@ -68,8 +68,8 @@ or the round supplied by `/deepcritique`. Otherwise select one past Claude's
 highest completed round within the latest authenticated `local-review-run:v1`
 (1 when it has none), using only its pass/complete comments after that run marker.
 Honor the run's cap and confirm the round with the run controller at
-`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`); it
-is shared by every surface despite its path. If it is absent from the checkout,
+`.claude/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`).
+If it is absent from the checkout,
 report that and stop rather than running unauthorized. Follow the workflow's
 [run initialization](../../REVIEW_WORKFLOW.md#start-an-interactive-run-before-authorizing-a-pass)
 when no run exists. An ended run, including an aborted one, requires fresh

@@ -67,7 +67,7 @@ The protocol uses a draft PR as shared review context. Reviewers record verified
 
 Lean and Deep describe review scope and budgets. Resolve them from the installed workflow's triggers; the size of a diff or the presence of a `deepcritique` skill is not sufficient to choose a tier. The workflow defines how explicit deep-review requests are handled.
 
-For automatic chains, follow the [runner reference](../.codex/references/review-chain-runner.md); [Everyday workflows](workflows.md#the-automatic-review-chain) summarizes setup and outcomes for the user. The runner lives in the Codex control surface and can coordinate the supported engines. Selecting only Claude or Gemini at installation does not install that controller. A skill copied with `add` is also not proof that all peer reviewers and their supporting skills are installed.
+For automatic chains, follow the [runner reference](../.codex/references/review-chain-runner.md); [Everyday workflows](workflows.md#the-automatic-review-chain) summarizes setup and outcomes for the user. The runner lives in the Codex control surface and can coordinate the supported engines. Selecting only Claude or Gemini at installation does not install the runner. It is not the run controller that numbers each pass — that ships with every harness root, so a single-harness repository can still run `critique` and `deepcritique`. A skill copied with `add` is also not proof that all peer reviewers and their supporting skills are installed.
 
 Use checked-in launchers and the required validation commands. Launcher failure, missing evidence, and exhausted budgets must be reported as such. A fixed plan can complete without independent convergence. Success does not authorize merge, deployment, or a new run with a reset budget.
 

@@ -80,7 +80,7 @@ engine's highest completed round within the latest authenticated
 that run marker. Resolve Agy as `gemini`, including historical `antigravity`
 aliases in its evidence; use `codex` only for a Codex pass. Honor the run's cap and
 confirm the round with the shared run controller at
-`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
+`.agents/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`). If
 it is absent from the checkout, report that and stop rather than running
 unauthorized.
 An ended run, including an aborted one, requires fresh restart authorization:

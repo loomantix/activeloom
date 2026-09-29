@@ -82,6 +82,13 @@ VENDORED_DOCUMENTS: dict[str, str] = {
     "packages/review-ledger/protocol/local-review-ledger.md": (
         "references/local-review-ledger.md"
     ),
+    # The run controller is protocol, not a launcher: it owns the
+    # `local-review-run:v1` markers every engine's passes are numbered inside.
+    # One implementation, vendored into each root so a harness resolves it under
+    # its own root and a repository that selected one harness still gets it.
+    "packages/review-ledger/protocol/local-review-handoff.py": (
+        "skills/critique/scripts/local-review-handoff.py"
+    ),
 }
 
 RETIRED_DOCUMENTS: frozenset[str] = frozenset()
@@ -510,10 +517,18 @@ def _document_source(source_relative: str, root_relative: str) -> Path:
             f"{STACK_MANIFEST_NAME!r}: {root_relative!r}"
         )
     if root_path.parts[0] == "skills":
-        raise ValueError(
-            f"vendored document destination must not sit inside a rendered "
-            f"skill directory: {root_relative!r}"
-        )
+        # A *rendered* skill's directory is wholly owned by the skill render —
+        # `unowned_files` deletes anything in it the render did not write, so a
+        # vendored file there would be produced and swept by the same run. An
+        # unrendered skill has no such owner and no sweep, so vendoring one
+        # shared file beside its hand-maintained copies is well defined. The
+        # guard therefore names the collision instead of the parent directory.
+        owned_skills = set(rendered_roster()) | set(RETIRED_SKILLS)
+        if len(root_path.parts) < 2 or root_path.parts[1] in owned_skills:
+            raise ValueError(
+                f"vendored document destination must not sit inside a rendered "
+                f"skill directory: {root_relative!r}"
+            )
     source = REPO_ROOT / source_path
     current = REPO_ROOT
     for part in source_path.parts:

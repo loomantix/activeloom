@@ -181,6 +181,16 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # The run controller — it owns the `local-review-run:v1` markers every
+      # pass is numbered inside, so `critique` and `deepcritique` cannot run a
+      # pass without it. One implementation, rendered into each root from
+      # `packages/review-ledger/protocol/`; it ships with every harness so a
+      # repository that selected only this one can still review.
+      - source: .claude/skills/critique/scripts/local-review-handoff.py
+        destination: .claude/skills/critique/scripts/local-review-handoff.py
+        substitutions: []
+        mode: '0755'
+
       - source: .claude/skills/deepcritique/SKILL.md
         destination: .claude/skills/deepcritique/SKILL.md
         substitutions: []
@@ -1129,6 +1139,16 @@ harnesses:
         destination: .agents/skills/critique/scripts/review-ledger.integrity
         substitutions: []
         mode: '0644'
+
+      # The run controller — it owns the `local-review-run:v1` markers every
+      # pass is numbered inside, so `critique` and `deepcritique` cannot run a
+      # pass without it. One implementation, rendered into each root from
+      # `packages/review-ledger/protocol/`; it ships with every harness so a
+      # repository that selected only this one can still review.
+      - source: .agents/skills/critique/scripts/local-review-handoff.py
+        destination: .agents/skills/critique/scripts/local-review-handoff.py
+        substitutions: []
+        mode: '0755'
 
       - source: .agents/skills/deepcritique/SKILL.md
         destination: .agents/skills/deepcritique/SKILL.md

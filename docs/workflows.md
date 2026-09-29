@@ -142,7 +142,7 @@ Run these in a fresh session, not the one that wrote the change. Both start from
 
 You don't have to pick the tier by gut feel. The review workflow chooses Deep when a change touches security or data boundaries, can't be reverted, fans out to other repositories, or changes subtle runtime behavior. `deepcritique` hands a change that resolves to Lean back to `critique`. `critique deep` or asking for a deep review forces Deep.
 
-Both need a review profile (`review-setup`), a clean committed feature branch, and the Codex harness installed in the repository, since the run controller lives there. Repository-specific review lessons go in `.review/addendum.local.md`, which both read. A change that only needs a human glance, such as docs-only, ends immediately with no review.
+Both need a review profile (`review-setup`) and a clean committed feature branch. Whichever harness you installed is enough: the run controller that numbers each pass ships with every harness root. Repository-specific review lessons go in `.review/addendum.local.md`, which both read. A change that only needs a human glance, such as docs-only, ends immediately with no review.
 
 Each run ends `clean`, `changed`, or `blocked`, and reports the tier, rounds, and fix commits. Neither skill merges, force-pushes, or marks a PR ready while threads are still open.
 

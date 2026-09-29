@@ -341,15 +341,15 @@ rather than a licence for another round. Say which, and stop.
 
 Rounds are numbered inside an authenticated `local-review-run:v1` marker, not
 across the PR's whole history. The script that owns those markers is the run
-controller, and this repository ships exactly one, shared by every engine
-surface:
+controller, and this repository has exactly one implementation of it, rendered
+into every harness root. Invoke this root's copy:
 
 ```
-.codex/skills/critique/scripts/local-review-handoff.py
+.agents/skills/critique/scripts/local-review-handoff.py
 ```
 
-It lives under `.codex/` for historical reasons and is not Codex-only; invoke it
-by that path from any surface. Its commands are `start-run`, `next-pass`,
+Every root's copy is the same bytes, so an engine reviewing from another root
+runs the same controller against the same markers. Its commands are `start-run`, `next-pass`,
 `authorize-pass`, `finish-run`, `post-handoff`, and `show-handoff`. It implements neither `status`
 nor `resume-run`. For legacy unsequenced runs, select one past this engine's highest completed round inside
 the active run (1 when it has none), then confirm it with `authorize-pass`.
