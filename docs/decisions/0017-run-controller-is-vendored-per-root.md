@@ -44,10 +44,12 @@ protocol drift.
 - Each harness target set ships its own copy, so harness selection no longer
   decides whether a repository can review at all.
 - `VENDORED_DOCUMENTS` may now target a directory belonging to an _unrendered_
-  skill. A rendered skill's directory stays off limits: `unowned_files` deletes
-  anything there the skill render did not write, so a vendored file would be
-  produced and swept by the same run. The guard names that collision instead of
-  the parent directory.
+  skill. A rendered skill's directory stays off limits: `render_documents` runs
+  after the skill render, so a colliding destination would overwrite a rendered
+  file with the source bytes and nothing would report it — the written set hides
+  it from the sweep, the manifest dedupes the double entry, and `--check` sees
+  matching bytes. An unrendered skill has no render to collide with, so the guard
+  rejects the rendered roster's directories rather than all of `skills/`.
 
 This supersedes the parenthetical in record 0012 that gives the controller's
 location as a `.codex/` path. The script, its commands, its marker formats, and
