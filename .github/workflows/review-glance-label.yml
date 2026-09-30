@@ -37,6 +37,7 @@ jobs:
     steps:
       # The base ref, pinned to the exact base commit of this PR. The PR's own
       # commits are never checked out: this job holds a write token.
+      # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
