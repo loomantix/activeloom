@@ -82,6 +82,13 @@ VENDORED_DOCUMENTS: dict[str, str] = {
     "packages/review-ledger/protocol/local-review-ledger.md": (
         "references/local-review-ledger.md"
     ),
+    # The run controller is protocol, not a launcher: it owns the
+    # `local-review-run:v1` markers every engine's passes are numbered inside.
+    # One implementation, vendored into each root so a harness resolves it under
+    # its own root and a repository that selected one harness still gets it.
+    "packages/review-ledger/protocol/local-review-handoff.py": (
+        "skills/critique/scripts/local-review-handoff.py"
+    ),
 }
 
 RETIRED_DOCUMENTS: frozenset[str] = frozenset()
@@ -510,10 +517,20 @@ def _document_source(source_relative: str, root_relative: str) -> Path:
             f"{STACK_MANIFEST_NAME!r}: {root_relative!r}"
         )
     if root_path.parts[0] == "skills":
-        raise ValueError(
-            f"vendored document destination must not sit inside a rendered "
-            f"skill directory: {root_relative!r}"
-        )
+        # A *rendered* skill's directory is wholly owned by the skill render, and
+        # `render_documents` runs after it, so a colliding vendored destination
+        # would overwrite a rendered file with the source bytes and nothing would
+        # say so: the path is in `written`, so `unowned_files` skips it,
+        # `_manifest_text` dedupes the double entry, and `--check` compares
+        # staging against a repo already holding those bytes. An unrendered skill
+        # has no render to collide with, so the guard rejects the rendered
+        # roster's directories rather than all of `skills/`.
+        owned_skills = set(rendered_roster()) | set(RETIRED_SKILLS)
+        if len(root_path.parts) < 2 or root_path.parts[1] in owned_skills:
+            raise ValueError(
+                f"vendored document destination must not sit inside a rendered "
+                f"skill directory: {root_relative!r}"
+            )
     source = REPO_ROOT / source_path
     current = REPO_ROOT
     for part in source_path.parts:

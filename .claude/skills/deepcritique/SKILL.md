@@ -116,7 +116,7 @@ Deep-versus-Lean comparison as if the two were measured on the same boundary.
    Otherwise select one past Claude's highest completed round within the latest
    authenticated `local-review-run:v1` (1 when it has none), using only its
    pass/complete comments after that run marker. Honor the run's cap and use
-   `.codex/skills/critique/scripts/local-review-handoff.py authorize-pass`, the
+   `.claude/skills/critique/scripts/local-review-handoff.py authorize-pass`, the
    shared run controller. If it is absent, report that and stop.
    Follow the workflow's run initialization when no run exists. An ended run,
    including an aborted one, needs fresh restart authorization; this controller

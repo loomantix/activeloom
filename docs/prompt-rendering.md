@@ -64,17 +64,25 @@ an unrelated hand-authored skill.
 ## Vendored documents
 
 `VENDORED_DOCUMENTS` in `scripts/render-prompts.py` maps a repo-relative source
-to the path it is copied to under **every** harness root. One entry today:
+to the path it is copied to under **every** harness root:
 
-| Source                                                   | Written to                                 |
-| -------------------------------------------------------- | ------------------------------------------ |
-| `packages/review-ledger/protocol/local-review-ledger.md` | `<root>/references/local-review-ledger.md` |
+| Source                                                    | Written to                                               |
+| --------------------------------------------------------- | -------------------------------------------------------- |
+| `packages/review-ledger/protocol/local-review-ledger.md`  | `<root>/references/local-review-ledger.md`               |
+| `packages/review-ledger/protocol/local-review-handoff.py` | `<root>/skills/critique/scripts/local-review-handoff.py` |
 
 The ledger protocol is the engine-neutral contract that
 [`packages/review-ledger`](../packages/review-ledger/README.md) implements, so
 the package is the only place it can be authored without the document and the
 code enforcing it drifting apart. A hand-edit to a copy fails `--check` like
 any other generated file, and a write-mode render restores it.
+
+The run controller is there for the same reason and one more: every engine's
+passes are numbered inside the `local-review-run:v1` markers it owns, so a
+harness that did not receive it cannot run a review pass at all. Vendoring it
+per root is what stops harness selection from deciding that — see
+[`docs/decisions/0015`](decisions/0015-run-controller-is-vendored-per-root.md).
+Mode is carried from the source, so the copies stay executable.
 
 Two deliberate differences from a rendered skill:
 
@@ -94,10 +102,18 @@ domain no longer admits, which is a render that cannot be made to pass.
 
 Only the exact paths the table produces are renderer-owned. `references/`
 itself is not: it holds hand-authored prompts in two roots, and a destination
-directory is never swept the way a rendered skill directory is. A destination
-inside `skills/` is rejected too: a rendered skill directory is wholly owned by
-the skill render, so a document there could collide with a file that skill
-emits, and a hand-authored skill directory is not the renderer's to write into.
+directory is never swept the way a rendered skill directory is.
+
+A destination inside a **rendered** skill's directory is rejected. That
+directory is wholly owned by the skill render, and `render_documents` runs after
+it, so a colliding destination would overwrite a rendered file with the source
+bytes and nothing would report it: the path is in the written set, so
+`unowned_files` skips it, the manifest dedupes the double entry, and `--check`
+compares staging against a repository already holding those bytes. An
+**unrendered** skill's directory has no render to collide with, so one shared
+file may be vendored in beside its hand-maintained siblings; that is how the run
+controller reaches `skills/critique/scripts/`. The rest of that directory stays
+hand-maintained, and only the vendored path is renderer-owned.
 
 ## The prompt stack manifest
 
