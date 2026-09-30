@@ -6,6 +6,7 @@ export interface ReviewRun {
   id: string;
   commentId: number;
   base: string;
+  tier: 'lean' | 'deep';
   maxRounds: number;
 }
 
@@ -77,7 +78,13 @@ export function reviewRuns(rows: Array<Record<string, unknown>>): ReviewRun[] {
       fail('local-review run supersession chain is incomplete or forked');
     }
     seen.set(id!, { body, commentId });
-    runs.push({ id: id!, commentId, base: base!, maxRounds });
+    runs.push({
+      id: id!,
+      commentId,
+      base: base!,
+      tier: tier as ReviewRun['tier'],
+      maxRounds,
+    });
   }
   return runs;
 }

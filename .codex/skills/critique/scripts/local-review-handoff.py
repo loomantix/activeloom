@@ -797,6 +797,13 @@ def _authorize_pass(args: argparse.Namespace) -> None:
                 "round": args.round,
                 "run_round": run_round,
                 "run_id": run["run_id"],
+                # Lean's final round and Deep's rounds 3+ land the change
+                # rather than challenge it; the ledger enforces the same split.
+                "stance": (
+                    "convergence"
+                    if run_round >= (2 if run["tier"] == "lean" else 3)
+                    else "adversarial"
+                ),
                 "tier": run["tier"],
                 "verified": True,
             },

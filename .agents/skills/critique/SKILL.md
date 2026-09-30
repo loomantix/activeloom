@@ -97,7 +97,9 @@ call and result.
   unchanged, and the round cap does not move.
 
 The first pass after escalation and a reviewer's first cold read remain
-adversarial regardless of ordinal. State the resolved round and stance in the output.
+adversarial regardless of ordinal. Take the stance from `authorize-pass`'s `stance` field and state the round and
+stance in the output. The ledger refuses a convergence result that fixed a
+non-blocking finding.
 
 ## Adversarial Stance
 
