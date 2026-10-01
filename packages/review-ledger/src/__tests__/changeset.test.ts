@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   CHANGESET_CLASSIFIER_VERSION,
+  SMALL_CHANGE_LINE_LIMIT,
   classifyFiles,
   classifyPath,
   classifyRange,
@@ -173,6 +174,88 @@ describe('classifyFiles', () => {
         { path: 'src/a.ts', added: Number.MAX_SAFE_INTEGER, deleted: 1 },
       ]),
     ).toThrow(/invalid churn total/);
+  });
+});
+
+describe('classifyFiles small-change gate', () => {
+  it('recommends a glance for a short application change', () => {
+    const report = classifyFiles([
+      { path: 'infra/s3/buckets.tf', added: 11, deleted: 2, blank: 0 },
+    ]);
+    expect(report.skip).toBe(false);
+    expect(report.smallChange).toBe(true);
+    expect(report.smallChangeLines).toBe(13);
+  });
+
+  it('treats the limit as exclusive', () => {
+    const at = (added: number) =>
+      classifyFiles([{ path: 'src/a.ts', added, deleted: 0, blank: 0 }]);
+    expect(at(SMALL_CHANGE_LINE_LIMIT - 1).smallChange).toBe(true);
+    expect(at(SMALL_CHANGE_LINE_LIMIT).smallChange).toBe(false);
+  });
+
+  it('sums application churn across files and ignores blank churn', () => {
+    const report = classifyFiles([
+      { path: 'src/a.ts', added: 10, deleted: 0, blank: 0 },
+      { path: 'src/b.ts', added: 12, deleted: 3, blank: 6 },
+    ]);
+    expect(report.smallChangeLines).toBe(19);
+    expect(report.smallChange).toBe(true);
+    const over = classifyFiles([
+      { path: 'src/a.ts', added: 10, deleted: 0, blank: 0 },
+      { path: 'src/b.ts', added: 10, deleted: 0, blank: 0 },
+    ]);
+    expect(over.smallChange).toBe(false);
+  });
+
+  it('does not count test, docs, or generated churn toward the limit', () => {
+    const report = classifyFiles([
+      { path: 'src/a.ts', added: 5, deleted: 0, blank: 0 },
+      { path: 'src/a.test.ts', added: 200, deleted: 0, blank: 0 },
+      { path: 'docs/guide.md', added: 80, deleted: 0, blank: 0 },
+      { path: 'dist/a.js', added: 900, deleted: 0, blank: 0 },
+    ]);
+    expect(report.smallChangeLines).toBe(5);
+    expect(report.smallChange).toBe(true);
+  });
+
+  it('is never small when the range skips', () => {
+    const report = classifyFiles([
+      { path: 'README.md', added: 3, deleted: 0, blank: 0 },
+    ]);
+    expect(report.skip).toBe(true);
+    expect(report.smallChange).toBe(false);
+    expect(classifyFiles([]).smallChange).toBe(false);
+  });
+
+  it.each([
+    'pnpm-lock.yaml',
+    'package.json',
+    'services/api/requirements-dev.txt',
+    'go.mod',
+    'crates/x/Cargo.toml',
+  ])('is never small when the range touches %s', (path) => {
+    const report = classifyFiles([
+      { path, added: 1, deleted: 1, blank: 0 },
+      { path: 'src/a.ts', added: 1, deleted: 0, blank: 0 },
+    ]);
+    expect(report.smallChange).toBe(false);
+  });
+
+  it('is never small when a review-significant file has no line churn', () => {
+    const report = classifyFiles([
+      { path: 'src/a.ts', added: 1, deleted: 0, blank: 0 },
+      { path: 'assets/logo.bin', added: 0, deleted: 0, blank: 0 },
+    ]);
+    expect(report.smallChange).toBe(false);
+  });
+
+  it('still sizes a range whose unsized file is not review-significant', () => {
+    const report = classifyFiles([
+      { path: 'src/a.ts', added: 1, deleted: 0, blank: 0 },
+      { path: 'docs/diagram.png', added: 0, deleted: 0, blank: 0 },
+    ]);
+    expect(report.smallChange).toBe(true);
   });
 });
 

@@ -22,6 +22,15 @@ import type {
 export const CHANGESET_CLASSIFIER_VERSION = 1;
 
 /**
+ * Application churn below which the gate recommends a human glance.
+ *
+ * A person reads a diff this size in full, so a review chain adds cost and
+ * almost no coverage. The limit is exclusive and counts non-blank `app` churn
+ * only: a defect in a test reaches a red CI run rather than production.
+ */
+export const SMALL_CHANGE_LINE_LIMIT = 20;
+
+/**
  * Prompt surfaces treated as source whatever the extension, per the protocol.
  *
  * These paths are read by a model as instructions and sync to every consumer,
@@ -102,6 +111,29 @@ const CONFIG_BASENAMES: ReadonlySet<string> = new Set([
   '.gitlab-ci.yml',
   '.platform-config.yml',
 ]);
+
+/**
+ * Dependency manifests. With the lockfiles above, these make a range a
+ * dependency change: a two-line version bump pulls in code its line count does
+ * not measure, so it is never small.
+ */
+const DEPENDENCY_MANIFEST_BASENAMES: ReadonlySet<string> = new Set([
+  'package.json',
+  'pyproject.toml',
+  'setup.py',
+  'setup.cfg',
+  'cargo.toml',
+  'go.mod',
+  'gemfile',
+  'podfile',
+  'pubspec.yaml',
+  'pom.xml',
+  'build.gradle',
+  'build.gradle.kts',
+  'composer.json',
+]);
+
+const REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;
 
 const CONFIG_PREFIXES: readonly string[] = [
   '.github/workflows/',
@@ -298,7 +330,16 @@ function isConfig(path: string, name: string, extension: string): boolean {
     hasSegment(path, CONFIG_SEGMENTS) ||
     /^dockerfile(\.|$)/.test(name) ||
     /^tsconfig(\.[^.]+)?\.json$/.test(name) ||
-    /^requirements(-[^.]+)?\.txt$/.test(name)
+    REQUIREMENTS_FILE.test(name)
+  );
+}
+
+function isDependencyFile(path: string): boolean {
+  const name = basename(normalizePath(path)).toLowerCase();
+  return (
+    GENERATED_BASENAMES.has(name) ||
+    DEPENDENCY_MANIFEST_BASENAMES.has(name) ||
+    REQUIREMENTS_FILE.test(name)
   );
 }
 
@@ -401,6 +442,12 @@ function emptyChangeset(): Changeset {
  * literals, and JSX. `null` and `0` are different answers and aggregation must
  * exclude the first rather than average it in, so the field is never filled
  * with a guess.
+ *
+ * `smallChange` is a second gate answer beside `skip`, and the two never hold
+ * together. It fails closed: a dependency file, or a review-significant file
+ * with no line churn (binary, mode-only, pure rename), cannot be sized by its
+ * lines and keeps the range out. Comment churn counts toward the limit until a
+ * lexer can exclude it, which errs toward running the chain.
  */
 export function classifyFiles(
   files: readonly ChangedFile[],
@@ -408,6 +455,7 @@ export function classifyFiles(
 ): ChangesetReport {
   const changeset = emptyChangeset();
   const classifications: FileClassification[] = [];
+  let unsizedFiles = 0;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
     classifications.push(classification);
@@ -438,6 +486,12 @@ export function classifyFiles(
     // comment lexer lands it partitions the same total further, which is what
     // `classifierVersion` exists to record.
     const counted = churn - blank;
+    if (
+      isDependencyFile(file.path) ||
+      (classification.reviewSignificant && churn === 0)
+    ) {
+      unsizedFiles += 1;
+    }
     changeset.linesChanged.blank += blank;
     changeset.linesChanged[classification.class] += counted;
 
@@ -453,6 +507,11 @@ export function classifyFiles(
     classifications,
     reviewSignificantFiles: changeset.reviewSignificantFiles,
     skip: changeset.reviewSignificantFiles === 0,
+    smallChange:
+      changeset.reviewSignificantFiles > 0 &&
+      unsizedFiles === 0 &&
+      changeset.linesChanged.app < SMALL_CHANGE_LINE_LIMIT,
+    smallChangeLines: changeset.linesChanged.app,
   };
 }
 

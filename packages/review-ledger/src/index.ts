@@ -159,6 +159,7 @@ export { formatFindings } from './format.js';
 export {
   CHANGESET_CLASSIFIER_VERSION,
   DEFAULT_PROMPT_SURFACES,
+  SMALL_CHANGE_LINE_LIMIT,
   classifyFiles,
   classifyPath,
   classifyRange,

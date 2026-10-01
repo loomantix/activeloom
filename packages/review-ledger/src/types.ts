@@ -550,6 +550,13 @@ export interface ChangesetReport {
   reviewSignificantFiles: number;
   /** True when nothing in the range obliges a lane to run. */
   skip: boolean;
+  /**
+   * True when the range is review-significant but short enough that a human
+   * reads all of it. Never true together with `skip`.
+   */
+  smallChange: boolean;
+  /** Non-blank `app` churn, the count `smallChange` is decided on. */
+  smallChangeLines: number;
 }
 
 /** What kind of pass spent the tokens. */

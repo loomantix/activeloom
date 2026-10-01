@@ -34,10 +34,12 @@ context-window check, the PR boundary, round and stance, the telemetry
 snapshot, and any marker. Follow `.agents/REVIEW_WORKFLOW.md` "Human glance": on `skip: true` with at
 least one classified file, print that section's one-line message and stop, with
 no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
-record.
+record. On `smallChange: true`, print that section's small-change
+recommendation and stop the same way.
 
-Continue when the range carries a review-significant file, when a human
-explicitly asked for this change to be reviewed anyway, or when
+Continue when the range carries a review-significant file and is not a small
+change, when a human explicitly asked for this change to be reviewed anyway or
+overrode a small-change recommendation, or when
 `$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
 pass owns the gate.
 

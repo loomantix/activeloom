@@ -217,17 +217,20 @@ merges, and no review chain runs. The entry point prints one line and stops
 before it requires or opens a draft PR, checks context, resolves a round or
 stance, takes a telemetry snapshot, or writes a result, attestation, tier or
 refactor marker, or telemetry record — so none of those artifacts exists for a
-human-glance range. One or more review-significant files means the normal chain.
-A mixed changeset is not a partial human glance.
+human-glance range. One or more review-significant files means the normal chain,
+with one exception: a range short enough to read in full gets a human-glance
+recommendation that stops the same way, and the chain runs when a human asks
+for it. A mixed changeset is not a partial human glance.
 
 The workflow's "Human glance" section names the range each entry point
-classifies, the explicit-request override, and the controller-scheduled pass
-that skips the gate. A later push that adds a review-significant file takes the
+classifies, the small-change recommendation and its override, the
+explicit-request override, and the controller-scheduled pass that skips the
+gate. A later push that adds a review-significant file takes the
 PR out of human glance, and the normal tier resolution then covers the whole
 range.
 
 The rules above are executable: `review-ledger classify-changeset --base <sha>
---head <sha>` returns `skip` alongside per-file classifications, and every entry
+--head <sha>` returns `skip` and `smallChange` alongside per-file classifications, and every entry
 point decides from that rather than from its own reading of this paragraph. Four
 skills interpreting the same prose independently is four chances to disagree
 about whether a pass was owed.

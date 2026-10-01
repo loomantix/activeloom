@@ -26,7 +26,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.5.2" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.6.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -17307,6 +17307,7 @@ function verifyLedger(params) {
 
 // src/changeset.ts
 var CHANGESET_CLASSIFIER_VERSION = 1;
+var SMALL_CHANGE_LINE_LIMIT = 20;
 var DEFAULT_PROMPT_SURFACES = [
   ".claude/",
   ".codex/",
@@ -17369,6 +17370,22 @@ var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
   ".gitlab-ci.yml",
   ".platform-config.yml"
 ]);
+var DEPENDENCY_MANIFEST_BASENAMES = /* @__PURE__ */ new Set([
+  "package.json",
+  "pyproject.toml",
+  "setup.py",
+  "setup.cfg",
+  "cargo.toml",
+  "go.mod",
+  "gemfile",
+  "podfile",
+  "pubspec.yaml",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "composer.json"
+]);
+var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;
 var CONFIG_PREFIXES = [
   ".github/workflows/",
   ".github/actions/",
@@ -17507,7 +17524,11 @@ function isFixture(path, name) {
   return /\.fixture\.[^.]+$/.test(name) || path.startsWith("fixtures/") || path.includes("/fixtures/");
 }
 function isConfig(path, name, extension) {
-  return CONFIG_BASENAMES.has(name) || CONFIG_EXTENSIONS.has(extension) || hasPrefix(path, CONFIG_PREFIXES) || hasSegment(path, CONFIG_SEGMENTS) || /^dockerfile(\.|$)/.test(name) || /^tsconfig(\.[^.]+)?\.json$/.test(name) || /^requirements(-[^.]+)?\.txt$/.test(name);
+  return CONFIG_BASENAMES.has(name) || CONFIG_EXTENSIONS.has(extension) || hasPrefix(path, CONFIG_PREFIXES) || hasSegment(path, CONFIG_SEGMENTS) || /^dockerfile(\.|$)/.test(name) || /^tsconfig(\.[^.]+)?\.json$/.test(name) || REQUIREMENTS_FILE.test(name);
+}
+function isDependencyFile(path) {
+  const name = basename(normalizePath(path)).toLowerCase();
+  return GENERATED_BASENAMES.has(name) || DEPENDENCY_MANIFEST_BASENAMES.has(name) || REQUIREMENTS_FILE.test(name);
 }
 function isDocs(path, name, extension) {
   return DOCS_BASENAMES.has(name) || DOCS_EXTENSIONS.has(extension) || hasPrefix(path, DOCS_PREFIXES) || hasSegment(path, DOCS_SEGMENTS);
@@ -17560,6 +17581,7 @@ function emptyChangeset() {
 function classifyFiles(files, options) {
   const changeset = emptyChangeset();
   const classifications = [];
+  let unsizedFiles = 0;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
     classifications.push(classification);
@@ -17579,6 +17601,9 @@ function classifyFiles(files, options) {
       fail(`changed file ${file.path} reports an invalid blank count`);
     }
     const counted = churn - blank;
+    if (isDependencyFile(file.path) || classification.reviewSignificant && churn === 0) {
+      unsizedFiles += 1;
+    }
     changeset.linesChanged.blank += blank;
     changeset.linesChanged[classification.class] += counted;
     if (classification.class !== "generated" && classification.language) {
@@ -17590,7 +17615,9 @@ function classifyFiles(files, options) {
     changeset,
     classifications,
     reviewSignificantFiles: changeset.reviewSignificantFiles,
-    skip: changeset.reviewSignificantFiles === 0
+    skip: changeset.reviewSignificantFiles === 0,
+    smallChange: changeset.reviewSignificantFiles > 0 && unsizedFiles === 0 && changeset.linesChanged.app < SMALL_CHANGE_LINE_LIMIT,
+    smallChangeLines: changeset.linesChanged.app
   };
 }
 function unquotePath(raw) {
@@ -19636,6 +19663,9 @@ function runCliCommand(argv) {
       writeSortedJson({
         ...report.changeset,
         skip: report.skip,
+        smallChange: report.smallChange,
+        smallChangeLines: report.smallChangeLines,
+        smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications
       });
