@@ -295,6 +295,22 @@ what makes tokens-per-application-line comparable. `reviewSignificant` is
 whether a lane must run at all. A lockfile proves they cannot be one field: it
 must be reviewed and it must stay out of every ratio.
 
+The report carries two gate answers that never hold together. `skip` is true
+when no file is review-significant. `smallChange` is true when the range is
+review-significant but changes fewer than `smallChangeLimit` (20) non-blank
+`app` lines, reported as `smallChangeLines`. It fails closed: a lockfile, a
+dependency manifest, a submodule gitlink, or a review-significant file with no
+line churn keeps a range out, and comment lines count until a lexer can exclude
+them. Test lines are outside the limit, so a test-only range of any size is
+small; a caller reports `linesChanged.test` beside `smallChangeLines`.
+
+The test class is assigned by path, and a directory named `test` is not always
+tests. A `test`-class file that also matches a config or prompt-surface rule,
+such as `infra/environments/test/main.tf`, keeps its class and counts toward the
+limit as well, so it appears in both figures. A file named as a test
+(`*.test.*`, `*_test.py`) never does. A path the classifier knows only through
+the test rule, such as a YAML contract under `spec/`, stays outside the limit.
+
 ### Record What a Pass Cost
 
 ```bash

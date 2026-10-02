@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   CHANGESET_CLASSIFIER_VERSION,
+  SMALL_CHANGE_LINE_LIMIT,
   classifyFiles,
   classifyPath,
   classifyRange,
@@ -176,6 +177,206 @@ describe('classifyFiles', () => {
   });
 });
 
+describe('classifyFiles small-change gate', () => {
+  it('recommends a glance for a short application change', () => {
+    const report = classifyFiles([
+      { path: 'infra/s3/buckets.tf', added: 11, deleted: 2, blank: 0 },
+    ]);
+    expect(report.skip).toBe(false);
+    expect(report.smallChange).toBe(true);
+    expect(report.smallChangeLines).toBe(13);
+  });
+
+  it('treats the limit as exclusive', () => {
+    const at = (added: number) =>
+      classifyFiles([{ path: 'src/a.ts', added, deleted: 0, blank: 0 }]);
+    expect(at(SMALL_CHANGE_LINE_LIMIT - 1).smallChange).toBe(true);
+    expect(at(SMALL_CHANGE_LINE_LIMIT).smallChange).toBe(false);
+  });
+
+  it('sums application churn across files and ignores blank churn', () => {
+    const report = classifyFiles([
+      { path: 'src/a.ts', added: 10, deleted: 0, blank: 0 },
+      { path: 'src/b.ts', added: 12, deleted: 3, blank: 6 },
+    ]);
+    expect(report.smallChangeLines).toBe(19);
+    expect(report.smallChange).toBe(true);
+    const over = classifyFiles([
+      { path: 'src/a.ts', added: 10, deleted: 0, blank: 0 },
+      { path: 'src/b.ts', added: 10, deleted: 0, blank: 0 },
+    ]);
+    expect(over.smallChange).toBe(false);
+  });
+
+  it('does not count test, docs, or generated churn toward the limit', () => {
+    const report = classifyFiles([
+      { path: 'src/a.ts', added: 5, deleted: 0, blank: 0 },
+      { path: 'src/a.test.ts', added: 200, deleted: 0, blank: 0 },
+      { path: 'docs/guide.md', added: 80, deleted: 0, blank: 0 },
+      { path: 'dist/a.js', added: 900, deleted: 0, blank: 0 },
+    ]);
+    expect(report.smallChangeLines).toBe(5);
+    expect(report.smallChange).toBe(true);
+  });
+
+  it('is never small when the range skips', () => {
+    const report = classifyFiles([
+      { path: 'README.md', added: 3, deleted: 0, blank: 0 },
+    ]);
+    expect(report.skip).toBe(true);
+    expect(report.smallChange).toBe(false);
+    expect(classifyFiles([]).smallChange).toBe(false);
+  });
+
+  it.each([
+    'pnpm-lock.yaml',
+    'package.json',
+    'services/api/requirements-dev.txt',
+    'go.mod',
+    'crates/x/Cargo.toml',
+    'pnpm-workspace.yaml',
+    'bun.lock',
+    'Pipfile.lock',
+    'infra/.terraform.lock.hcl',
+    '.gitmodules',
+  ])('is never small when the range touches %s', (path) => {
+    const report = classifyFiles([
+      { path, added: 1, deleted: 1, blank: 0 },
+      { path: 'src/a.ts', added: 1, deleted: 0, blank: 0 },
+    ]);
+    expect(report.smallChange).toBe(false);
+  });
+
+  it('is never small when a review-significant file has no line churn', () => {
+    const report = classifyFiles([
+      { path: 'src/a.ts', added: 1, deleted: 0, blank: 0 },
+      { path: 'assets/logo.bin', added: 0, deleted: 0, blank: 0 },
+    ]);
+    expect(report.smallChange).toBe(false);
+  });
+
+  it('still sizes a range whose unsized file is not review-significant', () => {
+    const report = classifyFiles([
+      { path: 'src/a.ts', added: 1, deleted: 0, blank: 0 },
+      { path: 'docs/diagram.png', added: 0, deleted: 0, blank: 0 },
+    ]);
+    expect(report.smallChange).toBe(true);
+  });
+
+  it('leaves the small-change dependency names out of the stored classes', () => {
+    // `deno.json` under docs/ stays docs: the wider list sizes the gate only.
+    expect(classifyPath('docs/examples/deno.json').class).toBe('docsConfig');
+    expect(classifyPath('docs/examples/package.json').class).toBe('app');
+  });
+
+  it('is never small when the range bumps a submodule', () => {
+    const patch = [
+      'diff --git a/third_party/lib b/third_party/lib',
+      'index 1111111..2222222 160000',
+      '--- a/third_party/lib',
+      '+++ b/third_party/lib',
+      '@@ -1 +1 @@',
+      '-Subproject commit 1111111111111111111111111111111111111111',
+      '+Subproject commit 2222222222222222222222222222222222222222',
+      'diff --git a/src/a.ts b/src/a.ts',
+      'index 3333333..4444444 100644',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1 +1 @@',
+      '-const a = 1;',
+      '+const a = 2;',
+    ].join('\n');
+    const files = parseDiffPatch(patch);
+    expect(files.map((file) => file.submodule ?? false)).toEqual([true, false]);
+    const report = classifyFiles(files);
+    expect(report.smallChangeLines).toBe(4);
+    expect(report.smallChange).toBe(false);
+    expect(classifyFiles(files.slice(1)).smallChange).toBe(true);
+  });
+
+  it('is never small when the range adds or removes a submodule', () => {
+    const added = parseDiffPatch(
+      [
+        'diff --git a/third_party/lib b/third_party/lib',
+        'new file mode 160000',
+        'index 0000000..2222222',
+        '--- /dev/null',
+        '+++ b/third_party/lib',
+        '@@ -0,0 +1 @@',
+        '+Subproject commit 2222222222222222222222222222222222222222',
+      ].join('\n'),
+    );
+    expect(classifyFiles(added).smallChange).toBe(false);
+    const removed = parseDiffPatch(
+      [
+        'diff --git a/third_party/lib b/third_party/lib',
+        'deleted file mode 160000',
+        'index 1111111..0000000',
+        '--- a/third_party/lib',
+        '+++ /dev/null',
+        '@@ -1 +0,0 @@',
+        '-Subproject commit 1111111111111111111111111111111111111111',
+      ].join('\n'),
+    );
+    expect(removed[0]!.submodule).toBe(true);
+    expect(classifyFiles(removed).smallChange).toBe(false);
+  });
+
+  it('is never small when a dependency file is not review-significant', () => {
+    const report = classifyFiles([
+      { path: 'docs/examples/deno.json', added: 1, deleted: 1, blank: 0 },
+      { path: 'src/a.ts', added: 1, deleted: 0, blank: 0 },
+    ]);
+    expect(report.classifications[0]!.reviewSignificant).toBe(false);
+    expect(report.smallChange).toBe(false);
+  });
+
+  it.each([
+    'infra/environments/test/main.tf',
+    'k8s/overlays/test/deploy.yaml',
+    '.claude/skills/critique/tests/SKILL.md',
+  ])('counts %s toward the limit and keeps its test class', (path) => {
+    const report = classifyFiles([{ path, added: 30, deleted: 0, blank: 0 }]);
+    expect(report.classifications[0]!.class).toBe('test');
+    expect(report.changeset.linesChanged.test).toBe(30);
+    expect(report.changeset.linesChanged.app).toBe(0);
+    expect(report.smallChangeLines).toBe(30);
+    expect(report.smallChange).toBe(false);
+  });
+
+  it.each([
+    'infra/modules/bucket/main_test.go',
+    '.claude/skills/critique/scripts/ledger.test.js',
+    'infra/test/fixtures/plan.tf',
+    'spec/openapi.yaml',
+  ])('leaves %s outside the limit', (path) => {
+    const report = classifyFiles([{ path, added: 30, deleted: 0, blank: 0 }]);
+    expect(report.classifications[0]!.class).toBe('test');
+    expect(report.smallChangeLines).toBe(0);
+    expect(report.smallChange).toBe(true);
+  });
+
+  it('reads a custom prompt surface when sizing a test-named path', () => {
+    const files = [{ path: 'prompts/tests/role.md', added: 30, deleted: 0 }];
+    expect(classifyFiles(files).smallChangeLines).toBe(0);
+    expect(
+      classifyFiles(files, { promptSurfaces: ['prompts/'] }).smallChangeLines,
+    ).toBe(30);
+  });
+
+  it('reports test churn beside a small change without counting it', () => {
+    // Deliberate: the limit bounds application churn only. The gate prints
+    // `linesChanged.test` so a test-only or test-heavy range is not described
+    // as zero lines.
+    const report = classifyFiles([
+      { path: 'tests/test_a.py', added: 1500, deleted: 500, blank: 0 },
+    ]);
+    expect(report.smallChange).toBe(true);
+    expect(report.smallChangeLines).toBe(0);
+    expect(report.changeset.linesChanged.test).toBe(2000);
+  });
+});
+
 describe('parseDiffPatch', () => {
   it('parses a standard unified diff without Git extension headers', () => {
     const patch = [
@@ -346,6 +547,8 @@ describe('classifyRange', () => {
     setGitHubRunner(runner);
     const report = classifyRange({ base: BASE, head: HEAD });
     expect(runner.lastArgs).toContain(`${BASE}..${HEAD}`);
+    expect(runner.lastArgs).toContain('--submodule=short');
+    expect(runner.lastArgs).toContain('--ignore-submodules=none');
     expect(report.changeset.linesChanged.app).toBe(2);
     expect(report.skip).toBe(false);
   });

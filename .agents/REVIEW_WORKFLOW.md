@@ -8,7 +8,7 @@ edits will be overwritten on the next sync.
 For an explicitly requested automatic review chain, use the deterministic
 `.codex/skills/critique/scripts/review-chain-runner.py` controller. Resolve the
 tier and its triggers first — after the [human-glance gate](#human-glance),
-which starts no run for a docs/config-only range — then supply either an exact `--chain` or a repeating
+which starts no run for a docs/config-only range or an unanswered small-change recommendation — then supply either an exact `--chain` or a repeating
 `--cycle --until-converged`. Do not implement the outer loop in conversation.
 Read [runner usage](../.codex/references/review-chain-runner.md) before starting;
 it defines required validation commands, durable checkpoints, and recovery.
@@ -181,7 +181,9 @@ to Deep.
 ### Human glance
 
 A changeset with no review-significant file needs a human to read the diff and
-merge, not a review chain. This outcome sits below Lean and is decided first:
+merge, not a review chain. So does one whose code and configuration change is
+short enough to read in full, unless a human asks for the chain. This outcome
+sits below Lean and is decided first:
 classification is the first step of `critique`, `deepcritique`, `pr-critique`, `refactorpass`, `reviewit`,
 and the review phase of `agent-loop`. It runs before a draft PR is
 required or opened, before the context-window check, round, stance, and
@@ -205,18 +207,53 @@ print this line with N as that array's length, and stop:
 Human glance: N docs/config files, no review-significant changes — read the diff and merge. No review chain run.
 ```
 
+When the output has `"smallChange": true`, the range is review-significant but
+changes fewer than `smallChangeLimit` non-blank lines of application code,
+configuration, or prompt surface, and touches no dependency manifest,
+lockfile, or submodule. Docs and generated lines do not count. Test lines do
+not count toward the limit either, so a test-only range is small at any size
+and the line below states them. A person reads a code change that size in
+full, so the default is a recommendation, and the chain runs only when a
+human asks for it. Read the diff against triggers 1–5 in
+[What sets the tier](#what-sets-the-tier) so the recommendation says what a
+missed defect would reach. Then print this line and stop the same way, with N
+as `smallChangeLines`, T as `linesChanged.test`, M as
+`reviewSignificantFiles`, and each matched trigger's number and name, or
+`none`:
+
+```text
+Human glance recommended: N changed lines of code or config and T of tests in M files. Triggers: <matched triggers, or none>. Read the diff and merge, or ask for the review chain to run.
+```
+
+Neither line authorizes a merge. When the repository's own instructions gate
+merging the touched paths — a deploy on merge, an apply-before-merge order —
+state that gate on the line after.
+
 Otherwise continue the entry point unchanged. An empty range or a classifier
 that cannot run is not human glance; the entry point's own pre-flight handles it.
 
 - **Explicit request.** A human who directly asks for this change to be reviewed
-  anyway overrides the gate. That request is trigger 6: the chain runs and the
-  tier marker records it. Typing a review skill's name, or asking to "review
-  this PR" or "run the review chain", is not that request: it invokes the entry
-  point, which applies this gate and resolves the tier as usual.
+  anyway overrides the gate. For a range with no review-significant file, that
+  request is trigger 6: the chain runs and the tier marker records it. For a
+  small change, the next rule sets the tier. Typing a review skill's name, or
+  asking to "review this PR" or "run the review chain", is not that request:
+  it invokes the entry point, which applies this gate and resolves the tier as
+  usual.
+- **Small-change override.** After the recommendation is printed, a human's
+  request to run the chain on this range, in any words, is the override: the
+  entry point continues past this gate. The tier then resolves from triggers
+  1–5, and the request is trigger 6 only when it asks for a deep review. The
+  same holds when the request for this change to be reviewed anyway came
+  before the recommendation. An open PR whose ledger already carries a tier
+  marker has a chain under way: continue without recommending again.
 - **Controller-scheduled passes.** When `$AGENT_LOOP_REVIEW_RESULT_FILE` is set,
   the controller that scheduled the pass owns the gate, and the pass reviews the
-  range it was given. `agent-loop` classifies before its first review round, and
-  an automatic chain classifies before it starts the runner.
+  range it was given; a pass the runner schedules does not gate again. The
+  session that receives a request for an automatic chain applies this gate in
+  full, small-change recommendation included, before it starts the runner: the
+  human who asked is there to answer. `agent-loop` classifies before its first
+  review round and has no human to act on a recommendation, so it gates on
+  `skip` alone and ignores `smallChange`.
 - **Later pushes.** Every invocation classifies the whole range again. A push
   that adds a review-significant file takes the PR out of human glance, and tier
   resolution applies to the whole range.
@@ -227,7 +264,8 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
   that has no runtime, contract, or security effect, the classifier rule is
   what is wrong. Continue the entry point, and open an issue naming the path
   and the rule that matched it. A session does not overrule `"skip": false` on
-  its own reading of the diff.
+  its own reading of the diff, and the small-change count is the classifier's
+  in the same way.
 
 ### What sets the tier
 

@@ -511,6 +511,8 @@ export interface ChangedFile {
   deleted: number;
   /** Blank-line churn; absent or null is conservatively counted as zero. */
   blank?: number | null | undefined;
+  /** True for a submodule gitlink, whose churn is a commit id, not code. */
+  submodule?: boolean | undefined;
 }
 
 /** How one path classified, on both the value axis and the review axis. */
@@ -550,6 +552,16 @@ export interface ChangesetReport {
   reviewSignificantFiles: number;
   /** True when nothing in the range obliges a lane to run. */
   skip: boolean;
+  /**
+   * True when the range is review-significant but short enough that a human
+   * reads all of it. Never true together with `skip`.
+   */
+  smallChange: boolean;
+  /**
+   * The count `smallChange` is decided on: non-blank `app` churn, plus
+   * configuration and prompt surfaces filed under a test-named directory.
+   */
+  smallChangeLines: number;
 }
 
 /** What kind of pass spent the tokens. */
