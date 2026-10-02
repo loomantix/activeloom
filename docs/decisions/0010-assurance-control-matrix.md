@@ -304,6 +304,11 @@ carries no information about what a missed defect reaches. Any rule of the form
 "under N lines, skip" would be a scalar exemption reintroduced at the one place
 where everything else in this record has been kept off a scale.
 
+Amended by [0015](0015-small-changes-default-to-human-glance.md): a short
+review-significant range gets a human-glance _recommendation_ that a human
+overrides by asking for the chain. It is not an automatic exemption, and a loop
+with no human to answer still gates on file kind alone.
+
 An organization lock on `review.plan_floor` does not move the gate either: a
 docs-only range in a locked repository is still a docs-only range. What a lock
 reaches is what happens once the gate passes.

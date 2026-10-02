@@ -26,7 +26,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.5.2" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.6.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -17307,6 +17307,7 @@ function verifyLedger(params) {
 
 // src/changeset.ts
 var CHANGESET_CLASSIFIER_VERSION = 1;
+var SMALL_CHANGE_LINE_LIMIT = 20;
 var DEFAULT_PROMPT_SURFACES = [
   ".claude/",
   ".codex/",
@@ -17342,12 +17343,8 @@ var GENERATED_PREFIXES = [
   "target/release/"
 ];
 var GENERATED_SEGMENTS = ["/dist/", "/build/", "/vendor/"];
-var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
+var DEPENDENCY_MANIFEST_BASENAMES = /* @__PURE__ */ new Set([
   "package.json",
-  "pnpm-workspace.yaml",
-  "lerna.json",
-  "turbo.json",
-  "nx.json",
   "pyproject.toml",
   "setup.py",
   "setup.cfg",
@@ -17359,7 +17356,14 @@ var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
   "pom.xml",
   "build.gradle",
   "build.gradle.kts",
-  "composer.json",
+  "composer.json"
+]);
+var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
+  ...DEPENDENCY_MANIFEST_BASENAMES,
+  "pnpm-workspace.yaml",
+  "lerna.json",
+  "turbo.json",
+  "nx.json",
   "dockerfile",
   "docker-compose.yml",
   "docker-compose.yaml",
@@ -17369,6 +17373,27 @@ var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
   ".gitlab-ci.yml",
   ".platform-config.yml"
 ]);
+var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;
+var SMALL_CHANGE_DEPENDENCY_BASENAMES = /* @__PURE__ */ new Set([
+  "pnpm-workspace.yaml",
+  "bun.lock",
+  "deno.json",
+  "deno.jsonc",
+  "deno.lock",
+  "pipfile",
+  "pipfile.lock",
+  ".terraform.lock.hcl",
+  "mix.exs",
+  "mix.lock",
+  "package.swift",
+  "package.resolved",
+  "packages.lock.json",
+  "gradle.lockfile",
+  "go.work",
+  "go.work.sum",
+  ".gitmodules"
+]);
+var GITLINK_HEADER = /^(?:index [0-9a-f]+\.\.[0-9a-f]+|new file mode|deleted file mode|old mode|new mode) 160000$/;
 var CONFIG_PREFIXES = [
   ".github/workflows/",
   ".github/actions/",
@@ -17500,14 +17525,33 @@ function hasSegment(path, segments) {
 function isGenerated(path, name) {
   return GENERATED_BASENAMES.has(name) || hasPrefix(path, GENERATED_PREFIXES) || hasSegment(path, GENERATED_SEGMENTS) || /\.min\.(js|css)$/.test(name) || /\.bundle\.(js|mjs|cjs)$/.test(name) || /\.generated\.[^.]+$/.test(name) || /\.snap$/.test(name) || /\.pb\.go$/.test(name) || /_pb2(_grpc)?\.py$/.test(name) || /\.g\.dart$/.test(name);
 }
+function isTestName(name) {
+  return TEST_BASENAMES.has(name) || /\.(test|spec)\.[^.]+$/.test(name) || /_test\.(go|py|rb)$/.test(name);
+}
 function isTest(path, name) {
-  return TEST_BASENAMES.has(name) || hasPrefix(path, TEST_PREFIXES) || hasSegment(path, TEST_SEGMENTS) || /\.(test|spec)\.[^.]+$/.test(name) || /_test\.(go|py|rb)$/.test(name);
+  return isTestName(name) || hasPrefix(path, TEST_PREFIXES) || hasSegment(path, TEST_SEGMENTS);
+}
+function isPromptSurface2(path, promptSurfaces) {
+  return promptSurfaces.some(
+    (surface) => path === surface || surface.endsWith("/") && path.startsWith(surface) || path.endsWith(`/${surface}`)
+  );
 }
 function isFixture(path, name) {
   return /\.fixture\.[^.]+$/.test(name) || path.startsWith("fixtures/") || path.includes("/fixtures/");
 }
 function isConfig(path, name, extension) {
-  return CONFIG_BASENAMES.has(name) || CONFIG_EXTENSIONS.has(extension) || hasPrefix(path, CONFIG_PREFIXES) || hasSegment(path, CONFIG_SEGMENTS) || /^dockerfile(\.|$)/.test(name) || /^tsconfig(\.[^.]+)?\.json$/.test(name) || /^requirements(-[^.]+)?\.txt$/.test(name);
+  return CONFIG_BASENAMES.has(name) || CONFIG_EXTENSIONS.has(extension) || hasPrefix(path, CONFIG_PREFIXES) || hasSegment(path, CONFIG_SEGMENTS) || /^dockerfile(\.|$)/.test(name) || /^tsconfig(\.[^.]+)?\.json$/.test(name) || REQUIREMENTS_FILE.test(name);
+}
+function isDependencyFile(path) {
+  const name = basename(normalizePath(path)).toLowerCase();
+  return GENERATED_BASENAMES.has(name) || DEPENDENCY_MANIFEST_BASENAMES.has(name) || SMALL_CHANGE_DEPENDENCY_BASENAMES.has(name) || REQUIREMENTS_FILE.test(name);
+}
+function isSourceUnderTestPath(path, promptSurfaces) {
+  const name = basename(path).toLowerCase();
+  if (isTestName(name)) {
+    return false;
+  }
+  return isPromptSurface2(path, promptSurfaces) || !isFixture(path, name) && isConfig(path, name, extensionOf2(path));
 }
 function isDocs(path, name, extension) {
   return DOCS_BASENAMES.has(name) || DOCS_EXTENSIONS.has(extension) || hasPrefix(path, DOCS_PREFIXES) || hasSegment(path, DOCS_SEGMENTS);
@@ -17525,9 +17569,7 @@ function classifyPath(rawPath, options) {
   if (isTest(path, name)) {
     return classify("test", true);
   }
-  if (promptSurfaces.some(
-    (surface) => path === surface || surface.endsWith("/") && path.startsWith(surface) || path.endsWith(`/${surface}`)
-  )) {
+  if (isPromptSurface2(path, promptSurfaces)) {
     return classify("app", true);
   }
   if (isFixture(path, name)) {
@@ -17560,6 +17602,9 @@ function emptyChangeset() {
 function classifyFiles(files, options) {
   const changeset = emptyChangeset();
   const classifications = [];
+  let unsizedFiles = 0;
+  let smallChangeLines = 0;
+  const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
     classifications.push(classification);
@@ -17579,6 +17624,12 @@ function classifyFiles(files, options) {
       fail(`changed file ${file.path} reports an invalid blank count`);
     }
     const counted = churn - blank;
+    if (isDependencyFile(file.path) || file.submodule === true || classification.reviewSignificant && churn === 0) {
+      unsizedFiles += 1;
+    }
+    if (classification.class === "app" || classification.class === "test" && isSourceUnderTestPath(classification.path, promptSurfaces)) {
+      smallChangeLines += counted;
+    }
     changeset.linesChanged.blank += blank;
     changeset.linesChanged[classification.class] += counted;
     if (classification.class !== "generated" && classification.language) {
@@ -17590,7 +17641,9 @@ function classifyFiles(files, options) {
     changeset,
     classifications,
     reviewSignificantFiles: changeset.reviewSignificantFiles,
-    skip: changeset.reviewSignificantFiles === 0
+    skip: changeset.reviewSignificantFiles === 0,
+    smallChange: changeset.reviewSignificantFiles > 0 && unsizedFiles === 0 && smallChangeLines < SMALL_CHANGE_LINE_LIMIT,
+    smallChangeLines
   };
 }
 function unquotePath(raw) {
@@ -17711,6 +17764,10 @@ function parseDiffPatch(patch) {
     if (current === null) {
       continue;
     }
+    if (!inHunk && GITLINK_HEADER.test(rawLine)) {
+      current.submodule = true;
+      continue;
+    }
     if (!inHunk && rawLine.startsWith("--- ")) {
       const left = stripSide(rawLine.slice(4).trim());
       if (left !== null) {
@@ -17784,6 +17841,10 @@ function classifyRange(params) {
     "--no-color",
     "--no-ext-diff",
     "--find-renames",
+    // A clone configured with `diff.submodule=log` would otherwise print a
+    // gitlink change with no file record, and the range would lose it.
+    "--submodule=short",
+    "--ignore-submodules=none",
     `${params.base}..${params.head}`
   ]);
   return classifyFiles(parseDiffPatch(patch), params.options);
@@ -19636,6 +19697,9 @@ function runCliCommand(argv) {
       writeSortedJson({
         ...report.changeset,
         skip: report.skip,
+        smallChange: report.smallChange,
+        smallChangeLines: report.smallChangeLines,
+        smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications
       });
