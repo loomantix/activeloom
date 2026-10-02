@@ -17,8 +17,14 @@ from typing import Any
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parent.parent / ".codex/skills/publish-npm-package/scripts"
-SKILL = Path(__file__).resolve().parent.parent / ".codex/skills/publish-npm-package/SKILL.md"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# Harness roots that ship this skill. The helper scripts are exercised from the
+# first root; `test_helper_scripts_are_identical_across_harnesses` extends that
+# coverage to the rest.
+HARNESS_ROOTS = (".codex", ".agents")
+SKILL_DIRS = tuple(REPO_ROOT / root / "skills/publish-npm-package" for root in HARNESS_ROOTS)
+SCRIPTS = SKILL_DIRS[0] / "scripts"
+SCRIPT_NAMES = ("release-preflight.py", "verify-published-package.py")
 
 
 def _load_script(name: str) -> ModuleType:
@@ -125,8 +131,16 @@ def _replace_slsa_payload(entry: dict[str, object], payload: dict[str, Any]) -> 
     envelope["payload"] = base64.b64encode(json.dumps(payload).encode()).decode()
 
 
-def test_skill_isolates_oidc_publish_authority() -> None:
-    guidance = SKILL.read_text(encoding="utf-8")
+@pytest.mark.parametrize("name", SCRIPT_NAMES)
+def test_helper_scripts_are_identical_across_harnesses(name: str) -> None:
+    copies = {(skill_dir / "scripts" / name).read_bytes() for skill_dir in SKILL_DIRS}
+
+    assert len(copies) == 1
+
+
+@pytest.mark.parametrize("skill_dir", SKILL_DIRS, ids=HARNESS_ROOTS)
+def test_skill_isolates_oidc_publish_authority(skill_dir: Path) -> None:
+    guidance = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
 
     assert "Grant `id-token: write` only to the" in guidance
     assert "must not check out the repository" in guidance
