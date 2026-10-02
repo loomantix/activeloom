@@ -259,10 +259,6 @@ harnesses:
         substitutions: []
         mode: '0755'
 
-      - source: .claude/skills/task-packet/SKILL.md
-        destination: .claude/skills/task-packet/SKILL.md
-        substitutions: []
-
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
       # project-specific substitution values that `npx activeloom init` refuses
       # to invent, for a human to confirm. Consumers receive it so a teammate
@@ -506,6 +502,13 @@ harnesses:
         delete: true
       - destination: .claude/hooks/check-simplify-state.sh
         delete: true
+      # `task-packet` is retired: `issues start <n>` is the entry point for
+      # implementing a tracked change. Keep this delete until every consumer has
+      # run a sync that includes it. The allowlist gate applies to deletes, so a
+      # consumer with a non-empty `allowed_destinations` must keep
+      # `.claude/skills/task-packet/**` allowlisted until this entry leaves.
+      - destination: .claude/skills/task-packet/SKILL.md
+        delete: true
       # `/grill` and `/deepgrill` became `/critique` and `/deepcritique`. These
       # deletes are what make the rename atomic in a consumer: the same sync run
       # that writes the new paths removes the old ones, so no repo is ever left
@@ -541,7 +544,7 @@ harnesses:
       # reintroduce the collision.
       #
       # User-invoked, so it costs no always-loaded description context; it is the
-      # front end of the same arc /feature-dev and /task-packet finish.
+      # front end of the arc /feature-dev and /issues finish.
       - source: .claude/skills/grill/SKILL.md
         destination: .claude/skills/grill/SKILL.md
         substitutions: []
@@ -813,10 +816,6 @@ harnesses:
         substitutions: []
         mode: '0755'
 
-      - source: .codex/skills/task-packet/SKILL.md
-        destination: .codex/skills/task-packet/SKILL.md
-        substitutions: []
-
       - source: .codex/skills/agent-loop/SKILL.md
         destination: .codex/skills/agent-loop/SKILL.md
         substitutions: []
@@ -989,6 +988,13 @@ harnesses:
         delete: true
       - destination: .codex/hooks/check-simplify-state.sh
         delete: true
+      # `task-packet` is retired: `issues start <n>` is the entry point for
+      # implementing a tracked change. Keep this delete until every consumer has
+      # run a sync that includes it. The allowlist gate applies to deletes, so a
+      # consumer with a non-empty `allowed_destinations` must keep
+      # `.codex/skills/task-packet/**` allowlisted until this entry leaves.
+      - destination: .codex/skills/task-packet/SKILL.md
+        delete: true
       # The review chain moved from `grill` terminology to `critique`. Keep these
       # deletes until every consumer has synced this manifest, so a fleet sync does
       # not leave duplicate model-invocable review skills behind.
@@ -1040,7 +1046,7 @@ harnesses:
       # `tests/test_skill_surface.py` asserts the ordering so a future reshuffle of
       # this file cannot silently reintroduce the collision.
       #
-      # Front end of the arc feature-dev and task-packet finish; the adversarial
+      # Front end of the arc feature-dev and issues finish; the adversarial
       # review skills are critique / deepcritique / pr-critique.
       - source: .codex/skills/grill/SKILL.md
         destination: .codex/skills/grill/SKILL.md
@@ -1234,10 +1240,6 @@ harnesses:
         substitutions: []
         mode: '0755'
 
-      - source: .agents/skills/task-packet/SKILL.md
-        destination: .agents/skills/task-packet/SKILL.md
-        substitutions: []
-
       - source: .agents/skills/agent-loop/SKILL.md
         destination: .agents/skills/agent-loop/SKILL.md
         substitutions: []
@@ -1393,6 +1395,13 @@ harnesses:
       - destination: .agents/skills/pushit/SKILL.md
         delete: true
       - destination: .agents/skills/review-cycle/SKILL.md
+        delete: true
+      # `task-packet` is retired: `issues start <n>` is the entry point for
+      # implementing a tracked change. Keep this delete until every consumer has
+      # run a sync that includes it. The allowlist gate applies to deletes, so a
+      # consumer with a non-empty `allowed_destinations` must keep
+      # `.agents/skills/task-packet/**` allowlisted until this entry leaves.
+      - destination: .agents/skills/task-packet/SKILL.md
         delete: true
       - destination: .agents/skills/grill/SKILL.md
         delete: true

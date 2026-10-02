@@ -73,6 +73,5 @@
 .codex/skills/refactorpass/SKILL.md
 .codex/skills/reviewit/SKILL.md
 .codex/skills/ship-staging/SKILL.md
-.codex/skills/task-packet/SKILL.md
 .github/workflows/dco.yml
 # <<< platform-synced paths >>>

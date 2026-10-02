@@ -171,10 +171,6 @@ targets:
     destination: .codex/skills/diagnosing-bugs/SKILL.md
     substitutions: []
 
-  - source: .codex/skills/task-packet/SKILL.md
-    destination: .codex/skills/task-packet/SKILL.md
-    substitutions: []
-
   - source: .codex/skills/agent-loop/SKILL.md
     destination: .codex/skills/agent-loop/SKILL.md
     substitutions: []
@@ -374,7 +370,7 @@ targets:
   # `tests/test_skill_surface.py` asserts the ordering so a future reshuffle of
   # this file cannot silently reintroduce the collision.
   #
-  # Front end of the arc feature-dev and task-packet finish; the adversarial
+  # Front end of the arc feature-dev and issues finish; the adversarial
   # review skills are critique / deepcritique / pr-critique.
   - source: .codex/skills/grill/SKILL.md
     destination: .codex/skills/grill/SKILL.md

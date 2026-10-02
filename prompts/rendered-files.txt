@@ -25,7 +25,6 @@
 .agents/skills/review-setup/scripts/review-settings.py
 .agents/skills/simplify-comments/SKILL.md
 .agents/skills/simplify-comments/scripts/comment-density.py
-.agents/skills/task-packet/SKILL.md
 .claude/prompt-stack.json
 .claude/references/local-review-ledger.md
 .claude/skills/backlog-refinement/SETUP.md
@@ -54,7 +53,6 @@
 .claude/skills/review-setup/scripts/review-settings.py
 .claude/skills/simplify-comments/SKILL.md
 .claude/skills/simplify-comments/scripts/comment-density.py
-.claude/skills/task-packet/SKILL.md
 .codex/prompt-stack.json
 .codex/references/local-review-ledger.md
 .codex/skills/backlog-refinement/SETUP.md
@@ -83,4 +81,3 @@
 .codex/skills/review-setup/scripts/review-settings.py
 .codex/skills/simplify-comments/SKILL.md
 .codex/skills/simplify-comments/scripts/comment-density.py
-.codex/skills/task-packet/SKILL.md

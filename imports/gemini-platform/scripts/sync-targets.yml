@@ -122,10 +122,6 @@ targets:
     destination: .agents/skills/diagnosing-bugs/SKILL.md
     substitutions: []
 
-  - source: .agents/skills/task-packet/SKILL.md
-    destination: .agents/skills/task-packet/SKILL.md
-    substitutions: []
-
   - source: .agents/skills/agent-loop/SKILL.md
     destination: .agents/skills/agent-loop/SKILL.md
     substitutions: []
