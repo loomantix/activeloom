@@ -193,6 +193,16 @@ material fixes restart at Codex. A missing, invalid, or blocked result stops
 clearly even if the hook process exits zero. Accepted result bytes remain
 unchanged through final validation.
 
+A blocked result beside a `<result-file>.recovery.json` sidecar is a completed
+pass whose `write-result` verification was refused, such as a `minor`
+classification on a behavioral range. After a zero-exit hook the wrapper pins
+the sidecar's SHA-256, runs `review-ledger.js recover-result` with the pass's
+identity arguments and its pre-pass comment snapshot, re-validates the result,
+and continues with the ordinary validation and attestation steps. Recovery may
+promote a saved `minor` to `material`; it launches no reviewer and spends no
+round. A blocked result without a sidecar, a sidecar that changed after the
+hook returned, or a failed recovery stops the run as blocked.
+
 The wrapper pins `GH_REPO` from the current checkout before any
 repository-scoped GitHub operation. Setup, worker, and validation hooks cannot
 push or call ordinary `gh`; review hooks run only after draft PR creation and
