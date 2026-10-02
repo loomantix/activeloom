@@ -557,7 +557,10 @@ export interface ChangesetReport {
    * reads all of it. Never true together with `skip`.
    */
   smallChange: boolean;
-  /** Non-blank `app` churn, the count `smallChange` is decided on. */
+  /**
+   * The count `smallChange` is decided on: non-blank `app` churn, plus
+   * configuration and prompt surfaces filed under a test-named directory.
+   */
   smallChangeLines: number;
 }
 

@@ -17525,8 +17525,16 @@ function hasSegment(path, segments) {
 function isGenerated(path, name) {
   return GENERATED_BASENAMES.has(name) || hasPrefix(path, GENERATED_PREFIXES) || hasSegment(path, GENERATED_SEGMENTS) || /\.min\.(js|css)$/.test(name) || /\.bundle\.(js|mjs|cjs)$/.test(name) || /\.generated\.[^.]+$/.test(name) || /\.snap$/.test(name) || /\.pb\.go$/.test(name) || /_pb2(_grpc)?\.py$/.test(name) || /\.g\.dart$/.test(name);
 }
+function isTestName(name) {
+  return TEST_BASENAMES.has(name) || /\.(test|spec)\.[^.]+$/.test(name) || /_test\.(go|py|rb)$/.test(name);
+}
 function isTest(path, name) {
-  return TEST_BASENAMES.has(name) || hasPrefix(path, TEST_PREFIXES) || hasSegment(path, TEST_SEGMENTS) || /\.(test|spec)\.[^.]+$/.test(name) || /_test\.(go|py|rb)$/.test(name);
+  return isTestName(name) || hasPrefix(path, TEST_PREFIXES) || hasSegment(path, TEST_SEGMENTS);
+}
+function isPromptSurface2(path, promptSurfaces) {
+  return promptSurfaces.some(
+    (surface) => path === surface || surface.endsWith("/") && path.startsWith(surface) || path.endsWith(`/${surface}`)
+  );
 }
 function isFixture(path, name) {
   return /\.fixture\.[^.]+$/.test(name) || path.startsWith("fixtures/") || path.includes("/fixtures/");
@@ -17537,6 +17545,13 @@ function isConfig(path, name, extension) {
 function isDependencyFile(path) {
   const name = basename(normalizePath(path)).toLowerCase();
   return GENERATED_BASENAMES.has(name) || DEPENDENCY_MANIFEST_BASENAMES.has(name) || SMALL_CHANGE_DEPENDENCY_BASENAMES.has(name) || REQUIREMENTS_FILE.test(name);
+}
+function isSourceUnderTestPath(path, promptSurfaces) {
+  const name = basename(path).toLowerCase();
+  if (isTestName(name)) {
+    return false;
+  }
+  return isPromptSurface2(path, promptSurfaces) || !isFixture(path, name) && isConfig(path, name, extensionOf2(path));
 }
 function isDocs(path, name, extension) {
   return DOCS_BASENAMES.has(name) || DOCS_EXTENSIONS.has(extension) || hasPrefix(path, DOCS_PREFIXES) || hasSegment(path, DOCS_SEGMENTS);
@@ -17554,9 +17569,7 @@ function classifyPath(rawPath, options) {
   if (isTest(path, name)) {
     return classify("test", true);
   }
-  if (promptSurfaces.some(
-    (surface) => path === surface || surface.endsWith("/") && path.startsWith(surface) || path.endsWith(`/${surface}`)
-  )) {
+  if (isPromptSurface2(path, promptSurfaces)) {
     return classify("app", true);
   }
   if (isFixture(path, name)) {
@@ -17590,6 +17603,8 @@ function classifyFiles(files, options) {
   const changeset = emptyChangeset();
   const classifications = [];
   let unsizedFiles = 0;
+  let smallChangeLines = 0;
+  const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
     classifications.push(classification);
@@ -17612,6 +17627,9 @@ function classifyFiles(files, options) {
     if (isDependencyFile(file.path) || file.submodule === true || classification.reviewSignificant && churn === 0) {
       unsizedFiles += 1;
     }
+    if (classification.class === "app" || classification.class === "test" && isSourceUnderTestPath(classification.path, promptSurfaces)) {
+      smallChangeLines += counted;
+    }
     changeset.linesChanged.blank += blank;
     changeset.linesChanged[classification.class] += counted;
     if (classification.class !== "generated" && classification.language) {
@@ -17624,8 +17642,8 @@ function classifyFiles(files, options) {
     classifications,
     reviewSignificantFiles: changeset.reviewSignificantFiles,
     skip: changeset.reviewSignificantFiles === 0,
-    smallChange: changeset.reviewSignificantFiles > 0 && unsizedFiles === 0 && changeset.linesChanged.app < SMALL_CHANGE_LINE_LIMIT,
-    smallChangeLines: changeset.linesChanged.app
+    smallChange: changeset.reviewSignificantFiles > 0 && unsizedFiles === 0 && smallChangeLines < SMALL_CHANGE_LINE_LIMIT,
+    smallChangeLines
   };
 }
 function unquotePath(raw) {

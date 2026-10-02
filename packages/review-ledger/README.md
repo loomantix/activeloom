@@ -304,6 +304,13 @@ line churn keeps a range out, and comment lines count until a lexer can exclude
 them. Test lines are outside the limit, so a test-only range of any size is
 small; a caller reports `linesChanged.test` beside `smallChangeLines`.
 
+The test class is assigned by path, and a directory named `test` is not always
+tests. A `test`-class file that also matches a config or prompt-surface rule,
+such as `infra/environments/test/main.tf`, keeps its class and counts toward the
+limit as well, so it appears in both figures. A file named as a test
+(`*.test.*`, `*_test.py`) never does. A path the classifier knows only through
+the test rule, such as a YAML contract under `spec/`, stays outside the limit.
+
 ### Record What a Pass Cost
 
 ```bash

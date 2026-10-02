@@ -19,6 +19,8 @@ to credit that the code change fits on one screen.
   `app` class: application code, configuration, and prompt surfaces. Test,
   docs, and generated lines do not count. A test-only range is therefore small
   at any size, so the recommendation states the test lines beside the count.
+  Configuration or a prompt surface under a test-named directory is not test
+  code and counts toward the limit.
 - The answer fails closed. A lockfile, dependency manifest, or submodule keeps
   a range out, because a version bump pulls in code its line count does not
   measure. So does a review-significant file with no line churn. Comment lines
@@ -34,6 +36,23 @@ to credit that the code change fits on one screen.
 - `agent-loop` keeps gating on `skip` alone: a recommendation needs a human to
   act on it. The session that starts an automatic chain has that human, so it
   applies the full gate, and the passes its runner schedules do not gate again.
+
+## Amendment shipped with this record
+
+**To [0010](0010-assurance-control-matrix.md)**, "The human-glance gate". That
+section says the gate's inputs are the file classifications and nothing else,
+and that line count is never an automatic exemption. This record adds line count
+as a second input, in one bounded form:
+
+- It is a recommendation to a human, who overrides it by asking for the chain.
+  Where no human is present to answer, the gate is unchanged: `agent-loop` reads
+  `skip` alone, and a pass a runner schedules does not gate.
+- It does not ignore reach, which was 0010's objection to sizing. The
+  recommendation names every tier trigger the diff matches.
+- File kind still decides `skip`, the one outcome that stops without asking.
+
+0010's rule stands everywhere else: size selects no tier, lowers no control, and
+exempts nothing from a chain a human asked for.
 
 ## Consequences
 

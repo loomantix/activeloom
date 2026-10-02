@@ -307,6 +307,61 @@ describe('classifyFiles small-change gate', () => {
       ].join('\n'),
     );
     expect(classifyFiles(added).smallChange).toBe(false);
+    const removed = parseDiffPatch(
+      [
+        'diff --git a/third_party/lib b/third_party/lib',
+        'deleted file mode 160000',
+        'index 1111111..0000000',
+        '--- a/third_party/lib',
+        '+++ /dev/null',
+        '@@ -1 +0,0 @@',
+        '-Subproject commit 1111111111111111111111111111111111111111',
+      ].join('\n'),
+    );
+    expect(removed[0]!.submodule).toBe(true);
+    expect(classifyFiles(removed).smallChange).toBe(false);
+  });
+
+  it('is never small when a dependency file is not review-significant', () => {
+    const report = classifyFiles([
+      { path: 'docs/examples/deno.json', added: 1, deleted: 1, blank: 0 },
+      { path: 'src/a.ts', added: 1, deleted: 0, blank: 0 },
+    ]);
+    expect(report.classifications[0]!.reviewSignificant).toBe(false);
+    expect(report.smallChange).toBe(false);
+  });
+
+  it.each([
+    'infra/environments/test/main.tf',
+    'k8s/overlays/test/deploy.yaml',
+    '.claude/skills/critique/tests/SKILL.md',
+  ])('counts %s toward the limit and keeps its test class', (path) => {
+    const report = classifyFiles([{ path, added: 30, deleted: 0, blank: 0 }]);
+    expect(report.classifications[0]!.class).toBe('test');
+    expect(report.changeset.linesChanged.test).toBe(30);
+    expect(report.changeset.linesChanged.app).toBe(0);
+    expect(report.smallChangeLines).toBe(30);
+    expect(report.smallChange).toBe(false);
+  });
+
+  it.each([
+    'infra/modules/bucket/main_test.go',
+    '.claude/skills/critique/scripts/ledger.test.js',
+    'infra/test/fixtures/plan.tf',
+    'spec/openapi.yaml',
+  ])('leaves %s outside the limit', (path) => {
+    const report = classifyFiles([{ path, added: 30, deleted: 0, blank: 0 }]);
+    expect(report.classifications[0]!.class).toBe('test');
+    expect(report.smallChangeLines).toBe(0);
+    expect(report.smallChange).toBe(true);
+  });
+
+  it('reads a custom prompt surface when sizing a test-named path', () => {
+    const files = [{ path: 'prompts/tests/role.md', added: 30, deleted: 0 }];
+    expect(classifyFiles(files).smallChangeLines).toBe(0);
+    expect(
+      classifyFiles(files, { promptSurfaces: ['prompts/'] }).smallChangeLines,
+    ).toBe(30);
   });
 
   it('reports test churn beside a small change without counting it', () => {
@@ -493,6 +548,7 @@ describe('classifyRange', () => {
     const report = classifyRange({ base: BASE, head: HEAD });
     expect(runner.lastArgs).toContain(`${BASE}..${HEAD}`);
     expect(runner.lastArgs).toContain('--submodule=short');
+    expect(runner.lastArgs).toContain('--ignore-submodules=none');
     expect(report.changeset.linesChanged.app).toBe(2);
     expect(report.skip).toBe(false);
   });

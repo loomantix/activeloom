@@ -25,8 +25,10 @@ export const CHANGESET_CLASSIFIER_VERSION = 1;
  * Application churn below which the gate recommends a human glance.
  *
  * A person reads a diff this size in full, so a review chain adds cost and
- * almost no coverage. The limit is exclusive and counts non-blank `app` churn
- * only: a defect in a test reaches a red CI run rather than production.
+ * almost no coverage. The limit is exclusive and counts non-blank `app` churn,
+ * plus configuration and prompt surfaces filed under a test-named directory.
+ * Other test churn is outside it: a defect in a test reaches a red CI run
+ * rather than production.
  */
 export const SMALL_CHANGE_LINE_LIMIT = 20;
 
@@ -126,8 +128,10 @@ const REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;
 /**
  * Further lockfiles and manifests that only the small-change gate reads.
  *
- * They stay out of the sets above so no stored classification changes: adding
- * one there would reclassify paths in records already written.
+ * Apart from `pnpm-workspace.yaml`, which is already config and is repeated
+ * here because `isDependencyFile` reads this set, they stay out of the sets
+ * above so no stored classification changes: adding one there would reclassify
+ * paths in records already written.
  */
 const SMALL_CHANGE_DEPENDENCY_BASENAMES: ReadonlySet<string> = new Set([
   'pnpm-workspace.yaml',
@@ -322,13 +326,31 @@ function isGenerated(path: string, name: string): boolean {
   );
 }
 
-function isTest(path: string, name: string): boolean {
+function isTestName(name: string): boolean {
   return (
     TEST_BASENAMES.has(name) ||
-    hasPrefix(path, TEST_PREFIXES) ||
-    hasSegment(path, TEST_SEGMENTS) ||
     /\.(test|spec)\.[^.]+$/.test(name) ||
     /_test\.(go|py|rb)$/.test(name)
+  );
+}
+
+function isTest(path: string, name: string): boolean {
+  return (
+    isTestName(name) ||
+    hasPrefix(path, TEST_PREFIXES) ||
+    hasSegment(path, TEST_SEGMENTS)
+  );
+}
+
+function isPromptSurface(
+  path: string,
+  promptSurfaces: readonly string[],
+): boolean {
+  return promptSurfaces.some(
+    (surface) =>
+      path === surface ||
+      (surface.endsWith('/') && path.startsWith(surface)) ||
+      path.endsWith(`/${surface}`),
   );
 }
 
@@ -359,6 +381,30 @@ function isDependencyFile(path: string): boolean {
     DEPENDENCY_MANIFEST_BASENAMES.has(name) ||
     SMALL_CHANGE_DEPENDENCY_BASENAMES.has(name) ||
     REQUIREMENTS_FILE.test(name)
+  );
+}
+
+/**
+ * Whether a `test`-class path is configuration or a prompt surface that the
+ * test rule claimed by directory alone.
+ *
+ * That rule runs first and matches any test-named segment, so an environment
+ * called `test` files its Terraform as test churn. The stored class stays as
+ * it is. The small-change gate counts these lines, because a defect in them
+ * reaches a deployment or a model rather than a red CI run. A file named as a
+ * test is test code wherever it sits.
+ */
+function isSourceUnderTestPath(
+  path: string,
+  promptSurfaces: readonly string[],
+): boolean {
+  const name = basename(path).toLowerCase();
+  if (isTestName(name)) {
+    return false;
+  }
+  return (
+    isPromptSurface(path, promptSurfaces) ||
+    (!isFixture(path, name) && isConfig(path, name, extensionOf(path)))
   );
 }
 
@@ -410,14 +456,7 @@ export function classifyPath(
   if (isTest(path, name)) {
     return classify('test', true);
   }
-  if (
-    promptSurfaces.some(
-      (surface) =>
-        path === surface ||
-        (surface.endsWith('/') && path.startsWith(surface)) ||
-        path.endsWith(`/${surface}`),
-    )
-  ) {
+  if (isPromptSurface(path, promptSurfaces)) {
     return classify('app', true);
   }
   if (isFixture(path, name)) {
@@ -468,7 +507,9 @@ function emptyChangeset(): Changeset {
  * cannot be sized by its lines and keeps the range out. Comment churn counts
  * toward the limit until a lexer can exclude it, which errs toward running the
  * chain. Test churn is deliberately outside the limit, so a caller that
- * reports `smallChangeLines` reports `linesChanged.test` beside it.
+ * reports `smallChangeLines` reports `linesChanged.test` beside it. The
+ * exception is configuration or a prompt surface under a test-named directory:
+ * it keeps its `test` class and also counts toward the limit.
  */
 export function classifyFiles(
   files: readonly ChangedFile[],
@@ -477,6 +518,8 @@ export function classifyFiles(
   const changeset = emptyChangeset();
   const classifications: FileClassification[] = [];
   let unsizedFiles = 0;
+  let smallChangeLines = 0;
+  const promptSurfaces = options?.promptSurfaces ?? DEFAULT_PROMPT_SURFACES;
   for (const file of files) {
     const classification = classifyPath(file.path, options);
     classifications.push(classification);
@@ -514,6 +557,13 @@ export function classifyFiles(
     ) {
       unsizedFiles += 1;
     }
+    if (
+      classification.class === 'app' ||
+      (classification.class === 'test' &&
+        isSourceUnderTestPath(classification.path, promptSurfaces))
+    ) {
+      smallChangeLines += counted;
+    }
     changeset.linesChanged.blank += blank;
     changeset.linesChanged[classification.class] += counted;
 
@@ -532,8 +582,8 @@ export function classifyFiles(
     smallChange:
       changeset.reviewSignificantFiles > 0 &&
       unsizedFiles === 0 &&
-      changeset.linesChanged.app < SMALL_CHANGE_LINE_LIMIT,
-    smallChangeLines: changeset.linesChanged.app,
+      smallChangeLines < SMALL_CHANGE_LINE_LIMIT,
+    smallChangeLines,
   };
 }
 
