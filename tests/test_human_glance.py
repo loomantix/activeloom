@@ -108,9 +108,14 @@ def test_the_workflow_defines_human_glance_ahead_of_the_tier(root: str) -> None:
 def test_the_gate_stops_on_a_small_change(root: str, skill: str) -> None:
     body = _skill(root, skill)
     gate = " ".join(body.split(GATE_HEADING, 1)[1].split("\n## ", 1)[0].split())
-    assert "On `smallChange: true`, print that section's small-change recommendation" in gate
+    assert (
+        "On `smallChange: true`, print that section's small-change recommendation "
+        "and stop the same way." in gate
+    )
     assert "and is not a small change" in gate
     assert "overrode a small-change recommendation" in gate
+    # A relay already under way is not stopped by a later session's gate.
+    assert "when a small change's open PR already carries a tier marker" in gate
 
 
 @pytest.mark.parametrize("root", HARNESS_ROOTS)
@@ -119,14 +124,22 @@ def test_the_workflow_recommends_a_glance_for_a_small_change(root: str) -> None:
     gate = body.split("### Human glance", 1)[1].split("### What sets the tier", 1)[0]
     assert '`"smallChange": true`' in gate
     assert (
-        "Human glance recommended: N changed lines of code or config in M files. "
-        "Triggers: <matched triggers, or none>. Read the diff and merge, or ask for "
-        "the review chain to run." in gate
+        "Human glance recommended: N changed lines of code or config and T of tests "
+        "in M files. Triggers: <matched triggers, or none>. Read the diff and merge, "
+        "or ask for the review chain to run." in gate
     )
-    # The override runs the chain without selecting Deep.
-    assert "the request is trigger 6 only when it asks for a deep review" in gate
-    # No human acts on a recommendation inside a controller-scheduled pass.
-    assert "a controller gates on `skip` alone and ignores `smallChange`" in gate
+    # Test lines sit outside the limit, so the line reports them.
+    assert "T as `linesChanged.test`" in gate
+    # The override runs the chain without selecting Deep, whenever it was asked.
+    assert "the request is trigger 6 only when it asks for a deep review. The same holds" in gate
+    assert "For a range with no review-significant file, that request is trigger 6" in gate
+    # The human who asks for an automatic chain is there to answer.
+    assert (
+        "applies this gate in full, small-change recommendation included, before it "
+        "starts the runner" in gate
+    )
+    # No human acts on a recommendation inside agent-loop.
+    assert "so it gates on `skip` alone and ignores `smallChange`" in gate
     # Neither glance outcome is merge authority.
     assert "Neither line authorizes a merge." in gate
 

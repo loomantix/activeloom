@@ -234,6 +234,11 @@ describe('classifyFiles small-change gate', () => {
     'services/api/requirements-dev.txt',
     'go.mod',
     'crates/x/Cargo.toml',
+    'pnpm-workspace.yaml',
+    'bun.lock',
+    'Pipfile.lock',
+    'infra/.terraform.lock.hcl',
+    '.gitmodules',
   ])('is never small when the range touches %s', (path) => {
     const report = classifyFiles([
       { path, added: 1, deleted: 1, blank: 0 },
@@ -256,6 +261,64 @@ describe('classifyFiles small-change gate', () => {
       { path: 'docs/diagram.png', added: 0, deleted: 0, blank: 0 },
     ]);
     expect(report.smallChange).toBe(true);
+  });
+
+  it('leaves the small-change dependency names out of the stored classes', () => {
+    // `deno.json` under docs/ stays docs: the wider list sizes the gate only.
+    expect(classifyPath('docs/examples/deno.json').class).toBe('docsConfig');
+    expect(classifyPath('docs/examples/package.json').class).toBe('app');
+  });
+
+  it('is never small when the range bumps a submodule', () => {
+    const patch = [
+      'diff --git a/third_party/lib b/third_party/lib',
+      'index 1111111..2222222 160000',
+      '--- a/third_party/lib',
+      '+++ b/third_party/lib',
+      '@@ -1 +1 @@',
+      '-Subproject commit 1111111111111111111111111111111111111111',
+      '+Subproject commit 2222222222222222222222222222222222222222',
+      'diff --git a/src/a.ts b/src/a.ts',
+      'index 3333333..4444444 100644',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1 +1 @@',
+      '-const a = 1;',
+      '+const a = 2;',
+    ].join('\n');
+    const files = parseDiffPatch(patch);
+    expect(files.map((file) => file.submodule ?? false)).toEqual([true, false]);
+    const report = classifyFiles(files);
+    expect(report.smallChangeLines).toBe(4);
+    expect(report.smallChange).toBe(false);
+    expect(classifyFiles(files.slice(1)).smallChange).toBe(true);
+  });
+
+  it('is never small when the range adds or removes a submodule', () => {
+    const added = parseDiffPatch(
+      [
+        'diff --git a/third_party/lib b/third_party/lib',
+        'new file mode 160000',
+        'index 0000000..2222222',
+        '--- /dev/null',
+        '+++ b/third_party/lib',
+        '@@ -0,0 +1 @@',
+        '+Subproject commit 2222222222222222222222222222222222222222',
+      ].join('\n'),
+    );
+    expect(classifyFiles(added).smallChange).toBe(false);
+  });
+
+  it('reports test churn beside a small change without counting it', () => {
+    // Deliberate: the limit bounds application churn only. The gate prints
+    // `linesChanged.test` so a test-only or test-heavy range is not described
+    // as zero lines.
+    const report = classifyFiles([
+      { path: 'tests/test_a.py', added: 1500, deleted: 500, blank: 0 },
+    ]);
+    expect(report.smallChange).toBe(true);
+    expect(report.smallChangeLines).toBe(0);
+    expect(report.changeset.linesChanged.test).toBe(2000);
   });
 });
 
@@ -429,6 +492,7 @@ describe('classifyRange', () => {
     setGitHubRunner(runner);
     const report = classifyRange({ base: BASE, head: HEAD });
     expect(runner.lastArgs).toContain(`${BASE}..${HEAD}`);
+    expect(runner.lastArgs).toContain('--submodule=short');
     expect(report.changeset.linesChanged.app).toBe(2);
     expect(report.skip).toBe(false);
   });

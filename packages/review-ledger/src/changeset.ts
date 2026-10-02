@@ -123,6 +123,36 @@ const CONFIG_BASENAMES: ReadonlySet<string> = new Set([
 
 const REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;
 
+/**
+ * Further lockfiles and manifests that only the small-change gate reads.
+ *
+ * They stay out of the sets above so no stored classification changes: adding
+ * one there would reclassify paths in records already written.
+ */
+const SMALL_CHANGE_DEPENDENCY_BASENAMES: ReadonlySet<string> = new Set([
+  'pnpm-workspace.yaml',
+  'bun.lock',
+  'deno.json',
+  'deno.jsonc',
+  'deno.lock',
+  'pipfile',
+  'pipfile.lock',
+  '.terraform.lock.hcl',
+  'mix.exs',
+  'mix.lock',
+  'package.swift',
+  'package.resolved',
+  'packages.lock.json',
+  'gradle.lockfile',
+  'go.work',
+  'go.work.sum',
+  '.gitmodules',
+]);
+
+/** A header line naming mode 160000: the entry is a submodule gitlink. */
+const GITLINK_HEADER =
+  /^(?:index [0-9a-f]+\.\.[0-9a-f]+|new file mode|deleted file mode|old mode|new mode) 160000$/;
+
 const CONFIG_PREFIXES: readonly string[] = [
   '.github/workflows/',
   '.github/actions/',
@@ -327,6 +357,7 @@ function isDependencyFile(path: string): boolean {
   return (
     GENERATED_BASENAMES.has(name) ||
     DEPENDENCY_MANIFEST_BASENAMES.has(name) ||
+    SMALL_CHANGE_DEPENDENCY_BASENAMES.has(name) ||
     REQUIREMENTS_FILE.test(name)
   );
 }
@@ -432,10 +463,12 @@ function emptyChangeset(): Changeset {
  * with a guess.
  *
  * `smallChange` is a second gate answer beside `skip`, and the two never hold
- * together. It fails closed: a dependency file, or a review-significant file
- * with no line churn (binary, mode-only, pure rename), cannot be sized by its
- * lines and keeps the range out. Comment churn counts toward the limit until a
- * lexer can exclude it, which errs toward running the chain.
+ * together. It fails closed: a dependency file, a submodule gitlink, or a
+ * review-significant file with no line churn (binary, mode-only, pure rename)
+ * cannot be sized by its lines and keeps the range out. Comment churn counts
+ * toward the limit until a lexer can exclude it, which errs toward running the
+ * chain. Test churn is deliberately outside the limit, so a caller that
+ * reports `smallChangeLines` reports `linesChanged.test` beside it.
  */
 export function classifyFiles(
   files: readonly ChangedFile[],
@@ -476,6 +509,7 @@ export function classifyFiles(
     const counted = churn - blank;
     if (
       isDependencyFile(file.path) ||
+      file.submodule === true ||
       (classification.reviewSignificant && churn === 0)
     ) {
       unsizedFiles += 1;
@@ -655,6 +689,10 @@ export function parseDiffPatch(patch: string): ChangedFile[] {
     if (current === null) {
       continue;
     }
+    if (!inHunk && GITLINK_HEADER.test(rawLine)) {
+      current.submodule = true;
+      continue;
+    }
     if (!inHunk && rawLine.startsWith('--- ')) {
       const left = stripSide(rawLine.slice(4).trim());
       if (left !== null) {
@@ -741,6 +779,10 @@ export function classifyRange(params: {
     '--no-color',
     '--no-ext-diff',
     '--find-renames',
+    // A clone configured with `diff.submodule=log` would otherwise print a
+    // gitlink change with no file record, and the range would lose it.
+    '--submodule=short',
+    '--ignore-submodules=none',
     `${params.base}..${params.head}`,
   ]);
   return classifyFiles(parseDiffPatch(patch), params.options);

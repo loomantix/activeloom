@@ -299,8 +299,10 @@ The report carries two gate answers that never hold together. `skip` is true
 when no file is review-significant. `smallChange` is true when the range is
 review-significant but changes fewer than `smallChangeLimit` (20) non-blank
 `app` lines, reported as `smallChangeLines`. It fails closed: a lockfile, a
-dependency manifest, or a review-significant file with no line churn keeps a
-range out, and comment lines count until a lexer can exclude them.
+dependency manifest, a submodule gitlink, or a review-significant file with no
+line churn keeps a range out, and comment lines count until a lexer can exclude
+them. Test lines are outside the limit, so a test-only range of any size is
+small; a caller reports `linesChanged.test` beside `smallChangeLines`.
 
 ### Record What a Pass Cost
 

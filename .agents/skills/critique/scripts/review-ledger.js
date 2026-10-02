@@ -17374,6 +17374,26 @@ var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
   ".platform-config.yml"
 ]);
 var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;
+var SMALL_CHANGE_DEPENDENCY_BASENAMES = /* @__PURE__ */ new Set([
+  "pnpm-workspace.yaml",
+  "bun.lock",
+  "deno.json",
+  "deno.jsonc",
+  "deno.lock",
+  "pipfile",
+  "pipfile.lock",
+  ".terraform.lock.hcl",
+  "mix.exs",
+  "mix.lock",
+  "package.swift",
+  "package.resolved",
+  "packages.lock.json",
+  "gradle.lockfile",
+  "go.work",
+  "go.work.sum",
+  ".gitmodules"
+]);
+var GITLINK_HEADER = /^(?:index [0-9a-f]+\.\.[0-9a-f]+|new file mode|deleted file mode|old mode|new mode) 160000$/;
 var CONFIG_PREFIXES = [
   ".github/workflows/",
   ".github/actions/",
@@ -17516,7 +17536,7 @@ function isConfig(path, name, extension) {
 }
 function isDependencyFile(path) {
   const name = basename(normalizePath(path)).toLowerCase();
-  return GENERATED_BASENAMES.has(name) || DEPENDENCY_MANIFEST_BASENAMES.has(name) || REQUIREMENTS_FILE.test(name);
+  return GENERATED_BASENAMES.has(name) || DEPENDENCY_MANIFEST_BASENAMES.has(name) || SMALL_CHANGE_DEPENDENCY_BASENAMES.has(name) || REQUIREMENTS_FILE.test(name);
 }
 function isDocs(path, name, extension) {
   return DOCS_BASENAMES.has(name) || DOCS_EXTENSIONS.has(extension) || hasPrefix(path, DOCS_PREFIXES) || hasSegment(path, DOCS_SEGMENTS);
@@ -17589,7 +17609,7 @@ function classifyFiles(files, options) {
       fail(`changed file ${file.path} reports an invalid blank count`);
     }
     const counted = churn - blank;
-    if (isDependencyFile(file.path) || classification.reviewSignificant && churn === 0) {
+    if (isDependencyFile(file.path) || file.submodule === true || classification.reviewSignificant && churn === 0) {
       unsizedFiles += 1;
     }
     changeset.linesChanged.blank += blank;
@@ -17726,6 +17746,10 @@ function parseDiffPatch(patch) {
     if (current === null) {
       continue;
     }
+    if (!inHunk && GITLINK_HEADER.test(rawLine)) {
+      current.submodule = true;
+      continue;
+    }
     if (!inHunk && rawLine.startsWith("--- ")) {
       const left = stripSide(rawLine.slice(4).trim());
       if (left !== null) {
@@ -17799,6 +17823,10 @@ function classifyRange(params) {
     "--no-color",
     "--no-ext-diff",
     "--find-renames",
+    // A clone configured with `diff.submodule=log` would otherwise print a
+    // gitlink change with no file record, and the range would lose it.
+    "--submodule=short",
+    "--ignore-submodules=none",
     `${params.base}..${params.head}`
   ]);
   return classifyFiles(parseDiffPatch(patch), params.options);

@@ -103,6 +103,48 @@ describe('CLI command parser and execution', () => {
       }
     },
   );
+  it('prints every field the human-glance gate reads by name', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'classify-cli-'));
+    const diff = join(directory, 'range.diff');
+    writeFileSync(
+      diff,
+      [
+        'diff --git a/src/a.ts b/src/a.ts',
+        '--- a/src/a.ts',
+        '+++ b/src/a.ts',
+        '@@ -1 +1 @@',
+        '-const a = 1;',
+        '+const a = 2;',
+        'diff --git a/tests/test_a.py b/tests/test_a.py',
+        '--- a/tests/test_a.py',
+        '+++ b/tests/test_a.py',
+        '@@ -1 +1,2 @@',
+        '-assert a == 1',
+        '+assert a == 2',
+        '+assert b == 3',
+        '',
+      ].join('\n'),
+    );
+    const stdout = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+    try {
+      expect(runCli(['classify-changeset', '--diff-file', diff])).toBe(0);
+      const report = JSON.parse(String(stdout.mock.calls[0]![0]));
+      expect(report).toMatchObject({
+        skip: false,
+        smallChange: true,
+        smallChangeLines: 2,
+        smallChangeLimit: 20,
+        reviewSignificantFiles: 2,
+        linesChanged: { app: 2, test: 3 },
+      });
+    } finally {
+      stdout.mockRestore();
+      rmSync(directory, { recursive: true });
+    }
+  });
+
   it('outputs protocol version when requested', () => {
     const stdoutSpy = vi
       .spyOn(process.stdout, 'write')

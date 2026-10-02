@@ -18,7 +18,8 @@ recommendation and stop the same way.
 
 Continue when the range carries a review-significant file and is not a small
 change, when a human explicitly asked for this change to be reviewed anyway or
-overrode a small-change recommendation, or when
+overrode a small-change recommendation, when a small change's open PR already
+carries a tier marker, or when
 `$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
 pass owns the gate.
 

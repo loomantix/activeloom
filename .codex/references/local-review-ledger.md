@@ -218,9 +218,10 @@ before it requires or opens a draft PR, checks context, resolves a round or
 stance, takes a telemetry snapshot, or writes a result, attestation, tier or
 refactor marker, or telemetry record — so none of those artifacts exists for a
 human-glance range. One or more review-significant files means the normal chain,
-with one exception: a range short enough to read in full gets a human-glance
-recommendation that stops the same way, and the chain runs when a human asks
-for it. A mixed changeset is not a partial human glance.
+with one exception: a range whose code and configuration change is short enough
+to read in full gets a human-glance recommendation that stops the same way, and
+the chain runs when a human asks for it. A mixed changeset is not a partial
+human glance.
 
 The workflow's "Human glance" section names the range each entry point
 classifies, the small-change recommendation and its override, the
