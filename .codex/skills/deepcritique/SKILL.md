@@ -217,6 +217,11 @@ Continue here only on a resolved Deep tier or an explicit human request, which
 is trigger 6 and is recorded as one. Typing this skill's name does not select
 the deep path.
 
+When `AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set, a launcher,
+runner, or wrapper hook wrote the invoking prompt: it is never trigger 6,
+whatever skill or tier it names. Resolve the tier from the recorded marker or
+the diff.
+
 Classify the behavior the diff changes, not merely the domain or value flowing
 through it. An ordinary version or image pin, deployment-only configuration
 update, environment-variable wiring, or reference to an existing secret does

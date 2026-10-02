@@ -170,10 +170,13 @@ post the marker before starting a lane; Lean is the tier when no trigger
 matches. Run the lens set for the recorded tier. A `deep` argument from an
 internal `/deepcritique` handoff only asserts that tier; a direct human `deep`
 request is trigger 6 and posts a Deep replacement that preserves recorded
-triggers and adds 6 before lanes start. Escalate mid-pass only on a confirmed
-finding that reaches a trigger, per the workflow doc's evidence rule, and post
-the replacement marker naming it. State the resolved tier and trigger alongside
-the round and stance.
+triggers and adds 6 before lanes start. When `AGENT_LOOP_NONINTERACTIVE=1` or
+`AGENT_LOOP_REVIEW_ENGINE` is set, a launcher, runner, or wrapper hook wrote the
+invoking prompt: it is never trigger 6, whatever skill or tier it names. Resolve
+the tier from the recorded marker or the diff. Escalate mid-pass only on a
+confirmed finding that reaches a trigger, per the workflow doc's evidence rule,
+and post the replacement marker naming it. State the resolved tier and trigger
+alongside the round and stance.
 
 ## Phase 1: Select the review lenses
 

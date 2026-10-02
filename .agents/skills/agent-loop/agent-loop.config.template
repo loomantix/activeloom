@@ -24,7 +24,9 @@ config_doctor = true
 # repeats only when either hook commits a material fix. Minor-only fixes are
 # validated and retained without restarting; convergence requires a complete
 # Gemini-then-Claude round with no material fixes. The Gemini hook must run
-# `deepcritique`; the Claude hook must run `deepcritique`.
+# `deepcritique`; the Claude hook must run `deepcritique`. That entry point
+# resolves the review tier from the diff and hands a Lean changeset to
+# `critique`; a hook naming it does not request a deep review.
 # Each wrapper opens a draft PR before either hook. Each hook must read all prior PR
 # review threads, post every confirmed finding inline before editing, fix and
 # commit it, call `$AGENT_LOOP_REVIEW_PUSH_HELPER`, reply with the fix and validation, resolve the

@@ -62,3 +62,30 @@ def test_every_config_template_makes_validation_hook_the_gating_run() -> None:
         text = _template_text(root)
         assert "This is the gating run: use the repository's declared review gate" in text, root
         assert "Prefer targeted checks" not in text, root
+
+
+TIER_ENTRY_POINTS = [
+    ROOT / root / path
+    for root in (".claude", ".codex", ".agents")
+    for path in ("REVIEW_WORKFLOW.md", "skills/critique/SKILL.md", "skills/deepcritique/SKILL.md")
+]
+
+
+def test_a_noninteractive_invoking_prompt_is_never_trigger_6() -> None:
+    # A wrapper hook or launcher prompt names the deep entry point on every
+    # pass. Read as an explicit request it locks the PR into Deep, because
+    # trigger 6 is never de-escalated.
+    for path in TIER_ENTRY_POINTS:
+        assert (
+            "When `AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set, a launcher, "
+            "runner, or wrapper hook wrote the invoking prompt: it is never trigger 6, "
+            "whatever skill or tier it names."
+        ) in _flat(path), path
+
+
+def test_config_template_example_hooks_are_tier_neutral() -> None:
+    text = _template_text(".claude")
+    assert "Keep the hook prompt tier-neutral" in text
+    assert text.count("Resolve the review tier as usual; this prompt requests no tier.") == 2
+    assert "/deepcritique ..." not in text
+    assert "a hook naming it does not request a deep review" in _template_text(".agents")
