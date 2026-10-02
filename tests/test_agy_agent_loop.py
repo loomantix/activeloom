@@ -670,6 +670,104 @@ def _run(
 
 
 
+def test_v3_refused_minor_result_is_finalized_without_another_reviewer(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    hook = tmp_path / "refused-minor-v3-hook.py"
+    _write_executable(
+        hook,
+        """#!/usr/bin/env python3
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+
+state = Path(os.environ["AGENT_STATE_DIR"])
+with (state / "events.log").open("a", encoding="utf-8") as handle:
+    handle.write("claude-hook\\n")
+before = os.environ["AGENT_LOOP_PR_HEAD_SHA"]
+round_number = os.environ["AGENT_LOOP_REVIEW_ROUND"]
+result_file = Path(os.environ["AGENT_LOOP_REVIEW_RESULT_FILE"])
+if round_number != "1":
+    result_file.write_text(json.dumps({
+        "version": 3, "status": "clean", "engine": "claude",
+        "round": int(round_number),
+        "baseSha": os.environ["AGENT_LOOP_REVIEW_BASE_SHA"],
+        "beforeSha": before, "afterSha": before, "classification": None,
+        "findingFingerprints": [], "finalLaneComplete": True,
+    }), encoding="utf-8")
+    raise SystemExit(0)
+
+Path("catalog.ts").write_text("// Corrected note.\\nexport const entries = [];\\n", encoding="utf-8")
+subprocess.run(["git", "add", "catalog.ts"], check=True)
+subprocess.run(["git", "commit", "-m", "fix: correct catalog note"], check=True)
+subprocess.run([os.environ["AGENT_LOOP_REVIEW_PUSH_HELPER"]], check=True)
+after = subprocess.run(
+    ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+).stdout.strip()
+
+finding_content = "Catalog note is wrong."
+disposition_content = f"Fixed in {after}. Validation: fixture."
+finding = (
+    f"<!-- local-review:v3 engine=claude round={round_number} head={before} "
+    "fingerprint=catalog-note occurrence=1 severity=minor lens=comments "
+    f"content-sha256={hashlib.sha256(finding_content.encode()).hexdigest()} -->"
+    f"\\n{finding_content}"
+)
+disposition = (
+    f"<!-- local-review-disposition:v3 engine=claude round={round_number} "
+    f"head={after} fingerprint=catalog-note occurrence=1 outcome=fixed "
+    f"content-sha256={hashlib.sha256(disposition_content.encode()).hexdigest()} -->"
+    f"\\n{disposition_content}"
+)
+(state / "review-threads.json").write_text(json.dumps([{
+    "id": "THREAD-CATALOG",
+    "isResolved": True,
+    "repository": {"nameWithOwner": "fixture/consumer"},
+    "pullRequest": {"number": 1},
+    "comments": {
+        "nodes": [
+            {"databaseId": 71, "body": finding, "author": {"login": "tester"}},
+            {"databaseId": 72, "body": disposition, "author": {"login": "tester"}},
+        ],
+        "pageInfo": {"hasNextPage": False},
+    },
+}]), encoding="utf-8")
+refused = subprocess.run(
+    [
+        "node", ".agents/skills/critique/scripts/review-ledger.js", "write-result",
+        "--repo", "fixture/consumer", "--pr", os.environ["AGENT_LOOP_PR_NUMBER"],
+        "--head", after, "--engine", "claude", "--round", round_number,
+        "--base", os.environ["AGENT_LOOP_REVIEW_BASE_SHA"], "--before", before,
+        "--result-file", str(result_file), "--classification", "minor",
+    ],
+    capture_output=True, text=True,
+)
+(state / "write-result.stderr").write_text(refused.stderr, encoding="utf-8")
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "37"],
+        issues=[_issue(37)],
+        config=_config_v3(tmp_path, claude_review_hook=str(hook)),
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    state = consumer[3]
+    assert "minor classification requires a non-behavioral change range" in (
+        state / "write-result.stderr"
+    ).read_text(encoding="utf-8")
+    assert "recovered: result-finalization (Claude, round 1)" in result.stdout
+    # One Claude launch per round: recovery finalized round 1 in place.
+    hook_events = (state / "events.log").read_text(encoding="utf-8").splitlines()
+    assert hook_events.count("claude-hook") == 2
+    result_file = next((tmp_path / "logs").glob("*/claude-review-round-1.result.json"))
+    recovered = json.loads(result_file.read_text(encoding="utf-8"))
+    assert (recovered["status"], recovered["classification"]) == ("changed", "material")
+
+
 def _env_capture(name: str) -> str:
     return (
         "env | grep -E '^AGENT_LOOP_(CLAUDE|CODEX|GEMINI|NONINTERACTIVE)' | sort "

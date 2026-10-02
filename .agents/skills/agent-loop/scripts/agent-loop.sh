@@ -1578,6 +1578,31 @@ recover_v3_review_pass() {
     REVIEW_PASS_OUTCOME_SIGNATURE="$outcome_signature"
 }
 
+# Finalize a completed pass whose `write-result` verification was refused. The
+# helper left a blocked result beside a recovery sidecar holding the candidate.
+# As in the review-chain runner, the sidecar must still hash to the digest
+# pinned at the hook's zero exit, and `recover-result` rechecks the live head,
+# Git transition, dispositions, and range classification before it writes. No
+# reviewer is launched and no round is spent. Prints the re-validated result.
+finalize_blocked_review_result() {
+    local slug="$1" round="$2" before_sha="$3" after_sha="$4" result_file="$5"
+    local pinned_signature="$6" historical_comment_ids_file="$7" signature
+    local -a identity=(--engine "$slug" --round "$round"
+        --base "$AGENT_LOOP_REVIEW_BASE_SHA" --before "$before_sha"
+        --head "$after_sha" --result-file "$result_file")
+    signature="$(review_outcome_signature "$result_file.recovery.json")" || return 1
+    if [ "$signature" != "$pinned_signature" ]; then
+        echo "completed result recovery evidence changed after the review hook returned" >&2
+        return 1
+    fi
+    node "$REVIEW_LEDGER" recover-result \
+        --repo "$GH_REPO" --pr "$AGENT_LOOP_PR_NUMBER" "${identity[@]}" \
+        --actor "$CURRENT_LOGIN" \
+        --expected-recovery-sha256 "${pinned_signature#file:}" \
+        --historical-comment-ids-file "$historical_comment_ids_file" >/dev/null || return 1
+    node "$REVIEW_LEDGER" validate-result "${identity[@]}"
+}
+
 run_review_pass() {
     local engine="$1" slug="$2" hook="$3" round="$4"
     local hook_description="$5" hook_failure_description="$6"
@@ -1586,6 +1611,7 @@ run_review_pass() {
     local result_file result_json result_status result_hash allowed_heads_file blocker
     local pre_pass_threads_file historical_comment_ids_file review_push_state_file
     local historical_comment_ids_signature
+    local result_recovery_signature=missing recovered_result_json
     local boundary_status
 
     prepare_review_pass_budget || return 1
@@ -1651,6 +1677,10 @@ run_review_pass() {
         return 1
     }
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
+        # Pin a result recovery sidecar at the hook's observed zero exit. Only
+        # these bytes may finalize a blocked result below.
+        result_recovery_signature="$(review_outcome_signature "$result_file.recovery.json")" || \
+            result_recovery_signature=unsafe
         require_review_outcome_signature "$engine pre-pass history" \
             "$historical_comment_ids_file" "$historical_comment_ids_signature" \
             "after review round $round" || return 1
@@ -1689,8 +1719,26 @@ run_review_pass() {
         result_hash="$(jq -r '.resultSha256' <<<"$result_json")"
         if [ "$result_status" = blocked ]; then
             blocker="$(jq -r '.blocker' <<<"$result_json")"
+            case "$result_recovery_signature" in
+                file:*)
+                    if recovered_result_json="$(finalize_blocked_review_result "$slug" "$round" \
+                        "$before_sha" "$after_sha" "$result_file" \
+                        "$result_recovery_signature" "$historical_comment_ids_file")"; then
+                        result_json="$recovered_result_json"
+                        result_status="$(jq -r '.status' <<<"$result_json")"
+                        result_hash="$(jq -r '.resultSha256' <<<"$result_json")"
+                    else
+                        echo "$engine review result finalization recovery failed in round $round" >&2
+                    fi
+                    ;;
+            esac
+        fi
+        if [ "$result_status" = blocked ]; then
             recovery_message "$engine review blocked in round $round: $blocker"
             return 1
+        fi
+        if [ -n "${recovered_result_json:-}" ]; then
+            echo "   recovered: result-finalization ($engine, round $round); no reviewer launched"
         fi
     fi
     boundary_status=0

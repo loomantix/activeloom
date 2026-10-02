@@ -264,7 +264,6 @@
     "docs": {
       "paths": [
         "docs/**",
-        "imports/**",
         "*.md",
         ".agents/**/*.md",
         ".claude/**/*.md",

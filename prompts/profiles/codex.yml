@@ -47,9 +47,6 @@ skills:
   diagnosing-bugs:
     FM_EXTRAS: ''
 
-  task-packet:
-    FM_EXTRAS: ''
-
   backlog-refinement:
     FM_EXTRAS: ''
     DESC_TRIGGER: ' Use when the user says refine backlog or refine-backlog, asks to set up backlog refinement, or before agent-loop, after issue triage, or after a loop run.'

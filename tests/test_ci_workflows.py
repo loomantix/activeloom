@@ -237,7 +237,6 @@ def test_pytest_run_pins_coverage_and_names_the_branch_config() -> None:
     [
         ("docs/agent-guide.md", True),
         ("docs/decisions/0001-x.md", True),
-        ("imports/upstream/file.txt", True),
         ("README.md", True),
         ("PROMPT_STACK_VERSION", True),
         (".claude/prompt-stack.json", True),

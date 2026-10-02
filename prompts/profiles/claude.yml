@@ -83,9 +83,6 @@ skills:
     # harness that later needs a key here does not have to edit the source.
     FM_EXTRAS: ''
 
-  task-packet:
-    FM_EXTRAS: 'argument-hint: Paste a full Task Packet markdown document'
-
   backlog-refinement:
     FM_EXTRAS: |-
       disable-model-invocation: true
