@@ -68,7 +68,7 @@ The session is done when **the frontier is empty** — every branch of the tree 
 
 Then summarize: the decisions made, the alternatives rejected and why, and anything the user explicitly ruled out of scope. Keep it under 400 words — it is a record of decisions, not a spec.
 
-**Do not act on it until the user confirms the understanding is shared.** When they do, the natural next steps are `<<INVOKE>>task-packet` for a single bounded change, `<<INVOKE>>issues` to file it, or `<<INVOKE>>backlog-refinement` if it needs breaking into an agent-ready queue.
+**Do not act on it until the user confirms the understanding is shared.** When they do, the natural next steps are `<<INVOKE>>issues start <n>` when the work already has an issue, `<<INVOKE>>issues` to file it when it does not, or `<<INVOKE>>backlog-refinement` if it needs breaking into an agent-ready queue.
 
 ## Record and hand back
 

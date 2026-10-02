@@ -49,7 +49,6 @@ Names below identify skills; use the invocation supported by the current harness
 | Set up a repository for autonomous work      | [Setup guide](autonomous-development.md)   | Stage by stage with user confirmation; ends at a first allowlisted loop run, not at merge                                           |
 | Prepare issues for autonomous work           | `backlog-refinement`                       | Curates the queue; does not authorize implementing every open issue                                                                 |
 | Implement a bounded issue queue              | `agent-loop`                               | Requires an explicit issue allowlist, harness-specific worker/review setup, and its own launch contract                             |
-| Execute a supplied implementation packet     | `task-packet`                              | Follow the packet's acceptance criteria and action boundaries                                                                       |
 | Choose reviewer models, effort, and order    | `review-setup`                             | Confirm settings with the user; the helper is the profile's only writer                                                             |
 | Clean up or review an existing PR            | `refactorpass`, `critique`, `deepcritique` | Read the review workflow and ledger first; resolve the tier before running                                                          |
 | Automate a local review relay                | `review-chain-runner.py`                   | Requires an authorized plan, clean dedicated worktree, draft PR, reviewers, and a repository validation contract or legacy commands |
@@ -86,16 +85,15 @@ Scheduled sync requires its workflow on the default branch and the appropriate r
 
 ## Know which source to edit
 
-| Source                                    | Purpose                                                      | Editing rule                                                                                   |
-| ----------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `prompts/skills/` and `prompts/profiles/` | Shared skill sources and harness vocabulary                  | Edit here for rendered skills, then run the renderer                                           |
-| `prompts/rendered-files.txt`              | Generated ownership inventory                                | Inspect to identify generated files; do not maintain by hand                                   |
-| `.claude/`, `.codex/`, `.agents/`         | Distributed prompts, references, and helpers                 | Some files are generated or vendored; establish ownership first                                |
-| `scripts/sync-targets.yml`                | Consumer destination and ownership contract                  | Controls shared and selected-harness targets                                                   |
-| `cli/`                                    | Installer and detection code                                 | Separate from the content it downloads                                                         |
-| `imports/`                                | Imported engine trees                                        | New consumers use the root manifest and harness trees, not separate installs from these copies |
-| Consumer `.activeloom-config.yml`         | Harness selection, substitutions, path permissions, opt-outs | Owned by that consumer                                                                         |
-| Consumer `.review/addendum.local.md`      | Repository-specific review lessons                           | Keep local context here; sync preserves it                                                     |
+| Source                                    | Purpose                                                      | Editing rule                                                    |
+| ----------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------- |
+| `prompts/skills/` and `prompts/profiles/` | Shared skill sources and harness vocabulary                  | Edit here for rendered skills, then run the renderer            |
+| `prompts/rendered-files.txt`              | Generated ownership inventory                                | Inspect to identify generated files; do not maintain by hand    |
+| `.claude/`, `.codex/`, `.agents/`         | Distributed prompts, references, and helpers                 | Some files are generated or vendored; establish ownership first |
+| `scripts/sync-targets.yml`                | Consumer destination and ownership contract                  | Controls shared and selected-harness targets                    |
+| `cli/`                                    | Installer and detection code                                 | Separate from the content it downloads                          |
+| Consumer `.activeloom-config.yml`         | Harness selection, substitutions, path permissions, opt-outs | Owned by that consumer                                          |
+| Consumer `.review/addendum.local.md`      | Repository-specific review lessons                           | Keep local context here; sync preserves it                      |
 
 Review prompts intentionally retain engine-specific implementations. Do not consolidate them merely because their names match. Read [prompt rendering](prompt-rendering.md), [decision records](decisions/README.md), and [Contributing](../CONTRIBUTING.md) before changing the shared source.
 

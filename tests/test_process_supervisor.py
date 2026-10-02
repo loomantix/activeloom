@@ -264,6 +264,11 @@ while True:
 
 
 def _run_main(module: Any, argv: list[str], monkeypatch: pytest.MonkeyPatch) -> int:
+    # `main()` runs in the pytest process here. The subreaper flag cannot be
+    # undone by monkeypatch and would outlive the test: every later orphan in
+    # this worker would be reparented to pytest and sit unreaped, so a sibling
+    # test that waits for a killed grandchild to disappear would never see it go.
+    monkeypatch.setattr(module, "_become_subreaper", lambda: None)
     monkeypatch.setattr(sys, "argv", ["process-supervisor.py", *argv])
     return int(module.main())
 
