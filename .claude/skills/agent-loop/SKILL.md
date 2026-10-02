@@ -272,8 +272,8 @@ hook must also carry `AGENT_LOOP_REVIEW_PUSH_HELPER`,
 rejects it:
 
 ```
-claude_review_hook = claude --print $([ "$AGENT_LOOP_CLAUDE_MODEL" = inherit ] || printf -- '--model %s' "$AGENT_LOOP_CLAUDE_MODEL") --effort "$AGENT_LOOP_CLAUDE_EFFORT" /deepcritique ... </dev/null
-codex_review_hook  = codex exec --json $([ "$AGENT_LOOP_CODEX_MODEL" = inherit ] || printf -- '-m %s' "$AGENT_LOOP_CODEX_MODEL") -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... /deepcritique ... </dev/null
+claude_review_hook = claude --print $([ "$AGENT_LOOP_CLAUDE_MODEL" = inherit ] || printf -- '--model %s' "$AGENT_LOOP_CLAUDE_MODEL") --effort "$AGENT_LOOP_CLAUDE_EFFORT" "/deepcritique $AGENT_LOOP_PR_NUMBER. Resolve the review tier as usual; this prompt requests no tier. ..." </dev/null
+codex_review_hook  = codex exec --json $([ "$AGENT_LOOP_CODEX_MODEL" = inherit ] || printf -- '-m %s' "$AGENT_LOOP_CODEX_MODEL") -c model_reasoning_effort="$AGENT_LOOP_CODEX_EFFORT" ... "Run the review entry point (the deepcritique skill) on PR $AGENT_LOOP_PR_NUMBER. Resolve the review tier as usual; this prompt requests no tier. ..." </dev/null
 ```
 
 A pinned model of `inherit` means "pass no model flag" so the CLI's own

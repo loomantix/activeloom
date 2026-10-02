@@ -206,7 +206,7 @@ the workflow doc's triggers and post the marker before starting a lane. Lean is
 the tier when no trigger matches.
 
 - **Lean**: the default. Run the lean two-lane review: code reviewer plus silent failure hunter. This is still an adversarial PR review, not a casual skim.
-- **Deep**: run the full independent review matrix below only when the recorded tier is Deep. A `deep` argument handed down from `deepcritique` asserts that recorded tier; a direct human `deep` request is trigger 6 and posts a Deep replacement marker that preserves the recorded triggers and adds 6 before lanes start. Deep mode is intentionally much heavier than lean mode; do not collapse it into one general review pass.
+- **Deep**: run the full independent review matrix below only when the recorded tier is Deep. A `deep` argument handed down from `deepcritique` asserts that recorded tier; a direct human `deep` request is trigger 6 and posts a Deep replacement marker that preserves the recorded triggers and adds 6 before lanes start. When `AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set, a launcher, runner, or wrapper hook wrote the invoking prompt: it is never trigger 6, whatever skill or tier it names. Resolve the tier from the recorded marker or the diff. Deep mode is intentionally much heavier than lean mode; do not collapse it into one general review pass.
 
 Escalate mid-pass only on a confirmed finding that reaches a trigger, per the
 workflow doc's evidence rule, and post the replacement marker naming it. A

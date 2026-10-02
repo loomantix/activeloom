@@ -153,7 +153,9 @@ that cannot run is not human glance; the entry point's own pre-flight handles it
   small change, the next rule sets the tier. Typing a review skill's name, or
   asking to "review this PR" or "run the review chain", is not that request:
   it invokes the entry point, which applies this gate and resolves the tier as
-  usual.
+  usual. When `AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set,
+  a launcher, runner, or wrapper hook wrote the invoking prompt: it is never
+  trigger 6, whatever skill or tier it names.
 - **Small-change override.** After the recommendation is printed, a human's
   request to run the chain on this range, in any words, is the override: the
   entry point continues past this gate. The tier then resolves from triggers

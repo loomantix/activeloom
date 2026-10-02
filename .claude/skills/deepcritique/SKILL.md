@@ -143,6 +143,11 @@ owns the v3 structured result for the transition, so do not exit before it
 finalizes one. Continue here only on a Deep tier or an explicit user override —
 itself trigger 6, recorded in the marker.
 
+When `AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set, a launcher,
+runner, or wrapper hook wrote the invoking prompt: it is never trigger 6,
+whatever skill or tier it names. Resolve the tier from the recorded marker or
+the diff.
+
 If Deep round 1 completes with no confirmed finding from **all owning lenses for
 every recorded trigger**, de-escalate: post the replacement marker naming every
 clean lens and send the remaining rounds to `/critique` at Lean. Never

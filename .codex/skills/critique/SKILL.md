@@ -195,7 +195,7 @@ the workflow doc's triggers and post the marker before starting a lane. Lean is
 the tier when no trigger matches.
 
 - **Lean**: the default. Review correctness and add lenses only for signals in the diff, including security and tests for a bounded sensitive-path repair.
-- **Deep**: examine the risks that selected Deep using the relevant lenses below. A `deep` argument handed down from `deepcritique` asserts that recorded tier; a direct human `deep` request is trigger 6 and posts a Deep replacement marker that preserves the recorded triggers and adds 6 before lanes start. Trace those risks beyond the edited lines; choose execution by the scope of that work.
+- **Deep**: examine the risks that selected Deep using the relevant lenses below. A `deep` argument handed down from `deepcritique` asserts that recorded tier; a direct human `deep` request is trigger 6 and posts a Deep replacement marker that preserves the recorded triggers and adds 6 before lanes start. When `AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set, a launcher, runner, or wrapper hook wrote the invoking prompt: it is never trigger 6, whatever skill or tier it names. Resolve the tier from the recorded marker or the diff. Trace those risks beyond the edited lines; choose execution by the scope of that work.
 
 Escalate mid-pass only on a confirmed finding that reaches a trigger, per the
 workflow doc's evidence rule, and post the replacement marker naming it. A
