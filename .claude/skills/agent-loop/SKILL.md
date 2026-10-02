@@ -112,6 +112,8 @@ stops even when the hook exits zero, with one exception under review contract v3
 without writing any result, and left no commit, push, ledger thread, or PR
 comment behind, is retried once in the same round (`retry:
 hook-ended-without-result`). The retry draws on the same review budget. A
+blocked result that carries a recovery sidecar is finalized in place instead
+(see Failure and Recovery). A
 pass that left uncommitted changes stops with `worktree-state`, and one that
 committed without a matching push checkpoint stops with
 `push-checkpoint-mismatch`. Any other pass that ends without a result,
@@ -435,6 +437,16 @@ interrupted pass under the same-round rules below, then lists the ref when the
 run completes. Any other divergence still stops, such as a remote ahead of the
 checkpoint or ledger evidence for a stranded commit.
 
+A blocked result beside a `<result-file>.recovery.json` sidecar is a completed
+pass whose `write-result` verification was refused, such as a `minor`
+classification on a behavioral range. After a zero-exit hook the wrapper pins
+the sidecar's SHA-256, runs `review-ledger.js recover-result` with the pass's
+identity arguments and its pre-pass comment snapshot, re-validates the result,
+and continues with the ordinary validation and attestation steps. Recovery may
+promote a saved `minor` to `material`; it launches no reviewer and spends no
+round. A blocked result without a sidecar, a sidecar that changed after the
+hook returned, or a failed recovery stops as `review-blocked`.
+
 Resuming a run interrupted in the Claude leg of any round, with that round's
 Codex result on disk and the head unchanged, re-verifies the Codex evidence and
 runs only the Claude leg of the same round; it does not consume a round. If the
@@ -511,7 +523,7 @@ line, appended with `fsync`, carrying `event`, `epoch`, and `runTag`:
 | `stop`                                      | `issue`, `category`, `resumable`, `resumeCommand`, `hookPhase`, `hookLog` |
 | `parked`                                    | `issue`, `category`, `resumeCommand`                                      |
 | `bail`                                      | `issue`, `classification`, `handoffPath`                                  |
-| `recovered`                                 | `issue`, `kind`, `ref`                                                    |
+| `recovered`                                 | `issue`, `kind`, and `ref` or `round` and `engine`                        |
 | `pr_ready`                                  | `issue`, `pr`, `head`                                                     |
 
 Every stop names a category from a fixed list: `no-result/hook-ended-early`,
@@ -524,6 +536,8 @@ Every stop names a category from a fixed list: `no-result/hook-ended-early`,
 `uncertain-mutation`, `child-resume-failed`, `batch-incomplete`,
 `human-glance`, `interrupted`, or `internal-error`. A stop that follows a hook carries that
 hook's phase and the path of its log (`hookLog`), never the output itself.
+A `recovered` event has `kind` `stranded-review-commits` with the rescue `ref`,
+or `result-finalization` with the `round` and `engine` of the finalized pass.
 `resumable` is true when `resumeCommand` names a command; it does not mean
 resuming is safe, which the stop category decides. Events carry identifiers, categories, counts, and paths: never issue titles or
 bodies, hook or model output, or findings. A resumed run

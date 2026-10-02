@@ -3598,6 +3598,242 @@ jq -n --arg engine "$AGENT_LOOP_REVIEW_ENGINE" \
     assert not (consumer[3] / "pr-ready").exists()
 
 
+def _refused_minor_hook(tmp_path: Path) -> Path:
+    """A Claude pass that fixes a finding in a source file, then has its
+    `write-result --classification minor` refused by the real helper. Later
+    rounds are clean."""
+    hook = tmp_path / "refused-minor-v3-hook.py"
+    _write_executable(
+        hook,
+        """#!/usr/bin/env python3
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+
+state = Path(os.environ["AGENT_STATE_DIR"])
+with (state / "events.log").open("a", encoding="utf-8") as handle:
+    handle.write("claude-hook\\n")
+before = os.environ["AGENT_LOOP_PR_HEAD_SHA"]
+round_number = os.environ["AGENT_LOOP_REVIEW_ROUND"]
+result_file = Path(os.environ["AGENT_LOOP_REVIEW_RESULT_FILE"])
+if round_number != "1":
+    result_file.write_text(json.dumps({
+        "version": 3, "status": "clean", "engine": "claude",
+        "round": int(round_number),
+        "baseSha": os.environ["AGENT_LOOP_REVIEW_BASE_SHA"],
+        "beforeSha": before, "afterSha": before, "classification": None,
+        "findingFingerprints": [], "finalLaneComplete": True,
+    }), encoding="utf-8")
+    raise SystemExit(0)
+
+Path("catalog.ts").write_text("// Corrected note.\\nexport const entries = [];\\n", encoding="utf-8")
+subprocess.run(["git", "add", "catalog.ts"], check=True)
+subprocess.run(["git", "commit", "-m", "fix: correct catalog note"], check=True)
+subprocess.run([os.environ["AGENT_LOOP_REVIEW_PUSH_HELPER"]], check=True)
+after = subprocess.run(
+    ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+).stdout.strip()
+
+finding_content = "Catalog note is wrong."
+disposition_content = f"Fixed in {after}. Validation: fixture."
+finding = (
+    f"<!-- local-review:v3 engine=claude round={round_number} head={before} "
+    "fingerprint=catalog-note occurrence=1 severity=minor lens=comments "
+    f"content-sha256={hashlib.sha256(finding_content.encode()).hexdigest()} -->"
+    f"\\n{finding_content}"
+)
+disposition = (
+    f"<!-- local-review-disposition:v3 engine=claude round={round_number} "
+    f"head={after} fingerprint=catalog-note occurrence=1 outcome=fixed "
+    f"content-sha256={hashlib.sha256(disposition_content.encode()).hexdigest()} -->"
+    f"\\n{disposition_content}"
+)
+(state / "review-threads.json").write_text(json.dumps([{
+    "id": "THREAD-CATALOG",
+    "isResolved": True,
+    "repository": {"nameWithOwner": "fixture/consumer"},
+    "pullRequest": {"number": 1},
+    "comments": {
+        "nodes": [
+            {"databaseId": 71, "body": finding, "author": {"login": "tester"}},
+            {"databaseId": 72, "body": disposition, "author": {"login": "tester"}},
+        ],
+        "pageInfo": {"hasNextPage": False},
+    },
+}]), encoding="utf-8")
+refused = subprocess.run(
+    [
+        "node", ".claude/skills/critique/scripts/review-ledger.js", "write-result",
+        "--repo", "fixture/consumer", "--pr", os.environ["AGENT_LOOP_PR_NUMBER"],
+        "--head", after, "--engine", "claude", "--round", round_number,
+        "--base", os.environ["AGENT_LOOP_REVIEW_BASE_SHA"], "--before", before,
+        "--result-file", str(result_file), "--classification", "minor",
+    ],
+    capture_output=True, text=True,
+)
+(state / "write-result.stderr").write_text(refused.stderr, encoding="utf-8")
+(state / "write-result.exit").write_text(str(refused.returncode), encoding="utf-8")
+""",
+    )
+    return hook
+
+
+def _run_events(tmp_path: Path) -> list[dict[str, object]]:
+    events_file = next((tmp_path / "logs").glob("*-run-*-events.jsonl"))
+    return [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+
+
+def test_v3_refused_minor_result_is_finalized_without_another_reviewer(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "37"],
+        issues=[_issue(37)],
+        config=_config_v3(tmp_path, claude_review_hook=str(_refused_minor_hook(tmp_path))),
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    state = consumer[3]
+    assert (state / "write-result.exit").read_text(encoding="utf-8") != "0"
+    assert "minor classification requires a non-behavioral change range" in (
+        state / "write-result.stderr"
+    ).read_text(encoding="utf-8")
+    # One Claude launch per round: recovery finalized round 1 in place.
+    hook_events = (state / "events.log").read_text(encoding="utf-8").splitlines()
+    assert hook_events.count("claude-hook") == 2
+    assert "recovered: result-finalization (Claude, round 1)" in result.stdout
+    assert "convergence round 2/4" in result.stdout
+    assert "convergence round 3/4" not in result.stdout
+    events = _run_events(tmp_path)
+    recovered = [event for event in events if event["event"] == "recovered"]
+    assert [(event["kind"], event["engine"], event["round"]) for event in recovered] == [
+        ("result-finalization", "claude", 1)
+    ]
+    assert all(set(event) <= _EVENT_KEYS for event in events)
+    assert not [event for event in events if event["event"] == "stop"]
+    finalized = next(
+        event for event in events
+        if event["event"] == "pass_result" and event["engine"] == "claude" and event["round"] == 1
+    )
+    # The saved `minor` candidate is promoted: the range touches a source file.
+    assert (finalized["status"], finalized["classification"]) == ("changed", "material")
+    comments = (state / "pr-comments.log").read_text(encoding="utf-8")
+    assert re.search(
+        r"local-review-complete:v3 engine=claude round=1 \S+ \S+ \S+ classification=material "
+        r"fingerprints=catalog-note",
+        comments,
+    )
+    result_file = next((tmp_path / "logs").glob("*/claude-review-round-1.result.json"))
+    assert json.loads(result_file.read_text(encoding="utf-8"))["status"] == "changed"
+    # The digest-pinned sidecar keeps the original candidate.
+    sidecar = json.loads(
+        result_file.with_name(result_file.name + ".recovery.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["candidate"]["classification"] == "minor"
+    assert (state / "pr-ready").exists()
+
+
+def test_v3_recovery_sidecar_changed_after_the_hook_returned_stops_as_blocked(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # The wrapper pins the sidecar when the hook returns. Rewrite it at the
+    # next ledger call, which is the first point after that pin.
+    real_node = shutil.which("node")
+    assert real_node is not None
+    _write_executable(
+        consumer[2] / "node",
+        f"""#!/usr/bin/env bash
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = --result-file ] && [ -f "$argument.recovery.json" ] && \\
+     [ ! -e "$AGENT_STATE_DIR/sidecar-rewritten" ] && \\
+     [[ " $* " == *" validate-result "* ]]; then
+    printf ' ' >> "$argument.recovery.json"
+    : > "$AGENT_STATE_DIR/sidecar-rewritten"
+  fi
+  previous="$argument"
+done
+exec {real_node} "$@"
+""",
+    )
+    result = _run(
+        consumer,
+        ["--issues", "38"],
+        issues=[_issue(38)],
+        config=_config_v3(tmp_path, claude_review_hook=str(_refused_minor_hook(tmp_path))),
+        timeout=180,
+    )
+    assert result.returncode != 0
+    state = consumer[3]
+    assert (state / "sidecar-rewritten").exists()
+    assert "completed result recovery evidence changed" in result.stderr
+    assert "Claude review blocked in round 1: Completed review requires result finalization recovery" in result.stderr
+    assert "Stop category: review-blocked" in result.stderr
+    events = _run_events(tmp_path)
+    assert not [event for event in events if event["event"] == "recovered"]
+    assert [event["category"] for event in events if event["event"] == "stop"] == ["review-blocked"]
+    result_file = next((tmp_path / "logs").glob("*/claude-review-round-1.result.json"))
+    assert json.loads(result_file.read_text(encoding="utf-8"))["status"] == "blocked"
+    assert (state / "events.log").read_text(encoding="utf-8").splitlines().count("claude-hook") == 1
+    assert not (state / "pr-ready").exists()
+
+
+def test_v3_blocked_result_without_a_recovery_sidecar_still_stops(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    blocked_hook = (
+        'jq -n --arg engine "$AGENT_LOOP_REVIEW_ENGINE" '
+        '--argjson round "$AGENT_LOOP_REVIEW_ROUND" '
+        '--arg base "$AGENT_LOOP_REVIEW_BASE_SHA" '
+        '--arg head "$AGENT_LOOP_PR_HEAD_SHA" '
+        '\'{version:3,status:"blocked",engine:$engine,round:$round,'
+        "baseSha:$base,beforeSha:$head,afterSha:$head,classification:null,"
+        'findingFingerprints:[],finalLaneComplete:false,blocker:"review work unfinished"}\' '
+        '> "$AGENT_LOOP_REVIEW_RESULT_FILE"'
+    )
+    result = _run(
+        consumer,
+        ["--issues", "39"],
+        issues=[_issue(39)],
+        config=_config_v3(tmp_path, claude_review_hook=blocked_hook),
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "Claude review blocked in round 1: review work unfinished" in result.stderr
+    assert "Stop category: review-blocked" in result.stderr
+    events = _run_events(tmp_path)
+    assert not [event for event in events if event["event"] == "recovered"]
+    assert [event["category"] for event in events if event["event"] == "stop"] == ["review-blocked"]
+    assert not (consumer[3] / "pr-ready").exists()
+
+
+def test_every_wrapper_root_finalizes_a_recoverable_blocked_result() -> None:
+    # The Codex root has no fixture that reaches a review pass, so hold all
+    # three copies to one recovery helper and one call site instead.
+    bodies = []
+    for root in (".claude", ".codex", ".agents"):
+        text = (REPO_ROOT / root / "skills/agent-loop/scripts/agent-loop.sh").read_text(
+            encoding="utf-8"
+        )
+        body = re.search(r"^finalize_blocked_review_result\(\) \{\n.*?^\}\n", text, re.M | re.S)
+        assert body is not None, root
+        bodies.append(
+            body.group(0).replace('node "$REVIEW_LEDGER"', "LEDGER").replace(
+                "run_review_ledger", "LEDGER"
+            )
+        )
+        pin = text.index('result_recovery_signature="$(review_outcome_signature')
+        validate = text.index("validate-result", pin)
+        call = text.index('recovered_result_json="$(finalize_blocked_review_result', validate)
+        stop = text.index('recovery_message "$engine review blocked in round $round: $blocker"', call)
+        assert pin < validate < call < stop, root
+    assert bodies[0] == bodies[1] == bodies[2]
+    assert "--expected-recovery-sha256" in bodies[0] and "--classification" not in bodies[0]
+
+
 def test_large_worker_writes_survive_and_log_is_bounded(
     consumer: tuple[Path, Path, Path, Path], tmp_path: Path
 ) -> None:
