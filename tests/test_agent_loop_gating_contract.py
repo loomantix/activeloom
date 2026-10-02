@@ -11,6 +11,7 @@ every surface that carries the rule, and pin the standalone rule beside it.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -89,3 +90,12 @@ def test_config_template_example_hooks_are_tier_neutral() -> None:
     assert text.count("Resolve the review tier as usual; this prompt requests no tier.") == 2
     assert "/deepcritique ..." not in text
     assert "a hook naming it does not request a deep review" in _template_text(".agents")
+
+
+def test_agent_loop_skill_shows_the_template_example_hooks() -> None:
+    template = (ROOT / ".claude/skills/agent-loop/agent-loop.config.template").read_text(encoding="utf-8")
+    examples = re.findall(r"^#\s+((?:claude|codex)_review_hook\s+=.*)$", template, re.MULTILINE)
+    assert len(examples) == 2
+    skill_lines = (ROOT / ".claude/skills/agent-loop/SKILL.md").read_text(encoding="utf-8").splitlines()
+    for example in examples:
+        assert example in skill_lines, example
