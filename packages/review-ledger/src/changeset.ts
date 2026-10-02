@@ -83,35 +83,6 @@ const GENERATED_PREFIXES: readonly string[] = [
 
 const GENERATED_SEGMENTS: readonly string[] = ['/dist/', '/build/', '/vendor/'];
 
-/** Dependency and build manifests: source even with an inert extension. */
-const CONFIG_BASENAMES: ReadonlySet<string> = new Set([
-  'package.json',
-  'pnpm-workspace.yaml',
-  'lerna.json',
-  'turbo.json',
-  'nx.json',
-  'pyproject.toml',
-  'setup.py',
-  'setup.cfg',
-  'cargo.toml',
-  'go.mod',
-  'gemfile',
-  'podfile',
-  'pubspec.yaml',
-  'pom.xml',
-  'build.gradle',
-  'build.gradle.kts',
-  'composer.json',
-  'dockerfile',
-  'docker-compose.yml',
-  'docker-compose.yaml',
-  'makefile',
-  'justfile',
-  'procfile',
-  '.gitlab-ci.yml',
-  '.platform-config.yml',
-]);
-
 /**
  * Dependency manifests. With the lockfiles above, these make a range a
  * dependency change: a two-line version bump pulls in code its line count does
@@ -131,6 +102,23 @@ const DEPENDENCY_MANIFEST_BASENAMES: ReadonlySet<string> = new Set([
   'build.gradle',
   'build.gradle.kts',
   'composer.json',
+]);
+
+/** Dependency and build manifests: source even with an inert extension. */
+const CONFIG_BASENAMES: ReadonlySet<string> = new Set([
+  ...DEPENDENCY_MANIFEST_BASENAMES,
+  'pnpm-workspace.yaml',
+  'lerna.json',
+  'turbo.json',
+  'nx.json',
+  'dockerfile',
+  'docker-compose.yml',
+  'docker-compose.yaml',
+  'makefile',
+  'justfile',
+  'procfile',
+  '.gitlab-ci.yml',
+  '.platform-config.yml',
 ]);
 
 const REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;

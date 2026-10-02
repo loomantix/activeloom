@@ -17343,33 +17343,6 @@ var GENERATED_PREFIXES = [
   "target/release/"
 ];
 var GENERATED_SEGMENTS = ["/dist/", "/build/", "/vendor/"];
-var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
-  "package.json",
-  "pnpm-workspace.yaml",
-  "lerna.json",
-  "turbo.json",
-  "nx.json",
-  "pyproject.toml",
-  "setup.py",
-  "setup.cfg",
-  "cargo.toml",
-  "go.mod",
-  "gemfile",
-  "podfile",
-  "pubspec.yaml",
-  "pom.xml",
-  "build.gradle",
-  "build.gradle.kts",
-  "composer.json",
-  "dockerfile",
-  "docker-compose.yml",
-  "docker-compose.yaml",
-  "makefile",
-  "justfile",
-  "procfile",
-  ".gitlab-ci.yml",
-  ".platform-config.yml"
-]);
 var DEPENDENCY_MANIFEST_BASENAMES = /* @__PURE__ */ new Set([
   "package.json",
   "pyproject.toml",
@@ -17384,6 +17357,21 @@ var DEPENDENCY_MANIFEST_BASENAMES = /* @__PURE__ */ new Set([
   "build.gradle",
   "build.gradle.kts",
   "composer.json"
+]);
+var CONFIG_BASENAMES = /* @__PURE__ */ new Set([
+  ...DEPENDENCY_MANIFEST_BASENAMES,
+  "pnpm-workspace.yaml",
+  "lerna.json",
+  "turbo.json",
+  "nx.json",
+  "dockerfile",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  "makefile",
+  "justfile",
+  "procfile",
+  ".gitlab-ci.yml",
+  ".platform-config.yml"
 ]);
 var REQUIREMENTS_FILE = /^requirements(-[^.]+)?\.txt$/;
 var CONFIG_PREFIXES = [
