@@ -40,7 +40,12 @@ import {
   recoverResult,
 } from './ledger.js';
 import { readResult, validateResult, writeBlockedResult } from './result.js';
-import { classifyFiles, classifyRange, parseDiffPatch } from './changeset.js';
+import {
+  SMALL_CHANGE_LINE_LIMIT,
+  classifyFiles,
+  classifyRange,
+  parseDiffPatch,
+} from './changeset.js';
 import {
   buildTelemetryBody,
   buildTelemetryRecord,
@@ -1019,6 +1024,9 @@ function runCliCommand(argv: string[]): number {
       writeSortedJson({
         ...report.changeset,
         skip: report.skip,
+        smallChange: report.smallChange,
+        smallChangeLines: report.smallChangeLines,
+        smallChangeLimit: SMALL_CHANGE_LINE_LIMIT,
         reviewSignificantFiles: report.reviewSignificantFiles,
         classifications: report.classifications,
       });
