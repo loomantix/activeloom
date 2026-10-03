@@ -15,6 +15,10 @@ class IsolationError(RuntimeError):
     """A bootstrap invariant failed."""
 
 
+# Directories this process created; reported when the run never starts.
+created: list[Path] = []
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-dir", required=True)
@@ -52,8 +56,9 @@ def main() -> None:
             check=False,
         )
         if result.returncode:
-            # Git transport/config errors can contain credentials or URLs.
-            raise IsolationError("Git operation failed during isolated bootstrap")
+            # Git transport/config errors can contain credentials or URLs;
+            # the subcommand is a literal from this file.
+            raise IsolationError(f"Git {arguments[0]} failed during isolated bootstrap")
         return result.stdout
 
     base = (
@@ -133,6 +138,11 @@ def main() -> None:
     scoped_config = run(
         source, "config", "--includes", "--show-scope", "--null", "--list"
     )
+    origin_head = (
+        run(source, "for-each-ref", "--format=%(symref)", "refs/remotes/origin/HEAD")
+        .decode()
+        .strip()
+    )
     if run(source, "config", "--null", "--list") != config_before:
         raise IsolationError(
             "source Git configuration changed during isolated snapshot"
@@ -150,9 +160,9 @@ def main() -> None:
         raise IsolationError("isolated destination must not already exist")
     os.umask(0o077)
     destination.mkdir(mode=0o700)
+    created.append(destination)
     repository = destination / "repository"
     controller = destination / "controller"
-    print(f"Isolated controller (retained for recovery): {controller}", flush=True)
     run(
         source,
         "clone",
@@ -164,7 +174,15 @@ def main() -> None:
     )
     # Fetch by the captured object, not a source ref that may move concurrently.
     run(repository, "fetch", "--no-tags", "--", str(source), base)
+    # The clone's tracking refs are the source's local branches and its
+    # origin/HEAD is the source's checked-out branch. Neither describes origin,
+    # and the runner derives an unset base branch from origin/HEAD.
+    stale_refs = run(repository, "for-each-ref", "--format=%(refname)", "refs/remotes/")
+    for stale_ref in stale_refs.decode().splitlines():
+        run(repository, "update-ref", "--no-deref", "-d", stale_ref)
     run(repository, "update-ref", base_ref, base)
+    if origin_head == base_ref:
+        run(repository, "symbolic-ref", "refs/remotes/origin/HEAD", base_ref)
     run(repository, "config", "--remove-section", "remote.origin")
     for name, value in config_entries:
         if name.lower() in {"remote.origin.url", "remote.origin.pushurl"}:
@@ -177,16 +195,29 @@ def main() -> None:
         "remote.origin.fetch",
         "+refs/heads/*:refs/remotes/origin/*",
     )
-    excluded = {"core.bare", "core.worktree", "core.repositoryformatversion"}
+    # Origin's URLs and fetch refspec were written above. Other remote settings
+    # stay: gh resolves the repository, and Git the push default, from them.
+    excluded = {
+        "core.bare",
+        "core.worktree",
+        "core.repositoryformatversion",
+        "remote.origin.url",
+        "remote.origin.pushurl",
+        "remote.origin.fetch",
+    }
     for name, value in config_entries:
         normalized = name.lower()
-        if normalized in excluded or normalized.split(".", 1)[0] in {
+        section = normalized.split(".", 1)[0]
+        if normalized in excluded or section in {
             "extensions",
-            "remote",
             "branch",
             "include",
             "includeif",
         }:
+            continue
+        if section == "remote" and normalized.endswith(
+            (".promisor", ".partialclonefilter")
+        ):
             continue
         run(repository, "config", "--local", "--add", name, value)
     if (
@@ -212,6 +243,7 @@ def main() -> None:
     if child_args[:1] == ["--"]:
         child_args = child_args[1:]
     env["AGENT_LOOP_PROJECT_DIR"] = str(controller)
+    print(f"Isolated controller (retained for recovery): {controller}", flush=True)
     os.chdir(controller)
     os.execve(
         str(controller / runner_relative),
@@ -229,6 +261,12 @@ if __name__ == "__main__":
         else:
             print(
                 "isolation: filesystem or configuration operation failed",
+                file=sys.stderr,
+            )
+        for leftover in created:
+            print(
+                f"isolation: {leftover} was created but the run did not start; "
+                "remove it before retrying",
                 file=sys.stderr,
             )
         sys.exit(1)

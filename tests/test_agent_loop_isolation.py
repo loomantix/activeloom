@@ -259,3 +259,71 @@ subprocess.run(['/usr/bin/git', 'commit', '-m', 'fix: worker result'], check=Tru
         assert _git("config", "branch.concurrent.remote", cwd=consumer.repo) == "origin"
     # The validation hook intentionally stops before any publication.
     assert "pr create" not in consumer.log("gh.log")
+
+
+def test_helper_drops_source_branches_from_origin_tracking_refs(tmp_path: Path) -> None:
+    consumer = _stub_consumer(tmp_path)
+    _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=consumer.repo)
+    _git("checkout", "-b", "feature/other-work", cwd=consumer.repo)
+    _git("commit", "--allow-empty", "-m", "test: unrelated work", cwd=consumer.repo)
+    _git("push", "origin", "feature/other-work", cwd=consumer.repo)
+    _git("branch", "unpublished", cwd=consumer.repo)
+    destination = tmp_path / "isolated"
+    result = _helper(consumer, destination)
+    assert result.returncode == 0, result.stdout + result.stderr
+    controller = destination / "controller"
+    # The runner derives an unset base branch from origin/HEAD.
+    assert _git("symbolic-ref", "refs/remotes/origin/HEAD", cwd=controller) == "refs/remotes/origin/main"
+    tracking = _git("for-each-ref", "--format=%(refname)", "refs/remotes/", cwd=controller)
+    assert tracking.split() == ["refs/remotes/origin/HEAD", "refs/remotes/origin/main"]
+
+
+def test_helper_preserves_other_remotes_and_repository_resolution(tmp_path: Path) -> None:
+    consumer = _stub_consumer(tmp_path)
+    _git("remote", "add", "upstream", "fixture:upstream", cwd=consumer.repo)
+    _git("config", "remote.upstream.gh-resolved", "base", cwd=consumer.repo)
+    _git("config", "remote.pushDefault", "origin", cwd=consumer.repo)
+    destination = tmp_path / "isolated"
+    result = _helper(consumer, destination)
+    assert result.returncode == 0, result.stdout + result.stderr
+    controller = destination / "controller"
+    assert _git("remote", "get-url", "upstream", cwd=controller) == "fixture:upstream"
+    assert _git("config", "remote.upstream.gh-resolved", cwd=controller) == "base"
+    assert _git("config", "remote.pushDefault", cwd=controller) == "origin"
+    assert _git("config", "--get-all", "remote.origin.fetch", cwd=controller) == (
+        "+refs/heads/*:refs/remotes/origin/*"
+    )
+    assert _git("config", "--get-all", "remote.origin.url", cwd=controller) == str(tmp_path / "remote.git")
+
+
+def test_helper_names_failed_step_and_leftover_destination(tmp_path: Path) -> None:
+    consumer = _stub_consumer(tmp_path)
+    real_git = subprocess.run(
+        ["bash", "-c", "type -P git"], text=True, capture_output=True, check=True
+    ).stdout.strip()
+    failing_git = tmp_path / "failing-git"
+    _executable(
+        failing_git,
+        f"""#!/usr/bin/env bash
+for argument in "$@"; do [ "$argument" != worktree ] || exit 1; done
+exec {real_git} "$@"
+""",
+    )
+    destination = tmp_path / "isolated"
+    env = os.environ.copy()
+    env["AGENT_LOOP_REAL_GIT"] = str(failing_git)
+    result = subprocess.run(
+        [
+            sys.executable, str(HELPER),
+            "--project-dir", str(consumer.repo),
+            "--base-ref", "origin/main",
+            "--destination", str(destination),
+            "--harness", ".codex",
+        ],
+        cwd=consumer.repo, env=env, text=True, capture_output=True, timeout=60,
+    )
+    assert result.returncode == 1
+    assert "Git worktree failed" in result.stderr
+    assert f"{destination} was created but the run did not start" in result.stderr
+    assert "Isolated controller" not in result.stdout
+    assert not (tmp_path / "child.json").exists()
