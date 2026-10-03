@@ -644,6 +644,35 @@ def test_verify_rejects_empty_selection(
     assert report["files"] == []
 
 
+@pytest.mark.parametrize("extension", [".sh", ".yaml", ".sql", ".css", ".html", ".prisma", ".tpl"])
+def test_audit_only_languages_never_certify(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str], extension: str
+) -> None:
+    name = f"sample{extension}"
+    (repo / name).write_text("sample\n")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-qm", "audit baseline")
+    code, report = _verify(cd, capsys, name)
+    assert code == 1
+    assert report["statuses"] == {"error": 1}
+    files = report["files"]
+    assert isinstance(files, list)
+    assert "audit-only language" in files[0]["detail"]
+
+
+def test_compiler_verification_missing_node_fails_closed(cd: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cd, "_baseline", lambda *args: ("const x=1;", None))
+
+    def missing(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("node")
+
+    monkeypatch.setattr(cd.subprocess, "run", missing)
+    source = cd.Source(Path("sample.ts"), "sample.ts", cd.TYPESCRIPT, "const x=1;")
+    result = cd.verify_typescript([source], "HEAD", "/installed/typescript")[0]
+    assert result["status"] == "error"
+    assert "Node.js required" in result["detail"]
+
+
 def test_verify_rejects_changed_jsx_text(
     cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
