@@ -4164,3 +4164,44 @@ def test_review_budget_config_fails_before_issue_mutation(
     assert message in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+
+
+def test_isolated_run_completes_on_the_launchers_base_outside_the_source_checkout(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo = consumer[0]
+    shutil.copy2(
+        AGENT_LOOP.parent / "isolate-repository.py",
+        repo / ".claude/skills/agent-loop/scripts/isolate-repository.py",
+    )
+    # An unset base branch is derived from origin/HEAD, which a clone of the
+    # source would otherwise point at the source's checked-out branch.
+    config = _config(tmp_path, base_branch="")
+    (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(config, encoding="utf-8")
+    _run_git("add", ".", cwd=repo)
+    _run_git("commit", "-m", "test: isolation inputs", cwd=repo)
+    _run_git("push", "origin", "main", cwd=repo)
+    _run_git("checkout", "-b", "feature/other-work", cwd=repo)
+    _run_git("commit", "--allow-empty", "-m", "test: unrelated work", cwd=repo)
+    _run_git("push", "origin", "feature/other-work", cwd=repo)
+    destination = tmp_path / "isolated"
+
+    result = _run(
+        consumer,
+        ["--isolate", str(destination), "--issues", "41"],
+        issues=[_issue(41)],
+        config=config,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert gh_log.count("pr create") == 1
+    assert "pr create --draft --base main " in gh_log
+    isolated_branches = _run_git(
+        "for-each-ref", "--format=%(refname)", "refs/heads/agent-loop/", cwd=destination / "controller"
+    ).stdout
+    assert "refs/heads/agent-loop/issue-41-" in isolated_branches
+    source_worktrees = _run_git("worktree", "list", "--porcelain", cwd=repo).stdout
+    assert source_worktrees.count("worktree ") == 1
+    assert "agent-loop/issue-41-" not in _run_git("branch", "--list", cwd=repo).stdout
