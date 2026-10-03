@@ -340,6 +340,12 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # Independent repository bootstrap for concurrent batch runs.
+      - source: .claude/skills/agent-loop/scripts/isolate-repository.py
+        destination: .claude/skills/agent-loop/scripts/isolate-repository.py
+        substitutions: []
+        mode: '0755'
+
       - source: .claude/skills/agent-loop/scripts/agent-loop-state.py
         destination: .claude/skills/agent-loop/scripts/agent-loop-state.py
         substitutions: []
@@ -841,6 +847,12 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # Independent repository bootstrap for concurrent batch runs.
+      - source: .codex/skills/agent-loop/scripts/isolate-repository.py
+        destination: .codex/skills/agent-loop/scripts/isolate-repository.py
+        substitutions: []
+        mode: '0755'
+
       - source: .codex/skills/agent-loop/scripts/agent-loop-state.py
         destination: .codex/skills/agent-loop/scripts/agent-loop-state.py
         substitutions: []
@@ -1270,6 +1282,12 @@ harnesses:
 
       - source: .agents/skills/agent-loop/scripts/agent-loop.sh
         destination: .agents/skills/agent-loop/scripts/agent-loop.sh
+        substitutions: []
+        mode: '0755'
+
+      # Independent repository bootstrap for concurrent batch runs.
+      - source: .agents/skills/agent-loop/scripts/isolate-repository.py
+        destination: .agents/skills/agent-loop/scripts/isolate-repository.py
         substitutions: []
         mode: '0755'
 
