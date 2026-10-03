@@ -50,6 +50,16 @@ const accepted = [
     '/** Long narrative. */\nexport const x = 1;',
     '/** Summary. */\nexport const x = 1;',
   ],
+  [
+    'block.ts',
+    '// history\n\n// Copyright Example Authors\n// All rights reserved.\nconst x=1;',
+    '// Copyright Example Authors\n// All rights reserved.\nconst x=1;',
+  ],
+  [
+    'header.ts',
+    '/* history */\n// @ts-nocheck\nconst x=1;',
+    '// @ts-nocheck\nconst x=1;',
+  ],
 ];
 for (const [file, before, after] of accepted) {
   test(`accepts comment reduction: ${file}`, () =>
@@ -96,10 +106,78 @@ const rejected = [
   ['bang.ts', '/*! Legal */\nconst x=1;', 'const x=1;'],
   ['shebang.js', '#!/usr/bin/env node\nf();', 'f();'],
   ['reference.ts', '/// <reference path="a.d.ts" />\nconst x=1;', 'const x=1;'],
+  [
+    'legal-continuation.ts',
+    '// Copyright Example Authors\n// All rights reserved.\nconst x=1;',
+    '// Copyright Example Authors\nconst x=1;',
+  ],
+  [
+    'legal-lead.ts',
+    '// Part of Example.\n// Released under an open licence.\nconst x=1;',
+    '// Released under an open licence.\nconst x=1;',
+  ],
+  [
+    'example-continuation.ts',
+    '// @example\n// f(1)\nfunction f(x) {}',
+    '// @example\nfunction f(x) {}',
+  ],
+  [
+    'directive-reason.ts',
+    'f(); // eslint-disable-line no-console --\n     // reason continues\ng();',
+    'f(); // eslint-disable-line no-console --\ng();',
+  ],
+  [
+    'trailing.js',
+    'f(); // eslint-disable-line\ng();',
+    'f();\n// eslint-disable-line\ng();',
+  ],
+  [
+    'biome-gap.ts',
+    '// biome-ignore lint: reason\nf();',
+    '// biome-ignore lint: reason\n\nf();',
+  ],
+  ['flow-gap.js', '// $FlowFixMe\nf();', '// $FlowFixMe\n\nf();'],
 ];
+
 for (const [file, before, after] of rejected) {
   test(`rejects semantic mutation: ${file}`, () =>
     assert.equal(verify(ts, file, before, after).status, 'changed'));
+}
+for (const comment of [
+  '// eslint-disable-next-line no-console',
+  '// prettier-ignore',
+  '// biome-ignore lint: reason',
+  '// oxlint-disable',
+  '/* istanbul ignore next */',
+  '/* c8 ignore next */',
+  '/* v8 ignore next */',
+  '// SAFETY: invariant',
+  '/* globals a */',
+  '/* jshint esversion: 6 */',
+  '// deno-lint-ignore no-explicit-any',
+  '// deno-fmt-ignore',
+  '// dprint-ignore',
+  '// cspell:disable-next-line',
+  '/* stylelint-disable */',
+  '// Stryker disable next-line all',
+  '// NOSONAR',
+  '// nosemgrep',
+  '// lgtm[js/example]',
+  '// codeql[js/example]',
+  '// gitleaks:allow',
+  '// noinspection JSUnusedGlobalSymbols',
+  '// tslint:disable',
+  '// $FlowFixMe',
+  '// Licensed under an example licence',
+  '// All rights reserved.',
+  '// Permission is hereby granted, free of charge',
+  '//# sourceMappingURL=a.js.map',
+]) {
+  test(`rejects deleting protected comment: ${comment}`, () =>
+    assert.equal(
+      verify(ts, 'protected.js', `${comment}\nf();`, 'f();').status,
+      'changed',
+    ));
 }
 for (const text of [
   'const x = ;',
@@ -111,6 +189,29 @@ for (const text of [
   test(`malformed source fails closed: ${JSON.stringify(text)}`, () =>
     assert.equal(verify(ts, 'broken.tsx', text, text).status, 'error'));
 }
+test('a rejection locates the first difference without quoting source', () => {
+  assert.deepEqual(
+    verify(ts, 'a.ts', 'const a=1;\n// @ts-ignore\nf();', 'const a=1;\nf();'),
+    {
+      status: 'changed',
+      detail: 'trivia differ (first difference: baseline line 2, edited none)',
+      verifier: 'typescript-5.9.3',
+    },
+  );
+  assert.equal(
+    verify(ts, 'a.ts', 'const a=1;\nconst b=2;', 'const a=1;\n\nconst b=3;')
+      .detail,
+    'tokens differ (first difference: baseline line 2, edited line 3)',
+  );
+  assert.match(
+    verify(ts, 'a.ts', 'const x=1;', 'const x = ;').detail,
+    /^edited: parse diagnostic TS\d+ at offset \d+$/,
+  );
+  assert.match(
+    verify(ts, 'a.ts', 'const x = ;', 'const x=1;').detail,
+    /^baseline: parse diagnostic/,
+  );
+});
 test('unsupported compiler and missing module fail closed', () => {
   assert.throws(
     () => loadCompiler('/missing/compiler'),

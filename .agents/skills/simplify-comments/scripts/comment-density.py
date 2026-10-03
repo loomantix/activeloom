@@ -41,7 +41,11 @@ from typing import Any
 
 # importlib-based callers do not necessarily put this helper's directory on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The skill directory is synced into other repositories; leave no __pycache__ there.
+_write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 from comment_audit import AUDIT_LANGUAGES, audit_kinds, audit_reason  # noqa: E402
+
+sys.dont_write_bytecode = _write_bytecode
 
 SCHEMA_VERSION = 2
 CODE, COMMENT, BLANK = "code", "comment", "blank"
@@ -1113,18 +1117,23 @@ def verify_typescript(sources: list[Source], ref: str, compiler: str) -> list[di
             check=False,
             timeout=120,
         )
-        payload = json.loads(proc.stdout)
+        try:
+            payload = json.loads(proc.stdout)
+        except ValueError:
+            payload = None
         if proc.returncode or not isinstance(payload, list) or len(payload) != len(selected):
             detail = payload.get("error") if isinstance(payload, dict) else None
-            raise ValueError(detail or "compiler verifier failed or returned an invalid response")
-        for result, verification in zip(selected, payload, strict=True):
+            raise ValueError(
+                detail or f"compiler verifier exited with status {proc.returncode} or returned an invalid response"
+            )
+        for result, verification in zip(selected, payload):
             if not isinstance(verification, dict) or verification.get("status") not in {
                 "unchanged",
                 "changed",
                 "error",
             }:
                 raise ValueError("compiler verifier returned an invalid status")
-            result.update(verification)
+            result.update({key: verification[key] for key in ("status", "detail", "verifier") if key in verification})
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         detail = "compiler verifier unavailable (Node.js required)" if isinstance(error, OSError) else str(error)
         for result in selected:
@@ -1166,7 +1175,7 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
         return 2
     results = (
         verify_typescript(list(sources), args.verify_against, args.typescript)
-        if args.typescript
+        if args.typescript is not None
         else [verify_source(source, args.verify_against) for source in sources]
     )
     statuses = Counter(r["status"] for r in results)
@@ -1200,6 +1209,8 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
                 print(f"             after:  …{r['divergence']['after']}…")
             if "detail" in r:
                 print(f"             {r['detail']}")
+            if "verifier" in r:
+                print(f"             verifier: {r['verifier']}")
     return 1 if failed or unverified or not results else 0
 
 
@@ -1273,7 +1284,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unsupported extension(s): {', '.join(unsupported)}")
     if args.verify_against is not None and (not args.verify_against or args.verify_against.startswith("-")):
         parser.error("--verify-against needs a revision that does not start with '-'")
-    if args.typescript and args.verify_against is None:
+    if args.typescript is not None and not args.typescript.strip():
+        parser.error("--typescript needs an installed TypeScript module path; an empty value never falls back")
+    if args.typescript is not None and args.verify_against is None:
         parser.error("--typescript requires --verify-against")
     for raw in args.paths:
         if not os.path.exists(raw):
@@ -1281,7 +1294,7 @@ def main(argv: list[str] | None = None) -> int:
     skipped: Counter[str] = Counter()
     sources = iter_sources(
         args.paths, extensions, args.glob, args.exclude, not args.no_default_excludes, skipped,
-        allow_js_nul=bool(args.typescript),
+        allow_js_nul=args.typescript is not None,
     )
     if args.verify_against is not None:
         return run_verify(args, sources, skipped)

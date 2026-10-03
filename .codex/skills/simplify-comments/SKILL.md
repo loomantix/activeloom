@@ -24,7 +24,11 @@ The compiler mode compares exact non-comment parser tokens, syntax structure,
 emitted JavaScript, and byte-identical anchored annotations and legal comments.
 It preserves JSX text/whitespace, regular expressions, template raw text and
 literal NUL bytes. Annotated comment blocks stay whole, including API tags and
-examples; moving or rewording one may conservatively fail. Density counts stay
+examples: a comment carrying a tag, directive or legal text, together with the
+consecutive `//` lines around it, must stay byte-identical and in place. Under
+this mode leave such a block as it is, even where the taxonomy would delete or
+condense part of it. A `changed` result names the baseline and edited line of
+the first difference; restore that edit and rerun. Density counts stay
 approximate even when the compiler certifies preservation. This is a comment
 edit check, not a typecheck or a proof about arbitrary external tools that read
 source text: inspect every Preserve item and run repository gates as well.
@@ -33,7 +37,7 @@ Without the compiler option the standard-library verifier retains its limited
 lexical coverage; it cannot certify JSX, ambiguous regex contexts or JavaScript
 Unicode line separators. Java Unicode escapes, cgo preambles, and nested quotes
 in Kotlin/Swift/C# interpolation remain unsupported. Shell, YAML, SQL, CSS, HTML,
-Prisma and Helm/template files now have **audit-only** estimates: heredocs,
+Prisma and Helm/template files have **audit-only** estimates: heredocs,
 scalar bodies, embedded languages and template whitespace need their own
 grammar-aware verifiers. They always fail certification, even if unedited.
 Declaration files and unknown dialects remain outside compiler coverage.
