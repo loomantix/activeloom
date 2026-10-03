@@ -1152,11 +1152,7 @@ def verify_source(source: Source, ref: str) -> dict[str, Any]:
         }
     if before.fingerprint == after.fingerprint:
         return {**result, "status": "unchanged"}
-    return {
-        **result,
-        "status": "changed",
-        "divergence": _divergence(before.fingerprint, after.fingerprint),
-    }
+    return {**result, "status": "changed", "divergence": _divergence(before.fingerprint, after.fingerprint)}
 
 
 def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Counter[str]) -> int:
@@ -1166,10 +1162,7 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
         first if first.is_dir() else first.parent,
     )
     if probe.returncode != 0:
-        print(
-            f"comment-density.py: unknown git revision: {args.verify_against}",
-            file=sys.stderr,
-        )
+        print(f"comment-density.py: unknown git revision: {args.verify_against}", file=sys.stderr)
         return 2
     results = (
         verify_typescript(list(sources), args.verify_against, args.typescript)
@@ -1246,40 +1239,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also scan dependency, build, vendored, generated, and minified files",
     )
-    parser.add_argument(
-        "--min-density",
-        type=float,
-        default=0.0,
-        metavar="PCT",
-        help="list only files at or above PCT",
-    )
-    parser.add_argument(
-        "--min-lines",
-        type=int,
-        default=0,
-        metavar="N",
-        help="list only files with at least N lines",
-    )
-    parser.add_argument(
-        "--sort",
-        choices=sorted(SORT_KEYS),
-        default="comments",
-        help="ranking (default: comments)",
-    )
-    parser.add_argument(
-        "--top",
-        type=int,
-        default=25,
-        metavar="N",
-        help="list at most N files; 0 lists all (default: 25)",
-    )
-    parser.add_argument(
-        "--highlight",
-        type=float,
-        default=25.0,
-        metavar="PCT",
-        help="mark files at or above PCT (default: 25)",
-    )
+    parser.add_argument("--min-density", type=float, default=0.0, metavar="PCT", help="list only files at or above PCT")
+    parser.add_argument("--min-lines", type=int, default=0, metavar="N", help="list only files with at least N lines")
+    parser.add_argument("--sort", choices=sorted(SORT_KEYS), default="comments", help="ranking (default: comments)")
+    parser.add_argument("--top", type=int, default=25, metavar="N", help="list at most N files; 0 lists all (default: 25)")
+    parser.add_argument("--highlight", type=float, default=25.0, metavar="PCT", help="mark files at or above PCT (default: 25)")
     parser.add_argument("--json", action="store_true", help="print a JSON report")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI color")
     parser.add_argument(
@@ -1316,12 +1280,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"no such file or directory: {raw}")
     skipped: Counter[str] = Counter()
     sources = iter_sources(
-        args.paths,
-        extensions,
-        args.glob,
-        args.exclude,
-        not args.no_default_excludes,
-        skipped,
+        args.paths, extensions, args.glob, args.exclude, not args.no_default_excludes, skipped,
         allow_js_nul=bool(args.typescript),
     )
     if args.verify_against is not None:
