@@ -52,6 +52,7 @@ RESUME_RUN_FILE=""
 RESUME_BATCH_FILE=""
 BATCH_STATE_FILE=""
 DRY_RUN=false
+ISOLATE_DIR=""
 LEGACY_ITERATIONS_SEEN=false
 
 usage() {
@@ -66,6 +67,7 @@ Options:
   --resume-run FILE    Resume review/finalization from a private run-state file.
   --resume-batch FILE  Resume an ordered multi-issue batch from durable state.
   --dry-run            Show selection, gates, paths, hooks, and publication only.
+  --isolate DIR        Start a new run in an independent repository under DIR.
   -h, --help           Show this help.
 
 The legacy numeric first argument remains supported. Collection branches are no
@@ -102,6 +104,12 @@ while [ "$#" -gt 0 ]; do
         --dry-run)
             DRY_RUN=true
             shift
+            ;;
+        --isolate)
+            [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "--isolate requires a directory" >&2; exit 2; }
+            [ -z "$ISOLATE_DIR" ] || { echo "--isolate may be specified only once" >&2; exit 2; }
+            ISOLATE_DIR="$(realpath -m -- "$2")"
+            shift 2
             ;;
         -h|--help)
             usage
@@ -142,6 +150,10 @@ if [ -n "$RESUME_BATCH_FILE" ] && { [ -n "$RESUME_RUN_FILE" ] || [ -n "$ISSUE_AL
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -n "$ISOLATE_DIR" ] && { [ -n "$RESUME_RUN_FILE" ] || [ -n "$RESUME_BATCH_FILE" ]; }; then
+    echo "--isolate starts new runs; resume using the retained controller's runner" >&2
+    exit 2
+fi
 if [ -n "${AGENT_LOOP_PROJECT_DIR:-}" ]; then
     PROJECT_DIR="$AGENT_LOOP_PROJECT_DIR"
 else
@@ -873,6 +885,21 @@ fi
 if [ "$CONFIG_DOCTOR" = true ]; then
     python3 "$CONFIG_DOCTOR_HELPER" --project-dir "$PROJECT_DIR" --repo "$GH_REPO" \
         --settings-from-env || exit 1
+fi
+
+if [ -n "$ISOLATE_DIR" ]; then
+    if [ "$DRY_RUN" = true ]; then
+        echo "   Isolation plan: independent repository and controller under $ISOLATE_DIR"
+        echo "   Dry-run uses current refs; no isolation directory will be created."
+    else
+        isolation_helper="$SCRIPT_DIR/isolate-repository.py"
+        isolation_args=(--project-dir "$PROJECT_DIR" --base-ref "$BASE_REMOTE_REF"
+            --destination "$ISOLATE_DIR" --harness .claude -- --iterations "$MAX_ITERATIONS")
+        [ -z "$ISSUE_ALLOWLIST" ] || isolation_args+=(--issues "$ISSUE_ALLOWLIST")
+        [ "$INCLUDE_ASSIGNED" = false ] || isolation_args+=(--include-assigned)
+        python3 -I "$isolation_helper" "${isolation_args[@]}" || exit $?
+        exit 0
+    fi
 fi
 
 already_processed() {

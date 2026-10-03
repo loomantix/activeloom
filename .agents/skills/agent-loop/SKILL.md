@@ -51,6 +51,30 @@ Use an allowlist for every scoped or retrospective-driven run.
 Collection branches and worker-side publication are removed. Every selected
 issue gets a unique `agent-loop/issue-<N>-<run>` branch and linked worktree.
 
+## Isolated repository runs
+
+For a new run alongside other work in the same repository, add
+`--isolate <new-directory>`. The wrapper runs preflight, then creates an
+independent clone under that owner-only directory and a linked `controller`
+worktree. Issue worktrees belong to that clone, so unrelated branch-tracking
+or ref changes in the original checkout do not change the batch's Git state.
+`--dry-run --isolate <new-directory>` previews selection without creating it.
+
+The launcher, isolation helper, consumer config, instructions, and optional
+prompt must match committed files on the configured base. Commit and land
+bootstrap changes before using isolation; local edits and untracked inputs are
+not copied. Origin fetch/push destinations and repository-local operational
+Git settings are preserved. Relative configuration paths and hooks resolve
+from the isolated checkout; configure external paths explicitly when needed.
+
+The clone, controller, and local branches are retained after completion or
+failure. Keep them until their work and recovery state are no longer needed.
+Use the printed controller's runner for `--resume-run` or `--resume-batch`;
+do not pass `--isolate` again or move an existing run into a new clone.
+This costs an additional repository copy per run. Global/system Git settings,
+credentials, and installed tools remain shared and subject to existing checks;
+this mode isolates repository metadata, not processes or credentials.
+
 ## Required Consumer Files
 
 - `agent-loop-instructions.md`: repository conventions and worker safety rules.
