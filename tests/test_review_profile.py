@@ -99,15 +99,15 @@ def test_init_writes_confirmed_defaults_privately(
     assert stat.S_IMODE(profile.stat().st_mode) == 0o600
     stored = json.loads(profile.read_text())
     assert stored["engines"]["claude"] == {
-        "model": "opus",
+        "model": "claude-opus-5-5",
         "effort": "high",
-        "worker": {"model": "opus", "effort": "high"},
+        "worker": {"model": "claude-opus-5-5", "effort": "high"},
     }
     assert stored["confirmed_at"]
     status, out, _ = run(capsys, "resolve", "--engine", "claude")
     assert json.loads(out) == {
         "engine": "claude",
-        "model": "opus",
+        "model": "claude-opus-5-5",
         "effort": "high",
         "source": "user profile",
     }
@@ -250,11 +250,11 @@ def test_repository_overrides_layer_over_user_settings(
     scoped = json.loads(
         run(capsys, "resolve", "--engine", "codex", "--repo", "example/project")[1]
     )
-    assert other["model"] == "inherit"
+    assert other["model"] == "gpt-6-astra"
     assert scoped == {
         "engine": "codex",
         "model": "example-model",
-        "effort": "high",
+        "effort": "medium",
         "source": "repository override",
     }
     assert run(capsys, "order", "--tier", "lean", "--repo", "example/project")[
@@ -546,7 +546,7 @@ def test_init_prefills_workers_from_the_chosen_reviewer_values(
     )
     engines = json.loads(profile.read_text())["engines"]
     assert engines["claude"]["worker"] == {"model": "sonnet", "effort": "medium"}
-    assert engines["codex"]["worker"] == {"model": "inherit", "effort": "low"}
+    assert engines["codex"]["worker"] == {"model": "gpt-6-astra", "effort": "low"}
 
 
 def test_worker_settings_resolve_separately_from_reviewer_settings(
@@ -559,7 +559,7 @@ def test_worker_settings_resolve_separately_from_reviewer_settings(
     )
     assert json.loads(run(capsys, "resolve", "--engine", "claude")[1]) == {
         "engine": "claude",
-        "model": "opus",
+        "model": "claude-opus-5-5",
         "effort": "medium",
         "source": "user profile",
     }
@@ -650,7 +650,7 @@ def test_repository_overrides_may_set_worker_keys_but_not_availability(
             "example/project",
         )[1]
     )
-    assert scoped["model"] == "inherit"
+    assert scoped["model"] == "gpt-6-astra"
     assert scoped["effort"] == "low"
     assert scoped["fallback"] == {"model": "example-model", "effort": "medium"}
     assert scoped["source"] == "repository override"
@@ -689,7 +689,7 @@ def test_unavailable_engines_are_stored_only_by_setup_and_kept_out_of_orders(
     )
     stored = json.loads(profile.read_text())
     assert stored["engines"]["gemini"]["availability"] == "unavailable"
-    assert stored["engines"]["gemini"]["model"] == "gemini-3.7-flash-high"
+    assert stored["engines"]["gemini"]["model"] == "gemini-3.8-flash-high"
     snapshot = profile.read_bytes()
     assert run(capsys, "set", "order.lean=claude,gemini")[0] == 1
     assert run(capsys, "set", "--repo", "example/project", "order.lean=gemini")[0] == 1
