@@ -1,21 +1,21 @@
 {
   "schema_version": 3,
-  "defaults_version": "2026.09.19",
+  "defaults_version": "2026.10.03",
   "engines": {
     "claude": {
-      "model": "opus",
+      "model": "claude-opus-5-5",
       "effort": "medium",
-      "worker": { "model": "opus", "effort": "medium" }
+      "worker": { "model": "claude-opus-5-5", "effort": "medium" }
     },
     "codex": {
-      "model": "inherit",
-      "effort": "high",
-      "worker": { "model": "inherit", "effort": "high" }
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "worker": { "model": "gpt-6-astra", "effort": "medium" }
     },
     "gemini": {
-      "model": "gemini-3.7-flash-high",
+      "model": "gemini-3.8-flash-high",
       "effort": "high",
-      "worker": { "model": "gemini-3.7-flash-high", "effort": "high" }
+      "worker": { "model": "gemini-3.8-flash-high", "effort": "high" }
     }
   },
   "order": {
@@ -23,8 +23,8 @@
     "deep": ["claude", "codex", "gemini"]
   },
   "notes": {
-    "claude": "Review accuracy holds at medium effort on the current Opus generation; raise it for a demanding change.",
-    "codex": "inherit uses the model configured for the Codex CLI; set an explicit model to pin it.",
+    "claude": "Pins Claude Opus 5.5 at medium effort for reviewer and worker roles.",
+    "codex": "Pins GPT-6 Astra at medium effort; choose inherit to use the Codex CLI's configured model instead.",
     "gemini": "The Antigravity CLI accepts low, medium or high effort."
   }
 }
