@@ -8,6 +8,9 @@ import subprocess
 
 import pytest
 
+
+pytestmark = pytest.mark.regression
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -120,6 +123,7 @@ def test_repository_gate_without_shell_exports(
 
 
 @pytest.mark.parametrize("harness", [".claude", ".codex", ".agents"])
+@pytest.mark.fast
 def test_gate_reader_is_identical_across_harnesses(harness: str) -> None:
     relative = "skills/critique/scripts/review-telemetry-gates.js"
     assert (ROOT / harness / relative).read_bytes() == (

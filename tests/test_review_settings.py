@@ -14,6 +14,9 @@ from typing import Any
 
 import pytest
 
+
+pytestmark = pytest.mark.regression
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "prompts/skills/review-setup/scripts"
 ENV_KEYS = {
@@ -156,12 +159,13 @@ def test_a_later_pair_is_pinned_without_changing_earlier_ones(
     assert run(scripts, *base, "--reviewer", "claude").returncode == 0
     changed = profile_document()
     changed["engines"]["claude"]["effort"] = "max"
+    changed["engines"]["gemini"]["worker"]["model"] = "gemini-3.7-flash-high"
     Path(os.environ["ACTIVELOOM_REVIEW_PROFILE"]).write_text(json.dumps(changed))
     later = run(scripts, *base, "--worker", "gemini")
     assert later.returncode == 0, later.stderr
     values = evaluated(later.stdout)
     assert values["AGENT_LOOP_CLAUDE_EFFORT"] == "medium"
-    assert values["AGENT_LOOP_GEMINI_WORKER_MODEL"] == "gemini-3.7-flash-high"
+    assert values["AGENT_LOOP_GEMINI_WORKER_MODEL"] == changed["engines"]["gemini"]["worker"]["model"]
     assert "Pinned gemini worker settings" in later.stderr
 
 
@@ -354,6 +358,7 @@ def test_unexpected_failures_are_invalid_not_refused(
     assert (result.returncode, result.stdout) == (2, "")
 
 
+@pytest.mark.fast
 def test_pin_resolves_only_on_first_use() -> None:
     module = load()
     state: dict[str, Any] = {}
@@ -372,6 +377,7 @@ def test_pin_resolves_only_on_first_use() -> None:
     assert module.pinned(state, "codex", "reviewer") is None
 
 
+@pytest.mark.fast
 def test_fallback_switch_is_recorded_once_per_role() -> None:
     module = load()
     fallback = {"model": "small", "effort": "medium"}

@@ -11,6 +11,9 @@ from pathlib import Path
 import pytest
 
 
+pytestmark = pytest.mark.regression
+
+
 ROOT = Path(__file__).resolve().parent.parent
 HEAD = "a" * 40
 

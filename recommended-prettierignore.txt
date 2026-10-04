@@ -82,6 +82,8 @@
 .claude/skills/reviewit/SKILL.md
 .claude/skills/simplify-comments/SKILL.md
 .claude/skills/simplify-comments/scripts/comment-density.py
+.claude/skills/simplify-comments/scripts/comment_audit.py
+.claude/skills/simplify-comments/scripts/verify-typescript.cjs
 .github/copilot-instructions.md
 .github/workflows/dco.yml
 .github/workflows/review-glance-label.yml

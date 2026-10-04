@@ -13,6 +13,14 @@ This repo is public. Keep repository content suitable for public readers:
 
 If work needs non-public context, discuss that context outside this public repository and keep any public issue or PR focused on the reusable change.
 
+## Local validation
+
+Use `python3 scripts/run-tests.py fast` for routine Python validation and review
+gates. For a changed integration scenario, use the `focused` lane with explicit
+test files or node IDs. The complete `regression` lane runs weekly or on explicit
+request; do not run it for every commit, review pass, or push. See
+[Testing architecture](docs/testing.md).
+
 ## Everything under `.claude/` is a prompt
 
 Skills, agent definitions, and the instruction strings a skill tells Claude to pass to `Agent(...)` are all read by the model as instructions — so they are version-sensitive in a way ordinary docs are not. A phrasing that improved results on one model generation can suppress findings or waste tokens on the next.

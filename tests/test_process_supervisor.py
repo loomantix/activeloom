@@ -13,6 +13,9 @@ from typing import Any
 import pytest
 
 
+pytestmark = pytest.mark.regression
+
+
 ROOT = Path(__file__).resolve().parent.parent
 SUPERVISOR = ROOT / ".codex/skills/agent-loop/scripts/process-supervisor.py"
 
@@ -62,6 +65,7 @@ def test_supervisor_self_test() -> None:
     assert result.stdout.strip() == "linux-subreaper-v1"
 
 
+@pytest.mark.fast
 def test_descendant_enumeration_fails_closed_on_malformed_children(
     tmp_path: Path,
 ) -> None:
@@ -79,6 +83,7 @@ def test_descendant_enumeration_fails_closed_on_malformed_children(
         supervisor._descendants(1, tmp_path)
 
 
+@pytest.mark.fast
 def test_descendant_enumeration_ignores_unrelated_proc_entries(tmp_path: Path) -> None:
     supervisor = _load_supervisor()
     root_task = tmp_path / "1/task/1"

@@ -21,6 +21,7 @@ If work needs non-public context, discuss that context outside this public repos
 - Do not revert user changes or unrelated dirty worktree state.
 - Keep changes scoped to the user's request and the existing repo architecture.
 - Run the smallest meaningful validation command after edits; report anything that could not be run.
+- Use `python3 scripts/run-tests.py fast` for routine Python validation and review gates. Use the `focused` lane with explicit test files or node IDs for changed integration scenarios. The complete suite is the `regression` lane, run weekly or on explicit request; do not run it for every commit, review pass, or push. See [Testing architecture](docs/testing.md).
 - Read [.claude/MODEL_NOTES.md](.claude/MODEL_NOTES.md) before editing anything under `.claude/skills/` or `.claude/agents/` — those files are prompts, and the notes record the model-generation deltas that make some plausible-looking phrasings harmful.
 - Read [.claude/SKILL_AUTHORING.md](.claude/SKILL_AUTHORING.md) alongside it when adding or restructuring a skill — it covers document structure (invocation, information hierarchy, completion criteria, pruning) where MODEL_NOTES covers model-generation deltas.
 

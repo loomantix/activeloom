@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 
+pytestmark = pytest.mark.regression
+
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENT_LOOP = REPO_ROOT / ".claude/skills/agent-loop/scripts/agent-loop.sh"
 CRITIQUE_SCRIPTS = REPO_ROOT / ".claude/skills/critique/scripts"
@@ -613,6 +616,7 @@ def _run(
     )
 
 
+@pytest.mark.fast
 def test_script_remains_executable_and_valid_bash() -> None:
     assert stat.S_IMODE(AGENT_LOOP.stat().st_mode) == 0o755
     subprocess.run(["bash", "-n", str(AGENT_LOOP)], check=True)
@@ -1288,6 +1292,7 @@ def test_batch_preflight_warns_on_a_prose_only_dependency(
     assert ("Issue #67 mentions earlier batch issue #66 without 'Depends on #66'" in result.stderr) == warns
 
 
+@pytest.mark.fast
 def test_every_recovery_message_names_a_known_stop_category() -> None:
     text = AGENT_LOOP.read_text(encoding="utf-8")
     declared = re.search(r'^STOP_CATEGORIES="([^"]+)"', text, re.M)
@@ -1316,6 +1321,7 @@ def test_every_recovery_message_names_a_known_stop_category() -> None:
     assert calls > 100
 
 
+@pytest.mark.fast
 def test_parkable_stop_categories_are_known_and_resumable() -> None:
     text = AGENT_LOOP.read_text(encoding="utf-8")
     stop = re.search(r'^STOP_CATEGORIES="([^"]+)"', text, re.M)
@@ -3810,6 +3816,7 @@ def test_v3_blocked_result_without_a_recovery_sidecar_still_stops(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+@pytest.mark.fast
 def test_every_wrapper_root_finalizes_a_recoverable_blocked_result() -> None:
     # The Codex root has no fixture that reaches a review pass, so hold all
     # three copies to one recovery helper and one call site instead.
@@ -4164,3 +4171,44 @@ def test_review_budget_config_fails_before_issue_mutation(
     assert message in result.stderr
     gh_log = consumer[3] / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+
+
+def test_isolated_run_completes_on_the_launchers_base_outside_the_source_checkout(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo = consumer[0]
+    shutil.copy2(
+        AGENT_LOOP.parent / "isolate-repository.py",
+        repo / ".claude/skills/agent-loop/scripts/isolate-repository.py",
+    )
+    # An unset base branch is derived from origin/HEAD, which a clone of the
+    # source would otherwise point at the source's checked-out branch.
+    config = _config(tmp_path, base_branch="")
+    (repo / ".claude/skills/agent-loop/agent-loop.config").write_text(config, encoding="utf-8")
+    _run_git("add", ".", cwd=repo)
+    _run_git("commit", "-m", "test: isolation inputs", cwd=repo)
+    _run_git("push", "origin", "main", cwd=repo)
+    _run_git("checkout", "-b", "feature/other-work", cwd=repo)
+    _run_git("commit", "--allow-empty", "-m", "test: unrelated work", cwd=repo)
+    _run_git("push", "origin", "feature/other-work", cwd=repo)
+    destination = tmp_path / "isolated"
+
+    result = _run(
+        consumer,
+        ["--isolate", str(destination), "--issues", "41"],
+        issues=[_issue(41)],
+        config=config,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert gh_log.count("pr create") == 1
+    assert "pr create --draft --base main " in gh_log
+    isolated_branches = _run_git(
+        "for-each-ref", "--format=%(refname)", "refs/heads/agent-loop/", cwd=destination / "controller"
+    ).stdout
+    assert "refs/heads/agent-loop/issue-41-" in isolated_branches
+    source_worktrees = _run_git("worktree", "list", "--porcelain", cwd=repo).stdout
+    assert source_worktrees.count("worktree ") == 1
+    assert "agent-loop/issue-41-" not in _run_git("branch", "--list", cwd=repo).stdout

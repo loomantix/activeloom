@@ -16,7 +16,8 @@ certify every selected file. JSX, ambiguous JavaScript regex contexts, Unicode
 line separators in JavaScript, Java Unicode escapes, cgo preambles, and quotes
 inside Kotlin, Swift, or C# interpolation are audit-only approximations.
 
-Standard library only.
+Auditing and legacy verification use the standard library. --typescript selects
+the optional compiler verifier for JavaScript/TypeScript, without fallback.
 """
 
 from __future__ import annotations
@@ -38,7 +39,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+# importlib-based callers do not necessarily put this helper's directory on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The skill directory is synced into other repositories; leave no __pycache__ there.
+_write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+from comment_audit import AUDIT_LANGUAGES, audit_kinds, audit_reason  # noqa: E402
+
+sys.dont_write_bytecode = _write_bytecode
+
+SCHEMA_VERSION = 2
 CODE, COMMENT, BLANK = "code", "comment", "blank"
 
 
@@ -84,6 +93,7 @@ LANGUAGES: dict[str, Dialect | str] = {
     ".kts": KOTLIN,
     ".swift": SWIFT,
     ".cs": CSHARP,
+    **AUDIT_LANGUAGES,
 }
 
 DEFAULT_EXCLUDED_DIRS = frozenset(
@@ -188,6 +198,7 @@ class Scan:
     kinds: list[str]
     fingerprint: str
     approximate: bool = False
+    reason: str | None = None
 
 
 def _is_word(ch: str) -> bool:
@@ -781,6 +792,13 @@ def scan_text(text: str, language: Dialect | str) -> Scan:
         text = text[1:]
     if isinstance(language, Dialect):
         return _CFamilyScanner(text, language).scan()
+    if language != PYTHON:
+        return Scan(
+            audit_kinds(text, language),
+            "",
+            approximate=True,
+            reason=audit_reason(language),
+        )
     return scan_python(text)
 
 
@@ -881,6 +899,7 @@ def iter_sources(
     excludes: list[str],
     default_excludes: bool,
     skipped: Counter[str],
+    allow_js_nul: bool = False,
 ) -> Iterator[Source]:
     """Yield readable source files; count why selected-extension files were skipped.
 
@@ -922,7 +941,7 @@ def iter_sources(
             except OSError:
                 skipped["unreadable"] += 1
                 continue
-            if b"\0" in data:
+            if b"\0" in data and not (allow_js_nul and isinstance(language, Dialect) and language.regex_literals):
                 skipped["binary"] += 1
                 continue
             try:
@@ -1059,6 +1078,69 @@ def _counts(scan: Scan) -> dict[str, Any]:
     }
 
 
+def verify_typescript(sources: list[Source], ref: str, compiler: str) -> list[dict[str, Any]]:
+    """Batch compiler verification; dependency and parser failures never fall back."""
+    results: list[dict[str, Any]] = []
+    requests = []
+    selected = []
+    for source in sources:
+        if not isinstance(source.language, Dialect) or not source.language.regex_literals:
+            results.append(verify_source(source, ref))
+            continue
+        baseline, error = _baseline(source.path, ref)
+        result: dict[str, Any] = {"path": source.display}
+        results.append(result)
+        if error or baseline is None:
+            result.update(status="error" if error else "added")
+            if error:
+                result["detail"] = error
+            continue
+        result.update(
+            before=_counts(scan_text(baseline, source.language)),
+            after=_counts(scan_text(source.text, source.language)),
+            density_approximate=True,
+        )
+        selected.append(result)
+        requests.append({"path": source.display, "before": baseline, "after": source.text})
+    if not requests:
+        return results
+    try:
+        proc = subprocess.run(
+            [
+                "node",
+                str(Path(__file__).with_name("verify-typescript.cjs")),
+                str(Path(compiler).resolve()),
+            ],
+            input=json.dumps(requests),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        try:
+            payload = json.loads(proc.stdout)
+        except ValueError:
+            payload = None
+        if proc.returncode or not isinstance(payload, list) or len(payload) != len(selected):
+            detail = payload.get("error") if isinstance(payload, dict) else None
+            raise ValueError(
+                detail or f"compiler verifier exited with status {proc.returncode} or returned an invalid response"
+            )
+        for result, verification in zip(selected, payload):
+            if not isinstance(verification, dict) or verification.get("status") not in {
+                "unchanged",
+                "changed",
+                "error",
+            }:
+                raise ValueError("compiler verifier returned an invalid status")
+            result.update({key: verification[key] for key in ("status", "detail", "verifier") if key in verification})
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        detail = "compiler verifier unavailable (Node.js required)" if isinstance(error, OSError) else str(error)
+        for result in selected:
+            result.update(status="error", detail=detail)
+    return results
+
+
 def verify_source(source: Source, ref: str) -> dict[str, Any]:
     result: dict[str, Any] = {"path": source.display}
     after = scan_text(source.text, source.language)
@@ -1070,7 +1152,13 @@ def verify_source(source: Source, ref: str) -> dict[str, Any]:
     before = scan_text(baseline, source.language)
     result.update(before=_counts(before), after=_counts(after))
     if before.approximate or after.approximate:
-        return {**result, "status": "error", "detail": "unsupported or unparseable syntax; cannot verify"}
+        return {
+            **result,
+            "status": "error",
+            "detail": before.reason
+            or after.reason
+            or "unsupported or unparseable syntax; cannot verify (JS/TS: use --typescript)",
+        }
     if before.fingerprint == after.fingerprint:
         return {**result, "status": "unchanged"}
     return {**result, "status": "changed", "divergence": _divergence(before.fingerprint, after.fingerprint)}
@@ -1085,7 +1173,11 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
     if probe.returncode != 0:
         print(f"comment-density.py: unknown git revision: {args.verify_against}", file=sys.stderr)
         return 2
-    results = [verify_source(source, args.verify_against) for source in sources]
+    results = (
+        verify_typescript(list(sources), args.verify_against, args.typescript)
+        if args.typescript is not None
+        else [verify_source(source, args.verify_against) for source in sources]
+    )
     statuses = Counter(r["status"] for r in results)
     failed = sum(count for status, count in statuses.items() if status != "unchanged")
     # Filters that shape an audit leave a file uncompared, so any skip fails verification.
@@ -1117,6 +1209,8 @@ def run_verify(args: argparse.Namespace, sources: Iterator[Source], skipped: Cou
                 print(f"             after:  …{r['divergence']['after']}…")
             if "detail" in r:
                 print(f"             {r['detail']}")
+            if "verifier" in r:
+                print(f"             verifier: {r['verifier']}")
     return 1 if failed or unverified or not results else 0
 
 
@@ -1168,6 +1262,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="REF",
         help="compare each file's code fingerprint with REF; exit 1 if any code changed",
     )
+    parser.add_argument(
+        "--typescript",
+        metavar="MODULE_PATH",
+        help="certify JS/TS/JSX/TSX using installed TypeScript 5.9.3 (requires Node.js; no fallback)",
+    )
     return parser
 
 
@@ -1185,12 +1284,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unsupported extension(s): {', '.join(unsupported)}")
     if args.verify_against is not None and (not args.verify_against or args.verify_against.startswith("-")):
         parser.error("--verify-against needs a revision that does not start with '-'")
+    if args.typescript is not None and not args.typescript.strip():
+        parser.error("--typescript needs an installed TypeScript module path; an empty value never falls back")
+    if args.typescript is not None and args.verify_against is None:
+        parser.error("--typescript requires --verify-against")
     for raw in args.paths:
         if not os.path.exists(raw):
             parser.error(f"no such file or directory: {raw}")
     skipped: Counter[str] = Counter()
     sources = iter_sources(
-        args.paths, extensions, args.glob, args.exclude, not args.no_default_excludes, skipped
+        args.paths, extensions, args.glob, args.exclude, not args.no_default_excludes, skipped,
+        allow_js_nul=args.typescript is not None,
     )
     if args.verify_against is not None:
         return run_verify(args, sources, skipped)

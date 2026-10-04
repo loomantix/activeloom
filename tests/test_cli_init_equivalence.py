@@ -12,6 +12,9 @@ from pathlib import Path
 
 import pytest
 
+
+pytestmark = pytest.mark.regression
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLI = REPO_ROOT / "cli" / "bin" / "activeloom.js"
 FIXTURE_CONFIG = REPO_ROOT / "tests" / "fixtures" / "render-check" / ".activeloom-config.yml"

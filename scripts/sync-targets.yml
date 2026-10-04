@@ -259,6 +259,14 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .claude/skills/simplify-comments/scripts/comment_audit.py
+        destination: .claude/skills/simplify-comments/scripts/comment_audit.py
+        substitutions: []
+
+      - source: .claude/skills/simplify-comments/scripts/verify-typescript.cjs
+        destination: .claude/skills/simplify-comments/scripts/verify-typescript.cjs
+        substitutions: []
+
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
       # project-specific substitution values that `npx activeloom init` refuses
       # to invent, for a human to confirm. Consumers receive it so a teammate
@@ -329,6 +337,12 @@ harnesses:
 
       - source: .claude/skills/agent-loop/scripts/agent-loop.sh
         destination: .claude/skills/agent-loop/scripts/agent-loop.sh
+        substitutions: []
+        mode: '0755'
+
+      # Independent repository bootstrap for concurrent batch runs.
+      - source: .claude/skills/agent-loop/scripts/isolate-repository.py
+        destination: .claude/skills/agent-loop/scripts/isolate-repository.py
         substitutions: []
         mode: '0755'
 
@@ -816,12 +830,26 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .codex/skills/simplify-comments/scripts/comment_audit.py
+        destination: .codex/skills/simplify-comments/scripts/comment_audit.py
+        substitutions: []
+
+      - source: .codex/skills/simplify-comments/scripts/verify-typescript.cjs
+        destination: .codex/skills/simplify-comments/scripts/verify-typescript.cjs
+        substitutions: []
+
       - source: .codex/skills/agent-loop/SKILL.md
         destination: .codex/skills/agent-loop/SKILL.md
         substitutions: []
 
       - source: .codex/skills/agent-loop/scripts/agent-loop.sh
         destination: .codex/skills/agent-loop/scripts/agent-loop.sh
+        substitutions: []
+        mode: '0755'
+
+      # Independent repository bootstrap for concurrent batch runs.
+      - source: .codex/skills/agent-loop/scripts/isolate-repository.py
+        destination: .codex/skills/agent-loop/scripts/isolate-repository.py
         substitutions: []
         mode: '0755'
 
@@ -1240,12 +1268,26 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      - source: .agents/skills/simplify-comments/scripts/comment_audit.py
+        destination: .agents/skills/simplify-comments/scripts/comment_audit.py
+        substitutions: []
+
+      - source: .agents/skills/simplify-comments/scripts/verify-typescript.cjs
+        destination: .agents/skills/simplify-comments/scripts/verify-typescript.cjs
+        substitutions: []
+
       - source: .agents/skills/agent-loop/SKILL.md
         destination: .agents/skills/agent-loop/SKILL.md
         substitutions: []
 
       - source: .agents/skills/agent-loop/scripts/agent-loop.sh
         destination: .agents/skills/agent-loop/scripts/agent-loop.sh
+        substitutions: []
+        mode: '0755'
+
+      # Independent repository bootstrap for concurrent batch runs.
+      - source: .agents/skills/agent-loop/scripts/isolate-repository.py
+        destination: .agents/skills/agent-loop/scripts/isolate-repository.py
         substitutions: []
         mode: '0755'
 

@@ -644,6 +644,92 @@ def test_verify_rejects_empty_selection(
     assert report["files"] == []
 
 
+@pytest.mark.parametrize("extension", [".sh", ".yaml", ".sql", ".css", ".html", ".prisma", ".tpl"])
+def test_audit_only_languages_never_certify(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str], extension: str
+) -> None:
+    name = f"sample{extension}"
+    (repo / name).write_text("sample\n")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-qm", "audit baseline")
+    code, report = _verify(cd, capsys, name)
+    assert code == 1
+    assert report["statuses"] == {"error": 1}
+    files = report["files"]
+    assert isinstance(files, list)
+    assert "audit-only language" in files[0]["detail"]
+
+
+def test_compiler_verification_missing_node_fails_closed(cd: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cd, "_baseline", lambda *args: ("const x=1;", None))
+
+    def missing(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("node")
+
+    monkeypatch.setattr(cd.subprocess, "run", missing)
+    source = cd.Source(Path("sample.ts"), "sample.ts", cd.TYPESCRIPT, "const x=1;")
+    result = cd.verify_typescript([source], "HEAD", "/installed/typescript")[0]
+    assert result["status"] == "error"
+    assert "Node.js required" in result["detail"]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [
+        (1, "", "exited with status 1"),
+        (1, '{"error": "cannot load TypeScript"}', "cannot load TypeScript"),
+        (0, "not json", "invalid response"),
+        (0, "[]", "invalid response"),
+        (0, '[{"status": "certified"}]', "invalid status"),
+        (0, '["unchanged"]', "invalid status"),
+    ],
+)
+def test_compiler_verification_rejects_failed_or_malformed_child(
+    cd: ModuleType, monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, expected: str
+) -> None:
+    monkeypatch.setattr(cd, "_baseline", lambda *args: ("const x=1;", None))
+    monkeypatch.setattr(
+        cd.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, returncode, stdout, "")
+    )
+    source = cd.Source(Path("sample.ts"), "sample.ts", cd.TYPESCRIPT, "const x=1;")
+    result = cd.verify_typescript([source], "HEAD", "/installed/typescript")[0]
+    assert result["status"] == "error"
+    assert expected in result["detail"]
+
+
+def test_compiler_verification_keeps_only_verdict_fields(cd: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        cd, "_baseline", lambda path, ref: ("x = 1\n" if path.suffix == ".py" else "const x=1;", None)
+    )
+    payload = '[{"status": "unchanged", "verifier": "typescript-5.9.3", "path": "other.ts", "before": 0}]'
+    monkeypatch.setattr(cd.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, payload, ""))
+    python = cd.Source(Path("sample.py"), "sample.py", cd.PYTHON, "x = 1\n")
+    source = cd.Source(Path("sample.ts"), "sample.ts", cd.TYPESCRIPT, "const x=1;")
+    legacy, compiled = cd.verify_typescript([python, source], "HEAD", "/installed/typescript")
+    assert "verifier" not in legacy
+    assert legacy["status"] == "unchanged"
+    assert compiled["path"] == "sample.ts"
+    assert compiled["verifier"] == "typescript-5.9.3"
+    assert isinstance(compiled["before"], dict)
+
+
+@pytest.mark.parametrize("value", ["", "  "])
+def test_empty_compiler_path_never_falls_back(
+    cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        cd.main(["--verify-against", "HEAD", "--typescript", value, "--json", "."])
+    assert raised.value.code == 2
+    assert "never falls back" in capsys.readouterr().err
+
+
+def test_helper_run_leaves_no_bytecode_beside_the_skill(tmp_path: Path) -> None:
+    for name in ("comment-density.py", "comment_audit.py"):
+        (tmp_path / name).write_bytes((SCRIPT.parent / name).read_bytes())
+    subprocess.run([sys.executable, str(tmp_path / "comment-density.py"), "--help"], check=True, capture_output=True)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["comment-density.py", "comment_audit.py"]
+
+
 def test_verify_rejects_changed_jsx_text(
     cd: ModuleType, repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
