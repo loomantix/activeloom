@@ -566,7 +566,7 @@ print(path.resolve(strict=True))
         echo "   Review round cap restored from run state: $REVIEW_MAX_ROUNDS"
     fi
     [ "$(jq -r '.version' <<<"$RESUME_STATE_JSON")" = 4 ] || {
-        echo "Legacy review budget requires explicit budget-migrate; see docs/agent-loop-budget-recovery.md" >&2
+        echo "Legacy review budget requires explicit budget-migrate; see https://github.com/loomantix/activeloom/blob/main/docs/agent-loop-budget-recovery.md" >&2
         exit 1
     }
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {

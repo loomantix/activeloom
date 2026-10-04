@@ -1666,6 +1666,51 @@ def test_pending_pass_without_pre_pass_digests_gets_no_repair(
     assert runner.state["pending"]["phase"] == "returned"
 
 
+@pytest.mark.parametrize("order", ["retry-then-repair", "repair-then-retry", "failed-repair-posts"])
+def test_validation_repair_composes_with_another_retry_of_the_pass(
+    provider_500_harness: Any, validation_repair_harness: Any,
+    monkeypatch: pytest.MonkeyPatch, order: str,
+) -> None:
+    p = provider_500_harness
+    v = validation_repair_harness
+    h = v.harness
+    h.args.chain = "claude,codex,claude,codex"
+    posted: list[dict[str, Any]] = []
+    inner = h.module.managed
+    workers = 0
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *args: Any, **kwargs: Any) -> None:
+        nonlocal workers
+        worker = "AGENT_LOOP_REVIEW_RESULT_FILE" in env
+        if worker:
+            workers += 1
+            if order != "retry-then-repair":
+                p.controls.failures = int(workers == 2)
+        inner(argv, log, env, *args, **kwargs)
+        # The clean candidate posts, as a first pass does with its refactor latch.
+        if worker and not posted:
+            posted.append({"id": 99, "body": "candidate"})
+
+    monkeypatch.setattr(h.module, "managed", managed)
+    monkeypatch.setattr(
+        h.runner, "comments", lambda self, path: h.module.save(path, list(posted))
+    )
+    if order == "failed-repair-posts":
+        p.controls.side_effect = lambda folder: posted.append({"id": 100, "body": "repair"})
+    runner = h.runner(h.args, h.directory)
+    if order == "failed-repair-posts":
+        with pytest.raises(h.module.Blocked, match="requires reconciliation"):
+            runner.run()
+        assert runner.state["pending"]["phase"] == "provider_500_failed"
+        return
+    assert runner.run() == "converged"
+    # The retried repair launch receives the same failed-gate evidence again.
+    assert len(v.repair_logs) == (1 if order == "retry-then-repair" else 2)
+    assert len(set(v.repair_logs)) == 1
+    assert len(p.failures_seen) == 1
+    assert [a["engine"] for a in runner.state["attempts"][:3]] == ["claude"] * 3
+
+
 def test_one_invocation_runs_all_fixed_steps(harness: Any) -> None:
     runner = harness.runner(harness.args, harness.directory)
     assert runner.run() == "converged"

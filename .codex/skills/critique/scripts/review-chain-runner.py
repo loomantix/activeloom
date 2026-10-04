@@ -2042,10 +2042,23 @@ class Runner:
         ):
             raise Blocked(f"{failure} evidence changed or a reviewer result exists")
         prefix = kind.replace("_", "-")
+        # A validation repair launches after a completed clean candidate that
+        # may have posted. From then on the failed gate's snapshot, not the
+        # pre-pass one, is what a failed worker must have left unchanged.
+        gate = None
+        if origin := pending.get("validation_origin"):
+            gates = [a for a in self.state["attempts"] if a["attempt_id"] == origin]
+            if len(gates) != 1:
+                raise Blocked("validation recovery origin changed")
+            gate = gates[0]
         for name, capture in (("threads", self.threads), ("comments", self.comments)):
             before = folder / f"before-{name}.json"
             if digest(before) != pending.get(f"before_{name}_sha256"):
                 raise Blocked("pre-pass review evidence changed")
+            if gate is not None:
+                before = self.directory / gate["folder"] / f"validation-{name}.json"
+                if digest(before) != gate["validation_failure"][name + "_sha256"]:
+                    raise Blocked("validation review snapshot changed")
             current = folder / f"{prefix}-{name}.json"
             capture(current)
             if digest(current) != digest(before):
