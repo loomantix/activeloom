@@ -437,3 +437,82 @@ After host failure or an uncatchable kill, an operator must reconcile any
 surviving reviewer before recovery; no script can guarantee progress while its
 host is down. The guarantee is that a running controller advances verified
 passes without another conversational turn, not that workers cannot fail.
+
+### Abort an interrupted run, then separately authorize restart
+
+A worker that exits without `result.json` can leave a nonterminal checkpoint
+that neither `--resume` nor `--restart` can advance. Use the recovery interface
+from the **original review worktree root**, with a reviewed controller that
+supports these commands. Diagnosis and abort read the checkpoint's original
+pinned helpers; they do not migrate its controller or launch reviewers.
+
+```bash
+python3 /path/to/reviewed/checkout/.codex/skills/critique/scripts/review-chain-runner.py \
+  --repo example/project --pr 42 --diagnose
+```
+
+Diagnosis is read-only. It reports the local and authenticated ledger states,
+current and checkpoint heads, worker attempts, potential surviving workers,
+blockers, and an `evidence_sha256`. Inspect the discrepancy and the preserved
+files at the printed checkpoint path. Exit 2 means the reported blocker needs
+reconciliation. A clean dedicated worktree, matching local/remote/PR heads,
+unchanged authenticated actor, original controller hashes, and the same run
+identity are mandatory. Linux `/proc` must be readable. Unknown worker exits,
+live process groups, unreadable process evidence, unfinished terminal writes,
+or conflicting terminal markers refuse abort. Do not edit a checkpoint to
+manufacture proof of a worker exit or discard it to obtain another budget.
+
+After explicitly authorizing abandonment of that run at the inspected head,
+copy its exact run ID and evidence digest into:
+
+```bash
+python3 /path/to/reviewed/checkout/.codex/skills/critique/scripts/review-chain-runner.py \
+  --repo example/project --pr 42 --abort-run <diagnosed-run-id> \
+  --evidence-sha256 <diagnosed-evidence-sha256>
+```
+
+This command rechecks the evidence and records an intent in `abort.json` before
+posting the authenticated `aborted` terminal marker. It never marks a failed
+attempt successful. The original `state.json`, logs, results, snapshots,
+findings and attestations remain intact. An evidence change requires fresh
+read-only diagnosis and inspection; a conflicting saved abort intent requires
+manual reconciliation, not deletion. If interrupted after the intent or after
+the remote marker was posted, repeat the **same abort command**. An identical
+completed invocation is a no-op after live verification. Do not run standalone
+reviewers or change the PR during recovery; the per-PR lock excludes other
+controllers but is not a lock on all GitHub writers.
+
+Abort stops there. Only after separate authorization, run the normal full plan
+command with `--restart`, the desired pinned base and a fresh authorization
+file. For example, in a repository with a validation contract:
+
+```bash
+python3 .codex/skills/critique/scripts/review-chain-runner.py \
+  --repo example/project --pr 42 --base <pinned-base-sha> \
+  --author codex --tier deep --trigger 3 \
+  --cycle codex,claude --until-converged \
+  --authorization-file /absolute/path/new-review-authorization.txt --restart
+```
+
+Restart verifies the completed abort against live evidence, then archives the
+**entire directory** as `<owner>-<repo>-<pr>-run-<full-run-id>`. It creates a
+**new budget**; previous convergence is not implied and stale-head passes are
+not current-head evidence. Once a new checkpoint exists, repeated `--restart`
+refuses to replace a nonterminal run: use its printed `--resume` command.
+An interrupted archive rename preserves the old directory; rerunning restart
+can initialize the empty active location. An uncertain remote start remains
+blocked for reconciliation and never grants another budget automatically.
+
+Same-run adoption of later standalone attestations is **unsupported** here.
+Their presence in an authenticated ledger does not bind them to the failed
+local worker's result, validation receipts, head transitions and attempt
+budget. Diagnosis displays the ledger decision; abort preserves it. It does
+not synthesize a canonical result or count those passes in the old checkpoint.
+
+Consumer rollout: after this change is reviewed and merged upstream, distribute
+it through the normal reviewed ActiveLoom update. Verify the installed runner
+contains `--diagnose` and `--abort-run`. For existing pinned runs, invoke the
+reviewed checkout's recovery entry point from the original consumer worktree;
+retain the original controls. Test diagnosis first, obtain explicit abort and
+restart authorization separately, and retain the archived directory. This PR
+does not itself release, move distribution tags or sync consumers.
