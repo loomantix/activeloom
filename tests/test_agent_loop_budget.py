@@ -219,6 +219,26 @@ def test_legacy_migration_rejects_invalid_operator_bounds(helper: Path, tmp_path
     assert not list(path.parent.glob("*.legacy-*"))
 
 
+@pytest.mark.parametrize("command", ["budget-migrate", "budget-reconcile"])
+def test_recovery_refuses_a_checkpoint_changed_since_inspection(helper: Path, tmp_path: Path,
+                                                               command: str) -> None:
+    extra: tuple[str, ...] = ()
+    if command == "budget-migrate":
+        path = state(tmp_path, helper, legacy=True, deadline=1)
+        extra = ("--remaining-seconds", "1800", "--limit-seconds", "7200")
+    else:
+        path = state(tmp_path, helper)
+        assert run(helper, "budget-begin", "--file", str(path), "--seconds", "100",
+                   "--owner", "2147483647").returncode == 0
+    before = path.read_bytes()
+    result = run(helper, command, "--file", str(path), "--expected-sha256",
+                 hashlib.sha256(before + b" ").hexdigest(), "--confirm-stopped",
+                 "--reason", "stale inspection", *extra)
+    assert result.returncode != 0 and "checkpoint" in result.stderr
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob("*.legacy-*"))
+
+
 def test_fully_spent_observed_execution_cannot_be_replenished(helper: Path, tmp_path: Path,
                                                            monkeypatch: pytest.MonkeyPatch) -> None:
     import time

@@ -1499,6 +1499,8 @@ def test_resumed_run_names_its_issue_and_emits_a_resumed_start(
     assert first.returncode != 0
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
     before = json.loads(state_file.read_text())
+    failed = before["reviewBudget"]["attempts"][-1]
+    assert failed["status"] == "settled" and failed["charged"] < failed["reserved"]
     if legacy:
         # Reproduce an expired legacy checkpoint on this disposable consumer.
         import hashlib
@@ -1542,6 +1544,29 @@ def test_resumed_run_names_its_issue_and_emits_a_resumed_start(
     start = next(event for event in events if event["event"] == "issue_start")
     assert (start["issue"], start["resumed"], start["round"]) == (75, True, 1)
     assert any(event["event"] == "pr_ready" and event["issue"] == 75 for event in events)
+
+
+def test_interrupted_review_hook_keeps_its_reservation_until_reconciled(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # A hook status at the interruption boundary is never settled or refunded.
+    config = _config_v3(tmp_path, claude_review_hook="exit 124")
+    first = _run(consumer, ["--issues", "75"], issues=[_issue(75)], config=config, timeout=60)
+    assert first.returncode != 0
+    assert "Budget reservation retained" in first.stderr, first.stderr
+    state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    saved = state_file.read_bytes()
+    attempt = json.loads(saved)["reviewBudget"]["attempts"][-1]
+    assert attempt["status"] == "active" and attempt["charged"] == attempt["reserved"]
+    resumed = _run(
+        consumer,
+        ["--resume-run", str(state_file)],
+        issues=[_issue(75, assigned=True)],
+        config=config,
+        timeout=60,
+    )
+    assert resumed.returncode != 0 and "budget-reconcile" in resumed.stderr, resumed.stderr
+    assert state_file.read_bytes() == saved
 
 
 def test_event_stream_refuses_to_follow_a_symlink(
