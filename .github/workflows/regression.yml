@@ -46,6 +46,8 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "CI"
           git config --global init.defaultBranch main
+      - name: Install prompt authoring dependencies
+        run: npm ci --prefix prompts --ignore-scripts
       # least_duration distributes individual cases, including the expensive
       # agent-loop cases, across runners. Without a timing baseline it balances
       # counts; JUnit artifacts provide timings for subsequent tuning.

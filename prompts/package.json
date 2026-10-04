@@ -1,0 +1,10 @@
+{
+  "name": "activeloom-prompt-authoring",
+  "private": true,
+  "scripts": {
+    "test": "node --test compose.test.cjs"
+  },
+  "dependencies": {
+    "handlebars": "4.7.9"
+  }
+}

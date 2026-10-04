@@ -84,16 +84,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import prompt_roots  # noqa: E402  (needs the sys.path line above)
 
-SOURCE_SCOPE_DIR = "prompts/skills"
+SOURCE_SCOPE_DIRS = ("prompts/skills", "prompts/review", "prompts/partials")
 GATED_SUBDIRS = ("skills", "agents", "references")
 
 
 def scan_pathspecs(roots: list[str]) -> list[str]:
-    return sorted(set(roots) | {SOURCE_SCOPE_DIR})
+    return sorted(set(roots) | set(SOURCE_SCOPE_DIRS))
 
 
 # File extensions in scope: prompt docs, templates, and executable payloads.
-SCOPE_SUFFIXES = (".md", ".template", ".js", ".py", ".sh", ".bash")
+SCOPE_SUFFIXES = (".md", ".hbs", ".template", ".js", ".py", ".sh", ".bash")
 
 
 @dataclass(frozen=True)
@@ -327,7 +327,8 @@ def _rendered_to_source() -> tuple[dict[str, str], list[str]]:
                 f"(expected `<root>/<path under the root>`)"
             )
             continue
-        mapping[out] = f"prompts/{tail}"
+        composed = f"prompts/review/{head[1:]}/{tail}.hbs"
+        mapping[out] = composed if os.path.isfile(composed) else f"prompts/{tail}"
     return mapping, errors
 
 
@@ -453,7 +454,7 @@ def _is_executable_regular_file(path: str) -> bool:
 
 def _in_gated_tree(path: str, roots: list[str]) -> bool:
     """Is `path` inside a tree this gate reads? Suffix/executable check is separate."""
-    if path.startswith(SOURCE_SCOPE_DIR + "/"):
+    if any(path.startswith(source + "/") for source in SOURCE_SCOPE_DIRS):
         return True
     for root in roots:
         if any(path.startswith(f"{root}/{sub}/") for sub in GATED_SUBDIRS):
@@ -685,6 +686,8 @@ def run_self_test() -> int:
         ),
         ("docs/example.js", False, ".js outside every gated tree"),
         ("prompts/skills/issues/SKILL.md", True, "rendered-skill source SKILL.md"),
+        ("prompts/review/codex/skills/critique/SKILL.md.hbs", True, "review template"),
+        ("prompts/partials/review/human-glance.hbs", True, "shared policy partial"),
         (
             "prompts/skills/issues/scripts/link.py",
             True,

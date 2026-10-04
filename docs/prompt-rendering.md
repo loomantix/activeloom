@@ -3,8 +3,9 @@
 Some skills are the same skill on every harness, differing only in vocabulary:
 what the todo tool is called, whether a skill is addressed with a leading slash,
 which doc a consumer keeps its build config in. Those are single-sourced in
-`prompts/` and rendered into each harness root. Everything else stays
-per-harness and is held to account by a decision record instead.
+`prompts/` and rendered into each harness root. Review documents use separate
+engine templates that compose shared policy partials. Their review methods and
+calibration remain per-harness, with differences recorded in decision records.
 
 ## The shape
 
@@ -16,6 +17,12 @@ prompts/
     agents.yml        root: .agents   (the Gemini harness)
   skills/
     <skill>/SKILL.md  one source per rendered skill, with <<KEY>> placeholders
+  partials/review/
+    <policy>.hbs     shared review policy, included with {{> review/<policy>}}
+  review/
+    <engine>/       separate claude, codex, and agents templates
+      REVIEW_WORKFLOW.md.hbs
+      skills/<skill>/SKILL.md.hbs
 ```
 
 Rendering writes `<root>/skills/<skill>/…` for every profile. Those outputs are
@@ -28,6 +35,7 @@ The renderer also writes the [vendored documents](#vendored-documents), whose
 source is not in `prompts/` at all.
 
 ```bash
+npm ci --prefix prompts --ignore-scripts   # pinned authoring-only Handlebars
 python3 scripts/render-prompts.py            # write the harness roots
 python3 scripts/render-prompts.py --check    # what CI runs; prints a diff per drift
 ```
@@ -46,6 +54,65 @@ the build artifacts the render already excludes at the source (`__pycache__`,
 `.pyc`, `.pyo`), because CI's own compile step drops those next to the rendered issue
 scripts. Anything else that belongs in a rendered skill belongs in
 `prompts/skills/<skill>/`.
+
+## Composed review documents
+
+Edit shared policy in `prompts/partials/review/`; edit engine-specific instructions
+in the matching `prompts/review/<engine>/` template. Include policy with a static
+Handlebars call such as `{{> review/human-glance-gate}}`. Vocabulary still uses
+the existing `<<KEY>>` profile substitutions, applied after composition.
+
+The initial shared policy covers the human-glance entry gate and workflow,
+findings before telemetry emission, finding severity, and tier non-triggers.
+The routine dependency recommendation lives only in `human-glance.hbs`.
+Different review lenses, launch instructions, and calibrated wording stay in the
+engine templates. The parity lint continues comparing these engine-specific
+outputs; composition does not exempt them from that check.
+
+`COMPOSED_DOCUMENTS` in `scripts/render-prompts.py` declares the exact Markdown
+files owned by composition. Unlike a whole rendered skill, this owns **no sibling
+files or directories**. Scripts and references beside a composed `SKILL.md`
+keep their existing owners. New templates need an explicit destination entry;
+unknown or missing templates fail. Sources and destinations reject symlinks and
+traversal, and missing or cyclic partials fail before publishing any outputs.
+To retire a composed document, move its destination into
+`RETIRED_COMPOSED_DOCUMENTS`, remove its template and its `.gitattributes` line,
+and render; remove the retired entry after the generated inventory no longer
+names it. When a profile's `prompt_stack` names the document, drop that entry and
+advance `PROMPT_STACK_VERSION` in the same change: the render refuses a stack
+entry it no longer generates.
+
+Handlebars is a build dependency in the private `prompts/package.json`; consumers
+receive plain Markdown and require no template engine. Composition accepts only
+text and static partial includes: no helpers, conditionals, variables, dynamic
+names, context overrides, or fallback blocks. Profile vocabulary remains the
+only substitution interface. Templates and partials are covered by skill-content
+lint, and rendered Markdown is formatted and compared by the existing check.
+`.gitattributes` marks the exact composed outputs as generated so GitHub collapses
+their diffs by default; source templates and partials remain visible.
+
+Because every `{{` is parsed, a few things that are ordinary in prompt prose fail
+composition:
+
+- A literal `{{` — an Actions `${{ … }}` expression, a `gh --template` example —
+  must be written `\{{`.
+- Handlebars comments (`{{! … }}`) and whitespace control (`{{~> … }}`) are
+  rejected along with everything else that is not a plain include.
+- A partial is addressed by its path under `prompts/partials/` without the
+  suffix; each segment starts with a lower-case letter and holds only lower-case
+  letters, digits, and hyphens.
+- Every file under `prompts/partials/` must end in `.hbs`, and every file under
+  `prompts/review/` must have a `COMPOSED_DOCUMENTS` entry; a stray file in
+  either tree fails the render.
+
+Put an include on its own unindented line and end the partial with a newline. The
+include line contributes no newline of its own, and indentation before it reaches
+only the partial's first line.
+
+Migrate shared policy without changing rendered bytes or prompt-stack identity.
+For later behavior changes, edit the partial, advance `PROMPT_STACK_VERSION`
+according to the rules below, and regenerate. Verify composition with
+`npm test --prefix prompts` and the renderer with `--check`.
 
 ## Adding a rendered skill
 
@@ -170,19 +237,20 @@ newline and no comments or blank lines. The renderer is its only writer, and
 `--check` compares it against a fresh render, so it cannot silently go stale.
 
 Every entry is inside the renderer's ownership domain, which is what makes the
-file safe to act on. Three shapes appear in it:
+file safe to act on. The source depends on the declared owner:
 
-| Shape                          | Source                                                           |
-| ------------------------------ | ---------------------------------------------------------------- |
-| `<root>/skills/<skill>/<path>` | `prompts/skills/<skill>/<path>`                                  |
-| `<root>/prompt-stack.json`     | `prompts/profiles/<profile>.yml` and root `PROMPT_STACK_VERSION` |
-| `<root>/<vendored path>`       | the `VENDORED_DOCUMENTS` source for that path                    |
+| Shape                          | Source                                                                   |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `<root>/skills/<skill>/<path>` | `prompts/skills/<skill>/<path>`                                          |
+| composed review Markdown       | the engine template in `prompts/review/` plus `prompts/partials/review/` |
+| `<root>/prompt-stack.json`     | `prompts/profiles/<profile>.yml` and root `PROMPT_STACK_VERSION`         |
+| `<root>/<vendored path>`       | the `VENDORED_DOCUMENTS` source for that path                            |
 
-The shapes after the first are the ones to check a reader against: they are
-generated paths with **no** corresponding file under `prompts/skills/`, so a
-tool that resolves an inventory entry back to a source by string surgery on the
-skill segment will not find one. They are also the only entries that are not
-inside a skill directory.
+Composed review entries may sit inside skill directories but have no source
+under `prompts/skills/`. The source for an output such as
+`.codex/skills/critique/SKILL.md` is
+`prompts/review/codex/skills/critique/SKILL.md.hbs`. Inventory readers must account
+for this ownership before assuming that every skill path has a shared source.
 
 ## Adding a variable
 
@@ -192,16 +260,14 @@ a placeholder that survives substitution for any reason.
 
 ## Two rules that are not negotiable
 
-**Zero conditionals.** The substitution engine has no branching construct and
-none will be added. A skill whose _structure_ must differ between harnesses — a
-phase only one engine runs, a different number of steps — is per-harness by
-definition. It stays out of `prompts/` and is held to account by the parity
-lint instead (below). The moment a renderer grows an `{% if %}`, the single
-source stops being readable as the thing that ships, which is the only property
-that makes rendering safer than copies.
+**Zero conditionals.** Shared skills use vocabulary substitution; composed review
+documents add static partial includes. A phase only one engine runs, a different
+number of steps, or calibrated reviewer instructions belong in that engine's
+template. Handlebars branching and dynamic composition are rejected, so the
+structure that ships remains visible in the source.
 
-**Prettier never touches the sources.** `prompts/skills/` is in
-`.prettierignore` and must stay there. Prettier's Markdown parser is not
+**Prettier never touches the sources.** `prompts/skills/`, `prompts/review/`, and
+`prompts/partials/` are in `.prettierignore` and must stay there. Prettier's Markdown parser is not
 placeholder-aware and corrupts them: it paired the underscores inside
 `<<REVIEW_CHAIN_POINTER>>` with a neighbouring `_before_` emphasis span and
 rewrote the key to `<<REVIEW*CHAIN_POINTER>>`, which the engine's `<<KEY>>`
@@ -242,12 +308,11 @@ The protocol document that ships beside it _is_ rendered — see
 editing it does advance `PROMPT_STACK_VERSION`.
 
 The review chain — `critique`, `deepcritique`, `refactorpass`, `reviewit`,
-`copilot-review`, and their siblings — is deliberately never single-sourced.
+`copilot-review`, and their siblings — retains separate engine implementations.
 [`docs/decisions/0006`](decisions/0006-review-chains-never-converge.md) is the
-standing record: those prompts are calibration for a specific model family, and
-two engines running the same text are one reviewer with two billing accounts.
-The implementations deliberately diverge, so there is no shared source to
-recover even if it were wanted. `agent-loop` is unrendered for a different
+standing record: calibrated review instructions stay separate, while shared
+policy is composed from partials in the migrated entry points. `copilot-review`
+and other unmigrated skills remain directly authored. `agent-loop` is unrendered for a different
 reason — [`0007`](decisions/0007-agent-loop-per-harness-launch.md) — three
 launch models and three supervision models around one protocol.
 

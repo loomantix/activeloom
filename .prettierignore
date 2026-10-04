@@ -36,6 +36,8 @@ pnpm-lock.yaml
 # file it emits. Consumers only ever receive rendered output, so nothing that
 # ships is unformatted.
 prompts/skills/
+prompts/review/
+prompts/partials/
 
 # Legal text — preserve canonical wrapping
 LICENSE

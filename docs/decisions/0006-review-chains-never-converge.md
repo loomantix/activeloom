@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-30
+- Amended: 2026-10-04 — share engine-neutral policy through static partials.
 
 ## Scope
 
@@ -16,15 +17,22 @@ violate.
 
 ## The decision
 
-The two lineages' review-chain prompts are **never** to be unified — not in
-either direction, not partially by "tidying" near-identical passages, not as a
-side effect of a rename, a repo restructure, or a parity-lint fix. What
-converges is the engine-neutral **protocol**: the vendored local-review-ledger
+The two lineages retain separate review methods, lens instructions, calibration,
+and orchestration. Similar wording alone does not justify unifying those parts.
+What converges is the engine-neutral **policy and protocol**: human-glance
+eligibility, tier rules, evidence requirements, the vendored local-review-ledger
 contract, the PR-as-ledger model, the four-rung severity ladder (`blocking`,
 `major`, `minor`, `nit`), the once-per-engine refactor latch, and the
 role-based relay in `REVIEW_WORKFLOW.md`, which deliberately never names an
-engine. A protocol change ports to all three trees — each time rewritten in the
-target lineage's own calibration, never by copying prose across the boundary.
+engine. Shared policy can be authored once in `prompts/partials/review/` and
+included by the separate engine templates in `prompts/review/`. A policy edit
+then reaches every entry point through generation rather than manual copying.
+
+Composition uses static Handlebars partials. Engine-specific branches belong in
+their own templates; helpers, conditionals, and dynamic partial selection are
+rejected. Extract only shared policy, preserving the rendered text during a
+migration. Engine-specific wording remains in its template, even where another
+engine expresses a similar rule. See [prompt rendering](../prompt-rendering.md).
 
 ## Why prompt convergence is a defect, not a cleanup
 
@@ -42,9 +50,11 @@ different default behaviours.
 The deeper reason is what the two-class architecture is for. The review
 protocol's value comes from an independent second opinion: a Codex pass reads
 the PR cold, calibrated differently from the Claude pass that preceded it.
-Converging the prompts erodes exactly that independence — two engines running
-the same text are one reviewer with two billing accounts. The divergence is not
-a cost of the architecture; it is the product.
+Preserving different review methods and calibration supports that independence.
+Shared severity definitions or human-glance eligibility do not require identical
+review methods. The original blanket prohibition on sharing passages made a
+single policy correction require edits across many entry points. The boundary
+is now the instruction's purpose, rather than whether it lives in a skill file.
 
 ## The failure mode this record forestalls
 
@@ -56,4 +66,6 @@ deliberate calibration catalogued in records 0001–0005. The parity lint exists
 to catch _accidental_ drift in the shared protocol surface; this record and its
 siblings are its allowlist for the remainder. When the lint flags a divergence
 that is in fact deliberate, the fix is a new decision record here — never a
-cross-lineage edit that makes the texts match.
+cross-lineage edit that makes calibrated review instructions match. A source
+migration of already-shared policy must leave the rendered instructions unchanged;
+subsequent policy changes are reviewed separately from that migration.
