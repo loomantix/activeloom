@@ -799,9 +799,15 @@ class Runner:
             raise Blocked("; ".join(report["blockers"]))
         path = self.directory / "abort.json"
         existing = read(path) if path.exists() else None
-        if existing is not None and not isinstance(existing, dict):
+        if existing is not None and (
+            not isinstance(existing, dict)
+            or existing.get("version") != 1
+            or existing.get("phase") not in ("prepared", "aborted")
+            or not isinstance(existing.get("snapshot"), dict)
+            or json_digest(existing["snapshot"]) != existing.get("evidence_sha256")
+        ):
             raise Blocked("abort receipt is malformed; preserve it for reconciliation")
-        if existing is not None and existing.get("phase") == "aborted":
+        if existing is not None and (existing["phase"] == "aborted" or report["end"]):
             # The authenticated marker ended the run. Later PR conversation and
             # commits are not evidence about the preserved checkpoint.
             saved, live, end = existing.get("snapshot"), report["snapshot"], report["end"]
@@ -818,6 +824,9 @@ class Runner:
                 or end["head"] != saved["head"]
             ):
                 raise Blocked("abort receipt conflicts with authenticated terminal evidence")
+            if existing["phase"] == "prepared":
+                existing["phase"] = "aborted"
+                save(path, existing, staging=self.directory / ".abort-staging")
             return existing
         if evidence != report["evidence_sha256"]:
             raise Blocked("recovery evidence changed; rerun --diagnose and inspect before authorizing abort")
@@ -825,7 +834,16 @@ class Runner:
                    "snapshot": report["snapshot"]}
         if existing is not None:
             if existing.get("evidence_sha256") != evidence or existing.get("snapshot") != report["snapshot"]:
-                raise Blocked("abort intent conflicts with live evidence; preserve it for reconciliation")
+                # A fresh digest explicitly authorizes the new live evidence,
+                # but never permits replacement of the preserved checkpoint.
+                if any(existing["snapshot"].get(key) != report["snapshot"][key]
+                       for key in ("run_id", "checkpoint_head", "files")):
+                    raise Blocked("abort intent conflicts with preserved checkpoint files; preserve it for reconciliation")
+                history = self.directory / ".abort-staging" / ("intent-" + existing["evidence_sha256"] + ".json")
+                if history.exists() and read(history) != existing:
+                    raise Blocked("saved abort intent history conflicts; preserve it for reconciliation")
+                save(history, existing, staging=self.directory / ".abort-staging")
+                save(path, receipt, staging=self.directory / ".abort-staging")
         else:
             if report["end"]:
                 raise Blocked("run ended outside this recovery; reconcile before abort")

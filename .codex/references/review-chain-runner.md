@@ -478,8 +478,14 @@ python3 /path/to/reviewed/checkout/.codex/skills/critique/scripts/review-chain-r
 This command rechecks the evidence and records an intent in `abort.json` before
 posting the authenticated `aborted` terminal marker. It never marks a failed
 attempt successful. The original `state.json`, logs, results, snapshots,
-findings and attestations remain intact. An evidence change requires fresh
-read-only diagnosis and inspection; a conflicting saved abort intent requires
+findings and attestations remain intact. An evidence change before the remote
+abort requires fresh read-only diagnosis, inspection and explicit authorization
+using the new digest. The command preserves the prior intent under
+`.abort-staging/intent-<old-digest>.json` before replacing it; changed checkpoint
+files remain a blocker. If the authenticated aborted marker already exists,
+repeat the original command: it completes the receipt despite later PR
+conversation or commits, provided the marker matches the original intent and
+the preserved files are unchanged. Conflicting terminal evidence requires
 manual reconciliation, not deletion. If interrupted after the intent or after
 the remote marker was posted, repeat the **same abort command**. An identical
 completed invocation is a no-op after live verification. Do not run standalone

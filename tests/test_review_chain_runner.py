@@ -4689,22 +4689,87 @@ def test_abort_replays_interrupted_remote_write(
         assert h.module.read(h.directory / 'abort.json')['phase'] == 'prepared'
         # Another actor's marker is evidence, not our lost reply.
         rows[0]['user']['login'] = 'different-actor'
+        h.recovery_ledger['end'] = None
         with pytest.raises(h.module.Blocked, match='evidence changed'):
             runner.abort_run(report['evidence_sha256'])
         rows[0]['user']['login'] = runner.state['actor']
+        h.recovery_ledger['end'] = {'outcome': 'aborted', 'head': HEAD}
     runner.abort_run(report['evidence_sha256'])
     assert runner.diagnose_recovery()['evidence_sha256'] == report['evidence_sha256']
     runner.abort_run(report['evidence_sha256'])
-    assert len(calls) == (2 if lost_response else 1)
+    assert len(calls) == 1
     assert h.module.read(h.directory / 'abort.json')['phase'] == 'aborted'
     # Later PR conversation must not strand a completed abort.
     rows.append({'id': 102, 'user': {'login': 'someone-else'}, 'body': 'What happened here?'})
     assert runner.diagnose_recovery()['evidence_sha256'] != report['evidence_sha256']
     assert runner.abort_run(report['evidence_sha256'])['phase'] == 'aborted'
-    assert len(calls) == (2 if lost_response else 1)
+    assert len(calls) == 1
     (h.directory / 'pass-1/worker.log').write_text('changed')
     with pytest.raises(h.module.Blocked, match='authenticated terminal evidence'):
         runner.abort_run(report['evidence_sha256'])
+
+
+@pytest.mark.parametrize('terminal', [False, True])
+@pytest.mark.parametrize('changed_files', [False, True])
+def test_prepared_abort_after_evidence_drift(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch,
+    terminal: bool, changed_files: bool,
+) -> None:
+    h = abort_harness
+    runner = h.recovery_runner
+    original = runner.diagnose_recovery()
+    receipt = {'version': 1, 'phase': 'prepared',
+               'evidence_sha256': original['evidence_sha256'], 'snapshot': original['snapshot']}
+    h.module.save(h.directory / 'abort.json', receipt)
+    if terminal:
+        h.recovery_ledger['end'] = {'outcome': 'aborted', 'head': HEAD}
+    monkeypatch.setattr(runner, 'boundary', lambda: 'e' * 40)
+    if changed_files:
+        (h.directory / 'pass-1/worker.log').write_text('changed')
+    fresh = runner.diagnose_recovery()
+    evidence = original['evidence_sha256'] if terminal else fresh['evidence_sha256']
+    if changed_files:
+        with pytest.raises(h.module.Blocked, match='conflicts'):
+            runner.abort_run(evidence)
+        assert h.module.read(h.directory / 'abort.json') == receipt
+        return
+    if not terminal:
+        with pytest.raises(h.module.Blocked, match='evidence changed'):
+            runner.abort_run(original['evidence_sha256'])
+    result = runner.abort_run(evidence)
+    assert result['phase'] == 'aborted'
+    assert result['snapshot']['head'] == (HEAD if terminal else 'e' * 40)
+    if not terminal:
+        history = h.directory / '.abort-staging' / ('intent-' + original['evidence_sha256'] + '.json')
+        assert h.module.read(history) == receipt
+        h.recovery_ledger['end'] = {'outcome': 'aborted', 'head': 'e' * 40}
+    assert runner.abort_run(evidence) == result
+
+
+def test_prepared_abort_reauthorization_replays_interrupted_write(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = abort_harness
+    runner = h.recovery_runner
+    original = runner.diagnose_recovery()
+    receipt = {'version': 1, 'phase': 'prepared',
+               'evidence_sha256': original['evidence_sha256'], 'snapshot': original['snapshot']}
+    h.module.save(h.directory / 'abort.json', receipt)
+    monkeypatch.setattr(runner, 'boundary', lambda: 'e' * 40)
+    fresh = runner.diagnose_recovery()
+    save = h.module.save
+    def interrupted(path: Path, value: Any, **kwargs: Any) -> None:
+        if path == h.directory / 'abort.json':
+            raise h.module.Blocked('interrupted receipt replacement')
+        save(path, value, **kwargs)
+    monkeypatch.setattr(h.module, 'save', interrupted)
+    with pytest.raises(h.module.Blocked, match='interrupted receipt replacement'):
+        runner.abort_run(fresh['evidence_sha256'])
+    assert h.module.read(h.directory / 'abort.json') == receipt
+    monkeypatch.setattr(h.module, 'save', save)
+    assert runner.abort_run(fresh['evidence_sha256'])['phase'] == 'aborted'
+    history = h.directory / '.abort-staging' / ('intent-' + original['evidence_sha256'] + '.json')
+    assert h.module.read(history) == receipt
 
 
 @pytest.mark.parametrize('identity', ['run', 'cwd'])
