@@ -78,7 +78,7 @@ It builds repros on synthetic data and keeps secrets and user content out of any
 
 `--issues` is a strict allowlist. Without it, the loop takes unassigned `dev: agent` issues from the `issues ready` queue. Keep early runs small and allowlisted until the queue has earned your trust. `--include-assigned` also takes issues assigned to you, and `--resume` continues a stopped run.
 
-Use `--isolate <new-directory>` when other worktrees need to keep working concurrently. It creates an independent repository and a linked controller, preserving the existing per-issue worktree and review flow. Bootstrap files must be committed on the configured base. Keep the directory for recovery and resume using the printed controller path. Global Git settings and credentials remain shared; see the installed agent-loop skill for the isolation boundary.
+Use `--isolate <new-directory>` when other worktrees need to keep working concurrently. It creates an independent repository and a linked controller, preserving the existing per-issue worktree and review flow. Bootstrap files must be committed on the configured base. Keep the directory for recovery and resume with the command the run prints. Global Git settings and credentials remain shared; see the installed agent-loop skill for the isolation boundary.
 
 **Before the first run:**
 

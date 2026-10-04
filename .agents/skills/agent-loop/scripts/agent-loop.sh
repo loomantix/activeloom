@@ -157,6 +157,10 @@ if [ -z "$PROJECT_DIR" ]; then
     echo "Could not find a Git repository from the invocation directory" >&2
     exit 1
 fi
+# A run given its project directory is not resumable from the invocation
+# directory alone, so its resume commands carry that directory.
+RESUME_ENV=""
+[ -z "${AGENT_LOOP_PROJECT_DIR:-}" ] || RESUME_ENV="AGENT_LOOP_PROJECT_DIR='$PROJECT_DIR' "
 
 if [ -d "$PROJECT_DIR/.agents/skills/agent-loop" ]; then
     PROJECT_SKILL_BASE="$PROJECT_DIR/.agents/skills"
@@ -620,10 +624,10 @@ recovery_message() {
         echo "If issue #${SELECTED_ID:-?} was claimed, unassign it before it is re-selected." >&2
     fi
     if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
-        echo "Resume review with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
+        echo "Resume review with: ${RESUME_ENV}'$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
     fi
     if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
-        echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
+        echo "Resume batch with: ${RESUME_ENV}'$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
     fi
 }
 
@@ -3239,7 +3243,7 @@ if [ -n "$BATCH_STATE_FILE" ]; then
     if [ "$batch_cursor" -lt "$batch_count" ]; then
         if [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
             echo -e "${YELLOW}○${NC} Ordered batch paused cleanly at the $MAX_ITERATIONS-issue iteration cap."
-            echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+            echo "Resume batch with: ${RESUME_ENV}'$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
             exit 0
         fi
         recovery_message "Ordered batch stopped before every issue reached a finalized or explicitly bailed state."

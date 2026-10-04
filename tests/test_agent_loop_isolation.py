@@ -13,6 +13,9 @@ import pytest
 from tests.test_codex_agent_loop import Consumer, _executable, _git
 
 
+pytestmark = pytest.mark.regression
+
+
 ROOT = Path(__file__).resolve().parent.parent
 HELPER = ROOT / ".codex/skills/agent-loop/scripts/isolate-repository.py"
 
@@ -327,3 +330,67 @@ exec {real_git} "$@"
     assert f"{destination} was created but the run did not start" in result.stderr
     assert "Isolated controller" not in result.stdout
     assert not (tmp_path / "child.json").exists()
+
+
+def test_helper_fetches_a_base_ahead_of_every_source_branch(tmp_path: Path) -> None:
+    consumer = _stub_consumer(tmp_path)
+    other = tmp_path / "other"
+    _git("clone", str(tmp_path / "remote.git"), str(other), cwd=tmp_path)
+    _git(
+        "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "--allow-empty", "-m", "test: landed elsewhere", cwd=other,
+    )
+    _git("push", "origin", "HEAD:main", cwd=other)
+    _git("fetch", "origin", cwd=consumer.repo)
+    base = _git("rev-parse", "origin/main", cwd=consumer.repo)
+    # The clone copies local branches only, and none of them holds this commit.
+    assert base != _git("rev-parse", "HEAD", cwd=consumer.repo)
+    destination = tmp_path / "isolated"
+    result = _helper(consumer, destination)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git("rev-parse", "HEAD", cwd=destination / "controller") == base
+
+
+def test_helper_ignores_an_inherited_repository_location(tmp_path: Path) -> None:
+    consumer = _stub_consumer(tmp_path)
+    source_config = _git("config", "--local", "--list", cwd=consumer.repo)
+    env = os.environ.copy()
+    env["ISOLATION_TEST_RECORD"] = str(tmp_path / "child.json")
+    env["ISOLATION_TEST_EXIT"] = "0"
+    # -C does not override an exported GIT_DIR.
+    env["GIT_DIR"] = str(consumer.repo / ".git")
+    destination = tmp_path / "isolated"
+    result = subprocess.run(
+        [
+            sys.executable, str(HELPER),
+            "--project-dir", str(consumer.repo),
+            "--base-ref", "origin/main",
+            "--destination", str(destination),
+            "--harness", ".codex",
+        ],
+        cwd=consumer.repo, env=env, text=True, capture_output=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git("config", "--local", "--list", cwd=consumer.repo) == source_config
+    assert _git("worktree", "list", "--porcelain", cwd=consumer.repo).count("worktree ") == 1
+    controller = destination / "controller"
+    common = Path(_git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=controller))
+    assert common == destination / "repository/.git"
+
+
+def test_isolated_batch_resume_command_names_the_controller(tmp_path: Path) -> None:
+    consumer = Consumer(tmp_path, 3)
+    destination = tmp_path / "isolated"
+    result = consumer.run(
+        "--isolate", str(destination), "--issues", "5,6", "--iterations", "1",
+        extra_env={"AGENT_READY_JSON": '[{"number": 5}, {"number": 6}]'},
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    controller = destination / "controller"
+    # The runner resolves its project from the invocation directory, which is
+    # the launching checkout when the operator pastes this command.
+    assert (
+        f"Resume batch with: AGENT_LOOP_PROJECT_DIR='{controller}' "
+        f"'{controller}/.codex/skills/agent-loop/scripts/agent-loop.sh' --resume-batch "
+    ) in output

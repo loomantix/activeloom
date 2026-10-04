@@ -65,11 +65,15 @@ bootstrap changes before using isolation; local edits and untracked inputs are
 not copied. Origin fetch/push destinations and repository-local operational
 Git settings are preserved. Relative configuration paths and hooks resolve
 from the isolated checkout; configure external paths explicitly when needed.
+Hooks and `info/` files installed in the original checkout's Git directory are
+not copied, so checks that live only there do not run in the isolated batch.
 
 The clone, controller, and local branches are retained after completion or
 failure. Keep them until their work and recovery state are no longer needed.
-Use the printed controller's runner for `--resume-run` or `--resume-batch`;
-do not pass `--isolate` again or move an existing run into a new clone.
+Resume with the `--resume-run` or `--resume-batch` command the isolated run
+printed: it names the controller's runner and, where the runner needs it, the
+controller checkout. Do not pass `--isolate` again or move an existing run into
+a new clone.
 This costs an additional repository copy per run. Global/system Git settings,
 credentials, and installed tools remain shared and subject to existing checks;
 this mode isolates repository metadata, not processes or credentials.

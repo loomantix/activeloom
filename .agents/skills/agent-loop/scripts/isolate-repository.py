@@ -17,6 +17,18 @@ class IsolationError(RuntimeError):
 
 # Directories this process created; reported when the run never starts.
 created: list[Path] = []
+# An exported repository location overrides -C, which would aim the isolated
+# steps and the run itself at that repository instead of the new one.
+REPOSITORY_ENVIRONMENT = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    }
+)
 
 
 def main() -> None:
@@ -34,7 +46,11 @@ def main() -> None:
     git = os.environ.get("AGENT_LOOP_REAL_GIT") or shutil.which("git")
     if not git or not Path(git).is_absolute():
         raise IsolationError("trusted Git executable is unavailable")
-    env = os.environ.copy()
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in REPOSITORY_ENVIRONMENT
+    }
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
 
     def run(directory: Path, *arguments: str) -> bytes:

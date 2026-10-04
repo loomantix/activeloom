@@ -1464,3 +1464,50 @@ def test_isolated_run_completes_on_the_launchers_base_outside_the_source_checkou
     source_worktrees = _run_git("worktree", "list", "--porcelain", cwd=repo).stdout
     assert source_worktrees.count("worktree ") == 1
     assert "agent-loop/issue-41-" not in _run_git("branch", "--list", cwd=repo).stdout
+
+
+def test_isolated_batch_resumes_in_the_isolated_repository_from_the_source_checkout(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo = consumer[0]
+    shutil.copy2(
+        AGENT_LOOP.parent / "isolate-repository.py",
+        repo / ".agents/skills/agent-loop/scripts/isolate-repository.py",
+    )
+    config = _config_v3(tmp_path)
+    (repo / ".agents/skills/agent-loop/agent-loop.config").write_text(config, encoding="utf-8")
+    _run_git("add", ".", cwd=repo)
+    _run_git("commit", "-m", "test: isolation inputs", cwd=repo)
+    _run_git("push", "origin", "main", cwd=repo)
+    destination = tmp_path / "isolated"
+    issues = [_issue(41), _issue(42)]
+
+    paused = _run(
+        consumer,
+        ["--isolate", str(destination), "--issues", "41,42", "--iterations", "1"],
+        issues=issues,
+        config=config,
+        timeout=120,
+    )
+
+    assert paused.returncode == 0, paused.stderr + paused.stdout
+    hint = [line for line in paused.stdout.splitlines() if line.startswith("Resume batch with: ")]
+    assert len(hint) == 1, paused.stdout
+    # The operator's shell is still in the launching checkout.
+    resumed = subprocess.run(
+        ["bash", "-c", hint[0].removeprefix("Resume batch with: ")],
+        cwd=repo,
+        env=_agent_loop_env(consumer, issues=issues),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    isolated_branches = _run_git(
+        "for-each-ref", "--format=%(refname)", "refs/heads/agent-loop/", cwd=destination / "controller"
+    ).stdout
+    assert "refs/heads/agent-loop/issue-41-" in isolated_branches
+    assert "refs/heads/agent-loop/issue-42-" in isolated_branches
+    assert "agent-loop/issue-" not in _run_git("branch", "--list", cwd=repo).stdout
+    assert _run_git("worktree", "list", "--porcelain", cwd=repo).stdout.count("worktree ") == 1

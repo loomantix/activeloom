@@ -161,6 +161,10 @@ if [ -z "$PROJECT_DIR" ]; then
     echo "Could not find a Git repository from the invocation directory" >&2
     exit 1
 fi
+# A run given its project directory is not resumable from the invocation
+# directory alone, so its resume commands carry that directory.
+RESUME_ENV=""
+[ -z "${AGENT_LOOP_PROJECT_DIR:-}" ] || RESUME_ENV="AGENT_LOOP_PROJECT_DIR='$PROJECT_DIR' "
 
 PROJECT_SKILL_BASE="$PROJECT_DIR/.codex/skills"
 PACKAGED_SKILL_BASE="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -976,10 +980,10 @@ recovery_message() {
        { [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; }; then
         if require_trusted_git_config && require_pinned_agent_loop_entrypoint; then
             if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ]; then
-                echo "Resume review with: '$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
+                echo "Resume review with: ${RESUME_ENV}'$SCRIPT_DIR/agent-loop.sh' --resume-run '$AGENT_LOOP_RUN_STATE_FILE'" >&2
             fi
             if [ -n "$BATCH_STATE_FILE" ] && [ -f "$BATCH_STATE_FILE" ]; then
-                echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
+                echo "Resume batch with: ${RESUME_ENV}'$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'" >&2
             fi
         else
             echo "The controller trust boundary changed after startup; restore the pinned entrypoint and trusted Git configuration before resuming." >&2
@@ -4011,7 +4015,7 @@ if [ -n "$BATCH_STATE_FILE" ]; then
         if [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
             echo -e "${YELLOW}○${NC} Ordered batch paused cleanly at the $MAX_ITERATIONS-issue iteration cap."
             if require_trusted_git_config && require_pinned_agent_loop_entrypoint; then
-                echo "Resume batch with: '$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
+                echo "Resume batch with: ${RESUME_ENV}'$SCRIPT_DIR/agent-loop.sh' --resume-batch '$BATCH_STATE_FILE'"
             else
                 echo "The controller trust boundary changed after startup; restore the pinned entrypoint and trusted Git configuration before resuming." >&2
             fi
