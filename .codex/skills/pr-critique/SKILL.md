@@ -54,8 +54,12 @@ no draft PR, ledger result, attestation, tier or refactor marker, or telemetry
 record. On `smallChange: true`, print that section's small-change
 recommendation and stop the same way.
 
+For a dependency-only diff, also apply the workflow's "Routine dependency
+updates" rule before continuing; a qualifying recommendation stops the same way.
+
 Continue when the range carries a review-significant file and is not a small
-change, when a human explicitly asked for this change to be reviewed anyway or
+change and does not qualify for the dependency recommendation, when a human
+explicitly asked for this change to be reviewed anyway or
 overrode a small-change recommendation, when a small change's open PR already
 carries a tier marker, or when
 `$AGENT_LOOP_REVIEW_RESULT_FILE` is set and the controller that scheduled this
