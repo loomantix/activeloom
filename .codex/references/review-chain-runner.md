@@ -458,10 +458,15 @@ files at the printed checkpoint path. Exit 2 with a report means the listed
 blockers need reconciliation. Exit 2 with only a `review-chain blocked:` line
 means a mandatory condition failed and no digest was produced. A clean dedicated worktree, matching local/remote/PR heads,
 unchanged authenticated actor, original controller hashes, and the same run
-identity are mandatory. Linux `/proc` must be readable. A same-user process
+identity are mandatory. Linux `/proc` must be readable, and recovery must run
+in the process namespace the review ran in: inside a sandbox with its own PID
+namespace the probes cannot see a surviving worker, so an empty `workers` list
+from there proves nothing. A same-user process
 that hides its environment, such as `gpg-agent` or `ssh-agent`, cannot be shown
-to be unrelated: diagnosis names each one by PID and stops until it is stopped
-or reconciled. An unknown exit without
+to be unrelated: diagnosis names each one by PID and stops until it is stopped.
+Any other same-user process whose working directory is inside the worktree is
+reported as a potential worker, including a second shell, an editor, or the
+other side of a pipe; close them and run the command unpiped. An unknown exit without
 an explicit cleanup-completed receipt, live process groups, unreadable process evidence, unfinished terminal writes,
 or conflicting terminal markers refuse abort. Do not edit a checkpoint to
 manufacture proof of a worker exit or discard it to obtain another budget.
@@ -483,9 +488,11 @@ abort requires fresh read-only diagnosis, inspection and explicit authorization
 using the new digest. The command preserves the prior intent under
 `.abort-staging/intent-<old-digest>.json` before replacing it; changed checkpoint
 files remain a blocker. If the authenticated aborted marker already exists,
-repeat the original command: it completes the receipt despite later PR
-conversation or commits, provided the marker matches the original intent and
-the preserved files are unchanged. Conflicting terminal evidence requires
+repeat the command with the digest recorded in `abort.json`, not a freshly
+diagnosed one: it completes the receipt despite later PR
+conversation or commits, provided the marker matches that intent and
+the preserved files are unchanged. Once `abort.json` exists, `--resume` is
+refused for this run. Conflicting terminal evidence requires
 manual reconciliation, not deletion. If interrupted after the intent or after
 the remote marker was posted, repeat the **same abort command**. An identical
 completed invocation is a no-op after live verification. Do not run standalone
@@ -509,7 +516,8 @@ Restart requires the completed abort: a receipt in the `aborted` phase, the
 authenticated `aborted` marker at its head, and unchanged preserved files. If
 the abort is still only prepared, repeat the same abort command first. Comments,
 thread changes or commits made on the PR after the completed abort do not block
-restart. It then
+restart. The first restart repeats the diagnosis, so its mandatory conditions
+and process checks apply again at the live head. It then
 archives the **entire directory** as `<owner>-<repo>-<pr>-run-<full-run-id>`. It creates a
 **new budget**; previous convergence is not implied and stale-head passes are
 not current-head evidence. The aborted run ID is the restart idempotency key. Repeating the same command

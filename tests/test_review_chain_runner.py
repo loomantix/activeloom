@@ -4698,6 +4698,8 @@ def test_abort_replays_interrupted_remote_write(
     assert runner.diagnose_recovery()['evidence_sha256'] == report['evidence_sha256']
     runner.abort_run(report['evidence_sha256'])
     assert len(calls) == 1
+    assert calls[0] == ('finish-run', '--repo', h.args.repo, '--pr', str(h.args.pr), '--head', HEAD,
+                        '--run-id', runner.state['run_id'], '--outcome', 'aborted')
     assert h.module.read(h.directory / 'abort.json')['phase'] == 'aborted'
     # Later PR conversation must not strand a completed abort.
     rows.append({'id': 102, 'user': {'login': 'someone-else'}, 'body': 'What happened here?'})
@@ -4770,6 +4772,39 @@ def test_prepared_abort_reauthorization_replays_interrupted_write(
     assert runner.abort_run(fresh['evidence_sha256'])['phase'] == 'aborted'
     history = h.directory / '.abort-staging' / ('intent-' + original['evidence_sha256'] + '.json')
     assert h.module.read(history) == receipt
+
+
+@pytest.mark.parametrize('case', ['wrong-digest', 'no-marker', 'malformed', 'history-conflict'])
+def test_abort_receipt_refuses_unauthorized_completion(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    h = abort_harness
+    runner = h.recovery_runner
+    original = runner.diagnose_recovery()
+    evidence = original['evidence_sha256']
+    receipt = {'version': 1, 'phase': 'aborted' if case == 'no-marker' else 'prepared',
+               'evidence_sha256': evidence, 'snapshot': original['snapshot']}
+    if case == 'malformed':
+        receipt['evidence_sha256'] = 'f' * 64
+    h.module.save(h.directory / 'abort.json', receipt)
+    if case == 'wrong-digest':
+        # The marker exists, so only the digest the receipt records may complete it.
+        h.recovery_ledger['end'] = {'outcome': 'aborted', 'head': HEAD}
+        evidence = 'f' * 64
+    if case == 'history-conflict':
+        staging = h.directory / '.abort-staging'
+        staging.mkdir()
+        (staging / f'intent-{evidence}.json').write_text('{"phase": "other"}')
+        monkeypatch.setattr(runner, 'boundary', lambda: 'e' * 40)
+        evidence = runner.diagnose_recovery()['evidence_sha256']
+    posted: list[tuple[str, ...]] = []
+    monkeypatch.setattr(runner, 'helper', lambda name, *parts: posted.append(parts))
+    message = {'wrong-digest': 'different evidence digest', 'no-marker': 'authenticated terminal evidence',
+               'malformed': 'malformed', 'history-conflict': 'intent history conflicts'}[case]
+    with pytest.raises(h.module.Blocked, match=message):
+        runner.abort_run(evidence)
+    assert posted == []
+    assert h.module.read(h.directory / 'abort.json') == receipt
 
 
 @pytest.mark.parametrize('identity', ['run', 'cwd'])
@@ -4850,14 +4885,19 @@ def test_abort_then_archive_preserves_full_directory(abort_harness: Any) -> None
     assert not h.module.archive_terminal_checkpoint(h.directory)
 
 
-def test_abort_intent_blocks_ordinary_resume(abort_harness: Any) -> None:
+def test_abort_intent_blocks_ordinary_resume(
+    abort_harness: Any, capsys: pytest.CaptureFixture[str],
+) -> None:
     h = abort_harness
     runner = h.recovery_runner
     report = runner.diagnose_recovery()
     runner.abort_run(report['evidence_sha256'])
     h.args.resume = True
-    with pytest.raises(h.module.Blocked, match='abort recovery exists'):
+    with pytest.raises(h.module.Blocked, match='abort recovery exists.*--restart-aborted'):
         runner.run()
+    # The refusal must not be followed by a resume command that cannot succeed.
+    assert h.module.run_with_checkpoint(runner, h.directory) == 2
+    assert '--resume' not in capsys.readouterr().err
     assert h.launches == ['codex']
 
 
@@ -5029,6 +5069,47 @@ def test_recovery_cli_reports_blocked_instead_of_traceback(
     monkeypatch.setattr(h.module, 'ModuleType', seeded)
     with pytest.raises(h.module.Blocked, match='GitHub operation failed$'):
         h.module.Runner.recovery_ledger(runner, HEAD)
+
+
+def test_recovery_cli_binds_abort_to_the_diagnosed_run(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    h = abort_harness
+    run_id = h.recovery_runner.state['run_id']
+    common = h.directory.parent / 'common'
+    directory = common / 'activeloom-review/example-repo-1'
+    directory.parent.mkdir(parents=True)
+    h.directory.rename(directory)
+    for lock in (directory.parent / (directory.name + '.lock'), directory / 'runner.lock'):
+        lock.touch()
+    original_command = h.module.command
+    monkeypatch.setattr(h.module, 'command', lambda argv: str(common)
+                        if argv == ['git', 'rev-parse', '--git-common-dir'] else original_command(argv))
+    posted: list[tuple[str, ...]] = []
+    workers: list[int] = []
+    class Recording(h.runner):  # type: ignore[misc, name-defined]
+        def helper(self, name: str, *parts: str) -> dict[str, Any]:
+            posted.append(parts)
+            return dict(super().helper(name, *parts))
+        def recovery_ledger(self, head: str) -> dict[str, Any]:
+            return dict(h.recovery_ledger)
+        def recovery_workers(self) -> list[int]:
+            return workers
+    monkeypatch.setattr(h.module, 'Runner', Recording)
+    scope = ['--repo', h.args.repo, '--pr', str(h.args.pr)]
+    assert h.module.main([*scope, '--diagnose']) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report['run_id'] == run_id and report['blockers'] == []
+    other = 'f' * 64 if run_id != 'f' * 64 else 'e' * 64
+    assert h.module.main([*scope, '--abort-run', other,
+                          '--evidence-sha256', report['evidence_sha256']]) == 2
+    assert 'names a different run' in capsys.readouterr().err
+    assert posted == [] and not (directory / 'abort.json').exists()
+    # A listed blocker is a report with exit 2, not a clean diagnosis.
+    workers.append(4242)
+    assert h.module.main([*scope, '--diagnose']) == 2
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked['workers'] == [4242] and blocked['blockers']
 
 
 @pytest.mark.parametrize('changed', [False, True])

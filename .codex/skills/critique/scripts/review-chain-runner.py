@@ -707,7 +707,7 @@ class Runner:
             raise Blocked(
                 "process evidence is unreadable for PID "
                 + ", ".join(sorted(unreadable))
-                + "; stop or reconcile each process, then rerun --diagnose"
+                + "; stop each process, then rerun --diagnose"
             )
         return sorted(found)
 
@@ -811,9 +811,10 @@ class Runner:
             # The authenticated marker ended the run. Later PR conversation and
             # commits are not evidence about the preserved checkpoint.
             saved, live, end = existing.get("snapshot"), report["snapshot"], report["end"]
+            if existing["evidence_sha256"] != evidence:
+                raise Blocked("abort receipt records a different evidence digest; repeat --abort-run with the digest in abort.json")
             if (
-                existing.get("evidence_sha256") != evidence
-                or not isinstance(saved, dict)
+                not isinstance(saved, dict)
                 or json_digest(saved) != evidence
                 or any(
                     saved.get(key) != live[key]
@@ -3164,7 +3165,7 @@ class Runner:
 
     def run(self) -> str:
         if (self.directory / "abort.json").exists():
-            raise Blocked("abort recovery exists; complete --abort-run, then explicitly authorize --restart (new budget)")
+            raise Blocked("abort recovery exists; complete --abort-run, then explicitly authorize --restart --restart-aborted <run-id> (new budget)")
         self.initialize()
         if self.state["status"] in ("converged", "plan-complete", "exhausted"):
             if self.boundary() != self.state["head"]:
@@ -3473,7 +3474,7 @@ def recovery_main(arguments: list[str]) -> int:
             print(json.dumps({"status": "aborted", "run_id": args.abort_run,
                               "receipt": str(directory / "abort.json"),
                               "head": receipt["snapshot"]["head"],
-                              "next": "Separate --restart authorization creates a NEW budget; previous convergence is not implied."}))
+                              "next": "Separate --restart --restart-aborted <run_id> authorization creates a NEW budget; previous convergence is not implied."}))
             return 0
         report = runner.diagnose_recovery()
         snapshot = report["snapshot"]
@@ -3687,7 +3688,8 @@ def run_with_checkpoint(runner: Runner, directory: Path) -> int:
             f"review-chain blocked: {error}; checkpoint: {directory}",
             file=sys.stderr,
         )
-        if runner.state:
+        # A saved abort intent closes --resume; its refusal names the next step.
+        if runner.state and not (directory / "abort.json").exists():
             print(
                 f"After reconciliation, in {runner.state['config']['worktree']}:\n{runner.recovery_command()}",
                 file=sys.stderr,
