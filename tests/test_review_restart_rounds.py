@@ -1034,7 +1034,7 @@ def test_finish_run_verifies_signed_history_only_when_converged(
     assert ledger_checks == ([HEAD_SHA] if outcome == "converged" else [])
 
 
-@pytest.mark.parametrize('conflict', [None, 'authorization', 'terminal', 'parent'])
+@pytest.mark.parametrize('conflict', [None, 'authorization', 'terminal', 'parent', 'unended', 'converged'])
 def test_aborted_restart_replays_only_its_matching_successor(
     real_handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     capsys: pytest.CaptureFixture[str], conflict: str | None,
@@ -1053,8 +1053,11 @@ def test_aborted_restart_replays_only_its_matching_successor(
         successor['supersedes'] = 2
     monkeypatch.setattr(h, '_issue_comments', lambda *_: [])
     monkeypatch.setattr(h, '_run_records', lambda *_: [parent, successor])
+    # Only an authenticated aborted parent may have its successor replayed.
+    parent_end = (None if conflict == 'unended' else
+                  {'outcome': 'converged' if conflict == 'converged' else 'aborted'})
     monkeypatch.setattr(h, '_run_end', lambda rows, run_id: (
-        {'outcome': 'aborted'} if run_id == parent['run_id'] else
+        parent_end if run_id == parent['run_id'] else
         {'outcome': 'exhausted'} if conflict == 'terminal' else None))
     monkeypatch.setattr(h, '_verify_reviewable_head', lambda *_: None)
     def unexpected_post(*args: Any) -> None:
@@ -1064,7 +1067,8 @@ def test_aborted_restart_replays_only_its_matching_successor(
                            tier='deep', restart=True, restart_from_run='d' * 64,
                            chain='codex,claude', authorization_file=str(authorization))
     if conflict:
-        with pytest.raises(h.HandoffError, match='successor'):
+        message = 'aborted outcome' if conflict in ('unended', 'converged') else 'successor'
+        with pytest.raises(h.HandoffError, match=message):
             h._start_run(args)
     else:
         h._start_run(args)

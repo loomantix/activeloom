@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import fcntl
 import importlib.util
 import json
 import os
@@ -4854,6 +4855,12 @@ def test_abort_conflicting_terminal_refuses_mutation(abort_harness: Any) -> None
     with pytest.raises(h.module.Blocked, match='different outcome'):
         runner.abort_run(report['evidence_sha256'])
     assert not (h.directory / 'abort.json').exists()
+    # An aborted marker with no receipt was not posted by this recovery.
+    h.recovery_ledger['end'] = {'outcome': 'aborted', 'head': HEAD}
+    with pytest.raises(h.module.Blocked, match='ended outside this recovery'):
+        runner.abort_run(report['evidence_sha256'])
+    assert not (h.directory / 'abort.json').exists()
+    assert h.launches == ['codex']
 
 
 def test_abort_preserves_later_standalone_passes_without_adoption(abort_harness: Any) -> None:
@@ -4910,9 +4917,9 @@ def test_recovery_diagnosis_does_not_modify_artifacts(abort_harness: Any) -> Non
     assert h.recovery_runner.recovery_files() == before
 
 
-@pytest.mark.parametrize('conflict', [False, True])
+@pytest.mark.parametrize('conflict', [None, 'digest', 'run'])
 def test_recovery_reads_authenticated_run_with_original_parser(
-    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, conflict: bool
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, conflict: str | None
 ) -> None:
     h = abort_harness
     runner = h.recovery_runner
@@ -4926,8 +4933,12 @@ def test_recovery_reads_authenticated_run_with_original_parser(
               f'base={BASE} start-head={HEAD} supersedes=none content-sha256={run_id} -->\n{content}')
     rows = [{'id': 1, 'body': marker, 'user': {'login': 'test-actor'},
              'created_at': '2026-01-01T00:00:00Z'}]
-    if conflict:
+    if conflict == 'digest':
         rows[0]['body'] = marker.replace('Synthetic authorization.', 'Tampered authorization.')
+    if conflict == 'run':
+        # The checkpoint's run is not the latest authenticated run.
+        runner.state['run_id'] = 'f' * 64
+        runner.persist()
     original_run = subprocess.run
     def run(argv: list[str], **kwargs: Any) -> Any:
         if argv[0] == 'gh':
@@ -4936,8 +4947,11 @@ def test_recovery_reads_authenticated_run_with_original_parser(
         return original_run(argv, **kwargs)
     monkeypatch.setattr(subprocess, 'run', run)
     before = runner.recovery_files()
-    if conflict:
+    if conflict == 'digest':
         with pytest.raises(RuntimeError, match='digest'):
+            h.module.Runner.recovery_ledger(runner, HEAD)
+    elif conflict == 'run':
+        with pytest.raises(h.module.Blocked, match='authenticated active run differs'):
             h.module.Runner.recovery_ledger(runner, HEAD)
     else:
         actual = h.module.Runner.recovery_ledger(runner, HEAD)
@@ -5105,6 +5119,13 @@ def test_recovery_cli_binds_abort_to_the_diagnosed_run(
                           '--evidence-sha256', report['evidence_sha256']]) == 2
     assert 'names a different run' in capsys.readouterr().err
     assert posted == [] and not (directory / 'abort.json').exists()
+    # Recovery does not run while another runner holds the PR.
+    with (directory / 'runner.lock').open() as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert h.module.main([*scope, '--abort-run', run_id,
+                              '--evidence-sha256', report['evidence_sha256']]) == 2
+    assert 'another runner owns this PR' in capsys.readouterr().err
+    assert posted == [] and not (directory / 'abort.json').exists()
     # A listed blocker is a report with exit 2, not a clean diagnosis.
     workers.append(4242)
     assert h.module.main([*scope, '--diagnose']) == 2
@@ -5155,6 +5176,12 @@ def test_restart_archives_a_completed_abort_and_starts_one_successor(
         assert not archive.exists() and (directory / 'abort.json').exists()
         assert posted == []
         return
+    # An aborted checkpoint is archived only for a restart that names its run.
+    other = 'f' * 64 if old_id != 'f' * 64 else 'e' * 64
+    for unnamed in (arguments[:-2], [*arguments[:-1], other]):
+        assert h.module.main(unnamed) == 2
+        assert 'requires --restart-aborted' in capsys.readouterr().err
+        assert not archive.exists() and posted == []
     assert h.module.main(arguments) == 0
     assert 'NEW review budget' in capsys.readouterr().err
     # The lock taken for this restart is the only file the archive gains.
