@@ -164,7 +164,7 @@ def test_a_later_pair_is_pinned_without_changing_earlier_ones(
     assert later.returncode == 0, later.stderr
     values = evaluated(later.stdout)
     assert values["AGENT_LOOP_CLAUDE_EFFORT"] == "medium"
-    assert values["AGENT_LOOP_GEMINI_WORKER_MODEL"] == "gemini-3.7-flash-high"
+    assert values["AGENT_LOOP_GEMINI_WORKER_MODEL"] == changed["engines"]["gemini"]["worker"]["model"]
     assert "Pinned gemini worker settings" in later.stderr
 
 

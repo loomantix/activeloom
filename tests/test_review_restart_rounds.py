@@ -1033,3 +1033,46 @@ def test_finish_run_verifies_signed_history_only_when_converged(
     assert kinds.count("history") == (2 if expects_history else 0)
     assert all(call == EXPECTED_CALL for _, call in verify_calls)
     assert ledger_checks == ([HEAD_SHA] if outcome == "converged" else [])
+
+
+@pytest.mark.parametrize('conflict', [None, 'authorization', 'terminal', 'parent', 'unended', 'converged'])
+def test_aborted_restart_replays_only_its_matching_successor(
+    real_handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str], conflict: str | None,
+) -> None:
+    h = real_handoff
+    authorization = tmp_path / 'authorization.txt'
+    authorization.write_text('Explicit new budget for synthetic review.')
+    content = '<!-- local-review-plan:v1 mode=chain engines=codex,claude -->\n\n' + authorization.read_text()
+    parent = {'comment_id': 1, 'run_id': 'd' * 64}
+    successor = {'comment_id': 3, 'run_id': 'e' * 64, 'supersedes': 1,
+                 'tier': 'deep', 'base': 'b' * 40, 'start_head': 'a' * 40,
+                 'content': content}
+    if conflict == 'authorization':
+        successor['content'] = 'Other authorization'
+    if conflict == 'parent':
+        successor['supersedes'] = 2
+    monkeypatch.setattr(h, '_issue_comments', lambda *_: [])
+    monkeypatch.setattr(h, '_run_records', lambda *_: [parent, successor])
+    # Only an authenticated aborted parent may have its successor replayed.
+    parent_end = (None if conflict == 'unended' else
+                  {'outcome': 'converged' if conflict == 'converged' else 'aborted'})
+    monkeypatch.setattr(h, '_run_end', lambda rows, run_id: (
+        parent_end if run_id == parent['run_id'] else
+        {'outcome': 'exhausted'} if conflict == 'terminal' else None))
+    monkeypatch.setattr(h, '_verify_reviewable_head', lambda *_: None)
+    def unexpected_post(*args: Any) -> None:
+        pytest.fail('repeated restart must not post another run')
+    monkeypatch.setattr(h, '_post_issue_comment', unexpected_post)
+    args = SimpleNamespace(repo='example/repo', pr=1, head='a' * 40, base='b' * 40,
+                           tier='deep', restart=True, restart_from_run='d' * 64,
+                           chain='codex,claude', authorization_file=str(authorization))
+    if conflict:
+        message = 'aborted outcome' if conflict in ('unended', 'converged') else 'successor'
+        with pytest.raises(h.HandoffError, match=message):
+            h._start_run(args)
+    else:
+        h._start_run(args)
+        result = json.loads(capsys.readouterr().out)
+        assert result['run_id'] == successor['run_id']
+        assert result['replayed'] is True
