@@ -454,11 +454,12 @@ python3 /path/to/reviewed/checkout/.codex/skills/critique/scripts/review-chain-r
 Diagnosis is read-only. It reports the local and authenticated ledger states,
 current and checkpoint heads, worker attempts, potential surviving workers,
 blockers, and an `evidence_sha256`. Inspect the discrepancy and the preserved
-files at the printed checkpoint path. Exit 2 means the reported blocker needs
-reconciliation. A clean dedicated worktree, matching local/remote/PR heads,
+files at the printed checkpoint path. Exit 2 with a report means the listed
+blockers need reconciliation. Exit 2 with only a `review-chain blocked:` line
+means a mandatory condition failed and no digest was produced. A clean dedicated worktree, matching local/remote/PR heads,
 unchanged authenticated actor, original controller hashes, and the same run
-identity are mandatory. Linux `/proc` must be readable. Unknown worker exits,
-live process groups, unreadable process evidence, unfinished terminal writes,
+identity are mandatory. Linux `/proc` must be readable. An attempt whose end
+the runner never observed, live process groups, unreadable process evidence, unfinished terminal writes,
 or conflicting terminal markers refuse abort. Do not edit a checkpoint to
 manufacture proof of a worker exit or discard it to obtain another budget.
 
@@ -495,8 +496,11 @@ python3 .codex/skills/critique/scripts/review-chain-runner.py \
   --restart --restart-aborted <aborted-run-id>
 ```
 
-Restart verifies the completed abort against live evidence, then archives the
-**entire directory** as `<owner>-<repo>-<pr>-run-<full-run-id>`. It creates a
+Restart requires the completed abort: a receipt in the `aborted` phase, the
+authenticated `aborted` marker at its head, and unchanged preserved files. If
+the abort is still only prepared, repeat the same abort command first. Comments
+or thread changes made on the PR after the marker do not block restart. It then
+archives the **entire directory** as `<owner>-<repo>-<pr>-run-<full-run-id>`. It creates a
 **new budget**; previous convergence is not implied and stale-head passes are
 not current-head evidence. The aborted run ID is the restart idempotency key. Repeating the same command
 resumes or reports that one successor; it never creates another budget, even
@@ -512,10 +516,9 @@ local worker's result, validation receipts, head transitions and attempt
 budget. Diagnosis displays the ledger decision; abort preserves it. It does
 not synthesize a canonical result or count those passes in the old checkpoint.
 
-Consumer rollout: after this change is reviewed and merged upstream, distribute
-it through the normal reviewed ActiveLoom update. Verify the installed runner
-contains `--diagnose` and `--abort-run`. For existing pinned runs, invoke the
-reviewed checkout's recovery entry point from the original consumer worktree;
-retain the original controls. Test diagnosis first, obtain explicit abort and
-restart authorization separately, and retain the archived directory. This PR
-does not itself release, move distribution tags or sync consumers.
+Consumer rollout: verify that the installed runner contains `--diagnose`,
+`--abort-run` and `--restart-aborted`. For a run pinned before the update,
+invoke the reviewed checkout's entry point from the original consumer worktree
+for all three steps and retain the original controls. Test diagnosis first,
+obtain explicit abort and restart authorization separately, and retain the
+archived directory.

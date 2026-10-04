@@ -4492,7 +4492,7 @@ def abort_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     ledger = {'run_id': runner.state['run_id'], 'head': HEAD,
               'end': None, 'passes': [], 'status': 'next', 'started_at': '2026-01-01T00:00:00Z'}
     monkeypatch.setattr(runner, 'recovery_ledger', lambda head: dict(ledger))
-    monkeypatch.setattr(runner, 'recovery_workers', lambda started_at: [])
+    monkeypatch.setattr(runner, 'recovery_workers', lambda: [])
     harness.recovery_runner = runner
     harness.recovery_ledger = ledger
     return harness
@@ -4512,7 +4512,7 @@ def test_abort_stuck_checkpoint_preserves_every_original_file(abort_harness: Any
     assert h.launches == ['codex']
 
 
-@pytest.mark.parametrize('conflict', ['worker', 'unknown_exit', 'changed_head', 'changed_file'])
+@pytest.mark.parametrize('conflict', ['worker', 'changed_head', 'changed_file'])
 def test_abort_refuses_uncertain_or_changed_evidence(
     abort_harness: Any, monkeypatch: pytest.MonkeyPatch, conflict: str
 ) -> None:
@@ -4520,10 +4520,7 @@ def test_abort_refuses_uncertain_or_changed_evidence(
     runner = h.recovery_runner
     report = runner.diagnose_recovery()
     if conflict == 'worker':
-        monkeypatch.setattr(runner, 'recovery_workers', lambda started_at: [123])
-    elif conflict == 'unknown_exit':
-        runner.state['attempts'][0]['exit_status'] = None
-        runner.persist()
+        monkeypatch.setattr(runner, 'recovery_workers', lambda: [123])
     elif conflict == 'changed_head':
         monkeypatch.setattr(runner, 'boundary', lambda: 'e' * 40)
     else:
@@ -4531,6 +4528,26 @@ def test_abort_refuses_uncertain_or_changed_evidence(
     with pytest.raises(h.module.Blocked):
         runner.abort_run(report['evidence_sha256'])
     assert not (h.directory / 'abort.json').exists()
+
+
+@pytest.mark.parametrize('reason', [None, 'execution_failed_or_unknown', 'codex_startup_stall'])
+def test_abort_unknown_exit_blocks_only_an_unobserved_attempt(
+    abort_harness: Any, reason: str | None
+) -> None:
+    h = abort_harness
+    runner = h.recovery_runner
+    # A timeout, stall or signal leaves no exit code after the group is killed.
+    runner.state['attempts'][0].update(exit_status=None, failure_reason=reason)
+    runner.persist()
+    report = runner.diagnose_recovery()
+    if reason is None:
+        assert report['blockers'] == ['worker exit is unknown; mutation outcome is uncertain']
+        with pytest.raises(h.module.Blocked, match='worker exit is unknown'):
+            runner.abort_run(report['evidence_sha256'])
+        assert not (h.directory / 'abort.json').exists()
+    else:
+        assert report['blockers'] == []
+        assert runner.abort_run(report['evidence_sha256'])['phase'] == 'aborted'
 
 
 @pytest.mark.parametrize('lost_response', [False, True])
@@ -4565,13 +4582,23 @@ def test_abort_replays_interrupted_remote_write(
         with pytest.raises(h.module.Blocked, match='response lost'):
             runner.abort_run(report['evidence_sha256'])
         assert h.module.read(h.directory / 'abort.json')['phase'] == 'prepared'
+        # Another actor's marker is evidence, not our lost reply.
+        rows[0]['user']['login'] = 'different-actor'
+        with pytest.raises(h.module.Blocked, match='evidence changed'):
+            runner.abort_run(report['evidence_sha256'])
+        rows[0]['user']['login'] = runner.state['actor']
     runner.abort_run(report['evidence_sha256'])
     assert runner.diagnose_recovery()['evidence_sha256'] == report['evidence_sha256']
     runner.abort_run(report['evidence_sha256'])
     assert len(calls) == (2 if lost_response else 1)
     assert h.module.read(h.directory / 'abort.json')['phase'] == 'aborted'
-    rows[0]['user']['login'] = 'different-actor'
-    with pytest.raises(h.module.Blocked, match='evidence changed'):
+    # Later PR conversation must not strand a completed abort.
+    rows.append({'id': 102, 'user': {'login': 'someone-else'}, 'body': 'What happened here?'})
+    assert runner.diagnose_recovery()['evidence_sha256'] != report['evidence_sha256']
+    assert runner.abort_run(report['evidence_sha256'])['phase'] == 'aborted'
+    assert len(calls) == (2 if lost_response else 1)
+    (h.directory / 'pass-1/worker.log').write_text('changed')
+    with pytest.raises(h.module.Blocked, match='authenticated terminal evidence'):
         runner.abort_run(report['evidence_sha256'])
 
 
@@ -4589,7 +4616,7 @@ def test_recovery_process_probe_finds_live_child(
     monkeypatch.setattr(Path, 'iterdir', lambda p: iter([Path('/proc') / str(child.pid)]) if p == Path('/proc') else original_iterdir(p))
     try:
         # A reviewer process can predate the run; exec retains its start time.
-        assert child.pid in h.module.Runner.recovery_workers(h.recovery_runner, '2099-01-01T00:00:00Z')
+        assert child.pid in h.module.Runner.recovery_workers(h.recovery_runner)
     finally:
         child.terminate()
         child.wait(timeout=5)
@@ -4724,12 +4751,21 @@ def test_restart_aborted_repeat_resumes_same_successor(
     original_command = h.module.command
     monkeypatch.setattr(h.module, 'command', lambda argv: str(common)
                         if argv == ['git', 'rev-parse', '--git-common-dir'] else original_command(argv))
-    monkeypatch.setattr(h.module, 'Runner', h.runner)
+    starts: list[tuple[str, ...]] = []
+    class Recording(h.runner):  # type: ignore[misc, name-defined]
+        def helper(self, name: str, *parts: str) -> dict[str, Any]:
+            if parts[0] == 'start-run':
+                starts.append(parts)
+            return dict(super().helper(name, *parts))
+    monkeypatch.setattr(h.module, 'Runner', Recording)
     arguments = ['--repo', h.args.repo, '--pr', '1', '--base', BASE, '--tier', 'deep',
                  '--trigger', '3', '--author', 'codex', '--chain', h.args.chain,
                  '--check', h.args.check[0], '--authorization-file', h.args.authorization_file,
                  '--restart', '--restart-aborted', old_id]
     assert h.module.main(arguments) == 0
+    # The controller's single-successor guard needs the aborted parent.
+    assert len(starts) == 1 and '--restart' in starts[0]
+    assert starts[0][starts[0].index('--restart-from-run') + 1] == old_id
     first = h.module.read(directory / 'state.json')
     launches = list(h.launches)
     assert h.module.main(arguments) == 0
@@ -4738,3 +4774,67 @@ def test_restart_aborted_repeat_resumes_same_successor(
     runner = h.runner(h.args, directory)
     resume = runner.recovery_command()
     assert '--restart-aborted ' + old_id in resume
+
+
+def test_recovery_cli_reports_blocked_instead_of_traceback(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    h = abort_harness
+    runner = h.recovery_runner
+    run_id = runner.state['run_id']
+    original_command = h.module.command
+    common = tmp_path / 'missing-common'
+    monkeypatch.setattr(h.module, 'command', lambda argv: str(common)
+                        if argv == ['git', 'rev-parse', '--git-common-dir'] else original_command(argv))
+    # The equals form reaches recovery, and a PR without a checkpoint says so.
+    assert h.module.main(['--repo', h.args.repo, '--pr', '1', f'--abort-run={run_id}',
+                          '--evidence-sha256', 'a' * 64]) == 2
+    assert 'no review checkpoint exists' in capsys.readouterr().err
+    controller = runner.control / 'local-review-handoff.py'
+    def gh_failure(repo: str, pr: int) -> None:
+        raise RuntimeError('GitHub operation failed: secret detail')
+    def load_failing(source: Any, *args: Any) -> Any:
+        return compile('_issue_comments = failing', str(controller), 'exec')
+    monkeypatch.setattr(h.module, 'compile', load_failing, raising=False)
+    module_type = h.module.ModuleType
+    def seeded(name: str) -> Any:
+        module = module_type(name)
+        module.failing = gh_failure
+        return module
+    monkeypatch.setattr(h.module, 'ModuleType', seeded)
+    with pytest.raises(h.module.Blocked, match='GitHub operation failed$'):
+        h.module.Runner.recovery_ledger(runner, HEAD)
+
+
+def test_restart_refuses_an_abort_that_is_only_prepared(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    h = abort_harness
+    runner = h.recovery_runner
+    report = runner.diagnose_recovery()
+    h.module.save(h.directory / 'abort.json', {
+        'version': 1, 'phase': 'prepared', 'evidence_sha256': report['evidence_sha256'],
+        'snapshot': report['snapshot']})
+    common = h.directory.parent / 'common'
+    directory = common / 'activeloom-review/example-repo-1'
+    directory.parent.mkdir(parents=True)
+    h.directory.rename(directory)
+    original_command = h.module.command
+    monkeypatch.setattr(h.module, 'command', lambda argv: str(common)
+                        if argv == ['git', 'rev-parse', '--git-common-dir'] else original_command(argv))
+    posted: list[tuple[str, ...]] = []
+    class Recording(h.runner):  # type: ignore[misc, name-defined]
+        def helper(self, name: str, *parts: str) -> dict[str, Any]:
+            posted.append(parts)
+            return dict(super().helper(name, *parts))
+    monkeypatch.setattr(h.module, 'Runner', Recording)
+    arguments = ['--repo', h.args.repo, '--pr', str(h.args.pr), '--base', BASE, '--tier', 'deep',
+                 '--trigger', '3', '--author', 'codex', '--chain', h.args.chain,
+                 '--check', h.args.check[0], '--authorization-file', h.args.authorization_file,
+                 '--restart', '--restart-aborted', runner.state['run_id']]
+    assert h.module.main(arguments) == 2
+    assert 'abort is not complete' in capsys.readouterr().err
+    assert not any(parts[0] == 'finish-run' for parts in posted)
+    assert h.module.read(directory / 'abort.json')['phase'] == 'prepared'
+    assert (directory / 'state.json').exists()

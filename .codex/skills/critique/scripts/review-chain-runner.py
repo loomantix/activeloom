@@ -616,6 +616,20 @@ class Runner:
         source = self.control / "local-review-handoff.py"
         controller = ModuleType("recovery_handoff")
         controller.__file__ = str(source)
+        try:
+            return self.read_recovery_ledger(controller, source, head)
+        except Blocked:
+            raise
+        except (RuntimeError, KeyError, AttributeError, StopIteration) as error:
+            detail = str(error) if isinstance(error, RuntimeError) else type(error).__name__
+            if detail.startswith("GitHub operation failed"):
+                # Raw external errors can contain repository content or credentials.
+                detail = "GitHub operation failed"
+            raise Blocked(f"pinned controller could not read the ledger: {detail}") from None
+
+    def read_recovery_ledger(
+        self, controller: ModuleType, source: Path, head: str
+    ) -> dict[str, Any]:
         # Loading a diagnostic must not create __pycache__ in preserved evidence.
         exec(compile(source.read_bytes(), str(source), "exec"), controller.__dict__)
         rows = controller._issue_comments(self.args.repo, self.args.pr)
@@ -641,7 +655,7 @@ class Runner:
             "started_at": next(row["created_at"] for row in rows if row["id"] == run["comment_id"]),
         }
 
-    def recovery_workers(self, started_at: str) -> list[int]:
+    def recovery_workers(self) -> list[int]:
         """Read-only Linux probe; uncertainty is never evidence of a stopped worker."""
         proc = Path("/proc")
         if not (proc / "self/environ").is_file():
@@ -672,7 +686,7 @@ class Runner:
                     or cwd.is_relative_to(self.state["config"]["worktree"])
                 ):
                     found.append(int(entry.name))
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 continue  # Process exited during the probe.
             except PermissionError as error:
                 raise Blocked("process evidence is unreadable; reconcile permissions before abort") from error
@@ -701,7 +715,7 @@ class Runner:
         head = self.boundary()
         ledger = self.recovery_ledger(head)
         blockers = []
-        workers = self.recovery_workers(ledger["started_at"])
+        workers = self.recovery_workers()
         if workers:
             blockers.append("worker may still be running; reconcile listed processes before abort")
         attempts = self.state.get("attempts", [])
@@ -711,7 +725,11 @@ class Runner:
         ):
             blockers.append("pending worker identity is missing; mutation outcome is uncertain")
         for attempt in attempts:
-            if type(attempt.get("exit_status")) is not int:
+            # A recorded failure means launch() saw the attempt end after its
+            # group cleanup; only an end the runner never observed is unknown.
+            if type(attempt.get("exit_status")) is not int and not attempt.get(
+                "failure_reason"
+            ):
                 blockers.append("worker exit is unknown; mutation outcome is uncertain")
             group = attempt.get("process_group")
             if group is not None:
@@ -757,20 +775,35 @@ class Runner:
         report = self.diagnose_recovery()
         if report["blockers"]:
             raise Blocked("; ".join(report["blockers"]))
+        path = self.directory / "abort.json"
+        existing = read(path) if path.exists() else None
+        if existing is not None and not isinstance(existing, dict):
+            raise Blocked("abort receipt is malformed; preserve it for reconciliation")
+        if existing is not None and existing.get("phase") == "aborted":
+            # The authenticated marker ended the run. Later PR conversation is
+            # not evidence about the preserved checkpoint, so it is not compared.
+            saved, live, end = existing.get("snapshot"), report["snapshot"], report["end"]
+            if (
+                existing.get("evidence_sha256") != evidence
+                or not isinstance(saved, dict)
+                or json_digest(saved) != evidence
+                or any(
+                    saved.get(key) != live[key]
+                    for key in ("run_id", "head", "checkpoint_head", "files")
+                )
+                or not end
+                or end["outcome"] != "aborted"
+                or end["head"] != saved["head"]
+            ):
+                raise Blocked("abort receipt conflicts with authenticated terminal evidence")
+            return existing
         if evidence != report["evidence_sha256"]:
             raise Blocked("recovery evidence changed; rerun --diagnose and inspect before authorizing abort")
-        path = self.directory / "abort.json"
         receipt = {"version": 1, "phase": "prepared", "evidence_sha256": evidence,
                    "snapshot": report["snapshot"]}
-        if path.exists():
-            digest(path)
-            existing = read(path)
+        if existing is not None:
             if existing.get("evidence_sha256") != evidence or existing.get("snapshot") != report["snapshot"]:
                 raise Blocked("abort intent conflicts with live evidence; preserve it for reconciliation")
-            if existing.get("phase") == "aborted":
-                if not report["end"] or report["end"]["outcome"] != "aborted" or report["end"]["head"] != report["snapshot"]["head"]:
-                    raise Blocked("abort receipt conflicts with authenticated terminal evidence")
-                return existing
         else:
             if report["end"]:
                 raise Blocked("run ended outside this recovery; reconcile before abort")
@@ -3350,6 +3383,8 @@ def recovery_main(arguments: list[str]) -> int:
         parser.error("--evidence-sha256 authorizes abort only")
     common = Path(command(["git", "rev-parse", "--git-common-dir"])).resolve()
     directory = common / "activeloom-review" / f"{args.repo.replace('/', '-')}-{args.pr}"
+    if not (directory / "state.json").is_file():
+        raise Blocked(f"no review checkpoint exists for this PR: {directory}")
     # Open existing lock files only: diagnosis must not create checkpoint state.
     with ExitStack() as stack:
         for path in (directory.parent / (directory.name + ".lock"), directory / "runner.lock"):
@@ -3397,8 +3432,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     if os.environ.get("AGENT_LOOP_REVIEW_RESULT_FILE"):
         raise Blocked("a one-pass reviewer cannot start another chain runner")
-    if "--diagnose" in arguments or "--abort-run" in arguments:
-        return recovery_main(arguments)
+    if any(
+        a in ("--diagnose", "--abort-run") or a.startswith("--abort-run=")
+        for a in arguments
+    ):
+        try:
+            return recovery_main(arguments)
+        except (Blocked, OSError, ValueError, KeyError) as error:
+            print(f"review-chain blocked: {error}", file=sys.stderr)
+            return 2
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--pr", required=True, type=int)
@@ -3532,6 +3574,8 @@ def main(argv: list[str] | None = None) -> int:
                         if args.restart_aborted != old.state.get("run_id"):
                             raise Blocked("aborted checkpoint requires --restart-aborted <its run ID> with --restart")
                         receipt = read(directory / "abort.json")
+                        if not isinstance(receipt, dict) or receipt.get("phase") != "aborted":
+                            raise Blocked("abort is not complete; repeat the same --abort-run command before restart")
                         old.abort_run(receipt["evidence_sha256"])
                         aborted = True
                         print("Restart creates a NEW review budget; the aborted run does not establish convergence.", file=sys.stderr)
