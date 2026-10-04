@@ -458,7 +458,10 @@ files at the printed checkpoint path. Exit 2 with a report means the listed
 blockers need reconciliation. Exit 2 with only a `review-chain blocked:` line
 means a mandatory condition failed and no digest was produced. A clean dedicated worktree, matching local/remote/PR heads,
 unchanged authenticated actor, original controller hashes, and the same run
-identity are mandatory. Linux `/proc` must be readable. An unknown exit without
+identity are mandatory. Linux `/proc` must be readable. A same-user process
+that hides its environment, such as `gpg-agent` or `ssh-agent`, cannot be shown
+to be unrelated: diagnosis names each one by PID and stops until it is stopped
+or reconciled. An unknown exit without
 an explicit cleanup-completed receipt, live process groups, unreadable process evidence, unfinished terminal writes,
 or conflicting terminal markers refuse abort. Do not edit a checkpoint to
 manufacture proof of a worker exit or discard it to obtain another budget.
@@ -498,8 +501,9 @@ python3 .codex/skills/critique/scripts/review-chain-runner.py \
 
 Restart requires the completed abort: a receipt in the `aborted` phase, the
 authenticated `aborted` marker at its head, and unchanged preserved files. If
-the abort is still only prepared, repeat the same abort command first. Comments
-or thread changes made on the PR after the marker do not block restart. It then
+the abort is still only prepared, repeat the same abort command first. Comments,
+thread changes or commits made on the PR after the completed abort do not block
+restart. It then
 archives the **entire directory** as `<owner>-<repo>-<pr>-run-<full-run-id>`. It creates a
 **new budget**; previous convergence is not implied and stale-head passes are
 not current-head evidence. The aborted run ID is the restart idempotency key. Repeating the same command

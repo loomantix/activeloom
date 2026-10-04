@@ -6,6 +6,7 @@ from collections.abc import Iterator
 import importlib.util
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -1006,7 +1007,8 @@ def stall_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     module = harness.module
     wrapped = module.managed
     controls = SimpleNamespace(
-        stalls=1, engine="codex", side_effect=None, started=False, cleanup_denied=False
+        stalls=1, engine="codex", side_effect=None, started=False, cleanup_denied=False,
+        cleanup_completed=False,
     )
     stalled: list[str | None] = []
 
@@ -1046,7 +1048,10 @@ def stall_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
                     None,
                     False,
                 )
-            raise module.StartupStalled("codex emitted no thread.started event")
+            error = module.StartupStalled("codex emitted no thread.started event")
+            if controls.cleanup_completed:
+                error.cleanup_completed = True
+            raise error
         wrapped(argv, log, env, timeout)
 
     monkeypatch.setattr(module, "managed", managed)
@@ -1129,6 +1134,20 @@ def test_unsafe_codex_startup_stall_is_not_retried(
     assert h.launches == []
     assert runner.state["completed"] == []
     assert len(runner.state["attempts"]) == 1
+
+
+@pytest.mark.parametrize("case", ["receipt", "no-receipt", "denied"])
+def test_launch_records_cleanup_only_with_a_receipt(stall_harness: Any, case: str) -> None:
+    h = stall_harness.harness
+    stall_harness.controls.engine = "claude"
+    stall_harness.controls.cleanup_completed = case == "receipt"
+    stall_harness.controls.cleanup_denied = case == "denied"
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.Blocked):
+        runner.run()
+    attempt = h.module.read(h.directory / "state.json")["attempts"][-1]
+    assert (attempt["engine"], attempt["exit_status"]) == ("claude", None)
+    assert attempt["cleanup_completed"] is (case == "receipt")
 
 
 def test_another_engine_stall_is_not_retried(stall_harness: Any) -> None:
@@ -4597,6 +4616,45 @@ def test_abort_receipt_publication_survives_process_death(
     assert all(path.parent == h.directory / '.abort-staging' for path in leftovers)
 
 
+def test_recovery_process_probe_names_unreadable_processes(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = abort_harness
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], cwd=h.directory)
+    entry = Path('/proc') / str(child.pid)
+    original_iterdir, original_read = Path.iterdir, Path.read_bytes
+    monkeypatch.setattr(Path, 'iterdir', lambda p: iter([entry]) if p == Path('/proc') else original_iterdir(p))
+    def read_bytes(path: Path) -> bytes:
+        # A non-dumpable process keeps its directory but hides its environment.
+        if path == entry / 'environ':
+            raise PermissionError(13, 'Permission denied')
+        return original_read(path)
+    monkeypatch.setattr(Path, 'read_bytes', read_bytes)
+    try:
+        name = (entry / 'comm').read_text().strip()
+        with pytest.raises(h.module.Blocked, match=rf'unreadable for PID {child.pid} \({re.escape(name)}\); stop'):
+            h.module.Runner.recovery_workers(h.recovery_runner)
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+def test_completed_abort_survives_a_later_commit(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = abort_harness
+    runner = h.recovery_runner
+    report = runner.diagnose_recovery()
+    runner.abort_run(report['evidence_sha256'])
+    h.recovery_ledger['end'] = {'outcome': 'aborted', 'head': HEAD}
+    monkeypatch.setattr(runner, 'boundary', lambda: 'e' * 40)
+    assert runner.abort_run(report['evidence_sha256'])['phase'] == 'aborted'
+    # The marker must still name the head the receipt recorded.
+    h.recovery_ledger['end'] = {'outcome': 'aborted', 'head': 'e' * 40}
+    with pytest.raises(h.module.Blocked, match='authenticated terminal evidence'):
+        runner.abort_run(report['evidence_sha256'])
+
+
 @pytest.mark.parametrize('lost_response', [False, True])
 def test_abort_replays_interrupted_remote_write(
     abort_harness: Any, monkeypatch: pytest.MonkeyPatch, lost_response: bool
@@ -4906,6 +4964,62 @@ def test_recovery_cli_reports_blocked_instead_of_traceback(
     monkeypatch.setattr(h.module, 'ModuleType', seeded)
     with pytest.raises(h.module.Blocked, match='GitHub operation failed$'):
         h.module.Runner.recovery_ledger(runner, HEAD)
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_restart_archives_a_completed_abort_and_starts_one_successor(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    changed: bool,
+) -> None:
+    h = abort_harness
+    runner = h.recovery_runner
+    runner.abort_run(runner.diagnose_recovery()['evidence_sha256'])
+    h.recovery_ledger['end'] = {'outcome': 'aborted', 'head': HEAD}
+    old_id = runner.state['run_id']
+    common = h.directory.parent / 'common'
+    directory = common / 'activeloom-review/example-repo-1'
+    directory.parent.mkdir(parents=True)
+    h.directory.rename(directory)
+    before = {str(p.relative_to(directory)): p.read_bytes()
+              for p in directory.rglob('*') if p.is_file()}
+    h.controls.missing = False
+    h.controls.exit_code = 0
+    original_command = h.module.command
+    monkeypatch.setattr(h.module, 'command', lambda argv: str(common)
+                        if argv == ['git', 'rev-parse', '--git-common-dir'] else original_command(argv))
+    posted: list[tuple[str, ...]] = []
+    class Recording(h.runner):  # type: ignore[misc, name-defined]
+        def helper(self, name: str, *parts: str) -> dict[str, Any]:
+            posted.append(parts)
+            return dict(super().helper(name, *parts))
+        def recovery_ledger(self, head: str) -> dict[str, Any]:
+            return dict(h.recovery_ledger)
+        def recovery_workers(self) -> list[int]:
+            return []
+    monkeypatch.setattr(h.module, 'Runner', Recording)
+    arguments = ['--repo', h.args.repo, '--pr', str(h.args.pr), '--base', BASE, '--tier', 'deep',
+                 '--trigger', '3', '--author', 'codex', '--chain', h.args.chain,
+                 '--check', h.args.check[0], '--authorization-file', h.args.authorization_file,
+                 '--restart', '--restart-aborted', old_id]
+    archive = directory.with_name(directory.name + '-run-' + old_id)
+    if changed:
+        (directory / 'pass-1/worker.log').write_text('changed')
+        assert h.module.main(arguments) == 2
+        assert 'authenticated terminal evidence' in capsys.readouterr().err
+        assert not archive.exists() and (directory / 'abort.json').exists()
+        assert posted == []
+        return
+    assert h.module.main(arguments) == 0
+    assert 'NEW review budget' in capsys.readouterr().err
+    # The lock taken for this restart is the only file the archive gains.
+    assert {str(p.relative_to(archive)): p.read_bytes() for p in archive.rglob('*')
+            if p.is_file() and p.name != 'runner.lock'} == before
+    # Restart verifies the completed abort; it never ends the run a second time.
+    assert not any(parts[0] == 'finish-run' and 'aborted' in parts for parts in posted)
+    starts = [parts for parts in posted if parts[0] == 'start-run']
+    assert len(starts) == 1
+    assert starts[0][starts[0].index('--restart-from-run') + 1] == old_id
+    assert h.module.read(directory / 'state.json')['config']['restart_aborted'] == old_id
 
 
 def test_restart_refuses_an_abort_that_is_only_prepared(

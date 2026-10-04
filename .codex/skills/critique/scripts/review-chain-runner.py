@@ -677,6 +677,7 @@ class Runner:
             except (OSError, AttributeError, ValueError) as error:
                 raise Blocked("cannot identify recovery process ancestors") from error
         found = []
+        unreadable = []
         for entry in proc.iterdir():
             if not entry.name.isdigit() or int(entry.name) in ancestors:
                 continue
@@ -695,8 +696,19 @@ class Runner:
                     found.append(int(entry.name))
             except (FileNotFoundError, ProcessLookupError):
                 continue  # Process exited during the probe.
-            except PermissionError as error:
-                raise Blocked("process evidence is unreadable; reconcile permissions before abort") from error
+            except PermissionError:
+                # A non-dumpable process, such as a key agent, hides both fields.
+                try:
+                    name = (entry / "comm").read_text().strip()
+                except OSError:
+                    name = "unknown"
+                unreadable.append(f"{entry.name} ({name})")
+        if unreadable:
+            raise Blocked(
+                "process evidence is unreadable for PID "
+                + ", ".join(sorted(unreadable))
+                + "; stop or reconcile each process, then rerun --diagnose"
+            )
         return sorted(found)
 
     def recovery_files(self) -> dict[str, str]:
@@ -790,8 +802,8 @@ class Runner:
         if existing is not None and not isinstance(existing, dict):
             raise Blocked("abort receipt is malformed; preserve it for reconciliation")
         if existing is not None and existing.get("phase") == "aborted":
-            # The authenticated marker ended the run. Later PR conversation is
-            # not evidence about the preserved checkpoint, so it is not compared.
+            # The authenticated marker ended the run. Later PR conversation and
+            # commits are not evidence about the preserved checkpoint.
             saved, live, end = existing.get("snapshot"), report["snapshot"], report["end"]
             if (
                 existing.get("evidence_sha256") != evidence
@@ -799,7 +811,7 @@ class Runner:
                 or json_digest(saved) != evidence
                 or any(
                     saved.get(key) != live[key]
-                    for key in ("run_id", "head", "checkpoint_head", "files")
+                    for key in ("run_id", "checkpoint_head", "files")
                 )
                 or not end
                 or end["outcome"] != "aborted"
