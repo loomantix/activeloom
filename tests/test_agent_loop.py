@@ -403,7 +403,21 @@ elif args[0] == 'api' and any(value.startswith('repos/') for value in args):
     for record in records:
         record['user'] = {'login': author}
     endpoint_path = endpoint.split('?', 1)[0]
-    if '/compare/' in endpoint_path:
+    if endpoint_path.endswith('/pulls'):
+        rows = []
+        branch_file = state / 'pr-branch'
+        if branch_file.exists():
+            branch = branch_file.read_text()
+            remote_head = subprocess.run(['git', 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch],
+                check=True, capture_output=True, text=True).stdout.split()[0]
+            base_name = (state / 'pr-base-branch').read_text()
+            rows = [{'number': 1, 'html_url': 'https://example.invalid/pr/1',
+                'state': 'closed' if (state / 'pr-closed').exists() else 'open',
+                'draft': not (state / 'pr-ready').exists(),
+                'head': {'ref': branch, 'sha': remote_head, 'repo': {'full_name': 'fixture/consumer'}},
+                'base': {'ref': base_name, 'repo': {'full_name': 'fixture/consumer'}}}]
+        print(json.dumps([rows]))
+    elif '/compare/' in endpoint_path:
         comparison = endpoint_path.split('/compare/', 1)[1]
         before, after = comparison.split('...', 1)
         print(json.dumps({

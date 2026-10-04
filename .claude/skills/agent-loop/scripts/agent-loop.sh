@@ -178,6 +178,7 @@ HOOK_GH_GUARD="$SCRIPT_DIR/hook-gh-guard"
 
 BASE_BRANCH=""
 SETUP_HOOK=""
+PREPARATION_HOOK=""
 VALIDATION_HOOK=""
 CLAUDE_REVIEW_HOOK=""
 CODEX_REVIEW_HOOK=""
@@ -223,6 +224,7 @@ assign_config() {
     case "$key" in
         base_branch) BASE_BRANCH="$value" ;;
         setup_hook) SETUP_HOOK="$value" ;;
+        preparation_hook) PREPARATION_HOOK="$value" ;;
         validation_hook) VALIDATION_HOOK="$value" ;;
         claude_review_hook) CLAUDE_REVIEW_HOOK="$value" ;;
         codex_review_hook) CODEX_REVIEW_HOOK="$value" ;;
@@ -610,7 +612,7 @@ print(path.resolve(strict=True))
         --lock-fd "$AGENT_LOOP_RUN_LOCK_FD" >/dev/null || exit 1
     resume_phase="$(jq -r '.phase' <<<"$RESUME_STATE_JSON")"
     case "$resume_phase" in
-        draft-open|reviewing|converged|finalizing|finalized) ;;
+        worker-running|worker-complete|integrating|integrated|publishing|pushed|draft-open|reviewing|converged|finalizing|finalized) ;;
         *) echo "run state is not resumable" >&2; exit 1 ;;
     esac
 fi
@@ -737,6 +739,124 @@ update_run_state() {
     fi
     "${command[@]}" >/dev/null
 }
+
+# agent-loop-publication:begin
+# Shared pre-publication recovery, rendered inline into each pinned controller.
+loop_state() {
+    if declare -F run_state_helper >/dev/null; then
+        run_state_helper "$@"
+    else
+        python3 -I "$RUN_STATE_HELPER" "$@"
+    fi
+}
+
+prepared_validation_hook() {
+    if [ -n "$PREPARATION_HOOK" ]; then
+        printf '( %s ) && ( %s )' "$PREPARATION_HOOK" "$VALIDATION_HOOK"
+    else
+        printf '%s' "$VALIDATION_HOOK"
+    fi
+}
+
+integrate_initial_base() {
+    local target before
+    fetch_base || return 1
+    target="$(git rev-parse "${ISSUE_BASE_REMOTE_REF:-$BASE_REMOTE_REF}")" || return 1
+    before="$(git rev-parse HEAD)" || return 1
+    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+        update_run_state integrating 1 "$target" "$before" || return 1
+    fi
+    if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false merge --no-edit "$target"; then
+        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false merge --abort >/dev/null 2>&1 || true
+        return 1
+    fi
+    update_run_state integrated 1 "$target" "$(git rev-parse HEAD)"
+}
+
+publish_initial_branch() {
+    local branch="$1" head="$2" base="$3" remote phase="" saved
+    remote="$("$REAL_GIT_BIN" ls-remote --heads origin "refs/heads/$branch")" || return 1
+    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+        saved="$(loop_state show --file "$AGENT_LOOP_RUN_STATE_FILE")" || return 1
+        phase="$(jq -r '.phase' <<<"$saved")"
+        [ "$(jq -r '.headSha' <<<"$saved")" = "$head" ] && \
+            [ "$(jq -r '.baseSha' <<<"$saved")" = "$base" ] || return 1
+    fi
+    if [ -n "$remote" ]; then
+        # Only a saved publication intent permits adopting a matching remote.
+        case "$phase" in publishing|pushed) ;; *) echo "Remote branch existed before publication intent" >&2; return 1 ;; esac
+        [ "${remote%%[[:space:]]*}" = "$head" ] || { echo "Initial publication remote head mismatch" >&2; return 1; }
+    else
+        [ "$phase" != pushed ] || { echo "Previously pushed branch disappeared" >&2; return 1; }
+        update_run_state publishing 1 "$base" "$head" || return 1
+        if declare -F require_trusted_git_config >/dev/null; then
+            require_trusted_git_config || return 1
+        fi
+        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+            push --force-with-lease="refs/heads/$branch:" origin "$head:refs/heads/$branch" || return 1
+    fi
+    attest_remote_branch "$branch" "$head" "after initial publication push" || return 1
+    update_run_state pushed 1 "$base" "$head" || return 1
+}
+
+find_existing_initial_pr() {
+    local branch="$1" head="$2" rows count
+    EXISTING_INITIAL_PR_URL=""
+    EXISTING_INITIAL_PR_NUMBER=""
+    # Include closed PRs and all pages: neither duplicates nor a closed publication
+    # may be silently replaced. Ignore forks that share a branch name.
+    rows="$(gh api --paginate --slurp "repos/$GH_REPO/pulls?state=all&head=${GH_REPO%%/*}:$branch&per_page=100")" || return 1
+    rows="$(jq --arg repo "$GH_REPO" --arg branch "$branch" \
+        '[.[][] | select(.head.repo.full_name == $repo and .head.ref == $branch)]' <<<"$rows")" || return 1
+    count="$(jq length <<<"$rows")" || return 1
+    [ "$count" -le 1 ] || { echo "Multiple PRs match the publication branch" >&2; return 1; }
+    if [ "$count" -eq 1 ]; then
+        jq -e --arg repo "$GH_REPO" --arg base "${ISSUE_BASE_BRANCH:-$BASE_BRANCH}" --arg head "$head" \
+            '.[0] | .state == "open" and .draft == true and .head.sha == $head and .base.ref == $base and .base.repo.full_name == $repo' \
+            <<<"$rows" >/dev/null || { echo "Existing initial PR does not match the saved publication" >&2; return 1; }
+        EXISTING_INITIAL_PR_NUMBER="$(jq -er '.[0].number | select(type == "number" and . > 0)' <<<"$rows")" || return 1
+        EXISTING_INITIAL_PR_URL="$(jq -er '.[0].html_url | select(type == "string" and length > 0)' <<<"$rows")" || return 1
+    fi
+}
+
+resume_initial_publication() {
+    local phase="$1" saved_head="$2" current base parents
+    if [ "$phase" = worker-running ]; then
+        recovery_message "Worker completion was not checkpointed; preserve and inspect its work. The worker will not be replayed." worker-ambiguous-bail
+        return 1
+    fi
+    current="$(git rev-parse HEAD)" || return 1
+    base="$(jq -r '.baseSha' <<<"$RESUME_STATE_JSON")" || return 1
+    if [ "$current" != "$saved_head" ]; then
+        # The only uncheckpointed head transition accepted is the controller's
+        # recorded integration: fast-forward to the target or one merge of it.
+        [ "$phase" = integrating ] || { echo "Pre-publication head changed" >&2; return 1; }
+        parents="$(git show -s --format=%P "$current")" || return 1
+        if [ "$current" = "$base" ]; then
+            git merge-base --is-ancestor "$saved_head" "$base" || return 1
+        elif [ "$parents" != "$saved_head $base" ]; then
+            echo "Interrupted integration does not match its recorded parents" >&2
+            return 1
+        fi
+        update_run_state integrated 1 "$base" "$current" || return 1
+    fi
+    case "$phase" in
+        worker-complete|integrating|integrated)
+            integrate_initial_base || return 1
+            base="$(git rev-parse "${ISSUE_BASE_REMOTE_REF:-$BASE_REMOTE_REF}")" || return 1
+            ;;
+    esac
+    inspect_publication_diff "$base" || return 1
+    run_validation "resumed-initial-publication" || return 1
+    find_existing_initial_pr "$AGENT_LOOP_BRANCH" "$(git rev-parse HEAD)" || return 1
+    verify_issue_for_publication "$SELECTED_ID" "$EXISTING_INITIAL_PR_NUMBER" || return 1
+    open_draft_pr "$SELECTED_ID" "$AGENT_LOOP_BRANCH" "$(git rev-parse HEAD)" "$base" || return 1
+    if human_glance_gate "$base" "$(git rev-parse HEAD)"; then
+        recovery_message "Draft PR requires a human glance; no review chain was started." human-glance
+        return 1
+    fi
+}
+# agent-loop-publication:end
 
 on_interrupt() {
     INTERRUPTED=true
@@ -1817,7 +1937,7 @@ run_validation() {
         prepare_review_pass_budget || return 1
         timeout_seconds="$REVIEW_PASS_TIMEOUT_SECONDS"
     fi
-    run_bounded_hook "$label validation" "$VALIDATION_HOOK" "$timeout_seconds" \
+    run_bounded_hook "$label validation" "$(prepared_validation_hook)" "$timeout_seconds" \
         "$AGENT_LOOP_LOG_DIR/${label// /-}-validation.log" || hook_status=$?
     if [ "$hook_status" -ne 0 ]; then
         record_validation_evidence "$label" "$before_sha" "$base_sha" failed "$hook_status"
@@ -3034,12 +3154,7 @@ open_draft_pr() {
         echo "issue branch changed after publication snapshot" >&2
         return 1
     }
-    # Create-only lease: fail if the branch appeared after the absence check.
-    # This never rewrites an existing remote ref.
-    git push --force-with-lease="refs/heads/$branch:" origin \
-        "$publication_sha:refs/heads/$branch"
-    attest_remote_branch "$branch" "$publication_sha" "after draft publication push" || return 1
-    git branch --set-upstream-to="origin/$branch" "$branch"
+    publish_initial_branch "$branch" "$publication_sha" "$publication_base_sha" || return 1
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
     {
         echo "## Summary"
@@ -3056,18 +3171,29 @@ open_draft_pr() {
         echo "Closes #$number"
     } > "$body_file"
     title="$(draft_pr_title "$number" "$publication_base_sha" "$publication_sha")"
+    find_existing_initial_pr "$branch" "$publication_sha" || return 1
+    if [ -n "$EXISTING_INITIAL_PR_URL" ]; then
+        pr_url="$EXISTING_INITIAL_PR_URL"
+    else
     pr_url="$(gh pr create --draft --base "$ISSUE_BASE_BRANCH" --head "$branch" \
         --title "$title" --body-file "$body_file")" || {
         echo "could not create draft PR after publishing remote branch $branch" >&2
         return 1
     }
+    fi
     pr_number="$(gh pr view "$pr_url" --json number --jq .number)" || return 1
     export AGENT_LOOP_PR_NUMBER="$pr_number"
     export AGENT_LOOP_PR_URL="$pr_url"
     export AGENT_LOOP_PR_HEAD_SHA="$publication_sha"
+    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+        loop_state update --file "$AGENT_LOOP_RUN_STATE_FILE" --phase draft-open \
+            --pr "$pr_number" --pr-url "$pr_url" >/dev/null || return 1
+    fi
     if ! attest_pr_head "$publication_sha" "$publication_base_sha" \
         "after draft PR creation"; then
-        close_unattested_pr "$pr_url" "created draft PR head could not be attested"
+        if [ -z "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+            close_unattested_pr "$pr_url" "created draft PR head could not be attested"
+        fi
         return 1
     fi
     echo -e "${GREEN}✓${NC} Opened draft review ledger $pr_url"
@@ -3302,6 +3428,15 @@ resume_review_run() {
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
     export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    case "$state_phase" in
+        worker-running|worker-complete|integrating|integrated|publishing|pushed)
+            resume_initial_publication "$state_phase" "$state_head" || return 1
+            RESUME_STATE_JSON="$(loop_state show --file "$AGENT_LOOP_RUN_STATE_FILE")" || return 1
+            state_phase=draft-open
+            state_head="$(jq -r '.headSha' <<<"$RESUME_STATE_JSON")"
+            current_head="$state_head"
+            ;;
+    esac
     AGENT_LOOP_PR_NUMBER="$(jq -r '.prNumber' <<<"$RESUME_STATE_JSON")" || return 1
     AGENT_LOOP_PR_URL="$(jq -r '.prUrl' <<<"$RESUME_STATE_JSON")" || return 1
     export AGENT_LOOP_PR_NUMBER AGENT_LOOP_PR_URL
@@ -4105,64 +4240,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     export AGENT_LOOP_LOG_DIR
     export AGENT_LOOP_PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$SELECTED_ID}"
     export AGENT_LOOP_HANDOFF_FILE="$AGENT_LOOP_LOG_DIR/operator-handoff.md"
+    AGENT_LOOP_RUN_STATE_FILE=""
     start_sha="$(git rev-parse HEAD)"
-    if [ -n "$SETUP_HOOK" ]; then
-        run_bounded_hook "isolated dependency bootstrap" "$SETUP_HOOK" "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/setup.log" || {
-            recovery_message "Setup hook failed." setup-failed
-            exit 1
-        }
-        setup_status="$(git status --porcelain)" || { recovery_message "Could not inspect Git status after setup." setup-failed; exit 1; }
-        [ -z "$setup_status" ] || { recovery_message "Setup hook left Git-visible worktree changes." setup-failed; exit 1; }
-        require_issue_branch_head || { recovery_message "Setup hook moved HEAD away from the issue branch." setup-failed; exit 1; }
-        setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup." setup-failed; exit 1; }
-        [ "$setup_after_sha" = "$start_sha" ] || { recovery_message "Setup hook changed HEAD; setup hooks must not commit." setup-failed; exit 1; }
-    fi
-
-    run_worker "$start_sha" || exit 1
-    if [ "$WORKER_BAILED" = true ]; then
-        handle_worker_bail "$SELECTED_ID" "$branch" "$start_sha" || exit 1
-        continue
-    fi
-    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
-    require_clean_committed_tree "Worker" "$start_sha" || exit 1
-    run_validation "worker" || { recovery_message "Worker validation failed." validation-red; exit 1; }
-
-    echo -e "${BLUE}▸${NC} Initial fresh-base integration"
-    fetch_base
-    initial_base_sha="$(git rev-parse "$ISSUE_BASE_REMOTE_REF")"
-    if ! git merge --no-edit "$initial_base_sha"; then
-        git merge --abort >/dev/null 2>&1 || true
-        recovery_message "Initial fresh-base merge conflicted; original commits were preserved." merge-conflict
-        exit 1
-    fi
-    inspect_publication_diff "$initial_base_sha" || {
-        recovery_message "Initial publication diff inspection failed." publication-diff
-        exit 1
-    }
-    run_validation "initial-fresh-base" || {
-        recovery_message "Initial fresh-base validation failed." validation-red
-        exit 1
-    }
-
-    publication_readiness_status=0
-    verify_issue_for_publication "$SELECTED_ID" || publication_readiness_status=$?
-    if [ "$publication_readiness_status" -ne 0 ]; then
-        recovery_message "Issue requirements or readiness changed before draft PR creation; completed work was preserved and the claim was retained." issue-changed
-        exit 1
-    fi
-    if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-        recovery_message "Remote branch existed before draft PR creation." heads-misaligned
-        exit 1
-    fi
-    initial_pr_sha="$(git rev-parse HEAD)"
-    open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
-
-    if human_glance_gate "$initial_base_sha" "$initial_pr_sha"; then
-        echo "Human glance: $HUMAN_GLANCE_FILES docs/config files, no review-significant changes — read the diff and merge. No review chain run."
-        recovery_message "Draft PR $AGENT_LOOP_PR_URL needs a human glance, not a review chain." human-glance
-        exit 1
-    fi
-
     if [ "$REVIEW_CONTRACT_VERSION" = 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"
         python3 "$RUN_STATE_HELPER" create --file "$AGENT_LOOP_RUN_STATE_FILE" \
@@ -4171,9 +4250,8 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             --issue-title-sha256 "$(printf '%s' "$SELECTED_TITLE" | sha256_text)" \
             --issue-body-sha256 "$(printf '%s' "$SELECTED_BODY" | sha256_text)" \
             --branch "$branch" --worktree "$ACTIVE_WORKTREE" \
-            --log-dir "$AGENT_LOOP_LOG_DIR" --pr "$AGENT_LOOP_PR_NUMBER" \
-            --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \
-            --head-sha "$initial_pr_sha" \
+            --log-dir "$AGENT_LOOP_LOG_DIR" --phase worker-running --base-sha "$start_sha" \
+            --head-sha "$start_sha" \
             --review-budget-seconds "$REVIEW_TIMEOUT_SECONDS" \
             --review-max-rounds "$REVIEW_MAX_ROUNDS" \
             --review-settings-file "$SETTINGS_PIN_FILE" >/dev/null || {
@@ -4193,6 +4271,54 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             }
         fi
         echo "   Review recovery state: $AGENT_LOOP_RUN_STATE_FILE"
+    fi
+
+    if [ -n "$SETUP_HOOK" ]; then
+        run_bounded_hook "isolated dependency bootstrap" "$SETUP_HOOK" "$HOOK_TIMEOUT_SECONDS" "$AGENT_LOOP_LOG_DIR/setup.log" || {
+            recovery_message "Setup hook failed." setup-failed
+            exit 1
+        }
+        setup_status="$(git status --porcelain)" || { recovery_message "Could not inspect Git status after setup." setup-failed; exit 1; }
+        [ -z "$setup_status" ] || { recovery_message "Setup hook left Git-visible worktree changes." setup-failed; exit 1; }
+        require_issue_branch_head || { recovery_message "Setup hook moved HEAD away from the issue branch." setup-failed; exit 1; }
+        setup_after_sha="$(git rev-parse HEAD)" || { recovery_message "Could not inspect HEAD after setup." setup-failed; exit 1; }
+        [ "$setup_after_sha" = "$start_sha" ] || { recovery_message "Setup hook changed HEAD; setup hooks must not commit." setup-failed; exit 1; }
+    fi
+
+    run_worker "$start_sha" || exit 1
+    if [ "$WORKER_BAILED" = true ]; then
+        handle_worker_bail "$SELECTED_ID" "$branch" "$start_sha" || exit 1
+        continue
+    fi
+    export AGENT_LOOP_REVIEW_PUSH_HELPER="$REVIEW_PUSH_HELPER"
+    require_clean_committed_tree "Worker" "$start_sha" || exit 1
+    update_run_state worker-complete 1 "$start_sha" "$(git rev-parse HEAD)" || exit 1
+    run_validation "worker" || { recovery_message "Worker validation failed." validation-red; exit 1; }
+
+    integrate_initial_base || { recovery_message "Initial fresh-base integration failed." merge-conflict; exit 1; }
+    initial_base_sha="$(git rev-parse "${ISSUE_BASE_REMOTE_REF:-$BASE_REMOTE_REF}")"
+    inspect_publication_diff "$initial_base_sha" || {
+        recovery_message "Initial publication diff inspection failed." publication-diff
+        exit 1
+    }
+    run_validation "initial-fresh-base" || {
+        recovery_message "Initial fresh-base validation failed." validation-red
+        exit 1
+    }
+
+    publication_readiness_status=0
+    verify_issue_for_publication "$SELECTED_ID" || publication_readiness_status=$?
+    if [ "$publication_readiness_status" -ne 0 ]; then
+        recovery_message "Issue requirements or readiness changed before draft PR creation; completed work was preserved and the claim was retained." issue-changed
+        exit 1
+    fi
+    initial_pr_sha="$(git rev-parse HEAD)"
+    open_draft_pr "$SELECTED_ID" "$branch" "$initial_pr_sha" "$initial_base_sha"
+
+    if human_glance_gate "$initial_base_sha" "$initial_pr_sha"; then
+        echo "Human glance: $HUMAN_GLANCE_FILES docs/config files, no review-significant changes — read the diff and merge. No review chain run."
+        recovery_message "Draft PR $AGENT_LOOP_PR_URL needs a human glance, not a review chain." human-glance
+        exit 1
     fi
 
     export AGENT_LOOP_REVIEW_BASE="$ISSUE_BASE_REMOTE_REF"

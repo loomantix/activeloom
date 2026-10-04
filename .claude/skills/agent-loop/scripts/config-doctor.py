@@ -434,7 +434,7 @@ def doctor(project: Path, *, repo: str | None = None, settings_from_env: bool = 
     # The wrapper exports CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 for every hook.
     # A hook that sets it back or unsets it lets a one-shot Claude CLI end its
     # turn with a command still running, which exits 0 without a result.
-    for key in ("codex_review_hook", "claude_review_hook", "worker_hook", "setup_hook", "validation_hook"):
+    for key in ("codex_review_hook", "claude_review_hook", "worker_hook", "setup_hook", "preparation_hook", "validation_hook"):
         hook = values.get(key, "")
         if re.search(r"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=(?!1(?:\s|;|$))", hook) or re.search(
             r"(?:\bunset\s+|\benv\s+(?:\S+\s+)*-u\s*)CLAUDE_CODE_DISABLE_BACKGROUND_TASKS\b", hook

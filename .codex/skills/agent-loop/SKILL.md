@@ -372,8 +372,8 @@ detached/wrong-branch state, review-thread failures, and review
 non-convergence failures also preserve the worktree and draft PR. Never reset,
 reuse, clean, or delete a dirty recovery worktree.
 
-Contract v3 creates an owner-only atomic `run-state.json` after draft PR
-publication and checkpoints every review round plus convergence. On a review or
+Contract v3/v4 creates an owner-only atomic `run-state.json` before worker
+execution and checkpoints every review round plus convergence. On a review or
 finalization interruption, use the exact `--resume-run <state-file>` command
 printed by the wrapper. Recovery re-attests repository identity, issue
 assignment and original requirement digests, worktree ancestry, branch, PR
@@ -413,3 +413,30 @@ Legacy absolute-deadline checkpoints require explicit, bounded migration, even
 when their deadline has expired. Follow the [budget recovery reference](https://github.com/loomantix/activeloom/blob/main/docs/agent-loop-budget-recovery.md).
 Do not edit checkpoint fields or start a replacement run to reset the budget.
 Neither `--resume-run` nor `--resume-batch` supports `--dry-run`.
+
+## Generated outputs and pre-publication recovery
+
+Configure `preparation_hook` for an idempotent refresh of ignored dependencies
+and generated outputs. It runs inside each validation gate's existing timeout,
+budget and command guards, including review-push validation. It must not change
+HEAD or leave tracked or untracked changes. Use input freshness checks rather
+than artifact existence alone. A failed preparation blocks publication.
+
+New contract-v3/v4 runs create the private child checkpoint before setup/worker
+execution. A `worker-running` checkpoint is deliberately not replayed: completion
+is uncertain. After a clean committed worker returns, `worker-complete` is saved
+before validation. `--resume-run` and `--resume-batch` can then repeat preparation,
+integration and validation without rerunning that worker. Review budgets and
+pinned settings remain attached to the original run.
+
+Initial integration records its target and prior head before merging. Resume
+accepts the exact saved head, a fast-forward to that target, or a single merge
+whose parents are the saved head and target. Other head drift and dirty trees
+stop. Initial publication records intent before its create-only push. Resume
+adopts a remote branch only when that intent exists and its head matches exactly;
+it reconciles an existing same-repository draft PR with that head and base rather
+than creating a duplicate. Closed, ready, mismatched or duplicate PRs stop.
+
+Keep controller and state-helper revisions together. Older runs without a child
+checkpoint still require operator inspection and an explicit bail; this change
+does not invent historical completion evidence or replenish budgets.
