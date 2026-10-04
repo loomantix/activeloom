@@ -43,3 +43,5 @@ NOTICE
 
 # Local-only Claude overrides (already gitignored, defense in depth)
 .claude/settings.local.json
+# Python and shell source regions rendered into the agent-loop controllers.
+scripts/agent-loop-budget.*.inc

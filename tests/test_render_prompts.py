@@ -187,6 +187,14 @@ class Harness:
         self._renders = 0
         monkeypatch.setattr(render_prompts, "SKILLS_SRC", self.src)
         monkeypatch.setattr(render_prompts, "PROFILES_DIR", self.profiles_dir)
+        # Region rendering has separate protocol tests; give the miniature
+        # repository valid regions without adding them to its prompt inventory.
+        for harness_root in (".agents", ".claude", ".codex"):
+            for suffix, name in (("py", "agent-loop-state.py"), ("sh", "agent-loop.sh")):
+                region = (Path(__file__).resolve().parents[1] / "scripts" / f"agent-loop-budget.{suffix}.inc").read_text()
+                target = root / harness_root / "skills/agent-loop/scripts" / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("# agent-loop-budget:begin\n" + region + "# agent-loop-budget:end\n")
         monkeypatch.setattr(render_prompts, "REPO_ROOT", root)
         monkeypatch.setattr(
             render_prompts, "MANIFEST_PATH", root / "prompts/rendered-files.txt"

@@ -808,6 +808,9 @@ def test_batch_resume_finalizes_interrupted_first_issue_then_processes_second(
     assert batch["issues"][0]["status"] == "active"
     assert batch["issues"][0]["childRunState"]
     assert batch["issues"][1]["status"] == "pending"
+    child_path = Path(batch["issues"][0]["childRunState"])
+    child_before = json.loads(child_path.read_text())
+    os.utime(child_path, (1, 1))
 
     second = _run(
         consumer,
@@ -819,6 +822,11 @@ def test_batch_resume_finalizes_interrupted_first_issue_then_processes_second(
     assert second.returncode == 0, second.stderr + second.stdout
     final = json.loads(batch_file.read_text(encoding="utf-8"))
     assert final["cursor"] == 2
+    assert final["runId"] == batch["runId"]
+    assert final["allowlist"] == batch["allowlist"]
+    child_after = json.loads(child_path.read_text())
+    assert child_after["runId"] == child_before["runId"]
+    assert child_after["reviewBudget"] == child_before["reviewBudget"]
     assert [row["status"] for row in final["issues"]] == [
         "finalized",
         "finalized",
@@ -1476,8 +1484,9 @@ def test_a_later_issue_stop_does_not_name_the_previous_issue_run_state(
     assert "Resume review with" not in result.stderr
 
 
+@pytest.mark.parametrize("legacy", [False, True])
 def test_resumed_run_names_its_issue_and_emits_a_resumed_start(
-    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path, legacy: bool
 ) -> None:
     fail_marker = consumer[3] / "fail-claude-review"
     fail_marker.touch()
@@ -1489,6 +1498,27 @@ def test_resumed_run_names_its_issue_and_emits_a_resumed_start(
     first = _run(consumer, ["--issues", "75"], issues=[_issue(75)], config=config, timeout=60)
     assert first.returncode != 0
     state_file = next((tmp_path / "logs").glob("*/run-state.json"))
+    before = json.loads(state_file.read_text())
+    if legacy:
+        # Reproduce an expired legacy checkpoint on this disposable consumer.
+        import hashlib
+
+        value = dict(before)
+        value.pop("reviewBudget")
+        value.update(version=2, reviewDeadlineEpoch=1)
+        state_file.write_text(json.dumps(value))
+        helper = consumer[0] / ".claude/skills/agent-loop/scripts/agent-loop-state.py"
+        migration = subprocess.run(
+            ["python3", str(helper), "budget-migrate", "--file", str(state_file),
+             "--expected-sha256", hashlib.sha256(state_file.read_bytes()).hexdigest(),
+             "--limit-seconds", "7200", "--remaining-seconds", "3600",
+             "--confirm-stopped", "--reason", "Disposable expired-checkpoint recovery test"],
+            capture_output=True, text=True, check=False,
+        )
+        assert migration.returncode == 0, migration.stderr
+        before = json.loads(state_file.read_text())
+    # Simulate old checkpoint evidence after an outage without spending execution.
+    os.utime(state_file, (1, 1))
     fail_marker.unlink()
     resumed = _run(
         consumer,
@@ -1498,6 +1528,12 @@ def test_resumed_run_names_its_issue_and_emits_a_resumed_start(
         timeout=60,
     )
     assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    after = json.loads(state_file.read_text())
+    assert after["runId"] == before["runId"]
+    assert after["round"] == before["round"]
+    assert after["reviewBudget"]["remaining"] < before["reviewBudget"]["remaining"]
+    prior_attempts = before["reviewBudget"]["attempts"]
+    assert after["reviewBudget"]["attempts"][:len(prior_attempts)] == prior_attempts
     assert "Issue #75 (resumed, round 1)" in resumed.stdout
     events = [
         json.loads(line)

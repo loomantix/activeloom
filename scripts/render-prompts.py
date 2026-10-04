@@ -921,6 +921,33 @@ def format_markdown(destination: Path, written: list[Path]) -> None:
         ) from None
 
 
+def render_budget_regions(*, check: bool) -> bool:
+    """Keep the budget protocol identical inside otherwise distinct engines.
+
+    Inline regions preserve the controllers' existing pinned-file trust boundary;
+    consumers need no additional runtime import or executable dependency.
+    """
+    clean = True
+    for suffix, name in (("py", "agent-loop-state.py"), ("sh", "agent-loop.sh")):
+        source = (SCRIPT_DIR / f"agent-loop-budget.{suffix}.inc").read_text()
+        for root in sorted(SUPPORTED_PROFILE_ROOTS):
+            target = REPO_ROOT / root / "skills/agent-loop/scripts" / name
+            text = target.read_text()
+            begin, end = "# agent-loop-budget:begin\n", "# agent-loop-budget:end"
+            if text.count(begin) != 1 or text.count(end) != 1:
+                raise ValueError(f"{target}: expected exactly one budget region")
+            prefix, rest = text.split(begin)
+            old, tail = rest.split(end)
+            if old == source:
+                continue
+            if check:
+                sys.stderr.write(f"budget region drift: {target}\n")
+                clean = False
+            else:
+                target.write_text(prefix + begin + source + end + tail)
+    return clean
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -957,8 +984,11 @@ def main(argv: list[str] | None = None) -> int:
         unowned = unowned_files(profiles, written)
 
         if args.check:
-            return _report_drift(staging, written, previously_owned, unowned)
+            budget_clean = render_budget_regions(check=True)
+            drift = _report_drift(staging, written, previously_owned, unowned)
+            return drift if budget_clean else 1
 
+        render_budget_regions(check=False)
         _publish_outputs(staging, written, previously_owned, profiles, unowned)
 
     print(

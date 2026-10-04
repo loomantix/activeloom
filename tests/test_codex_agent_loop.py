@@ -443,6 +443,8 @@ def test_resume_launches_with_the_recorded_pins_after_the_profile_is_removed(
             "--pr-url", "https://example.invalid/pull/9",
             "--base-sha", sha,
             "--head-sha", sha,
+            "--review-budget-seconds", "7200",
+            "--review-max-rounds", "4",
             "--review-settings-file", str(pins),
         ],
         check=True,

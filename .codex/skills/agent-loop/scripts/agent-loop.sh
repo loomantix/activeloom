@@ -187,6 +187,8 @@ IGNORED_EFFORT_POLICY=false
 REVIEW_MAX_ROUNDS=4
 REVIEW_TIMEOUT_SECONDS=7200
 REVIEW_DEADLINE_EPOCH=0
+REVIEW_REMAINING_SECONDS=0
+REVIEW_PASS_MIN_SECONDS=1
 REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
 RETRY_ON_TIMEOUT=true
 RETRY_DELAY_SECONDS=15
@@ -901,11 +903,10 @@ print(path.resolve(strict=True))
         REVIEW_MAX_ROUNDS="$recorded_review_max_rounds"
         echo "   Review round cap restored from run state: $REVIEW_MAX_ROUNDS"
     fi
-    REVIEW_DEADLINE_EPOCH="$(jq -r '.reviewDeadlineEpoch // empty' <<<"$RESUME_STATE_JSON")"
-    if [ -z "$REVIEW_DEADLINE_EPOCH" ]; then
-        REVIEW_DEADLINE_EPOCH=$(( $(stat -c %Y "$RESUME_RUN_FILE") + REVIEW_TIMEOUT_SECONDS ))
-        echo "   Legacy run state uses its original checkpoint time for the review deadline"
-    fi
+    [ "$(jq -r '.version' <<<"$RESUME_STATE_JSON")" = 4 ] || {
+        echo "Legacy review budget requires explicit budget-migrate; see docs/agent-loop-budget-recovery.md" >&2
+        exit 1
+    }
     [ "$(jq -r '.repo' <<<"$RESUME_STATE_JSON")" = "$GH_REPO" ] || {
         echo "run state repository does not match $GH_REPO" >&2
         exit 1
@@ -940,6 +941,8 @@ print(path.resolve(strict=True))
         exit 1
     }
     case "$resume_worktree" in "$WORKTREE_ROOT"/*) ;; *) echo "run state worktree is outside configured worktree_root" >&2; exit 1 ;; esac
+    run_state_helper budget-show --file "$RESUME_RUN_FILE" \
+        --lock-fd "$AGENT_LOOP_RUN_LOCK_FD" >/dev/null || exit 1
     resume_phase="$(jq -r '.phase' <<<"$RESUME_STATE_JSON")"
     case "$resume_phase" in
         draft-open|reviewing|converged|finalizing|finalized) ;;
@@ -1691,6 +1694,7 @@ install_pinned_review_launcher() {
 run_bounded_hook() {
     local phase="$1" hook_command="$2" timeout_seconds="$3" log_file="$4"
     local allow_review_mutations="${5:-false}"
+    local BUDGET_ATTEMPT="" BUDGET_STARTED_NS=""
     local direct_review_engine="${6:-}"
     local disable_consumer_git_extensions="${7:-false}"
     local max_bytes=$((LOG_MAX_KB * 1024)) status=0
@@ -1755,6 +1759,9 @@ run_bounded_hook() {
         echo "hook command guard directory holds unexpected entries" >&2
         return 1
     }
+    if [ "${budgeted:-false}" = true ]; then
+        budget_begin "$timeout_seconds" || return 1
+    fi
     (
         set +e
         if [ -n "$AGENT_LOOP_RUN_LOCK_FD" ]; then
@@ -1804,6 +1811,15 @@ run_bounded_hook() {
         fi
         exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?
+    if [ "${budgeted:-false}" = true ]; then
+        # A signal/timeout retains the full durable reservation. Ordinary exits,
+        # including failures, charge rounded-up monotonic execution time.
+        if [ "$status" -lt 124 ]; then
+            budget_finish "$timeout_seconds" || return 1
+        else
+            echo "Budget reservation retained; reconcile after confirming all workers stopped." >&2
+        fi
+    fi
     if ! require_trusted_git_config; then
         echo "hook changed trusted Git configuration" >>"$log_file"
         status=1
@@ -1927,7 +1943,7 @@ run_validation() {
         return 1
     fi
     before_sha="$(git rev-parse HEAD)" || return 1
-    if [ "$budgeted" = true ] && [ "$REVIEW_DEADLINE_EPOCH" -gt 0 ]; then
+    if [ "$budgeted" = true ]; then
         prepare_review_pass_budget || return 1
         timeout_seconds="$REVIEW_PASS_TIMEOUT_SECONDS"
     fi
@@ -2214,6 +2230,7 @@ finalize_blocked_review_result() {
 }
 
 run_review_pass() {
+    local budgeted=true
     local engine="$1" slug="$2" hook="$3" round="$4"
     local hook_description="$5" hook_failure_description="$6"
     local review_description="$7" validation_description="$8"
@@ -2522,22 +2539,56 @@ require_fast_forward_base_advance() {
     fi
 }
 
+budget_state() { run_state_helper "$@"; }
+
+# agent-loop-budget:begin
+# Shared budget protocol; rendered into the three controllers.
 prepare_review_pass_budget() {
-    local now remaining
-    now="$(date +%s)"
-    if [ "$REVIEW_DEADLINE_EPOCH" -eq 0 ]; then
-        REVIEW_DEADLINE_EPOCH=$((now + REVIEW_TIMEOUT_SECONDS))
+    local remaining
+    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+        remaining="$(budget_state budget-show --file "$AGENT_LOOP_RUN_STATE_FILE" \
+            --lock-fd "$AGENT_LOOP_RUN_LOCK_FD")" || return 1
+    else
+        remaining="$REVIEW_REMAINING_SECONDS"
     fi
-    remaining=$((REVIEW_DEADLINE_EPOCH - now))
-    if [ "$remaining" -le 0 ]; then
-        recovery_message "Local review exceeded its configured whole-run time budget."
+    if [ "$remaining" -lt "$REVIEW_PASS_MIN_SECONDS" ]; then
+        recovery_message "Local review exhausted its active execution budget." budget-exhausted
         return 1
     fi
     REVIEW_PASS_TIMEOUT_SECONDS="$HOOK_TIMEOUT_SECONDS"
     if [ "$remaining" -lt "$REVIEW_PASS_TIMEOUT_SECONDS" ]; then
         REVIEW_PASS_TIMEOUT_SECONDS="$remaining"
     fi
+    # Compatibility for nested pre-push validation. This transient bound is
+    # enclosed by the hook timeout and is never restored from a checkpoint.
+    REVIEW_DEADLINE_EPOCH=$(( $(date +%s) + REVIEW_PASS_TIMEOUT_SECONDS ))
+    echo "Review execution budget: ${remaining}s; hook bound ${REVIEW_PASS_TIMEOUT_SECONDS}s"
 }
+
+budget_begin() {
+    local seconds="$1"
+    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+        BUDGET_ATTEMPT="$(budget_state budget-begin --file "$AGENT_LOOP_RUN_STATE_FILE" \
+            --lock-fd "$AGENT_LOOP_RUN_LOCK_FD" --seconds "$seconds" --owner "$$")" || return 1
+    else
+        [ "$seconds" -le "$REVIEW_REMAINING_SECONDS" ] || return 1
+        REVIEW_REMAINING_SECONDS=$((REVIEW_REMAINING_SECONDS - seconds))
+        BUDGET_STARTED_NS="$(python3 -c 'import time; print(time.monotonic_ns())')" || return 1
+    fi
+}
+
+budget_finish() {
+    local seconds="$1" elapsed
+    if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ]; then
+        budget_state budget-finish --file "$AGENT_LOOP_RUN_STATE_FILE" \
+            --lock-fd "$AGENT_LOOP_RUN_LOCK_FD" --attempt "$BUDGET_ATTEMPT" --owner "$$" >/dev/null || return 1
+    else
+        elapsed="$(python3 -c 'import sys,time; print(max(1,(time.monotonic_ns()-int(sys.argv[1])+999999999)//1000000000))' "$BUDGET_STARTED_NS")" || return 1
+        [ "$elapsed" -le "$seconds" ] || elapsed="$seconds"
+        REVIEW_REMAINING_SECONDS=$((REVIEW_REMAINING_SECONDS + seconds - elapsed))
+    fi
+}
+# agent-loop-budget:end
 
 # A range with no review-significant file needs a human glance, not a review
 # chain. Classify before the first round so no hook, checkpoint, latch, or
@@ -2556,6 +2607,7 @@ human_glance_gate() {
 }
 
 run_review_convergence() {
+    REVIEW_REMAINING_SECONDS="$REVIEW_TIMEOUT_SECONDS"
     local round="${1:-1}" codex_classification claude_classification
     local resume_engine="${2:-codex}"
     local recovered_complete_round=false
@@ -3866,7 +3918,6 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
 
     if [ "$REVIEW_CONTRACT_VERSION" -ge 3 ]; then
         AGENT_LOOP_RUN_STATE_FILE="$AGENT_LOOP_LOG_DIR/run-state.json"
-        REVIEW_DEADLINE_EPOCH=$(( $(date +%s) + REVIEW_TIMEOUT_SECONDS ))
         run_state_helper create --file "$AGENT_LOOP_RUN_STATE_FILE" \
             --run-id "$RUN_TAG-issue-$SELECTED_ID" --repo "$GH_REPO" \
             --issue "$SELECTED_ID" --base-branch "$BASE_BRANCH" \
@@ -3879,7 +3930,7 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
             --log-dir "$AGENT_LOOP_LOG_DIR" --pr "$AGENT_LOOP_PR_NUMBER" \
             --pr-url "$AGENT_LOOP_PR_URL" --base-sha "$initial_base_sha" \
             --head-sha "$initial_pr_sha" \
-            --review-deadline-epoch "$REVIEW_DEADLINE_EPOCH" \
+            --review-budget-seconds "$REVIEW_TIMEOUT_SECONDS" \
             --review-max-rounds "$REVIEW_MAX_ROUNDS" \
             --review-settings-file "$SETTINGS_PIN_FILE" >/dev/null || {
             recovery_message "Could not create the private review run-state checkpoint."
