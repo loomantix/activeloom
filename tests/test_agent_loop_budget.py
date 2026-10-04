@@ -185,6 +185,13 @@ def test_monotonic_rollback_or_reboot_never_refunds(helper: Path, tmp_path: Path
     monkeypatch.setattr(time, "monotonic_ns", lambda: 1000000000)
     with pytest.raises(module.StateError, match="clock or execution owner"):
         module._budget_command(finish)
+    assert path.read_bytes() == before
+    # A forward clock isolates each remaining guard from the rollback above.
+    monkeypatch.setattr(time, "monotonic_ns", lambda: 3000000000)
+    stranger = parser.parse_args(["budget-finish", "--file", str(path), "--attempt", "1", "--owner", str(os.getpid() + 1)])
+    with pytest.raises(module.StateError, match="clock or execution owner"):
+        module._budget_command(stranger)
+    assert path.read_bytes() == before
     monkeypatch.setattr(module, "_budget_boot", lambda: "new-boot")
     with pytest.raises(module.StateError, match="clock or execution owner"):
         module._budget_command(finish)

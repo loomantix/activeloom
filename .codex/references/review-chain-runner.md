@@ -370,7 +370,11 @@ An interrupted staging transaction resumes that same slot. Changed heads or
 ledger evidence, modified saved evidence, failed cleanup, unknown exits,
 timeouts and signals block automatic repair. A candidate that already changed
 the head also requires ordinary explicit recovery: this narrow path does not
-rewrite its unfinalized transition. A second failed gate cannot launch another
+rewrite its unfinalized transition. When the repair is refused before its retry
+is staged, the slot is forfeited and the pass returns to the ordinary gate
+rerun: `--resume` reruns the failed gates and attests the original candidate
+only if they pass. A pending pass saved without pre-pass ledger digests gets no
+repair either. A second failed gate cannot launch another
 repair. `--resume` may rerun its gates after an environmental fix, but cannot
 replenish the repair slot. No abort, new budget, ready transition or merge is
 implied. Independent exact-head review remains required after a repair commit.

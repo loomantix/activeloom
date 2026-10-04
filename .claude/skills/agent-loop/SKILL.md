@@ -192,12 +192,14 @@ consequences are easy to miss:
   cost, and keep `hook_timeout_seconds` well below it so one pass cannot spend
   everything.
 - **Running out mid-pass does not look like running out.** The clean
-  "exhausted its configured whole-run time budget" stop only fires when the
+  "exhausted its active execution budget" stop only fires when the
   budget is under `REVIEW_PASS_MIN_SECONDS` (120s) _at the start_ of a pass. A
   pass that starts with more than that and then hits its bound is killed by
-  `timeout`, writes no result, and is reported as a hook failure. The wrapper
-  logs the remaining budget and the applied bound before each pass so the two
-  can be told apart.
+  `timeout`, writes no result, and stops as `budget-exhausted` when the
+  remaining budget set the bound or `hook-timeout` otherwise. Either way the
+  killed hook keeps its whole reservation, and the run resumes only after
+  reconciliation. The wrapper logs the remaining budget and the applied bound
+  before each pass so the two can be told apart.
 
 ### Validation is not repeated on an unchanged head
 

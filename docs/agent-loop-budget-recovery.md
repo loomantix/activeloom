@@ -9,7 +9,9 @@ while the controller is stopped do not spend that budget. Existing independent
 setup, worker, and final-publication validation limits still apply.
 
 Timeouts, signals, power loss, or a crash before the completion checkpoint retain
-the full reservation. The timeout's existing 15-second forced-cleanup grace is
+the full reservation. The controller draws that line at the hook's exit status:
+only a status below 124 is settled and refunded, so a hook that itself exits
+with 124 or above, such as 126, 127, or 255, is handled as an interruption. The timeout's existing 15-second forced-cleanup grace is
 additional to the execution limit. No refund is inferred from wall-clock time,
 file modification time, event logs, a new timeout configuration, or a reboot.
 A changed boot identity or a backwards monotonic reading refuses a refund.

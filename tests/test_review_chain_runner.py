@@ -1610,6 +1610,62 @@ def test_validation_recovery_rechecks_saved_evidence_on_resume(
     assert runner.state["run_id"] == before["run_id"]
 
 
+@pytest.mark.parametrize("failures", [1, 2])
+def test_refused_validation_repair_falls_back_to_gate_rerun(
+    validation_repair_harness: Any, monkeypatch: pytest.MonkeyPatch, failures: int,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    v.controls.failures = failures
+    recover = h.runner.recover_validation
+
+    def stop(self: Any, pending: Any) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(h.runner, "recover_validation", stop)
+    with pytest.raises(KeyboardInterrupt):
+        h.runner(h.args, h.directory).run()
+    saved = h.module.read(h.directory / "state.json")
+    (h.directory / saved["pending"]["folder"] / "validation-threads.json").write_text("tampered")
+    monkeypatch.setattr(h.runner, "recover_validation", recover)
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="repair refused"):
+        h.runner(h.args, h.directory).run()
+    saved = h.module.read(h.directory / "state.json")
+    assert saved["pending"]["phase"] == "returned"
+    assert saved["pending"]["validation_repair_refused"] is True
+    runner = h.runner(h.args, h.directory)
+    if failures == 1:
+        assert runner.run() == "converged"
+        assert h.launches == ["codex", "claude", "codex", "claude"]
+    else:
+        with pytest.raises(h.module.ProcessFailure):
+            runner.run()
+        assert h.launches == ["codex"]
+        assert runner.state["pending"]["phase"] == "returned"
+    assert v.repair_logs == []
+
+
+def test_pending_pass_without_pre_pass_digests_gets_no_repair(
+    validation_repair_harness: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    original = h.runner.record_validation_failure
+
+    def legacy(self: Any, pending: Any, *args: Any) -> bool:
+        pending.pop("before_threads_sha256")
+        pending.pop("before_comments_sha256")
+        return bool(original(self, pending, *args))
+
+    monkeypatch.setattr(h.runner, "record_validation_failure", legacy)
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.ProcessFailure):
+        runner.run()
+    assert h.launches == ["codex"]
+    assert runner.state["pending"]["phase"] == "returned"
+
+
 def test_one_invocation_runs_all_fixed_steps(harness: Any) -> None:
     runner = harness.runner(harness.args, harness.directory)
     assert runner.run() == "converged"

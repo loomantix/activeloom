@@ -2153,6 +2153,8 @@ class Runner:
         # existing recovery boundary. A pass gets at most one repair attempt.
         if (
             pending.get("validation_origin")
+            or pending.get("validation_repair_refused")
+            or not {"before_threads_sha256", "before_comments_sha256"} <= set(pending)
             or result["status"] != "clean"
             or head != pending["before"]
             or head != self.state["head"]
@@ -2237,7 +2239,22 @@ class Runner:
         if pending.get("validation_origin"):
             raise Blocked("validation repair already attempted; no further retry")
         origin = pending["attempt_id"]
-        attempt = self.verify_validation_recovery(pending, origin)
+        try:
+            attempt = self.verify_validation_recovery(pending, origin)
+        except ProcessFailure:
+            raise
+        except Blocked as error:
+            if "validation_recovery" in pending:
+                raise
+            # Nothing is staged yet, so an unverifiable repair forfeits its slot
+            # and the pass returns to the ordinary gate rerun.
+            pending["phase"] = "returned"
+            pending["validation_repair_refused"] = True
+            self.persist()
+            raise Blocked(
+                f"automatic validation repair refused ({error}); "
+                "--resume reruns the failed gates without a repair attempt"
+            ) from error
         retry = self.stage_retry(
             pending, attempt, "validation_recovery", "validation-retry", "validation repair"
         )
