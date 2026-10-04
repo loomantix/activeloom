@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
-from datetime import datetime
 import fcntl
 import hashlib
 import io
@@ -647,14 +646,6 @@ class Runner:
         proc = Path("/proc")
         if not (proc / "self/environ").is_file():
             raise Blocked("recovery requires readable Linux /proc process evidence")
-        # The authenticated run predates every worker it authorizes. Exclude
-        # older unrelated daemons (notably non-dumpable credential agents).
-        # Leave a five-minute margin for host/API clock skew.
-        cutoff = datetime.fromisoformat(started_at).timestamp() - 300
-        boot = re.search(r"^btime (\d+)$", (proc / "stat").read_text(), re.M)
-        if boot is None:
-            raise Blocked("process boot time is unavailable")
-        boot_time = int(boot.group(1))
         ancestors = {os.getpid()}
         parent = os.getppid()
         while parent > 0 and parent not in ancestors:
@@ -670,9 +661,6 @@ class Runner:
                 continue
             try:
                 if entry.stat().st_uid != os.getuid():
-                    continue
-                stat = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-                if boot_time + int(stat[19]) / os.sysconf("SC_CLK_TCK") < cutoff:
                     continue
                 fields = (entry / "environ").read_bytes().split(b"\0")
                 env = dict(field.split(b"=", 1) for field in fields if b"=" in field)
@@ -752,7 +740,7 @@ class Runner:
             # Only our exact abort marker may appear after a lost POST response.
             marker = f"<!-- local-review-run-end:v1 id={self.state['run_id']} outcome=aborted head={head} -->"
             comments = [row for row in comments if row.get("body") != marker
-                        or row.get("user", {}).get("login") != self.state["actor"]]
+                        or row.get("author") != self.state["actor"]]
             snapshot = {
                 "run_id": self.state["run_id"], "head": head,
                 "checkpoint_head": self.state["head"],

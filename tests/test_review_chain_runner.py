@@ -4533,9 +4533,20 @@ def test_abort_refuses_uncertain_or_changed_evidence(
     assert not (h.directory / 'abort.json').exists()
 
 
-def test_abort_replays_interrupted_remote_write(abort_harness: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('lost_response', [False, True])
+def test_abort_replays_interrupted_remote_write(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, lost_response: bool
+) -> None:
     h = abort_harness
     runner = h.recovery_runner
+    rows: list[dict[str, Any]] = []
+    original_command = h.module.command
+    def command(argv: list[str], **kwargs: Any) -> str:
+        if argv[:2] == ['gh', 'api'] and argv[2].endswith('/comments'):
+            return json.dumps([rows])
+        return str(original_command(argv, **kwargs))
+    monkeypatch.setattr(h.module, 'command', command)
+    monkeypatch.setattr(runner, 'comments', lambda path: h.module.Runner.comments(runner, path))
     report = runner.diagnose_recovery()
     helper = runner.helper
     calls = []
@@ -4543,27 +4554,42 @@ def test_abort_replays_interrupted_remote_write(abort_harness: Any, monkeypatch:
         if parts[0] == 'finish-run':
             calls.append(parts)
             h.recovery_ledger['end'] = {'outcome': 'aborted', 'head': HEAD}
-            if len(calls) == 1:
+            if not rows:
+                rows.append({'id': 101, 'user': {'login': runner.state['actor']},
+                             'body': f"<!-- local-review-run-end:v1 id={runner.state['run_id']} outcome=aborted head={HEAD} -->"})
+            if lost_response and len(calls) == 1:
                 raise h.module.Blocked('response lost')
         return dict(helper(name, *parts))
     monkeypatch.setattr(runner, 'helper', fail_after_post)
-    with pytest.raises(h.module.Blocked, match='response lost'):
-        runner.abort_run(report['evidence_sha256'])
-    assert h.module.read(h.directory / 'abort.json')['phase'] == 'prepared'
+    if lost_response:
+        with pytest.raises(h.module.Blocked, match='response lost'):
+            runner.abort_run(report['evidence_sha256'])
+        assert h.module.read(h.directory / 'abort.json')['phase'] == 'prepared'
     runner.abort_run(report['evidence_sha256'])
+    assert runner.diagnose_recovery()['evidence_sha256'] == report['evidence_sha256']
     runner.abort_run(report['evidence_sha256'])
-    assert len(calls) == 2
+    assert len(calls) == (2 if lost_response else 1)
     assert h.module.read(h.directory / 'abort.json')['phase'] == 'aborted'
+    rows[0]['user']['login'] = 'different-actor'
+    with pytest.raises(h.module.Blocked, match='evidence changed'):
+        runner.abort_run(report['evidence_sha256'])
 
 
-def test_recovery_process_probe_finds_live_child(abort_harness: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('identity', ['run', 'cwd'])
+def test_recovery_process_probe_finds_live_child(
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, identity: str
+) -> None:
     h = abort_harness
-    env = dict(os.environ, ACTIVELOOM_RUN_ID=h.recovery_runner.state['run_id'])
-    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], env=env)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('AGENT_LOOP_', 'ACTIVELOOM_'))}
+    if identity == 'run':
+        env['ACTIVELOOM_RUN_ID'] = h.recovery_runner.state['run_id']
+    cwd = Path(h.recovery_runner.state['config']['worktree']) if identity == 'cwd' else h.directory
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], env=env, cwd=cwd)
     original_iterdir = Path.iterdir
     monkeypatch.setattr(Path, 'iterdir', lambda p: iter([Path('/proc') / str(child.pid)]) if p == Path('/proc') else original_iterdir(p))
     try:
-        assert child.pid in h.module.Runner.recovery_workers(h.recovery_runner, '2026-01-01T00:00:00Z')
+        # A reviewer process can predate the run; exec retains its start time.
+        assert child.pid in h.module.Runner.recovery_workers(h.recovery_runner, '2099-01-01T00:00:00Z')
     finally:
         child.terminate()
         child.wait(timeout=5)
