@@ -14,8 +14,10 @@ setup_hook =
 # Git-visible files unchanged.
 preparation_hook =
 
-# This is the gating run: use the repository's declared review gate, bounded
-# and with concise output, not a narrower targeted check.
+# Required. Run after the worker, after every local review pass, and after the
+# fresh-base merge. It must not commit, switch branches, or leave worktree
+# changes. This is the gating run: use the repository's declared review gate,
+# bounded and with concise output, not a narrower targeted check.
 validation_hook =
 
 # Required acknowledgement of the current review-hook contract. Existing

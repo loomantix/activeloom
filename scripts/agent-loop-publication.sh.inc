@@ -78,6 +78,37 @@ find_existing_initial_pr() {
     fi
 }
 
+# A human-glance stop starts no review chain and a worker-running checkpoint
+# cannot be resumed, so neither stop advertises a run resume.
+run_resume_offered() {
+    local category="${1:-}" phase
+    [ -n "$AGENT_LOOP_RUN_STATE_FILE" ] && [ -f "$AGENT_LOOP_RUN_STATE_FILE" ] || return 1
+    [ "$category" != human-glance ] || return 1
+    phase="$(jq -r '.phase // empty' "$AGENT_LOOP_RUN_STATE_FILE" 2>/dev/null)" || return 1
+    [ "$phase" != worker-running ]
+}
+
+# A draft-open checkpoint also follows a human-glance stop. Classify again so
+# resume cannot start the review chain that stop withheld.
+stop_resumed_human_glance() {
+    local head="$1" base
+    base="$(jq -er '.baseSha' <<<"$RESUME_STATE_JSON")" || return 1
+    human_glance_gate "$base" "$head" || return 0
+    recovery_message "Draft PR requires a human glance; no review chain was started." human-glance
+    return 1
+}
+
+# A batch child without checkpointed worker completion is never launched: the
+# operator inspects it and bails it explicitly.
+refuse_unfinished_batch_child() {
+    local issue="$1" child_json="$2" phase
+    phase="$(jq -er '.phase' <<<"$child_json")" || return 1
+    [ "$phase" = worker-running ] || return 0
+    recovery_message "Batch issue #$issue stopped before its worker completion was checkpointed; inspect its worktree before explicitly bailing it. The worker will not be replayed." worker-ambiguous-bail
+    print_batch_bail_command "$issue" active
+    return 1
+}
+
 resume_initial_publication() {
     local phase="$1" saved_head="$2" current base parents
     if [ "$phase" = worker-running ]; then
@@ -89,7 +120,7 @@ resume_initial_publication() {
     if [ "$current" != "$saved_head" ]; then
         # The only uncheckpointed head transition accepted is the controller's
         # recorded integration: fast-forward to the target or one merge of it.
-        [ "$phase" = integrating ] || { echo "Pre-publication head changed" >&2; return 1; }
+        [ "$phase" = integrating ] || { recovery_message "Pre-publication head changed" heads-misaligned; return 1; }
         parents="$(git show -s --format=%P "$current")" || return 1
         if [ "$current" = "$base" ]; then
             git merge-base --is-ancestor "$saved_head" "$base" || return 1
@@ -101,15 +132,24 @@ resume_initial_publication() {
     fi
     case "$phase" in
         worker-complete|integrating|integrated)
-            integrate_initial_base || return 1
+            integrate_initial_base || { recovery_message "Initial fresh-base integration failed." merge-conflict; return 1; }
             base="$(git rev-parse "${ISSUE_BASE_REMOTE_REF:-$BASE_REMOTE_REF}")" || return 1
             ;;
     esac
-    inspect_publication_diff "$base" || return 1
-    run_validation "resumed-initial-publication" || return 1
-    find_existing_initial_pr "$AGENT_LOOP_BRANCH" "$(git rev-parse HEAD)" || return 1
-    verify_issue_for_publication "$SELECTED_ID" "$EXISTING_INITIAL_PR_NUMBER" || return 1
-    open_draft_pr "$SELECTED_ID" "$AGENT_LOOP_BRANCH" "$(git rev-parse HEAD)" "$base" || return 1
+    inspect_publication_diff "$base" || { recovery_message "Initial publication diff inspection failed." publication-diff; return 1; }
+    run_validation "resumed-initial-publication" || { recovery_message "Resumed initial validation failed." validation-red; return 1; }
+    find_existing_initial_pr "$AGENT_LOOP_BRANCH" "$(git rev-parse HEAD)" || {
+        recovery_message "Existing PR state could not be reconciled with the saved publication." uncertain-mutation
+        return 1
+    }
+    verify_issue_for_publication "$SELECTED_ID" "$EXISTING_INITIAL_PR_NUMBER" || {
+        recovery_message "Issue requirements or readiness changed before draft PR creation." issue-changed
+        return 1
+    }
+    open_draft_pr "$SELECTED_ID" "$AGENT_LOOP_BRANCH" "$(git rev-parse HEAD)" "$base" || {
+        recovery_message "Initial publication could not be completed or reconciled." uncertain-mutation
+        return 1
+    }
     if human_glance_gate "$base" "$(git rev-parse HEAD)"; then
         recovery_message "Draft PR requires a human glance; no review chain was started." human-glance
         return 1

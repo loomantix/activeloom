@@ -90,6 +90,17 @@ def run_loop(
     return result
 
 
+def lose_pr_response_once(fixture: tuple[Path, Path, Path, Path]) -> None:
+    """Create the draft PR, then fail the first lookup of its number."""
+    gh = fixture[2] / "gh"
+    gh.write_text(
+        gh.read_text().replace(
+            "if '--json number' in joined:\n        print('1')",
+            "if '--json number' in joined:\n        if not (state / 'response-lost').exists():\n            (state / 'response-lost').touch()\n            sys.exit(1)\n        print('1')",
+        )
+    )
+
+
 def checkpoint(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     """Return the first issue's durable checkpoint."""
     path = next((tmp_path / "logs").glob("*issue-71*/run-state.json"))
@@ -258,12 +269,7 @@ def test_publication_reconciliation_never_duplicates_or_overwrites(
 ) -> None:
     gh = consumer[2] / "gh"
     if failure == "lost-pr-response":
-        gh.write_text(
-            gh.read_text().replace(
-                "if '--json number' in joined:\n        print('1')",
-                "if '--json number' in joined:\n        if not (state / 'response-lost').exists():\n            (state / 'response-lost').touch()\n            sys.exit(1)\n        print('1')",
-            )
-        )
+        lose_pr_response_once(consumer)
         stopped = run_loop(consumer, harness, tmp_path, ["--issues", "71"])
     else:
         gh.write_text(
@@ -365,3 +371,167 @@ if [ -f artifact-input ]; then cmp artifact-input .generated; test ! -f "$AGENT_
     assert completed.returncode == 0, completed.stderr + completed.stdout
     _, state = checkpoint(tmp_path)
     assert state["phase"] == "finalized"
+
+
+@pytest.mark.parametrize("marker", ("pr-closed", "pr-ready"))
+def test_resume_never_adopts_a_closed_or_ready_pr(
+    consumer: tuple[Path, Path, Path, Path],
+    harness: str,
+    tmp_path: Path,
+    marker: str,
+) -> None:
+    lose_pr_response_once(consumer)
+    stopped = run_loop(consumer, harness, tmp_path, ["--issues", "71"])
+    assert stopped.returncode != 0
+    path, state = checkpoint(tmp_path)
+    assert state["phase"] == "pushed"
+    (consumer[3] / marker).touch()
+    resumed = run_loop(consumer, harness, tmp_path, ["--resume-run", str(path)])
+    assert resumed.returncode != 0
+    assert "Existing initial PR does not match the saved publication" in resumed.stderr
+    assert json.loads(path.read_text())["phase"] == "pushed"
+    assert consumer[3].joinpath("gh.log").read_text().count("pr create") == 1
+    events = consumer[3].joinpath("events.log").read_text().splitlines()
+    assert events.count("worker") == 1
+    assert "claude" not in events
+
+
+def test_resume_never_adopts_a_remote_branch_without_publication_intent(
+    consumer: tuple[Path, Path, Path, Path],
+    harness: str,
+    tmp_path: Path,
+) -> None:
+    failure = consumer[3] / "fail-validation"
+    failure.touch()
+    gate = 'test ! -f "$AGENT_STATE_DIR/fail-validation"'
+    stopped = run_loop(
+        consumer, harness, tmp_path, ["--issues", "71"], validation_hook=gate
+    )
+    assert stopped.returncode != 0
+    path, state = checkpoint(tmp_path)
+    assert state["phase"] == "worker-complete"
+    # Someone else publishes the same commit under the issue branch name.
+    _run_git(
+        "push",
+        str(consumer[1]),
+        f"{state['headSha']}:refs/heads/{state['branch']}",
+        cwd=Path(str(state["worktree"])),
+    )
+    failure.unlink()
+    resumed = run_loop(
+        consumer, harness, tmp_path, ["--resume-run", str(path)], validation_hook=gate
+    )
+    assert resumed.returncode != 0
+    assert "Remote branch existed before publication intent" in resumed.stderr
+    assert json.loads(path.read_text())["phase"] in ("worker-complete", "integrated")
+    assert "pr create" not in consumer[3].joinpath("gh.log").read_text()
+
+
+def test_pre_worker_failure_offers_no_resume_and_batch_resume_names_the_bail(
+    consumer: tuple[Path, Path, Path, Path],
+    harness: str,
+    tmp_path: Path,
+) -> None:
+    stopped = run_loop(
+        consumer, harness, tmp_path, ["--issues", "71,72"], setup_hook="exit 7"
+    )
+    assert stopped.returncode != 0
+    path, state = checkpoint(tmp_path)
+    assert state["phase"] == "worker-running"
+    assert "--resume-run" not in stopped.stderr
+    batch = next((tmp_path / "logs").glob("*batch*.json"))
+    resumed = run_loop(
+        consumer, harness, tmp_path, ["--resume-batch", str(batch)], setup_hook="exit 7"
+    )
+    assert resumed.returncode != 0
+    assert "Explicit bail command:" in resumed.stderr
+    assert "--status bailed" in resumed.stderr
+    direct = run_loop(
+        consumer, harness, tmp_path, ["--resume-run", str(path)], setup_hook="exit 7"
+    )
+    assert direct.returncode != 0
+    assert "Worker completion was not checkpointed" in direct.stderr
+    assert "--resume-run" not in direct.stderr
+    assert json.loads(path.read_text())["phase"] == "worker-running"
+    assert json.loads(batch.read_text())["issues"][0]["status"] == "active"
+    events = consumer[3] / "events.log"
+    assert not events.exists() or "worker" not in events.read_text().splitlines()
+
+
+def test_human_glance_stop_never_resumes_into_the_review_chain(
+    consumer: tuple[Path, Path, Path, Path],
+    harness: str,
+    tmp_path: Path,
+) -> None:
+    worker = (
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf 'note\\n' > NOTES.md; "
+        "git add NOTES.md; git commit -m 'docs: note'"
+    )
+    stopped = run_loop(
+        consumer, harness, tmp_path, ["--issues", "71"], worker_hook=worker
+    )
+    assert stopped.returncode != 0
+    assert "needs a human glance" in stopped.stderr
+    assert "--resume-run" not in stopped.stderr
+    path, state = checkpoint(tmp_path)
+    assert state["phase"] == "draft-open"
+    resumed = run_loop(
+        consumer, harness, tmp_path, ["--resume-run", str(path)], worker_hook=worker
+    )
+    assert resumed.returncode != 0
+    assert "requires a human glance" in resumed.stderr
+    assert "--resume-run" not in resumed.stderr
+    assert json.loads(path.read_text())["phase"] == "draft-open"
+    assert not (consumer[3] / "pr-ready").exists()
+    assert consumer[3].joinpath("events.log").read_text().splitlines().count(
+        "worker"
+    ) == 1
+    assert "claude" not in consumer[3].joinpath("events.log").read_text().splitlines()
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("root", (".codex", ".claude", ".agents"))
+def test_state_helper_binds_pr_identity_to_publication(
+    root: str, tmp_path: Path
+) -> None:
+    helper = REPO_ROOT / root / "skills/agent-loop/scripts/agent-loop-state.py"
+    head, base = "a" * 40, "b" * 40
+    pr = ("--pr", "9", "--pr-url", "https://example.invalid/pr/9")
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["python3", str(helper), *args], capture_output=True, text=True
+        )
+
+    def create(name: str, *extra: str) -> tuple[Path, subprocess.CompletedProcess[str]]:
+        state = tmp_path / name / "run-state.json"
+        return state, run(
+            "create", "--file", str(state), "--run-id", "run-1",
+            "--repo", "example/repository", "--issue", "7",
+            "--issue-title-sha256", "c" * 64, "--issue-body-sha256", "d" * 64,
+            "--base-branch", "main", "--branch", "agent-loop/issue-7-run-1",
+            "--worktree", str(tmp_path / "worktree"), "--log-dir", str(tmp_path / name),
+            "--base-sha", base, "--head-sha", head,
+            "--review-budget-seconds", "60", "--review-max-rounds", "4", *extra,
+        )  # fmt: skip
+
+    def update(state: Path, phase: str, *extra: str) -> int:
+        return run(
+            "update", "--file", str(state), "--phase", phase, "--round", "1",
+            "--base-sha", base, "--head-sha", head, *extra,
+        ).returncode  # fmt: skip
+
+    assert create("with-pr", "--phase", "worker-running", *pr)[1].returncode != 0
+    assert create("draft-without-pr", "--phase", "draft-open")[1].returncode != 0
+    state, created = create("run", "--phase", "worker-running")
+    assert created.returncode == 0, created.stderr
+    assert update(state, "worker-complete") == 0
+    # PR identity attaches only to a pushed branch, and only as a pair.
+    assert run("update", "--file", str(state), "--phase", "draft-open", *pr).returncode != 0
+    assert update(state, "draft-open") != 0
+    assert update(state, "publishing") == 0
+    assert update(state, "pushed") == 0
+    assert run("update", "--file", str(state), "--phase", "draft-open", "--pr", "9").returncode != 0
+    assert run("update", "--file", str(state), "--phase", "draft-open", *pr).returncode == 0
+    assert update(state, "worker-complete") != 0
+    assert json.loads(state.read_text())["phase"] == "draft-open"

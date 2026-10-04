@@ -298,7 +298,7 @@ detached/wrong-branch state, review-thread failures, and review
 non-convergence failures also preserve the worktree and draft PR. Never reset,
 reuse, clean, or delete a dirty recovery worktree.
 
-Contract v3/v4 creates an owner-only atomic `run-state.json` before worker
+Contract v3 creates an owner-only atomic `run-state.json` before worker
 execution and checkpoints every review round plus convergence. On a review or
 finalization interruption, use the exact `--resume-run <state-file>` command
 printed by the wrapper. Recovery re-attests repository identity, issue
@@ -344,13 +344,16 @@ Neither `--resume-run` nor `--resume-batch` supports `--dry-run`.
 
 Configure `preparation_hook` for an idempotent refresh of ignored dependencies
 and generated outputs. It runs inside each validation gate's existing timeout,
-budget and command guards, including review-push validation. It must not change
+budget and command guards. It must not change
 HEAD or leave tracked or untracked changes. Use input freshness checks rather
 than artifact existence alone. A failed preparation blocks publication.
 
-New contract-v3/v4 runs create the private child checkpoint before setup/worker
+Contract-v3 runs create the private child checkpoint before setup/worker
 execution. A `worker-running` checkpoint is deliberately not replayed: completion
-is uncertain. After a clean committed worker returns, `worker-complete` is saved
+is uncertain. That phase also covers a failed setup hook or worker, so such a
+stop offers no run resume and `--resume-batch` stops with the explicit bail
+command; inspect the preserved worktree, then bail the issue. After a clean
+committed worker returns, `worker-complete` is saved
 before validation. `--resume-run` and `--resume-batch` can then repeat preparation,
 integration and validation without rerunning that worker. Review budgets and
 pinned settings remain attached to the original run.
@@ -362,6 +365,8 @@ stop. Initial publication records intent before its create-only push. Resume
 adopts a remote branch only when that intent exists and its head matches exactly;
 it reconciles an existing same-repository draft PR with that head and base rather
 than creating a duplicate. Closed, ready, mismatched or duplicate PRs stop.
+Resuming a `draft-open` checkpoint classifies the range again, so a human-glance
+stop stays a stop and never starts the review chain.
 
 Keep controller and state-helper revisions together. Older runs without a child
 checkpoint still require operator inspection and an explicit bail; this change
