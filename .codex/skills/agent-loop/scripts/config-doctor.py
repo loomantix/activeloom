@@ -289,7 +289,7 @@ def _verify_protocols(ledger: Path, state: Path, review_push: Path) -> None:
         raise DoctorError("review-ledger protocol is incompatible with contract v3")
     if (
         _version([sys.executable, "-I", str(state), "--state-version"], "run state")
-        != "2"
+        != "4"
     ):
         raise DoctorError("agent-loop state protocol is incompatible")
     if (

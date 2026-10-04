@@ -149,6 +149,15 @@ def test_launcher_disables_background_tasks(
     ]
 
 
+def test_validation_repair_evidence_reaches_claude_prompt(tmp_path: Path) -> None:
+    _write_profile(tmp_path / "review-profile.json", model="opus", effort="medium")
+    _invoke(tmp_path, {"ACTIVELOOM_VALIDATION_FAILURE_LOG": "/private/check-0.log"})
+    argv = json.loads((tmp_path / "invocation.json").read_text())["argv"]
+    assert "ACTIVELOOM_VALIDATION_FAILURE_LOG" in argv[-1]
+    assert "one bounded repair attempt" in argv[-1]
+    assert "do not weaken or skip gates" in argv[-1]
+
+
 def test_launcher_omits_the_model_flag_for_an_inherited_model(tmp_path: Path) -> None:
     _write_profile(tmp_path / "review-profile.json", model="inherit", effort="xhigh")
     _invoke(tmp_path, {})

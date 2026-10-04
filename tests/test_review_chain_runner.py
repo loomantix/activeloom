@@ -1459,6 +1459,258 @@ sys.exit(int(sys.argv[2]))
     )
 
 
+@pytest.fixture
+def validation_repair_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    h = harness
+    wrapped = h.module.managed
+    controls = SimpleNamespace(failures=1, exit_status=1, interrupt=False)
+    repair_logs: list[str] = []
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *args: Any, **kwargs: Any) -> None:
+        if "AGENT_LOOP_REVIEW_RESULT_FILE" in env:
+            if evidence := env.get("ACTIVELOOM_VALIDATION_FAILURE_LOG"):
+                assert Path(evidence).read_text() == "synthetic required gate failure\n"
+                repair_logs.append(evidence)
+        elif controls.failures:
+            controls.failures -= 1
+            log.write_text("synthetic required gate failure\n")
+            if controls.interrupt:
+                raise KeyboardInterrupt
+            raise h.module.ProcessFailure("synthetic required gate failure", controls.exit_status)
+        wrapped(argv, log, env, *args, **kwargs)
+
+    monkeypatch.setattr(h.module, "managed", managed)
+    return SimpleNamespace(harness=h, controls=controls, repair_logs=repair_logs)
+
+
+@pytest.mark.parametrize("engine", ["codex", "claude", "gemini"])
+def test_failed_validation_repairs_once_without_resetting_run_or_round(
+    validation_repair_harness: Any, engine: str,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    other = "claude" if engine == "codex" else "codex"
+    h.args.chain = f"{engine},{other},{engine},{other}"
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert h.launches == [engine, engine, other, engine, other]
+    assert len(runner.state["attempts"]) == 5
+    failed, repaired = runner.state["attempts"][:2]
+    assert (failed["engine"], failed["round"]) == (repaired["engine"], repaired["round"])
+    assert repaired["folder"] == failed["folder"] + "/validation-retry"
+    assert len(v.repair_logs) == 1
+    assert (h.directory / failed["folder"] / "result.json").is_file()
+    assert not (h.directory / failed["folder"] / "validated.json").exists()
+    assert runner.state["run_id"] == "d" * 64
+    assert len(runner.state["completed"]) == 4
+
+
+def test_validation_repair_failure_remains_blocked_on_repeated_resumes(
+    validation_repair_harness: Any,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    v.controls.failures = 10
+    for _ in range(3):
+        runner = h.runner(h.args, h.directory)
+        with pytest.raises(h.module.ProcessFailure):
+            runner.run()
+        h.args.resume = True
+        assert len(runner.state["attempts"]) == 2
+        assert runner.state["completed"] == []
+        assert runner.state["run_id"] == "d" * 64
+    assert h.launches == ["codex", "codex"]
+
+
+@pytest.mark.parametrize("exit_status", [-9, 0, 124, 137])
+def test_uncertain_or_timeout_validation_does_not_launch_repair(
+    validation_repair_harness: Any, exit_status: int,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    v.controls.exit_status = exit_status
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.ProcessFailure):
+        runner.run()
+    assert h.launches == ["codex"]
+    assert len(runner.state["attempts"]) == 1
+
+
+def test_validation_interruption_does_not_authorize_repair(validation_repair_harness: Any) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    v.controls.interrupt = True
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(KeyboardInterrupt):
+        runner.run()
+    assert h.launches == ["codex"]
+    assert runner.state["pending"]["phase"] == "returned"
+
+
+def test_interrupted_validation_retry_staging_reuses_the_same_slot(
+    validation_repair_harness: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    original = h.runner.stage_retry
+
+    def interrupted(self: Any, *args: Any) -> Path:
+        original(self, *args)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(h.runner, "stage_retry", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        h.runner(h.args, h.directory).run()
+    saved = h.module.read(h.directory / "state.json")
+    assert saved["pending"]["phase"] == "validation_failed"
+    assert len(saved["attempts"]) == 1
+    monkeypatch.setattr(h.runner, "stage_retry", original)
+    h.args.resume = True
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert len(v.repair_logs) == 1
+    assert len(runner.state["attempts"]) == 5
+    assert runner.state["run_id"] == saved["run_id"]
+
+
+@pytest.mark.parametrize("mutation", ["none", "log", "result", "snapshot", "head", "ledger"])
+def test_validation_recovery_rechecks_saved_evidence_on_resume(
+    validation_repair_harness: Any, monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    recover = h.runner.recover_validation
+
+    def stop(self: Any, pending: Any) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(h.runner, "recover_validation", stop)
+    with pytest.raises(KeyboardInterrupt):
+        h.runner(h.args, h.directory).run()
+    before = h.module.read(h.directory / "state.json")
+    assert before["pending"]["phase"] == "validation_failed"
+    folder = h.directory / before["pending"]["folder"]
+    if mutation in {"log", "result", "snapshot"}:
+        path = {"log": "check-0.log", "result": "result.json", "snapshot": "validation-threads.json"}[mutation]
+        (folder / path).write_text("tampered")
+    elif mutation == "head":
+        monkeypatch.setattr(h.runner, "boundary", lambda self: "e" * 40)
+    elif mutation == "ledger":
+        monkeypatch.setattr(h.runner, "decision", lambda self, head: {"status": "exhausted"})
+    monkeypatch.setattr(h.runner, "recover_validation", recover)
+    h.args.resume = True
+    runner = h.runner(h.args, h.directory)
+    if mutation == "none":
+        assert runner.run() == "converged"
+        assert len(runner.state["attempts"]) == 5
+    else:
+        with pytest.raises(h.module.Blocked):
+            runner.run()
+        assert len(h.launches) == 1
+    assert runner.state["run_id"] == before["run_id"]
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_refused_validation_repair_falls_back_to_gate_rerun(
+    validation_repair_harness: Any, monkeypatch: pytest.MonkeyPatch, failures: int,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    v.controls.failures = failures
+    recover = h.runner.recover_validation
+
+    def stop(self: Any, pending: Any) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(h.runner, "recover_validation", stop)
+    with pytest.raises(KeyboardInterrupt):
+        h.runner(h.args, h.directory).run()
+    saved = h.module.read(h.directory / "state.json")
+    (h.directory / saved["pending"]["folder"] / "validation-threads.json").write_text("tampered")
+    monkeypatch.setattr(h.runner, "recover_validation", recover)
+    h.args.resume = True
+    with pytest.raises(h.module.Blocked, match="repair refused"):
+        h.runner(h.args, h.directory).run()
+    saved = h.module.read(h.directory / "state.json")
+    assert saved["pending"]["phase"] == "returned"
+    assert saved["pending"]["validation_repair_refused"] is True
+    runner = h.runner(h.args, h.directory)
+    if failures == 1:
+        assert runner.run() == "converged"
+        assert h.launches == ["codex", "claude", "codex", "claude"]
+    else:
+        with pytest.raises(h.module.ProcessFailure):
+            runner.run()
+        assert h.launches == ["codex"]
+        assert runner.state["pending"]["phase"] == "returned"
+    assert v.repair_logs == []
+
+
+def test_pending_pass_without_pre_pass_digests_gets_no_repair(
+    validation_repair_harness: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    v = validation_repair_harness
+    h = v.harness
+    original = h.runner.record_validation_failure
+
+    def legacy(self: Any, pending: Any, *args: Any) -> bool:
+        pending.pop("before_threads_sha256")
+        pending.pop("before_comments_sha256")
+        return bool(original(self, pending, *args))
+
+    monkeypatch.setattr(h.runner, "record_validation_failure", legacy)
+    runner = h.runner(h.args, h.directory)
+    with pytest.raises(h.module.ProcessFailure):
+        runner.run()
+    assert h.launches == ["codex"]
+    assert runner.state["pending"]["phase"] == "returned"
+
+
+@pytest.mark.parametrize("order", ["retry-then-repair", "repair-then-retry", "failed-repair-posts"])
+def test_validation_repair_composes_with_another_retry_of_the_pass(
+    provider_500_harness: Any, validation_repair_harness: Any,
+    monkeypatch: pytest.MonkeyPatch, order: str,
+) -> None:
+    p = provider_500_harness
+    v = validation_repair_harness
+    h = v.harness
+    h.args.chain = "claude,codex,claude,codex"
+    posted: list[dict[str, Any]] = []
+    inner = h.module.managed
+    workers = 0
+
+    def managed(argv: list[str], log: Path, env: dict[str, str], *args: Any, **kwargs: Any) -> None:
+        nonlocal workers
+        worker = "AGENT_LOOP_REVIEW_RESULT_FILE" in env
+        if worker:
+            workers += 1
+            if order != "retry-then-repair":
+                p.controls.failures = int(workers == 2)
+        inner(argv, log, env, *args, **kwargs)
+        # The clean candidate posts, as a first pass does with its refactor latch.
+        if worker and not posted:
+            posted.append({"id": 99, "body": "candidate"})
+
+    monkeypatch.setattr(h.module, "managed", managed)
+    monkeypatch.setattr(
+        h.runner, "comments", lambda self, path: h.module.save(path, list(posted))
+    )
+    if order == "failed-repair-posts":
+        p.controls.side_effect = lambda folder: posted.append({"id": 100, "body": "repair"})
+    runner = h.runner(h.args, h.directory)
+    if order == "failed-repair-posts":
+        with pytest.raises(h.module.Blocked, match="requires reconciliation"):
+            runner.run()
+        assert runner.state["pending"]["phase"] == "provider_500_failed"
+        return
+    assert runner.run() == "converged"
+    # The retried repair launch receives the same failed-gate evidence again.
+    assert len(v.repair_logs) == (1 if order == "retry-then-repair" else 2)
+    assert len(set(v.repair_logs)) == 1
+    assert len(p.failures_seen) == 1
+    assert [a["engine"] for a in runner.state["attempts"][:3]] == ["claude"] * 3
+
+
 def test_one_invocation_runs_all_fixed_steps(harness: Any) -> None:
     runner = harness.runner(harness.args, harness.directory)
     assert runner.run() == "converged"
@@ -2730,8 +2982,9 @@ def test_managed_timeout_stops_worker(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("repair", [False, True])
 def test_codex_launcher_pins_boundary_without_changing_model(
-    tmp_path: Path, stale: bool
+    tmp_path: Path, stale: bool, repair: bool,
 ) -> None:
     import shutil
 
@@ -2795,6 +3048,7 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
             "STALE": "1" if stale else "0",
             "ACTIVELOOM_REVIEW_MODEL": "inherit",
             "ACTIVELOOM_REVIEW_EFFORT": "high",
+            **({"ACTIVELOOM_VALIDATION_FAILURE_LOG": "/private/check-0.log"} if repair else {}),
         },
         capture_output=True,
         text=True,
@@ -2821,6 +3075,7 @@ else: pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(args))
         ) in argv[-1]
         assert "absolute paths" not in argv[-1]
         assert "Do not launch another engine" in argv[-1]
+        assert ("one bounded repair attempt" in argv[-1]) is repair
 
 
 def test_codex_launcher_records_execution_and_forwards_run_id(

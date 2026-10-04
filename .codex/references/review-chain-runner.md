@@ -346,7 +346,40 @@ No reviewer is relaunched and the run ID, round and budget stay unchanged.
 This requires a helper that implements `recover-result`; update the published
 bundle through its normal verified distribution path, never patch it locally.
 
-`--resume` can retry this finalization, rerun a failed validation command and reconcile an attestation
+### Automatic validation repair
+
+When a reviewer returns a clean canonical result at the unchanged head and a
+required controller validation command then exits ordinarily with status 1–123,
+the runner automatically offers that same reviewer **one repair attempt for the
+owed pass**. This applies to Codex, Claude and Gemini. The reviewer receives the
+failed gate log as diagnostic evidence, must post verified findings before fixes,
+and may repair necessary fixtures within the authorized task. It may not weaken
+gates or expand unrelated scope. The controller reruns every required gate on
+the resulting head before attestation; the earlier candidate is never attested.
+
+The original result, failed log, command, exit status and ledger snapshots remain
+in the original pass directory. The retry lives in `validation-retry`. The run
+ID, base, engine, model pins, round, round cap and previous attempts are retained.
+The repair slot uses the existing per-launch timeout (at most 3660 seconds
+including launcher cleanup); it is persisted and cannot be renewed by resume.
+This is a bounded extra attempt, not an automatic abort/restart or fresh run.
+New controllers include this behavior in the authorized automatic-chain policy;
+older pinned controllers retain their original recovery behavior.
+
+An interrupted staging transaction resumes that same slot. Changed heads or
+ledger evidence, modified saved evidence, failed cleanup, unknown exits,
+timeouts and signals block automatic repair. A candidate that already changed
+the head also requires ordinary explicit recovery: this narrow path does not
+rewrite its unfinalized transition. When the repair is refused before its retry
+is staged, the slot is forfeited and the pass returns to the ordinary gate
+rerun: `--resume` reruns the failed gates and attests the original candidate
+only if they pass. A pending pass saved without pre-pass ledger digests gets no
+repair either. A second failed gate cannot launch another
+repair. `--resume` may rerun its gates after an environmental fix, but cannot
+replenish the repair slot. No abort, new budget, ready transition or merge is
+implied. Independent exact-head review remains required after a repair commit.
+
+`--resume` can retry finalization, rerun a failed validation command and reconcile an attestation
 posted before a checkpoint write, without relaunching the worker. Each launch
 attempt records its execution boundary, known exit status, and structured
 failure reason. A crash between the boundary write and process creation remains

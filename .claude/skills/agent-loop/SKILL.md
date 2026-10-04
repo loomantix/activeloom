@@ -96,28 +96,28 @@ The config is parsed as literal `key = value` lines and is never sourced.
 Unknown or duplicate keys fail closed. Hook values are shell commands executed
 with the issue worktree as the current directory.
 
-| Key                                              | Purpose                                                                                                                                                                                                      |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                                                                               |
-| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                                                                                                  |
-| `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                                                                                                    |
-| `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility.                                                                                                  |
-| `config_doctor`                                  | Run the compatibility preflight after settings are pinned and before issue selection or claim, including that each review hook's CLI resolves on `PATH`.                                                     |
-| `claude_effort_policy`                           | Retired. The doctor refuses a non-empty value; `config-doctor.py --migrate` removes it.                                                                                                                      |
-| `review_max_rounds`                              | Codex→Claude round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the draft PR.                                                                                                |
-| `review_timeout_seconds`                         | Positive wall-clock budget for one issue's review, persisted across resume. Default `7200`; each review pass and its validation is capped at the smaller of the remaining budget and `hook_timeout_seconds`. |
-| `claude_review_hook`                             | Required local Claude PR review. Reads the ledger, comments before fixes, publishes through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, replies, and resolves.                                                         |
-| `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                                                                                                                                |
-| `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                                                                                                |
-| `worker_model`, `worker_fallback_model`          | Retired. The default worker's model and fallback come from the review profile; the doctor refuses a non-empty value and `--migrate` removes the keys.                                                        |
-| `worker_effort`                                  | Retired, like `worker_model`. The default worker's effort comes from the review profile.                                                                                                                     |
-| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                  |
-| `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                      |
-| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                        |
-| `dependency_gate`                                | `ready` (legacy), `merged-to-base`, or `batch-stack`.                                                                                                                                                        |
-| `batch_on_issue_failure`                         | `stop` (default) or `park`. See "Parking a failed batch issue".                                                                                                                                              |
-| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                                                                  |
-| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                                                             |
+| Key                                              | Purpose                                                                                                                                                                                                            |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                                                                                                     |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                                                                                                        |
+| `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                                                                                                          |
+| `review_contract_version`                        | New and migrated consumers use `3`; version `2` remains temporarily accepted for staged sync compatibility.                                                                                                        |
+| `config_doctor`                                  | Run the compatibility preflight after settings are pinned and before issue selection or claim, including that each review hook's CLI resolves on `PATH`.                                                           |
+| `claude_effort_policy`                           | Retired. The doctor refuses a non-empty value; `config-doctor.py --migrate` removes it.                                                                                                                            |
+| `review_max_rounds`                              | Codex→Claude round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the draft PR.                                                                                                      |
+| `review_timeout_seconds`                         | Positive active-execution budget for one issue's review, persisted across resume. Default `7200`; each review pass and its validation is capped at the smaller of the remaining budget and `hook_timeout_seconds`. |
+| `claude_review_hook`                             | Required local Claude PR review. Reads the ledger, comments before fixes, publishes through `$AGENT_LOOP_REVIEW_PUSH_HELPER`, replies, and resolves.                                                               |
+| `codex_review_hook`                              | Required local Codex PR review with the same ledger contract.                                                                                                                                                      |
+| `worker_hook`                                    | Optional worker command override. Default is the Claude CLI in headless, auto-approving mode.                                                                                                                      |
+| `worker_model`, `worker_fallback_model`          | Retired. The default worker's model and fallback come from the review profile; the doctor refuses a non-empty value and `--migrate` removes the keys.                                                              |
+| `worker_effort`                                  | Retired, like `worker_model`. The default worker's effort comes from the review profile.                                                                                                                           |
+| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                        |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                                                                                            |
+| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                                                                                              |
+| `dependency_gate`                                | `ready` (legacy), `merged-to-base`, or `batch-stack`.                                                                                                                                                              |
+| `batch_on_issue_failure`                         | `stop` (default) or `park`. See "Parking a failed batch issue".                                                                                                                                                    |
+| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                                                                                                        |
+| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                                                                                                   |
 
 Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_BASE_BRANCH`,
 `AGENT_LOOP_BRANCH`, `AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and
@@ -200,9 +200,10 @@ issue and reports the model and effort now in use:
 ## Review Budget
 
 `review_timeout_seconds` is a whole-run budget for **one issue's** review. It is
-reset the moment that issue's draft PR opens and persisted to run state as
-`reviewDeadlineEpoch`, so `--resume-run` and `--resume-batch` continue the
-original clock rather than restarting it.
+initialized when that issue's draft PR opens and persisted as `reviewBudget`.
+Only review hooks and budgeted validation spend it; stopped time does not.
+Interrupted execution retains its full reservation until explicitly reconciled,
+without a refund.
 
 Every review pass **and the validation that follows it** draws from that budget.
 A round is therefore two hook invocations plus two validations, and fresh-base
@@ -219,12 +220,14 @@ consequences are easy to miss:
   cost, and keep `hook_timeout_seconds` well below it so one pass cannot spend
   everything.
 - **Running out mid-pass does not look like running out.** The clean
-  "exhausted its configured whole-run time budget" stop only fires when the
+  "exhausted its active execution budget" stop only fires when the
   budget is under `REVIEW_PASS_MIN_SECONDS` (120s) _at the start_ of a pass. A
   pass that starts with more than that and then hits its bound is killed by
-  `timeout`, writes no result, and is reported as a hook failure. The wrapper
-  logs the remaining budget and the applied bound before each pass so the two
-  can be told apart.
+  `timeout`, writes no result, and stops as `budget-exhausted` when the
+  remaining budget set the bound or `hook-timeout` otherwise. Either way the
+  killed hook keeps its whole reservation, and the run resumes only after
+  reconciliation. The wrapper logs the remaining budget and the applied bound
+  before each pass so the two can be told apart.
 
 ### Validation is not repeated on an unchanged head
 
@@ -391,7 +394,7 @@ wrong engine identity and corrupt the ledger's roster, so it is not a workaround
    safe-push helper, posts structured fix and final-lane
    completion evidence, then resolves.
 9. If either engine made material fixes, restart from Codex. Stop after
-   `review_max_rounds` or the persisted whole-run deadline and preserve the draft.
+   `review_max_rounds` or the persisted active-execution budget and preserve the draft.
 10. Re-attest the exact issue contract and dependencies, excluding only the
     wrapper-captured PR from the addressed-by-open-PR check. Require a complete
     clean round plus replies and resolutions on every marked thread, then mark
@@ -491,7 +494,7 @@ never from hook output. Every one of these must hold:
 
 - the stop category is `no-result/hook-ended-early`, `validation-red`,
   `hook-timeout`, or `push-checkpoint-mismatch`. Resume restores the round cap
-  and the review deadline, so an exhausted cap or budget stops the batch;
+  and the review execution budget, so an exhausted cap or budget stops the batch;
 - the issue has a valid review checkpoint in the `reviewing` or `converged`
   phase;
 - the worktree is clean and on the issue branch;
@@ -630,3 +633,10 @@ Do not insert `--` before `TestName`; that can run the full suite.
 
 This directory is upstream-owned and synced to consumers. Change reusable
 mechanics here, not in a consumer's synced copy.
+
+## Budget recovery
+
+Legacy absolute-deadline checkpoints require explicit, bounded migration, even
+when their deadline has expired. Follow the [budget recovery reference](https://github.com/loomantix/activeloom/blob/main/docs/agent-loop-budget-recovery.md).
+Do not edit checkpoint fields or start a replacement run to reset the budget.
+Neither `--resume-run` nor `--resume-batch` supports `--dry-run`.

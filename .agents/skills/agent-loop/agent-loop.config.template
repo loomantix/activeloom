@@ -47,9 +47,10 @@ config_doctor = true
 gemini_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine gemini
 claude_review_hook = "$AGENT_LOOP_AGY_REVIEW_LAUNCHER" --engine claude
 review_max_rounds = 4
-# Positive wall-clock budget for the complete review run. The deadline is
-# persisted so resume cannot reset it; each review pass receives only the
-# remaining time.
+# Active review execution seconds across all engines and rounds. Stopped time
+# does not count. Checkpointed reservations prevent resume from replenishing it;
+# interrupted hooks retain their full reservation until explicit reconciliation.
+# Legacy deadlines require explicit migration; see the budget recovery reference.
 review_timeout_seconds = 7200
 
 # Optional worker override. When empty, the wrapper runs `agy` with the

@@ -1643,6 +1643,11 @@ class Runner:
         # Build the environment first: a failure here launched nothing and must
         # leave the owed pass resumable, not an unknown "launching" attempt.
         env = self.environment(pending["engine"])
+        if origin := pending.get("validation_origin"):
+            failed = self.verify_validation_recovery(pending, origin)
+            env["ACTIVELOOM_VALIDATION_FAILURE_LOG"] = str(
+                self.directory / failed["folder"] / failed["validation_failure"]["log"]
+            )
         if origin := pending.get("capacity_origin"):
             attempts = [
                 item for item in self.state["attempts"]
@@ -2037,10 +2042,23 @@ class Runner:
         ):
             raise Blocked(f"{failure} evidence changed or a reviewer result exists")
         prefix = kind.replace("_", "-")
+        # A validation repair launches after a completed clean candidate that
+        # may have posted. From then on the failed gate's snapshot, not the
+        # pre-pass one, is what a failed worker must have left unchanged.
+        gate = None
+        if origin := pending.get("validation_origin"):
+            gates = [a for a in self.state["attempts"] if a["attempt_id"] == origin]
+            if len(gates) != 1:
+                raise Blocked("validation recovery origin changed")
+            gate = gates[0]
         for name, capture in (("threads", self.threads), ("comments", self.comments)):
             before = folder / f"before-{name}.json"
             if digest(before) != pending.get(f"before_{name}_sha256"):
                 raise Blocked("pre-pass review evidence changed")
+            if gate is not None:
+                before = self.directory / gate["folder"] / f"validation-{name}.json"
+                if digest(before) != gate["validation_failure"][name + "_sha256"]:
+                    raise Blocked("validation review snapshot changed")
             current = folder / f"{prefix}-{name}.json"
             capture(current)
             if digest(current) != digest(before):
@@ -2138,6 +2156,132 @@ class Runner:
                     folder / name, target, attempt["attempt_id"]
                 )
         return retry
+
+    def record_validation_failure(
+        self, pending: dict[str, Any], head: str, result: dict[str, Any],
+        index: int, argv: list[str], error: ProcessFailure,
+    ) -> bool:
+        # Only an ordinary failed gate after a clean, unchanged-head review is
+        # retryable. Unknown exits, timeouts and material transitions keep their
+        # existing recovery boundary. A pass gets at most one repair attempt.
+        if (
+            pending.get("validation_origin")
+            or pending.get("validation_repair_refused")
+            or not {"before_threads_sha256", "before_comments_sha256"} <= set(pending)
+            or result["status"] != "clean"
+            or head != pending["before"]
+            or head != self.state["head"]
+            or not 0 < error.exit_status < 124
+        ):
+            return False
+        attempt = self.state["attempts"][-1]
+        if (
+            attempt["attempt_id"] != pending.get("attempt_id")
+            or attempt["phase"] != "returned"
+            or attempt["exit_status"] != 0
+        ):
+            return False
+        if self.boundary() != head:
+            raise Blocked("validation changed the reviewed head")
+        folder = self.directory / pending["folder"]
+        log = f"check-{index}.log"
+        receipt = {
+            "head": head, "result_sha256": digest(folder / "result.json"),
+            "log": log, "log_sha256": digest(folder / log),
+            "argv": argv, "exit_status": error.exit_status,
+        }
+        for name, capture in (("threads", self.threads), ("comments", self.comments)):
+            path = folder / f"validation-{name}.json"
+            capture(path)
+            receipt[name + "_sha256"] = digest(path)
+        attempt["validation_failure"] = receipt
+        pending["phase"] = "validation_failed"
+        self.persist()
+        return True
+
+    def verify_validation_recovery(
+        self, pending: dict[str, Any], origin: str,
+    ) -> dict[str, Any]:
+        self.verify_control()
+        attempts = [a for a in self.state["attempts"] if a["attempt_id"] == origin]
+        if len(attempts) != 1:
+            raise Blocked("validation recovery origin changed")
+        attempt = attempts[0]
+        receipt = attempt.get("validation_failure", {})
+        if (
+            attempt.get("phase") != "returned" or attempt.get("exit_status") != 0
+            or (attempt.get("engine"), attempt.get("round"))
+            != (pending["engine"], pending["round"])
+            or receipt.get("head") != pending["before"]
+            or self.boundary() != pending["before"]
+            or self.state["head"] != pending["before"]
+            or type(receipt.get("exit_status")) is not int
+            or not 0 < receipt["exit_status"] < 124
+            or not re.fullmatch(r"check-[0-9]+\.log", str(receipt.get("log")))
+        ):
+            raise Blocked("validation recovery requires the unchanged completed pass")
+        decision = self.decision(pending["before"])
+        if (
+            decision.get("passes") != self.state["completed"]
+            or decision.get("status") != "next"
+            or (decision.get("engine"), decision.get("round"))
+            != (pending["engine"], pending["round"])
+        ):
+            raise Blocked("validation recovery cannot change the owed pass or budget")
+        folder = self.directory / attempt["folder"]
+        if (
+            digest(folder / "result.json") != receipt["result_sha256"]
+            or digest(folder / receipt["log"]) != receipt["log_sha256"]
+            or read(folder / "result.json")["status"] != "clean"
+            or digest(folder / "historical.json") != pending["historical_sha256"]
+        ):
+            raise Blocked("validation failure evidence changed")
+        for name, capture in (("threads", self.threads), ("comments", self.comments)):
+            if digest(folder / f"before-{name}.json") != pending[f"before_{name}_sha256"]:
+                raise Blocked("pre-pass review evidence changed")
+            path = folder / f"validation-{name}.json"
+            if digest(path) != receipt[name + "_sha256"]:
+                raise Blocked("validation review snapshot changed")
+            current = folder / f"validation-current-{name}.json"
+            capture(current)
+            if digest(current) != receipt[name + "_sha256"]:
+                raise Blocked("review evidence changed after validation failure")
+        return dict(attempt)
+
+    def recover_validation(self, pending: dict[str, Any]) -> None:
+        if pending.get("validation_origin"):
+            raise Blocked("validation repair already attempted; no further retry")
+        origin = pending["attempt_id"]
+        try:
+            attempt = self.verify_validation_recovery(pending, origin)
+        except ProcessFailure:
+            raise
+        except Blocked as error:
+            if "validation_recovery" in pending:
+                raise
+            # Nothing is staged yet, so an unverifiable repair forfeits its slot
+            # and the pass returns to the ordinary gate rerun.
+            pending["phase"] = "returned"
+            pending["validation_repair_refused"] = True
+            self.persist()
+            raise Blocked(
+                f"automatic validation repair refused ({error}); "
+                "--resume reruns the failed gates without a repair attempt"
+            ) from error
+        retry = self.stage_retry(
+            pending, attempt, "validation_recovery", "validation-retry", "validation repair"
+        )
+        pending.update(
+            folder=str(retry.relative_to(self.directory)), phase="prepared",
+            validation_origin=origin,
+        )
+        pending.pop("validation_recovery")
+        self.persist()
+        print(
+            f"Validation failed: one bounded repair by {pending['engine']} "
+            f"in the same run and round {pending['round']}; original evidence retained",
+            flush=True,
+        )
 
     def recover_startup_stall(self, pending: dict[str, Any]) -> None:
         """Relaunch a Codex pass that stalled before thread.started, once."""
@@ -2623,11 +2767,18 @@ class Runner:
             )
         if not (folder / "validated.json").exists():
             for index, check in enumerate(validation["commands"]):
-                managed(
-                    check["argv"],
-                    folder / f"check-{index}.log",
-                    check["environment"],
-                )
+                try:
+                    managed(
+                        check["argv"],
+                        folder / f"check-{index}.log",
+                        check["environment"],
+                    )
+                except ProcessFailure as error:
+                    if self.record_validation_failure(
+                        pending, head, result, index, check["argv"], error
+                    ):
+                        return
+                    raise
             if self.boundary() != head:
                 raise Blocked("validation changed the reviewed head")
             save(folder / "validated.json", expected_validation)
@@ -3289,6 +3440,8 @@ class Runner:
                     self.recover_startup_stall(pending)
                 elif pending["phase"] == "provider_500_failed":
                     self.recover_provider_500(pending)
+                elif pending["phase"] == "validation_failed":
+                    self.recover_validation(pending)
                 elif pending["phase"] == "cleanup_blocked":
                     self.recover_cleanup(pending)
                 elif pending["phase"] == "prepared":

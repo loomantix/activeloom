@@ -126,7 +126,9 @@ def test_bounded_runner_stops_its_workers(tmp_path: Path, cancel: bool) -> None:
     ready = tmp_path / "worker.pid"
     worker = (
         "import os, pathlib, time; "
-        f"pathlib.Path({str(ready)!r}).write_text(str(os.getpid())); "
+        f"ready = pathlib.Path({str(ready)!r}); "
+        "staged = ready.with_suffix('.tmp'); "
+        "staged.write_text(str(os.getpid())); staged.replace(ready); "
         "time.sleep(60)"
     )
     parent = (

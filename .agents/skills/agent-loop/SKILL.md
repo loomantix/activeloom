@@ -108,7 +108,7 @@ with the issue worktree as the current directory.
 | `config_doctor`                                          | Run the consumer compatibility doctor after settings are pinned and before selection or claim. Current contract-v3 consumers set `true`.                                                                    |
 | `claude_effort_policy`                                   | Retired. The doctor refuses a non-empty value; remove the key from the config.                                                                                                                              |
 | `review_max_rounds`                                      | Review-round cap from `1` through the hard ceiling `4`. Default `4`; exhaustion preserves the worktree and blocks publication.                                                                              |
-| `review_timeout_seconds`                                 | Positive wall-clock budget for the complete review run, persisted across resume. Default `7200`; each pass is capped at the remaining budget.                                                               |
+| `review_timeout_seconds`                                 | Positive active-execution budget for the complete review run, persisted across resume. Default `7200`; each pass is capped at the remaining budget.                                                         |
 | `worker_hook`                                            | Optional worker command override (e.g. `agy`, `gemini`, or custom CLI invocation).                                                                                                                          |
 | `worker_model`, `worker_fallback_model`, `worker_effort` | Retired. The default worker's model, effort, and fallback come from the review profile; the doctor refuses a non-empty value, so remove the keys from the config.                                           |
 | `worker_retries`                                         | Retries after clean capacity/timeout failures. Default `1`.                                                                                                                                                 |
@@ -258,7 +258,7 @@ and never copies issue bodies, model logs, or findings into GitHub.
 9. If either reviewer commits a material fix, restart at Gemini. Minor-only fixes
    are validated and retained without restarting. Convergence requires one
    entire Gemini-then-Claude round with no material fixes. Exhausting
-   `review_max_rounds` or the persisted whole-run deadline blocks publication
+   `review_max_rounds` or the persisted active-execution budget blocks publication
    and preserves the worktree.
 10. If the base advances, integrate and push it on the draft PR before restarting
     at Gemini. A non-fast-forward base move stops the loop.
@@ -332,3 +332,10 @@ Do not insert `--` before `TestName`; that can run the full suite.
 
 This directory is upstream-owned and synced to consumers. Change reusable
 mechanics here, not in a consumer's synced copy.
+
+## Budget recovery
+
+Legacy absolute-deadline checkpoints require explicit, bounded migration, even
+when their deadline has expired. Follow the [budget recovery reference](https://github.com/loomantix/activeloom/blob/main/docs/agent-loop-budget-recovery.md).
+Do not edit checkpoint fields or start a replacement run to reset the budget.
+Neither `--resume-run` nor `--resume-batch` supports `--dry-run`.

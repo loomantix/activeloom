@@ -277,3 +277,13 @@ a pin, a manifest — has to resolve to the source before the skill moves.
 
 Held today, with the drift written down rather than waved through:
 `actions-usage-audit`, `pr-critique`, `publish-npm-package`.
+
+## Shared agent-loop budget regions
+
+The controllers retain their engine-specific review and attestation paths. Their
+budget state machine and accounting shell functions are single-sourced in
+`scripts/agent-loop-budget.py.inc` and `scripts/agent-loop-budget.sh.inc`.
+`python3 scripts/render-prompts.py` replaces the delimited budget regions in all
+three controllers/helpers; `--check` rejects drift. Inline generation keeps
+Codex's existing base-pinned, self-contained helper boundary intact. Edit these
+sources, regenerate, and commit the generated regions together.
