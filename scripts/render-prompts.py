@@ -118,7 +118,7 @@ COMPOSED_DOCUMENTS: frozenset[str] = frozenset(
     )
 )
 RETIRED_COMPOSED_DOCUMENTS: frozenset[str] = frozenset()
-COMPOSER_PATH = SCRIPT_DIR.parent / "prompts/compose.cjs"
+COMPOSER_PATH = PROMPTS_DIR / "compose.cjs"
 
 IGNORED_DIR_NAMES = frozenset({"__pycache__"})
 IGNORED_SUFFIXES = (".pyc", ".pyo")
@@ -469,7 +469,7 @@ def rendered_roster() -> list[str]:
 def render_tree(
     engine: ModuleType, profiles: list[Profile], destination: Path, version: str
 ) -> list[Path]:
-    """Render every skill, and every vendored document, under `destination`.
+    """Render every skill, composed and vendored document under `destination`.
 
     Returns the written paths, relative to `destination`.
     """
@@ -539,7 +539,7 @@ def render_composed_documents(
         relative: _composition_source(composed_source_path(relative))
         for relative in sorted(COMPOSED_DOCUMENTS)
     }
-    partials = {}
+    partials: dict[str, str] = {}
     partial_root = REPO_ROOT / "prompts/partials"
     if partial_root.is_symlink():
         raise ValueError(
@@ -548,16 +548,10 @@ def render_composed_documents(
     for source in sorted(_source_files(partial_root)):
         if source.suffix != ".hbs":
             raise ValueError(f"partial source must end in .hbs: {source}")
-        source = _composition_source(source.relative_to(REPO_ROOT))
         name = source.relative_to(partial_root).with_suffix("").as_posix()
         partials[name] = source.read_text(encoding="utf-8")
     expected = set(sources.values())
-    template_root = REPO_ROOT / "prompts/review"
-    if template_root.is_symlink():
-        raise ValueError(
-            f"composition sources must not contain symlinks: {template_root}"
-        )
-    for source in _source_files(template_root):
+    for source in _source_files(REPO_ROOT / "prompts/review"):
         if source not in expected:
             raise ValueError(f"review template has no declared destination: {source}")
     payload = {
@@ -588,7 +582,7 @@ def render_composed_documents(
         or not all(isinstance(value, str) for value in rendered.values())
     ):
         raise ValueError("composer returned an invalid document set")
-    written = []
+    written: list[Path] = []
     profiles_by_root = {profile.root: profile for profile in profiles}
     for name, source in sources.items():
         relative = Path(name)
