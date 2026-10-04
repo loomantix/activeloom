@@ -14,6 +14,9 @@ import pytest
 import yaml
 
 
+pytestmark = pytest.mark.regression
+
+
 ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = ROOT / ".claude/skills/critique/scripts/run-agy-review.sh"
 SYNC_TARGETS = ROOT / "scripts/sync-targets.yml"

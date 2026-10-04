@@ -47,38 +47,29 @@ def test_incomplete_partition_fails(artifacts: Path, damage: str) -> None:
         module.verify(artifacts)
 
 
-@pytest.mark.parametrize(
-    ("plan", "skip", "tests", "passes"),
-    [
-        ("success", "false", "success", True),
-        ("success", "true", "skipped", True),
-        ("failure", "true", "skipped", False),
-        ("success", "false", "failure", False),
-        ("success", "false", "skipped", False),
-        ("success", "false", "cancelled", False),
-        ("success", "", "success", False),
-        ("success", "true", "success", False),
-    ],
-)
-def test_gate_requires_all_expected_jobs(plan: str, skip: str, tests: str, passes: bool) -> None:
-    job = _workflow("ci.yml")["jobs"]["python-types-and-tests"]
+@pytest.mark.parametrize("tests", ["success", "failure", "skipped", "cancelled", ""])
+def test_regression_gate_requires_all_shards(tests: str) -> None:
+    job = _workflow("regression.yml")["jobs"]["python-types-and-tests"]
     script = job["steps"][0]["run"]
     result = subprocess.run(
         ["bash", "-e", "-c", script],
-        env={"PLAN_RESULT": plan, "SKIP": skip, "TEST_RESULT": tests},
+        env={"TEST_RESULT": tests},
         check=False,
     )
-    assert (result.returncode == 0) == passes
+    assert (result.returncode == 0) == (tests == "success")
 
 
 def test_matrix_and_manual_checkpoint() -> None:
-    workflow = _workflow("ci.yml")
+    workflow = _workflow("regression.yml")
     assert "workflow_dispatch" in workflow["on"]
     jobs = workflow["jobs"]
     matrix = jobs["python-tests"]["strategy"]
     assert matrix["matrix"]["shard"] == ["1", "2", "3", "4"]
     assert matrix["fail-fast"] == "false"
-    for name in ("python-plan", "static-checks", "python-types-and-tests"):
-        assert "github.event_name != 'pull_request'" in jobs[name]["if"]
-    assert set(jobs["python-types-and-tests"]["needs"]) == {"python-plan", "python-tests"}
+    assert jobs["python-types-and-tests"]["needs"] == "python-tests"
     assert "!cancelled()" in jobs["python-types-and-tests"]["if"]
+    for step in jobs["python-tests"]["steps"]:
+        if "python3 -m pytest" in step.get("run", ""):
+            for command in step["run"].splitlines():
+                if "python3 -m pytest" in command:
+                    assert "--test-lane=regression" in command

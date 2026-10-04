@@ -15,6 +15,9 @@ from typing import Any
 
 import pytest
 
+
+pytestmark = pytest.mark.regression
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / ".codex/skills/critique/scripts"
 HEAD = "a" * 40
@@ -124,6 +127,7 @@ def capacity_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
         ),
     ],
 )
+@pytest.mark.fast
 def test_capacity_recognition_uses_only_terminal_json_events(
     tmp_path: Path, events: list[dict[str, Any]], expected: bool
 ) -> None:
@@ -440,6 +444,7 @@ def idle_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
         ),
     ],
 )
+@pytest.mark.fast
 def test_agy_idle_exit_recognition_is_specific(
     tmp_path: Path, text: str, expected: bool
 ) -> None:
@@ -599,6 +604,7 @@ def test_agy_clean_exit_without_execution_marker_is_not_retried(
     "change",
     ["wrong-actor", "wrong-engine", "wrong-head", "extra-comment", "blank-body"],
 )
+@pytest.mark.fast
 def test_agy_incomplete_comment_exception_is_exact(change: str) -> None:
     module = load("review-chain-runner")
     marker: dict[str, Any] = {
@@ -637,6 +643,7 @@ def test_agy_incomplete_comment_exception_is_exact(change: str) -> None:
         ("reordered", False),
     ],
 )
+@pytest.mark.fast
 def test_agy_incomplete_comment_exception_keeps_prior_comments(
     change: str, allowed: bool
 ) -> None:
@@ -665,6 +672,7 @@ def test_agy_incomplete_comment_exception_keeps_prior_comments(
     )
 
 
+@pytest.mark.fast
 def test_agy_incomplete_comment_leading_whitespace_allowed() -> None:
     module = load("review-chain-runner")
     marker: dict[str, Any] = {
@@ -863,6 +871,7 @@ STDIN_BANNER = "Reading additional input from stdin...\n"
         (json.dumps({"type": "turn.started"}) + "\n" + json.dumps({"type": "thread.started"}), False),
     ],
 )
+@pytest.mark.fast
 def test_codex_startup_stall_recognition_needs_the_json_event(
     tmp_path: Path, text: str, expected: bool
 ) -> None:
@@ -871,6 +880,7 @@ def test_codex_startup_stall_recognition_needs_the_json_event(
     assert load("review-chain-runner").codex_startup_stalled(log) is expected
 
 
+@pytest.mark.fast
 def test_codex_startup_stall_requires_a_regular_log(tmp_path: Path) -> None:
     module = load("review-chain-runner")
     assert module.codex_startup_stalled(tmp_path / "missing.log") is False
@@ -1791,6 +1801,7 @@ def provider_500_harness(harness: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
         ("API Error: 500 Internal server error.\n" * 2, False),
     ],
 )
+@pytest.mark.fast
 def test_claude_provider_500_recognition_requires_sole_diagnostic(
     tmp_path: Path, text: str, expected: bool
 ) -> None:
@@ -1799,6 +1810,7 @@ def test_claude_provider_500_recognition_requires_sole_diagnostic(
     assert load("review-chain-runner").claude_provider_500(log) is expected
 
 
+@pytest.mark.fast
 def test_claude_provider_500_recognition_rejects_large_or_linked_logs(
     tmp_path: Path,
 ) -> None:
@@ -2295,6 +2307,7 @@ def test_standalone_contract_validation_rejects_invalid_or_linked_files(
         ),
     ],
 )
+@pytest.mark.fast
 def test_validation_contract_rejects_unsafe_or_ambiguous_schema(
     mutate: Any, message: str
 ) -> None:
@@ -2315,6 +2328,7 @@ def test_validation_contract_rejects_unsafe_or_ambiguous_schema(
         module.parse_validation_contract(json.dumps(document).encode())
 
 
+@pytest.mark.fast
 def test_validation_contract_rejects_duplicate_json_keys() -> None:
     module = load("review-chain-runner")
     raw = b'{"schema_version":1,"schema_version":1,"fallback_gate":"full","gates":{}}'
@@ -2333,6 +2347,7 @@ def test_validation_contract_rejects_duplicate_json_keys() -> None:
         ("docs/guide.rst", "**/*.md", False),
     ],
 )
+@pytest.mark.fast
 def test_validation_path_matching_is_slash_aware(
     path: str, pattern: str, expected: bool
 ) -> None:
@@ -2898,6 +2913,7 @@ def test_runner_launchers_mark_execution_before_the_reviewer_starts(
         assert 'run_id_args=(--run-id "$ACTIVELOOM_RUN_ID")' in lines
 
 
+@pytest.mark.fast
 def test_launch_state_helper_copies_are_identical() -> None:
     assert (SCRIPTS / "review-launch-state.py").read_bytes() == (
         ROOT / ".claude/skills/critique/scripts/review-launch-state.py"

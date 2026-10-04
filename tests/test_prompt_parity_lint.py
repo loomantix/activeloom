@@ -603,6 +603,7 @@ def test_an_entry_for_a_skill_that_is_not_in_scope_fails(
     assert "not a shared unrendered skill" in violations[0]
 
 
+@pytest.mark.regression
 def test_the_repository_passes_its_own_parity_gate(lint_prompt_parity: ModuleType) -> None:
     assert lint_prompt_parity.main([]) == 0
 
@@ -673,6 +674,7 @@ def test_an_unwritable_summary_does_not_fail_a_clean_gate(
     lint_prompt_parity._write_step_summary(["ship-staging"])
 
 
+@pytest.mark.regression
 def test_report_mode_never_fails(
     lint_prompt_parity: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -680,6 +682,7 @@ def test_report_mode_never_fails(
     assert "residual" in capsys.readouterr().out
 
 
+@pytest.mark.regression
 def test_diff_mode_prints_the_normalized_diff(
     lint_prompt_parity: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -687,6 +690,7 @@ def test_diff_mode_prints_the_normalized_diff(
     assert ".claude → .codex" in capsys.readouterr().out
 
 
+@pytest.mark.regression
 def test_diff_mode_rejects_a_skill_that_is_not_in_scope(
     lint_prompt_parity: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -694,6 +698,7 @@ def test_diff_mode_rejects_a_skill_that_is_not_in_scope(
     assert "not a shared unrendered skill" in capsys.readouterr().err
 
 
+@pytest.mark.regression
 def test_an_empty_allowlist_fails_the_real_repository(
     lint_prompt_parity: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -704,6 +709,7 @@ def test_an_empty_allowlist_fails_the_real_repository(
     assert "no allowlist entry" in capsys.readouterr().err
 
 
+@pytest.mark.regression
 def test_a_malformed_allowlist_is_a_config_error_not_a_violation(
     lint_prompt_parity: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

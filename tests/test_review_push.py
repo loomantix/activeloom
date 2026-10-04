@@ -10,6 +10,9 @@ from pathlib import Path
 import pytest
 
 
+pytestmark = pytest.mark.regression
+
+
 ROOT = Path(__file__).resolve().parent.parent
 HELPER = ROOT / ".claude/skills/agent-loop/scripts/review-push.sh"
 
@@ -218,6 +221,7 @@ def _run(
     )
 
 
+@pytest.mark.fast
 def test_reports_review_push_protocol_version() -> None:
     result = subprocess.run(
         [str(HELPER), "--protocol-version"], capture_output=True, text=True

@@ -6,6 +6,9 @@ import subprocess
 
 import pytest
 
+
+pytestmark = pytest.mark.regression
+
 ROOT = Path(__file__).resolve().parents[1]
 
 

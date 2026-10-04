@@ -9,7 +9,6 @@ so it detects renames rather than regressions.
 from __future__ import annotations
 
 from pathlib import Path
-import re
 import subprocess
 from typing import Any
 
@@ -120,8 +119,10 @@ def test_pull_request_heads_are_superseded_but_main_is_never_queued(path: Path) 
         assert "github.event.pull_request.number" in group, (
             f"{path.name} must still group PR runs by PR number"
         )
-    assert "pull_request" in str(concurrency["cancel-in-progress"]) or (
-        "push" not in triggers and "schedule" not in triggers
+    assert (
+        concurrency["cancel-in-progress"] == "false"
+        or "pull_request" in str(concurrency["cancel-in-progress"])
+        or ("push" not in triggers and "schedule" not in triggers)
     ), f"{path.name} may cancel a push or scheduled run in progress"
 
 
@@ -201,11 +202,18 @@ def test_draft_preflight_is_cheap_and_installs_nothing() -> None:
     assert "bash -n" in checks
 
 
-def test_full_gate_runs_on_pushes_and_on_ready_pull_requests() -> None:
-    for job_name in ("static-checks", "python-types-and-tests"):
-        job = _workflow("ci.yml")["jobs"][job_name]
-        assert _draft_gated(job), f"{job_name} should skip draft pull requests"
-        assert "github.event_name" in job["if"], f"{job_name} must still run on push"
+def test_routine_python_gate_runs_on_every_push_and_pull_request() -> None:
+    workflow = _workflow("ci.yml")
+    job = workflow["jobs"]["python-types-and-tests"]
+    assert "if" not in job
+    assert "strategy" not in job, "routine validation must not fan out the regression shards"
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "python3 -m mypy" in commands
+    assert "python3 scripts/run-tests.py fast" in commands
+    for routine_job in workflow["jobs"].values():
+        for step in routine_job.get("steps", []):
+            assert "--test-lane=regression" not in step.get("run", "")
+            assert "run-tests.py regression" not in step.get("run", "")
 
 
 def test_pytest_run_pins_coverage_and_names_the_branch_config() -> None:
@@ -220,7 +228,7 @@ def test_pytest_run_pins_coverage_and_names_the_branch_config() -> None:
     is what turned that mismatch from a silent merge into a hard `DataError`,
     and an unpinned floor lets a future release move the failure again.
     """
-    steps = _workflow("ci.yml")["jobs"]["python-tests"]["steps"]
+    steps = _workflow("regression.yml")["jobs"]["python-tests"]["steps"]
     install = next(s for s in steps if s.get("name") == "Install pinned tooling")
     assert "'coverage==7.16.0'" in install["run"]
     assert "'pytest-xdist==3.8.0'" in install["run"]
@@ -230,33 +238,14 @@ def test_pytest_run_pins_coverage_and_names_the_branch_config() -> None:
     assert "--cov-config=pyproject.toml" in pytest_step["run"]
     assert "-n 4" in pytest_step["run"]
     assert "--dist worksteal" in pytest_step["run"]
+    assert "--test-lane=regression" in pytest_step["run"]
 
 
-@pytest.mark.parametrize(
-    ("path", "skips"),
-    [
-        ("docs/agent-guide.md", True),
-        ("docs/decisions/0001-x.md", True),
-        ("README.md", True),
-        ("PROMPT_STACK_VERSION", True),
-        (".claude/prompt-stack.json", True),
-        ("docs/", False),
-        ("cli/index.js", False),
-        ("scripts/render-prompts.py", False),
-        ("tests/fixtures/sample.md", False),
-        (".claude/skills/critique/SKILL.md", False),
-        (".prettierrc.py", False),
-    ],
-)
-def test_python_suite_skip_filter_matches_only_inert_paths(path: str, skips: bool) -> None:
-    """The skip filter reports a required check green without running it.
-
-    Exercise the pattern the workflow actually ships in both directions: a
-    directory prefix that stops matching silently re-runs the suite on every
-    docs PR, and one that widens silently skips tests a change needed.
-    """
-    steps = _workflow("ci.yml")["jobs"]["python-plan"]["steps"]
-    script = next(s for s in steps if s.get("id") == "filter")["run"]
-    match = re.search(r'ignore = re\.compile\(r"(.+)"\)', script)
-    assert match, "skip filter pattern not found in the filter step"
-    assert bool(re.compile(match.group(1)).match(path)) is skips
+def test_full_regression_is_only_weekly_or_explicit() -> None:
+    triggers = _workflow("regression.yml")["on"]
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    schedules = triggers["schedule"]
+    assert len(schedules) == 1
+    minute, hour, day, month, weekday = schedules[0]["cron"].split()
+    assert minute.isdigit() and hour.isdigit()
+    assert (day, month) == ("*", "*") and weekday in "0123456"

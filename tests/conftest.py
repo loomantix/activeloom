@@ -25,6 +25,38 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 ISSUES_SCRIPTS_DIR = REPO_ROOT / ".claude" / "skills" / "issues" / "scripts"
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--test-lane", choices=("fast", "focused", "regression"), default="fast",
+        help="fast (default), explicitly selected integration files, or the full regression suite",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if config.getoption("--test-lane") == "focused":
+        if not config.args or any(
+            not Path(arg.split("::", 1)[0]).is_file() for arg in config.args
+        ):
+            raise pytest.UsageError("the focused lane requires explicit test files or node IDs")
+
+
+def pytest_report_header(config: pytest.Config) -> str:
+    return f"test lane: {config.getoption('--test-lane')}"
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("--test-lane") != "fast":
+        return
+    deselected = [
+        item for item in items
+        if item.get_closest_marker("regression") and not item.get_closest_marker("fast")
+    ]
+    if deselected:
+        excluded = set(deselected)
+        items[:] = [item for item in items if item not in excluded]
+        config.hook.pytest_deselected(items=deselected)
+
+
 def _load_script(name: str, path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:

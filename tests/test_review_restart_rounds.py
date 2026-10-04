@@ -230,6 +230,7 @@ def test_start_run_returns_first_round(
 
 @pytest.mark.parametrize(("tier", "cap"), [("lean", 2), ("deep", 4)])
 @pytest.mark.parametrize("sequenced", [False, True])
+@pytest.mark.regression
 def test_restarted_controller_round_finalizes_with_published_ledger(
     handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
