@@ -1,15 +1,20 @@
 ---
 name: internal-docs
-description: Find, author, validate and locally preview repository-owned internal documentation using the consumer's documentation command. Use for internal handbook, ADR, runbook or documentation artefact work.
+description: Find, author, validate and locally preview repository-owned internal documentation using the consumer's documentation command. Use for internal handbook, ADR, runbook or documentation artefact work in a repository that has `internal-docs.config.json`.
 ---
 
 # Internal docs
 
+This workflow applies only in a repository that has `internal-docs.config.json`.
+Without that file the repository has not adopted it: do the documentation task
+with the repository's ordinary conventions and report no missing prerequisite.
+
 Read the repository's `AGENTS.md` or `CLAUDE.md` and `internal-docs.config.json`.
 The consumer owns its command array, setup guide, approved collections and
-publication authority. Missing configuration or shell access means the workflow
-is unavailable: explain the missing prerequisite and use the documented manual
-equivalent. A skill installation grants no source or publisher access.
+publication authority. When the file exists but its command or shell access is
+missing, the workflow is unavailable: explain the missing prerequisite and use
+the manual equivalent documented in the configured setup guide. A skill
+installation grants no source or publisher access.
 
 1. Run the configured command with `doctor --sources <local mapping JSON>`.
    Map canonical repository identities to explicit task checkouts; never infer
@@ -24,11 +29,12 @@ equivalent. A skill installation grants no source or publisher access.
 3. Keep owner, audience, content-review date, document revision and application
    evidence separate. Unknown metadata stays unresolved. Preserve the existing
    information architecture; renames/removals need redirects or retirement review.
-4. Run `validate` and `prepare` with the explicit source mapping, then `preview`.
-   Publication preparation reads only approved immutable revisions. For local
-   uncommitted work use `prepare --draft`, then `preview --draft`; clearly label
-   this output and never pass it to a publisher. Follow the consumer's build,
-   link/anchor and browser checks. Failed preparation invalidates earlier output.
+4. Run `validate` with the explicit source mapping. Edits not yet committed and
+   approved are a draft: use `prepare --draft`, then `preview --draft`, clearly
+   label this output and never pass it to a publisher. Plain `prepare` and
+   `preview` read only approved immutable revisions, so use them only once the
+   change is one. Follow the consumer's build, link/anchor and browser checks.
+   Failed preparation invalidates earlier output.
 5. Run `status` and prepare the source/manifest PRs and their native review.
    Report exact revisions, validation, unresolved ownership, local preview and
    the next publisher step. Report a published URL only with verified deployment

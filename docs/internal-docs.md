@@ -16,6 +16,11 @@ node cli/bin/activeloom.js add internal-docs --harness claude --harness codex --
 node cli/bin/activeloom.js add internal-docs --harness claude --harness codex --harness gemini --upstream-dir .
 ```
 
+`add` is a personal install: it writes to the harness directories under your
+home directory, and alongside the skill it installs that harness's shared support
+files. `--force` replaces those support files as well as the skill, so treat the
+`--dry-run` output as the list to inspect.
+
 For repository delivery, use the existing `init`/sync path with those harnesses
 selected in consumer configuration. The manifest carries all three skill files;
 consumer destination gates must permit them. Upgrade through a reviewed sync PR
@@ -26,7 +31,10 @@ sync ref is not an installed version.
 Claude Code loads `.claude/skills/internal-docs/SKILL.md` and supports
 `/internal-docs`. Current Codex native discovery uses `.agents/skills`, so select
 the Gemini surface as well as Codex for this skill's native repository/personal
-discovery; `.codex/skills` remains the legacy distributed/manual adapter. Gemini
+discovery; `.codex/skills` remains the legacy distributed/manual adapter. Through
+sync, naming `gemini` delivers that harness's whole target set, not only this
+skill: narrow it with `skip_targets` (see [Sync](sync.md)), or install this one
+skill personally with `add --harness gemini`. Gemini
 CLI documents `.agents/skills` as a workspace/user alias. Agy runtime behavior
 needs an actual fresh-session smoke, independently of Gemini CLI documentation.
 Codex-only legacy installation can read its installed file explicitly and use
@@ -46,11 +54,13 @@ draft preview. Check that the same update retains its stable ID/route. Record
 client version, installed file digest, commands, actual tool outcomes and any
 unavailable tools. Static parity/installer tests are not runtime smoke evidence.
 
-Missing configuration, source access or command executables is a local setup
-failure. Reader browser sign-in does not grant CLI access. Missing hosting
-credentials does not block local authoring. A prepared artifact supplies no
-verified live URL. Publication, protected hosted previews, static downloads and
-interactive isolation require their consumer integrations and separate review.
+A repository without `internal-docs.config.json` has not adopted the workflow,
+and the skill stands aside for ordinary editing. Where the file exists, missing
+source access or command executables is a local setup failure. Reader browser
+sign-in does not grant CLI access. Missing hosting credentials does not block
+local authoring. A prepared artifact supplies no verified live URL. Publication,
+protected hosted previews, static downloads and interactive isolation require
+their consumer integrations and separate review.
 
 Clients without native skills but with a shell can read the installed `SKILL.md`
 explicitly and invoke the command array. Clients without a shell use the

@@ -45,6 +45,7 @@
             "--test",
             "tests/cli/cli.test.js",
             "tests/cli/harness-table.test.js",
+            "tests/cli/internal-docs.test.js",
             "tests/cli/onboard-profiles.test.js",
             "tests/cli/package-smoke.test.js",
             "tests/cli/review-config.test.js",
