@@ -3090,18 +3090,18 @@ class Runner:
                 delta["durationSeconds"] = round(sum(durations), 3)
         if already_recorded:
             if delta.get("enabled") is True and delta.get("durationSeconds") is not None:
-                outcome = self.helper(
-                    "ledger", "enrich-telemetry-duration", *self.scope(head),
-                    "--base", self.state["base"], "--engine", engine,
-                    "--round", str(pending["round"]),
-                    "--idempotency-key", boundary["key"],
-                    "--duration-seconds", str(delta["durationSeconds"]),
-                )
-                return (
-                    "preserved the reviewer's record with measured duration"
-                    if outcome.get("emitted") is True
-                    else "duration enrichment unavailable; preserved the reviewer's record"
-                )
+                # The record may name either end of a head-moving pass; its key binds both.
+                for recorded_head in dict.fromkeys((head, pending["before"])):
+                    outcome = self.helper(
+                        "ledger", "enrich-telemetry-duration", *self.scope(recorded_head),
+                        "--base", self.state["base"], "--engine", engine,
+                        "--round", str(pending["round"]),
+                        "--idempotency-key", boundary["key"],
+                        "--duration-seconds", str(delta["durationSeconds"]),
+                    )
+                    if outcome.get("emitted") is True:
+                        return "preserved the reviewer's record with measured duration"
+                return "duration enrichment unavailable; preserved the reviewer's record"
             return "the reviewer already emitted this pass's record"
         findings = self.telemetry_findings(pending, rows, output)
         if isinstance(findings, str):

@@ -55,6 +55,8 @@ RUN_END_V1_RE = re.compile(
     r"head=(?P<head>[0-9a-f]{40}) -->$",
     re.MULTILINE,
 )
+# Every Deep trigger the change matched, as the tier marker records them.
+TRIGGER_RE = re.compile(r"none|[1-6](?:,[1-6])*")
 PASS_V3_RE = re.compile(
     r"^<!-- local-review-pass:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
@@ -615,8 +617,8 @@ def _start_run(args: argparse.Namespace) -> None:
             mode = previous.get("plan_mode", "cycle")
     trigger = getattr(args, "trigger", None)
     if trigger is not None:
-        if (args.tier == "lean" and trigger != "none") or (
-            args.tier == "deep" and trigger not in {str(n) for n in range(1, 7)}
+        if not TRIGGER_RE.fullmatch(trigger) or (args.tier == "lean") != (
+            trigger == "none"
         ):
             _fail("review trigger must match the resolved tier")
         labels = (
@@ -1169,6 +1171,14 @@ def _sha(value: str) -> str:
     return value
 
 
+def _trigger(value: str) -> str:
+    if not TRIGGER_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError(
+            "must be none or comma-separated trigger ids from 1 through 6"
+        )
+    return value
+
+
 def _parse_sequence(value: str) -> list[str]:
     engines = [
         "gemini" if part.strip() == "antigravity" else part.strip()
@@ -1402,7 +1412,7 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--head", required=True, type=_sha)
     start.add_argument("--base", required=True, type=_sha)
     start.add_argument("--tier", required=True, choices=sorted(TIER_CAPS))
-    start.add_argument("--trigger", choices=["none", "1", "2", "3", "4", "5", "6"])
+    start.add_argument("--trigger", type=_trigger)
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
     start.add_argument("--restart-from-run", help="idempotent restart of this aborted run only")

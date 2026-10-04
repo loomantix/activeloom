@@ -4123,6 +4123,32 @@ def test_runner_never_duplicates_a_reviewer_record(telemetry_harness: Any) -> No
     assert all(float(item["--duration-seconds"]) >= 0 for item in telemetry_harness.enrichments)
 
 
+def test_runner_retries_enrichment_at_the_starting_head(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A reviewer record may name the head its pass started from."""
+    h = telemetry_harness.harness
+    telemetry_harness.controls.reviewer_emits = True
+    start = "c" * 40
+    recorded_helper = h.runner.helper
+    fallback = h.runner.fallback_telemetry
+
+    def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        outcome = dict(recorded_helper(self, name, *parts))
+        if parts and parts[0] == "enrich-telemetry-duration":
+            outcome["emitted"] = parts[parts.index("--head") + 1] == start
+        return outcome
+
+    def moved(self: Any, pending: dict[str, Any], status: str, head: str) -> str:
+        return str(fallback(self, {**pending, "before": start}, status, head))
+
+    monkeypatch.setattr(h.runner, "helper", helper)
+    monkeypatch.setattr(h.runner, "fallback_telemetry", moved)
+    assert h.runner(h.args, h.directory).run() == "converged"
+    assert [item["--head"] for item in telemetry_harness.enrichments] == [HEAD, start] * 4
+    assert "duration enrichment unavailable" not in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("gate", ["LOOM_REVIEW_TELEMETRY_EXTRACT", "LOOM_REVIEW_TELEMETRY"])
 def test_runner_does_not_enrich_when_extraction_is_off(
     telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, gate: str
