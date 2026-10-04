@@ -199,6 +199,42 @@ def test_interrupted_pr_creation_adopts_exact_push_without_worker_replay(
 
 
 @pytest.mark.fast
+@pytest.mark.parametrize(
+    ("preparation", "expected_status"),
+    (("set -e; false; printf unexpected", 1), ("exit 42", 42), ("true", 0)),
+)
+def test_preparation_preserves_exit_status(
+    preparation: str, expected_status: int
+) -> None:
+    for root in (".codex", ".claude", ".agents"):
+        text = (
+            REPO_ROOT / root / "skills/agent-loop/scripts/agent-loop.sh"
+        ).read_text()
+        region = text.split("# agent-loop-publication:begin\n")[1].split(
+            "# agent-loop-publication:end"
+        )[0]
+        command = subprocess.run(
+            [
+                "bash",
+                "-c",
+                region
+                + '\nPREPARATION_HOOK="$1"\nVALIDATION_HOOK="printf validated"\n'
+                + "prepared_validation_hook",
+                "preparation-test",
+                preparation,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        result = subprocess.run(
+            ["bash", "-c", command], capture_output=True, text=True
+        )
+        assert result.returncode == expected_status
+        assert result.stdout == ("validated" if expected_status == 0 else "")
+
+
+@pytest.mark.fast
 def test_publication_region_is_identical_in_every_controller() -> None:
     expected = (REPO_ROOT / "scripts/agent-loop-publication.sh.inc").read_text()
     for root in (".codex", ".claude", ".agents"):

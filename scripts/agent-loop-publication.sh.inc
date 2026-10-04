@@ -9,7 +9,9 @@ loop_state() {
 
 prepared_validation_hook() {
     if [ -n "$PREPARATION_HOOK" ]; then
-        printf '( %s ) && ( %s )' "$PREPARATION_HOOK" "$VALIDATION_HOOK"
+        # An AND-list disables errexit inside its left-hand subshell.
+        printf '( %s\n)\nactiveloom_preparation_status=$?\nif [ "$activeloom_preparation_status" -ne 0 ]; then exit "$activeloom_preparation_status"; fi\n( %s\n)' \
+            "$PREPARATION_HOOK" "$VALIDATION_HOOK"
     else
         printf '%s' "$VALIDATION_HOOK"
     fi
