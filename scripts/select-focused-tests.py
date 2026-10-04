@@ -28,6 +28,7 @@ GROUPS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         (
             "tests/test_agent_loop.py",
             "tests/test_agent_loop_doctor.py",
+            "tests/test_agent_loop_isolation.py",
             "tests/test_agent_loop_state.py",
             "tests/test_agy_agent_loop.py",
             "tests/test_codex_agent_loop.py",
