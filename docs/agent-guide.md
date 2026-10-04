@@ -54,6 +54,9 @@ Names below identify skills; use the invocation supported by the current harness
 | Automate a local review relay                | `review-chain-runner.py`                   | Requires an authorized plan, clean dedicated worktree, draft PR, reviewers, and a repository validation contract or legacy commands |
 | Handle hosted review comments                | `copilot-review` or `reviewit`             | Only when the task and repository policy permit that hosted workflow                                                                |
 
+For repository-owned internal documentation, use `internal-docs` and the
+consumer command/setup contract described in [Internal docs](internal-docs.md).
+
 Specialized skills also exist, such as Actions usage auditing, mobile installation, accessibility review, and package publication. Their presence varies by harness; inspect their requirements rather than treating the toolkit as a uniform menu.
 
 Not every artifact here is a skill: [`claude/github-api-usage.md`](../claude/github-api-usage.md) is drop-in guidance on rate-limit-aware GitHub API usage, written to be pasted into a project's own agent guide.
