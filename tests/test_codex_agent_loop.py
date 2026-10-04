@@ -12,6 +12,9 @@ from typing import Any
 import pytest
 
 
+pytestmark = pytest.mark.regression
+
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILL = REPO_ROOT / ".codex/skills/agent-loop"
 STATE_HELPER = SKILL / "scripts/agent-loop-state.py"

@@ -11,6 +11,9 @@ from typing import Any
 
 import pytest
 
+
+pytestmark = pytest.mark.regression
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".claude" / "skills" / "critique" / "scripts" / "usage-snapshot.js"
 
@@ -132,6 +135,7 @@ def tokens_of(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return records
 
 
+@pytest.mark.fast
 def test_gate_off_writes_nothing(tmp_path: Path, session: Path) -> None:
     """An explicit opt-out must not touch the filesystem."""
     out = tmp_path / "start.json"
@@ -163,6 +167,7 @@ def test_no_session_log_reports_unavailable(tmp_path: Path) -> None:
     assert payload["lanesFile"] is None
 
 
+@pytest.mark.fast
 def test_scoped_delta_counts_only_the_pass(tmp_path: Path, session: Path) -> None:
     """Work that predates the snapshot belongs to whatever ran before."""
     session.write_text(turn(request_id="before", output=9_999))

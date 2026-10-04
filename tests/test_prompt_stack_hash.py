@@ -11,6 +11,9 @@ from typing import Any
 
 import pytest
 
+
+pytestmark = pytest.mark.regression
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".claude/skills/critique/scripts" / "prompt-stack-hash.js"
 
@@ -102,6 +105,7 @@ def expected_digest(domain: str, root: Path, files: list[str]) -> str | None:
     return outer.hexdigest() if present else None
 
 
+@pytest.mark.fast
 def test_the_documented_hash_input_definition_is_what_is_computed(
     tmp_path: Path,
 ) -> None:
@@ -458,6 +462,7 @@ def test_an_oversized_declared_prompt_abstains(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("root", [".claude", ".codex"])
+@pytest.mark.fast
 def test_the_shipped_declaration_is_well_formed(root: str) -> None:
     """Verify every shipped manifest satisfies its corresponding engine reader."""
     script = REPO_ROOT / root / "skills/critique/scripts" / "prompt-stack-hash.js"
@@ -545,6 +550,7 @@ def test_a_single_abstention_reason_reads_unchanged(tmp_path: Path) -> None:
     assert payload["error"] == "no prompt-stack.json under .claude"
 
 
+@pytest.mark.fast
 def test_the_two_engine_copies_of_this_helper_are_identical() -> None:
     """Verify that the .claude and .codex copies of the script are identical."""
     sibling = REPO_ROOT / ".codex/skills/critique/scripts" / "prompt-stack-hash.js"

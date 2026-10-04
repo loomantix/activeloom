@@ -45,36 +45,45 @@ The full DCO text is at https://developercertificate.org/. By signing off, you a
 1. **Open an issue** describing the change. For non-trivial changes, get rough alignment before opening a PR.
 2. **Fork the repo and create a feature branch**. Branch names: `feat/<short-description>`, `fix/<short-description>`, `docs/<short-description>`.
 3. **Make your changes**, with `git commit -s` (DCO sign-off) on every commit.
-4. **Run CI locally** — see CI workflow for the exact commands.
+4. **Run routine validation locally** — use the fast lane below and focused integration cases for the behavior you changed.
 5. **Open a PR** against `main`. CI must pass.
 
 ### Batch work on a draft PR
 
 Keep the PR in draft while iterating and push related commits together. A PR
 push triggers one workflow run for the updated head, not one per commit in the
-push. Drafts run the cheap preflight and review-ledger build; the heavy static
-and Python gates run automatically once the PR is ready. New PR updates cancel
-obsolete PR runs.
+push. Drafts run the preflight, fast Python lane, and review-ledger build;
+the static gates also run once the PR is ready. New PR updates cancel obsolete
+PR runs.
 
-To validate a completed batch while keeping the PR draft, run the CI workflow
-manually on its branch:
+### Test lanes
 
-```bash
-gh workflow run ci.yml --ref <branch>
-```
+| Lane       | When                                                            | Command                                                                                                    |
+| ---------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Fast       | Local iteration, review, and ordinary CI                        | `python3 scripts/run-tests.py fast`                                                                        |
+| Focused    | A changed integration behavior needs a specific regression case | `python3 scripts/run-tests.py focused tests/test_agent_loop.py::test_v3_clean_results_attest_and_converge` |
+| Regression | Weekly or a deliberate full checkpoint                          | `gh workflow run regression.yml --ref <branch>`                                                            |
 
-Manual runs execute the full suite, including four Python shards, regardless of
-draft status or the docs-only filter. Check the run's commit SHA before treating
-it as evidence: later pushes need a new checkpoint. Ready PR updates and every
-merge to `main` still run automatic CI. Manual runs do not mark a PR ready or
-merge it.
+Bare `python3 -m pytest` also selects the fast lane. Fast and focused local runs
+use two workers and a 120-second deadline through `run-tests.py`. The full local
+suite requires `python3 scripts/run-tests.py regression` (four workers, 20-minute
+deadline). A timeout fails the command and stops its worker process group.
 
-Python shards use `pytest-split` with `least_duration` and four xdist workers per
-runner. Without stored durations, cases are balanced by count across shards;
-three-day JUnit artifacts expose timings for tuning. The combined
-`Python types + tests` check requires all four shards, verifies complete and
-disjoint test selection, and enforces the existing per-file coverage floors
-after combining their coverage data.
+Ordinary `ci.yml` runs the fast lane on PRs, pushes to `main`, and manual
+dispatches. The required `Python types + tests` check includes mypy and fast
+tests even for drafts. Full Python regression runs in `regression.yml` weekly
+(Sunday, 05:17 UTC) or by explicit manual dispatch. It retains four shards,
+complete/disjoint collection verification, JUnit artifacts, and all four 80%
+coverage floors. Check the run's commit SHA before using it as evidence.
+
+The repository review contract runs the fast suite once alongside static and
+path-specific non-Python gates. An unmapped path cannot expand it to full
+regression. Run focused integration cases for fixes in deferred scenarios;
+do not rerun the entire integration suite for each commit, reviewer, or push.
+The unfiltered review gating suite in this repository is the **fast lane**.
+
+See [Testing architecture](docs/testing.md) for classification, prerequisites,
+timing budgets, and regression maintenance.
 
 ## Find the source before editing
 

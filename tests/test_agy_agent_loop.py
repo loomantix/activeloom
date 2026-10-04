@@ -17,6 +17,9 @@ from typing import Any
 import pytest
 
 
+pytestmark = pytest.mark.regression
+
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILL = REPO_ROOT / ".agents/skills/agent-loop"

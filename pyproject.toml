@@ -5,6 +5,10 @@
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+markers = [
+    "regression: subprocess-heavy or end-to-end scenarios; explicit focused/regression lane only",
+    "fast: cheap unit or contract case retained from a regression-marked module",
+]
 addopts = [
     "-ra",
     "--strict-markers",

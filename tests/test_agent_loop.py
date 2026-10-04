@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 
+pytestmark = pytest.mark.regression
+
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENT_LOOP = REPO_ROOT / ".claude/skills/agent-loop/scripts/agent-loop.sh"
 CRITIQUE_SCRIPTS = REPO_ROOT / ".claude/skills/critique/scripts"
@@ -613,6 +616,7 @@ def _run(
     )
 
 
+@pytest.mark.fast
 def test_script_remains_executable_and_valid_bash() -> None:
     assert stat.S_IMODE(AGENT_LOOP.stat().st_mode) == 0o755
     subprocess.run(["bash", "-n", str(AGENT_LOOP)], check=True)
@@ -1288,6 +1292,7 @@ def test_batch_preflight_warns_on_a_prose_only_dependency(
     assert ("Issue #67 mentions earlier batch issue #66 without 'Depends on #66'" in result.stderr) == warns
 
 
+@pytest.mark.fast
 def test_every_recovery_message_names_a_known_stop_category() -> None:
     text = AGENT_LOOP.read_text(encoding="utf-8")
     declared = re.search(r'^STOP_CATEGORIES="([^"]+)"', text, re.M)
@@ -1316,6 +1321,7 @@ def test_every_recovery_message_names_a_known_stop_category() -> None:
     assert calls > 100
 
 
+@pytest.mark.fast
 def test_parkable_stop_categories_are_known_and_resumable() -> None:
     text = AGENT_LOOP.read_text(encoding="utf-8")
     stop = re.search(r'^STOP_CATEGORIES="([^"]+)"', text, re.M)
@@ -3810,6 +3816,7 @@ def test_v3_blocked_result_without_a_recovery_sidecar_still_stops(
     assert not (consumer[3] / "pr-ready").exists()
 
 
+@pytest.mark.fast
 def test_every_wrapper_root_finalizes_a_recoverable_blocked_result() -> None:
     # The Codex root has no fixture that reaches a review pass, so hold all
     # three copies to one recovery helper and one call site instead.

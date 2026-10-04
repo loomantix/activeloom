@@ -14,6 +14,9 @@ from pathlib import Path
 import pytest
 
 
+pytestmark = pytest.mark.regression
+
+
 ROOT = Path(__file__).resolve().parent.parent
 DOCTOR = ROOT / ".claude/skills/agent-loop/scripts/config-doctor.py"
 TEMPLATE = ROOT / ".claude/skills/agent-loop/agent-loop.config.template"

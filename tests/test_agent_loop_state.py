@@ -10,6 +10,11 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.regression
+
 
 ROOT = Path(__file__).resolve().parent.parent
 HELPER = ROOT / ".claude/skills/agent-loop/scripts/agent-loop-state.py"

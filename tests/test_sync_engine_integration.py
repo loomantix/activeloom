@@ -18,6 +18,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+
+pytestmark = pytest.mark.regression
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SYNC_ENGINE = REPO_ROOT / "scripts" / "sync-engine.py"
 
