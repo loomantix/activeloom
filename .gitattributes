@@ -1,0 +1,19 @@
+# Exact generated review documents; neighboring scripts remain visible.
+/.agents/REVIEW_WORKFLOW.md linguist-generated=true
+/.agents/skills/critique/SKILL.md linguist-generated=true
+/.agents/skills/deepcritique/SKILL.md linguist-generated=true
+/.agents/skills/pr-critique/SKILL.md linguist-generated=true
+/.agents/skills/refactorpass/SKILL.md linguist-generated=true
+/.agents/skills/reviewit/SKILL.md linguist-generated=true
+/.claude/REVIEW_WORKFLOW.md linguist-generated=true
+/.claude/skills/codex-review/SKILL.md linguist-generated=true
+/.claude/skills/critique/SKILL.md linguist-generated=true
+/.claude/skills/deepcritique/SKILL.md linguist-generated=true
+/.claude/skills/refactorpass/SKILL.md linguist-generated=true
+/.claude/skills/reviewit/SKILL.md linguist-generated=true
+/.codex/REVIEW_WORKFLOW.md linguist-generated=true
+/.codex/skills/critique/SKILL.md linguist-generated=true
+/.codex/skills/deepcritique/SKILL.md linguist-generated=true
+/.codex/skills/pr-critique/SKILL.md linguist-generated=true
+/.codex/skills/refactorpass/SKILL.md linguist-generated=true
+/.codex/skills/reviewit/SKILL.md linguist-generated=true

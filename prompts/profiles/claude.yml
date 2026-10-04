@@ -16,6 +16,9 @@ values:
   SKILLS_ROOT: .claude/skills
   REFS_ROOT: .claude/references
   WORKFLOW_DOC: .claude/REVIEW_WORKFLOW.md
+  PROMPT_ROOT: .claude
+  HUMAN_GLANCE_WORKFLOW: '[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md)'
+  REVIEW_ENTRY_POINTS: '`critique`, `deepcritique`, `refactorpass`, `reviewit`, `codex-review`'
 
   # --- invocation ------------------------------------------------------------
   # Claude Code addresses a skill as a slash command; the Codex and Gemini

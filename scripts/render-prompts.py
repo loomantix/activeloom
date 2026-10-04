@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Render the single-sourced skills in `prompts/skills/` into each harness root.
 
-One source file per skill, one profile per harness, `<<KEY>>` substitution and
-nothing else. The rendered outputs (`.claude/skills/<skill>/…`,
+Shared skills use one source per skill and `<<KEY>>` vocabulary substitution.
+Review documents compose shared policy partials with Handlebars while retaining
+separate templates per harness. The rendered outputs (`.claude/skills/<skill>/…`,
 `.codex/skills/…`, `.agents/skills/…`) are committed, so a reader of any
 harness root sees the real prompt rather than a template, and consumers keep
 receiving the harness-specific distribution artifacts they select.
@@ -15,9 +16,8 @@ three roots hold the same bytes as the source — but they are generated files
 with one writer, so the same `--check` that catches a hand-edited skill catches
 a hand-edited copy.
 
-**Zero conditionals.** The substitution engine has no branching construct and
-none is planned: a skill whose text must differ structurally between harnesses
-is per-harness by definition and stays unrendered, tracked instead by a
+**Zero conditionals.** Composition accepts static partial includes only.
+Engine-specific structure stays in separate templates, tracked by a
 `docs/decisions/` record. See `docs/prompt-rendering.md`.
 
 Markdown is normalized with Prettier after substitution. This is not cosmetic:
@@ -85,6 +85,40 @@ VENDORED_DOCUMENTS: dict[str, str] = {
 }
 
 RETIRED_DOCUMENTS: frozenset[str] = frozenset()
+
+# Exact file ownership: sibling scripts and references stay hand-maintained.
+COMPOSED_DOCUMENTS: frozenset[str] = frozenset(
+    f"{root}/{relative}"
+    for root, skills in {
+        ".claude": (
+            "critique",
+            "deepcritique",
+            "refactorpass",
+            "reviewit",
+            "codex-review",
+        ),
+        ".codex": (
+            "critique",
+            "deepcritique",
+            "refactorpass",
+            "reviewit",
+            "pr-critique",
+        ),
+        ".agents": (
+            "critique",
+            "deepcritique",
+            "refactorpass",
+            "reviewit",
+            "pr-critique",
+        ),
+    }.items()
+    for relative in (
+        "REVIEW_WORKFLOW.md",
+        *(f"skills/{skill}/SKILL.md" for skill in skills),
+    )
+)
+RETIRED_COMPOSED_DOCUMENTS: frozenset[str] = frozenset()
+COMPOSER_PATH = SCRIPT_DIR.parent / "prompts/compose.cjs"
 
 IGNORED_DIR_NAMES = frozenset({"__pycache__"})
 IGNORED_SUFFIXES = (".pyc", ".pyo")
@@ -451,8 +485,124 @@ def render_tree(
                 _render_file(engine, raw, source, profile, skill, target)
                 shutil.copymode(source, target)
                 written.append(target.relative_to(destination))
+    written.extend(render_composed_documents(engine, profiles, destination))
     written.extend(render_documents(profiles, destination))
     written.extend(write_stack_manifests(profiles, destination, version))
+    if len(written) != len(set(written)):
+        raise ValueError("multiple prompt sources own the same destination")
+    return written
+
+
+def _composition_source(relative: Path) -> Path:
+    """Read only regular, non-symlink sources inside the authoring tree."""
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or relative.parts[:1] != ("prompts",)
+    ):
+        raise ValueError(f"composition source must be inside prompts/: {relative}")
+    current = REPO_ROOT
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(
+                f"composition sources must not contain symlinks: {current}"
+            )
+    if not current.is_file():
+        raise ValueError(f"composition source does not exist: {current}")
+    return current
+
+
+def composed_source_path(relative: str) -> Path:
+    """Map an explicitly owned output to its engine's authoring template."""
+    path = Path(relative)
+    if (
+        len(path.parts) < 2
+        or path.parts[0] not in SUPPORTED_PROFILE_ROOTS
+        or ".." in path.parts
+        or path.as_posix() != relative
+        or path.suffix != ".md"
+    ):
+        raise ValueError(f"invalid composed document destination: {relative!r}")
+    return (
+        Path("prompts/review") / path.parts[0][1:] / ("/".join(path.parts[1:]) + ".hbs")
+    )
+
+
+def render_composed_documents(
+    engine: ModuleType, profiles: list[Profile], destination: Path
+) -> list[Path]:
+    """Compose all engine templates once, then substitute profile vocabulary."""
+    if not COMPOSED_DOCUMENTS:
+        return []
+    sources = {
+        relative: _composition_source(composed_source_path(relative))
+        for relative in sorted(COMPOSED_DOCUMENTS)
+    }
+    partials = {}
+    partial_root = REPO_ROOT / "prompts/partials"
+    if partial_root.is_symlink():
+        raise ValueError(
+            f"composition sources must not contain symlinks: {partial_root}"
+        )
+    for source in sorted(_source_files(partial_root)):
+        if source.suffix != ".hbs":
+            raise ValueError(f"partial source must end in .hbs: {source}")
+        source = _composition_source(source.relative_to(REPO_ROOT))
+        name = source.relative_to(partial_root).with_suffix("").as_posix()
+        partials[name] = source.read_text(encoding="utf-8")
+    expected = set(sources.values())
+    template_root = REPO_ROOT / "prompts/review"
+    if template_root.is_symlink():
+        raise ValueError(
+            f"composition sources must not contain symlinks: {template_root}"
+        )
+    for source in _source_files(template_root):
+        if source not in expected:
+            raise ValueError(f"review template has no declared destination: {source}")
+    payload = {
+        "partials": partials,
+        "templates": {
+            name: source.read_text(encoding="utf-8") for name, source in sources.items()
+        },
+    }
+    try:
+        result = subprocess.run(
+            ["node", str(COMPOSER_PATH)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("Node is required for prompt composition") from None
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"{exc.stderr.strip()}\nInstall authoring dependencies with "
+            "`npm ci --prefix prompts --ignore-scripts`."
+        ) from exc
+    rendered = json.loads(result.stdout)
+    if (
+        not isinstance(rendered, dict)
+        or rendered.keys() != sources.keys()
+        or not all(isinstance(value, str) for value in rendered.values())
+    ):
+        raise ValueError("composer returned an invalid document set")
+    written = []
+    profiles_by_root = {profile.root: profile for profile in profiles}
+    for name, source in sources.items():
+        relative = Path(name)
+        profile = profiles_by_root.get(relative.parts[0])
+        if profile is None:
+            continue
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        skill = relative.parts[2] if relative.parts[1] == "skills" else ""
+        _render_file(
+            engine, rendered[name].encode("utf-8"), source, profile, skill, target
+        )
+        shutil.copymode(source, target)
+        written.append(relative)
     return written
 
 
@@ -501,8 +651,7 @@ def _document_source(source_relative: str, root_relative: str) -> Path:
             or candidate.as_posix() != raw
         ):
             raise ValueError(
-                f"vendored document {label} must be a plain relative path: "
-                f"{raw!r}"
+                f"vendored document {label} must be a plain relative path: {raw!r}"
             )
     if root_path.as_posix() == STACK_MANIFEST_NAME:
         raise ValueError(
@@ -670,6 +819,9 @@ def _validate_generated_path(path: Path) -> None:
     ):
         return
     if path.as_posix() in vendored_document_destinations():
+        return
+    if path.as_posix() in COMPOSED_DOCUMENTS | RETIRED_COMPOSED_DOCUMENTS:
+        composed_source_path(path.as_posix())
         return
     if (
         len(path.parts) < 4
@@ -1016,7 +1168,8 @@ def _report_drift(
     if manifest_drift:
         sys.stderr.write(f"  differs:   {MANIFEST_PATH.relative_to(REPO_ROOT)}\n")
     sys.stderr.write(
-        "\nThe harness roots are generated. Edit the source in `prompts/skills/` "
+        "\nThe harness roots are generated. Edit the source in `prompts/skills/`, "
+        "`prompts/review/`, or `prompts/partials/` "
         "(or the value in `prompts/profiles/`, or the vendored document source "
         "named in `VENDORED_DOCUMENTS`), then run:\n"
         "  python3 scripts/render-prompts.py\n"

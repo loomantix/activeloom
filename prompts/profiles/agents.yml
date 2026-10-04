@@ -7,6 +7,9 @@ values:
   SKILLS_ROOT: .agents/skills
   REFS_ROOT: .agents/references
   WORKFLOW_DOC: .agents/REVIEW_WORKFLOW.md
+  PROMPT_ROOT: .agents
+  HUMAN_GLANCE_WORKFLOW: '`.agents/REVIEW_WORKFLOW.md`'
+  REVIEW_ENTRY_POINTS: '`critique`, `deepcritique`, `pr-critique`, `refactorpass`, `reviewit`'
 
   # The Gemini harness names a skill bare, with no slash prefix.
   INVOKE: ''

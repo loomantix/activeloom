@@ -1,0 +1,411 @@
+---
+name: critique
+description: PR-first adversarial review. Lean mode runs the highest-signal local Claude lenses; `deep` selects the full relevant matrix. Verified findings are posted inline before fixes, then replied to and resolved after a pushed fix.
+argument-hint: (optional PR number and/or "deep")
+---
+
+# /critique — PR-first adversarial review
+
+{{> review/human-glance-gate}}
+
+## Review profile preflight
+
+Run this before launching any reviewer, worker, or runner. When
+`AGENT_LOOP_NONINTERACTIVE=1` or `AGENT_LOOP_REVIEW_ENGINE` is set (a launcher or
+runner started this pass), skip it: the run uses its pinned values,
+and a launcher that reports missing settings is the blocker to report. Otherwise
+run `python3 -I .claude/skills/review-setup/scripts/review-profile.py check`.
+Exit 0 means continue. Exit 3 with `"configured": true` and only `ENGINE.worker.*`
+keys in `missing` also means continue: no review run reads worker settings, and
+storing them rewrites the shared profile in a schema older helper copies refuse.
+Any other exit 3 means settings are missing: follow
+`/review-setup` "Inline setup" in this conversation, then continue this request
+from where it paused. Report any other exit verbatim and stop.
+
+{{> review/findings-before-telemetry}}
+
+Run a bounded local Claude review against an open draft PR. GitHub review
+threads are the durable context ledger: later reviewers must see what earlier
+reviewers found, how it was fixed, and why a thread was resolved.
+
+## Mode resolution
+
+Mode follows the resolved review tier, not the caller's habit. Parse
+`$ARGUMENTS` for an optional PR number and the word `deep`; `deep` asserts that
+the tier resolved to Deep, and Phase 0 checks it against the PR's tier marker.
+
+- Lean mode runs `code-reviewer` and, when the diff contains error/async
+  signals, `silent-failure-hunter`.
+- Deep mode selects only the relevant lenses from `code-reviewer`,
+  `silent-failure-hunter`, `type-design-analyzer`, `comment-analyzer`,
+  `pr-test-analyzer`, `security-review`, and the tenant-coupling pass.
+- Five agents is the maximum for one pass. The matrix is a ceiling, not a
+  target.
+
+## Stance resolution
+
+Before selecting lenses, use the controller-authorized `$AGENT_LOOP_REVIEW_ROUND`
+or the round supplied by `/deepcritique`. Otherwise select one past Claude's
+highest completed round within the latest authenticated `local-review-run:v1`
+(1 when it has none), using only its pass/complete comments after that run marker.
+Honor the run's cap and confirm the round with the run controller at
+`.codex/skills/critique/scripts/local-review-handoff.py` (`authorize-pass`); it
+is shared by every surface despite its path. If it is absent from the checkout,
+report that and stop rather than running unauthorized. Follow the workflow's
+[run initialization](../../REVIEW_WORKFLOW.md#start-an-interactive-run-before-authorizing-a-pass)
+when no run exists. An ended run, including an aborted one, requires fresh
+restart authorization: this controller has no budget-preserving resume command.
+Earlier runs never consume a new run's budget, and PR-wide history cannot
+substitute for the authenticated run required by `authorize-pass`.
+
+The stance follows the tier's schedule, not the round ordinal alone:
+
+- **At Deep, rounds 1–2 run adversarially and round 3 and later run in
+  convergence mode.**
+- **At Lean the cap is two rounds: round 1 is adversarial and round 2 is the
+  convergence round.** A Lean PR arriving at round 3 is mis-tiered or not
+  converging; report which and stop rather than opening it.
+- **The first round after an escalation is adversarial whatever its ordinal**,
+  per the workflow doc's escalation rule.
+
+In an adversarial round the matrix and dispositions below apply as written. In a
+convergence round both engines have already read the change cold; the goal moves
+from challenging it to landing it. Convergence mode overrides the lens table and
+the fix bias, as set out under "Convergence rounds" below. It does not change the
+post-before-editing, reply, or resolve contract, and it does not raise the round
+cap.
+
+Take the stance from `authorize-pass`'s `stance` field and state the round and
+stance in the output. The ledger refuses a convergence result that fixed a
+non-blocking finding.
+
+## Phase 0: Fresh context and PR boundary
+
+### Context-window check
+
+If this session authored the change or carries dense implementation context,
+stop and recommend a fresh Claude session. Continue only after an explicit
+override. Fresh eyes and prompt-cache headroom are part of the review quality
+contract; see [`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §8.
+
+Cleanup and fixes made inside this same already-fresh review pass do not make
+it an authoring session. Continue from refactorpass with the enclosing identity
+and snapshot; do not demand a new session between those phases. This exception
+does not admit a session that implemented the feature before review started.
+
+### PR-first pre-flight
+
+1. Load [`../../references/local-review-ledger.md`](../../references/local-review-ledger.md).
+2. Require a clean, committed feature branch, not `main`, `master`, or
+   `staging`.
+3. Reuse the branch's open PR. If none exists, push normally and open a draft
+   PR before starting a reviewer.
+4. Require local HEAD, remote head, and PR head to match.
+   When continuing the same wrapper pass after refactorpass, instead require
+   remote and PR heads to equal the recorded pre-pass head and local HEAD to
+   equal its recorded cleanup commit, a descendant of that head. Retain the
+   original before SHA; any unrelated head movement goes to reconciliation.
+5. Record the exact PR base and head SHAs. Read the actor-owned issue comments
+   needed to resolve the tier, round, and stance, excluding every comment whose
+   marker begins `local-review-telemetry:`.
+6. Resolve the round and stance now, before the telemetry boundary or any branch
+   that can emit. Read the effective tier marker already on the PR — reading it
+   only — and fall back to `adversarial` when none exists, which is correct
+   because a PR carrying no tier marker has had no prior round and both schedules
+   make round 1 adversarial. `emit-telemetry` requires `--stance` and offers no
+   way to omit it.
+7. Take the pass telemetry snapshot now that its mandatory repository, PR,
+   base, head, round, and stance identity exists, per
+   [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry". The
+   helper is a no-op when extraction is not enabled for this repository, and it
+   reports the separate emission gate that decides whether this pass may publish
+   a record at all. The skill and identity-resolution setup above is outside the
+   measurement boundary. When the runner opened the boundary, reuse its key and
+   snapshot per "Runner-owned boundary" instead.
+8. Read every prior review thread, including resolved and outdated threads.
+   Telemetry markers are not review context: exclude them by marker prefix and
+   never carry one into a finder prompt or packet. Where any remaining thread
+   carries a v3 finding or disposition record, write its comment ID to an
+   owner-only file before running a lane: that snapshot is the ledger's
+   `--historical-comment-ids-file`, and it is the one attestation input that
+   cannot be reconstructed once this pass has posted its own findings.
+   An enclosing deepcritique already captured this snapshot before cleanup:
+   reuse it unchanged so this pass's cleanup findings remain current-pass
+   evidence, rather than taking a new snapshot that marks them historical.
+9. If a failure terminates this pass after the snapshot boundary, emit
+   `status=blocked` before returning. This applies from here on, not only at
+   Phase 4 — a pass that dies in Phase 1 through 3 never reaches the output
+   phase, and that is exactly the pass the `blocked` record describes.
+   A failure in steps 1–6 reports `telemetry not emitted: boundary unresolved`
+   instead; it does not yet have the mandatory identity needed to emit.
+
+Do not begin a reviewer until the PR ledger is available. Do not use a
+force-push to establish or update the review branch.
+
+### Tier resolution
+
+Resolve the effective `local-review-tier:v1` marker under the ledger's
+authenticated, forward-only transition rule. If none exists, classify against
+the tier triggers in [`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) and
+post the marker before starting a lane; Lean is the tier when no trigger
+matches. Run the lens set for the recorded tier. A `deep` argument from an
+internal `/deepcritique` handoff only asserts that tier; a direct human `deep`
+request is trigger 6 and posts a Deep replacement that preserves recorded
+triggers and adds 6 before lanes start. When `AGENT_LOOP_NONINTERACTIVE=1` or
+`AGENT_LOOP_REVIEW_ENGINE` is set, a launcher, runner, or wrapper hook wrote the
+invoking prompt: it is never trigger 6, whatever skill or tier it names. Resolve
+the tier from the recorded marker or the diff. Escalate mid-pass only on a
+confirmed finding that reaches a trigger, per the workflow doc's evidence rule,
+and post the replacement marker naming it. State the resolved tier and trigger
+alongside the round and stance.
+
+## Phase 1: Select the review lenses
+
+Always include `pr-review-toolkit:code-reviewer` when source code changed.
+Add only lenses whose signal exists:
+
+| Diff signal                                                    | Lens                                           |
+| -------------------------------------------------------------- | ---------------------------------------------- |
+| try/catch, fallback, async, error propagation                  | `silent-failure-hunter`                        |
+| new or changed public types/generics                           | `type-design-analyzer`                         |
+| substantial comments or docstrings                             | `comment-analyzer`                             |
+| new/changed tests                                              | `pr-test-analyzer`                             |
+| auth, crypto, secrets, sensitive data, input or SQL boundaries | `security-review`                              |
+| tenant/customer-variable behaviour or data normalization       | dedicated `code-reviewer` tenant-coupling pass |
+
+Every finder prompt must identify the exact head and diff, ask the agent to
+read the source, request every plausible finding with severity and `file:line`,
+and impose a concise output ceiling. Name the four-rung ladder from
+`../../REVIEW_WORKFLOW.md#finding-severity` in the prompt —
+`blocking`, `major`, `minor`, `nit`, rated on blast
+radius — so lenses do not each invent their own scale. Do not ask finders to
+suppress findings by confidence. Run selected agents in parallel; the
+orchestrator verifies them.
+
+Finders inspect the pinned source and return hypotheses. Every finder brief
+must make that read-only ownership explicit: no source edits, mutation tests,
+test-suite runs, builds, installs, or CI polling. A needed dynamic probe comes
+back as a proposed command. The orchestrator runs mutation probes only in a
+disposable copy, so a fail-open test edit cannot escape into the review branch.
+
+Explicitly audit claims about un-diffed plumbing: when a PR description or comment
+claims existing background plumbing already handles a new event, field, or state
+transition ("already re-polls", "already listened to", "existing pipe handles this"),
+treat the claim as an unverified hypothesis. Open and inspect the referenced producer
+or consumer directly to verify its dirty-checking, filtering, and propagation logic.
+
+Read the repo-local review addendum first. Check for
+`.review/addendum.local.md` in the repository under review; if it exists, read it
+before selecting lenses and fold each of its sections into the brief of the lens
+it names. It is consumer-owned and never synced, which is what makes it safe to
+append to — the role prompts and this skill are overwritten by the next sync, so
+a lens learned from a review cycle survives only if it lands there. If a lesson
+would be true of any codebase, it belongs in this skill or a role prompt
+upstream instead; if it names this repo's flags, paths, or past incidents, it
+belongs in the addendum.
+
+Brief each finder per the ledger's diff-delivery rules: resolve the changed-file
+list once, name the paths that lens owns, and prefer `git diff <base-sha>..HEAD
+-- <path>` over handing every agent one whole-diff artifact. Scope a lens by the
+files it reviews, never by the findings it may report.
+
+### Convergence rounds (any round whose stance is convergence)
+
+Run only `code-reviewer`, `silent-failure-hunter`, and `security-review` when its
+signal is present. Drop `type-design-analyzer`, `comment-analyzer`,
+`pr-test-analyzer`, and the tenant-coupling pass: they found what they were going
+to find in rounds 1–2, and they audit a surface that regenerates every time it is
+hardened, so they are guaranteed to return work and guaranteed not to change what
+ships.
+
+Brief those finders exactly as an adversarial round does. They still report
+everything they find with severity attached — a reviewer instructed to withhold
+by severity or confidence drops real defects, and this narrowing is a disposition
+rule enforced one level up, not a reporting rule pushed into the agent. See
+[`../../MODEL_NOTES.md`](../../MODEL_NOTES.md) §1.
+
+## Phase 2: Verify and deduplicate
+
+Combine the outputs, inspect the code, and reject false positives,
+pre-existing issues outside the diff, and unsupported style preferences.
+
+Before presenting or editing a surviving finding:
+
+Settle reachability, severity, and intended disposition first, using
+[Recover a blocked pass](../../REVIEW_WORKFLOW.md#recover-a-blocked-pass).
+Keep finder hypotheses separate from the final posted severity: a scheduled
+follow-up cannot also be a blocking deferral.
+
+1. derive its stable fingerprint;
+2. search all prior local-review threads for that fingerprint or defect;
+3. reuse the existing thread when present;
+4. otherwise post one inline comment on the right-side diff line using the
+   marker and content contract from the ledger.
+
+The inline comment must exist before the corresponding edit. If no defensible
+diff anchor exists, keep it out of the automated fix loop. Track it separately
+only when it clears the urgent-follow-up bar in Phase 3.
+
+If no new confirmed finding survives and the enclosing review hook did not move
+the head, finalize a `clean` v3 result per the ledger. When deepcritique's earlier
+refactorpass committed, continue through Phase 3 to publish and dispose any
+pending cleanup even when this lane found nothing new. Preserve the enclosing
+hook's original before SHA and finalize `changed` with classification `minor`
+and the fixed cleanup finding set after validation. The informational refactor
+latch does not supply result evidence. Under agent-loop the wrapper
+owns the canonical pass attestation; a standalone pass must attest through the
+helper before reporting completion. The helper's snapshot flags are optional
+inputs — omit them and it reads the threads live — so a pass that did not seal
+one still attests. Never report a pass complete on a write-up that only names
+the marker in prose; if the helper refuses, finalize `blocked` with its
+diagnostic instead. Return that result to the outer controller for the
+workflow's bounded recovery; it does not by itself end the controller's run.
+
+## Phase 3: Disposition and fixes
+
+Treat validity and actionability as separate decisions. A technically real
+concern is not automatically worth changing the PR or growing the backlog.
+
+Fix a confirmed finding only when the expected harm avoided clearly outweighs
+the churn and regression risk of the fix. Judge that from how likely a user is
+to reach the path, the impact and breadth when they do, recoverability,
+confidence in the root cause and correction, and the change's size, complexity,
+compatibility cost, and regression risk.
+
+For security findings, require a credible exploit path: identify the reachable
+boundary, attacker capability and preconditions, missing or bypassable control,
+and resulting impact. A theoretical weakness, generic hardening opportunity, or
+severity label without a plausible path to discovery and exploitation does not
+by itself justify churn.
+
+Create a GitHub issue only for an urgent follow-up: a concrete, high-impact
+defect that is important enough to schedule within roughly the next two weeks,
+but whose safe fix should not land in this PR. Ordinary deferred backlog,
+speculative hardening, cleanup, and low-likelihood edge cases get no issue. If
+already posted, reply with `outcome=deferred` and the no-issue rationale; keep a
+concern that does not clear the actionable finding bar out of the PR ledger.
+
+In a convergence round, the bar tightens further toward landing the change.
+Change the PR only for a realistically reachable `blocking` defect, as the
+workflow's Finding severity section defines it, that also clears the bar above.
+Judge the behavioral consequence rather than the file type:
+
+- Fix a blocking finding with the smallest edit that clears it. No refactor, no
+  rename, no new abstraction, no test or comment hardening alongside it.
+- Defer every confirmed non-blocking finding and resolve its thread. Create and
+  link an issue only when it clears the urgent-follow-up bar above; otherwise
+  reply with `outcome=deferred` and a concise no-issue rationale. Deferral here
+  is the expected disposition, not an admission of scope creep.
+- Dismiss false positives or suggestions that would make the code worse with
+  concrete evidence and resolve the thread without editing.
+
+The findings a convergence round defers may still be real. Fixing them in this
+PR is the wrong call when the expected benefit does not justify moving the head
+and re-staling the other engine's attestation. Land the change; let only urgent
+follow-ups grow the backlog.
+
+For confirmed fixes, including cleanup inherited from refactorpass:
+
+1. make the smallest safe edit;
+2. run focused validation;
+3. commit all corrections locally, then publish once for the enclosing pass.
+   When `$AGENT_LOOP_REVIEW_PUSH_HELPER` is set, invoke it exactly once after
+   the last fix; otherwise push normally. Include inherited cleanup commits
+   even when this lane found no new defect. Skip publication only when the
+   entire enclosing pass made no new commits;
+4. require local HEAD, remote head, and PR head to match;
+5. use the deterministic helper's resumable `dispose` transaction with the fix
+   SHA, validation result, fingerprint, and occurrence for every pending
+   finding, including cleanup. Then post any pending cleanup latch using the
+   current published head;
+6. before the attestation, run the repository's gating suite unfiltered, per the
+   ledger's "Validate before attesting". The focused run in step 2 dispositions
+   the finding and is not evidence for the pass. Name the command, config, and
+   SHA in the attestation. A red gating run is itself a blocking finding, even
+   when it predates this round, and applies to a `clean` pass just as much as a
+   changed one. Under agent-loop (`$AGENT_LOOP_REVIEW_CONTRACT_VERSION` is set)
+   skip this run: the wrapper's validation hook is the gating run on the exact
+   head after the pass, and its result stops the pass when red. Run focused
+   validation for your fixes only, and write the result only after every
+   command you started has finished;
+7. after the final lane, write the v3 structured result. Under agent-loop the
+   wrapper owns the committed-pass marker.
+
+Never resolve a finding merely because code changed. A marked thread requires
+both a response and an explicit resolution. Never batch unrelated findings
+into one ambiguous thread.
+
+Material fixes invalidate prior clean-pass attestations and require the next
+local engine to review the new exact head. Minor-only fixes do not by
+themselves start an unbounded new round.
+
+Classify by effect, not path or finding severity. `material` includes any
+substantive correctness, security/privacy, data-safety, compatibility,
+deployment/sync, or review-integrity change, including a test or workflow
+change needed to prevent a false green. `minor` is low-risk non-behavioral
+cleanup, clarity, or test/docs polish.
+
+Severity is a property of the finding, classification a property of this pass's
+diff, and neither implies the other. A non-behavioral clarification may be a
+`minor` pass; a test change that prevents a false green remains `material`.
+Never restate a severity
+to reach a classification: the thread's severity is fixed evidence, and the
+classification is read off the diff. See "Severity is not classification" in the
+ledger reference.
+
+Every engine attestation remains exact to the head it reviewed. A later minor
+fix does not rewrite that evidence or claim the other engine reviewed the new
+head. The outer round may still converge through an explicit minor transition;
+a material transition moves the head, which invalidates precisely those
+attestations that named the superseded commit.
+
+## Phase 4: Output
+
+Once the v3 result is finalized and any fix commits are pushed, take the
+prompt-stack digests and emit this pass's telemetry record per
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md) "Pass Telemetry", with
+`--pass-type review` and the status this pass reached. A record that cannot name
+the prompt generation it ran on cannot be compared against the next one, so the
+two digests are part of emitting, not an optional extra.
+Emission runs last because it must describe the finished pass, and it exits zero
+whether or not it succeeded: a telemetry failure is reported and never retried
+into the review, never changes the v3 result, and never delays marking the PR
+ready.
+
+Report the PR and reviewed head, the resolved tier and its trigger, the round
+and stance, mode and lenses, disposition/thread counts, validation, fix SHAs,
+and whether material fixes require another local-engine pass. Reporting this
+pass's own measured spend here is permitted; reading any earlier pass's record
+is not.
+
+A clean convergence pass ends Claude's work at this head. Record the result
+and hand it to the controller, which verifies every owed exact-head attestation
+and the ledger before recommending shipment. Unused rounds are not owed.
+
+If this Claude pass made a material fix, it moved the head: every declared
+reviewer whose attestation named the superseded commit re-runs against the new
+head, and a reviewer that already attested this head does not. In session mode
+that re-run is a fresh terminal; in auto mode it is that engine's checked-in
+launcher — `.claude/skills/critique/scripts/run-agy-review.sh` for `gemini` — followed by a
+`verify-coverage` check at the exact reviewed head, per
+[`../../REVIEW_WORKFLOW.md`](../../REVIEW_WORKFLOW.md). Otherwise it completes Claude's part of the current round. Always finalize
+`clean`, `changed`, or `blocked` per the ledger's wrapper/standalone ownership
+rule before returning. A one-pass invocation leaves reviewer scheduling to its
+outer controller. Use `write-result` for `clean` or `changed`, and use
+`write-blocked-result` with an owner-only blocker file for `blocked`.
+If finalization preserves `<result-file>.recovery.json`, keep it and the
+helper-written blocked result for the outer controller; report the failure
+without overwriting either file. Use a new blocker only for unfinished review
+work.
+
+## Boundaries
+
+- Do not force-push or merge.
+- Do not invoke hosted reviewers; they are a separate lane the caller runs, not a side effect of this skill.
+- Do not print raw model logs in the PR.
+- Do not mark the PR ready while marked threads are unanswered or unresolved.
+
+## Source of truth
+
+This skill lives upstream at `.claude/skills/critique/` and is synced to consumer
+repositories.

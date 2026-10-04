@@ -1,0 +1,16 @@
+## Finding severity
+
+Rate findings by the behavior and people affected, using the same four levels
+in every engine and lens:
+
+- **blocking**: ships materially wrong behavior, loses or corrupts data, exposes
+  a credible security/privacy exploit, breaks a public contract, or breaks rollout.
+- **major**: a reachable defect with a concrete user or operator consequence
+  that does not meet the blocking bar.
+- **minor**: a limited defect or improvement with no material behavioral consequence.
+- **nit**: style or preference, with no defect.
+
+Severity describes a finding; pass classification describes the effect of its
+fix. Apply the classification rules in the packaged ledger protocol separately.
+Instructions and tests can affect review integrity, so their file type alone
+does not determine severity or classification.

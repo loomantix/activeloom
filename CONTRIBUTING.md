@@ -89,7 +89,11 @@ timing budgets, and regression maintenance.
 
 ## Find the source before editing
 
-Use the [agent entry guide](docs/agent-guide.md#know-which-source-to-edit) to identify ownership. Shared rendered skills live in `prompts/skills/` with vocabulary in `prompts/profiles/`; edit those sources and regenerate rather than hand-editing outputs. Harness-specific review prompts remain separate by design. The root harness trees and `scripts/sync-targets.yml` are the unified consumer distribution surface; imported engine trees are not additional installation sources.
+Use the [agent entry guide](docs/agent-guide.md#know-which-source-to-edit) to identify ownership. Shared rendered skills live in `prompts/skills/` with vocabulary in `prompts/profiles/`. Migrated review documents use separate engine templates in `prompts/review/` and shared policy in `prompts/partials/review/`. Edit those sources and regenerate rather than hand-editing outputs. Harness-specific review methods remain separate by design. The root harness trees and `scripts/sync-targets.yml` are the unified consumer distribution surface; imported engine trees are not additional installation sources.
+
+Install the authoring-only dependencies with `npm ci --prefix prompts --ignore-scripts`
+before rendering or running Python tests that exercise composition. Run
+`npm test --prefix prompts` for the static Handlebars composition tests.
 
 Read [prompt rendering](docs/prompt-rendering.md) for generation, parity, and prompt-stack version rules. Vendored review-ledger files are built from [`packages/review-ledger`](packages/review-ledger/README.md): change the package source, rebuild, and commit the bundle into all three harness roots in the same PR. Consumer-specific rules belong in consumer configuration or `.review/addendum.local.md`.
 

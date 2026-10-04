@@ -85,15 +85,16 @@ Scheduled sync requires its workflow on the default branch and the appropriate r
 
 ## Know which source to edit
 
-| Source                                    | Purpose                                                      | Editing rule                                                    |
-| ----------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------- |
-| `prompts/skills/` and `prompts/profiles/` | Shared skill sources and harness vocabulary                  | Edit here for rendered skills, then run the renderer            |
-| `prompts/rendered-files.txt`              | Generated ownership inventory                                | Inspect to identify generated files; do not maintain by hand    |
-| `.claude/`, `.codex/`, `.agents/`         | Distributed prompts, references, and helpers                 | Some files are generated or vendored; establish ownership first |
-| `scripts/sync-targets.yml`                | Consumer destination and ownership contract                  | Controls shared and selected-harness targets                    |
-| `cli/`                                    | Installer and detection code                                 | Separate from the content it downloads                          |
-| Consumer `.activeloom-config.yml`         | Harness selection, substitutions, path permissions, opt-outs | Owned by that consumer                                          |
-| Consumer `.review/addendum.local.md`      | Repository-specific review lessons                           | Keep local context here; sync preserves it                      |
+| Source                                           | Purpose                                                      | Editing rule                                                     |
+| ------------------------------------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------- |
+| `prompts/skills/` and `prompts/profiles/`        | Shared skill sources and harness vocabulary                  | Edit here for rendered skills, then run the renderer             |
+| `prompts/partials/review/` and `prompts/review/` | Shared review policy and separate engine templates           | Edit the policy or engine template, then regenerate the Markdown |
+| `prompts/rendered-files.txt`                     | Generated ownership inventory                                | Inspect to identify generated files; do not maintain by hand     |
+| `.claude/`, `.codex/`, `.agents/`                | Distributed prompts, references, and helpers                 | Some files are generated or vendored; establish ownership first  |
+| `scripts/sync-targets.yml`                       | Consumer destination and ownership contract                  | Controls shared and selected-harness targets                     |
+| `cli/`                                           | Installer and detection code                                 | Separate from the content it downloads                           |
+| Consumer `.activeloom-config.yml`                | Harness selection, substitutions, path permissions, opt-outs | Owned by that consumer                                           |
+| Consumer `.review/addendum.local.md`             | Repository-specific review lessons                           | Keep local context here; sync preserves it                       |
 
 Review prompts intentionally retain engine-specific implementations. Do not consolidate them merely because their names match. Read [prompt rendering](prompt-rendering.md), [decision records](decisions/README.md), and [Contributing](../CONTRIBUTING.md) before changing the shared source.
 

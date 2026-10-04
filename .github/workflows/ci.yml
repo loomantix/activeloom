@@ -285,6 +285,7 @@ jobs:
         if: '!cancelled()'
         run: |
           set -euo pipefail
+          npm ci --prefix prompts --ignore-scripts
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             if [ -z "${GITHUB_BASE_REF:-}" ]; then
               echo "GITHUB_BASE_REF empty for pull_request event — aborting." >&2
@@ -491,6 +492,10 @@ jobs:
             'pytest-xdist==3.8.0'
       - name: mypy --strict (config from pyproject.toml)
         run: python3 -m mypy
+      - name: Install and test prompt composition
+        run: |
+          npm ci --prefix prompts --ignore-scripts
+          npm test --prefix prompts
       - name: Configure fixture Git identity
         run: |
           git config --global user.email "ci@example.invalid"

@@ -7,6 +7,9 @@ values:
   SKILLS_ROOT: .codex/skills
   REFS_ROOT: .codex/references
   WORKFLOW_DOC: .codex/REVIEW_WORKFLOW.md
+  PROMPT_ROOT: .codex
+  HUMAN_GLANCE_WORKFLOW: '`.codex/REVIEW_WORKFLOW.md`'
+  REVIEW_ENTRY_POINTS: '`critique`, `deepcritique`, `pr-critique`, `refactorpass`, `reviewit`'
 
   # Codex names a skill bare, with no slash prefix.
   INVOKE: ''

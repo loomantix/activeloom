@@ -196,6 +196,7 @@ class Harness:
         monkeypatch.setattr(render_prompts, "VERSION_PATH", self.version_path)
         # Tests that need vendored documents declare them via vendor_document.
         monkeypatch.setattr(render_prompts, "VENDORED_DOCUMENTS", {})
+        monkeypatch.setattr(render_prompts, "COMPOSED_DOCUMENTS", frozenset())
 
     def vendor_document(self, source: str, root_relative: str, text: str) -> Path:
         """Declare one vendored document and write its source into the fake repo."""

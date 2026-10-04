@@ -1,0 +1,36 @@
+### What does not set the tier
+
+Subtlety does not: a change can be hard to reason about and still be Lean. Nor
+does diff size — a large mechanical refactor is Lean unless it also trips
+trigger 4. Nor does topic adjacency: code _about_ security that does not itself
+enforce a sensitive boundary is not trigger 1.
+
+**Dependency version updates (manifest and lockfile changes) do not select Deep.**
+Upgrading an external dependency (e.g. updating `package.json`, `pnpm-lock.yaml`,
+`pnpm-workspace.yaml`, `Cargo.lock`, `requirements.txt`, `go.sum`) does not trip
+Trigger 1 or Trigger 4 simply because the package itself handles authentication,
+cryptography, validation, networking, or concurrency. A multi-lane code review
+inspects code diffs in this repository; it cannot critique external package
+source from a version bump diff. Dependency risk is properly addressed through
+upfront research, release notes, security advisories, and running the consumer test
+suite—not through a multi-lane code review chain. Dependency updates that
+proceed to review remain Lean unless accompanied by material application code
+changes that touch sensitive boundaries or non-obvious runtime behaviour.
+
+**The dominant rule: when the worst outcome of a missed defect is a red CI run,
+a broken build, or a broken developer workflow, the change is Lean.** CI
+scripts, lint rules, build tooling, developer utilities, fixtures, and test
+harnesses land here even when they are subtle and even when a defect in them
+fails open. That class of defect is caught by the next person the tool touches
+and fixed by editing the tool.
+
+Classify enforcement controls by the consequence of failure, not by their CI
+location. A secret/privacy scanner, provenance gate, or release guard is Deep
+when failing open can expose protected data, grant access, or compromise a
+published artifact; that outcome trips trigger 1 or 2 rather than this rule.
+
+**Precedence: walk triggers 1–6 first. The dominant rule only resolves a change
+that matched no trigger.** It is dominant over the difficulty instinct, not over
+the trigger list. Tooling that also fans out past this repo — the sync engine, a
+shared CI action, anything under `<<PROMPT_ROOT>>/` — is trigger 3 and therefore Deep,
+because its blast radius is not confined to the developer who runs it.
