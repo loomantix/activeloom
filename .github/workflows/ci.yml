@@ -533,6 +533,8 @@ jobs:
         run: pnpm run typecheck
       - name: Test
         run: pnpm run test
+      - name: Comment verifier compiler regressions
+        run: node --test ../../tests/comment-verifier.test.cjs
       - name: Build
         run: pnpm run build
 
