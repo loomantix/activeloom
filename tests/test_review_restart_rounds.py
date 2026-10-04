@@ -228,6 +228,79 @@ def test_start_run_returns_first_round(
     assert json.loads(capsys.readouterr().out)["first_round"] == 1
 
 
+@pytest.mark.parametrize(
+    ("tier", "trigger"), [("deep", "3"), ("deep", "1,3"), ("lean", "none")]
+)
+def test_start_run_includes_tier_without_repeating_authorization(
+    handoff: ModuleType,
+    real_handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    tier: str,
+    trigger: str,
+) -> None:
+    authorization = tmp_path / "authorization.txt"
+    authorization.write_text("Explicit review authorization.")
+    rows: list[dict[str, object]] = []
+    monkeypatch.setattr(handoff, "_run_records", real_handoff._run_records)
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *_: rows)
+    monkeypatch.setattr(handoff, "_verify_reviewable_head", lambda *_: None)
+
+    def post(*args: object) -> tuple[int, bool]:
+        rows.append({"id": 20, "body": args[-1]})
+        return 20, False
+
+    monkeypatch.setattr(handoff, "_post_issue_comment", post)
+    args = SimpleNamespace(
+        repo="example/repo", pr=7, base="b" * 40, head="a" * 40,
+        tier=tier, trigger=trigger, restart=False, cycle="codex,claude",
+        authorization_file=str(authorization),
+    )
+    parsed = real_handoff._parser().parse_args([
+        "start-run", "--repo", args.repo, "--pr", "7", "--head", args.head,
+        "--base", args.base, "--tier", tier, "--trigger", trigger,
+        "--cycle", "codex,claude", "--authorization-file", str(authorization),
+    ])
+    assert parsed.trigger == trigger
+    handoff._start_run(args)
+    first = json.loads(capsys.readouterr().out)
+    body = str(rows[0]["body"])
+    assert f"<!-- local-review-tier:v1 tier={tier} trigger={trigger} head={args.head} -->" in body
+    assert body.count(authorization.read_text()) == 1
+    assert f"{tier.title()} review started" in body
+    assert "Codex → Claude" in body
+    handoff._start_run(args)
+    replay = json.loads(capsys.readouterr().out)
+    assert replay["run_id"] == first["run_id"]
+    assert replay["replayed"] is True
+    assert len(rows) == 1
+
+
+@pytest.mark.parametrize(
+    ("tier", "trigger"),
+    [("deep", "none"), ("lean", "3"), ("deep", "1,7"), ("deep", "3,")],
+)
+def test_start_run_rejects_trigger_that_does_not_match_tier(
+    handoff: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tier: str,
+    trigger: str,
+) -> None:
+    authorization = tmp_path / "authorization.txt"
+    authorization.write_text("Explicit review authorization.")
+    monkeypatch.setattr(handoff, "_issue_comments", lambda *_: [])
+    monkeypatch.setattr(handoff, "_run_records", lambda rows: [])
+    args = SimpleNamespace(
+        repo="example/repo", pr=7, base="b" * 40, head="a" * 40,
+        tier=tier, trigger=trigger, restart=False, cycle="codex,claude",
+        authorization_file=str(authorization),
+    )
+    with pytest.raises(handoff.HandoffError, match="must match the resolved tier"):
+        handoff._start_run(args)
+
+
 @pytest.mark.parametrize(("tier", "cap"), [("lean", 2), ("deep", 4)])
 @pytest.mark.parametrize("sequenced", [False, True])
 @pytest.mark.regression

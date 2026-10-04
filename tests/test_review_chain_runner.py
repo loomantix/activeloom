@@ -1718,6 +1718,33 @@ def test_one_invocation_runs_all_fixed_steps(harness: Any) -> None:
     assert len(runner.state["completed"]) == 4
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_setup_combines_tier_and_reuses_unchanged_cross_engine_roster(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    h = harness
+    calls: list[tuple[str, ...]] = []
+    original = h.runner.helper
+
+    def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        calls.append(parts)
+        if parts[0] == "read-roster" and existing:
+            return {"present": True, "version": 2, "author": "codex",
+                    "reviewers": ["claude"], "head": "e" * 40}
+        return dict(original(self, name, *parts))
+
+    monkeypatch.setattr(h.runner, "helper", helper)
+    assert h.runner(h.args, h.directory).run() == "converged"
+    started = next(parts for parts in calls if parts[0] == "start-run")
+    assert started[started.index("--trigger") + 1] == "3"
+    assert not any(parts[0] == "post-pr-comment" for parts in calls)
+    assert sum(parts[0] == "post-roster" for parts in calls) == int(not existing)
+    if not existing:
+        assert (h.directory / "roster.txt").read_text() == (
+            "Review author: Codex. Independent reviewers: Claude.\n"
+        )
+
+
 def test_restart_authorization_reaches_start_run(harness: Any) -> None:
     harness.args.restart = True
     runner = harness.runner(harness.args, harness.directory)
@@ -1892,6 +1919,19 @@ def test_tier_publication_reaches_real_ledger_dispatch(
     original = harness.runner.helper
     checked: list[str] = []
 
+    # Preserve setup recovery for a run started by an older controller without tier_in_run.
+    harness.runner(harness.args, harness.directory).initialize()
+    harness.module.save(
+        harness.directory / "state.json",
+        {
+            **harness.module.read(harness.directory / "state.json"),
+            "run_id": "d" * 64,
+            "metadata_posted": False,
+        },
+    )
+    harness.args.resume = True
+    runner = harness.runner(harness.args, harness.directory)
+
     def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
         if parts[0] == "post-pr-comment":
             # Let the real parser/dispatcher validate the call, but make gh
@@ -1909,8 +1949,9 @@ def test_tier_publication_reaches_real_ledger_dispatch(
         return dict(original(self, name, *parts))
 
     monkeypatch.setattr(harness.runner, "helper", helper)
-    assert harness.runner(harness.args, harness.directory).run() == "converged"
+    assert runner.run() == "converged"
     assert checked == [HEAD]
+
 
 
 @pytest.mark.parametrize("failure", ["authorization", "base", "copy"])
@@ -4237,6 +4278,7 @@ def telemetry_harness(
         usage_helper=None,
     )
     emissions: list[dict[str, str]] = []
+    enrichments: list[dict[str, str]] = []
     boundaries: list[dict[str, Any]] = []
 
     def telemetry_script(self: Any, engine: str, name: str) -> Path | None:
@@ -4261,6 +4303,9 @@ def telemetry_harness(
     original_helper = harness.runner.helper
 
     def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        if parts and parts[0] == "enrich-telemetry-duration":
+            enrichments.append(dict(zip(parts[1::2], parts[2::2], strict=True)))
+            return {"emitted": True, "error": None}
         if parts and parts[0] == "emit-telemetry":
             options = dict(zip(parts[1::2], parts[2::2], strict=True))
             options["findings"] = module.read(Path(options["--findings-file"]))
@@ -4296,6 +4341,7 @@ def telemetry_harness(
         harness=harness,
         controls=controls,
         emissions=emissions,
+        enrichments=enrichments,
         boundaries=boundaries,
     )
 
@@ -4342,6 +4388,46 @@ def test_runner_never_duplicates_a_reviewer_record(telemetry_harness: Any) -> No
     telemetry_harness.controls.reviewer_emits = True
     assert h.runner(h.args, h.directory).run() == "converged"
     assert telemetry_harness.emissions == []
+    assert len(telemetry_harness.enrichments) == 4
+    assert all(float(item["--duration-seconds"]) >= 0 for item in telemetry_harness.enrichments)
+
+
+def test_runner_retries_enrichment_at_the_starting_head(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A reviewer record may name the head its pass started from."""
+    h = telemetry_harness.harness
+    telemetry_harness.controls.reviewer_emits = True
+    start = "c" * 40
+    recorded_helper = h.runner.helper
+    fallback = h.runner.fallback_telemetry
+
+    def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        outcome = dict(recorded_helper(self, name, *parts))
+        if parts and parts[0] == "enrich-telemetry-duration":
+            outcome["emitted"] = parts[parts.index("--head") + 1] == start
+        return outcome
+
+    def moved(self: Any, pending: dict[str, Any], status: str, head: str) -> str:
+        return str(fallback(self, {**pending, "before": start}, status, head))
+
+    monkeypatch.setattr(h.runner, "helper", helper)
+    monkeypatch.setattr(h.runner, "fallback_telemetry", moved)
+    assert h.runner(h.args, h.directory).run() == "converged"
+    assert [item["--head"] for item in telemetry_harness.enrichments] == [HEAD, start] * 4
+    assert "duration enrichment unavailable" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("gate", ["LOOM_REVIEW_TELEMETRY_EXTRACT", "LOOM_REVIEW_TELEMETRY"])
+def test_runner_does_not_enrich_when_extraction_is_off(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch, gate: str
+) -> None:
+    monkeypatch.setenv(gate, "off")
+    h = telemetry_harness.harness
+    telemetry_harness.controls.reviewer_emits = True
+    assert h.runner(h.args, h.directory).run() == "converged"
+    assert telemetry_harness.emissions == []
+    assert telemetry_harness.enrichments == []
 
 
 def test_runner_records_duration_without_session_usage(
@@ -4930,8 +5016,10 @@ def test_completed_abort_survives_a_later_commit(
 
 
 @pytest.mark.parametrize('lost_response', [False, True])
+@pytest.mark.parametrize('visible_summary', [False, True])
 def test_abort_replays_interrupted_remote_write(
-    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, lost_response: bool
+    abort_harness: Any, monkeypatch: pytest.MonkeyPatch, lost_response: bool,
+    visible_summary: bool,
 ) -> None:
     h = abort_harness
     runner = h.recovery_runner
@@ -4953,6 +5041,8 @@ def test_abort_replays_interrupted_remote_write(
             if not rows:
                 rows.append({'id': 101, 'user': {'login': runner.state['actor']},
                              'body': f"<!-- local-review-run-end:v1 id={runner.state['run_id']} outcome=aborted head={HEAD} -->"})
+                if visible_summary:
+                    rows[-1]['body'] += f"\n\nReview aborted at `{HEAD[:12]}`. This run does not establish convergence."
             if lost_response and len(calls) == 1:
                 raise h.module.Blocked('response lost')
         return dict(helper(name, *parts))

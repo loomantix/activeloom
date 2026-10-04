@@ -4,6 +4,7 @@ import {
   buildTelemetryRecord,
   classifyFiles,
   emitTelemetry,
+  enrichTelemetryDuration,
   excludeTelemetryComments,
   isTelemetryComment,
   matchTelemetry,
@@ -508,8 +509,10 @@ describe('prCommentSink', () => {
     public issueComments: Array<Record<string, unknown>> = [];
     public actorSequence: string[] = [];
     public posts = 0;
+    public patches = 0;
     public calls: string[] = [];
     public deleteFails = false;
+    public changeBeforeRead = false;
 
     runGh(args: string[], payload?: unknown): string {
       const cmd = args.join(' ');
@@ -542,8 +545,19 @@ describe('prCommentSink', () => {
         );
         return '';
       }
+      if (cmd.includes('-X PATCH') && cmd.includes('/issues/comments/')) {
+        const id = Number(args.at(-1)!.split('/').pop());
+        const row = this.issueComments.find((item) => item['id'] === id)!;
+        row['body'] = (payload as { body: string }).body;
+        this.patches += 1;
+        return JSON.stringify(row);
+      }
       if (cmd.includes('/issues/comments/')) {
         const id = parseInt(args[1]!.split('/').pop()!, 10);
+        if (this.changeBeforeRead) {
+          this.issueComments.find((row) => row['id'] === id)!['body'] =
+            'Changed concurrently';
+        }
         return JSON.stringify(
           this.issueComments.find((row) => row['id'] === id) ?? {},
         );
@@ -565,6 +579,142 @@ describe('prCommentSink', () => {
   beforeEach(() => {
     resetGitHubRunner();
   });
+
+  const durationIdentity = {
+    repo: record.repo,
+    pr: record.pr,
+    idempotencyKey: record.idempotencyKey,
+    engine: record.engine,
+    round: record.round,
+    base: record.baseSha,
+    head: record.headSha,
+    durationSeconds: 12.375,
+  };
+
+  it('fills a missing duration on the same comment and replays without another write', () => {
+    const runner = new MockRunner();
+    setGitHubRunner(runner);
+    const missing = { ...record, durationSeconds: null };
+    const original = emitTelemetry({
+      record: missing,
+      sink: prCommentSink(durationIdentity),
+    });
+    const first = enrichTelemetryDuration(durationIdentity);
+    const replay = enrichTelemetryDuration(durationIdentity);
+    expect(first).toMatchObject({
+      emitted: true,
+      reference: original.reference,
+    });
+    expect(replay.reference).toBe(original.reference);
+    expect(runner.posts).toBe(1);
+    expect(runner.patches).toBe(1);
+    expect(matchTelemetry(String(runner.issueComments[0]!['body']))).toEqual({
+      ...missing,
+      durationSeconds: 12.375,
+    });
+    expect(
+      emitTelemetry({ record: missing, sink: prCommentSink(durationIdentity) })
+        .emitted,
+    ).toBe(true);
+    expect(runner.posts).toBe(1);
+    expect(runner.patches).toBe(1);
+  });
+
+  it('preserves an existing measurement', () => {
+    const runner = new MockRunner();
+    setGitHubRunner(runner);
+    emitTelemetry({ record, sink: prCommentSink(durationIdentity) });
+    expect(enrichTelemetryDuration(durationIdentity).emitted).toBe(true);
+    expect(runner.patches).toBe(0);
+    expect(matchTelemetry(String(runner.issueComments[0]!['body']))).toEqual(
+      record,
+    );
+  });
+
+  it.each([
+    { engine: 'codex' },
+    { round: 4 },
+    { base: 'f'.repeat(40) },
+    { head: 'f'.repeat(40) },
+    { idempotencyKey: 'different-pass' },
+    { durationSeconds: -1 },
+    { durationSeconds: Number.NaN },
+  ])(
+    'refuses duration enrichment with mismatched or invalid evidence: %s',
+    (override) => {
+      const runner = new MockRunner();
+      setGitHubRunner(runner);
+      emitTelemetry({
+        record: { ...record, durationSeconds: null },
+        sink: prCommentSink(durationIdentity),
+      });
+      expect(
+        enrichTelemetryDuration({ ...durationIdentity, ...override }).emitted,
+      ).toBe(false);
+      expect(runner.patches).toBe(0);
+      expect(runner.posts).toBe(1);
+    },
+  );
+
+  it('does not enrich another actor or ambiguous duplicate records', () => {
+    const runner = new MockRunner();
+    setGitHubRunner(runner);
+    const row = {
+      id: 901,
+      user: { login: 'someone-else' },
+      body: buildTelemetryBody({ ...record, durationSeconds: null }),
+    };
+    runner.issueComments = [row];
+    expect(enrichTelemetryDuration(durationIdentity).emitted).toBe(false);
+    row.user.login = 'test-actor';
+    runner.issueComments.push({ ...row, id: 902 });
+    expect(enrichTelemetryDuration(durationIdentity).emitted).toBe(false);
+    expect(runner.patches).toBe(0);
+  });
+
+  it('preserves additive fields and any existing comment prefix', () => {
+    const runner = new MockRunner();
+    setGitHubRunner(runner);
+    const payload = { ...record, durationSeconds: null, futureCount: 7 };
+    runner.issueComments = [
+      {
+        id: 901,
+        user: { login: 'test-actor' },
+        body: `Measurement receipt\n<!-- local-review-telemetry:v1 -->\n\n\`\`\`json\n${JSON.stringify(payload)}\n\`\`\``,
+      },
+    ];
+    expect(enrichTelemetryDuration(durationIdentity).emitted).toBe(true);
+    const body = String(runner.issueComments[0]!['body']);
+    expect(body.startsWith('Measurement receipt\n')).toBe(true);
+    expect(body).toContain('"futureCount": 7');
+  });
+
+  it.each(['actor', 'body'])(
+    'refuses enrichment after %s changes before PATCH',
+    (changed) => {
+      const runner = new MockRunner();
+      setGitHubRunner(runner);
+      runner.issueComments = [
+        {
+          id: 901,
+          user: { login: 'test-actor' },
+          body: buildTelemetryBody({ ...record, durationSeconds: null }),
+        },
+      ];
+      if (changed === 'actor')
+        runner.actorSequence = [
+          'test-actor',
+          'test-actor',
+          'test-actor',
+          'test-actor',
+          'test-actor',
+          'different-actor',
+        ];
+      else runner.changeBeforeRead = true;
+      expect(enrichTelemetryDuration(durationIdentity).emitted).toBe(false);
+      expect(runner.patches).toBe(0);
+    },
+  );
 
   it('posts and replays an aggregate v3 record without duplication', () => {
     const runner = new MockRunner();

@@ -170,6 +170,7 @@ export {
   buildTelemetryBody,
   buildTelemetryRecord,
   emitTelemetry,
+  enrichTelemetryDuration,
   excludeTelemetryComments,
   isTelemetryComment,
   matchTelemetry,

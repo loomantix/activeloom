@@ -485,6 +485,14 @@ Telemetry v2 remains reserved for the assurance contract. Consumers must add v3
 support before rolling out producers of aggregate usage.
 A null model is unknown identity, never a model identifier or a zero-cost model.
 
+`enrich-telemetry-duration` fills a null `durationSeconds` on one existing,
+actor-owned review record. It requires `--repo`, `--pr`, `--idempotency-key`,
+`--engine`, `--round`, `--base`, `--head` and `--duration-seconds`; all identity
+fields must match. A known duration is retained, other measurements are
+preserved, and replay creates no comment. Failures are reported without failing
+the review. Callers must honor extraction and publication opt-outs; the runner
+uses only an observed, successfully returned launcher interval.
+
 Managed Agy reviews consume the terminal JSON usage envelope documented in
 [Antigravity headless mode](https://antigravity.google/docs/cli/headless/).
 A fresh single-turn invocation supplies the pass interval; resumed cumulative

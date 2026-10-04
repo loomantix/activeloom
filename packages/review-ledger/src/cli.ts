@@ -50,6 +50,7 @@ import {
   buildTelemetryBody,
   buildTelemetryRecord,
   emitTelemetry,
+  enrichTelemetryDuration,
   prCommentSink,
   validateFindings,
 } from './telemetry.js';
@@ -512,7 +513,12 @@ function validateArgs(args: CliArgs): void {
   // Telemetry records an open engine token; every other command is bound to the
   // protocol enum, where an unknown engine claiming a clean pass would be a
   // forgery vector rather than a junk row.
-  if (args.engineRaw !== undefined && args.command !== 'emit-telemetry') {
+  if (
+    args.engineRaw !== undefined &&
+    !['emit-telemetry', 'enrich-telemetry-duration'].includes(
+      args.command ?? '',
+    )
+  ) {
     args.engine = parseEnum('--engine', args.engineRaw, SUPPORTED_ENGINES);
   }
 
@@ -1032,6 +1038,39 @@ function runCliCommand(argv: string[]): number {
       });
       break;
     }
+    case 'enrich-telemetry-duration': {
+      if (args.dryRun)
+        fail('enrich-telemetry-duration does not support --dry-run');
+      const durationSeconds = parseDurationSeconds(args.durationSeconds);
+      if (
+        !args.repo ||
+        args.pr === undefined ||
+        !args.idempotencyKey ||
+        !args.engineRaw ||
+        args.round === undefined ||
+        !args.base ||
+        !args.head ||
+        durationSeconds === null
+      ) {
+        fail(
+          'enrich-telemetry-duration requires --repo, --pr, --idempotency-key, --engine, --round, --base, --head, and --duration-seconds',
+        );
+      }
+      writeSortedJson(
+        enrichTelemetryDuration({
+          repo: args.repo,
+          pr: args.pr,
+          actor: args.actor,
+          idempotencyKey: args.idempotencyKey,
+          engine: args.engineRaw,
+          round: args.round,
+          base: args.base,
+          head: args.head,
+          durationSeconds,
+        }),
+      );
+      break;
+    }
     case 'emit-telemetry': {
       // Emission never fails the pass that produced the record. A telemetry
       // defect must not block a review that found real defects, so every error
@@ -1188,7 +1227,11 @@ function commandFromArgv(argv: readonly string[]): string | undefined {
 /** Parse argv, dispatch the requested subcommand, and return an exit code. */
 export function runCli(argv: string[] = process.argv.slice(2)): number {
   resetGitHubRunner();
-  if (commandFromArgv(argv) !== 'emit-telemetry') {
+  if (
+    !['emit-telemetry', 'enrich-telemetry-duration'].includes(
+      commandFromArgv(argv) ?? '',
+    )
+  ) {
     return runCliCommand(argv);
   }
   try {

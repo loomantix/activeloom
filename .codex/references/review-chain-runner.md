@@ -230,6 +230,15 @@ revision, resolved schema, and allowlisted execution environment. Changes to the
 pinned runner require deliberate migration, not execution from an unverified
 replacement.
 
+### Conversation updates
+
+Run setup publishes its tier, engine order and authorization together in the
+run-start comment. A matching v2 cross-engine roster is reused across runs;
+initial or legacy rosters get one declaration naming the author and independent
+reviewers. Run-end comments show the outcome and head, including an explicit
+absence of convergence for aborted or exhausted runs. Historical evidence is
+preserved.
+
 ### Pass telemetry
 
 The runner owns each launched pass's telemetry boundary. Before the launcher
@@ -248,6 +257,14 @@ includes launcher setup and cleanup, excludes later controller validation and
 operator waiting, and does not imply measured tokens or model identity. Older
 checkpoints and attempts without an observed successful return keep duration
 unavailable.
+
+If the worker already published a record with a null duration, the runner uses
+`enrich-telemetry-duration` to fill that field on the same comment after its
+observed return. The ledger checks the actor, pass key, engine, round, base and
+head, verifies the original body before updating, then reads it back. Existing
+measurements, findings, token counts and timestamps are preserved. The operation
+is idempotent and nonfatal; emission and extraction opt-outs both prevent it.
+It does not infer token counts or model identity from elapsed time.
 
 For managed Gemini passes, the Agy launcher retains a numeric-only receipt from
 its successful single-turn JSON result. The runner binds the receipt to the
