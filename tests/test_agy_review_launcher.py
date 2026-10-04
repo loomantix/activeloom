@@ -749,6 +749,7 @@ def test_both_launchers_require_the_canonical_activeloom_surface(
             **_trusted_environment(tmp_path, surface_remote=remote),
             "AGY_ARGV_FILE": str(argv_file),
             "AGY_REVIEW_CLI": str(fake_agy),
+            "ACTIVELOOM_VALIDATION_FAILURE_LOG": "/private/check-0.log",
         },
     )
     assert (result.returncode == 0) is accepted, result.stderr
@@ -756,6 +757,8 @@ def test_both_launchers_require_the_canonical_activeloom_surface(
     if accepted:
         prompt = json.loads(argv_file.read_text(encoding="utf-8"))["argv"][-1]
         assert FOREGROUND_INSTRUCTION in prompt
+        if harness == ".codex":
+            assert "one bounded repair attempt" in prompt
     if not accepted:
         assert "untrusted Git remote" in result.stderr
 
