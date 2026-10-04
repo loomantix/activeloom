@@ -765,7 +765,11 @@ export function prCommentSink(target: {
           continue;
         }
         if (parsed?.idempotencyKey === record.idempotencyKey) {
-          if (replayFingerprint(parsed) !== replayFingerprint(record)) {
+          const replay =
+            record.durationSeconds === null
+              ? { ...record, durationSeconds: parsed.durationSeconds }
+              : record;
+          if (replayFingerprint(parsed) !== replayFingerprint(replay)) {
             fail('telemetry idempotency key conflicts with an existing record');
           }
           return { sink: 'pr-comment', reference: String(row['id'] ?? '') };
@@ -829,5 +833,102 @@ export function emitTelemetry(params: {
       idempotencyKey: record.idempotencyKey,
       error: message,
     };
+  }
+}
+
+/** Add an observed launcher duration without replacing a pass's other measurements. */
+export function enrichTelemetryDuration(params: {
+  repo: string;
+  pr: number;
+  actor?: string | undefined;
+  idempotencyKey: string;
+  engine: string;
+  round: number;
+  base: string;
+  head: string;
+  durationSeconds: number;
+}): EmitTelemetryResult {
+  const result = {
+    sink: 'pr-comment',
+    reference: null,
+    idempotencyKey: params.idempotencyKey,
+  };
+  try {
+    if (
+      !Number.isFinite(params.durationSeconds) ||
+      params.durationSeconds < 0
+    ) {
+      fail('telemetry duration must be a finite non-negative number');
+    }
+    const actor = assertActor(params.actor);
+    const matches = getIssueComments(params.repo, params.pr, actor).flatMap(
+      (row) => {
+        const body = String(row['body'] ?? '');
+        let record: TelemetryRecord | null;
+        try {
+          record = matchTelemetry(body);
+        } catch {
+          return [];
+        }
+        return record?.idempotencyKey === params.idempotencyKey
+          ? [{ row, body, record }]
+          : [];
+      },
+    );
+    if (matches.length !== 1)
+      fail(
+        'duration enrichment requires exactly one existing telemetry record',
+      );
+    const { row, body: original, record } = matches[0]!;
+    if (
+      record.repo !== params.repo ||
+      record.pr !== params.pr ||
+      record.engine !== params.engine ||
+      record.passType !== 'review' ||
+      record.round !== params.round ||
+      record.baseSha !== params.base ||
+      record.headSha !== params.head
+    ) {
+      fail('duration enrichment does not match the recorded pass identity');
+    }
+    const commentId = getPostedCommentId(row);
+    if (record.durationSeconds === null) {
+      // Preserve unknown additive payload fields; change only the missing measurement.
+      const marker = `<!-- local-review-telemetry:v${record.version} -->`;
+      const prefix = original.slice(
+        0,
+        original.indexOf(marker) + marker.length,
+      );
+      const payload = JSON.parse(
+        original
+          .slice(prefix.length)
+          .replace(/^\s*```(?:json)?\s*\n/, '')
+          .replace(/\n```\s*$/, '')
+          .trim(),
+      ) as Record<string, unknown>;
+      payload['durationSeconds'] = params.durationSeconds;
+      validateTelemetryRecord(payload);
+      const body = `${prefix}\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
+      verifyIssueComment(params.repo, commentId, original, actor);
+      assertLiveActor(actor);
+      jsonOutput(
+        [
+          'api',
+          '-X',
+          'PATCH',
+          `repos/${params.repo}/issues/comments/${commentId}`,
+        ],
+        { body },
+      );
+      verifyIssueComment(params.repo, commentId, body, actor);
+    }
+    return {
+      ...result,
+      emitted: true,
+      reference: String(commentId),
+      error: null,
+    };
+  } catch (error) {
+    return { ...result, emitted: false, error: errorMessage(error) };
   }
 }

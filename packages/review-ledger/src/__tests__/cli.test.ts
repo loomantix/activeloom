@@ -269,6 +269,9 @@ describe('CLI command parser and execution', () => {
     ['emit-telemetry', '--round', '0'],
     ['emit-telemetry', '--head', 'not-a-sha'],
     ['emit-telemetry', '--repo'],
+    ['enrich-telemetry-duration', '--duration-seconds', '-1'],
+    ['enrich-telemetry-duration', '--unknown'],
+    ['enrich-telemetry-duration', '--dry-run'],
   ])(
     'reports telemetry parse and validation failures without throwing',
     (...argv) => {

@@ -233,6 +233,25 @@ def test_finish_checks_sequence_then_ledger_before_posting(
     )
     controller._finish_run(args)
     assert len(posted) == 1
+    assert "Review converged" in posted[0]
+    assert HEAD[:12] in posted[0]
+    assert controller._run_end([{"id": 99, "body": posted[0]}], run()["run_id"])
+
+
+@pytest.mark.parametrize("outcome", ["aborted", "exhausted", "converged"])
+def test_terminal_summary_accepts_legacy_but_rejects_changed_prose(
+    controller: ModuleType, outcome: str
+) -> None:
+    marker = (
+        f"<!-- local-review-run-end:v1 id={'d' * 64} "
+        f"outcome={outcome} head={HEAD} -->"
+    )
+    assert controller._run_end([{"id": 99, "body": marker}], "d" * 64)
+    summary = controller._run_end_body(marker, outcome, HEAD)
+    assert controller._run_end([{"id": 99, "body": summary}], "d" * 64)
+    assert controller._run_end(
+        [{"id": 99, "body": summary + "\nMisleading extra outcome."}], "d" * 64
+    ) is None
 
 
 def test_next_pass_checks_live_head(

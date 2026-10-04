@@ -779,7 +779,11 @@ class Runner:
             comments = read(folder / "comments.json")
             # Only our exact abort marker may appear after a lost POST response.
             marker = f"<!-- local-review-run-end:v1 id={self.state['run_id']} outcome=aborted head={head} -->"
-            comments = [row for row in comments if row.get("body") != marker
+            terminal_body = (
+                f"{marker}\n\nReview aborted at `{head[:12]}`. "
+                "This run does not establish convergence."
+            )
+            comments = [row for row in comments if row.get("body") not in (marker, terminal_body)
                         or row.get("author") != self.state["actor"]]
             snapshot = {
                 "run_id": self.state["run_id"], "head": head,
@@ -3040,8 +3044,7 @@ class Runner:
         if usage is None:
             return "not emitted: the engine's usage helper is unavailable"
         rows = self.issue_comments()
-        if self.telemetry_recorded(boundary["key"], rows):
-            return "the reviewer already emitted this pass's record"
+        already_recorded = self.telemetry_recorded(boundary["key"], rows)
         directory = self.directory / boundary["directory"]
         output = directory / ("runner-" + uuid.uuid4().hex)
         output.mkdir(mode=0o700)
@@ -3085,6 +3088,21 @@ class Runner:
                 for attempt, duration in zip(attempts, durations, strict=True)
             ):
                 delta["durationSeconds"] = round(sum(durations), 3)
+        if already_recorded:
+            if delta.get("enabled") is True and delta.get("durationSeconds") is not None:
+                outcome = self.helper(
+                    "ledger", "enrich-telemetry-duration", *self.scope(head),
+                    "--base", self.state["base"], "--engine", engine,
+                    "--round", str(pending["round"]),
+                    "--idempotency-key", boundary["key"],
+                    "--duration-seconds", str(delta["durationSeconds"]),
+                )
+                return (
+                    "preserved the reviewer's record with measured duration"
+                    if outcome.get("emitted") is True
+                    else "duration enrichment unavailable; preserved the reviewer's record"
+                )
+            return "the reviewer already emitted this pass's record"
         findings = self.telemetry_findings(pending, rows, output)
         if isinstance(findings, str):
             return f"not emitted: findings measurement unavailable ({findings})"
@@ -3199,6 +3217,8 @@ class Runner:
                 self.state["base"],
                 "--tier",
                 config["tier"],
+                "--trigger",
+                str(self.args.trigger) if config["tier"] == "deep" else "none",
                 "--" + config["mode"],
                 config["plan"],
                 "--authorization-file",
@@ -3212,6 +3232,7 @@ class Runner:
                 ),
             )
             self.state["run_id"] = started["run_id"]
+            self.state["tier_in_run"] = True
             self.persist()
         if not self.state.get("metadata_posted"):
             engines = [
@@ -3235,10 +3256,14 @@ class Runner:
                     "existing roster differs from this plan; explicitly reconcile it first"
                 )
             # A single-engine finite plan may run, but cannot claim independent coverage.
-            if reviewers:
+            if reviewers and not (
+                roster_state.get("present") and roster_state.get("version") == 2
+            ):
                 roster = self.directory / "roster.txt"
+                labels = {"codex": "Codex", "claude": "Claude", "gemini": "Gemini"}
                 roster.write_text(
-                    "Reviewer roster from the explicitly authorized runner plan.\n"
+                    f"Review author: {labels[self.args.author]}. Independent reviewers: "
+                    + ", ".join(labels[e] for e in reviewers) + ".\n"
                 )
                 self.helper(
                     "ledger",
@@ -3251,24 +3276,19 @@ class Runner:
                     "--content-file",
                     str(roster),
                 )
-            tier = self.directory / "tier.txt"
-            trigger = (
-                f" trigger={self.args.trigger}"
-                if self.args.tier == "deep"
-                else " trigger=none"
-            )
-            tier.write_text(
-                f"<!-- local-review-tier:v1 tier={self.args.tier}{trigger} head={self.state['head']} -->\n"
-                + (self.directory / "authorization.txt").read_text()
-                + "\n"
-            )
-            self.helper(
-                "ledger",
-                "post-pr-comment",
-                *self.scope(self.state["head"]),
-                "--body-file",
-                str(tier),
-            )
+            if not self.state.get("tier_in_run"):
+                # Preserve setup recovery for a run started by an older controller.
+                tier = self.directory / "tier.txt"
+                trigger = self.args.trigger if self.args.tier == "deep" else "none"
+                tier.write_text(
+                    f"<!-- local-review-tier:v1 tier={self.args.tier} trigger={trigger} head={self.state['head']} -->\n"
+                    f"{self.args.tier.title()} review at `{self.state['head'][:12]}` "
+                    f"(trigger {trigger}); scope and authorization are in the run-start comment.\n"
+                )
+                self.helper(
+                    "ledger", "post-pr-comment", *self.scope(self.state["head"]),
+                    "--body-file", str(tier),
+                )
             self.state["metadata_posted"] = True
             self.persist()
         while True:

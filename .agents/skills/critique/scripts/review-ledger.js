@@ -26,7 +26,7 @@ import { readFileSync as readFileSync4 } from "fs";
 
 // src/constants.ts
 var PROTOCOL_VERSION = 3;
-var PACKAGE_VERSION = true ? "1.6.0" : "0.0.0-dev";
+var PACKAGE_VERSION = true ? "1.7.0" : "0.0.0-dev";
 var SUBPROCESS_MAX_BUFFER = 256 * 1024 * 1024;
 var EXPECTED_ACTOR_ENV = "AGENT_LOOP_REVIEW_ACTOR";
 var EXPECTED_THREADS_SHA256_ENV = "AGENT_LOOP_REVIEW_THREADS_SHA256";
@@ -18421,7 +18421,8 @@ function prCommentSink(target) {
           continue;
         }
         if (parsed?.idempotencyKey === record.idempotencyKey) {
-          if (replayFingerprint(parsed) !== replayFingerprint(record)) {
+          const replay = record.durationSeconds === null ? { ...record, durationSeconds: parsed.durationSeconds } : record;
+          if (replayFingerprint(parsed) !== replayFingerprint(replay)) {
             fail("telemetry idempotency key conflicts with an existing record");
           }
           return { sink: "pr-comment", reference: String(row["id"] ?? "") };
@@ -18476,6 +18477,77 @@ function emitTelemetry(params) {
       idempotencyKey: record.idempotencyKey,
       error: message
     };
+  }
+}
+function enrichTelemetryDuration(params) {
+  const result = {
+    sink: "pr-comment",
+    reference: null,
+    idempotencyKey: params.idempotencyKey
+  };
+  try {
+    if (!Number.isFinite(params.durationSeconds) || params.durationSeconds < 0) {
+      fail("telemetry duration must be a finite non-negative number");
+    }
+    const actor = assertActor(params.actor);
+    const matches = getIssueComments(params.repo, params.pr, actor).flatMap(
+      (row2) => {
+        const body = String(row2["body"] ?? "");
+        let record2;
+        try {
+          record2 = matchTelemetry(body);
+        } catch {
+          return [];
+        }
+        return record2?.idempotencyKey === params.idempotencyKey ? [{ row: row2, body, record: record2 }] : [];
+      }
+    );
+    if (matches.length !== 1)
+      fail(
+        "duration enrichment requires exactly one existing telemetry record"
+      );
+    const { row, body: original, record } = matches[0];
+    if (record.repo !== params.repo || record.pr !== params.pr || record.engine !== params.engine || record.passType !== "review" || record.round !== params.round || record.baseSha !== params.base || record.headSha !== params.head) {
+      fail("duration enrichment does not match the recorded pass identity");
+    }
+    const commentId = getPostedCommentId(row);
+    if (record.durationSeconds === null) {
+      const marker = `<!-- local-review-telemetry:v${record.version} -->`;
+      const prefix2 = original.slice(
+        0,
+        original.indexOf(marker) + marker.length
+      );
+      const payload = JSON.parse(
+        original.slice(prefix2.length).replace(/^\s*```(?:json)?\s*\n/, "").replace(/\n```\s*$/, "").trim()
+      );
+      payload["durationSeconds"] = params.durationSeconds;
+      validateTelemetryRecord(payload);
+      const body = `${prefix2}
+
+\`\`\`json
+${JSON.stringify(payload, null, 2)}
+\`\`\``;
+      verifyIssueComment(params.repo, commentId, original, actor);
+      assertLiveActor(actor);
+      jsonOutput(
+        [
+          "api",
+          "-X",
+          "PATCH",
+          `repos/${params.repo}/issues/comments/${commentId}`
+        ],
+        { body }
+      );
+      verifyIssueComment(params.repo, commentId, body, actor);
+    }
+    return {
+      ...result,
+      emitted: true,
+      reference: String(commentId),
+      error: null
+    };
+  } catch (error) {
+    return { ...result, emitted: false, error: errorMessage(error) };
   }
 }
 
@@ -19296,7 +19368,9 @@ function validateArgs(args) {
   if (!args.command) {
     fail("subcommand required");
   }
-  if (args.engineRaw !== void 0 && args.command !== "emit-telemetry") {
+  if (args.engineRaw !== void 0 && !["emit-telemetry", "enrich-telemetry-duration"].includes(
+    args.command ?? ""
+  )) {
     args.engine = parseEnum("--engine", args.engineRaw, SUPPORTED_ENGINES);
   }
   for (const name of ["head", "base", "before", "resultHead"]) {
@@ -19705,6 +19779,30 @@ function runCliCommand(argv) {
       });
       break;
     }
+    case "enrich-telemetry-duration": {
+      if (args.dryRun)
+        fail("enrich-telemetry-duration does not support --dry-run");
+      const durationSeconds = parseDurationSeconds(args.durationSeconds);
+      if (!args.repo || args.pr === void 0 || !args.idempotencyKey || !args.engineRaw || args.round === void 0 || !args.base || !args.head || durationSeconds === null) {
+        fail(
+          "enrich-telemetry-duration requires --repo, --pr, --idempotency-key, --engine, --round, --base, --head, and --duration-seconds"
+        );
+      }
+      writeSortedJson(
+        enrichTelemetryDuration({
+          repo: args.repo,
+          pr: args.pr,
+          actor: args.actor,
+          idempotencyKey: args.idempotencyKey,
+          engine: args.engineRaw,
+          round: args.round,
+          base: args.base,
+          head: args.head,
+          durationSeconds
+        })
+      );
+      break;
+    }
     case "emit-telemetry": {
       let outcome;
       try {
@@ -19830,7 +19928,9 @@ function commandFromArgv(argv) {
 }
 function runCli(argv = process.argv.slice(2)) {
   resetGitHubRunner();
-  if (commandFromArgv(argv) !== "emit-telemetry") {
+  if (!["emit-telemetry", "enrich-telemetry-duration"].includes(
+    commandFromArgv(argv) ?? ""
+  )) {
     return runCliCommand(argv);
   }
   try {

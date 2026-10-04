@@ -471,6 +471,11 @@ def _run_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return records
 
 
+def _run_end_body(marker: str, outcome: str, head: str) -> str:
+    suffix = "" if outcome == "converged" else " This run does not establish convergence."
+    return f"{marker}\n\nReview {outcome} at `{head[:12]}`.{suffix}"
+
+
 def _run_end(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
     matches: list[dict[str, Any]] = []
     for row in rows:
@@ -478,8 +483,15 @@ def _run_end(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
         comment_id = row.get("id")
         if not isinstance(body, str) or not isinstance(comment_id, int):
             continue
-        marker = RUN_END_V1_RE.fullmatch(body)
-        if marker is not None and marker.group("run_id") == run_id:
+        marker = RUN_END_V1_RE.fullmatch(body.split("\n", 1)[0])
+        if (
+            marker is not None
+            and marker.group("run_id") == run_id
+            and body in (
+                marker.group(0),
+                _run_end_body(marker.group(0), marker["outcome"], marker["head"]),
+            )
+        ):
             matches.append(
                 {
                     "comment_id": comment_id,
@@ -601,6 +613,22 @@ def _start_run(args: argparse.Namespace) -> None:
         if previous_sequence:
             sequence = ",".join(previous_sequence)
             mode = previous.get("plan_mode", "cycle")
+    trigger = getattr(args, "trigger", None)
+    if trigger is not None:
+        if (args.tier == "lean" and trigger != "none") or (
+            args.tier == "deep" and trigger not in {str(n) for n in range(1, 7)}
+        ):
+            _fail("review trigger must match the resolved tier")
+        labels = (
+            " → ".join(ENGINE_LABELS[e] for e in _parse_plan(sequence, mode))
+            if sequence is not None else "declared reviewers"
+        )
+        content = (
+            f"<!-- local-review-tier:v1 tier={args.tier} trigger={trigger} head={args.head} -->\n"
+            f"{args.tier.title()} review started at `{args.head[:12]}`: {labels}; "
+            f"up to {TIER_CAPS[args.tier]} passes per engine.\n\n"
+            f"<details>\n<summary>Scope and authorization</summary>\n\n{content}\n\n</details>"
+        )
     if sequence is not None:
         engines = _parse_plan(sequence, mode)
         if any(engines.count(engine) > TIER_CAPS[args.tier] for engine in engines):
@@ -868,7 +896,8 @@ def _finish_run(args: argparse.Namespace) -> None:
             )
         )
         return
-    comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, marker)
+    body = _run_end_body(marker, args.outcome, args.head)
+    comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, body)
     verify(args.repo, args.pr, args.head)
     print(
         json.dumps(
@@ -1373,6 +1402,7 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--head", required=True, type=_sha)
     start.add_argument("--base", required=True, type=_sha)
     start.add_argument("--tier", required=True, choices=sorted(TIER_CAPS))
+    start.add_argument("--trigger", choices=["none", "1", "2", "3", "4", "5", "6"])
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
     start.add_argument("--restart-from-run", help="idempotent restart of this aborted run only")
