@@ -1667,6 +1667,19 @@ def test_tier_publication_reaches_real_ledger_dispatch(
     original = harness.runner.helper
     checked: list[str] = []
 
+    # Preserve setup recovery for a run started by an older controller without tier_in_run.
+    harness.runner(harness.args, harness.directory).initialize()
+    harness.module.save(
+        harness.directory / "state.json",
+        {
+            **harness.module.read(harness.directory / "state.json"),
+            "run_id": "d" * 64,
+            "metadata_posted": False,
+        },
+    )
+    harness.args.resume = True
+    runner = harness.runner(harness.args, harness.directory)
+
     def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
         if parts[0] == "post-pr-comment":
             # Let the real parser/dispatcher validate the call, but make gh
@@ -1684,8 +1697,9 @@ def test_tier_publication_reaches_real_ledger_dispatch(
         return dict(original(self, name, *parts))
 
     monkeypatch.setattr(harness.runner, "helper", helper)
-    assert harness.runner(harness.args, harness.directory).run() == "converged"
+    assert runner.run() == "converged"
     assert checked == [HEAD]
+
 
 
 @pytest.mark.parametrize("failure", ["authorization", "base", "copy"])
