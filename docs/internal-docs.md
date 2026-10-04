@@ -18,8 +18,9 @@ node cli/bin/activeloom.js add internal-docs --harness claude --harness codex --
 
 `add` is a personal install: it writes to the harness directories under your
 home directory, and alongside the skill it installs that harness's shared support
-files. `--force` replaces those support files as well as the skill, so treat the
-`--dry-run` output as the list to inspect.
+files. `--force` replaces those support files as well as the skill. A dry run
+without `--force` skips whatever already exists, so before an upgrade inspect the
+list from `--dry-run --force`.
 
 For repository delivery, use the existing `init`/sync path with those harnesses
 selected in consumer configuration. The manifest carries all three skill files;
