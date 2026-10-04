@@ -1171,6 +1171,8 @@ class Runner:
             config["scope_decision"] = scope_decision
         if getattr(self.args, "restart", False):
             config["restart"] = True
+        if getattr(self.args, "restart_aborted", None):
+            config["restart_aborted"] = self.args.restart_aborted
         if self.state:
             if self.state.get("version") not in (1, 2):
                 raise Blocked("unsupported checkpoint version")
@@ -2446,6 +2448,10 @@ class Runner:
             argv.extend(["--check", check])
         if config.get("scope_decision"):
             argv.extend(["--scope-decision", config["scope_decision"]])
+        if config.get("restart"):
+            argv.append("--restart")
+        if config.get("restart_aborted"):
+            argv.extend(["--restart-aborted", config["restart_aborted"]])
         if (self.state.get("pending") or {}).get("phase") == "preflight_failed":
             argv.append("--recover-preflight")
         intent = (self.state.get("pending") or {}).get("legacy_reconciliation")
@@ -3133,6 +3139,7 @@ class Runner:
                 "--authorization-file",
                 str(self.directory / "authorization.txt"),
                 *(["--restart"] if config.get("restart") else []),
+                *(["--restart-from-run", config["restart_aborted"]] if config.get("restart_aborted") else []),
                 *(
                     ["--scope-decision", config["scope_decision"]]
                     if config.get("scope_decision")
@@ -3442,6 +3449,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="explicitly authorize a new run after the prior run has ended",
     )
+    parser.add_argument("--restart-aborted", metavar="RUN_ID",
+                        help="bind --restart to one aborted run; repeats resume its successor")
     parser.add_argument(
         "--recover-preflight",
         action="store_true",
@@ -3469,6 +3478,8 @@ def main(argv: list[str] | None = None) -> int:
         help="preserve and replace the managed installation at its existing pins",
     )
     args = parser.parse_args(arguments)
+    if args.restart_aborted and (not args.restart or not re.fullmatch(r"[0-9a-f]{64}", args.restart_aborted)):
+        parser.error("--restart-aborted requires --restart and a full run ID")
     if (
         args.recover_preflight or args.migrate_controller or args.repair_installation
     ) and not args.resume:
@@ -3521,15 +3532,25 @@ def main(argv: list[str] | None = None) -> int:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise Blocked("another runner owns this PR") from error
+            if args.restart_aborted and (directory / "state.json").exists():
+                saved = read(directory / "state.json")
+                if saved.get("config", {}).get("restart_aborted") == args.restart_aborted:
+                    args.resume = True
             if args.restart and not args.resume:
                 try:
                     aborted = False
                     if (directory / "abort.json").exists():
                         old = Runner(args, directory)
+                        if args.restart_aborted != old.state.get("run_id"):
+                            raise Blocked("aborted checkpoint requires --restart-aborted <its run ID> with --restart")
                         receipt = read(directory / "abort.json")
                         old.abort_run(receipt["evidence_sha256"])
                         aborted = True
                         print("Restart creates a NEW review budget; the aborted run does not establish convergence.", file=sys.stderr)
+                    elif args.restart_aborted:
+                        archive = directory.with_name(directory.name + "-run-" + args.restart_aborted)
+                        if (directory / "state.json").exists() or not (archive / "abort.json").is_file():
+                            raise Blocked("restart authorization does not name the preserved aborted checkpoint")
                     archived = archive_terminal_checkpoint(directory, aborted=aborted)
                 except (Blocked, OSError, ValueError, KeyError) as error:
                     print(

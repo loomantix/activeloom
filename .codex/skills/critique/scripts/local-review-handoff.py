@@ -619,10 +619,26 @@ def _start_run(args: argparse.Namespace) -> None:
     previous_end = (
         None if previous is None else _run_end(rows, cast(str, previous["run_id"]))
     )
+    restart_from = getattr(args, "restart_from_run", None)
+    replay_restart = False
+    if restart_from is not None:
+        if not args.restart or not re.fullmatch(r"[0-9a-f]{64}", restart_from):
+            _fail("--restart-from-run requires --restart and a full run ID")
+        parents = [record for record in records if record["run_id"] == restart_from]
+        if len(parents) != 1 or previous is None:
+            _fail("restart parent is not an authenticated run")
+        parent = parents[0]
+        end = _run_end(rows, restart_from)
+        if end is None or end["outcome"] != "aborted":
+            _fail("restart parent must have an authenticated aborted outcome")
+        if previous["run_id"] != restart_from:
+            if previous["supersedes"] != parent["comment_id"]:
+                _fail("restart parent already has a different successor")
+            replay_restart = True
     if (
         previous is not None
         and previous_end is None
-        and not args.restart
+        and (not args.restart or replay_restart)
         and previous["tier"] == args.tier
         and previous["base"] == args.base
         and previous["start_head"] == args.head
@@ -663,6 +679,9 @@ def _start_run(args: argparse.Namespace) -> None:
                 )
             )
             return
+
+    if replay_restart:
+        _fail("restart successor differs or has ended; refusing another budget")
 
     scope_signals: dict[str, Any] | None = None
     if scope_decision is not None:
@@ -1356,6 +1375,7 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--tier", required=True, choices=sorted(TIER_CAPS))
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
+    start.add_argument("--restart-from-run", help="idempotent restart of this aborted run only")
     plan = start.add_mutually_exclusive_group()
     plan.add_argument("--sequence", help="legacy alias for --cycle")
     plan.add_argument(

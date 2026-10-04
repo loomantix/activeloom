@@ -483,7 +483,7 @@ reviewers or change the PR during recovery; the per-PR lock excludes other
 controllers but is not a lock on all GitHub writers.
 
 Abort stops there. Only after separate authorization, run the normal full plan
-command with `--restart`, the desired pinned base and a fresh authorization
+command with `--restart --restart-aborted <aborted-run-id>`, the desired pinned base and a fresh authorization
 file. For example, in a repository with a validation contract:
 
 ```bash
@@ -491,17 +491,20 @@ python3 .codex/skills/critique/scripts/review-chain-runner.py \
   --repo example/project --pr 42 --base <pinned-base-sha> \
   --author codex --tier deep --trigger 3 \
   --cycle codex,claude --until-converged \
-  --authorization-file /absolute/path/new-review-authorization.txt --restart
+  --authorization-file /absolute/path/new-review-authorization.txt \
+  --restart --restart-aborted <aborted-run-id>
 ```
 
 Restart verifies the completed abort against live evidence, then archives the
 **entire directory** as `<owner>-<repo>-<pr>-run-<full-run-id>`. It creates a
 **new budget**; previous convergence is not implied and stale-head passes are
-not current-head evidence. Once a new checkpoint exists, repeated `--restart`
-refuses to replace a nonterminal run: use its printed `--resume` command.
+not current-head evidence. The aborted run ID is the restart idempotency key. Repeating the same command
+resumes or reports that one successor; it never creates another budget, even
+after the successor ends. Its printed `--resume` command also preserves this key.
 An interrupted archive rename preserves the old directory; rerunning restart
-can initialize the empty active location. An uncertain remote start remains
-blocked for reconciliation and never grants another budget automatically.
+can initialize the empty active location. If the remote start succeeds before the local run ID is saved, the same command
+replays only the matching authenticated successor. A different successor, plan
+or terminal outcome blocks reconciliation rather than granting another budget.
 
 Same-run adoption of later standalone attestations is **unsupported** here.
 Their presence in an authenticated ledger does not bind them to the failed

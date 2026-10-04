@@ -4682,3 +4682,33 @@ def test_recovery_reads_authenticated_run_with_original_parser(
         assert actual['status'] == 'next'
         assert actual['started_at'] == '2026-01-01T00:00:00Z'
     assert runner.recovery_files() == before
+
+
+def test_restart_aborted_repeat_resumes_same_successor(
+    harness: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    h = harness
+    common = tmp_path / 'common'
+    directory = common / 'activeloom-review/example-repo-1'
+    directory.mkdir(parents=True)
+    old_id = 'f' * 64
+    archive = directory.with_name(directory.name + '-run-' + old_id)
+    archive.mkdir()
+    h.module.save(archive / 'abort.json', {'phase': 'aborted'})
+    original_command = h.module.command
+    monkeypatch.setattr(h.module, 'command', lambda argv: str(common)
+                        if argv == ['git', 'rev-parse', '--git-common-dir'] else original_command(argv))
+    monkeypatch.setattr(h.module, 'Runner', h.runner)
+    arguments = ['--repo', h.args.repo, '--pr', '1', '--base', BASE, '--tier', 'deep',
+                 '--trigger', '3', '--author', 'codex', '--chain', h.args.chain,
+                 '--check', h.args.check[0], '--authorization-file', h.args.authorization_file,
+                 '--restart', '--restart-aborted', old_id]
+    assert h.module.main(arguments) == 0
+    first = h.module.read(directory / 'state.json')
+    launches = list(h.launches)
+    assert h.module.main(arguments) == 0
+    assert h.module.read(directory / 'state.json') == first
+    assert h.launches == launches
+    runner = h.runner(h.args, directory)
+    resume = runner.recovery_command()
+    assert '--restart-aborted ' + old_id in resume
