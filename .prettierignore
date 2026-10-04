@@ -47,3 +47,4 @@ NOTICE
 .claude/settings.local.json
 # Python and shell source regions rendered into the agent-loop controllers.
 scripts/agent-loop-budget.*.inc
+scripts/agent-loop-publication.sh.inc
