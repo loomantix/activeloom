@@ -71,7 +71,9 @@ deadline). A timeout fails the command and stops its worker process group.
 
 Ordinary `ci.yml` runs the fast lane on PRs, pushes to `main`, and manual
 dispatches. The required `Python types + tests` check includes mypy and fast
-tests even for drafts. Full Python regression runs in `regression.yml` weekly
+tests even for drafts. Once a PR is ready, `Focused integration tests` runs the
+deferred integration modules that `scripts/select-focused-tests.py` maps to the
+changed paths; a change that maps to none skips them. Full Python regression runs in `regression.yml` weekly
 (Sunday, 05:17 UTC) or by explicit manual dispatch. It retains four shards,
 complete/disjoint collection verification, JUnit artifacts, and all four 80%
 coverage floors. Check the run's commit SHA before using it as evidence.

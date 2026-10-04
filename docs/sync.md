@@ -40,9 +40,12 @@ workflow; a green label job on the update PR does not validate the new runtime.
 
 ```bash
 # in the upstream repo, on main, after merging changes you want to ship
+scripts/require-regression-green.sh <commit-sha>
 git tag -af sync-v2 -m "Retag sync-v2 to <reason>" <commit-sha>
 git push --force-with-lease origin sync-v2
 ```
+
+`require-regression-green.sh` fails unless the Regression workflow succeeded at exactly that commit. Routine CI runs only the fast lane and path-selected integration modules, so a green `main` is not evidence that the complete suite passed; if no run exists, start one with `gh workflow run regression.yml --ref main` and wait for it. See [Testing architecture](testing.md).
 
 The `--force-with-lease` is required and intentional — it asserts the tag's previous SHA so a concurrent retag from another maintainer fails loudly rather than silently clobbering. The annotated message documents the cumulative changes since the previous retag.
 

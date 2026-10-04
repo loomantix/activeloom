@@ -49,7 +49,7 @@ def test_incomplete_partition_fails(artifacts: Path, damage: str) -> None:
 
 @pytest.mark.parametrize("tests", ["success", "failure", "skipped", "cancelled", ""])
 def test_regression_gate_requires_all_shards(tests: str) -> None:
-    job = _workflow("regression.yml")["jobs"]["python-types-and-tests"]
+    job = _workflow("regression.yml")["jobs"]["regression-coverage"]
     script = job["steps"][0]["run"]
     result = subprocess.run(
         ["bash", "-e", "-c", script],
@@ -66,8 +66,8 @@ def test_matrix_and_manual_checkpoint() -> None:
     matrix = jobs["python-tests"]["strategy"]
     assert matrix["matrix"]["shard"] == ["1", "2", "3", "4"]
     assert matrix["fail-fast"] == "false"
-    assert jobs["python-types-and-tests"]["needs"] == "python-tests"
-    assert "!cancelled()" in jobs["python-types-and-tests"]["if"]
+    assert jobs["regression-coverage"]["needs"] == "python-tests"
+    assert "!cancelled()" in jobs["regression-coverage"]["if"]
     for step in jobs["python-tests"]["steps"]:
         if "python3 -m pytest" in step.get("run", ""):
             for command in step["run"].splitlines():

@@ -249,3 +249,25 @@ def test_full_regression_is_only_weekly_or_explicit() -> None:
     minute, hour, day, month, weekday = schedules[0]["cron"].split()
     assert minute.isdigit() and hour.isdigit()
     assert (day, month) == ("*", "*") and weekday in "0123456"
+
+
+def test_integration_modules_run_before_merge_for_the_paths_they_cover() -> None:
+    """The fast lane alone would merge an integration change with none of its tests run."""
+    job = _workflow("ci.yml")["jobs"]["focused-integration"]
+    assert _draft_gated(job) and "github.event_name != 'pull_request'" in job["if"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    select = steps["Select integration modules for the changed paths"]["run"]
+    assert "scripts/select-focused-tests.py" in select
+    assert "set -euo pipefail" in select, "a failed diff must fail the job, not select nothing"
+    run = steps["Run the selected modules in the focused lane"]
+    assert "--test-lane=focused" in run["run"]
+    assert run["if"] == "steps.select.outputs.modules != ''"
+
+
+def test_a_failed_scheduled_regression_is_reported() -> None:
+    workflow = _workflow("regression.yml")
+    assert workflow["permissions"] == {"contents": "read"}
+    job = workflow["jobs"]["report-failure"]
+    assert set(job["needs"]) == {"python-tests", "regression-coverage"}
+    assert "failure()" in job["if"] and "github.event_name == 'schedule'" in job["if"]
+    assert job["permissions"] == {"issues": "write"}

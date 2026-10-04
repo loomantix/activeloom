@@ -500,6 +500,82 @@ jobs:
         run: python3 scripts/run-tests.py fast
 
   # ---------------------------------------------------------------------------
+  # Integration modules deferred from the fast lane, selected by changed path.
+  #
+  # The fast lane leaves out the subprocess-heavy modules, so without this job a
+  # change to an integration surface would merge with none of its tests run.
+  # `scripts/select-focused-tests.py` owns the path map; a change that selects
+  # nothing costs one short job. The complete suite stays in regression.yml.
+  # ---------------------------------------------------------------------------
+  focused-integration:
+    name: Focused integration tests
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Select integration modules for the changed paths
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request)
+              git fetch --no-tags origin "$BASE_REF"
+              range="origin/$BASE_REF...HEAD"
+              ;;
+            push)
+              range="$BEFORE..HEAD"
+              ;;
+            *)
+              echo "Manual run: no changed paths. Use regression.yml for a full checkpoint."
+              echo "modules=" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          changed="$(git diff --name-only "$range")"
+          modules="$(printf '%s\n' "$changed" | python3 scripts/select-focused-tests.py)"
+          echo "Selected integration modules:"
+          echo "${modules:-(none)}"
+          echo "modules=$(echo "$modules" | xargs)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v7
+        if: steps.select.outputs.modules != ''
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v7
+        if: steps.select.outputs.modules != ''
+        with:
+          node-version-file: .nvmrc
+      - name: Install pinned tooling
+        if: steps.select.outputs.modules != ''
+        run: |
+          python3 -m pip install \
+            'pyyaml==6.0.2' \
+            'pytest==8.3.4' \
+            'pytest-xdist==3.8.0'
+      - name: Configure fixture Git identity
+        if: steps.select.outputs.modules != ''
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+      - name: Run the selected modules in the focused lane
+        if: steps.select.outputs.modules != ''
+        env:
+          MODULES: ${{ steps.select.outputs.modules }}
+        run: |
+          set -euo pipefail
+          read -r -a modules <<< "$MODULES"
+          python3 -m pytest --test-lane=focused "${modules[@]}" -n 4 --dist worksteal --durations=20
+
+  # ---------------------------------------------------------------------------
   # The review-ledger package and the bundles built from it.
   #
   # `packages/review-ledger` is the source of the `review-ledger.js` bundle
