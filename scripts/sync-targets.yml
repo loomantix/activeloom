@@ -49,6 +49,10 @@ harnesses:
       # global install can still invoke them. Devs who installed via
       # `scripts/install-skills.sh` will resolve from `~/.claude/skills/` first;
       # the in-repo copy is the fallback for everyone else and for CI contexts.
+      - source: .claude/skills/internal-docs/SKILL.md
+        destination: .claude/skills/internal-docs/SKILL.md
+        substitutions: []
+
       - source: .claude/skills/issues/SKILL.md
         destination: .claude/skills/issues/SKILL.md
         substitutions: []
@@ -579,6 +583,10 @@ harnesses:
       # global install can still invoke them. Devs who installed via
       # `scripts/install-skills.sh` will resolve from `~/.codex/skills/` first;
       # the in-repo copy is the fallback for everyone else and for CI contexts.
+      - source: .codex/skills/internal-docs/SKILL.md
+        destination: .codex/skills/internal-docs/SKILL.md
+        substitutions: []
+
       - source: .codex/skills/issues/SKILL.md
         destination: .codex/skills/issues/SKILL.md
         substitutions: []
@@ -1091,6 +1099,10 @@ harnesses:
     root: .agents
     targets:
       # Antigravity / Gemini skills
+      - source: .agents/skills/internal-docs/SKILL.md
+        destination: .agents/skills/internal-docs/SKILL.md
+        substitutions: []
+
       - source: .agents/skills/issues/SKILL.md
         destination: .agents/skills/issues/SKILL.md
         substitutions: []
