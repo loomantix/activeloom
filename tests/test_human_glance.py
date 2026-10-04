@@ -140,8 +140,41 @@ def test_the_workflow_recommends_a_glance_for_a_small_change(root: str) -> None:
     )
     # No human acts on a recommendation inside agent-loop.
     assert "so it gates on `skip` alone and ignores `smallChange`" in gate
-    # Neither glance outcome is merge authority.
-    assert "Neither line authorizes a merge." in gate
+    # A recommendation never supplies merge authority.
+    assert "No human-glance recommendation authorizes a merge." in gate
+
+
+@pytest.mark.parametrize("root,skill", ENTRY_POINTS, ids=lambda v: str(v))
+def test_dependency_recommendation_precedes_reviewer_setup(root: str, skill: str) -> None:
+    body = _skill(root, skill)
+    gate = " ".join(body.split(GATE_HEADING, 1)[1].split("\n## ", 1)[0].split())
+    assert 'workflow\'s "Routine dependency updates" rule' in gate
+    assert gate.index("For a dependency-only diff") < gate.index("Continue when")
+    assert "a qualifying recommendation stops the same way" in gate
+
+
+@pytest.mark.parametrize("root", HARNESS_ROOTS)
+def test_dependency_recommendation_requires_evidence_and_preserves_active_reviews(
+    root: str,
+) -> None:
+    body = " ".join((ROOT / root / "REVIEW_WORKFLOW.md").read_text(encoding="utf-8").split())
+    rule = body.split("**Routine dependency updates.**", 1)[1].split(
+        "No human-glance recommendation authorizes a merge.", 1
+    )[0]
+    for requirement in (
+        "existing direct development dependencies",
+        "no other manifest fields or files",
+        "transitive updates, release notes and advisories",
+        "successful frozen install",
+        "required CI at the current head",
+        "Missing or failed validation",
+        "PR with a tier marker",
+        "explicit request to run review anyway",
+        "controller-scheduled pass",
+        "reviewer launch failure never qualifies",
+        "does not change the classifier's `skip` or `smallChange` flags",
+    ):
+        assert requirement in rule
 
 
 def test_the_small_change_limit_matches_the_documented_figure() -> None:

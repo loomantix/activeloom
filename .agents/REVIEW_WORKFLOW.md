@@ -225,8 +225,32 @@ as `smallChangeLines`, T as `linesChanged.test`, M as
 Human glance recommended: N changed lines of code or config and T of tests in M files. Triggers: <matched triggers, or none>. Read the diff and merge, or ask for the review chain to run.
 ```
 
-Neither line authorizes a merge. When the repository's own instructions gate
-merging the touched paths — a deploy on merge, an apply-before-merge order —
+**Routine dependency updates.** Before reviewer setup, an interactive entry
+may recommend human glance for a non-empty diff limited to patch bumps between
+stable versions of existing direct development dependencies and their lockfiles.
+Preserve dependency groups and version-range operators.
+Read the full manifest and lockfile diff: no other manifest fields or files may
+change. Inspect transitive updates, release notes and advisories for compatibility
+concerns, new install scripts, and changed package sources or registries.
+Require a successful frozen install, relevant tests/typecheck/build, and required
+CI at the current head; reuse existing evidence. Missing or failed validation,
+unexplained transitive changes, or unresolved concerns continue the normal review
+route. This recommendation does not apply to a PR with a tier marker, an explicit
+request to run review anyway, or a controller-scheduled pass. A reviewer launch
+failure never qualifies a change for it.
+
+When those conditions hold, summarize the dependency validation and print:
+
+```text
+Use human glance. Routine development-dependency patch updates; dependency validation passed. No review chain needed.
+```
+
+Stop with the same absence of review artifacts as the recommendations above.
+This is an evidence-based recommendation; it does not change the classifier's
+`skip` or `smallChange` flags.
+
+No human-glance recommendation authorizes a merge. When the repository's own
+instructions gate merging the touched paths — a deploy on merge, an apply-before-merge order —
 state that gate on the line after.
 
 Otherwise continue the entry point unchanged. An empty range or a classifier
@@ -339,9 +363,9 @@ cryptography, validation, networking, or concurrency. A multi-lane code review
 inspects code diffs in this repository; it cannot critique external package
 source from a version bump diff. Dependency risk is properly addressed through
 upfront research, release notes, security advisories, and running the consumer test
-suite—not through a multi-lane code review chain. Unless the dependency update is
-accompanied by material application code changes that touch sensitive boundaries
-or non-obvious runtime behaviour, dependency updates are Lean.
+suite—not through a multi-lane code review chain. Dependency updates that
+proceed to review remain Lean unless accompanied by material application code
+changes that touch sensitive boundaries or non-obvious runtime behaviour.
 
 **The dominant rule: when the worst outcome of a missed defect is a red CI run,
 a broken build, or a broken developer workflow, the change is Lean.** CI

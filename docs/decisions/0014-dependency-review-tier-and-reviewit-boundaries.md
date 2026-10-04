@@ -32,6 +32,11 @@ dispatches:
   does not trip Trigger 1 or Trigger 4 based on the package's subject domain.
   Unless accompanied by material application code changes touching sensitive or
   non-obvious paths, dependency version updates are Lean.
+- **Validated routine development-dependency patches may use human glance.**
+  Before reviewer setup, the workflow's human-glance gate can recommend it for
+  stable patch bumps to existing development dependencies after release-note,
+  advisory, lockfile and current-head validation checks. This recommendation
+  changes neither classifier flags nor an active review run.
 - **Hosted review availability is configured at setup.** `review-setup` asks
   the user whether hosted review (`reviewit` — Gemini Flash + Copilot) is an
   option they want available. When a user declines or operates locally only,
