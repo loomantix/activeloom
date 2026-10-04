@@ -92,6 +92,8 @@
         "tests/__init__.py",
         "tests/conftest.py",
         "scripts/run-tests.py",
+        "scripts/select-focused-tests.py",
+        "scripts/require-regression-green.sh",
         "tests/test_test_lanes.py"
       ],
       "commands": [

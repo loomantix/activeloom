@@ -166,3 +166,44 @@ def test_bounded_runner_stops_its_workers(tmp_path: Path, cancel: bool) -> None:
         if process.poll() is None:
             process.kill()
         process.wait()
+
+
+SELECTOR = _load_script("select_focused_tests", ROOT / "scripts/select-focused-tests.py")
+
+
+def test_every_regression_marked_module_has_a_ci_trigger() -> None:
+    """A deferred module with no path mapping would run only in the weekly suite."""
+    marked = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "tests").glob("test_*.py")
+        if path.name != Path(__file__).name and "mark.regression" in path.read_text()
+    }
+    assert marked == set(SELECTOR.all_modules())
+
+
+@pytest.mark.parametrize(
+    ("paths", "expected"),
+    [
+        (["README.md", "docs/testing.md"], set()),
+        ([".claude/skills/agent-loop/scripts/agent-loop.sh"], {"tests/test_agent_loop.py"}),
+        ([".codex/skills/critique/scripts/review-chain-runner.py"], {"tests/test_review_chain_runner.py"}),
+        ([".agents/skills/critique/scripts/usage-snapshot.js"], {"tests/test_usage_snapshot.py"}),
+        (["scripts/sync-engine.py"], {"tests/test_sync_engine_integration.py"}),
+        (["cli/lib/upstream.js"], {"tests/test_cli_init_equivalence.py"}),
+        (["tests/test_review_push.py"], {"tests/test_review_push.py"}),
+        ([".claude/skills/agent-loop"], set()),
+        (["scripts/sync-engine.py.bak"], set()),
+    ],
+)
+def test_changed_paths_select_their_integration_modules(
+    paths: list[str], expected: set[str],
+) -> None:
+    selected = set(SELECTOR.select(paths))
+    assert expected <= selected
+    if not expected:
+        assert not selected
+
+
+@pytest.mark.parametrize("path", ["tests/conftest.py", "pyproject.toml", "scripts/run-tests.py"])
+def test_shared_test_machinery_selects_every_integration_module(path: str) -> None:
+    assert SELECTOR.select(["README.md", path]) == SELECTOR.all_modules()

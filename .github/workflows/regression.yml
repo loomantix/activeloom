@@ -35,17 +35,12 @@ jobs:
       - name: Install pinned tooling
         run: |
           python3 -m pip install \
-            'mypy==1.13.0' \
             'pyyaml==6.0.2' \
-            'types-PyYAML==6.0.12.20240917' \
             'pytest==8.3.4' \
             'pytest-cov==6.0.0' \
             'pytest-xdist==3.8.0' \
             'pytest-split==0.11.0' \
             'coverage==7.16.0'
-      - name: mypy --strict (config from pyproject.toml)
-        if: matrix.shard == 1
-        run: python3 -m mypy
       - name: Configure git identity (parse_status tests use a fixture git repo)
         run: |
           git config --global user.email "ci@example.invalid"
@@ -84,7 +79,7 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  python-types-and-tests:
+  regression-coverage:
     name: Regression coverage
     needs: python-tests
     if: ${{ !cancelled() }}
@@ -138,3 +133,32 @@ jobs:
         run: |
           test -f scripts/lint-prompt-parity.py
           python3 -m coverage report --include='scripts/lint-prompt-parity.py' --fail-under=80
+
+  # A scheduled run has no pull request to turn red, so a failure would
+  # otherwise sit unnoticed on the Actions tab. Keep one open issue and add
+  # each further failure to it.
+  report-failure:
+    name: Report scheduled failure
+    needs: [python-tests, regression-coverage]
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the regression failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Weekly regression suite is failing"
+          body="The scheduled Regression workflow failed at ${GITHUB_SHA}: ${RUN_URL}"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$title\"" --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi

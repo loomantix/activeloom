@@ -83,6 +83,15 @@ the runner deduplicates the fallback command when a change includes an unmapped
 path. One review owner runs validation; review lanes inspect the resulting
 evidence rather than launching additional suites.
 
+The `Focused integration tests` job closes the gap the fast lane leaves. For a
+ready PR or a push to `main` it passes the changed paths to
+`scripts/select-focused-tests.py` and runs the selected regression-marked
+modules in the focused lane; a change that selects nothing runs no tests. The
+script owns the path map. A new regression-marked module must be added to it,
+with the source paths that should trigger it, or `tests/test_test_lanes.py`
+fails. Local review does not run this selection, so the shared test host stays
+on the fast lane.
+
 `regression.yml` runs weekly on Sunday at 05:17 UTC and supports manual dispatch:
 
 ```bash
@@ -95,8 +104,14 @@ requires all shards to succeed, verifies a complete and disjoint partition,
 combines subprocess branch coverage, and enforces the existing 80% floors for
 the sync engine, signed-commit helper, renderer, and parity lint. A failure stays
 visible on that workflow and needs triage; a green fast check does not claim
-that full regression passed. Use a successful regression checkpoint when
-preparing a release or advancing a distribution ref.
+that full regression passed. A scheduled failure opens an issue titled
+"Weekly regression suite is failing", or comments on the open one. Before
+preparing a release or advancing a distribution ref, require a successful run
+at the exact commit:
+
+```bash
+scripts/require-regression-green.sh <commit-sha>
+```
 
 This repository's "unfiltered gating suite" means all tests selected by the
 fast lane. It does not mean the separately scheduled regression suite. Validation
