@@ -159,6 +159,7 @@ def test_a_later_pair_is_pinned_without_changing_earlier_ones(
     assert run(scripts, *base, "--reviewer", "claude").returncode == 0
     changed = profile_document()
     changed["engines"]["claude"]["effort"] = "max"
+    changed["engines"]["gemini"]["worker"]["model"] = "gemini-3.7-flash-high"
     Path(os.environ["ACTIVELOOM_REVIEW_PROFILE"]).write_text(json.dumps(changed))
     later = run(scripts, *base, "--worker", "gemini")
     assert later.returncode == 0, later.stderr

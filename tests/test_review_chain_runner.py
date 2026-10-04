@@ -3868,6 +3868,7 @@ def test_review_settings_are_pinned_once_and_named_in_the_attestation(
         shutil.copyfile(SCRIPTS / name, directory / "control" / name)
     profile = tmp_path / "review-profile.json"
     defaults = json.loads((SCRIPTS / "review-profile.defaults.json").read_text())
+    defaults["engines"]["claude"]["model"] = "opus"
     document = {
         "schema_version": 1,
         "defaults_version": defaults["defaults_version"],
@@ -3897,6 +3898,7 @@ def test_review_settings_are_pinned_once_and_named_in_the_attestation(
         "claude": pinned
     }
 
+    document["engines"]["claude"]["model"] = "sonnet"
     document["repos"]["example/repo"]["engines"]["claude"]["effort"] = "max"
     profile.write_text(json.dumps(document))
     assert runner.review_settings("claude") == pinned
