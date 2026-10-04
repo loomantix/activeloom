@@ -268,8 +268,12 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def save(path: Path, value: Any) -> None:
-    fd, name = tempfile.mkstemp(prefix=".checkpoint-", dir=path.parent)
+def save(path: Path, value: Any, *, staging: Path | None = None) -> None:
+    if staging is not None:
+        if staging.is_symlink():
+            raise Blocked("receipt staging cannot be a symlink")
+        staging.mkdir(mode=0o700, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".checkpoint-", dir=staging or path.parent)
     try:
         with os.fdopen(fd, "w") as stream:
             json.dump(value, stream, sort_keys=True)
@@ -590,6 +594,9 @@ def managed(
                     pass
                 signal_group(signal.SIGKILL)
                 child.wait()
+                if pending is not None:
+                    # Record success only after every owned cleanup step returns.
+                    setattr(pending, "cleanup_completed", True)
     finally:
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
@@ -698,7 +705,11 @@ class Runner:
             relative = str(path.relative_to(self.directory))
             if path.is_symlink():
                 raise Blocked("recovery evidence contains a symlink; preserve and reconcile it")
-            if path.is_file() and relative not in ("runner.lock", "abort.json"):
+            if (
+                path.is_file()
+                and relative not in ("runner.lock", "abort.json")
+                and not relative.startswith(".abort-staging/")
+            ):
                 files[relative] = digest(path)
         return files
 
@@ -725,10 +736,9 @@ class Runner:
         ):
             blockers.append("pending worker identity is missing; mutation outcome is uncertain")
         for attempt in attempts:
-            # A recorded failure means launch() saw the attempt end after its
-            # group cleanup; only an end the runner never observed is unknown.
-            if type(attempt.get("exit_status")) is not int and not attempt.get(
-                "failure_reason"
+            if (
+                type(attempt.get("exit_status")) is not int
+                and attempt.get("cleanup_completed") is not True
             ):
                 blockers.append("worker exit is unknown; mutation outcome is uncertain")
             group = attempt.get("process_group")
@@ -807,11 +817,11 @@ class Runner:
         else:
             if report["end"]:
                 raise Blocked("run ended outside this recovery; reconcile before abort")
-            save(path, receipt)
+            save(path, receipt, staging=self.directory / ".abort-staging")
         self.helper("controller", "finish-run", *self.scope(report["snapshot"]["head"]),
                     "--run-id", self.state["run_id"], "--outcome", "aborted")
         receipt["phase"] = "aborted"
-        save(path, receipt)
+        save(path, receipt, staging=self.directory / ".abort-staging")
         return receipt
 
     def verify_control(self) -> None:
@@ -1738,6 +1748,9 @@ class Runner:
             error = caught
             attempt["exit_status"] = getattr(caught, "exit_status", None)
             attempt["failure_reason"] = "execution_failed_or_unknown"
+            attempt["cleanup_completed"] = (
+                getattr(caught, "cleanup_completed", False) is True
+            )
             marker = folder / "launch.json"
             if marker.is_file():
                 evidence = read(marker)
@@ -3363,6 +3376,30 @@ def archive_terminal_checkpoint(directory: Path, *, aborted: bool = False) -> bo
     return True
 
 
+def verify_aborted_archive(args: argparse.Namespace, archive: Path) -> None:
+    if archive.is_symlink() or not archive.is_dir():
+        raise Blocked("preserved aborted archive must be a regular directory")
+    old = Runner(args, archive)
+    receipt = read(archive / "abort.json")
+    snapshot = receipt.get("snapshot") if isinstance(receipt, dict) else None
+    if (
+        not isinstance(snapshot, dict)
+        or receipt.get("version") != 1
+        or receipt.get("phase") != "aborted"
+        or receipt.get("evidence_sha256") != json_digest(snapshot)
+        or old.state.get("version") != 2
+        or old.state.get("run_id") != args.restart_aborted
+        or snapshot.get("run_id") != args.restart_aborted
+        or snapshot.get("checkpoint_head") != old.state.get("head")
+        or old.state.get("config", {}).get("repo") != args.repo
+        or old.state.get("config", {}).get("pr") != args.pr
+        or not old.state.get("control_hashes")
+        or snapshot.get("files") != old.recovery_files()
+    ):
+        raise Blocked("preserved aborted archive conflicts with its receipt")
+    old.verify_control()
+
+
 def recovery_main(arguments: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Inspect or explicitly abort an interrupted review; never launches a worker.")
     parser.add_argument("--repo", required=True)
@@ -3565,6 +3602,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.restart_aborted and (directory / "state.json").exists():
                 saved = read(directory / "state.json")
                 if saved.get("config", {}).get("restart_aborted") == args.restart_aborted:
+                    try:
+                        verify_aborted_archive(
+                            args, directory.with_name(directory.name + "-run-" + args.restart_aborted)
+                        )
+                    except (Blocked, OSError, ValueError, KeyError) as error:
+                        print(f"review-chain blocked: {error}; checkpoint: {directory}", file=sys.stderr)
+                        return 2
                     args.resume = True
             if args.restart and not args.resume:
                 try:
@@ -3583,6 +3627,7 @@ def main(argv: list[str] | None = None) -> int:
                         archive = directory.with_name(directory.name + "-run-" + args.restart_aborted)
                         if (directory / "state.json").exists() or not (archive / "abort.json").is_file():
                             raise Blocked("restart authorization does not name the preserved aborted checkpoint")
+                        verify_aborted_archive(args, archive)
                     archived = archive_terminal_checkpoint(directory, aborted=aborted)
                 except (Blocked, OSError, ValueError, KeyError) as error:
                     print(

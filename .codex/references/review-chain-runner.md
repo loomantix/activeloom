@@ -458,8 +458,8 @@ files at the printed checkpoint path. Exit 2 with a report means the listed
 blockers need reconciliation. Exit 2 with only a `review-chain blocked:` line
 means a mandatory condition failed and no digest was produced. A clean dedicated worktree, matching local/remote/PR heads,
 unchanged authenticated actor, original controller hashes, and the same run
-identity are mandatory. Linux `/proc` must be readable. An attempt whose end
-the runner never observed, live process groups, unreadable process evidence, unfinished terminal writes,
+identity are mandatory. Linux `/proc` must be readable. An unknown exit without
+an explicit cleanup-completed receipt, live process groups, unreadable process evidence, unfinished terminal writes,
 or conflicting terminal markers refuse abort. Do not edit a checkpoint to
 manufacture proof of a worker exit or discard it to obtain another budget.
 
