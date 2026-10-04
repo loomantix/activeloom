@@ -76,8 +76,11 @@ keep their existing owners. New templates need an explicit destination entry;
 unknown or missing templates fail. Sources and destinations reject symlinks and
 traversal, and missing or cyclic partials fail before publishing any outputs.
 To retire a composed document, move its destination into
-`RETIRED_COMPOSED_DOCUMENTS`, remove its template, and render; remove the retired
-entry after the generated inventory no longer names it.
+`RETIRED_COMPOSED_DOCUMENTS`, remove its template and its `.gitattributes` line,
+and render; remove the retired entry after the generated inventory no longer
+names it. When a profile's `prompt_stack` names the document, drop that entry and
+advance `PROMPT_STACK_VERSION` in the same change: the render refuses a stack
+entry it no longer generates.
 
 Handlebars is a build dependency in the private `prompts/package.json`; consumers
 receive plain Markdown and require no template engine. Composition accepts only
@@ -87,6 +90,24 @@ only substitution interface. Templates and partials are covered by skill-content
 lint, and rendered Markdown is formatted and compared by the existing check.
 `.gitattributes` marks the exact composed outputs as generated so GitHub collapses
 their diffs by default; source templates and partials remain visible.
+
+Because every `{{` is parsed, a few things that are ordinary in prompt prose fail
+composition:
+
+- A literal `{{` — an Actions `${{ … }}` expression, a `gh --template` example —
+  must be written `\{{`.
+- Handlebars comments (`{{! … }}`) and whitespace control (`{{~> … }}`) are
+  rejected along with everything else that is not a plain include.
+- A partial is addressed by its path under `prompts/partials/` without the
+  suffix; each segment starts with a lower-case letter and holds only lower-case
+  letters, digits, and hyphens.
+- Every file under `prompts/partials/` must end in `.hbs`, and every file under
+  `prompts/review/` must have a `COMPOSED_DOCUMENTS` entry; a stray file in
+  either tree fails the render.
+
+Put an include on its own unindented line and end the partial with a newline. The
+include line contributes no newline of its own, and indentation before it reaches
+only the partial's first line.
 
 Migrate shared policy without changing rendered bytes or prompt-stack identity.
 For later behavior changes, edit the partial, advance `PROMPT_STACK_VERSION`

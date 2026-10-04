@@ -565,16 +565,20 @@ def render_composed_documents(
             ["node", str(COMPOSER_PATH)],
             input=json.dumps(payload),
             text=True,
+            encoding="utf-8",
             capture_output=True,
             check=True,
         )
     except FileNotFoundError:
         raise RuntimeError("Node is required for prompt composition") from None
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            f"{exc.stderr.strip()}\nInstall authoring dependencies with "
-            "`npm ci --prefix prompts --ignore-scripts`."
-        ) from exc
+        message = exc.stderr.strip()
+        if "Cannot find module" in message:
+            message += (
+                "\nInstall authoring dependencies with "
+                "`npm ci --prefix prompts --ignore-scripts`."
+            )
+        raise RuntimeError(message) from exc
     rendered = json.loads(result.stdout)
     if (
         not isinstance(rendered, dict)

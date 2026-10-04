@@ -122,7 +122,32 @@ def test_symlinked_source_components_fail(composed: Harness, path: str) -> None:
     moved = composed.root / "external"
     target.rename(moved)
     target.symlink_to(moved, target_is_directory=moved.is_dir())
-    with pytest.raises(ValueError, match="symlink"):
+    with pytest.raises(ValueError, match="must not (contain|be) symlinks"):
+        composed.render()
+
+
+def test_authoring_error_names_the_template_without_install_hint(
+    composed: Harness,
+) -> None:
+    write(
+        composed.root,
+        "prompts/review/codex/skills/critique/SKILL.md.hbs",
+        "{{#if engine}}hidden{{/if}}\n",
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        composed.render()
+    assert ".codex/skills/critique/SKILL.md: only static partial" in str(excinfo.value)
+    assert "npm ci" not in str(excinfo.value)
+
+
+def test_missing_dependency_names_the_install_command(
+    composed: Harness,
+    render_prompts: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composer = write(composed.root, "compose.cjs", "require('./absent-module');\n")
+    monkeypatch.setattr(render_prompts, "COMPOSER_PATH", composer)
+    with pytest.raises(RuntimeError, match="npm ci --prefix prompts --ignore-scripts"):
         composed.render()
 
 
@@ -141,7 +166,7 @@ def test_destination_symlink_does_not_write_outside_repo(
     target = composed.root / ".codex/skills/critique/SKILL.md"
     target.parent.mkdir(parents=True)
     target.symlink_to(outside)
-    with pytest.raises(ValueError, match="symlink"):
+    with pytest.raises(ValueError, match="must not contain symlinks"):
         render_prompts._publish_outputs(
             out, written, [], render_prompts.load_profiles(), []
         )

@@ -28,7 +28,10 @@ python3 scripts/run-tests.py regression
 The runner uses the current Python interpreter and runs from the repository
 root. Install pytest, pytest-xdist, and PyYAML in that interpreter's environment;
 the pinned versions and mypy dependencies are in [CI](../.github/workflows/ci.yml).
-Use the repository's `.nvmrc` runtime for tests that invoke Node. Static checks,
+Use the repository's `.nvmrc` runtime for tests that invoke Node. The fast lane
+includes prompt-composition tests that run the real composer, so install its
+pinned dependency once per checkout or worktree with
+`npm ci --prefix prompts --ignore-scripts`. Static checks,
 prompt rendering, CLI tests, and review-ledger package validation keep their
 existing commands in CI and the review contract.
 

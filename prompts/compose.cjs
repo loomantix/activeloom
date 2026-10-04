@@ -2,7 +2,12 @@ const Handlebars = require('./node_modules/handlebars');
 
 // Composition is static: engine-specific structure lives in its own template.
 function parseTemplate(name, source) {
-  const ast = Handlebars.parse(source);
+  let ast;
+  try {
+    ast = Handlebars.parse(source);
+  } catch (error) {
+    throw new Error(`${name}: ${error.message}`);
+  }
   const dependencies = [];
   for (const node of ast.body) {
     if (node.type === 'ContentStatement') continue;
@@ -30,16 +35,18 @@ function compose({ partials, templates }) {
     ]),
   );
   const visited = new Set();
-  function visit(name, ancestors = new Set()) {
+  function visit(name, includedBy, ancestors = new Set()) {
     if (ancestors.has(name)) throw new Error(`Partial cycle at ${name}`);
     if (visited.has(name)) return;
     const partial = parsed.get(name);
-    if (!partial) throw new Error(`Missing partial: ${name}`);
+    if (!partial) throw new Error(`${includedBy}: Missing partial: ${name}`);
     const next = new Set(ancestors).add(name);
-    for (const dependency of partial.dependencies) visit(dependency, next);
+    for (const dependency of partial.dependencies) {
+      visit(dependency, name, next);
+    }
     visited.add(name);
   }
-  for (const name of parsed.keys()) visit(name);
+  for (const name of parsed.keys()) visit(name, name);
 
   const engine = Handlebars.create();
   const options = {
@@ -54,7 +61,7 @@ function compose({ partials, templates }) {
   return Object.fromEntries(
     Object.entries(templates).map(([name, source]) => {
       const { ast, dependencies } = parseTemplate(name, source);
-      for (const dependency of dependencies) visit(dependency);
+      for (const dependency of dependencies) visit(dependency, name);
       return [name, engine.compile(ast, options)({})];
     }),
   );

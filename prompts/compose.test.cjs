@@ -63,11 +63,22 @@ for (const source of [
 test('missing and cyclic partials fail before producing output', () => {
   assert.throws(
     () => compose({ partials: {}, templates: { entry: '{{> missing}}' } }),
-    /Missing partial/,
+    /^Error: entry: Missing partial: missing$/,
+  );
+  assert.throws(
+    () => compose({ partials: { outer: '{{> missing}}' }, templates: {} }),
+    /^Error: outer: Missing partial: missing$/,
   );
   assert.throws(
     () => compose({ partials: { a: '{{> b}}', b: '{{> a}}' }, templates: {} }),
     /Partial cycle/,
+  );
+});
+
+test('a parse error names the template that caused it', () => {
+  assert.throws(
+    () => compose({ partials: {}, templates: { entry: '{{#if x}}open' } }),
+    /^Error: entry: Parse error on line 1/,
   );
 });
 
