@@ -737,6 +737,24 @@ function replayFingerprint(record: TelemetryRecord): string {
   });
 }
 
+/**
+ * Report whether two stored records are replays of one pass rather than
+ * conflicting claims. An unmeasured duration matches any measured one.
+ */
+export function isTelemetryReplay(
+  left: TelemetryRecord,
+  right: TelemetryRecord,
+): boolean {
+  const fill = (record: TelemetryRecord, other: TelemetryRecord) =>
+    record.durationSeconds === null
+      ? { ...record, durationSeconds: other.durationSeconds }
+      : record;
+  return (
+    replayFingerprint(fill(left, right)) ===
+    replayFingerprint(fill(right, left))
+  );
+}
+
 /** Describe a thrown value without assuming it is an Error instance. */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

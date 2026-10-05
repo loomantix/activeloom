@@ -61,6 +61,13 @@ import {
   readRoster,
   verifyCoverage,
 } from './roster.js';
+import {
+  exportTelemetry,
+  parseAllowedLogins,
+  parseExportBound,
+  parsePullRequestNumbers,
+  prCommentSource,
+} from './export.js';
 import { formatFindings } from './format.js';
 import { resetGitHubRunner } from './github.js';
 import type {
@@ -152,6 +159,10 @@ interface CliArgs {
   promptSurfaces?: string[] | undefined;
   truncated?: boolean | undefined;
   dryRun?: boolean | undefined;
+  prs?: string | undefined;
+  since?: string | undefined;
+  until?: string | undefined;
+  allowedLogins?: string | undefined;
 }
 
 function writeSortedJson(value: unknown): void {
@@ -494,6 +505,18 @@ function parseCliArgs(argv: string[]): CliArgs {
         args.reviewers = parseVal(arg);
         break;
       }
+      case '--prs':
+        args.prs = parseVal(arg);
+        break;
+      case '--since':
+        args.since = parseVal(arg);
+        break;
+      case '--until':
+        args.until = parseVal(arg);
+        break;
+      case '--allowed-logins':
+        args.allowedLogins = parseVal(arg);
+        break;
       default:
         fail(`unknown argument: ${arg}`);
     }
@@ -1161,6 +1184,56 @@ function runCliCommand(argv: string[]): number {
         outcome = telemetryFailure(error);
       }
       writeSortedJson(outcome);
+      break;
+    }
+    case 'export': {
+      if (!args.repo) {
+        fail('export requires --repo');
+      }
+      const byNumber = args.pr !== undefined || args.prs !== undefined;
+      const byDate = args.since !== undefined || args.until !== undefined;
+      if (
+        byNumber === byDate ||
+        (args.pr !== undefined && args.prs !== undefined)
+      ) {
+        fail(
+          'export requires exactly one selection: --pr, --prs, or --since and/or --until',
+        );
+      }
+      const selection = byNumber
+        ? {
+            numbers:
+              args.pr !== undefined
+                ? [args.pr]
+                : parsePullRequestNumbers(args.prs!),
+          }
+        : {
+            since:
+              args.since === undefined
+                ? undefined
+                : parseExportBound(args.since, '--since'),
+            until:
+              args.until === undefined
+                ? undefined
+                : parseExportBound(args.until, '--until'),
+          };
+      const trailer = exportTelemetry({
+        repo: args.repo,
+        sources: [prCommentSource({ repo: args.repo, selection })],
+        allowedLogins:
+          args.allowedLogins === undefined
+            ? undefined
+            : parseAllowedLogins(args.allowedLogins),
+        write: (line) => process.stdout.write(`${line}\n`),
+        warn: (message) =>
+          process.stderr.write(`review-ledger export: ${message}\n`),
+      });
+      if (!trailer.complete) {
+        process.stderr.write(
+          'review-ledger export: incomplete; see the trailer for the sources that fell short\n',
+        );
+        return 1;
+      }
       break;
     }
     case 'read-result': {

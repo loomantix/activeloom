@@ -382,6 +382,59 @@ telemetry. Callers must exclude them by marker prefix with
 `isTelemetryComment` or `excludeTelemetryComments`, so a record type added
 later is excluded without teaching the caller each versioned marker.
 
+### Export Records
+
+`export` reads telemetry records back out as JSONL on stdout. It is run by a
+person or a job that wants the numbers, never by a review pass: no skill,
+prompt, or runner calls it, and a reviewer must not be handed its output.
+
+```bash
+# By pull request number: one, a range, or a list
+review-ledger export --repo owner/repo --pr 123
+review-ledger export --repo owner/repo --prs 100-140,152 > records.jsonl
+
+# By date: pull requests updated on or after --since and created on or
+# before --until (a bare date covers its whole UTC day)
+review-ledger export --repo owner/repo --since 2026-09-01 --until 2026-09-30
+
+# Also require the comment author to be a named login
+review-ledger export --repo owner/repo --prs 100-140 --allowed-logins octocat
+```
+
+Each record is one line, followed by a trailer:
+
+```json
+{"schema":"activeloom.review-metrics.export/v1","source":{"kind":"pr-comment","repo":"owner/repo","issue":123,"commentId":1234567890,"authorAssociation":"MEMBER","createdAt":"2026-10-05T15:43:03Z","updatedAt":"2026-10-05T15:51:10Z"},"record":{"version":1,"idempotencyKey":"…","pr":123,"…":"…"}}
+{"schema":"activeloom.review-metrics.export-trailer/v1","sources":[{"kind":"pr-comment","issue":123,"commentsReported":25,"commentsRead":25}],"records":10,"duplicatesCollapsed":0,"conflicts":0,"rejectedAuthor":0,"malformed":0,"complete":true}
+```
+
+Both shapes are published as a JSON Schema at
+[`protocol/review-metrics-export.v1.schema.json`](./protocol/review-metrics-export.v1.schema.json).
+The schema version covers the envelope; `record` keeps its own `version`.
+
+- **Read-only.** Every request is a `GET` through `gh api`, so a token with read
+  access is enough. Nothing is written to GitHub.
+- **Selection is by pull request, not by record.** Every record on a selected
+  pull request is exported, whenever it was emitted. A number in a range that is
+  an issue rather than a pull request is skipped with a note on stderr.
+- **Authors are checked before a record is parsed.** A record is accepted only
+  when the comment's `author_association` is `OWNER`, `MEMBER`, or
+  `COLLABORATOR`. `--allowed-logins` narrows that further; it never admits an
+  author the association rule rejects.
+- **Nothing is skipped silently.** Every comment carrying a telemetry marker
+  lands in exactly one trailer count: `records`, `duplicatesCollapsed` (a
+  replay of an exported record), `conflicts` (the same `idempotencyKey` with
+  different content; the earliest is exported and the rest are named on
+  stderr), `rejectedAuthor`, or `malformed`.
+- **`complete` is checked, not assumed.** It is true only when, for every pull
+  request read, the comments read equal the count GitHub reports. A pull request
+  or comment listing that could not be read appears with `null` in place of the
+  count. An incomplete export still writes its records and trailer, then exits 1.
+  Output with no trailer was cut short.
+- **Records are ordered** by the comment's creation time. `updatedAt` moves when
+  a duration is enriched in place, so a downstream table can upsert on
+  `record.idempotencyKey`.
+
 ### Reconcile & Verify Ledger
 
 ```bash
