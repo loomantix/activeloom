@@ -107,6 +107,23 @@ def checkpoint(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     return path, json.loads(path.read_text())
 
 
+def set_phase(
+    fixture: tuple[Path, Path, Path, Path],
+    root: str,
+    path: Path,
+    phase: str,
+    base: str,
+    head: str,
+) -> None:
+    """Advance a checkpoint as the controller would before an interruption."""
+    helper = fixture[0] / root / "skills/agent-loop/scripts/agent-loop-state.py"
+    subprocess.run(
+        ["python3", str(helper), "update", "--file", str(path), "--phase", phase,
+         "--round", "1", "--base-sha", base, "--head-sha", head],
+        check=True, capture_output=True, text=True,
+    )  # fmt: skip
+
+
 def test_completed_worker_validation_failure_resumes_without_replay(
     consumer: tuple[Path, Path, Path, Path],
     harness: str,
@@ -146,10 +163,19 @@ def test_completed_worker_validation_failure_resumes_without_replay(
     assert final["headSha"] == state["headSha"]
 
 
+@pytest.mark.parametrize(
+    ("phase", "refusal"),
+    (
+        ("worker-complete", "Pre-publication head changed"),
+        ("integrating", "Interrupted integration does not match its recorded parents"),
+    ),
+)
 def test_preparation_failure_and_head_drift_never_publish(
     consumer: tuple[Path, Path, Path, Path],
     harness: str,
     tmp_path: Path,
+    phase: str,
+    refusal: str,
 ) -> None:
     stopped = run_loop(
         consumer, harness, tmp_path, ["--issues", "71"], preparation_hook="exit 42"
@@ -158,6 +184,10 @@ def test_preparation_failure_and_head_drift_never_publish(
     path, state = checkpoint(tmp_path)
     assert state["phase"] == "worker-complete"
     assert "pr create" not in consumer[3].joinpath("gh.log").read_text()
+    if phase == "integrating":
+        # A commit that is not the recorded merge must not pass as integration.
+        target = _run_git("rev-parse", "main", cwd=consumer[1]).stdout.strip()
+        set_phase(consumer, harness, path, phase, target, str(state["headSha"]))
     worktree = str(state["worktree"])
     subprocess.run(
         [
@@ -176,7 +206,7 @@ def test_preparation_failure_and_head_drift_never_publish(
     )
     resumed = run_loop(consumer, harness, tmp_path, ["--resume-run", str(path)])
     assert resumed.returncode != 0
-    assert "Pre-publication head changed" in resumed.stderr
+    assert refusal in resumed.stderr
     assert "pr create" not in consumer[3].joinpath("gh.log").read_text()
 
 
@@ -373,8 +403,18 @@ if [ -f artifact-input ]; then cmp artifact-input .generated; test ! -f "$AGENT_
     assert state["phase"] == "finalized"
 
 
-@pytest.mark.parametrize("marker", ("pr-closed", "pr-ready"))
-def test_resume_never_adopts_a_closed_or_ready_pr(
+MISMATCHED_PR_ROWS = {
+    "wrong-head": ("'sha': remote_head", "'sha': '0' * 40"),
+    "wrong-base": ("'base': {'ref': base_name", "'base': {'ref': 'elsewhere'"),
+    "wrong-base-repo": (
+        "'base': {'ref': base_name, 'repo': {'full_name': 'fixture/consumer'}}",
+        "'base': {'ref': base_name, 'repo': {'full_name': 'other/consumer'}}",
+    ),
+}
+
+
+@pytest.mark.parametrize("marker", ("pr-closed", "pr-ready", *MISMATCHED_PR_ROWS))
+def test_resume_never_adopts_a_closed_ready_or_mismatched_pr(
     consumer: tuple[Path, Path, Path, Path],
     harness: str,
     tmp_path: Path,
@@ -385,7 +425,13 @@ def test_resume_never_adopts_a_closed_or_ready_pr(
     assert stopped.returncode != 0
     path, state = checkpoint(tmp_path)
     assert state["phase"] == "pushed"
-    (consumer[3] / marker).touch()
+    if marker in MISMATCHED_PR_ROWS:
+        gh = consumer[2] / "gh"
+        original, mismatched = MISMATCHED_PR_ROWS[marker]
+        assert original in gh.read_text()
+        gh.write_text(gh.read_text().replace(original, mismatched))
+    else:
+        (consumer[3] / marker).touch()
     resumed = run_loop(consumer, harness, tmp_path, ["--resume-run", str(path)])
     assert resumed.returncode != 0
     assert "Existing initial PR does not match the saved publication" in resumed.stderr
@@ -425,6 +471,54 @@ def test_resume_never_adopts_a_remote_branch_without_publication_intent(
     assert "Remote branch existed before publication intent" in resumed.stderr
     assert json.loads(path.read_text())["phase"] in ("worker-complete", "integrated")
     assert "pr create" not in consumer[3].joinpath("gh.log").read_text()
+
+
+@pytest.mark.parametrize("phase", ("publishing", "pushed"))
+def test_resume_honours_recorded_publication_intent(
+    consumer: tuple[Path, Path, Path, Path],
+    harness: str,
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    failure = consumer[3] / "fail-validation"
+    failure.touch()
+    gate = 'test ! -f "$AGENT_STATE_DIR/fail-validation"'
+    stopped = run_loop(
+        consumer, harness, tmp_path, ["--issues", "71"], validation_hook=gate
+    )
+    assert stopped.returncode != 0
+    path, state = checkpoint(tmp_path)
+    assert state["phase"] == "worker-complete"
+    head, base = str(state["headSha"]), str(state["baseSha"])
+    set_phase(consumer, harness, path, "publishing", base, head)
+    if phase == "publishing":
+        # Interrupted after the create-only push, before the pushed checkpoint.
+        _run_git(
+            "push",
+            str(consumer[1]),
+            f"{head}:refs/heads/{state['branch']}",
+            cwd=Path(str(state["worktree"])),
+        )
+    else:
+        # The recorded push is no longer on the remote.
+        set_phase(consumer, harness, path, "pushed", base, head)
+    failure.unlink()
+    resumed = run_loop(
+        consumer, harness, tmp_path, ["--resume-run", str(path)], validation_hook=gate
+    )
+    gh_log = consumer[3].joinpath("gh.log").read_text()
+    if phase == "publishing":
+        assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+        assert gh_log.count("pr create") == 1
+        assert json.loads(path.read_text())["phase"] == "finalized"
+    else:
+        assert resumed.returncode != 0
+        assert "Previously pushed branch disappeared" in resumed.stderr
+        assert "pr create" not in gh_log
+        assert json.loads(path.read_text())["phase"] == "pushed"
+    assert (
+        consumer[3].joinpath("events.log").read_text().splitlines().count("worker") == 1
+    )
 
 
 def test_pre_worker_failure_offers_no_resume_and_batch_resume_names_the_bail(

@@ -53,7 +53,7 @@ Options:
 | `--issues N,N,...`    | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
 | `--iterations N`      | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
 | `--include-assigned`  | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
-| `--resume-run FILE`   | Resume review/finalization from a private contract-v3/v4 run-state file after re-attesting its issue, worktree, branch, PR, base, and head.                                   |
+| `--resume-run FILE`   | Resume pre-publication, review, or finalization from a private contract-v3/v4 run-state file after re-attesting its issue, worktree, branch, PR, base, and head.              |
 | `--resume-batch FILE` | Resume an ordered contract-v3/v4 allowlist from its private batch-state file. It cannot be combined with `--resume-run`, `--issues`, or `--dry-run`.                          |
 | `--dry-run`           | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
 
@@ -373,8 +373,9 @@ non-convergence failures also preserve the worktree and draft PR. Never reset,
 reuse, clean, or delete a dirty recovery worktree.
 
 Contract v3/v4 creates an owner-only atomic `run-state.json` before worker
-execution and checkpoints every review round plus convergence. On a review or
-finalization interruption, use the exact `--resume-run <state-file>` command
+execution and checkpoints every review round plus convergence. On a
+pre-publication, review, or finalization interruption, use the exact
+`--resume-run <state-file>` command
 printed by the wrapper. Recovery re-attests repository identity, issue
 assignment and original requirement digests, worktree ancestry, branch, PR
 identity, base, and head before it continues. The original run and every resume
@@ -385,8 +386,10 @@ If a newly added claim cannot be rolled back before worktree creation, stop and
 manually inspect/unassign it. Publication is not atomic: after a push succeeds,
 an attestation, upstream-setting, or PR-creation failure can leave the captured
 SHA on the remote issue branch, and a failed post-create attestation can leave
-an open PR when automatic close also fails. Preserve the worktree, inspect both
-remote branch and PR state, and retry or clean up only after explicit SHA
+an open PR when automatic close also fails. Preserve the worktree and use the
+printed `--resume-run`, which adopts only the recorded publication; do not
+clean up its remote branch or draft PR by hand. Without a checkpoint, inspect
+both remote branch and PR state, and retry or clean up only after explicit SHA
 verification; a blind rerun will reject the existing remote branch.
 
 Successful publication removes the clean linked worktree but retains the local

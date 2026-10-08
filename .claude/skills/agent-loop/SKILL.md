@@ -40,7 +40,7 @@ from where it paused. Report any other exit verbatim and stop.
 | `--issues N,N,...`    | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
 | `--iterations N`      | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
 | `--include-assigned`  | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
-| `--resume-run FILE`   | Resume one contract-v3 review/finalization checkpoint.                                                                                                                        |
+| `--resume-run FILE`   | Resume one contract-v3 pre-publication, review, or finalization checkpoint.                                                                                                   |
 | `--resume-batch FILE` | Resume an ordered contract-v3 allowlist from its private batch-state file. It cannot be combined with `--resume-run`, `--issues`, or `--dry-run`.                             |
 | `--dry-run`           | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
 
