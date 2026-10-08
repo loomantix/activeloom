@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 from contextlib import ExitStack
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import io
@@ -359,6 +360,50 @@ def darwin_process_cwd(pid: int) -> Path:
     if fields[0] != f"p{pid}".encode() or len(paths) != 1 or not paths[0].startswith("/"):
         raise OSError("process working directory incomplete")
     return Path(paths[0]).resolve()
+
+
+def darwin_protected_service(pid: int) -> bool:
+    """Identify SIP-protected Apple services, never user-installed reviewers."""
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+    probe = libproc.proc_pidpath
+    probe.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    probe.restype = ctypes.c_int
+    path = ctypes.create_string_buffer(4096)
+    if probe(pid, path, ctypes.sizeof(path)) <= 0:
+        raise OSError("process executable unavailable")
+    executable = Path(os.fsdecode(path.value)).resolve()
+    service = executable.is_relative_to("/usr/libexec") or (
+        executable.is_relative_to("/System/Library")
+        and ("XPCServices" in executable.parts or executable.is_relative_to("/System/Library/CoreServices"))
+    )
+    if not service:
+        return False
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+    status = libc.csops
+    status.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
+    status.restype = ctypes.c_int
+    flags = ctypes.c_uint32()
+    if status(pid, 0, ctypes.byref(flags), ctypes.sizeof(flags)) != 0:
+        raise OSError("process code signature unavailable")
+    # CS_VALID | CS_RESTRICT | CS_NO_UNTRUSTED_HELPERS | CS_PLATFORM_BINARY.
+    required = 0x06000801
+    return flags.value & required == required and not flags.value & 0x10000000  # CS_DEBUGGED
+
+
+def darwin_process_started_at(pid: int) -> float:
+    """Read the kernel process creation time, which survives exec."""
+    result = subprocess.run(
+        ["/bin/ps", "-p", str(pid), "-o", "lstart="],
+        capture_output=True, text=True, timeout=10,
+        env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+    )
+    if result.returncode:
+        raise OSError("process creation time unavailable")
+    try:
+        created = datetime.strptime(result.stdout.strip(), "%a %b %d %H:%M:%S %Y")
+    except ValueError:
+        raise OSError("process creation time incomplete") from None
+    return created.replace(tzinfo=timezone.utc).timestamp()
 
 
 def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -773,26 +818,49 @@ class Runner:
 
     def darwin_recovery_workers(self) -> list[int]:
         try:
-            rows = command(["/bin/ps", "-axo", "pid=,ppid=,uid="])
+            rows = command(["/bin/ps", "-axo", "pid=,ppid=,uid=,stat="])
             processes = {}
             for row in rows.splitlines():
-                pid, parent, uid = map(int, row.split())
-                processes[pid] = (parent, uid)
+                fields = row.split()
+                pid, parent, uid = map(int, fields[:3])
+                processes[pid] = (parent, uid, fields[3])
             ancestors = {os.getpid()}
             parent = os.getppid()
             while parent > 0 and parent not in ancestors:
                 ancestors.add(parent)
                 parent = processes[parent][0]
-        except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+        except (OSError, ValueError, KeyError, IndexError, subprocess.TimeoutExpired):
             raise Blocked("cannot identify recovery process owners and ancestors") from None
         found = []
         unreadable = []
-        for pid, (_, uid) in processes.items():
-            if uid != os.getuid() or pid in ancestors:
+        started_at = getattr(self, "recovery_run_started_at", None)
+        for pid, (parent, uid, status) in processes.items():
+            if uid != os.getuid() or pid in ancestors or status.startswith("Z"):
                 continue
             try:
-                env = darwin_process_environment(pid)
                 cwd = darwin_process_cwd(pid)
+                if cwd.is_relative_to(self.state["config"]["worktree"]):
+                    found.append(pid)
+                    continue
+                try:
+                    env = darwin_process_environment(pid)
+                except OSError:
+                    # Workers start in new sessions and cannot join an older
+                    # desktop session. Check the leader rather than this PID:
+                    # desktop services can spawn new helpers after review starts.
+                    # The minute margin accommodates small clock skew.
+                    if started_at is not None:
+                        if darwin_process_started_at(pid) + 60 < started_at:
+                            continue
+                        session = os.getsid(pid)
+                        if session != pid and darwin_process_started_at(session) + 60 < started_at:
+                            continue
+                    # SIP hides Apple service environments. Only launchd-owned,
+                    # kernel-verified protected services outside the worktree are
+                    # exempt; shells, interpreters and reviewer binaries are not.
+                    if parent == 1 and darwin_protected_service(pid):
+                        continue
+                    raise
                 result = os.fsdecode(env.get(b"AGENT_LOOP_REVIEW_RESULT_FILE", b""))
                 if (
                     env.get(b"ACTIVELOOM_RUN_ID") == self.state["run_id"].encode()
@@ -842,6 +910,14 @@ class Runner:
         self.verify_control()
         head = self.boundary()
         ledger = self.recovery_ledger(head)
+        if sys.platform == "darwin":
+            try:
+                started = datetime.fromisoformat(ledger["started_at"].replace("Z", "+00:00"))
+                if started.tzinfo is None:
+                    raise ValueError("run timestamp has no timezone")
+                self.recovery_run_started_at = started.timestamp()
+            except (KeyError, TypeError, ValueError, AttributeError):
+                raise Blocked("authenticated run creation time is unavailable") from None
         blockers = []
         workers = self.recovery_workers()
         if workers:

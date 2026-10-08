@@ -12,6 +12,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -5013,7 +5014,7 @@ def test_darwin_recovery_probe_matches_worker_identity(
     monkeypatch.setattr(module.os, 'getpid', lambda: 10)
     monkeypatch.setattr(module.os, 'getppid', lambda: 9)
     monkeypatch.setattr(module.os, 'getuid', lambda: 501)
-    monkeypatch.setattr(module, 'command', lambda _: '1 0 0\n9 1 501\n10 9 501\n20 1 501\n30 1 502')
+    monkeypatch.setattr(module, 'command', lambda _: '1 0 0 S\n9 1 501 S\n10 9 501 S\n20 1 501 S\n30 1 502 S')
     env = {b'PATH': b'/usr/bin'}
     if identity == 'run':
         env[b'ACTIVELOOM_RUN_ID'] = runner.state['run_id'].encode()
@@ -5027,7 +5028,7 @@ def test_darwin_recovery_probe_matches_worker_identity(
     cwd = tmp_path / ('worktree/child' if identity == 'cwd' else 'worktree-other')
     monkeypatch.setattr(module, 'darwin_process_cwd', lambda _: cwd)
     assert runner.recovery_workers() == ([] if identity == 'unrelated' else [20])
-    assert seen == [20]
+    assert seen == ([] if identity == 'cwd' else [20])
 
 
 @pytest.mark.fast
@@ -5039,11 +5040,11 @@ def test_darwin_recovery_probe_does_not_ignore_unreadable_live_processes(
     module = load('review-chain-runner')
     runner = module.Runner.__new__(module.Runner)
     runner.directory = tmp_path
-    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path)}}
+    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path / 'worktree')}}
     monkeypatch.setattr(module.os, 'getpid', lambda: 10)
     monkeypatch.setattr(module.os, 'getppid', lambda: 1)
     monkeypatch.setattr(module.os, 'getuid', lambda: 501)
-    monkeypatch.setattr(module, 'command', lambda _: '1 0 0\n10 1 501\n20 1 501')
+    monkeypatch.setattr(module, 'command', lambda _: '1 0 0 S\n10 1 501 S\n20 1 501 S')
     monkeypatch.setattr(module, 'darwin_process_environment', lambda _: {b'PATH': b'/usr/bin'})
     monkeypatch.setattr(module, 'darwin_process_cwd', lambda _: tmp_path)
     def unreadable(pid: int) -> Any:
@@ -5077,6 +5078,129 @@ def test_darwin_recovery_probe_refuses_missing_ancestry(
     monkeypatch.setattr(module, 'command', lambda _: rows)
     with pytest.raises(module.Blocked, match='cannot identify recovery process owners and ancestors'):
         runner.darwin_recovery_workers()
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize('protected', [False, True, None])
+@pytest.mark.parametrize('parent', [1, 9])
+@pytest.mark.parametrize('in_worktree', [False, True])
+def test_darwin_hidden_environment_requires_protected_service_outside_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, protected: bool | None,
+    parent: int, in_worktree: bool,
+) -> None:
+    module = load('review-chain-runner')
+    runner = module.Runner.__new__(module.Runner)
+    runner.directory = tmp_path / 'checkpoint'
+    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path / 'worktree')}}
+    monkeypatch.setattr(module.os, 'getpid', lambda: 10)
+    monkeypatch.setattr(module.os, 'getppid', lambda: 1)
+    monkeypatch.setattr(module.os, 'getuid', lambda: 501)
+    monkeypatch.setattr(module, 'command', lambda _: f'1 0 0 S\n10 1 501 S\n20 {parent} 501 S')
+    monkeypatch.setattr(module, 'darwin_process_cwd', lambda _: tmp_path / ('worktree' if in_worktree else 'outside'))
+    def environment(pid: int) -> dict[bytes, bytes]:
+        raise OSError('hidden environment')
+    def service(pid: int) -> bool:
+        if protected is None:
+            raise OSError('hidden signature')
+        return protected
+    monkeypatch.setattr(module, 'darwin_process_environment', environment)
+    monkeypatch.setattr(module, 'darwin_protected_service', service)
+    monkeypatch.setattr(module.os, 'kill', lambda *_: None)
+    if in_worktree:
+        assert runner.darwin_recovery_workers() == [20]
+    elif protected and parent == 1:
+        assert runner.darwin_recovery_workers() == []
+    else:
+        with pytest.raises(module.Blocked, match='process evidence is unreadable for PID 20'):
+            runner.darwin_recovery_workers()
+
+
+@pytest.mark.fast
+def test_darwin_protected_service_with_readable_review_identity_is_not_exempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load('review-chain-runner')
+    runner = module.Runner.__new__(module.Runner)
+    runner.directory = tmp_path / 'checkpoint'
+    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path / 'worktree')}}
+    monkeypatch.setattr(module.os, 'getpid', lambda: 10)
+    monkeypatch.setattr(module.os, 'getppid', lambda: 1)
+    monkeypatch.setattr(module.os, 'getuid', lambda: 501)
+    monkeypatch.setattr(module, 'command', lambda _: '1 0 0 S\n10 1 501 S\n20 1 501 S')
+    monkeypatch.setattr(module, 'darwin_process_cwd', lambda _: tmp_path / 'outside')
+    monkeypatch.setattr(module, 'darwin_process_environment', lambda _: {b'ACTIVELOOM_RUN_ID': b'r' * 64})
+    monkeypatch.setattr(module, 'darwin_protected_service', lambda _: True)
+    assert runner.darwin_recovery_workers() == [20]
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize('lineage', ['old_process', 'old_session', 'new_session', 'unknown'])
+@pytest.mark.parametrize('in_worktree', [False, True])
+def test_darwin_hidden_environment_checks_process_and_session_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lineage: str, in_worktree: bool,
+) -> None:
+    module = load('review-chain-runner')
+    runner = module.Runner.__new__(module.Runner)
+    runner.directory = tmp_path / 'checkpoint'
+    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path / 'worktree')}}
+    runner.recovery_run_started_at = 200.0
+    monkeypatch.setattr(module.os, 'getpid', lambda: 10)
+    monkeypatch.setattr(module.os, 'getppid', lambda: 1)
+    monkeypatch.setattr(module.os, 'getuid', lambda: 501)
+    monkeypatch.setattr(module.os, 'getsid', lambda _: 2)
+    monkeypatch.setattr(module.os, 'kill', lambda *_: None)
+    monkeypatch.setattr(module, 'command', lambda _: '1 0 0 S\n10 1 501 S\n20 1 501 S')
+    monkeypatch.setattr(module, 'darwin_process_cwd', lambda _: tmp_path / ('worktree' if in_worktree else 'outside'))
+    def environment(pid: int) -> dict[bytes, bytes]:
+        raise OSError('hidden environment')
+    def creation(pid: int) -> float:
+        if lineage == 'unknown':
+            raise OSError('hidden creation time')
+        if (lineage == 'old_process' and pid == 20) or (lineage == 'old_session' and pid == 2):
+            return 10.0
+        return 140.0  # Exactly at the clock-skew margin is not exempt.
+    monkeypatch.setattr(module, 'darwin_process_environment', environment)
+    monkeypatch.setattr(module, 'darwin_process_started_at', creation)
+    monkeypatch.setattr(module, 'darwin_protected_service', lambda _: False)
+    if in_worktree:
+        assert runner.darwin_recovery_workers() == [20]
+    elif lineage in ('old_process', 'old_session'):
+        assert runner.darwin_recovery_workers() == []
+    else:
+        with pytest.raises(module.Blocked, match='process evidence is unreadable for PID 20'):
+            runner.darwin_recovery_workers()
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize('flags', [0x06000801, 0x06000800, 0x02000801, 0x16000801, 0])
+@pytest.mark.parametrize('path', ['/usr/libexec/service', '/usr/bin/python3', '/tmp/usr/libexec/service'])
+def test_darwin_service_exemption_requires_kernel_flags_and_system_path(
+    monkeypatch: pytest.MonkeyPatch, flags: int, path: str,
+) -> None:
+    module = load('review-chain-runner')
+    class Probe:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+        def __call__(self, *args: Any) -> int:
+            if self.kind == 'path':
+                args[1].value = os.fsencode(path)
+                return len(path)
+            args[2]._obj.value = flags
+            return 0
+    library = SimpleNamespace(proc_pidpath=Probe('path'), csops=Probe('status'))
+    monkeypatch.setattr(module.ctypes, 'CDLL', lambda _: library)
+    assert module.darwin_protected_service(20) == (flags == 0x06000801 and path == '/usr/libexec/service')
+
+
+@pytest.mark.fast
+def test_darwin_zombie_cannot_be_a_surviving_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load('review-chain-runner')
+    runner = module.Runner.__new__(module.Runner)
+    monkeypatch.setattr(module.os, 'getpid', lambda: 10)
+    monkeypatch.setattr(module.os, 'getppid', lambda: 1)
+    monkeypatch.setattr(module.os, 'getuid', lambda: 501)
+    monkeypatch.setattr(module, 'command', lambda _: '1 0 0 S\n10 1 501 S\n20 1 501 Z')
+    assert runner.darwin_recovery_workers() == []
 
 
 @pytest.mark.fast
@@ -5137,7 +5261,7 @@ def test_darwin_recovery_probe_finds_live_child(
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
                              env=env, cwd=worktree if identity == 'cwd' else tmp_path)
     try:
-        rows = module.command(['/bin/ps', '-axo', 'pid=,ppid=,uid='])
+        rows = module.command(['/bin/ps', '-axo', 'pid=,ppid=,uid=,stat='])
         processes = {int(row.split()[0]): row for row in rows.splitlines()}
         selected = {child.pid, os.getpid()}
         parent = os.getppid()
@@ -5150,6 +5274,38 @@ def test_darwin_recovery_probe_finds_live_child(
         assert b'executable_path' not in observed
         assert module.darwin_process_cwd(child.pid) == (worktree if identity == 'cwd' else tmp_path).resolve()
         assert runner.recovery_workers() == [child.pid]
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+    assert runner.recovery_workers() == []
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS process APIs')
+def test_darwin_new_hidden_worker_in_its_own_session_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load('review-chain-runner')
+    runner = module.Runner.__new__(module.Runner)
+    runner.directory = tmp_path / 'checkpoint'
+    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path / 'worktree')}}
+    runner.recovery_run_started_at = time.time()
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                             env={}, cwd=tmp_path, start_new_session=True)
+    try:
+        rows = module.command(['/bin/ps', '-axo', 'pid=,ppid=,uid=,stat='])
+        processes = {int(row.split()[0]): row for row in rows.splitlines()}
+        selected = {child.pid, os.getpid()}
+        parent = os.getppid()
+        while parent > 0 and parent not in selected:
+            selected.add(parent)
+            parent = int(processes[parent].split()[1])
+        monkeypatch.setattr(module, 'command', lambda _: '\n'.join(processes[pid] for pid in selected))
+        assert os.getsid(child.pid) == child.pid
+        def hidden_environment(pid: int) -> dict[bytes, bytes]:
+            raise OSError('environment unavailable')
+        monkeypatch.setattr(module, 'darwin_process_environment', hidden_environment)
+        with pytest.raises(module.Blocked, match=f'process evidence is unreadable for PID {child.pid}'):
+            runner.recovery_workers()
     finally:
         child.terminate()
         child.wait(timeout=5)

@@ -510,13 +510,25 @@ means a mandatory condition failed and no digest was produced. A clean dedicated
 unchanged authenticated actor, original controller hashes, and the same run
 identity are mandatory. Linux uses readable `/proc` process evidence. macOS
 uses the system `ps` and `lsof` tools plus `KERN_PROCARGS2` for process
-environments. An empty or restricted environment cannot establish that a process
-is unrelated and blocks recovery. Other platforms are unsupported. Recovery must run
+environments. It checks working directories before environments: a process in
+the worktree is always a potential worker. For a hidden environment outside the
+worktree, macOS can establish that the process or its session leader predates
+the authenticated run by more than one minute. This follows the runner's
+one-shot, new-session launch contract; it does not authorize reviewers to hand
+work to existing desktop sessions. Process creation time survives `exec`, so a
+readable review identity still overrides age. The margin accommodates small
+clock skew; recovery assumes the host and GitHub clocks agree within that
+margin. A second exception covers launchd-owned Apple services at system service
+paths whose live kernel code-signing flags prove a valid, restricted platform
+binary with no untrusted helpers and no debug allowance. A name or path alone
+does not qualify. Zombies have already exited and cannot mutate the review.
+Unknown creation times, new review sessions, unverified services, and unreadable
+working directories remain blockers. Other platforms are unsupported. Recovery must run
 in the process namespace the review ran in: inside a sandbox with its own PID
 namespace the probes cannot see a surviving worker, so an empty `workers` list
 from there proves nothing. A same-user process
-that hides its environment, such as `gpg-agent` or `ssh-agent`, cannot be shown
-to be unrelated: diagnosis names each one by PID and stops until it is stopped.
+that hides its environment and cannot be excluded by the platform's evidence
+checks is named by PID, and diagnosis stops until it is reconciled.
 Any other same-user process whose working directory is inside the worktree is
 reported as a potential worker, including a second shell, an editor, or the
 other side of a pipe; close them and run the command unpiped. An unknown exit without
