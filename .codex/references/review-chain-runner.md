@@ -508,7 +508,10 @@ files at the printed checkpoint path. Exit 2 with a report means the listed
 blockers need reconciliation. Exit 2 with only a `review-chain blocked:` line
 means a mandatory condition failed and no digest was produced. A clean dedicated worktree, matching local/remote/PR heads,
 unchanged authenticated actor, original controller hashes, and the same run
-identity are mandatory. Linux `/proc` must be readable, and recovery must run
+identity are mandatory. Linux uses readable `/proc` process evidence. macOS
+uses the system `ps` and `lsof` tools plus `KERN_PROCARGS2` for process
+environments. An empty or restricted environment cannot establish that a process
+is unrelated and blocks recovery. Other platforms are unsupported. Recovery must run
 in the process namespace the review ran in: inside a sandbox with its own PID
 namespace the probes cannot see a surviving worker, so an empty `workers` list
 from there proves nothing. A same-user process

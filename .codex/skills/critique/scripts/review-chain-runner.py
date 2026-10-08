@@ -8,6 +8,7 @@ control snapshot is independent of worker commits; resumption checks its hashes.
 from __future__ import annotations
 
 import argparse
+import ctypes
 from contextlib import ExitStack
 import fcntl
 import hashlib
@@ -303,6 +304,61 @@ def command(argv: list[str]) -> str:
 def json_digest(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def darwin_process_environment(pid: int) -> dict[bytes, bytes]:
+    """Read KERN_PROCARGS2 without exposing arguments or environment in diagnostics."""
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    sysctl = libc.sysctl
+    sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+                      ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    sysctl.restype = ctypes.c_int
+    mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2
+    size = ctypes.c_size_t()
+    if sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value < 5:
+        raise OSError("process arguments unavailable")
+    data = ctypes.create_string_buffer(size.value)
+    if sysctl(mib, 3, data, ctypes.byref(size), None, 0) != 0:
+        raise OSError("process arguments unavailable")
+    return darwin_parse_environment(data.raw[:size.value])
+
+
+def darwin_parse_environment(data: bytes) -> dict[bytes, bytes]:
+    argc = int.from_bytes(data[:4], sys.byteorder, signed=True)
+    if len(data) < 5 or argc < 1:
+        raise OSError("process arguments incomplete")
+    try:
+        offset = data.index(b"\0", 4) + 1
+        while offset < len(data) and data[offset] == 0:
+            offset += 1
+        for _ in range(argc):
+            offset = data.index(b"\0", offset) + 1
+    except ValueError:
+        raise OSError("process arguments incomplete") from None
+    fields = data[offset:].split(b"\0")
+    # Darwin appends an apple vector after envp's empty terminator; it is not
+    # evidence that the environment was readable.
+    fields = fields[:fields.index(b"")] if b"" in fields else []
+    env = dict(field.split(b"=", 1) for field in fields if b"=" in field)
+    # SIP can silently omit a restricted process's environment. Empty output
+    # cannot establish that it has no review identity.
+    if not env:
+        raise OSError("process environment unavailable")
+    return env
+
+
+def darwin_process_cwd(pid: int) -> Path:
+    result = subprocess.run(
+        ["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "cwd", "-F", "pn0"],
+        capture_output=True, timeout=10,
+    )
+    if result.returncode:
+        raise OSError("process working directory unavailable")
+    fields = [field.lstrip(b"\n") for field in result.stdout.split(b"\0")]
+    paths = [os.fsdecode(field[1:]) for field in fields if field.startswith(b"n")]
+    if fields[0] != f"p{pid}".encode() or len(paths) != 1 or not paths[0].startswith("/"):
+        raise OSError("process working directory incomplete")
+    return Path(paths[0]).resolve()
 
 
 def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -663,7 +719,11 @@ class Runner:
         }
 
     def recovery_workers(self) -> list[int]:
-        """Read-only Linux probe; uncertainty is never evidence of a stopped worker."""
+        """Read-only probe; uncertainty is never evidence of a stopped worker."""
+        if sys.platform == "darwin":
+            return self.darwin_recovery_workers()
+        if not sys.platform.startswith("linux"):
+            raise Blocked("recovery process evidence is unsupported on this platform")
         proc = Path("/proc")
         if not (proc / "self/environ").is_file():
             raise Blocked("recovery requires readable Linux /proc process evidence")
@@ -703,6 +763,51 @@ class Runner:
                 except OSError:
                     name = "unknown"
                 unreadable.append(f"{entry.name} ({name})")
+        if unreadable:
+            raise Blocked(
+                "process evidence is unreadable for PID "
+                + ", ".join(sorted(unreadable))
+                + "; stop each process, then rerun --diagnose"
+            )
+        return sorted(found)
+
+    def darwin_recovery_workers(self) -> list[int]:
+        try:
+            rows = command(["/bin/ps", "-axo", "pid=,ppid=,uid="])
+            processes = {}
+            for row in rows.splitlines():
+                pid, parent, uid = map(int, row.split())
+                processes[pid] = (parent, uid)
+            ancestors = {os.getpid()}
+            parent = os.getppid()
+            while parent > 0 and parent not in ancestors:
+                ancestors.add(parent)
+                parent = processes[parent][0]
+        except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+            raise Blocked("cannot identify recovery process owners and ancestors") from None
+        found = []
+        unreadable = []
+        for pid, (_, uid) in processes.items():
+            if uid != os.getuid() or pid in ancestors:
+                continue
+            try:
+                env = darwin_process_environment(pid)
+                cwd = darwin_process_cwd(pid)
+                result = os.fsdecode(env.get(b"AGENT_LOOP_REVIEW_RESULT_FILE", b""))
+                if (
+                    env.get(b"ACTIVELOOM_RUN_ID") == self.state["run_id"].encode()
+                    or result.startswith(str(self.directory) + os.sep)
+                    or cwd.is_relative_to(self.state["config"]["worktree"])
+                ):
+                    found.append(pid)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    continue
+                except PermissionError:
+                    pass
+                unreadable.append(str(pid))
         if unreadable:
             raise Blocked(
                 "process evidence is unreadable for PID "
