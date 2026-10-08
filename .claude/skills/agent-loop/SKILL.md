@@ -667,7 +667,9 @@ adopts a remote branch only when that intent exists and its head matches exactly
 it reconciles an existing same-repository draft PR with that head and base rather
 than creating a duplicate. Closed, ready, mismatched or duplicate PRs stop.
 Resuming a `draft-open` checkpoint classifies the range again, so a human-glance
-stop stays a stop and never starts the review chain.
+stop stays a stop and never starts the review chain. `--resume-batch` stops on
+such a child with the explicit bail command; read its draft PR, then bail the
+issue.
 
 Keep controller and state-helper revisions together. Older runs without a child
 checkpoint still require operator inspection and an explicit bail; this change

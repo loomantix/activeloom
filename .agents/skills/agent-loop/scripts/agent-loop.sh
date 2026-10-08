@@ -678,6 +678,16 @@ prepared_validation_hook() {
     fi
 }
 
+# Only a controller that pins trusted Git configuration bypasses repository
+# hooks; the others run them here as they do for every later merge and push.
+publication_git() {
+    if declare -F require_trusted_git_config >/dev/null; then
+        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"
+    else
+        git "$@"
+    fi
+}
+
 integrate_initial_base() {
     local target before
     fetch_base || return 1
@@ -686,8 +696,8 @@ integrate_initial_base() {
     if [ -n "$AGENT_LOOP_RUN_STATE_FILE" ]; then
         update_run_state integrating 1 "$target" "$before" || return 1
     fi
-    if ! "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false merge --no-edit "$target"; then
-        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false merge --abort >/dev/null 2>&1 || true
+    if ! publication_git merge --no-edit "$target"; then
+        publication_git merge --abort >/dev/null 2>&1 || true
         return 1
     fi
     update_run_state integrated 1 "$target" "$(git rev-parse HEAD)"
@@ -712,8 +722,7 @@ publish_initial_branch() {
         if declare -F require_trusted_git_config >/dev/null; then
             require_trusted_git_config || return 1
         fi
-        "$REAL_GIT_BIN" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
-            push --force-with-lease="refs/heads/$branch:" origin "$head:refs/heads/$branch" || return 1
+        publication_git push --force-with-lease="refs/heads/$branch:" origin "$head:refs/heads/$branch" || return 1
     fi
     attest_remote_branch "$branch" "$head" "after initial publication push" || return 1
     update_run_state pushed 1 "$base" "$head" || return 1
@@ -759,11 +768,20 @@ stop_resumed_human_glance() {
     return 1
 }
 
-# A batch child without checkpointed worker completion is never launched: the
-# operator inspects it and bails it explicitly.
+# A batch child without checkpointed worker completion, or one stopped for a
+# human glance, is never launched: the operator inspects it and bails it
+# explicitly.
 refuse_unfinished_batch_child() {
-    local issue="$1" child_json="$2" phase
+    local issue="$1" child_json="$2" phase base head
     phase="$(jq -er '.phase' <<<"$child_json")" || return 1
+    if [ "$phase" = draft-open ]; then
+        base="$(jq -er '.baseSha' <<<"$child_json")" || return 1
+        head="$(jq -er '.headSha' <<<"$child_json")" || return 1
+        human_glance_gate "$base" "$head" || return 0
+        recovery_message "Batch issue #$issue stopped for a human glance and starts no review chain; read its draft PR before explicitly bailing it." human-glance
+        print_batch_bail_command "$issue" active
+        return 1
+    fi
     [ "$phase" = worker-running ] || return 0
     recovery_message "Batch issue #$issue stopped before its worker completion was checkpointed; inspect its worktree before explicitly bailing it. The worker will not be replayed." worker-ambiguous-bail
     print_batch_bail_command "$issue" active

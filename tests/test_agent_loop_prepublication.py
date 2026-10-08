@@ -358,7 +358,7 @@ def test_preparation_refreshes_outputs_after_initial_base_integration(
 #!/usr/bin/env bash
 set -eu
 if [ ! -f "$AGENT_STATE_DIR/base-advanced" ]; then
-  /usr/bin/git clone '{consumer[1]}' '{tmp_path / "updater"}' >/dev/null 2>&1
+  /usr/bin/git clone --branch main '{consumer[1]}' '{tmp_path / "updater"}' >/dev/null 2>&1
   /usr/bin/git -C '{tmp_path / "updater"}' config user.name Test
   /usr/bin/git -C '{tmp_path / "updater"}' config user.email test@example.invalid
   printf 'new-source' > '{tmp_path / "updater"}/artifact-input'
@@ -581,6 +581,67 @@ def test_human_glance_stop_never_resumes_into_the_review_chain(
         "worker"
     ) == 1
     assert "claude" not in consumer[3].joinpath("events.log").read_text().splitlines()
+
+
+def test_batch_human_glance_child_names_the_bail_instead_of_relaunching(
+    consumer: tuple[Path, Path, Path, Path],
+    harness: str,
+    tmp_path: Path,
+) -> None:
+    worker = (
+        "printf 'worker\\n' >> \"$EVENT_LOG\"; printf 'note\\n' > NOTES.md; "
+        "git add NOTES.md; git commit -m 'docs: note'"
+    )
+    stopped = run_loop(
+        consumer, harness, tmp_path, ["--issues", "71,72"], worker_hook=worker
+    )
+    assert stopped.returncode != 0
+    assert "needs a human glance" in stopped.stderr
+    path, state = checkpoint(tmp_path)
+    assert state["phase"] == "draft-open"
+    batch = next((tmp_path / "logs").glob("*batch*.json"))
+    resumed = run_loop(
+        consumer, harness, tmp_path, ["--resume-batch", str(batch)], worker_hook=worker
+    )
+    assert resumed.returncode != 0
+    assert "stopped for a human glance" in resumed.stderr
+    assert "Explicit bail command:" in resumed.stderr
+    assert "--status bailed" in resumed.stderr
+    assert "did not resume to a safely finalized state" not in resumed.stderr
+    assert json.loads(batch.read_text())["issues"][0]["status"] == "active"
+    events = consumer[3].joinpath("events.log").read_text().splitlines()
+    assert events.count("worker") == 1
+    assert "claude" not in events
+
+
+def test_initial_publication_runs_repository_hooks_unless_the_controller_pins_git(
+    consumer: tuple[Path, Path, Path, Path],
+    harness: str,
+    tmp_path: Path,
+) -> None:
+    marker = consumer[3] / "pre-push-ran"
+    _write_executable(
+        consumer[0] / ".git/hooks/pre-push",
+        f"#!/bin/sh\ntouch '{marker}'\n",
+    )
+    # Stop right after the create-only push so no later push can run the hook.
+    gh = consumer[2] / "gh"
+    gh.write_text(
+        gh.read_text().replace(
+            "if os.environ.get('AGENT_PR_CREATE_FAIL'):",
+            "if (state / 'fail-pr-create').exists():",
+        )
+    )
+    stopped = run_loop(
+        consumer,
+        harness,
+        tmp_path,
+        ["--issues", "71"],
+        validation_hook='touch "$AGENT_STATE_DIR/fail-pr-create"',
+    )
+    assert stopped.returncode != 0
+    assert checkpoint(tmp_path)[1]["phase"] == "pushed", stopped.stderr
+    assert marker.exists() == (harness != ".codex")
 
 
 @pytest.mark.fast
