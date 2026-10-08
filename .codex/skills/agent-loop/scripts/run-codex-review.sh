@@ -106,11 +106,24 @@ effort_pattern='^[a-z][a-z0-9]{0,31}$'
 
 git_bin="${AGENT_LOOP_REAL_GIT:-$(type -P git 2>/dev/null || true)}"
 [ -x "$git_bin" ] || { echo "trusted Git executable is unavailable" >&2; exit 1; }
-trusted_repo="$(realpath -e -- "$AGENT_LOOP_TRUSTED_REPO_ROOT")" || {
+canonical_path() {
+    python3 -I - "$1" <<'PY'
+import sys
+from pathlib import Path
+
+try:
+    if not sys.argv[1]:
+        sys.exit(1)
+    print(Path(sys.argv[1]).resolve(strict=True))
+except (OSError, RuntimeError):
+    sys.exit(1)
+PY
+}
+trusted_repo="$(canonical_path "$AGENT_LOOP_TRUSTED_REPO_ROOT")" || {
     echo "trusted repository is unavailable" >&2
     exit 1
 }
-review_worktree="$(realpath -e -- "$PWD")" || {
+review_worktree="$(canonical_path "$PWD")" || {
     echo "review worktree is unavailable" >&2
     exit 1
 }
@@ -153,7 +166,7 @@ trusted_git fsck --strict --no-dangling \
     exit 1
 }
 
-launch_root="$(realpath -e -- "$(mktemp -d /tmp/codex-agent-loop-review.XXXXXXXX)")"
+launch_root="$(canonical_path "$(mktemp -d /tmp/codex-agent-loop-review.XXXXXXXX)")"
 case "$launch_root/" in "$trusted_repo/"*|"$review_worktree/"*) echo "review root overlaps a repository" >&2; exit 1 ;; esac
 cleanup_launch_root() { rm -rf -- "$launch_root"; }
 trap cleanup_launch_root EXIT
@@ -231,7 +244,7 @@ if [ -z "$review_cli" ]; then
         review_cli="${CLAUDE_REVIEW_CLI:-$(type -P claude 2>/dev/null || true)}"
     fi
 fi
-review_cli="$(realpath -e -- "$review_cli")" || { echo "$engine reviewer executable is unavailable" >&2; exit 1; }
+review_cli="$(canonical_path "$review_cli")" || { echo "$engine reviewer executable is unavailable" >&2; exit 1; }
 [ -x "$review_cli" ] && [ ! -L "$review_cli" ] || { echo "$engine reviewer executable is invalid" >&2; exit 1; }
 actual_bin_sha="$(sha256sum "$review_cli" | awk '{print $1}')"
 [ "$actual_bin_sha" = "$AGENT_LOOP_REVIEW_BIN_SHA256" ] || {
@@ -258,7 +271,7 @@ review_install_digest() {
     ) | sha256sum | awk '{print $1}'
 }
 
-review_install_root="$(realpath -e -- "$AGENT_LOOP_REVIEW_INSTALL_ROOT")" || {
+review_install_root="$(canonical_path "$AGENT_LOOP_REVIEW_INSTALL_ROOT")" || {
     echo "$engine reviewer install root is unavailable" >&2
     exit 1
 }

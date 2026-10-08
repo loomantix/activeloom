@@ -50,9 +50,38 @@ def _budget_new(seconds: int) -> dict[str, Any]:
 
 
 def _budget_boot() -> str:
-    # The wrappers require Linux flock/timeout. A boot identity prevents refund
-    # across reboots or unrelated monotonic-clock origins.
-    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    import subprocess
+
+    # Boot identity prevents refunds across unrelated monotonic-clock origins.
+    try:
+        if sys.platform == "darwin":
+            boot = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+                                  check=True, capture_output=True, text=True, timeout=5).stdout.strip().lower()
+        elif sys.platform.startswith("linux"):
+            boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        else:
+            _fail("review budget boot identity is unavailable on this platform")
+    except (OSError, subprocess.SubprocessError):
+        _fail("review budget boot identity is unavailable")
+    if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot):
+        _fail("review budget boot identity is invalid")
+    return boot
+
+
+def _budget_owner_exists(pid: int) -> bool:
+    if sys.platform.startswith("linux"):
+        return Path(f"/proc/{pid}").exists()
+    if sys.platform != "darwin":
+        _fail("review budget controller probe is unavailable on this platform")
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        _fail("review budget controller probe is unavailable")
+    return True
 
 
 @contextmanager
@@ -130,7 +159,7 @@ def _budget_command(args: argparse.Namespace) -> None:
             if hashlib.sha256(path.read_bytes()).hexdigest() != args.expected_sha256 or not args.reason.strip():
                 _fail("reconciliation requires an unchanged checkpoint and an operator reason")
             for attempt in pending:
-                if attempt["boot"] == _budget_boot() and Path(f"/proc/{attempt['owner']}").exists():
+                if attempt["boot"] == _budget_boot() and _budget_owner_exists(attempt["owner"]):
                     _fail("recorded controller still exists; stop it before reconciliation")
                 attempt["status"] = "abandoned"
                 attempt["reason"] = f"uid:{os.getuid()} epoch:{int(time.time())} {args.reason}"
