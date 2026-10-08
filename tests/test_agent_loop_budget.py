@@ -57,6 +57,124 @@ def load_module(helper: Path) -> ModuleType:
     return module
 
 
+def test_macos_boot_identity(helper: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    module = load_module(helper)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    boot = "12345678-ABCD-4000-8000-123456789ABC"
+    calls = []
+
+    def probe(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, boot + "\n", "")
+
+    monkeypatch.setattr(subprocess, "run", probe)
+    assert module._budget_boot() == boot.lower()
+    assert calls[0][0] == ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"]
+    assert calls[0][1]["timeout"] == 5
+
+
+def test_linux_budget_probes_keep_proc_evidence(helper: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    module = load_module(helper)
+    monkeypatch.setattr(sys, "platform", "linux")
+    boot = "12345678-abcd-4000-8000-123456789abc"
+
+    def read(path: Path) -> str:
+        assert str(path) == "/proc/sys/kernel/random/boot_id"
+        return boot + "\n"
+
+    def exists(path: Path) -> bool:
+        assert str(path) in {"/proc/12345", "/proc/54321"}
+        return str(path) == "/proc/12345"
+
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(Path, "exists", exists)
+    assert module._budget_boot() == boot
+    assert module._budget_owner_exists(12345)
+    assert not module._budget_owner_exists(54321)
+
+
+@pytest.mark.parametrize("output", ["", "unknown", "a" * 32])
+def test_macos_invalid_boot_identity_fails_closed(
+    helper: Path, monkeypatch: pytest.MonkeyPatch, output: str
+) -> None:
+    import sys
+
+    module = load_module(helper)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 0, output, ""))
+    with pytest.raises(module.StateError, match="boot identity"):
+        module._budget_boot()
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError(), subprocess.TimeoutExpired("sysctl", 5),
+                                   subprocess.CalledProcessError(1, "sysctl")])
+def test_macos_unavailable_boot_identity_keeps_reservation(
+    helper: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    import sys
+
+    path = state(tmp_path, helper)
+    before = path.read_bytes()
+    module = load_module(helper)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def probe(*args: object, **kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(subprocess, "run", probe)
+    with pytest.raises(module.StateError, match="boot identity"):
+        module._budget_command(module._parser().parse_args([
+            "budget-begin", "--file", str(path), "--seconds", "10", "--owner", str(os.getpid())]))
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("error,exists", [(None, True), (ProcessLookupError(), False),
+                                         (PermissionError(), True)])
+def test_macos_controller_probe(helper: Path, monkeypatch: pytest.MonkeyPatch,
+                               error: Exception | None, exists: bool) -> None:
+    import sys
+
+    module = load_module(helper)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def probe(pid: int, signal: int) -> None:
+        assert (pid, signal) == (12345, 0)
+        if error is not None:
+            raise error
+
+    monkeypatch.setattr(os, "kill", probe)
+    assert module._budget_owner_exists(12345) is exists
+
+
+def test_macos_unreadable_controller_keeps_active_reservation(
+    helper: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    path = state(tmp_path, helper)
+    module = load_module(helper)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(module, "_budget_boot", lambda: "test-boot")
+    parser = module._parser()
+    module._budget_command(parser.parse_args([
+        "budget-begin", "--file", str(path), "--seconds", "100", "--owner", "12345"]))
+    before = path.read_bytes()
+
+    def probe(*args: object) -> None:
+        raise OSError("process evidence unavailable")
+
+    monkeypatch.setattr(os, "kill", probe)
+    with pytest.raises(module.StateError, match="controller probe"):
+        module._budget_command(parser.parse_args([
+            "budget-reconcile", "--file", str(path), "--expected-sha256",
+            hashlib.sha256(before).hexdigest(), "--confirm-stopped", "--reason", "inspection"]))
+    assert path.read_bytes() == before
+
+
 def test_outage_and_repeated_resumes_do_not_spend_or_replenish(helper: Path, tmp_path: Path,
                                                              monkeypatch: pytest.MonkeyPatch) -> None:
     import time

@@ -161,6 +161,22 @@ def test_claude_reviewer_gets_pinned_model_and_effort(launch: Launch) -> None:
     assert call["effort_env"] == "medium"
 
 
+@pytest.mark.parametrize("field", ["AGENT_LOOP_TRUSTED_REPO_ROOT", "AGENT_LOOP_REVIEW_BIN",
+                                   "AGENT_LOOP_REVIEW_INSTALL_ROOT"])
+def test_missing_paths_fail_before_review(launch: Launch, tmp_path: Path, field: str) -> None:
+    result, calls = launch("codex", extra={field: str(tmp_path / "missing")})
+    assert result.returncode != 0
+    assert calls == []
+
+
+def test_reviewer_symlink_resolves_to_attested_executable(launch: Launch, tmp_path: Path) -> None:
+    alias = tmp_path / "reviewer-alias"
+    alias.symlink_to(tmp_path / "reviewer-cli")
+    result, calls = launch("codex", extra={"AGENT_LOOP_REVIEW_BIN": str(alias)})
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("engine", ["codex", "claude"])
 def test_inherit_model_omits_the_model_flag(launch: Launch, engine: str) -> None:
     settings = dict(PINNED)
