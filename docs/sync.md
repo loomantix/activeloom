@@ -10,7 +10,7 @@ The manifest emits **one target set per harness plus one harness-independent `sh
 
 Harnesses are processed in manifest declaration order. That matters in exactly one place: a `create_if_missing` destination shipped by more than one harness is bootstrapped by the first declared harness and preserved by every later one.
 
-A target with `delete: true` removes the destination from the consumer instead of writing to it (and prunes any empty parent directories). Use this to retire a previously-synced file across all consumers.
+A target with `delete: true` removes the destination from the consumer instead of writing to it (and prunes any empty parent directories). Use this to retire a previously-synced file across all consumers. When a later copy target in the same set writes the same destination, which reissues a retired path with new content, the delete leaves the file in place and the copy replaces it, so a sync that is already up to date removes nothing.
 
 A target with `create_if_missing: true` bootstraps the destination on first sync and leaves it alone thereafter. Use this for files that consumers are expected to customize after creation (starter scaffolding, per-consumer configuration). On first creation, required substitutions are still validated and the sync hard-fails if any are missing — same contract as any other copy target. On subsequent syncs the engine short-circuits before substitution, so substitution values declared by the manifest don't have to remain present in the consumer's `.activeloom-config.yml` once the file exists. Mutually exclusive with `delete`.
 
