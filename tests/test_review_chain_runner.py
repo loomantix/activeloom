@@ -5237,7 +5237,7 @@ def test_darwin_live_caffeinate_is_a_protected_system_binary() -> None:
 
 
 @pytest.mark.fast
-@pytest.mark.parametrize('lineage',['old_process', 'old_session', 'new_session', 'unknown'])
+@pytest.mark.parametrize('lineage', ['old_process', 'old_session', 'new_session', 'unknown'])
 @pytest.mark.parametrize('in_worktree', [False, True])
 def test_darwin_hidden_environment_checks_process_and_session_creation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lineage: str, in_worktree: bool,
