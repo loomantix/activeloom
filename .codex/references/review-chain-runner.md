@@ -17,7 +17,8 @@ Place the user's authorization, scope and tier rationale in a public-safe text
 file outside the worktree. Its contents are posted to the PR. Do not include
 credentials or confidential context. Prefer the repository-declared validation
 contract below. Its selected commands run without a shell, in the review
-worktree, after each worker and before attestation. Commands are published in
+worktree, after each worker and before attestation, unless the pass cites an
+earlier gate as described below. Commands are published in
 pass summaries, so they must not contain credentials. Scoped tests are not a
 substitute for the declared gate.
 
@@ -228,8 +229,10 @@ same validation contract and policy revision, the pass cites that earlier gate
 instead of running it again. Its `validated.json` names the cited pass and the
 digest of that pass's receipt, and its attestation lists the gate commands, the
 head, and the pass that ran them. Every other pass runs its gates: one that
-changed the head, the first pass of a run, the first pass after a restart or
-`--resume`, and a validation repair. A gate an engine ran inside its own pass
+changed the head, the first pass of a run, the first pass validated after a
+restart or `--resume`, and a validation repair. A pass interrupted after its
+receipt was saved keeps that receipt on resume, and a saved citation is
+rechecked against the cited receipt. A gate an engine ran inside its own pass
 is never cited. One consequence: a suite is no longer run several times on one
 commit, so a flaky test that only fails on a repeat run goes unnoticed.
 

@@ -2337,8 +2337,9 @@ def test_first_pass_after_resume_runs_the_gate_before_any_citation(
     [
         "citable",
         "no-earlier-gate",
-        "material",
+        "changed",
         "head-moved",
+        "recorded-head-differs",
         "different-gates",
         "different-policy",
         "repair-pass",
@@ -2362,10 +2363,12 @@ def test_gate_is_cited_only_for_a_clean_unchanged_pass_under_the_same_contract(
     result = {"status": "clean"}
     if case == "no-earlier-gate":
         runner.passed_gates.clear()
-    elif case == "material":
-        result["status"] = "material"
+    elif case == "changed":
+        result["status"] = "changed"
     elif case == "head-moved":
         pending["before"] = BASE
+    elif case == "recorded-head-differs":
+        runner.state["head"] = BASE
     elif case == "different-gates":
         validation = {**validation, "gates": ["backend"]}
     elif case == "different-policy":
@@ -2411,6 +2414,43 @@ def test_saved_gate_citation_is_rechecked_against_the_cited_receipt(
         citation = {**citation, "head": BASE}
     with pytest.raises(h.module.Blocked, match=message):
         runner.verify_gate_citation(citation, saved)
+
+
+@pytest.mark.parametrize("cited_receipt", ["intact", "changed"])
+def test_resumed_pass_rechecks_its_saved_gate_citation(
+    harness: Any, cited_receipt: str
+) -> None:
+    h = harness
+
+    interrupted = h.runner(h.args, h.directory)
+    helper = interrupted.helper
+
+    def interrupt_first_claude_pass(name: str, *parts: str) -> dict[str, Any]:
+        if parts[0] == "attest" and "claude" in parts:
+            h.controls.fail_attest = True
+        return dict(helper(name, *parts))
+
+    interrupted.helper = interrupt_first_claude_pass
+    # Pass 2 saves its citation of pass 1, then stops before it is recorded.
+    with pytest.raises(h.module.Blocked, match="after remote attestation"):
+        interrupted.run()
+    saved = h.module.read(h.directory / "pass-2" / "validated.json")
+    assert saved["cited_gate"]["pass"] == "pass-1"
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    if cited_receipt == "changed":
+        (h.directory / "pass-1" / "validated.json").write_text("{}")
+        with pytest.raises(h.module.Blocked, match="evidence changed"):
+            resumed.run()
+        assert len(h.launches) == 2
+        return
+    assert resumed.run() == "converged"
+    assert h.module.read(h.directory / "pass-2" / "validated.json") == saved
+    assert "in pass-1 of this run" in (
+        h.directory / "pass-2" / "summary.txt"
+    ).read_text()
+    # Pass 3 is the first validated by the new process, so it runs the gate.
+    assert len(h.check_launches) == 2
 
 
 def test_resume_rejects_changed_plan_and_tampered_snapshot(harness: Any) -> None:
