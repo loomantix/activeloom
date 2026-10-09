@@ -64,6 +64,25 @@ values in the checkpoint, and adds the gate's declared environment. Other
 ambient values do not reach validation commands. A resume with different
 allowlisted values blocks instead of silently changing the gate.
 
+Route documentation and other non-executable paths to a gate of their own.
+Matching is default-deny, so a path no gate claims selects the fallback on
+every pass, and when the fallback is the full suite one edited Markdown file
+costs a full run per pass. Give those paths a cheap gate that runs whatever
+actually reads them: a link or prose linter, or a drift check for a generated
+document.
+
+```json
+"docs": {
+  "paths": ["docs/**", "*.md"],
+  "commands": [{ "argv": ["just", "lint-docs"] }]
+}
+```
+
+`*` does not cross `/`, so `*.md` claims root-level Markdown only. Prefer that
+to `**/*.md`, which would also claim Markdown that tests or builds read from
+directories no other gate owns and silently drop the fallback for it. There is
+no ignore list: a path is either validated by a gate or it fails closed.
+
 The contract is consumer-owned and is not created or rewritten by ActiveLoom
 sync. A pull request that first adds or changes it continues to use the pinned
 target policy; the new contract takes effect after it reaches the target branch.
