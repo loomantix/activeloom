@@ -726,6 +726,9 @@ class Runner:
         self.control = directory / self.state.get("control_directory", "control")
         self.installation_repaired = False
         self._settings: ModuleType | None = None
+        # Gates this process ran to a pass, by head. Deliberately not
+        # checkpointed: a restart or resume has no earlier gate to cite.
+        self.passed_gates: dict[str, dict[str, str]] = {}
 
     def persist(self) -> None:
         save(self.checkpoint, self.state)
@@ -2359,6 +2362,57 @@ class Runner:
                 )
         return retry
 
+    def gate_identity(self, validation: dict[str, Any]) -> str:
+        return json_digest(
+            [validation, self.state["config"].get("validation_policy_revision")]
+        )
+
+    def citable_gate(
+        self, pending: dict[str, Any], head: str, result: dict[str, Any],
+        validation: dict[str, Any],
+    ) -> dict[str, str] | None:
+        """Return this run's earlier passing gate when it already covers the pass."""
+        earlier = self.passed_gates.get(head)
+        if (
+            earlier is None
+            or earlier["identity"] != self.gate_identity(validation)
+            or result["status"] != "clean"
+            or head != pending["before"]
+            or head != self.state["head"]
+            # A repair pass, or one whose repair was refused, owes a real rerun.
+            or pending.get("validation_origin")
+            or pending.get("validation_repair_refused")
+        ):
+            return None
+        return self.gate_citation(earlier["pass"], head)
+
+    def gate_citation(self, cited_pass: str, head: str) -> dict[str, str]:
+        return {
+            "pass": cited_pass,
+            "head": head,
+            "validated_sha256": digest(self.directory / cited_pass / "validated.json"),
+        }
+
+    def verify_gate_citation(
+        self, citation: Any, expected: dict[str, Any],
+    ) -> str:
+        """Recheck a saved citation against the runner's own receipt of that gate."""
+        if (
+            not isinstance(citation, dict)
+            or set(citation) != {"pass", "head", "validated_sha256"}
+            # A pass folder, or one of its retry folders (nested when retries compose).
+            or not re.fullmatch(r"pass-[0-9]+(/[a-z0-9-]+)*", str(citation["pass"]))
+            or citation["head"] != expected["head"]
+        ):
+            raise Blocked("saved validation cites a gate this runner cannot verify")
+        receipt = self.directory / citation["pass"] / "validated.json"
+        if not receipt.is_file() or digest(receipt) != citation["validated_sha256"]:
+            raise Blocked("cited validation gate evidence changed")
+        cited = read(receipt)
+        if {**cited, "result": expected["result"]} != expected:
+            raise Blocked("cited validation gate does not cover this head and gates")
+        return str(citation["pass"])
+
     def record_validation_failure(
         self, pending: dict[str, Any], head: str, result: dict[str, Any],
         index: int, argv: list[str], error: ProcessFailure,
@@ -2967,6 +3021,18 @@ class Runner:
                     "environment_sha256": validation["environment_sha256"],
                 }
             )
+        if not (folder / "validated.json").exists() and (
+            citation := self.citable_gate(pending, head, result, validation)
+        ):
+            # The same gates already passed on this commit earlier in this run
+            # and the pass changed nothing, so cite that run instead of
+            # repeating it.
+            if self.boundary() != head:
+                raise Blocked("reviewed head changed before validation was cited")
+            save(
+                folder / "validated.json",
+                {**expected_validation, "cited_gate": citation},
+            )
         if not (folder / "validated.json").exists():
             for index, check in enumerate(validation["commands"]):
                 try:
@@ -2984,8 +3050,23 @@ class Runner:
             if self.boundary() != head:
                 raise Blocked("validation changed the reviewed head")
             save(folder / "validated.json", expected_validation)
-        if read(folder / "validated.json") != expected_validation:
+            self.passed_gates[head] = {
+                "identity": self.gate_identity(validation),
+                "pass": pending["folder"],
+            }
+        saved_validation = read(folder / "validated.json")
+        citation = (
+            saved_validation.pop("cited_gate", None)
+            if isinstance(saved_validation, dict)
+            else None
+        )
+        if saved_validation != expected_validation:
             raise Blocked("saved validation does not name this exact head and result")
+        cited_pass = (
+            self.verify_gate_citation(citation, expected_validation)
+            if citation is not None
+            else None
+        )
         self.threads(folder / "threads.json")
         intermediate = (
             command(
@@ -3014,7 +3095,12 @@ class Runner:
             f"Base: {self.state['base']}. Result: {result['status']}.\n"
             + self.settings_line(pending["engine"])
             + validation_label
-            + " passed at this exact head:\n"
+            + (
+                " passed at this exact head:\n"
+                if cited_pass is None
+                else f" passed at this exact head in {cited_pass} of this run and were"
+                " not repeated after this clean pass left the head unchanged:\n"
+            )
             + "\n".join(shlex.join(check["argv"]) for check in validation["commands"])
             + "\n"
         )
