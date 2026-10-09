@@ -5134,6 +5134,112 @@ def test_darwin_protected_service_with_readable_review_identity_is_not_exempt(
 
 
 @pytest.mark.fast
+@pytest.mark.parametrize('protected', [False, True, None])
+@pytest.mark.parametrize('parent', [1, 8, 9, 10, 30])
+@pytest.mark.parametrize('in_worktree', [False, True])
+def test_darwin_session_helper_requires_ancestor_parent_and_protected_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, protected: bool | None,
+    parent: int, in_worktree: bool,
+) -> None:
+    module = load('review-chain-runner')
+    runner = module.Runner.__new__(module.Runner)
+    runner.directory = tmp_path / 'checkpoint'
+    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path / 'worktree')}}
+    monkeypatch.setattr(module.os, 'getpid', lambda: 10)
+    monkeypatch.setattr(module.os, 'getppid', lambda: 9)
+    monkeypatch.setattr(module.os, 'getuid', lambda: 501)
+    # 8 -> 9 -> 10 is the probe's ancestry; 30 is an unrelated runner.
+    monkeypatch.setattr(
+        module, 'command',
+        lambda _: f'1 0 0 S\n8 1 501 S\n9 8 501 S\n10 9 501 S\n30 1 501 S\n20 {parent} 501 S',
+    )
+    monkeypatch.setattr(module, 'darwin_process_cwd', lambda pid: tmp_path / (
+        'worktree' if in_worktree and pid == 20 else 'outside'
+    ))
+    def environment(pid: int) -> dict[bytes, bytes]:
+        if pid == 20:
+            raise OSError('hidden environment')
+        return {b'PATH': b'/usr/bin'}
+    def system_binary(pid: int) -> bool:
+        if protected is None:
+            raise OSError('hidden signature')
+        return protected
+    monkeypatch.setattr(module, 'darwin_process_environment', environment)
+    monkeypatch.setattr(module, 'darwin_protected_service', lambda _: False)
+    monkeypatch.setattr(module, 'darwin_session_helper', system_binary)
+    monkeypatch.setattr(module.os, 'kill', lambda *_: None)
+    if in_worktree:
+        assert runner.darwin_recovery_workers() == [20]
+    elif protected and parent in (8, 9, 10):
+        assert runner.darwin_recovery_workers() == []
+    else:
+        with pytest.raises(module.Blocked, match='process evidence is unreadable for PID 20'):
+            runner.darwin_recovery_workers()
+
+
+@pytest.mark.fast
+def test_darwin_session_helper_with_readable_review_identity_is_not_exempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load('review-chain-runner')
+    runner = module.Runner.__new__(module.Runner)
+    runner.directory = tmp_path / 'checkpoint'
+    runner.state = {'run_id': 'r' * 64, 'config': {'worktree': str(tmp_path / 'worktree')}}
+    monkeypatch.setattr(module.os, 'getpid', lambda: 10)
+    monkeypatch.setattr(module.os, 'getppid', lambda: 9)
+    monkeypatch.setattr(module.os, 'getuid', lambda: 501)
+    monkeypatch.setattr(module, 'command', lambda _: '1 0 0 S\n9 1 501 S\n10 9 501 S\n20 9 501 S')
+    monkeypatch.setattr(module, 'darwin_process_cwd', lambda _: tmp_path / 'outside')
+    monkeypatch.setattr(module, 'darwin_process_environment', lambda _: {b'ACTIVELOOM_RUN_ID': b'r' * 64})
+    monkeypatch.setattr(module, 'darwin_session_helper', lambda _: True)
+    assert runner.darwin_recovery_workers() == [20]
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize('flags', [0x06000801, 0x06000800, 0x02000801, 0x16000801, 0])
+@pytest.mark.parametrize('path', [
+    '/usr/bin/caffeinate', '/bin/zsh', '/bin/sh', '/usr/libexec/service', '/opt/homebrew/bin/caffeinate',
+    '/tmp/usr/bin/caffeinate', '/Users/me/bin/caffeinate',
+])
+def test_darwin_session_helper_requires_kernel_flags_and_caffeinate_path(
+    monkeypatch: pytest.MonkeyPatch, flags: int, path: str,
+) -> None:
+    module = load('review-chain-runner')
+    class Probe:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+        def __call__(self, *args: Any) -> int:
+            if self.kind == 'path':
+                args[1].value = os.fsencode(path)
+                return len(path)
+            args[2]._obj.value = flags
+            return 0
+    library = SimpleNamespace(proc_pidpath=Probe('path'), csops=Probe('status'))
+    monkeypatch.setattr(module.ctypes, 'CDLL', lambda _: library)
+    monkeypatch.setattr(module.Path, 'resolve', lambda self, strict=False: self)
+    assert module.darwin_session_helper(20) == (flags == 0x06000801 and path == '/usr/bin/caffeinate')
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS process APIs')
+def test_darwin_live_caffeinate_is_a_session_helper_and_shell_is_not() -> None:
+    module = load('review-chain-runner')
+    child = subprocess.Popen(['/usr/bin/caffeinate', '-i', '-t', '30'])
+    shell = subprocess.Popen(['/bin/zsh', '-c', 'sleep 30; true'])
+    try:
+        time.sleep(0.2)
+        for pid in (child.pid, shell.pid):
+            with pytest.raises(OSError):
+                module.darwin_process_environment(pid)
+        assert module.darwin_session_helper(child.pid)
+        assert not module.darwin_protected_service(child.pid)
+        assert not module.darwin_session_helper(shell.pid)
+    finally:
+        for process in (child, shell):
+            process.terminate()
+            process.wait(timeout=5)
+
+
+@pytest.mark.fast
 @pytest.mark.parametrize('lineage', ['old_process', 'old_session', 'new_session', 'unknown'])
 @pytest.mark.parametrize('in_worktree', [False, True])
 def test_darwin_hidden_environment_checks_process_and_session_creation(
