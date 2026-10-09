@@ -147,6 +147,15 @@ export const PROVIDER_BUCKET_KEY_RE = /^[a-z0-9_]+$/;
 /** RFC 3339 UTC, to the second. A record without a timestamp has no series. */
 export const UTC_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
+/** True for a real instant spelled exactly as `UTC_TIMESTAMP_RE` requires. */
+export function isCanonicalUtcTimestamp(value: string): boolean {
+  return (
+    UTC_TIMESTAMP_RE.test(value) &&
+    !Number.isNaN(Date.parse(value)) &&
+    new Date(value).toISOString().replace('.000Z', 'Z') === value
+  );
+}
+
 /** `owner/name`, the only repository spelling the ledger accepts. */
 export const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 

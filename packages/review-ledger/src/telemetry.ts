@@ -16,9 +16,9 @@ import {
   TELEMETRY_TRIGGERS,
   TELEMETRY_VERSION,
   TOKEN_RE,
-  UTC_TIMESTAMP_RE,
+  isCanonicalUtcTimestamp,
 } from './constants.js';
-import { fail, LedgerError } from './errors.js';
+import { errorMessage, fail, LedgerError } from './errors.js';
 import {
   assertActor,
   assertLiveActor,
@@ -367,12 +367,7 @@ export function validateTelemetryRecord(value: unknown): TelemetryRecord {
     fail('telemetry record version must be 1 or 3');
   }
   const emittedAt = source['emittedAt'];
-  if (
-    typeof emittedAt !== 'string' ||
-    !UTC_TIMESTAMP_RE.test(emittedAt) ||
-    Number.isNaN(Date.parse(emittedAt)) ||
-    new Date(emittedAt).toISOString().replace('.000Z', 'Z') !== emittedAt
-  ) {
+  if (typeof emittedAt !== 'string' || !isCanonicalUtcTimestamp(emittedAt)) {
     fail('telemetry emittedAt must be an RFC 3339 UTC timestamp');
   }
   const repo = source['repo'];
@@ -737,6 +732,16 @@ function replayFingerprint(record: TelemetryRecord): string {
   });
 }
 
+/** Give a record with no measured duration the other record's duration. */
+function withDurationFrom(
+  record: TelemetryRecord,
+  other: TelemetryRecord,
+): TelemetryRecord {
+  return record.durationSeconds === null
+    ? { ...record, durationSeconds: other.durationSeconds }
+    : record;
+}
+
 /**
  * Report whether two stored records are replays of one pass rather than
  * conflicting claims. An unmeasured duration matches any measured one.
@@ -745,19 +750,10 @@ export function isTelemetryReplay(
   left: TelemetryRecord,
   right: TelemetryRecord,
 ): boolean {
-  const fill = (record: TelemetryRecord, other: TelemetryRecord) =>
-    record.durationSeconds === null
-      ? { ...record, durationSeconds: other.durationSeconds }
-      : record;
   return (
-    replayFingerprint(fill(left, right)) ===
-    replayFingerprint(fill(right, left))
+    replayFingerprint(withDurationFrom(left, right)) ===
+    replayFingerprint(withDurationFrom(right, left))
   );
-}
-
-/** Describe a thrown value without assuming it is an Error instance. */
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** PR comment sink: one comment per review pass. */
@@ -783,10 +779,7 @@ export function prCommentSink(target: {
           continue;
         }
         if (parsed?.idempotencyKey === record.idempotencyKey) {
-          const replay =
-            record.durationSeconds === null
-              ? { ...record, durationSeconds: parsed.durationSeconds }
-              : record;
+          const replay = withDurationFrom(record, parsed);
           if (replayFingerprint(parsed) !== replayFingerprint(replay)) {
             fail('telemetry idempotency key conflicts with an existing record');
           }

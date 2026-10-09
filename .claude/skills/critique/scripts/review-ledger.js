@@ -88,6 +88,9 @@ var TELEMETRY_MARKER_PREFIX = "<!-- local-review-telemetry:";
 var OPEN_TOKEN_RE = /^[a-z0-9-]+$/;
 var PROVIDER_BUCKET_KEY_RE = /^[a-z0-9_]+$/;
 var UTC_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+function isCanonicalUtcTimestamp(value) {
+  return UTC_TIMESTAMP_RE.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().replace(".000Z", "Z") === value;
+}
 var REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 var TELEMETRY_PASS_TYPES = [
   "review",
@@ -137,6 +140,9 @@ var LedgerError = class extends Error {
 };
 function fail(message) {
   throw new LedgerError(message);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // src/io.ts
@@ -18097,7 +18103,7 @@ function validateTelemetryRecord(value) {
     fail("telemetry record version must be 1 or 3");
   }
   const emittedAt = source["emittedAt"];
-  if (typeof emittedAt !== "string" || !UTC_TIMESTAMP_RE.test(emittedAt) || Number.isNaN(Date.parse(emittedAt)) || new Date(emittedAt).toISOString().replace(".000Z", "Z") !== emittedAt) {
+  if (typeof emittedAt !== "string" || !isCanonicalUtcTimestamp(emittedAt)) {
     fail("telemetry emittedAt must be an RFC 3339 UTC timestamp");
   }
   const repo = source["repo"];
@@ -18400,12 +18406,11 @@ function replayFingerprint(record) {
     ) : void 0
   });
 }
-function isTelemetryReplay(left, right) {
-  const fill = (record, other) => record.durationSeconds === null ? { ...record, durationSeconds: other.durationSeconds } : record;
-  return replayFingerprint(fill(left, right)) === replayFingerprint(fill(right, left));
+function withDurationFrom(record, other) {
+  return record.durationSeconds === null ? { ...record, durationSeconds: other.durationSeconds } : record;
 }
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+function isTelemetryReplay(left, right) {
+  return replayFingerprint(withDurationFrom(left, right)) === replayFingerprint(withDurationFrom(right, left));
 }
 function prCommentSink(target) {
   return {
@@ -18425,7 +18430,7 @@ function prCommentSink(target) {
           continue;
         }
         if (parsed?.idempotencyKey === record.idempotencyKey) {
-          const replay = record.durationSeconds === null ? { ...record, durationSeconds: parsed.durationSeconds } : record;
+          const replay = withDurationFrom(record, parsed);
           if (replayFingerprint(parsed) !== replayFingerprint(replay)) {
             fail("telemetry idempotency key conflicts with an existing record");
           }
@@ -19080,7 +19085,7 @@ function parsePullRequestNumbers(spec) {
 }
 function parseExportBound(value, name) {
   const timestamp = DATE_RE.test(value) ? `${value}T${name === "--since" ? "00:00:00" : "23:59:59"}Z` : value;
-  if (!UTC_TIMESTAMP_RE.test(timestamp) || Number.isNaN(Date.parse(timestamp)) || new Date(timestamp).toISOString().replace(".000Z", "Z") !== timestamp) {
+  if (!isCanonicalUtcTimestamp(timestamp)) {
     fail(`${name} must be YYYY-MM-DD or an RFC 3339 UTC timestamp`);
   }
   return timestamp;
@@ -19099,9 +19104,6 @@ function reportedComments(issue) {
   }
   return count;
 }
-function errorMessage2(error) {
-  return error instanceof Error ? error.message : String(error);
-}
 function prCommentSource(target) {
   const { repo, selection } = target;
   return (warn) => {
@@ -19111,7 +19113,7 @@ function prCommentSource(target) {
       try {
         comments = getAllIssueComments(repo, issue);
       } catch (error) {
-        warn(`could not read comments on #${issue}: ${errorMessage2(error)}`);
+        warn(`could not read comments on #${issue}: ${errorMessage(error)}`);
       }
       reads.push({ kind: "pr-comment", issue, commentsReported, comments });
     };
@@ -19124,7 +19126,7 @@ function prCommentSource(target) {
             `repos/${repo}/issues/${number}`
           ]);
         } catch (error) {
-          warn(`could not read #${number}: ${errorMessage2(error)}`);
+          warn(`could not read #${number}: ${errorMessage(error)}`);
           reads.push({
             kind: "pr-comment",
             issue: number,

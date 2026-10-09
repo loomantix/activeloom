@@ -6,8 +6,8 @@
  * `idempotencyKey` across all sources, and written one per line followed by a
  * trailer that says whether the export is complete.
  */
-import { REPO_RE, UTC_TIMESTAMP_RE } from './constants.js';
-import { fail } from './errors.js';
+import { isCanonicalUtcTimestamp, REPO_RE } from './constants.js';
+import { errorMessage, fail } from './errors.js';
 import { flattenPages, getAllIssueComments, jsonOutput } from './github.js';
 import {
   isTelemetryComment,
@@ -122,11 +122,7 @@ export function parseExportBound(
   const timestamp = DATE_RE.test(value)
     ? `${value}T${name === '--since' ? '00:00:00' : '23:59:59'}Z`
     : value;
-  if (
-    !UTC_TIMESTAMP_RE.test(timestamp) ||
-    Number.isNaN(Date.parse(timestamp)) ||
-    new Date(timestamp).toISOString().replace('.000Z', 'Z') !== timestamp
-  ) {
+  if (!isCanonicalUtcTimestamp(timestamp)) {
     fail(`${name} must be YYYY-MM-DD or an RFC 3339 UTC timestamp`);
   }
   return timestamp;
@@ -147,10 +143,6 @@ function reportedComments(issue: Record<string, unknown>): number {
     fail('GitHub issue response has an unexpected shape');
   }
   return count;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Legacy source: records posted as comments on the pull request reviewed. */
