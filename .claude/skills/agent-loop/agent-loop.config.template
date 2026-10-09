@@ -12,6 +12,11 @@ base_branch =
 # symlink mutable node_modules or equivalent dependency directories.
 setup_hook =
 
+# Optional idempotent refresh of ignored dependencies and generated outputs.
+# Runs inside every validation timeout and guards; must leave HEAD and all
+# Git-visible files unchanged.
+preparation_hook =
+
 # Run after the worker, after each local review, and after fresh-base merge.
 # This is the gating run: use the repository's declared review gate, bounded
 # and with concise output, not a narrower targeted check.

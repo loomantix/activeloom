@@ -9,6 +9,11 @@ base_branch =
 # commit, switch branches, or leave Git-visible worktree changes.
 setup_hook =
 
+# Optional idempotent refresh of ignored dependency/generated outputs before every
+# validation, including review-push and resumed runs. Must leave HEAD, tracked and
+# untracked files unchanged. Runs inside the validation timeout and command guards.
+preparation_hook =
+
 # Required. Run after the worker, after every local review pass, and after the
 # fresh-base merge. It must not commit, switch branches, or leave worktree
 # changes. This is the gating run: use the repository's declared review gate,

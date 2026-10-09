@@ -40,7 +40,7 @@ from where it paused. Report any other exit verbatim and stop.
 | `--issues N,N,...`    | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
 | `--iterations N`      | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
 | `--include-assigned`  | Include an eligible issue assigned only to the current user. The deprecated `--resume` spelling remains an alias.                                                             |
-| `--resume-run FILE`   | Resume one contract-v3 review/finalization checkpoint.                                                                                                                        |
+| `--resume-run FILE`   | Resume one contract-v3 pre-publication, review, or finalization checkpoint.                                                                                                   |
 | `--resume-batch FILE` | Resume an ordered contract-v3 allowlist from its private batch-state file. It cannot be combined with `--resume-run`, `--issues`, or `--dry-run`.                             |
 | `--dry-run`           | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
 
@@ -640,3 +640,37 @@ Legacy absolute-deadline checkpoints require explicit, bounded migration, even
 when their deadline has expired. Follow the [budget recovery reference](https://github.com/loomantix/activeloom/blob/main/docs/agent-loop-budget-recovery.md).
 Do not edit checkpoint fields or start a replacement run to reset the budget.
 Neither `--resume-run` nor `--resume-batch` supports `--dry-run`.
+
+## Generated outputs and pre-publication recovery
+
+Configure `preparation_hook` for an idempotent refresh of ignored dependencies
+and generated outputs. It runs inside each validation gate's existing timeout,
+budget and command guards. It must not change
+HEAD or leave tracked or untracked changes. Use input freshness checks rather
+than artifact existence alone. A failed preparation blocks publication.
+
+Contract-v3 runs create the private child checkpoint before setup/worker
+execution. A `worker-running` checkpoint is deliberately not replayed: completion
+is uncertain. That phase also covers a failed setup hook or worker, so such a
+stop offers no run resume and `--resume-batch` stops with the explicit bail
+command; inspect the preserved worktree, then bail the issue. After a clean
+committed worker returns, `worker-complete` is saved
+before validation. `--resume-run` and `--resume-batch` can then repeat preparation,
+integration and validation without rerunning that worker. Review budgets and
+pinned settings remain attached to the original run.
+
+Initial integration records its target and prior head before merging. Resume
+accepts the exact saved head, a fast-forward to that target, or a single merge
+whose parents are the saved head and target. Other head drift and dirty trees
+stop. Initial publication records intent before its create-only push. Resume
+adopts a remote branch only when that intent exists and its head matches exactly;
+it reconciles an existing same-repository draft PR with that head and base rather
+than creating a duplicate. Closed, ready, mismatched or duplicate PRs stop.
+Resuming a `draft-open` checkpoint classifies the range again, so a human-glance
+stop stays a stop and never starts the review chain. `--resume-batch` stops on
+such a child with the explicit bail command; read its draft PR, then bail the
+issue.
+
+Keep controller and state-helper revisions together. Older runs without a child
+checkpoint still require operator inspection and an explicit bail; this change
+does not invent historical completion evidence or replenish budgets.

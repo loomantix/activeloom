@@ -190,11 +190,32 @@ class Harness:
         # Region rendering has separate protocol tests; give the miniature
         # repository valid regions without adding them to its prompt inventory.
         for harness_root in (".agents", ".claude", ".codex"):
-            for suffix, name in (("py", "agent-loop-state.py"), ("sh", "agent-loop.sh")):
-                region = (Path(__file__).resolve().parents[1] / "scripts" / f"agent-loop-budget.{suffix}.inc").read_text()
+            for suffix, name in (
+                ("py", "agent-loop-state.py"),
+                ("sh", "agent-loop.sh"),
+            ):
+                region = (
+                    Path(__file__).resolve().parents[1]
+                    / "scripts"
+                    / f"agent-loop-budget.{suffix}.inc"
+                ).read_text()
                 target = root / harness_root / "skills/agent-loop/scripts" / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text("# agent-loop-budget:begin\n" + region + "# agent-loop-budget:end\n")
+                target.write_text(
+                    "# agent-loop-budget:begin\n"
+                    + region
+                    + "# agent-loop-budget:end\n"
+                    + (
+                        "# agent-loop-publication:begin\n"
+                        + (
+                            Path(__file__).resolve().parents[1]
+                            / "scripts/agent-loop-publication.sh.inc"
+                        ).read_text()
+                        + "# agent-loop-publication:end\n"
+                        if suffix == "sh"
+                        else ""
+                    )
+                )
         monkeypatch.setattr(render_prompts, "REPO_ROOT", root)
         monkeypatch.setattr(
             render_prompts, "MANIFEST_PATH", root / "prompts/rendered-files.txt"
@@ -1175,8 +1196,7 @@ def test_changed_stack_membership_requires_a_version_advance(
     extra.write_text("# extra\n", encoding="utf-8")
     profile = stacked.profiles_dir / "claude.yml"
     profile.write_text(
-        profile.read_text(encoding="utf-8")
-        + "  - .claude/EXTRA_NOTES.md\n",
+        profile.read_text(encoding="utf-8") + "  - .claude/EXTRA_NOTES.md\n",
         encoding="utf-8",
     )
     assert stacked._rp.main([]) == 0

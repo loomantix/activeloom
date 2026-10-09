@@ -34,7 +34,21 @@ LEGACY_STATE_VERSION = 3
 BATCH_STATE_VERSION = 2
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
-PHASES = {"draft-open", "reviewing", "converged", "finalizing", "finalized"}
+PREPUBLICATION_PHASES = {
+    "worker-running",
+    "worker-complete",
+    "integrating",
+    "integrated",
+    "publishing",
+    "pushed",
+}
+PHASES = PREPUBLICATION_PHASES | {
+    "draft-open",
+    "reviewing",
+    "converged",
+    "finalizing",
+    "finalized",
+}
 BATCH_STATUSES = {"pending", "active", "finalized", "bailed"}
 SETTINGS_ENGINES = ("claude", "codex", "gemini")
 # review-settings.py pin-file keys: the pins of each role and the engines that
@@ -106,25 +120,53 @@ def _validate(value: dict[str, Any]) -> None:
         _fail("run state has missing or unknown fields")
     if "reviewSettings" in value:
         _validate_settings(value["reviewSettings"])
-    if type(value["version"]) is not int or value["version"] not in {LEGACY_STATE_VERSION, STATE_VERSION}:
+    if type(value["version"]) is not int or value["version"] not in {
+        LEGACY_STATE_VERSION,
+        STATE_VERSION,
+    }:
         _fail("unsupported run state version")
     _budget_validate(value)
-    for key in ("runId", "repo", "baseBranch", "branch", "worktree", "logDir", "prUrl"):
+    for key in ("runId", "repo", "baseBranch", "branch", "worktree", "logDir"):
         if not isinstance(value[key], str) or not value[key]:
             _fail(f"run state {key} must be a non-empty string")
-    for key in ("issue", "prNumber", "round"):
+    for key in ("issue", "round"):
         if type(value[key]) is not int or value[key] < 1:
             _fail(f"run state {key} must be a positive integer")
     if "reviewDeadlineEpoch" in value:
-        if type(value["reviewDeadlineEpoch"]) is not int or value["reviewDeadlineEpoch"] < 1:
+        if (
+            type(value["reviewDeadlineEpoch"]) is not int
+            or value["reviewDeadlineEpoch"] < 1
+        ):
             _fail("run state reviewDeadlineEpoch must be a positive integer")
-        if type(value["reviewMaxRounds"]) is not int or not 1 <= value["reviewMaxRounds"] <= 4:
+        if (
+            type(value["reviewMaxRounds"]) is not int
+            or not 1 <= value["reviewMaxRounds"] <= 4
+        ):
             _fail("run state reviewMaxRounds must be between 1 and 4")
     for key in ("baseSha", "headSha"):
         if not isinstance(value[key], str) or not SHA_RE.fullmatch(value[key]):
             _fail(f"run state {key} must be a full lowercase commit SHA")
     if value["phase"] not in PHASES:
         _fail("run state phase is invalid")
+    if value["phase"] in PREPUBLICATION_PHASES:
+        if (
+            value["version"] != STATE_VERSION
+            or value["prNumber"] is not None
+            or value["prUrl"] is not None
+        ):
+            _fail("pre-publication state requires an active budget and no PR identity")
+        if value["round"] != 1 or any(
+            value[key] is not None
+            for key in ("geminiResultSha256", "claudeResultSha256")
+        ):
+            _fail("pre-publication state cannot contain review evidence")
+    elif (
+        type(value["prNumber"]) is not int
+        or value["prNumber"] < 1
+        or not isinstance(value["prUrl"], str)
+        or not value["prUrl"]
+    ):
+        _fail("published state requires a positive PR number and URL")
     review_engine = value["reviewEngine"]
     if value["phase"] == "reviewing":
         if review_engine not in {"gemini", "claude"}:
@@ -141,10 +183,11 @@ def _validate(value: dict[str, Any]) -> None:
         if not isinstance(value[key], str) or not SHA256_RE.fullmatch(value[key]):
             _fail(f"run state {key} must be a lowercase SHA-256 digest")
     if value["phase"] in {"converged", "finalizing", "finalized"} and any(
-        value[key] is None
-        for key in ("geminiResultSha256", "claudeResultSha256")
+        value[key] is None for key in ("geminiResultSha256", "claudeResultSha256")
     ):
-        _fail("converged, finalizing, or finalized run state requires both review result hashes")
+        _fail(
+            "converged, finalizing, or finalized run state requires both review result hashes"
+        )
     worktree = Path(value["worktree"])
     log_dir = Path(value["logDir"])
     if not worktree.is_absolute() or not log_dir.is_absolute():
@@ -299,7 +342,7 @@ def _create(args: argparse.Namespace) -> None:
         "prUrl": args.pr_url,
         "baseSha": args.base_sha,
         "headSha": args.head_sha,
-        "phase": "draft-open",
+        "phase": args.phase,
         "round": 1,
         "reviewEngine": None,
         "geminiResultSha256": None,
@@ -325,6 +368,21 @@ def _create(args: argparse.Namespace) -> None:
 def _update(args: argparse.Namespace) -> None:
     path = Path(args.file)
     value = _read(path)
+    if (
+        args.phase in PREPUBLICATION_PHASES
+        and value["phase"] not in PREPUBLICATION_PHASES
+    ):
+        _fail("published state cannot return to pre-publication")
+    if args.pr is not None or args.pr_url is not None:
+        if (
+            value["phase"] != "pushed"
+            or args.phase != "draft-open"
+            or args.pr is None
+            or args.pr_url is None
+        ):
+            _fail("PR identity can only be attached after initial push")
+        value["prNumber"] = args.pr
+        value["prUrl"] = args.pr_url
     value["phase"] = args.phase
     value["reviewEngine"] = args.review_engine if args.phase == "reviewing" else None
     if args.round is not None:
@@ -354,7 +412,9 @@ def _settings_save(args: argparse.Namespace) -> None:
     path = Path(args.file)
     value = _read(path)
     settings = _read_pin_file(Path(args.pin_file))
-    if "reviewSettings" in value and not _settings_extend(value["reviewSettings"], settings):
+    if "reviewSettings" in value and not _settings_extend(
+        value["reviewSettings"], settings
+    ):
         _fail("pin file changes settings this run already pinned")
     value["reviewSettings"] = settings
     _atomic_write(path, value)
@@ -386,7 +446,16 @@ def _settings_restore(args: argparse.Namespace) -> None:
 
 
 def _validate_batch(value: dict[str, Any]) -> None:
-    required = {"version", "kind", "runId", "repo", "baseBranch", "allowlist", "cursor", "issues"}
+    required = {
+        "version",
+        "kind",
+        "runId",
+        "repo",
+        "baseBranch",
+        "allowlist",
+        "cursor",
+        "issues",
+    }
     if set(value) != required:
         _fail("batch state has missing or unknown fields")
     if value.get("kind") != "batch":
@@ -414,12 +483,18 @@ def _validate_batch(value: dict[str, Any]) -> None:
     if not isinstance(rows, list) or len(rows) != len(allowlist):
         _fail("batch issue statuses do not match the allowlist")
     for index, row in enumerate(rows):
-        if not isinstance(row, dict) or set(row) != {"issue", "status", "childRunState"}:
+        if not isinstance(row, dict) or set(row) != {
+            "issue",
+            "status",
+            "childRunState",
+        }:
             _fail("batch issue status has an invalid shape")
         if row["issue"] != allowlist[index] or row["status"] not in BATCH_STATUSES:
             _fail("batch issue status does not match the ordered allowlist")
         child = row["childRunState"]
-        if child is not None and (not isinstance(child, str) or not Path(child).is_absolute()):
+        if child is not None and (
+            not isinstance(child, str) or not Path(child).is_absolute()
+        ):
             _fail("batch child run-state path must be absolute or null")
         if index < cursor and row["status"] not in {"finalized", "bailed"}:
             _fail("completed batch entries must be finalized or bailed")
@@ -519,7 +594,10 @@ def _batch_update(args: argparse.Namespace) -> None:
     with _batch_lock(path):
         value = _read_batch(path)
         cursor = value["cursor"]
-        if cursor >= len(value["issues"]) or value["issues"][cursor]["issue"] != args.issue:
+        if (
+            cursor >= len(value["issues"])
+            or value["issues"][cursor]["issue"] != args.issue
+        ):
             _fail("batch update may target only the current cursor issue")
         row = value["issues"][cursor]
         if row["status"] != args.expected_status:
@@ -789,8 +867,11 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)
     create.add_argument("--log-dir", required=True)
-    create.add_argument("--pr", required=True, type=int)
-    create.add_argument("--pr-url", required=True)
+    create.add_argument(
+        "--phase", choices=("draft-open", "worker-running"), default="draft-open"
+    )
+    create.add_argument("--pr", type=int)
+    create.add_argument("--pr-url")
     create.add_argument("--base-sha", required=True)
     create.add_argument("--head-sha", required=True)
     create.add_argument("--review-budget-seconds", type=int)
@@ -801,6 +882,8 @@ def _parser() -> argparse.ArgumentParser:
     update = commands.add_parser("update")
     update.add_argument("--file", required=True)
     update.add_argument("--phase", required=True, choices=sorted(PHASES))
+    update.add_argument("--pr", type=int)
+    update.add_argument("--pr-url")
     update.add_argument("--round", type=int)
     update.add_argument("--review-engine", choices=("gemini", "claude"))
     update.add_argument("--base-sha")
@@ -811,7 +894,10 @@ def _parser() -> argparse.ArgumentParser:
     show = commands.add_parser("show")
     show.add_argument("--file", required=True)
     show.set_defaults(handler=_show)
-    for name, handler in (("settings-save", _settings_save), ("settings-restore", _settings_restore)):
+    for name, handler in (
+        ("settings-save", _settings_save),
+        ("settings-restore", _settings_restore),
+    ):
         settings = commands.add_parser(name)
         settings.add_argument("--file", required=True)
         settings.add_argument("--pin-file", required=True)

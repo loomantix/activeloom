@@ -24,12 +24,13 @@ def _skill(name: str) -> tuple[str, ...]:
 # directories; `*` does not.
 GROUPS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "agent_loop": (
-        _skill("agent-loop"),
+        (*_skill("agent-loop"), "scripts/agent-loop-*.inc"),
         (
             "tests/test_agent_loop.py",
             "tests/test_agent_loop_doctor.py",
             "tests/test_agent_loop_isolation.py",
             "tests/test_agent_loop_state.py",
+            "tests/test_agent_loop_prepublication.py",
             "tests/test_agy_agent_loop.py",
             "tests/test_codex_agent_loop.py",
             "tests/test_codex_agent_loop_doctor.py",

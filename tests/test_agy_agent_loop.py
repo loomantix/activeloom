@@ -488,6 +488,8 @@ elif args[:1] == ['api'] and endpoint_pr_number(r'/pulls/(\d+)/reviews') is not 
     number = endpoint_pr_number(r'/pulls/(\d+)/reviews')
     reviews = unscoped(scoped_rows(reviews_file, number))
     print(json.dumps([reviews] if '--slurp' in args else reviews))
+elif args[:1] == ['api'] and any('/pulls?state=all&head=' in value for value in args):
+    print('[[]]')
 else:
     print('unsupported gh invocation: ' + ' '.join(args), file=sys.stderr)
     sys.exit(2)
