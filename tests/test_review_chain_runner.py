@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import signal
 import shutil
 import subprocess
@@ -2280,6 +2281,178 @@ def test_resume_can_rerun_failed_gate_not_the_worker(harness: Any) -> None:
     assert len(harness.launches) == 4
 
 
+def test_clean_unchanged_pass_cites_the_gate_already_passed_at_that_head(
+    harness: Any,
+) -> None:
+    h = harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    assert len(h.launches) == 4
+    assert len(h.check_launches) == 1
+    first = h.directory / "pass-1" / "validated.json"
+    assert "cited_gate" not in h.module.read(first)
+    gate = shlex.join(shlex.split(h.args.check[0]))
+    for number in range(2, 5):
+        folder = h.directory / f"pass-{number}"
+        assert h.module.read(folder / "validated.json")["cited_gate"] == {
+            "pass": "pass-1",
+            "head": HEAD,
+            "validated_sha256": h.module.digest(first),
+        }
+        assert not (folder / "check-0.log").exists()
+        # The attestation still names the gating commands and the exact head.
+        summary = (folder / "summary.txt").read_text()
+        assert f"at {HEAD}." in summary
+        assert "passed at this exact head in pass-1 of this run" in summary
+        assert summary.endswith(gate + "\n")
+    assert "passed at this exact head:\n" in (
+        h.directory / "pass-1" / "summary.txt"
+    ).read_text()
+
+
+def test_first_pass_after_resume_runs_the_gate_before_any_citation(
+    harness: Any,
+) -> None:
+    h = harness
+    h.controls.fail_attest = True
+    with pytest.raises(h.module.Blocked, match="after remote attestation"):
+        h.runner(h.args, h.directory).run()
+    assert len(h.check_launches) == 1
+    h.args.resume = True
+    assert h.runner(h.args, h.directory).run() == "converged"
+    # Pass 1 keeps its saved receipt; pass 2 has no gate from this process to
+    # cite and runs one, which passes 3 and 4 then cite.
+    assert len(h.check_launches) == 2
+    cited = [
+        h.module.read(h.directory / f"pass-{number}" / "validated.json")
+        .get("cited_gate", {})
+        .get("pass")
+        for number in range(1, 5)
+    ]
+    assert cited == [None, None, "pass-2", "pass-2"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "citable",
+        "no-earlier-gate",
+        "changed",
+        "head-moved",
+        "recorded-head-differs",
+        "different-gates",
+        "different-policy",
+        "repair-pass",
+        "repair-refused",
+    ],
+)
+def test_gate_is_cited_only_for_a_clean_unchanged_pass_under_the_same_contract(
+    harness: Any, case: str
+) -> None:
+    h = harness
+    runner = h.runner(h.args, h.directory)
+    runner.state = {"head": HEAD, "config": {"validation_policy_revision": BASE}}
+    validation = {"mode": "contract-v1", "gates": ["full"], "commands": []}
+    (h.directory / "pass-1").mkdir()
+    h.module.save(h.directory / "pass-1" / "validated.json", {"head": HEAD})
+    runner.passed_gates[HEAD] = {
+        "identity": runner.gate_identity(validation),
+        "pass": "pass-1",
+    }
+    pending: dict[str, Any] = {"before": HEAD}
+    result = {"status": "clean"}
+    if case == "no-earlier-gate":
+        runner.passed_gates.clear()
+    elif case == "changed":
+        result["status"] = "changed"
+    elif case == "head-moved":
+        pending["before"] = BASE
+    elif case == "recorded-head-differs":
+        runner.state["head"] = BASE
+    elif case == "different-gates":
+        validation = {**validation, "gates": ["backend"]}
+    elif case == "different-policy":
+        runner.state["config"]["validation_policy_revision"] = HEAD
+    elif case == "repair-pass":
+        pending["validation_origin"] = "attempt"
+    elif case == "repair-refused":
+        pending["validation_repair_refused"] = True
+    citation = runner.citable_gate(pending, HEAD, result, validation)
+    if case == "citable":
+        assert citation is not None and citation["pass"] == "pass-1"
+    else:
+        assert citation is None
+
+
+@pytest.mark.parametrize("case", ["changed-receipt", "chained", "outside", "other-head"])
+def test_saved_gate_citation_is_rechecked_against_the_cited_receipt(
+    harness: Any, case: str
+) -> None:
+    h = harness
+    runner = h.runner(h.args, h.directory)
+    assert runner.run() == "converged"
+    saved = h.module.read(h.directory / "pass-2" / "validated.json")
+    citation = saved.pop("cited_gate")
+    assert runner.verify_gate_citation(citation, saved) == "pass-1"
+    message = "cannot verify"
+    if case == "changed-receipt":
+        (h.directory / "pass-1" / "validated.json").write_text("{}")
+        message = "evidence changed"
+    elif case == "chained":
+        # Only a gate the runner ran counts, never another citation.
+        citation = {
+            "pass": "pass-3",
+            "head": HEAD,
+            "validated_sha256": h.module.digest(
+                h.directory / "pass-3" / "validated.json"
+            ),
+        }
+        message = "does not cover"
+    elif case == "outside":
+        citation = {**citation, "pass": "../pass-1"}
+    elif case == "other-head":
+        citation = {**citation, "head": BASE}
+    with pytest.raises(h.module.Blocked, match=message):
+        runner.verify_gate_citation(citation, saved)
+
+
+@pytest.mark.parametrize("cited_receipt", ["intact", "changed"])
+def test_resumed_pass_rechecks_its_saved_gate_citation(
+    harness: Any, cited_receipt: str
+) -> None:
+    h = harness
+
+    interrupted = h.runner(h.args, h.directory)
+    helper = interrupted.helper
+
+    def interrupt_first_claude_pass(name: str, *parts: str) -> dict[str, Any]:
+        if parts[0] == "attest" and "claude" in parts:
+            h.controls.fail_attest = True
+        return dict(helper(name, *parts))
+
+    interrupted.helper = interrupt_first_claude_pass
+    # Pass 2 saves its citation of pass 1, then stops before it is recorded.
+    with pytest.raises(h.module.Blocked, match="after remote attestation"):
+        interrupted.run()
+    saved = h.module.read(h.directory / "pass-2" / "validated.json")
+    assert saved["cited_gate"]["pass"] == "pass-1"
+    h.args.resume = True
+    resumed = h.runner(h.args, h.directory)
+    if cited_receipt == "changed":
+        (h.directory / "pass-1" / "validated.json").write_text("{}")
+        with pytest.raises(h.module.Blocked, match="evidence changed"):
+            resumed.run()
+        assert len(h.launches) == 2
+        return
+    assert resumed.run() == "converged"
+    assert h.module.read(h.directory / "pass-2" / "validated.json") == saved
+    assert "in pass-1 of this run" in (
+        h.directory / "pass-2" / "summary.txt"
+    ).read_text()
+    # Pass 3 is the first validated by the new process, so it runs the gate.
+    assert len(h.check_launches) == 2
+
+
 def test_resume_rejects_changed_plan_and_tampered_snapshot(harness: Any) -> None:
     harness.controls.fail_check = True
     with pytest.raises(harness.module.Blocked):
@@ -2381,15 +2554,21 @@ def test_repository_contract_selects_gate_and_scrubs_ambient_environment(
     assert runner.state["config"]["validation"] == contract
     assert runner.state["config"]["validation_policy_revision"] == HEAD
     assert revisions == [HEAD]
-    assert len(h.check_launches) == 4
-    for argv, environment in h.check_launches:
-        assert argv == [sys.executable, "-c", "pass"]
-        assert environment == {"PATH": "/test/bin", "NODE_ENV": "development"}
+    # Later clean passes on the unchanged head cite the first pass's gate.
+    assert h.check_launches == [
+        (
+            [sys.executable, "-c", "pass"],
+            {"PATH": "/test/bin", "NODE_ENV": "development"},
+        )
+    ]
     for number in range(1, 5):
         receipt = h.module.read(h.directory / f"pass-{number}" / "validated.json")
         assert receipt["mode"] == "contract-v1"
         assert receipt["gates"] == ["backend"]
         assert receipt["manifest_sha256"] == contract["manifest_sha256"]
+        assert receipt.get("cited_gate", {}).get("pass") == (
+            None if number == 1 else "pass-1"
+        )
 
 
 def test_repository_contract_adds_fallback_for_unmatched_paths(harness: Any) -> None:

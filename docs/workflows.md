@@ -158,7 +158,7 @@ Where `critique` is one engine reviewing in your session, the automatic review c
 1. **Install the Codex harness in the repository.** The runner lives at `.codex/skills/critique/scripts/review-chain-runner.py`, so include `codex` when you run `init`, even if you start reviews from Claude.
 2. **Install and authenticate each reviewer's CLI**, plus `gh`.
 3. **Create your review profile** with the `review-setup` skill, or `npx activeloom review-config init --accept-defaults` after checking `npx activeloom review-config defaults`. It records each reviewer's model and effort and the order the engines run in. The runner refuses to start without a confirmed profile.
-4. **Declare the validation gate** in `.activeloom-review.json` at the repository root: the commands to run after every pass, chosen by the paths that changed. The [runner reference](../.codex/references/review-chain-runner.md#repository-declared-validation) has the schema. Check it with `python3 .codex/skills/critique/scripts/review-chain-runner.py --validate-contract`. Repositories without the file pass each gate command with `--check` instead.
+4. **Declare the validation gate** in `.activeloom-review.json` at the repository root: the commands to run after each pass, chosen by the paths that changed. A clean pass that leaves the head unchanged reuses the gate the run already passed on that commit. The [runner reference](../.codex/references/review-chain-runner.md#repository-declared-validation) has the schema. Check it with `python3 .codex/skills/critique/scripts/review-chain-runner.py --validate-contract`. Repositories without the file pass each gate command with `--check` instead.
 
 ### Start a run
 
