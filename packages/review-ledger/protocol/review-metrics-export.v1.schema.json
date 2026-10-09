@@ -57,7 +57,7 @@
           "type": "object",
           "required": ["version", "idempotencyKey", "repo", "pr"],
           "properties": {
-            "version": { "enum": [1, 3] },
+            "version": { "type": "integer", "minimum": 1 },
             "idempotencyKey": { "type": "string", "minLength": 1 },
             "repo": { "type": "string" },
             "pr": { "type": "integer", "minimum": 1 }
@@ -124,7 +124,7 @@
           "minimum": 0
         },
         "malformed": {
-          "description": "Comments from an allowed author whose telemetry marker carries no valid record.",
+          "description": "Comments from an allowed author whose telemetry marker carries no valid record, or whose `pr-comment` record names a different pull request than the one it is posted on.",
           "type": "integer",
           "minimum": 0
         },

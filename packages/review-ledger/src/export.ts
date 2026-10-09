@@ -30,7 +30,8 @@ export const EXPORT_AUTHOR_ASSOCIATIONS: readonly string[] = [
 /** Upper bound on pull requests named by number in one export. */
 export const EXPORT_MAX_PULL_REQUESTS = 1000;
 
-const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/;
+// An underscore appears in managed-user logins (`handle_shortcode`).
+const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?(?:\[bot\])?$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Where a record was read from. `pr-comment` is a legacy record. */
@@ -324,14 +325,29 @@ export function exportTelemetry(params: {
           trailer.rejectedAuthor += 1;
           continue;
         }
-        let record: TelemetryRecord | null;
+        let record: TelemetryRecord | null = null;
+        let reason = 'the marker carries no record';
         try {
           record = matchTelemetry(body);
-        } catch {
+        } catch (error) {
+          reason = errorMessage(error);
+        }
+        // A legacy record describes the pull request it was posted on. A
+        // store issue holds records for many, so its number is not compared.
+        if (
+          record !== null &&
+          read.kind === 'pr-comment' &&
+          record.pr !== read.issue
+        ) {
+          reason = `the record names pull request #${record.pr}`;
           record = null;
         }
         if (record === null) {
           trailer.malformed += 1;
+          warn(
+            `malformed record in comment ${String(row['id'])} on ` +
+              `#${read.issue}: ${reason}`,
+          );
           continue;
         }
         candidates.push(exportLineFrom(repo, read, row, record));
@@ -357,7 +373,8 @@ export function exportTelemetry(params: {
       trailer.conflicts += 1;
       warn(
         `conflicting records for idempotency key ${key}: kept comment ` +
-          `${earliest.source.commentId}, dropped comment ${line.source.commentId}`,
+          `${earliest.source.commentId} on #${earliest.source.issue}, ` +
+          `dropped comment ${line.source.commentId} on #${line.source.issue}`,
       );
     }
   }

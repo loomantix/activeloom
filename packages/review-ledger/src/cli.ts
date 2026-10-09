@@ -1200,6 +1200,17 @@ function runCliCommand(argv: string[]): number {
           'export requires exactly one selection: --pr, --prs, or --since and/or --until',
         );
       }
+      const since =
+        args.since === undefined
+          ? undefined
+          : parseExportBound(args.since, '--since');
+      const until =
+        args.until === undefined
+          ? undefined
+          : parseExportBound(args.until, '--until');
+      if (since !== undefined && until !== undefined && since > until) {
+        fail('export --since must not be later than --until');
+      }
       const selection = byNumber
         ? {
             numbers:
@@ -1207,16 +1218,7 @@ function runCliCommand(argv: string[]): number {
                 ? [args.pr]
                 : parsePullRequestNumbers(args.prs!),
           }
-        : {
-            since:
-              args.since === undefined
-                ? undefined
-                : parseExportBound(args.since, '--since'),
-            until:
-              args.until === undefined
-                ? undefined
-                : parseExportBound(args.until, '--until'),
-          };
+        : { since, until };
       const trailer = exportTelemetry({
         repo: args.repo,
         sources: [prCommentSource({ repo: args.repo, selection })],

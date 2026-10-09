@@ -19058,7 +19058,7 @@ var EXPORT_AUTHOR_ASSOCIATIONS = [
   "COLLABORATOR"
 ];
 var EXPORT_MAX_PULL_REQUESTS = 1e3;
-var LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/;
+var LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?(?:\[bot\])?$/;
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 function parsePullRequestNumbers(spec) {
   const numbers = /* @__PURE__ */ new Set();
@@ -19227,14 +19227,22 @@ function exportTelemetry(params) {
           trailer.rejectedAuthor += 1;
           continue;
         }
-        let record;
+        let record = null;
+        let reason = "the marker carries no record";
         try {
           record = matchTelemetry(body);
-        } catch {
+        } catch (error) {
+          reason = errorMessage(error);
+        }
+        if (record !== null && read.kind === "pr-comment" && record.pr !== read.issue) {
+          reason = `the record names pull request #${record.pr}`;
           record = null;
         }
         if (record === null) {
           trailer.malformed += 1;
+          warn(
+            `malformed record in comment ${String(row["id"])} on #${read.issue}: ${reason}`
+          );
           continue;
         }
         candidates.push(exportLineFrom(repo, read, row, record));
@@ -19255,7 +19263,7 @@ function exportTelemetry(params) {
     } else {
       trailer.conflicts += 1;
       warn(
-        `conflicting records for idempotency key ${key}: kept comment ${earliest.source.commentId}, dropped comment ${line.source.commentId}`
+        `conflicting records for idempotency key ${key}: kept comment ${earliest.source.commentId} on #${earliest.source.issue}, dropped comment ${line.source.commentId} on #${line.source.issue}`
       );
     }
   }
@@ -20123,12 +20131,14 @@ function runCliCommand(argv) {
           "export requires exactly one selection: --pr, --prs, or --since and/or --until"
         );
       }
+      const since = args.since === void 0 ? void 0 : parseExportBound(args.since, "--since");
+      const until = args.until === void 0 ? void 0 : parseExportBound(args.until, "--until");
+      if (since !== void 0 && until !== void 0 && since > until) {
+        fail("export --since must not be later than --until");
+      }
       const selection = byNumber ? {
         numbers: args.pr !== void 0 ? [args.pr] : parsePullRequestNumbers(args.prs)
-      } : {
-        since: args.since === void 0 ? void 0 : parseExportBound(args.since, "--since"),
-        until: args.until === void 0 ? void 0 : parseExportBound(args.until, "--until")
-      };
+      } : { since, until };
       const trailer = exportTelemetry({
         repo: args.repo,
         sources: [prCommentSource({ repo: args.repo, selection })],

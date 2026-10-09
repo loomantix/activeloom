@@ -1,4 +1,12 @@
-import { readFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runCli } from '../cli.js';
 import { LedgerError } from '../errors.js';
@@ -89,9 +97,17 @@ interface FakeIssue {
   comments: Array<Record<string, unknown>> | 'unreadable';
 }
 
+/** `gh api` sends a plain GET unless one of these is on the command line. */
+const WRITE_FLAG_RE = /^(?:-X|--method|-f|-F|--field|--raw-field|--input)/;
+
+/** Every `gh` call the current test made, and how many carried a body. */
+let served: string[][] = [];
+let bodiesSent = 0;
+
 /** Serve issues and their comments, recording every `gh` invocation. */
 function serve(issues: Record<number, FakeIssue>): string[][] {
   const calls: string[][] = [];
+  served = calls;
   const issueRow = (number: number, issue: FakeIssue) => ({
     number,
     created_at: issue.createdAt ?? '2026-08-01T00:00:00Z',
@@ -103,7 +119,9 @@ function serve(issues: Record<number, FakeIssue>): string[][] {
   setGitHubRunner({
     runGh(args, payload) {
       calls.push(args);
-      expect(payload).toBeUndefined();
+      if (payload !== undefined) {
+        bodiesSent += 1;
+      }
       const path = args.at(-1)!;
       const comments = path.match(/\/issues\/(\d+)\/comments\?per_page=100$/);
       if (comments) {
@@ -157,6 +175,17 @@ function run(
 
 afterEach(() => {
   resetGitHubRunner();
+  // Checked here, not inside the fake: the export catches a failed read and
+  // would turn a thrown assertion into a warning.
+  const calls = served;
+  const bodies = bodiesSent;
+  served = [];
+  bodiesSent = 0;
+  expect(bodies).toBe(0);
+  for (const args of calls) {
+    expect(args[0]).toBe('api');
+    expect(args.filter((arg) => WRITE_FLAG_RE.test(arg))).toEqual([]);
+  }
 });
 
 describe('exportTelemetry', () => {
@@ -290,28 +319,47 @@ describe('exportTelemetry', () => {
         ],
       },
     });
-    const { trailer } = run({ numbers: [7] });
+    const { trailer, warnings } = run({ numbers: [7] });
     expect(trailer).toMatchObject({
       records: 1,
       malformed: 2,
       rejectedAuthor: 1,
       complete: true,
     });
+    // Each malformed comment is located and explained; a rejection is not.
+    expect(warnings).toEqual([
+      expect.stringMatching(/^malformed record in comment \d+ on #7: .+/),
+      expect.stringMatching(
+        /^malformed record in comment \d+ on #7: .*unsupported version/,
+      ),
+    ]);
   });
 
-  it('collapses identical replays across pull requests', () => {
+  it('counts a record that names another pull request as malformed', () => {
+    const misplaced = comment(body({ pr: 999 }));
+    serve({ 7: { comments: [comment(body()), misplaced] } });
+    const { lines, trailer, warnings } = run({ numbers: [7] });
+    expect(lines.map((line) => line.record.pr)).toEqual([7]);
+    expect(trailer).toMatchObject({ records: 1, malformed: 1, conflicts: 0 });
+    expect(warnings).toEqual([
+      `malformed record in comment ${String(misplaced['id'])} on #7: ` +
+        'the record names pull request #999',
+    ]);
+  });
+
+  it('collapses identical replays', () => {
     const original = comment(body({ durationSeconds: 40 }));
     serve({
-      7: { comments: [original] },
-      8: {
+      7: {
         comments: [
+          original,
           // A replay differs only in when it was emitted and in a duration it
           // has not measured yet.
           comment(body({ emittedAt: '2026-08-20T06:00:00Z' })),
         ],
       },
     });
-    const { lines, trailer, warnings } = run({ numbers: [7, 8] });
+    const { lines, trailer, warnings } = run({ numbers: [7] });
     expect(lines.map((line) => line.source.commentId)).toEqual([
       original['id'],
     ]);
@@ -342,7 +390,8 @@ describe('exportTelemetry', () => {
     });
     expect(warnings).toEqual([
       expect.stringContaining(
-        `kept comment ${String(earliest['id'])}, dropped comment ${String(later['id'])}`,
+        `kept comment ${String(earliest['id'])} on #7, ` +
+          `dropped comment ${String(later['id'])} on #7`,
       ),
     ]);
   });
@@ -350,7 +399,7 @@ describe('exportTelemetry', () => {
   it('is incomplete when GitHub reports more comments than were read', () => {
     serve({
       7: { comments: [comment(body())], reported: 2 },
-      8: { comments: [comment(body({ round: 2 }))] },
+      8: { comments: [comment(body({ pr: 8 }))] },
     });
     const { lines, trailer } = run({ numbers: [7, 8] });
     expect(lines).toHaveLength(2);
@@ -405,7 +454,25 @@ describe('exportTelemetry', () => {
     });
     expect(lines.map((line) => line.source.issue)).toEqual([5]);
     expect(trailer.complete).toBe(true);
-    expect(calls[0]!.at(-1)).toContain('&since=2026-07-01T00:00:00Z');
+    expect(calls[0]).toEqual([
+      'api',
+      '--paginate',
+      '--slurp',
+      'repos/owner/repo/issues?state=all&sort=created&direction=asc' +
+        '&per_page=100&since=2026-07-01T00:00:00Z',
+    ]);
+  });
+
+  it('lists every pull request when only an upper bound is given', () => {
+    const calls = serve({ 5: { comments: [] } });
+    run({ until: '2026-09-01T23:59:59Z' });
+    expect(calls[0]).toEqual([
+      'api',
+      '--paginate',
+      '--slurp',
+      'repos/owner/repo/issues?state=all&sort=created&direction=asc' +
+        '&per_page=100',
+    ]);
   });
 
   it('rejects a malformed repository before reading anything', () => {
@@ -456,9 +523,10 @@ describe('export argument parsing', () => {
   );
 
   it('rejects a login list that is not a list of logins', () => {
-    expect(parseAllowedLogins('octocat,review-bot[bot]')).toEqual([
+    expect(parseAllowedLogins('octocat,review-bot[bot],mona_acme')).toEqual([
       'octocat',
       'review-bot[bot]',
+      'mona_acme',
     ]);
     expect(() => parseAllowedLogins('octocat, other')).toThrowError(
       /--allowed-logins/,
@@ -476,6 +544,18 @@ describe('export argument parsing', () => {
       ['export', '--repo', REPO, '--pr', '1', '--prs', '2'],
       /exactly one selection/,
     ],
+    [
+      [
+        'export',
+        '--repo',
+        REPO,
+        '--since',
+        '2026-09-30',
+        '--until',
+        '2026-09-01',
+      ],
+      /--since must not be later than --until/,
+    ],
   ])('rejects %j', (argv, message) => {
     const stdout = vi.spyOn(process.stdout, 'write');
     try {
@@ -484,5 +564,144 @@ describe('export argument parsing', () => {
     } finally {
       stdout.mockRestore();
     }
+  });
+});
+
+describe('export schema', () => {
+  it('leaves the set of record versions to the record', () => {
+    const schema = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../protocol/review-metrics-export.v1.schema.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as {
+      $defs: { line: { properties: { record: { properties: unknown } } } };
+    };
+    expect(schema.$defs.line.properties.record.properties).toMatchObject({
+      version: { type: 'integer', minimum: 1 },
+    });
+  });
+});
+
+describe('export command', () => {
+  let directory: string;
+  let originalPath: string | undefined;
+
+  /** Put a stub `gh` first on PATH: `runCli` restores the real runner. */
+  function stubGh(issues: Record<number, { reported: number }>): void {
+    directory = mkdtempSync(join(tmpdir(), 'export-cli-'));
+    for (const [number, issue] of Object.entries(issues)) {
+      writeFileSync(
+        join(directory, `issue-${number}.json`),
+        JSON.stringify({
+          number: Number(number),
+          comments: issue.reported,
+          pull_request: {},
+        }),
+      );
+      writeFileSync(
+        join(directory, `comments-${number}.json`),
+        JSON.stringify([[comment(body({ pr: Number(number) }))]]),
+      );
+    }
+    const stub = join(directory, 'gh');
+    writeFileSync(
+      stub,
+      [
+        '#!/bin/sh',
+        'for last; do :; done',
+        'case "$last" in',
+        '  repos/owner/repo/issues/*/comments\\?per_page=100)',
+        '    number=${last#repos/owner/repo/issues/}',
+        '    exec cat "$(dirname "$0")/comments-${number%%/*}.json" ;;',
+        '  repos/owner/repo/issues/*)',
+        '    exec cat "$(dirname "$0")/issue-${last##*/}.json" ;;',
+        'esac',
+        'echo "unexpected gh call: $*" >&2',
+        'exit 1',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(stub, 0o755);
+    originalPath = process.env['PATH'];
+    process.env['PATH'] = `${directory}${delimiter}${originalPath ?? ''}`;
+  }
+
+  /** Run the command, returning its exit code and parsed stdout lines. */
+  function runExport(argv: string[]): {
+    code: number;
+    lines: Array<Record<string, unknown>>;
+    stderr: string;
+  } {
+    let stdout = '';
+    let stderr = '';
+    const out = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk) => {
+        stdout += String(chunk);
+        return true;
+      });
+    const err = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk) => {
+        stderr += String(chunk);
+        return true;
+      });
+    try {
+      const code = runCli(['export', '--repo', REPO, ...argv]);
+      expect(stdout.endsWith('\n')).toBe(true);
+      return {
+        code,
+        lines: stdout
+          .trimEnd()
+          .split('\n')
+          .map((line) => JSON.parse(line) as Record<string, unknown>),
+        stderr,
+      };
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+    }
+  }
+
+  afterEach(() => {
+    process.env['PATH'] = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  it('exits 0 with one line per record and a complete trailer', () => {
+    stubGh({ 7: { reported: 1 } });
+    const { code, lines, stderr } = runExport(['--pr', '7']);
+    expect(code).toBe(0);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({ record: { pr: 7 } });
+    expect(lines[1]).toMatchObject({ records: 1, complete: true });
+    expect(stderr).toBe('');
+  });
+
+  it('exits 1 when the export is incomplete, after writing the trailer', () => {
+    stubGh({ 7: { reported: 1 }, 8: { reported: 2 } });
+    const { code, lines, stderr } = runExport(['--prs', '7-8']);
+    expect(code).toBe(1);
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toMatchObject({ records: 2, complete: false });
+    expect(stderr).toContain('review-ledger export: incomplete');
+  });
+
+  it('passes --allowed-logins to the author filter', () => {
+    stubGh({ 7: { reported: 1 } });
+    const { code, lines } = runExport([
+      '--pr',
+      '7',
+      '--allowed-logins',
+      'someone_else',
+    ]);
+    expect(code).toBe(0);
+    expect(lines).toEqual([
+      expect.objectContaining({ records: 0, rejectedAuthor: 1 }),
+    ]);
   });
 });

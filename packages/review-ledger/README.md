@@ -425,7 +425,9 @@ The schema version covers the envelope; `record` keeps its own `version`.
   lands in exactly one trailer count: `records`, `duplicatesCollapsed` (a
   replay of an exported record), `conflicts` (the same `idempotencyKey` with
   different content; the earliest is exported and the rest are named on
-  stderr), `rejectedAuthor`, or `malformed`.
+  stderr), `rejectedAuthor`, or `malformed`. A record that names a different
+  pull request than the one it is posted on counts as `malformed`, and each
+  malformed comment is named on stderr with the reason.
 - **`complete` is checked, not assumed.** It is true only when, for every pull
   request read, the comments read equal the count GitHub reports. A pull request
   or comment listing that could not be read appears with `null` in place of the
