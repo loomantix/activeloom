@@ -921,8 +921,8 @@ def unconsented_sensitive_writes(
     return denied
 
 
-def reissued_delete_indices(targets: Sequence[Any], skip: set[str]) -> set[int]:
-    """Indices of delete targets whose destination a later copy rewrites.
+def reissued_delete_indices(targets: Sequence[Any], skip: set[str]) -> dict[int, bool]:
+    """Delete indices and whether their next copy sets an explicit mode.
 
     A retired path can be reissued with new content: the manifest deletes the
     old file, then a copy further down writes the new one to the same path.
@@ -936,8 +936,8 @@ def reissued_delete_indices(targets: Sequence[Any], skip: set[str]) -> set[int]:
     whatever exists, so either leaves the delete in force. Malformed entries
     are ignored here and left to the main loop to report.
     """
-    reissued: set[int] = set()
-    later_copies: set[str] = set()
+    reissued: dict[int, bool] = {}
+    later_copies: dict[str, bool] = {}
     for index in range(len(targets) - 1, -1, -1):
         target = targets[index]
         if not isinstance(target, dict):
@@ -949,13 +949,13 @@ def reissued_delete_indices(targets: Sequence[Any], skip: set[str]) -> set[int]:
         delete_raw = target.get("delete")
         if delete_raw is True:
             if dest_rel in later_copies:
-                reissued.add(index)
+                reissued[index] = later_copies[dest_rel]
             continue
         if delete_raw not in (None, False) or target.get("create_if_missing") not in (None, False):
             continue
         if not isinstance(source_rel, str) or source_rel in skip or dest_rel in skip:
             continue
-        later_copies.add(dest_rel)
+        later_copies[dest_rel] = target.get("mode") is not None
     return reissued
 
 
@@ -1724,7 +1724,15 @@ def main() -> int:
                 existed = dest_path.exists() or dest_path.is_symlink()
                 # A later copy replaces the content in place. A symlink is still
                 # unlinked so that copy creates a regular file, not a write through it.
-                if existed and index in reissued and not dest_path.is_symlink():
+                if (
+                    existed
+                    and index in reissued
+                    and not dest_path.is_symlink()
+                    and (
+                        reissued[index]
+                        or stat.S_IMODE(dest_path.stat().st_mode) == 0o644
+                    )
+                ):
                     print(f"  ↪️  reissued below, not removing {dest_rel}")
                     continue
                 if args.dry_run:

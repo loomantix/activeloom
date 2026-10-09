@@ -1018,6 +1018,24 @@ def test_main_reissued_delete_replaces_the_retired_content(
     assert "🗑️" not in out
 
 
+def test_main_reissued_delete_resets_retired_mode_without_copy_mode(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retired = consumer_dir / "skill.md"
+    retired.write_text("reissued content\n")
+    retired.chmod(0o600)
+    _write_reissue_manifest(
+        upstream_repo, later={"source": "new.md", "destination": "skill.md"}
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    assert stat.S_IMODE(retired.stat().st_mode) == 0o644
+
+
 def test_main_delete_runs_when_the_reissuing_copy_is_skipped(
     sync_engine: ModuleType,
     upstream_repo: Path,
