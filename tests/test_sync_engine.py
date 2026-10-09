@@ -1036,6 +1036,51 @@ def test_main_reissued_delete_resets_retired_mode_without_copy_mode(
     assert stat.S_IMODE(retired.stat().st_mode) == 0o644
 
 
+def test_main_reissued_delete_keeps_file_when_copy_sets_mode(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    retired = consumer_dir / "skill.md"
+    retired.write_text("retired content\n")
+    retired.chmod(0o600)
+    _write_reissue_manifest(
+        upstream_repo,
+        later={"source": "new.md", "destination": "skill.md", "mode": "0755"},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    assert retired.read_text() == "reissued content\n"
+    assert stat.S_IMODE(retired.stat().st_mode) == 0o755
+    out = capsys.readouterr().out
+    assert "reissued below, not removing skill.md" in out
+    assert "🗑️" not in out
+
+
+def test_main_reissued_delete_still_unlinks_a_symlink(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Keeping the link would let the copy write through it to its target.
+    outside = consumer_dir.parent / "outside.md"
+    outside.write_text("outside content\n")
+    (consumer_dir / "skill.md").symlink_to(outside)
+    _write_reissue_manifest(
+        upstream_repo, later={"source": "new.md", "destination": "skill.md"}
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    assert outside.read_text() == "outside content\n"
+    assert not (consumer_dir / "skill.md").is_symlink()
+    assert (consumer_dir / "skill.md").read_text() == "reissued content\n"
+
+
 def test_main_delete_runs_when_the_reissuing_copy_is_skipped(
     sync_engine: ModuleType,
     upstream_repo: Path,
