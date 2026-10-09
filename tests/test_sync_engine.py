@@ -966,6 +966,118 @@ def test_main_delete_is_idempotent_when_already_absent(
     assert "already absent" in out
 
 
+def _write_reissue_manifest(upstream_repo: Path, *, later: dict[str, object]) -> None:
+    (upstream_repo / "new.md").write_text("reissued content\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {"targets": [{"destination": "skill.md", "delete": True}, later]},
+    )
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_main_reissued_delete_leaves_an_in_sync_file_alone(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    dry_run: bool,
+) -> None:
+    # A retired path that a later copy reissues: deleting it only for the copy
+    # to rewrite it reported a removal on every steady-state run.
+    (consumer_dir / "skill.md").write_text("reissued content\n")
+    _write_reissue_manifest(
+        upstream_repo, later={"source": "new.md", "destination": "skill.md"}
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch, dry_run=dry_run)
+    assert rc == 0
+    assert (consumer_dir / "skill.md").read_text() == "reissued content\n"
+    out = capsys.readouterr().out
+    assert "🗑️" not in out
+    assert "0 written, 0 removed" in out
+
+
+def test_main_reissued_delete_replaces_the_retired_content(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (consumer_dir / "skill.md").write_text("retired content\n")
+    _write_reissue_manifest(
+        upstream_repo, later={"source": "new.md", "destination": "skill.md"}
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    assert (consumer_dir / "skill.md").read_text() == "reissued content\n"
+    out = capsys.readouterr().out
+    assert "wrote skill.md" in out
+    assert "🗑️" not in out
+
+
+def test_main_delete_runs_when_the_reissuing_copy_is_skipped(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Opting out of the new file must not strand the retired one.
+    (consumer_dir / "skill.md").write_text("retired content\n")
+    _write_reissue_manifest(
+        upstream_repo, later={"source": "new.md", "destination": "skill.md"}
+    )
+    _write_yaml(consumer_dir / ".activeloom-config.yml", {"skip_targets": ["new.md"]})
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    assert not (consumer_dir / "skill.md").exists()
+
+
+def test_main_delete_before_create_if_missing_still_unlinks(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A bootstrap preserves whatever exists, so it cannot stand in for the
+    # delete: the retired content would survive.
+    (consumer_dir / "skill.md").write_text("retired content\n")
+    _write_reissue_manifest(
+        upstream_repo,
+        later={"source": "new.md", "destination": "skill.md", "create_if_missing": True},
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    assert (consumer_dir / "skill.md").read_text() == "reissued content\n"
+
+
+def test_main_copy_before_delete_still_unlinks(
+    sync_engine: ModuleType,
+    upstream_repo: Path,
+    consumer_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only a LATER copy reissues the path; list order stays authoritative.
+    (upstream_repo / "new.md").write_text("reissued content\n")
+    _write_yaml(
+        upstream_repo / "scripts" / "sync-targets.yml",
+        {
+            "targets": [
+                {"source": "new.md", "destination": "skill.md"},
+                {"destination": "skill.md", "delete": True},
+            ]
+        },
+    )
+
+    rc = _run_main(sync_engine, upstream_repo, consumer_dir, monkeypatch)
+    assert rc == 0
+    assert not (consumer_dir / "skill.md").exists()
+
+
 def test_main_rejects_stringly_typed_delete_flag(
     sync_engine: ModuleType,
     upstream_repo: Path,

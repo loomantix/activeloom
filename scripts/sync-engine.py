@@ -921,6 +921,44 @@ def unconsented_sensitive_writes(
     return denied
 
 
+def reissued_delete_indices(targets: Sequence[Any], skip: set[str]) -> set[int]:
+    """Indices of delete targets whose destination a later copy rewrites.
+
+    A retired path can be reissued with new content: the manifest deletes the
+    old file, then a copy further down writes the new one to the same path.
+    Unlinking first makes every steady-state run remove and recreate the file,
+    and a dry run, which cannot see the later write, reports a removal that
+    never lands. The later copy already replaces the content, so the delete
+    has nothing left to do.
+
+    Only a plain copy the consumer has not skipped counts. A skipped copy
+    would strand the retired content, and a `create_if_missing` copy preserves
+    whatever exists, so either leaves the delete in force. Malformed entries
+    are ignored here and left to the main loop to report.
+    """
+    reissued: set[int] = set()
+    later_copies: set[str] = set()
+    for index in range(len(targets) - 1, -1, -1):
+        target = targets[index]
+        if not isinstance(target, dict):
+            continue
+        dest_rel = target.get("destination")
+        source_rel = target.get("source")
+        if not isinstance(dest_rel, str):
+            continue
+        delete_raw = target.get("delete")
+        if delete_raw is True:
+            if dest_rel in later_copies:
+                reissued.add(index)
+            continue
+        if delete_raw not in (None, False) or target.get("create_if_missing") not in (None, False):
+            continue
+        if not isinstance(source_rel, str) or source_rel in skip or dest_rel in skip:
+            continue
+        later_copies.add(dest_rel)
+    return reissued
+
+
 def unallowed_destinations(
     targets: Sequence[Any],
     skip: Collection[str],
@@ -1536,7 +1574,8 @@ def main() -> int:
     sensitive = 0
 
     for scope, targets in plan:
-        for target in targets:
+        reissued = reissued_delete_indices(targets, scope.skip)
+        for index, target in enumerate(targets):
             if not isinstance(target, dict):
                 sys.stderr.write(f"  ❌ malformed target entry: expected a mapping, got {target!r}\n")
                 return 1
@@ -1683,6 +1722,11 @@ def main() -> int:
                     return 1
                 # Check existence including broken symlinks.
                 existed = dest_path.exists() or dest_path.is_symlink()
+                # A later copy replaces the content in place. A symlink is still
+                # unlinked so that copy creates a regular file, not a write through it.
+                if existed and index in reissued and not dest_path.is_symlink():
+                    print(f"  ↪️  reissued below, not removing {dest_rel}")
+                    continue
                 if args.dry_run:
                     if existed:
                         print(f"  🗑️  would remove {dest_rel}")
