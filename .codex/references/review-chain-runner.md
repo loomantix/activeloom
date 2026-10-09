@@ -521,12 +521,14 @@ clock skew; recovery assumes the host and GitHub clocks agree within that
 margin. A second exception covers launchd-owned Apple services at system service
 paths whose live kernel code-signing flags prove a valid, restricted platform
 binary with no untrusted helpers and no debug allowance. A name or path alone
-does not qualify. A third exception covers a session helper, such as the
-`caffeinate` process Claude Code keeps running: a process with the same
-code-signing proof, in a system directory, whose parent is an ancestor of the
-diagnosing command other than launchd. The runner starts each worker as its own
-child and an orphaned worker is reparented to launchd, so no worker has such a
-parent. The helper's descendants are still checked individually. Zombies have already exited and cannot mutate the review.
+does not qualify. A third exception covers the `/usr/bin/caffeinate` session
+helper Claude Code keeps running: with the same code-signing proof, and whose
+parent is an ancestor of the diagnosing command other than launchd. The runner
+starts each worker as its own child and an orphaned worker is reparented to
+launchd, so no worker has such a parent. Shells also hide their environment and
+are never exempt, because a session shell that launched the runner can still
+run commands after it. The helper's descendants are still checked individually.
+Zombies have already exited and cannot mutate the review.
 Unknown creation times, new review sessions, unverified services, and unreadable
 working directories remain blockers. Other platforms are unsupported. Recovery must run
 in the process namespace the review ran in: inside a sandbox with its own PID

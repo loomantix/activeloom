@@ -397,13 +397,9 @@ def darwin_protected_service(pid: int) -> bool:
     )
 
 
-def darwin_protected_system_binary(pid: int) -> bool:
-    """Identify protected Apple binaries in SIP system directories."""
-    executable = darwin_protected_executable(pid)
-    return executable is not None and any(
-        executable.is_relative_to(root)
-        for root in ("/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/libexec", "/System/Library")
-    )
+def darwin_session_helper(pid: int) -> bool:
+    """Identify a protected Apple session helper; shells also hide their environment."""
+    return darwin_protected_executable(pid) == Path("/usr/bin/caffeinate")
 
 
 def darwin_process_started_at(pid: int) -> float:
@@ -879,7 +875,7 @@ class Runner:
                     # A session helper such as Claude Code's caffeinate is a
                     # child of this probe's own ancestry. Workers are children of
                     # their runner, or launchd once orphaned, so they never are.
-                    if parent != 1 and parent in ancestors and darwin_protected_system_binary(pid):
+                    if parent != 1 and parent in ancestors and darwin_session_helper(pid):
                         continue
                     raise
                 result = os.fsdecode(env.get(b"AGENT_LOOP_REVIEW_RESULT_FILE", b""))

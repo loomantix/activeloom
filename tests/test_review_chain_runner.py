@@ -5166,7 +5166,7 @@ def test_darwin_session_helper_requires_ancestor_parent_and_protected_binary(
         return protected
     monkeypatch.setattr(module, 'darwin_process_environment', environment)
     monkeypatch.setattr(module, 'darwin_protected_service', lambda _: False)
-    monkeypatch.setattr(module, 'darwin_protected_system_binary', system_binary)
+    monkeypatch.setattr(module, 'darwin_session_helper', system_binary)
     monkeypatch.setattr(module.os, 'kill', lambda *_: None)
     if in_worktree:
         assert runner.darwin_recovery_workers() == [20]
@@ -5191,17 +5191,17 @@ def test_darwin_session_helper_with_readable_review_identity_is_not_exempt(
     monkeypatch.setattr(module, 'command', lambda _: '1 0 0 S\n9 1 501 S\n10 9 501 S\n20 9 501 S')
     monkeypatch.setattr(module, 'darwin_process_cwd', lambda _: tmp_path / 'outside')
     monkeypatch.setattr(module, 'darwin_process_environment', lambda _: {b'ACTIVELOOM_RUN_ID': b'r' * 64})
-    monkeypatch.setattr(module, 'darwin_protected_system_binary', lambda _: True)
+    monkeypatch.setattr(module, 'darwin_session_helper', lambda _: True)
     assert runner.darwin_recovery_workers() == [20]
 
 
 @pytest.mark.fast
 @pytest.mark.parametrize('flags', [0x06000801, 0x06000800, 0x02000801, 0x16000801, 0])
 @pytest.mark.parametrize('path', [
-    '/usr/bin/caffeinate', '/bin/zsh', '/usr/libexec/service', '/opt/homebrew/bin/caffeinate',
+    '/usr/bin/caffeinate', '/bin/zsh', '/bin/sh', '/usr/libexec/service', '/opt/homebrew/bin/caffeinate',
     '/tmp/usr/bin/caffeinate', '/Users/me/bin/caffeinate',
 ])
-def test_darwin_session_helper_requires_kernel_flags_and_system_directory(
+def test_darwin_session_helper_requires_kernel_flags_and_caffeinate_path(
     monkeypatch: pytest.MonkeyPatch, flags: int, path: str,
 ) -> None:
     module = load('review-chain-runner')
@@ -5217,23 +5217,26 @@ def test_darwin_session_helper_requires_kernel_flags_and_system_directory(
     library = SimpleNamespace(proc_pidpath=Probe('path'), csops=Probe('status'))
     monkeypatch.setattr(module.ctypes, 'CDLL', lambda _: library)
     monkeypatch.setattr(module.Path, 'resolve', lambda self, strict=False: self)
-    system = path in ('/usr/bin/caffeinate', '/bin/zsh', '/usr/libexec/service')
-    assert module.darwin_protected_system_binary(20) == (flags == 0x06000801 and system)
+    assert module.darwin_session_helper(20) == (flags == 0x06000801 and path == '/usr/bin/caffeinate')
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='macOS process APIs')
-def test_darwin_live_caffeinate_is_a_protected_system_binary() -> None:
+def test_darwin_live_caffeinate_is_a_session_helper_and_shell_is_not() -> None:
     module = load('review-chain-runner')
     child = subprocess.Popen(['/usr/bin/caffeinate', '-i', '-t', '30'])
+    shell = subprocess.Popen(['/bin/zsh', '-c', 'sleep 30; true'])
     try:
         time.sleep(0.2)
-        with pytest.raises(OSError):
-            module.darwin_process_environment(child.pid)
-        assert module.darwin_protected_system_binary(child.pid)
+        for pid in (child.pid, shell.pid):
+            with pytest.raises(OSError):
+                module.darwin_process_environment(pid)
+        assert module.darwin_session_helper(child.pid)
         assert not module.darwin_protected_service(child.pid)
+        assert not module.darwin_session_helper(shell.pid)
     finally:
-        child.terminate()
-        child.wait(timeout=5)
+        for process in (child, shell):
+            process.terminate()
+            process.wait(timeout=5)
 
 
 @pytest.mark.fast
