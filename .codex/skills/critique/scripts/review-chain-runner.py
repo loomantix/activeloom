@@ -362,8 +362,8 @@ def darwin_process_cwd(pid: int) -> Path:
     return Path(paths[0]).resolve()
 
 
-def darwin_protected_service(pid: int) -> bool:
-    """Identify SIP-protected Apple services, never user-installed reviewers."""
+def darwin_protected_executable(pid: int) -> Path | None:
+    """Return a kernel-verified protected Apple platform binary's path, else None."""
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
     probe = libproc.proc_pidpath
     probe.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
@@ -372,12 +372,6 @@ def darwin_protected_service(pid: int) -> bool:
     if probe(pid, path, ctypes.sizeof(path)) <= 0:
         raise OSError("process executable unavailable")
     executable = Path(os.fsdecode(path.value)).resolve()
-    service = executable.is_relative_to("/usr/libexec") or (
-        executable.is_relative_to("/System/Library")
-        and ("XPCServices" in executable.parts or executable.is_relative_to("/System/Library/CoreServices"))
-    )
-    if not service:
-        return False
     libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
     status = libc.csops
     status.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
@@ -387,7 +381,29 @@ def darwin_protected_service(pid: int) -> bool:
         raise OSError("process code signature unavailable")
     # CS_VALID | CS_RESTRICT | CS_NO_UNTRUSTED_HELPERS | CS_PLATFORM_BINARY.
     required = 0x06000801
-    return flags.value & required == required and not flags.value & 0x10000000  # CS_DEBUGGED
+    if flags.value & required != required or flags.value & 0x10000000:  # CS_DEBUGGED
+        return None
+    return executable
+
+
+def darwin_protected_service(pid: int) -> bool:
+    """Identify SIP-protected Apple services, never user-installed reviewers."""
+    executable = darwin_protected_executable(pid)
+    return executable is not None and (
+        executable.is_relative_to("/usr/libexec") or (
+            executable.is_relative_to("/System/Library")
+            and ("XPCServices" in executable.parts or executable.is_relative_to("/System/Library/CoreServices"))
+        )
+    )
+
+
+def darwin_protected_system_binary(pid: int) -> bool:
+    """Identify protected Apple binaries in SIP system directories."""
+    executable = darwin_protected_executable(pid)
+    return executable is not None and any(
+        executable.is_relative_to(root)
+        for root in ("/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/libexec", "/System/Library")
+    )
 
 
 def darwin_process_started_at(pid: int) -> float:
@@ -859,6 +875,11 @@ class Runner:
                     # kernel-verified protected services outside the worktree are
                     # exempt; shells, interpreters and reviewer binaries are not.
                     if parent == 1 and darwin_protected_service(pid):
+                        continue
+                    # A session helper such as Claude Code's caffeinate is a
+                    # child of this probe's own ancestry. Workers are children of
+                    # their runner, or launchd once orphaned, so they never are.
+                    if parent != 1 and parent in ancestors and darwin_protected_system_binary(pid):
                         continue
                     raise
                 result = os.fsdecode(env.get(b"AGENT_LOOP_REVIEW_RESULT_FILE", b""))

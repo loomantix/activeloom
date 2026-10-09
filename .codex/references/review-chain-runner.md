@@ -521,7 +521,12 @@ clock skew; recovery assumes the host and GitHub clocks agree within that
 margin. A second exception covers launchd-owned Apple services at system service
 paths whose live kernel code-signing flags prove a valid, restricted platform
 binary with no untrusted helpers and no debug allowance. A name or path alone
-does not qualify. Zombies have already exited and cannot mutate the review.
+does not qualify. A third exception covers a session helper, such as the
+`caffeinate` process Claude Code keeps running: a process with the same
+code-signing proof, in a system directory, whose parent is an ancestor of the
+diagnosing command other than launchd. The runner starts each worker as its own
+child and an orphaned worker is reparented to launchd, so no worker has such a
+parent. The helper's descendants are still checked individually. Zombies have already exited and cannot mutate the review.
 Unknown creation times, new review sessions, unverified services, and unreadable
 working directories remain blockers. Other platforms are unsupported. Recovery must run
 in the process namespace the review ran in: inside a sandbox with its own PID
@@ -531,7 +536,8 @@ that hides its environment and cannot be excluded by the platform's evidence
 checks is named by PID, and diagnosis stops until it is reconciled.
 Any other same-user process whose working directory is inside the worktree is
 reported as a potential worker, including a second shell, an editor, or the
-other side of a pipe; close them and run the command unpiped. An unknown exit without
+other side of a pipe such as `--diagnose | tail` started from the worktree;
+close them and run the command unpiped. An unknown exit without
 an explicit cleanup-completed receipt, live process groups, unreadable process evidence, unfinished terminal writes,
 or conflicting terminal markers refuse abort. Do not edit a checkpoint to
 manufacture proof of a worker exit or discard it to obtain another budget.
