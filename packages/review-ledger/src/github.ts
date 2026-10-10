@@ -407,7 +407,8 @@ export function verifyGitTransition(
   }
 }
 
-function flattenPages<T>(value: unknown, label: string): T[] {
+/** Flatten a `gh api --paginate --slurp` response into its rows. */
+export function flattenPages<T>(value: unknown, label: string): T[] {
   if (!Array.isArray(value)) {
     fail(`GitHub ${label} response has an unexpected shape`);
   }
@@ -489,7 +490,8 @@ export function getIssueComments(
   return authenticatedRows(rows, { actor });
 }
 
-function getAllIssueComments(
+/** Fetch every issue (conversation) comment, whoever wrote it. */
+export function getAllIssueComments(
   repo: string,
   pr: number,
 ): Array<Record<string, unknown>> {
