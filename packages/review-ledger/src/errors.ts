@@ -15,3 +15,8 @@ export class LedgerError extends Error {
 export function fail(message: string): never {
   throw new LedgerError(message);
 }
+
+/** Describe a thrown value without assuming it is an Error instance. */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

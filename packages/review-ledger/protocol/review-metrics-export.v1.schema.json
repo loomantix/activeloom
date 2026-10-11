@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/loomantix/activeloom/main/packages/review-ledger/protocol/review-metrics-export.v1.schema.json",
+  "title": "review-ledger export, version 1",
+  "description": "One line of `review-ledger export` output. Every line but the last is a record line; the last is the trailer. An export with no trailer was cut short and is not complete.",
+  "oneOf": [{ "$ref": "#/$defs/line" }, { "$ref": "#/$defs/trailer" }],
+  "$defs": {
+    "sourceKind": {
+      "description": "Where a record was read from. `pr-comment` is a legacy record posted on the pull request it describes; `store-issue` is reserved for the dedicated store.",
+      "enum": ["pr-comment", "store-issue"]
+    },
+    "line": {
+      "type": "object",
+      "required": ["schema", "source", "record"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "activeloom.review-metrics.export/v1" },
+        "source": {
+          "type": "object",
+          "required": [
+            "kind",
+            "repo",
+            "issue",
+            "commentId",
+            "authorAssociation",
+            "createdAt",
+            "updatedAt"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "$ref": "#/$defs/sourceKind" },
+            "repo": {
+              "description": "The repository the export read, as owner/name.",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+            },
+            "issue": {
+              "description": "The issue or pull request number the comment is on.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "commentId": { "type": "integer", "minimum": 1 },
+            "authorAssociation": {
+              "description": "The comment author's association with the repository. A record is exported only for these values.",
+              "enum": ["OWNER", "MEMBER", "COLLABORATOR"]
+            },
+            "createdAt": { "type": "string", "format": "date-time" },
+            "updatedAt": {
+              "description": "Later than `createdAt` when the record was enriched in place; upsert on `record.idempotencyKey`.",
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "record": {
+          "description": "The stored telemetry record as validated by the reader. Its own `version` governs its shape; this schema governs the envelope only.",
+          "type": "object",
+          "required": ["version", "idempotencyKey", "repo", "pr"],
+          "properties": {
+            "version": { "type": "integer", "minimum": 1 },
+            "idempotencyKey": { "type": "string", "minLength": 1 },
+            "repo": { "type": "string" },
+            "pr": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "trailer": {
+      "type": "object",
+      "required": [
+        "schema",
+        "sources",
+        "records",
+        "duplicatesCollapsed",
+        "conflicts",
+        "rejectedAuthor",
+        "malformed",
+        "complete"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "activeloom.review-metrics.export-trailer/v1" },
+        "sources": {
+          "description": "One entry per issue or pull request read.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "issue", "commentsReported", "commentsRead"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "$ref": "#/$defs/sourceKind" },
+              "issue": { "type": "integer", "minimum": 1 },
+              "commentsReported": {
+                "description": "The comment count GitHub reports; null when it could not be read.",
+                "type": ["integer", "null"],
+                "minimum": 0
+              },
+              "commentsRead": {
+                "description": "The comments the export read; null when the listing could not be read.",
+                "type": ["integer", "null"],
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "records": {
+          "description": "Record lines written before this trailer.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicatesCollapsed": {
+          "description": "Later comments that replayed an exported record under the same idempotency key.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "conflicts": {
+          "description": "Later comments that reused an exported record's idempotency key with different content. The earliest is exported.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "rejectedAuthor": {
+          "description": "Comments carrying a telemetry marker whose author is not allowed to write records.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "malformed": {
+          "description": "Comments from an allowed author whose telemetry marker carries no valid record, or whose `pr-comment` record names a different pull request than the one it is posted on.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "complete": {
+          "description": "True only when, for every source, `commentsRead` equals `commentsReported`.",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

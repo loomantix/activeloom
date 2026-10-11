@@ -141,6 +141,22 @@ export {
 } from './github.js';
 
 export {
+  EXPORT_AUTHOR_ASSOCIATIONS,
+  EXPORT_LINE_SCHEMA,
+  EXPORT_TRAILER_SCHEMA,
+  exportTelemetry,
+  prCommentSource,
+} from './export.js';
+export type {
+  ExportLine,
+  ExportSource,
+  ExportSourceKind,
+  ExportSourceRead,
+  ExportTrailer,
+  PullRequestSelection,
+} from './export.js';
+
+export {
   parseReviewers,
   matchRoster,
   buildRosterBody,
