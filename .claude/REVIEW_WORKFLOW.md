@@ -759,6 +759,16 @@ Invocation:
 
 ## Pass Telemetry
 
+The ledger reads its destination, `LOOM_REVIEW_TELEMETRY_STORE`, from the synced
+`review-telemetry.json` beside its bundle: `pr` until the repository sets
+`telemetry.store: issue`.
+In issue mode, a maintainer runs `metrics-setup` before the repository switches.
+Never create a store during a review, open its history as reviewer context, or
+fall back to a PR comment. If emission returns `recoveryRecord`, save that object
+in the pass's private directory as `metrics-recovery.json` and report the path
+locally. A person can retry it with `replay-telemetry --repo <owner/repo> --file
+<path>` after repairing the store. Never paste recovery records into a PR.
+
 At the pass boundary, create and save this pass's idempotency key:
 
 ```bash
@@ -776,7 +786,7 @@ creation fails, report telemetry failure rather than falling back to a key
 that may identify a different pass. This works with existing ledger bundles.
 
 Every pass records what it cost, as a `local-review-telemetry:v1` marker in its
-own PR comment. The record carries token buckets per exact model, classified
+configured store. The record carries token buckets per exact model, classified
 line churn, finding dispositions, and the pass identity needed to ask whether
 Deep earns its cost. It carries no prose, no file paths, no finding titles, and
 no money: rates move and a subscription's marginal cost is zero, so a stored
@@ -816,10 +826,10 @@ are read by the usage helper and nowhere else; both are environment
 configuration set once, never an interactive prompt during a pass, because a
 prompt would block an autonomous run.
 
-| Variable                        | Governs                             | Default           |
-| ------------------------------- | ----------------------------------- | ----------------- |
-| `LOOM_REVIEW_TELEMETRY`         | emitting a record to a pull request | on                |
-| `LOOM_REVIEW_TELEMETRY_EXTRACT` | measuring this pass at all          | the emission gate |
+| Variable                        | Governs                        | Default           |
+| ------------------------------- | ------------------------------ | ----------------- |
+| `LOOM_REVIEW_TELEMETRY`         | emitting a record to its store | on                |
+| `LOOM_REVIEW_TELEMETRY_EXTRACT` | measuring this pass at all     | the emission gate |
 
 Each accepts exactly `on` or `off`, ignoring surrounding whitespace and case.
 Any other non-empty value is neither: the helper stays disabled and reports an
@@ -828,7 +838,7 @@ opt-out.
 
 Publication defaults on for every review pass. Set `telemetry.emit: off` in the
 consumer's sync configuration — not in the rendered `review-telemetry.json`,
-whose only keys are the two variables named above — or set
+whose only keys are those two variables and `LOOM_REVIEW_TELEMETRY_STORE` — or set
 `LOOM_REVIEW_TELEMETRY=off` in the process environment to opt out. Extraction inherits emission unless explicitly set,
 so an emission opt-out also disables extraction by default. For local-only
 measurement, set `LOOM_REVIEW_TELEMETRY_EXTRACT=on` with emission off.

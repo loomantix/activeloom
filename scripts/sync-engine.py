@@ -138,6 +138,7 @@ RESERVED_SUBSTITUTION_KEYS: Final[frozenset[str]] = frozenset({"REVIEW_TELEMETRY
 TELEMETRY_GATES: Final[dict[str, str]] = {
     "emit": "LOOM_REVIEW_TELEMETRY",
     "extract": "LOOM_REVIEW_TELEMETRY_EXTRACT",
+    "store": "LOOM_REVIEW_TELEMETRY_STORE",
 }
 
 TELEMETRY_VALUES: Final[frozenset[str]] = frozenset({"on", "off"})
@@ -1080,14 +1081,16 @@ def render_telemetry_env(raw: object, config_path: Path) -> str | None:
         if key not in raw:
             continue
         value = raw[key]
-        if isinstance(value, bool):
+        allowed = frozenset({"pr", "issue"}) if key == "store" else TELEMETRY_VALUES
+        if isinstance(value, bool) and key != "store":
             text = "on" if value else "off"
-        elif isinstance(value, str) and value.strip().lower() in TELEMETRY_VALUES:
+        elif isinstance(value, str) and value.strip().lower() in allowed:
             text = value.strip().lower()
         else:
             sys.stderr.write(
-                f"{config_path}: `telemetry.{key}` must be `on` or `off`, "
-                f"got {value!r}\n"
+                f"{config_path}: `telemetry.{key}` must be "
+                + ("`pr` or `issue`, " if key == "store" else "`on` or `off`, ")
+                + f"got {value!r}\n"
             )
             return None
         rendered.append(f'"{variable}": "{text}"')

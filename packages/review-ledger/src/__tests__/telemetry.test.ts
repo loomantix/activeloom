@@ -479,6 +479,7 @@ describe('emitTelemetry', () => {
     expect(emitTelemetry({ record, sink })).toEqual({
       emitted: false,
       sink: 'exploding',
+      recoveryRecord: record,
       reference: null,
       idempotencyKey: record.idempotencyKey,
       error: 'GitHub is having a day',

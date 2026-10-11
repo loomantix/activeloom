@@ -6,7 +6,7 @@
   "oneOf": [{ "$ref": "#/$defs/line" }, { "$ref": "#/$defs/trailer" }],
   "$defs": {
     "sourceKind": {
-      "description": "Where a record was read from. `pr-comment` is a legacy record posted on the pull request it describes; `store-issue` is reserved for the dedicated store.",
+      "description": "Location of a record: legacy pull request or dedicated store issue.",
       "enum": ["pr-comment", "store-issue"]
     },
     "line": {
@@ -131,6 +131,11 @@
         "complete": {
           "description": "True only when, for every source, `commentsRead` equals `commentsReported`.",
           "type": "boolean"
+        },
+        "excludedBySelection": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Valid deduplicated records outside the requested selection; omitted when zero."
         }
       }
     }

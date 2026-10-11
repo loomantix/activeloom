@@ -1,6 +1,6 @@
 # 0016 — Review metrics leave the PR conversation
 
-- Status: proposed
+- Status: accepted (record approved in #399; implementation authorized 2026-10-11)
 - Date: 2026-10-05 (evidence cutoff; sources retrieved the same day)
 - Tracking: #397 (this record), #398 (defaults and disclosure)
 
@@ -203,7 +203,23 @@ adopter runs per pull request. It is not part of this change.
   model, effort, and version strings `^[A-Za-z0-9._:/-]+$`. The last admits a
   path-like value, which #398's public profile should consider.
 
-## Stage 2
+## Implementation
+
+The legacy exporter shipped in #400. The store implementation adds explicit
+`metrics-setup` and `metrics-rotate` commands, destination-aware emission,
+duration enrichment and runner presence lookup, both-source export, local
+recovery/replay, and a human-facing `report`. The writer schema, GitHub-only
+network architecture check, and migration/SQL recipe ship with the package.
+See the [package guide](../../packages/review-ledger/README.md#move-review-metrics-out-of-pr-conversations).
+
+The report deliberately names maximum observed rounds rather than claiming
+convergence: multiple review runs can restart round numbering, and decision 11
+prohibits treating telemetry as control evidence. Full store recovery after a
+failed setup/rotation remains an explicit operator action. Existing repositories
+must migrate their readers and select `issue` themselves; this implementation
+does not activate the switch or change the defaults owned by #398.
+
+## Stage 2 sequence
 
 In order: the exporter over legacy comments; a `report` command on top of it
 (tokens per pull request, rounds to convergence, findings by engine and

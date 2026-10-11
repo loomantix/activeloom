@@ -72,6 +72,9 @@ CONTROL_FILES = [
     "telemetry-pass-key.js",
     *LAUNCHERS.values(),
 ]
+# The ledger resolves its metrics destination from this file beside the bundle
+# it runs from, so a repository that renders one must have it pinned here too.
+OPTIONAL_CONTROL_FILES = ["review-telemetry.json"]
 TELEMETRY_MARKER = "<!-- local-review-telemetry:v1 -->"
 # Launched workers run without session persistence, so no usage log exists for
 # them. The boundary snapshot names this never-created log, which makes every
@@ -268,6 +271,13 @@ def digest(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         raise Blocked(f"expected a regular file: {path.name}")
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def control_names(source: Path) -> list[str]:
+    """Every required control file, and each optional one the source holds."""
+    return CONTROL_FILES + [
+        name for name in OPTIONAL_CONTROL_FILES if os.path.lexists(source / name)
+    ]
 
 
 def save(path: Path, value: Any, *, staging: Path | None = None) -> None:
@@ -1484,7 +1494,11 @@ class Runner:
             raise Blocked("control directory cannot be a symlink")
         self.control.mkdir(mode=0o700, exist_ok=True)
         source = Path(__file__).resolve().parent
-        for name in CONTROL_FILES:
+        names = control_names(source)
+        for name in OPTIONAL_CONTROL_FILES:
+            if name not in names:
+                (self.control / name).unlink(missing_ok=True)
+        for name in names:
             digest(source / name)
             if (self.control / name).is_symlink():
                 raise Blocked("control file cannot be a symlink")
@@ -1503,7 +1517,7 @@ class Runner:
             "head": head,
             "start_head": head,
             "actor": command(["gh", "api", "user", "--jq", ".login"]),
-            "control_hashes": {n: digest(self.control / n) for n in CONTROL_FILES},
+            "control_hashes": {n: digest(self.control / n) for n in names},
             "run_id": None,
             "pending": None,
             "completed": [],
@@ -1540,7 +1554,8 @@ class Runner:
         if replacement.is_symlink():
             raise Blocked("migration control directory cannot be a symlink")
         replacement.mkdir(mode=0o700, exist_ok=True)
-        for name in CONTROL_FILES:
+        names = control_names(source)
+        for name in names:
             expected = digest(source / name)
             target = replacement / name
             if target.exists() or target.is_symlink():
@@ -1559,7 +1574,7 @@ class Runner:
         self.state.update(
             version=2,
             control_directory=replacement.name,
-            control_hashes={name: digest(replacement / name) for name in CONTROL_FILES},
+            control_hashes={name: digest(replacement / name) for name in names},
             migrations=[migration],
             attempts=[],
             installation_revision=self.state["head"],
@@ -3301,20 +3316,12 @@ class Runner:
         ]
 
     def telemetry_recorded(self, key: str, rows: list[dict[str, Any]]) -> bool:
-        """Whether a record already carries this key. Only the key is read."""
-        for row in rows:
-            marker = re.search(r"<!-- local-review-telemetry:v[13] -->", row["body"])
-            if row["author"] != self.state["actor"] or not marker:
-                continue
-            payload = row["body"][marker.end():].strip()
-            payload = payload.removeprefix("```json").removesuffix("```")
-            try:
-                record = json.loads(payload)
-            except ValueError:
-                continue
-            if isinstance(record, dict) and record.get("idempotencyKey") == key:
-                return True
-        return False
+        """Ask the ledger for presence without passing metrics to a reviewer."""
+        outcome = self.helper(
+            "ledger", "telemetry-recorded", "--repo", self.args.repo,
+            "--pr", str(self.args.pr), "--idempotency-key", key,
+        )
+        return outcome.get("recorded") is True
 
     def telemetry_stance(self, pending: dict[str, Any]) -> str:
         adversarial = 2 if self.state["config"]["tier"] == "deep" else 1
@@ -3479,7 +3486,10 @@ class Runner:
         if usage is None:
             return "not emitted: the engine's usage helper is unavailable"
         rows = self.issue_comments()
-        already_recorded = self.telemetry_recorded(boundary["key"], rows)
+        try:
+            already_recorded = self.telemetry_recorded(boundary["key"], rows)
+        except Blocked:
+            already_recorded = False
         directory = self.directory / boundary["directory"]
         output = directory / ("runner-" + uuid.uuid4().hex)
         output.mkdir(mode=0o700)
@@ -3594,9 +3604,13 @@ class Runner:
             if source.get(field) is not None:
                 arguments += [flag, str(source[field])]
         outcome = self.helper("ledger", "emit-telemetry", *arguments)
+        if isinstance(outcome.get("recoveryRecord"), dict):
+            save(output / "metrics-recovery.json", outcome["recoveryRecord"])
         if outcome.get("emitted") is True:
             return f"emitted {status} record"
-        return "not emitted: the ledger declined the record"
+        reason = str(outcome.get("error") or "the ledger declined the record")
+        recovery = output / "metrics-recovery.json"
+        return f"not emitted: {reason}" + (f"; recovery: {recovery}" if recovery.is_file() else "")
 
     def emit_fallback_telemetry(
         self, pending: dict[str, Any], status: str, head: str | None = None

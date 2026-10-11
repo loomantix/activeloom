@@ -614,6 +614,7 @@ describe('export command', () => {
         '#!/bin/sh',
         'for last; do :; done',
         'case "$last" in',
+        "  repos/owner/repo/issues\\?state=all*labels=*) echo '[[]]'; exit 0 ;;",
         '  repos/owner/repo/issues/*/comments\\?per_page=100)',
         '    number=${last#repos/owner/repo/issues/}',
         '    exec cat "$(dirname "$0")/comments-${number%%/*}.json" ;;',

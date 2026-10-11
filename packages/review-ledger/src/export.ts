@@ -15,6 +15,7 @@ import {
   matchTelemetry,
 } from './telemetry.js';
 import type { TelemetryRecord } from './types.js';
+import { metricsStores } from './telemetry-store.js';
 
 export const EXPORT_LINE_SCHEMA = 'activeloom.review-metrics.export/v1';
 export const EXPORT_TRAILER_SCHEMA =
@@ -84,6 +85,7 @@ export interface ExportTrailer {
   conflicts: number;
   rejectedAuthor: number;
   malformed: number;
+  excludedBySelection?: number;
   complete: boolean;
 }
 
@@ -225,6 +227,25 @@ export function prCommentSource(target: {
   };
 }
 
+/** Every labeled store, including closed generations. Discovery failure is fatal. */
+export function storeIssueSource(repo: string): ExportSource {
+  return (warn) =>
+    metricsStores(repo, 'all').map((issue) => {
+      let comments: ExportSourceRead['comments'] = null;
+      try {
+        comments = getAllIssueComments(repo, issue.number);
+      } catch (error) {
+        warn(`could not read store #${issue.number}: ${errorMessage(error)}`);
+      }
+      return {
+        kind: 'store-issue',
+        issue: issue.number,
+        commentsReported: issue.comments,
+        comments,
+      };
+    });
+}
+
 function exportLineFrom(
   repo: string,
   read: ExportSourceRead,
@@ -263,13 +284,15 @@ function exportLineFrom(
  *
  * Every comment carrying a telemetry marker lands in exactly one trailer
  * counter: `records`, `duplicatesCollapsed`, `conflicts`, `rejectedAuthor`, or
- * `malformed`.
+ * `malformed`, or `excludedBySelection`.
  */
 export function exportTelemetry(params: {
   repo: string;
   sources: readonly ExportSource[];
   /** When given, a comment's author must also be one of these logins. */
   allowedLogins?: readonly string[] | undefined;
+  /** Restrict output after reading sources; completeness still covers every source. */
+  select?: ((record: TelemetryRecord) => boolean) | undefined;
   write: (line: string) => void;
   warn: (message: string) => void;
 }): ExportTrailer {
@@ -380,9 +403,13 @@ export function exportTelemetry(params: {
   }
 
   for (const line of kept.values()) {
-    write(JSON.stringify(line));
+    if (params.select === undefined || params.select(line.record)) {
+      write(JSON.stringify(line));
+      trailer.records++;
+    } else {
+      trailer.excludedBySelection = (trailer.excludedBySelection ?? 0) + 1;
+    }
   }
-  trailer.records = kept.size;
   write(JSON.stringify(trailer));
   return trailer;
 }

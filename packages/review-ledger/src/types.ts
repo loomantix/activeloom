@@ -762,6 +762,8 @@ export interface TelemetrySinkResult {
 
 /** The outcome of an emission attempt. Never throws; never fails a review. */
 export interface EmitTelemetryResult {
+  /** Validated writer projection retained locally when delivery fails. */
+  recoveryRecord?: TelemetryRecord;
   emitted: boolean;
   sink: string | null;
   reference: string | null;
