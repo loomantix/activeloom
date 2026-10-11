@@ -3,7 +3,7 @@
 // Two gates, because extraction and emission are different decisions.
 //
 // `LOOM_REVIEW_TELEMETRY` keeps its name and its meaning: it governs whether a
-// pass **emits** a record to a pull request. `LOOM_REVIEW_TELEMETRY_EXTRACT`
+// pass **emits** a record to the configured store. `LOOM_REVIEW_TELEMETRY_EXTRACT`
 // governs whether the usage helper **measures** at all, and defaults to the
 // emission gate so no existing configuration changes meaning.
 //
@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 
 const EMISSION_GATE = 'LOOM_REVIEW_TELEMETRY';
 const EXTRACTION_GATE = 'LOOM_REVIEW_TELEMETRY_EXTRACT';
+const STORE_GATE = 'LOOM_REVIEW_TELEMETRY_STORE';
 
 export function resolveGates() {
   let repository = {};
@@ -38,9 +39,11 @@ export function resolveGates() {
       // both gates, which no environment variable can then restore.
       Object.entries(repository).some(
         ([key, value]) =>
-          ![EMISSION_GATE, EXTRACTION_GATE].includes(key) ||
+          ![EMISSION_GATE, EXTRACTION_GATE, STORE_GATE].includes(key) ||
           typeof value !== 'string' ||
-          !['on', 'off'].includes(value.trim().toLowerCase()),
+          !(key === STORE_GATE ? ['pr', 'issue'] : ['on', 'off']).includes(
+            value.trim().toLowerCase(),
+          ),
       )
     ) {
       throw new Error('invalid configuration');
@@ -52,6 +55,12 @@ export function resolveGates() {
   // A misconfigured file is not an opt-out, and it disables both gates. Handled
   // here rather than inside `gate` so the partially parsed `repository` above
   // is unreachable once validation has failed.
+  const rawStore =
+    process.env[STORE_GATE]?.trim() || repository?.[STORE_GATE] || 'pr';
+  const store =
+    typeof rawStore === 'string' ? rawStore.trim().toLowerCase() : null;
+  if (!['pr', 'issue'].includes(store))
+    configError = 'LOOM_REVIEW_TELEMETRY_STORE must be pr or issue';
   if (configError) {
     const failed = {
       set: true,
@@ -59,7 +68,7 @@ export function resolveGates() {
       reason: configError,
       error: configError,
     };
-    return { emission: failed, extraction: failed };
+    return { emission: failed, extraction: failed, store: null };
   }
   function gate(name, defaultEnabled = false) {
     const raw = process.env[name]?.trim() || repository[name];
@@ -81,5 +90,5 @@ export function resolveGates() {
   }
   const emission = gate(EMISSION_GATE, true);
   const declared = gate(EXTRACTION_GATE);
-  return { emission, extraction: declared.set ? declared : emission };
+  return { emission, extraction: declared.set ? declared : emission, store };
 }

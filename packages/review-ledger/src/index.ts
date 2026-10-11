@@ -275,3 +275,14 @@ export type {
   TelemetrySinkResult,
   EmitTelemetryResult,
 } from './types.js';
+
+export { configuredTelemetrySink, telemetryRecorded } from './telemetry.js';
+export {
+  activeMetricsStore,
+  metricsStores,
+  setupMetricsStore,
+  telemetryStore,
+  METRICS_STORE_LABEL,
+} from './telemetry-store.js';
+export { storeIssueSource } from './export.js';
+export { metricsReport } from './metrics-report.js';

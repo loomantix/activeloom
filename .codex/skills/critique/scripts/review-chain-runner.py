@@ -3301,20 +3301,12 @@ class Runner:
         ]
 
     def telemetry_recorded(self, key: str, rows: list[dict[str, Any]]) -> bool:
-        """Whether a record already carries this key. Only the key is read."""
-        for row in rows:
-            marker = re.search(r"<!-- local-review-telemetry:v[13] -->", row["body"])
-            if row["author"] != self.state["actor"] or not marker:
-                continue
-            payload = row["body"][marker.end():].strip()
-            payload = payload.removeprefix("```json").removesuffix("```")
-            try:
-                record = json.loads(payload)
-            except ValueError:
-                continue
-            if isinstance(record, dict) and record.get("idempotencyKey") == key:
-                return True
-        return False
+        """Ask the ledger for presence without passing metrics to a reviewer."""
+        outcome = self.helper(
+            "ledger", "telemetry-recorded", "--repo", self.args.repo,
+            "--pr", str(self.args.pr), "--idempotency-key", key,
+        )
+        return outcome.get("recorded") is True
 
     def telemetry_stance(self, pending: dict[str, Any]) -> str:
         adversarial = 2 if self.state["config"]["tier"] == "deep" else 1
@@ -3479,7 +3471,10 @@ class Runner:
         if usage is None:
             return "not emitted: the engine's usage helper is unavailable"
         rows = self.issue_comments()
-        already_recorded = self.telemetry_recorded(boundary["key"], rows)
+        try:
+            already_recorded = self.telemetry_recorded(boundary["key"], rows)
+        except Blocked:
+            already_recorded = False
         directory = self.directory / boundary["directory"]
         output = directory / ("runner-" + uuid.uuid4().hex)
         output.mkdir(mode=0o700)
@@ -3594,9 +3589,13 @@ class Runner:
             if source.get(field) is not None:
                 arguments += [flag, str(source[field])]
         outcome = self.helper("ledger", "emit-telemetry", *arguments)
+        if isinstance(outcome.get("recoveryRecord"), dict):
+            save(output / "metrics-recovery.json", outcome["recoveryRecord"])
         if outcome.get("emitted") is True:
             return f"emitted {status} record"
-        return "not emitted: the ledger declined the record"
+        reason = str(outcome.get("error") or "the ledger declined the record")
+        recovery = output / "metrics-recovery.json"
+        return f"not emitted: {reason}" + (f"; recovery: {recovery}" if recovery.is_file() else "")
 
     def emit_fallback_telemetry(
         self, pending: dict[str, Any], status: str, head: str | None = None

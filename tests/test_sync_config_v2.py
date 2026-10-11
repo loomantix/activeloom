@@ -632,3 +632,19 @@ def test_real_manifest_delivers_repository_telemetry(
         assert delivered.read_bytes() == (
             root / ".claude/skills/critique/scripts" / name
         ).read_bytes()
+
+
+def test_telemetry_store_renders_with_existing_gates(
+    sync_engine: ModuleType, upstream: Path, consumer: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered = _render_telemetry(sync_engine, upstream, consumer, monkeypatch,
+                                 {"emit": True, "store": "issue"})
+    assert json.loads(rendered)["env"] == {
+        "LOOM_REVIEW_TELEMETRY": "on", "LOOM_REVIEW_TELEMETRY_STORE": "issue",
+    }
+
+
+@pytest.mark.parametrize("store", [True, False, "on", "typo", 123])
+def test_telemetry_store_rejects_invalid_values(sync_engine: ModuleType, store: object) -> None:
+    assert sync_engine.render_telemetry_env({"store": store}, Path("config.yml")) is None

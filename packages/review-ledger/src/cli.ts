@@ -51,7 +51,9 @@ import {
   buildTelemetryRecord,
   emitTelemetry,
   enrichTelemetryDuration,
-  prCommentSink,
+  configuredTelemetrySink,
+  telemetryRecorded,
+  validateTelemetryRecord,
   validateFindings,
 } from './telemetry.js';
 import {
@@ -67,7 +69,11 @@ import {
   parseExportBound,
   parsePullRequestNumbers,
   prCommentSource,
+  storeIssueSource,
 } from './export.js';
+import { setupMetricsStore } from './telemetry-store.js';
+import { metricsReport } from './metrics-report.js';
+import type { ExportLine } from './export.js';
 import { formatFindings } from './format.js';
 import { resetGitHubRunner } from './github.js';
 import type {
@@ -538,9 +544,11 @@ function validateArgs(args: CliArgs): void {
   // forgery vector rather than a junk row.
   if (
     args.engineRaw !== undefined &&
-    !['emit-telemetry', 'enrich-telemetry-duration'].includes(
-      args.command ?? '',
-    )
+    ![
+      'emit-telemetry',
+      'enrich-telemetry-duration',
+      'replay-telemetry',
+    ].includes(args.command ?? '')
   ) {
     args.engine = parseEnum('--engine', args.engineRaw, SUPPORTED_ENGINES);
   }
@@ -1094,6 +1102,57 @@ function runCliCommand(argv: string[]): number {
       );
       break;
     }
+    case 'replay-telemetry': {
+      if (!args.repo || !args.file)
+        fail('replay-telemetry requires --repo and --file');
+      const record = validateTelemetryRecord(
+        readJsonFile(args.file, 'metrics recovery record'),
+      );
+      if (record.repo !== args.repo)
+        fail('recovery record belongs to another repository');
+      if (args.dryRun) {
+        process.stdout.write(buildTelemetryBody(record) + '\n');
+        break;
+      }
+      writeSortedJson(
+        emitTelemetry({
+          record,
+          sink: configuredTelemetrySink({
+            repo: args.repo,
+            pr: record.pr,
+            actor: args.actor,
+          }),
+        }),
+      );
+      break;
+    }
+    case 'metrics-setup':
+    case 'metrics-rotate': {
+      if (!args.repo || args.dryRun)
+        fail(
+          'metrics setup/rotation requires --repo and does not support --dry-run',
+        );
+      process.stderr.write(
+        'Review metrics store subscribers receive notifications for every record. No repository configuration is changed.\n',
+      );
+      writeSortedJson(
+        setupMetricsStore(args.repo, args.command === 'metrics-rotate'),
+      );
+      break;
+    }
+    case 'telemetry-recorded': {
+      if (!args.repo || args.pr === undefined || !args.idempotencyKey)
+        fail('telemetry-recorded requires --repo, --pr, and --idempotency-key');
+      writeSortedJson({
+        recorded: telemetryRecorded({
+          repo: args.repo,
+          pr: args.pr,
+          actor: args.actor,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      });
+      break;
+    }
     case 'emit-telemetry': {
       // Emission never fails the pass that produced the record. A telemetry
       // defect must not block a review that found real defects, so every error
@@ -1174,7 +1233,7 @@ function runCliCommand(argv: string[]): number {
 
         outcome = emitTelemetry({
           record,
-          sink: prCommentSink({
+          sink: configuredTelemetrySink({
             repo: args.repo,
             pr: args.pr,
             actor: args.actor,
@@ -1186,6 +1245,7 @@ function runCliCommand(argv: string[]): number {
       writeSortedJson(outcome);
       break;
     }
+    case 'report':
     case 'export': {
       if (!args.repo) {
         fail('export requires --repo');
@@ -1219,17 +1279,34 @@ function runCliCommand(argv: string[]): number {
                 : parsePullRequestNumbers(args.prs!),
           }
         : { since, until };
+      const reportLines: ExportLine[] = [];
       const trailer = exportTelemetry({
         repo: args.repo,
-        sources: [prCommentSource({ repo: args.repo, selection })],
+        sources: [
+          prCommentSource({ repo: args.repo, selection }),
+          storeIssueSource(args.repo),
+        ],
+        select: (record) =>
+          byNumber
+            ? selection.numbers!.includes(record.pr)
+            : (since === undefined || record.emittedAt >= since) &&
+              (until === undefined || record.emittedAt <= until),
         allowedLogins:
           args.allowedLogins === undefined
             ? undefined
             : parseAllowedLogins(args.allowedLogins),
-        write: (line) => process.stdout.write(`${line}\n`),
+        write: (line) => {
+          if (args.command === 'export') process.stdout.write(`${line}\n`);
+          else {
+            const parsed = JSON.parse(line) as ExportLine;
+            if (parsed.record) reportLines.push(parsed);
+          }
+        },
         warn: (message) =>
           process.stderr.write(`review-ledger export: ${message}\n`),
       });
+      if (args.command === 'report')
+        process.stdout.write(metricsReport(reportLines, trailer));
       if (!trailer.complete) {
         process.stderr.write(
           'review-ledger export: incomplete; see the trailer for the sources that fell short\n',
@@ -1303,9 +1380,11 @@ function commandFromArgv(argv: readonly string[]): string | undefined {
 export function runCli(argv: string[] = process.argv.slice(2)): number {
   resetGitHubRunner();
   if (
-    !['emit-telemetry', 'enrich-telemetry-duration'].includes(
-      commandFromArgv(argv) ?? '',
-    )
+    ![
+      'emit-telemetry',
+      'enrich-telemetry-duration',
+      'replay-telemetry',
+    ].includes(commandFromArgv(argv) ?? '')
   ) {
     return runCliCommand(argv);
   }

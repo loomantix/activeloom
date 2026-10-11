@@ -393,8 +393,7 @@ prompt, or runner calls it, and a reviewer must not be handed its output.
 review-ledger export --repo owner/repo --pr 123
 review-ledger export --repo owner/repo --prs 100-140,152 > records.jsonl
 
-# By date: pull requests updated on or after --since and created on or
-# before --until (a bare date covers its whole UTC day)
+# By record emission date (a bare date covers its whole UTC day)
 review-ledger export --repo owner/repo --since 2026-09-01 --until 2026-09-30
 
 # Also require the comment author to be a named login
@@ -414,9 +413,12 @@ The schema version covers the envelope; `record` keeps its own `version`.
 
 - **Read-only.** Every request is a `GET` through `gh api`, so a token with read
   access is enough. Nothing is written to GitHub.
-- **Selection is by pull request, not by record.** Every record on a selected
-  pull request is exported, whenever it was emitted. A number in a range that is
-  an issue rather than a pull request is skipped with a note on stderr.
+- **Selection.** `--pr` and `--prs` select records by their PR number in both
+  stores. Date bounds select `record.emittedAt` inclusively. Legacy discovery
+  uses PR update/creation dates to bound reads; every labeled store is read,
+  including closed generations. This narrows the legacy exporter's earlier
+  date behavior, which returned all records on the selected PRs. Valid records
+  outside the selection count as `excludedBySelection` (omitted when zero).
 - **Authors are checked before a record is parsed.** A record is accepted only
   when the comment's `author_association` is `OWNER`, `MEMBER`, or
   `COLLABORATOR`. `--allowed-logins` narrows that further; it never admits an
@@ -425,11 +427,11 @@ The schema version covers the envelope; `record` keeps its own `version`.
   lands in exactly one trailer count: `records`, `duplicatesCollapsed` (a
   replay of an exported record), `conflicts` (the same `idempotencyKey` with
   different content; the earliest is exported and the rest are named on
-  stderr), `rejectedAuthor`, or `malformed`. A record that names a different
-  pull request than the one it is posted on counts as `malformed`, and each
+  stderr), `rejectedAuthor`, `malformed`, or `excludedBySelection`. A legacy
+  PR-comment record naming another PR counts as `malformed`, and each
   malformed comment is named on stderr with the reason.
 - **`complete` is checked, not assumed.** It is true only when, for every pull
-  request read, the comments read equal the count GitHub reports. A pull request
+  request or store read, the comments read equal the count GitHub reports. An issue
   or comment listing that could not be read appears with `null` in place of the
   count. An incomplete export still writes its records and trailer, then exits 1.
   Output with no trailer was cut short.
@@ -554,3 +556,95 @@ A fresh single-turn invocation supplies the pass interval; resumed cumulative
 sessions are deliberately excluded. Requested model settings are not observed
 model identity and are not copied into token buckets. These records use
 `tokenSource: "terminal-json"`; they are not session-log measurements.
+
+### Move review metrics out of PR conversations
+
+The default destination remains `pr` for mixed-version compatibility. No
+repository is switched by installing this version. The record stays in the
+adopter's own GitHub repository; export is pull-only with read credentials.
+
+1. Update downstream readers to consume `review-ledger export` JSONL, including
+   `store-issue` source lines, before switching any repository.
+2. Install the bundle, gate reader, and rendered configuration from the same
+   upstream revision. Older readers reject the new `store` key.
+3. A maintainer runs `review-ledger metrics-setup --repo owner/repo`. This creates
+   the reserved `activeloom:review-metrics` label and a locked issue. Subscribers
+   receive a notification per record. Running setup again reuses the locked
+   active store. It does not alter repository configuration.
+4. Set `telemetry.store: issue` in `.activeloom-config.yml` and sync. The generated
+   `review-telemetry.json` supplies `LOOM_REVIEW_TELEMETRY_STORE` beside the bundle.
+   An explicit environment value takes precedence. There is no dual-write.
+5. Confirm `export --pr <number>` includes the new `store-issue` record and
+   `complete: true`. Metrics emission failures remain nonfatal to reviews.
+
+Emission requires exactly one open, locked labeled issue. A missing, unlocked,
+ambiguous, full, or unreadable store does not fall back to PR comments or create
+an issue. At 2,000 comments the writer warns to run
+`review-ledger metrics-rotate --repo owner/repo`; 2,500 is the conservative
+writer ceiling. Rotation locks the replacement before retiring the previous
+store. Closed stores and their records remain available to the exporter.
+If setup or rotation stops midway, inspect the labeled issues, keep every old
+record, and restore exactly one open locked store before retrying emission.
+Concurrent setup/rotation is unsupported and detected by the final discovery.
+GitHub locking and label operations require the operator's existing issue
+permissions; the commands do not request or create credentials.
+
+`emit-telemetry` returns a validated `recoveryRecord` on delivery failure.
+Save that object locally as `metrics-recovery.json`; the runner does this in
+its private pass output directory. After repairing the store, a person runs:
+
+```bash
+review-ledger replay-telemetry --repo owner/repo --file metrics-recovery.json
+```
+
+The retry preserves the idempotency key and never posts recovery text to the
+PR. A permission failure on a locked store skips the record; do not widen a
+reviewer's credentials to make it pass. The runner's `telemetry-recorded`
+probe returns only a boolean and is not review-control evidence.
+
+Rollback: set `telemetry.store: pr` and sync. Export keeps reading both sources.
+Legacy comments are not deleted, edited, hidden, or backfilled by this migration.
+Ledger records, findings, dispositions, and attestations stay on the PR.
+
+### Report and load records
+
+```bash
+review-ledger report --repo owner/repo --since 2026-10-01 --until 2026-10-31
+review-ledger export --repo owner/repo --prs 100-140 > records.jsonl
+```
+
+The human-facing report shows known token counts by engine and PR, pass-level
+finding outcomes, and the maximum observed review round per PR. Unknown usage
+is explicit. Multiple runs can restart round numbering, and metrics never
+prove convergence; use the review ledger for that question. Counts are sums of
+pass measurements, not unique findings. No skill or runner invokes `report`.
+
+With DuckDB installed, load the JSONL separately from the review process:
+
+```sql
+CREATE TABLE review_export AS SELECT * FROM read_json_auto('records.jsonl');
+SELECT schema, complete FROM review_export
+WHERE schema = 'activeloom.review-metrics.export-trailer/v1';
+SELECT record.pr, record.engine, record.durationSeconds
+FROM review_export WHERE schema = 'activeloom.review-metrics.export/v1';
+```
+
+Require one trailer with `complete = true` before treating an export as complete.
+Inspect conflicts and rejected/malformed counts as well. Completeness compares
+comments read with each source's reported count; it is not an immutable snapshot
+and cannot prove that nobody previously deleted a comment. Re-export after
+concurrent writes and upsert on `record.idempotencyKey`; `source.updatedAt`
+exposes duration enrichment.
+
+[`review-metrics-record.schema.json`](protocol/review-metrics-record.schema.json)
+describes the allowlisted writer record (v1 and v3; v2 is reserved). The runtime
+validator also enforces arithmetic and cross-field invariants. Readers tolerate
+additive top-level fields; writers project onto known fields. Breaking record
+changes require a new record version; the export envelope has its own version.
+The export schema remains a permissive envelope around reader records, so
+additive record evolution does not require an envelope change.
+
+The package's ordinary test job includes an AST check rejecting new direct
+network clients and non-git/gh subprocess routes. It is a CI architectural
+check, not a runtime sandbox for modified source or a substituted `gh` binary.
+No new account, service, app, or push exporter is introduced.

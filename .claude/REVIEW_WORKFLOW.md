@@ -759,6 +759,14 @@ Invocation:
 
 ## Pass Telemetry
 
+The ledger reads `telemetry.store` (`pr` until explicitly switched to `issue`).
+In issue mode, a maintainer runs `metrics-setup` before the repository switches.
+Never create a store during a review, open its history as reviewer context, or
+fall back to a PR comment. If emission returns `recoveryRecord`, save that object
+in the pass's private directory as `metrics-recovery.json` and report the path
+locally. A person can retry it with `replay-telemetry --repo <owner/repo> --file
+<path>` after repairing the store. Never paste recovery records into a PR.
+
 At the pass boundary, create and save this pass's idempotency key:
 
 ```bash
@@ -776,7 +784,7 @@ creation fails, report telemetry failure rather than falling back to a key
 that may identify a different pass. This works with existing ledger bundles.
 
 Every pass records what it cost, as a `local-review-telemetry:v1` marker in its
-own PR comment. The record carries token buckets per exact model, classified
+configured store. The record carries token buckets per exact model, classified
 line churn, finding dispositions, and the pass identity needed to ask whether
 Deep earns its cost. It carries no prose, no file paths, no finding titles, and
 no money: rates move and a subscription's marginal cost is zero, so a stored

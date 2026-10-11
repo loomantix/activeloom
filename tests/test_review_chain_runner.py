@@ -4483,6 +4483,9 @@ def telemetry_harness(
     original_helper = harness.runner.helper
 
     def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        if parts and parts[0] == "telemetry-recorded":
+            key = parts[parts.index("--idempotency-key") + 1]
+            return {"recorded": any(key in row["body"] for row in controls.comments)}
         if parts and parts[0] == "enrich-telemetry-duration":
             enrichments.append(dict(zip(parts[1::2], parts[2::2], strict=True)))
             return {"emitted": True, "error": None}
@@ -5037,7 +5040,8 @@ def test_agy_v3_record_is_recognized_on_resume(telemetry_harness: Any) -> None:
     rows = [{"author": runner.state["actor"], "body":
              '<!-- local-review-telemetry:v3 -->\n\n```json\n' +
              json.dumps({"version": 3, "idempotencyKey": key}) + '\n```'}]
-    assert runner.telemetry_recorded(key, rows)
+    telemetry_harness.controls.comments = rows
+    assert runner.telemetry_recorded(key, [])
 
 
 @pytest.fixture
@@ -6188,3 +6192,22 @@ def test_restart_refuses_an_abort_that_is_only_prepared(
     assert not any(parts[0] == 'finish-run' for parts in posted)
     assert h.module.read(directory / 'abort.json')['phase'] == 'prepared'
     assert (directory / 'state.json').exists()
+
+
+def test_store_delivery_failure_retains_local_recovery_without_failing_review(
+    telemetry_harness: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = telemetry_harness.harness
+    original = h.runner.helper
+    recovery = {"idempotencyKey": "synthetic-pass-key", "version": 1}
+
+    def helper(self: Any, name: str, *parts: str) -> dict[str, Any]:
+        if parts and parts[0] == "emit-telemetry":
+            return {"emitted": False, "error": "store unavailable", "recoveryRecord": recovery}
+        return dict(original(self, name, *parts))
+
+    monkeypatch.setattr(h.runner, "helper", helper)
+    assert h.runner(h.args, h.directory).run() == "converged"
+    saved = list(h.directory.rglob("metrics-recovery.json"))
+    assert saved
+    assert all(h.module.read(path) == recovery for path in saved)

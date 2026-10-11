@@ -28,6 +28,11 @@ import {
   jsonOutput,
   verifyIssueComment,
 } from './github.js';
+import {
+  activeMetricsStore,
+  metricsStores,
+  telemetryStore,
+} from './telemetry-store.js';
 import { parseJsonOrFail } from './io.js';
 import type {
   AggregateTelemetryTokenBucket,
@@ -757,16 +762,18 @@ export function isTelemetryReplay(
 }
 
 /** PR comment sink: one comment per review pass. */
-export function prCommentSink(target: {
-  repo: string;
-  pr: number;
-  actor?: string;
-}): TelemetrySink {
+function commentSink(
+  target: { repo: string; pr: number; actor?: string },
+  name: string = 'pr-comment',
+  historicalIssues?: number[],
+): TelemetrySink {
   return {
-    name: 'pr-comment',
+    name,
     emit({ record, body }) {
       const actor = assertActor(target.actor);
-      const rows = getIssueComments(target.repo, target.pr, actor);
+      const rows = (historicalIssues ?? [target.pr]).flatMap((issue) =>
+        getIssueComments(target.repo, issue, actor),
+      );
       for (const row of rows) {
         const existing = String(row['body'] ?? '');
         if (!isTelemetryComment(existing)) {
@@ -783,7 +790,7 @@ export function prCommentSink(target: {
           if (replayFingerprint(parsed) !== replayFingerprint(replay)) {
             fail('telemetry idempotency key conflicts with an existing record');
           }
-          return { sink: 'pr-comment', reference: String(row['id'] ?? '') };
+          return { sink: name, reference: String(row['id'] ?? '') };
         }
       }
 
@@ -814,9 +821,77 @@ export function prCommentSink(target: {
         }
         throw error;
       }
-      return { sink: 'pr-comment', reference: String(commentId) };
+      return { sink: name, reference: String(commentId) };
     },
   };
+}
+
+/** Legacy destination retained until the repository explicitly switches. */
+export function prCommentSink(target: {
+  repo: string;
+  pr: number;
+  actor?: string;
+}): TelemetrySink {
+  return commentSink(target);
+}
+
+/** Resolve only the selected store; failures never fall back to the PR. */
+export function configuredTelemetrySink(target: {
+  repo: string;
+  pr: number;
+  actor?: string;
+}): TelemetrySink {
+  let store: 'pr' | 'issue';
+  try {
+    store = telemetryStore();
+  } catch (error) {
+    return {
+      name: 'unresolved',
+      emit() {
+        throw error;
+      },
+    };
+  }
+  if (store === 'pr') return prCommentSink(target);
+  return {
+    name: 'store-issue',
+    emit(input) {
+      const issue = activeMetricsStore(target.repo);
+      return commentSink(
+        { ...target, pr: issue.number },
+        'store-issue',
+        metricsStores(target.repo, 'all').map((store) => store.number),
+      ).emit(input);
+    },
+  };
+}
+
+/** A runner-only probe; no record content enters reviewer inputs. */
+export function telemetryRecorded(target: {
+  repo: string;
+  pr: number;
+  actor?: string;
+  idempotencyKey: string;
+}): boolean {
+  const issues =
+    telemetryStore() === 'issue'
+      ? metricsStores(target.repo, 'all').map((store) => store.number)
+      : [target.pr];
+  const actor = assertActor(target.actor);
+  return issues
+    .flatMap((issue) => getIssueComments(target.repo, issue, actor))
+    .some((row) => {
+      try {
+        const record = matchTelemetry(String(row['body'] ?? ''));
+        return (
+          record?.repo === target.repo &&
+          record.pr === target.pr &&
+          record.idempotencyKey === target.idempotencyKey
+        );
+      } catch {
+        return false;
+      }
+    });
 }
 
 /** Emit a record through a sink, reporting failure instead of raising it. */
@@ -825,7 +900,9 @@ export function emitTelemetry(params: {
   sink: TelemetrySink;
 }): EmitTelemetryResult {
   const { record, sink } = params;
+  let recoveryRecord: TelemetryRecord | undefined;
   try {
+    recoveryRecord = knownTelemetryRecord(record);
     const body = buildTelemetryBody(record);
     const result = sink.emit({ record, body });
     return {
@@ -843,6 +920,7 @@ export function emitTelemetry(params: {
       reference: null,
       idempotencyKey: record.idempotencyKey,
       error: message,
+      ...(recoveryRecord === undefined ? {} : { recoveryRecord }),
     };
   }
 }
@@ -871,9 +949,16 @@ export function enrichTelemetryDuration(params: {
     ) {
       fail('telemetry duration must be a finite non-negative number');
     }
+    const store = telemetryStore();
+    result.sink = store === 'issue' ? 'store-issue' : 'pr-comment';
+    const issues =
+      store === 'issue'
+        ? metricsStores(params.repo, 'all').map((issue) => issue.number)
+        : [params.pr];
     const actor = assertActor(params.actor);
-    const matches = getIssueComments(params.repo, params.pr, actor).flatMap(
-      (row) => {
+    const matches = issues
+      .flatMap((issue) => getIssueComments(params.repo, issue, actor))
+      .flatMap((row) => {
         const body = String(row['body'] ?? '');
         let record: TelemetryRecord | null;
         try {
@@ -884,8 +969,7 @@ export function enrichTelemetryDuration(params: {
         return record?.idempotencyKey === params.idempotencyKey
           ? [{ row, body, record }]
           : [];
-      },
-    );
+      });
     if (matches.length !== 1)
       fail(
         'duration enrichment requires exactly one existing telemetry record',

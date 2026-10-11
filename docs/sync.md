@@ -259,3 +259,13 @@ Regenerate `recommended-prettierignore.txt` whenever `scripts/sync-targets.yml` 
 1. Add an entry to the right set in `scripts/sync-targets.yml` — under `harnesses.<name>.targets` for a file only that harness's consumers should receive, or under `shared.targets` for a harness-independent one — with `source`, `destination`, and `substitutions: []` (or the placeholder list). For a Markdown destination, if an empty prose-only placeholder sits between blank separators, also add that key to `collapse_empty_substitutions` — it must appear in **both** lists, or the sync fails closed for every consumer. Do not opt in keys used in literal content; the `sync-targets` CI job checks both rules and rejects collapse opt-ins for non-Markdown destinations.
 2. Two target sets must not write the same destination unless **every** entry for it is `create_if_missing` — one plain write beside a bootstrap re-writes the file on every sync. Both sets may also `delete: true` the same destination; what CI refuses is one set deleting it while another writes it, where the outcome would depend on plan order. CI fails the manifest otherwise. If the file uses placeholders, update each consumer's `.activeloom-config.yml` to provide the new values **before** the sync runs — otherwise the sync workflow fails closed for every consumer until they catch up.
 3. Run the sync manually against one consumer first as a smoke test.
+
+### Review metrics destination
+
+`telemetry.store: pr | issue` renders `LOOM_REVIEW_TELEMETRY_STORE` beside each
+harness's review-ledger bundle. Omission preserves `pr`; invalid values disable
+measurement and emission rather than silently selecting a destination. Install
+the updated reader and bundle before declaring the key. See the
+[metrics migration](../packages/review-ledger/README.md#move-review-metrics-out-of-pr-conversations)
+for reader migration, explicit store setup, rotation, and rollback. This switch
+does not change `telemetry.emit` or `telemetry.extract` defaults.

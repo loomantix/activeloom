@@ -31,6 +31,7 @@ def run(*args: str, enabled: bool = True, **env: str) -> dict[str, Any]:
     environment = dict(os.environ)
     environment.pop("LOOM_REVIEW_TELEMETRY", None)
     environment.pop("LOOM_REVIEW_TELEMETRY_EXTRACT", None)
+    environment.pop("LOOM_REVIEW_TELEMETRY_STORE", None)
     environment.pop("CLAUDE_SESSION_LOG", None)
     assert _EMPTY_PROJECTS is not None, "_empty_projects_dir fixture did not run"
     environment["CLAUDE_PROJECTS_DIR"] = _EMPTY_PROJECTS
@@ -1000,3 +1001,20 @@ def test_every_payload_reports_the_emission_gate(tmp_path: Path) -> None:
     for payload in payloads:
         assert "emit" in payload
         assert "emitReason" in payload
+
+
+@pytest.mark.parametrize("store", ["pr", "issue"])
+def test_store_selection_preserves_measurement_gates(tmp_path: Path, store: str) -> None:
+    payload = run("snapshot", "--out", str(tmp_path / "start.json"),
+                  LOOM_REVIEW_TELEMETRY_STORE=store,
+                  LOOM_REVIEW_TELEMETRY_EXTRACT="off")
+    assert payload["emit"] is True
+    assert payload["enabled"] is False
+
+
+def test_invalid_store_disables_both_gates(tmp_path: Path) -> None:
+    payload = run("snapshot", "--out", str(tmp_path / "start.json"),
+                  LOOM_REVIEW_TELEMETRY_STORE="typo")
+    assert payload["emit"] is False
+    assert payload["enabled"] is False
+    assert "must be pr or issue" in payload["emitReason"]

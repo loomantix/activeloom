@@ -654,6 +654,14 @@ Invocation:
 
 ## Pass Telemetry
 
+The ledger reads `telemetry.store` (`pr` until explicitly switched to `issue`).
+In issue mode, a maintainer runs `metrics-setup` before the repository switches.
+Never create a store during a review, open its history as reviewer context, or
+fall back to a PR comment. If emission returns `recoveryRecord`, save that object
+in the pass's private directory as `metrics-recovery.json` and report the path
+locally. A person can retry it with `replay-telemetry --repo <owner/repo> --file
+<path>` after repairing the store. Never paste recovery records into a PR.
+
 At the pass boundary, create and save this pass's idempotency key:
 
 ```bash
@@ -670,8 +678,8 @@ share keys. Never regenerate a standalone key to retry publication. If key
 creation fails, report telemetry failure rather than falling back to a key
 that may identify a different pass. This works with existing ledger bundles.
 
-Every review and cleanup pass attempts one `local-review-telemetry:v1` PR
-comment after finalizing its review result, including blocked
+Every review and cleanup pass attempts one `local-review-telemetry:v1` record
+in the configured store after finalizing its review result, including blocked
 passes. Telemetry is best-effort: report failure and continue without changing
 the review outcome. Never read prior telemetry into reviewer context; filter
 all comments carrying the `local-review-telemetry:` prefix.
