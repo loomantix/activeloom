@@ -69,25 +69,27 @@ export function metricsStores(
     ]),
     'metrics stores',
   );
-  return rows.map((row) => {
-    if (
-      row['pull_request'] != null ||
-      !Number.isSafeInteger(row['number']) ||
-      Number(row['number']) < 1 ||
-      !Number.isSafeInteger(row['comments']) ||
-      Number(row['comments']) < 0 ||
-      typeof row['locked'] !== 'boolean' ||
-      !['open', 'closed'].includes(String(row['state']))
-    ) {
-      fail('invalid metrics store issue response');
-    }
-    return {
-      number: Number(row['number']),
-      comments: Number(row['comments']),
-      locked: row['locked'] as boolean,
-      state: String(row['state']),
-    };
-  });
+  // The issues API lists pull requests too; a labeled one is never a store.
+  return rows
+    .filter((row) => row['pull_request'] == null)
+    .map((row) => {
+      if (
+        !Number.isSafeInteger(row['number']) ||
+        Number(row['number']) < 1 ||
+        !Number.isSafeInteger(row['comments']) ||
+        Number(row['comments']) < 0 ||
+        typeof row['locked'] !== 'boolean' ||
+        !['open', 'closed'].includes(String(row['state']))
+      ) {
+        fail('invalid metrics store issue response');
+      }
+      return {
+        number: Number(row['number']),
+        comments: Number(row['comments']),
+        locked: row['locked'] as boolean,
+        state: String(row['state']),
+      };
+    });
 }
 
 export function activeMetricsStore(repo: string): MetricsStoreIssue {

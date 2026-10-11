@@ -654,7 +654,9 @@ Invocation:
 
 ## Pass Telemetry
 
-The ledger reads `telemetry.store` (`pr` until explicitly switched to `issue`).
+The ledger reads its destination, `LOOM_REVIEW_TELEMETRY_STORE`, from the synced
+`review-telemetry.json` beside its bundle: `pr` until the repository sets
+`telemetry.store: issue`.
 In issue mode, a maintainer runs `metrics-setup` before the repository switches.
 Never create a store during a review, open its history as reviewer context, or
 fall back to a PR comment. If emission returns `recoveryRecord`, save that object
@@ -700,7 +702,7 @@ non-empty environment overrides. `LOOM_REVIEW_TELEMETRY` governs publication;
 `LOOM_REVIEW_TELEMETRY_EXTRACT` governs measurement and inherits publication
 when unset. Missing gates default on. Set `telemetry.emit: off` in the
 consumer's sync configuration — not in the rendered `review-telemetry.json`,
-whose only keys are the two variables named above — or set
+whose only keys are those two variables and `LOOM_REVIEW_TELEMETRY_STORE` — or set
 `LOOM_REVIEW_TELEMETRY=off` to opt out; extraction also turns off unless
 explicitly enabled. An invalid value is not an opt-out: it disables the gate
 and reports an error, so a typo reads as a misconfiguration rather than as a

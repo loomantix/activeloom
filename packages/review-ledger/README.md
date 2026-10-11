@@ -597,8 +597,10 @@ its private pass output directory. After repairing the store, a person runs:
 review-ledger replay-telemetry --repo owner/repo --file metrics-recovery.json
 ```
 
-The retry preserves the idempotency key and never posts recovery text to the
-PR. A permission failure on a locked store skips the record; do not widen a
+Run it through the synced bundle, which has the rendered `review-telemetry.json`
+beside it, or with `LOOM_REVIEW_TELEMETRY_STORE=issue` set: a copy with no file
+beside it selects `pr`. The retry preserves the idempotency key and never posts
+recovery text to the PR. A permission failure on a locked store skips the record; do not widen a
 reviewer's credentials to make it pass. The runner's `telemetry-recorded`
 probe returns only a boolean and is not review-control evidence.
 

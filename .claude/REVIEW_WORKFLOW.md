@@ -759,7 +759,9 @@ Invocation:
 
 ## Pass Telemetry
 
-The ledger reads `telemetry.store` (`pr` until explicitly switched to `issue`).
+The ledger reads its destination, `LOOM_REVIEW_TELEMETRY_STORE`, from the synced
+`review-telemetry.json` beside its bundle: `pr` until the repository sets
+`telemetry.store: issue`.
 In issue mode, a maintainer runs `metrics-setup` before the repository switches.
 Never create a store during a review, open its history as reviewer context, or
 fall back to a PR comment. If emission returns `recoveryRecord`, save that object
@@ -824,10 +826,10 @@ are read by the usage helper and nowhere else; both are environment
 configuration set once, never an interactive prompt during a pass, because a
 prompt would block an autonomous run.
 
-| Variable                        | Governs                             | Default           |
-| ------------------------------- | ----------------------------------- | ----------------- |
-| `LOOM_REVIEW_TELEMETRY`         | emitting a record to a pull request | on                |
-| `LOOM_REVIEW_TELEMETRY_EXTRACT` | measuring this pass at all          | the emission gate |
+| Variable                        | Governs                        | Default           |
+| ------------------------------- | ------------------------------ | ----------------- |
+| `LOOM_REVIEW_TELEMETRY`         | emitting a record to its store | on                |
+| `LOOM_REVIEW_TELEMETRY_EXTRACT` | measuring this pass at all     | the emission gate |
 
 Each accepts exactly `on` or `off`, ignoring surrounding whitespace and case.
 Any other non-empty value is neither: the helper stays disabled and reports an
@@ -836,7 +838,7 @@ opt-out.
 
 Publication defaults on for every review pass. Set `telemetry.emit: off` in the
 consumer's sync configuration — not in the rendered `review-telemetry.json`,
-whose only keys are the two variables named above — or set
+whose only keys are those two variables and `LOOM_REVIEW_TELEMETRY_STORE` — or set
 `LOOM_REVIEW_TELEMETRY=off` in the process environment to opt out. Extraction inherits emission unless explicitly set,
 so an emission opt-out also disables extraction by default. For local-only
 measurement, set `LOOM_REVIEW_TELEMETRY_EXTRACT=on` with emission off.

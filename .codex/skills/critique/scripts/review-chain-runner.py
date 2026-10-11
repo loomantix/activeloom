@@ -72,6 +72,9 @@ CONTROL_FILES = [
     "telemetry-pass-key.js",
     *LAUNCHERS.values(),
 ]
+# The ledger resolves its metrics destination from this file beside the bundle
+# it runs from, so a repository that renders one must have it pinned here too.
+OPTIONAL_CONTROL_FILES = ["review-telemetry.json"]
 TELEMETRY_MARKER = "<!-- local-review-telemetry:v1 -->"
 # Launched workers run without session persistence, so no usage log exists for
 # them. The boundary snapshot names this never-created log, which makes every
@@ -268,6 +271,13 @@ def digest(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         raise Blocked(f"expected a regular file: {path.name}")
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def control_names(source: Path) -> list[str]:
+    """Every required control file, and each optional one the source holds."""
+    return CONTROL_FILES + [
+        name for name in OPTIONAL_CONTROL_FILES if os.path.lexists(source / name)
+    ]
 
 
 def save(path: Path, value: Any, *, staging: Path | None = None) -> None:
@@ -1484,7 +1494,11 @@ class Runner:
             raise Blocked("control directory cannot be a symlink")
         self.control.mkdir(mode=0o700, exist_ok=True)
         source = Path(__file__).resolve().parent
-        for name in CONTROL_FILES:
+        names = control_names(source)
+        for name in OPTIONAL_CONTROL_FILES:
+            if name not in names:
+                (self.control / name).unlink(missing_ok=True)
+        for name in names:
             digest(source / name)
             if (self.control / name).is_symlink():
                 raise Blocked("control file cannot be a symlink")
@@ -1503,7 +1517,7 @@ class Runner:
             "head": head,
             "start_head": head,
             "actor": command(["gh", "api", "user", "--jq", ".login"]),
-            "control_hashes": {n: digest(self.control / n) for n in CONTROL_FILES},
+            "control_hashes": {n: digest(self.control / n) for n in names},
             "run_id": None,
             "pending": None,
             "completed": [],
@@ -1540,7 +1554,8 @@ class Runner:
         if replacement.is_symlink():
             raise Blocked("migration control directory cannot be a symlink")
         replacement.mkdir(mode=0o700, exist_ok=True)
-        for name in CONTROL_FILES:
+        names = control_names(source)
+        for name in names:
             expected = digest(source / name)
             target = replacement / name
             if target.exists() or target.is_symlink():
@@ -1559,7 +1574,7 @@ class Runner:
         self.state.update(
             version=2,
             control_directory=replacement.name,
-            control_hashes={name: digest(replacement / name) for name in CONTROL_FILES},
+            control_hashes={name: digest(replacement / name) for name in names},
             migrations=[migration],
             attempts=[],
             installation_revision=self.state["head"],

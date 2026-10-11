@@ -6211,3 +6211,34 @@ def test_store_delivery_failure_retains_local_recovery_without_failing_review(
     saved = list(h.directory.rglob("metrics-recovery.json"))
     assert saved
     assert all(h.module.read(path) == recovery for path in saved)
+
+
+def test_control_copy_pins_the_rendered_metrics_destination(
+    harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = harness.runner(harness.args, harness.directory)
+    runner.initialize()
+    assert "review-telemetry.json" not in runner.state["control_hashes"]
+    assert not (harness.directory / "control" / "review-telemetry.json").exists()
+
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in harness.module.CONTROL_FILES:
+        shutil.copyfile(SCRIPTS / name, scripts / name)
+    rendered = '{"LOOM_REVIEW_TELEMETRY_STORE": "issue"}\n'
+    (scripts / "review-telemetry.json").write_text(rendered)
+    monkeypatch.setattr(
+        harness.module, "__file__", str(scripts / "review-chain-runner.py")
+    )
+    directory = tmp_path / "configured"
+    directory.mkdir()
+    runner = harness.runner(harness.args, directory)
+    runner.initialize()
+    pinned = directory / "control" / "review-telemetry.json"
+    assert pinned.read_text() == rendered
+    assert runner.state["control_hashes"]["review-telemetry.json"] == (
+        harness.module.digest(pinned)
+    )
+    pinned.write_text('{"LOOM_REVIEW_TELEMETRY_STORE": "pr"}\n')
+    with pytest.raises(harness.module.Blocked, match="pinned controller"):
+        runner.verify_control()

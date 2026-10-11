@@ -215,6 +215,48 @@ describe('metrics store lifecycle and routing', () => {
     ).toBe(false);
   });
 
+  it('answers the presence probe false for an absent key or another pull request', () => {
+    fixture();
+    const key = record.idempotencyKey;
+    emitTelemetry({ record, sink: configuredTelemetrySink({ repo, pr: 7 }) });
+    expect(telemetryRecorded({ repo, pr: 7, idempotencyKey: 'absent' })).toBe(
+      false,
+    );
+    expect(telemetryRecorded({ repo, pr: 8, idempotencyKey: key })).toBe(false);
+  });
+
+  it('probes the pull request, not a store, in the default destination', () => {
+    const runner = fixture();
+    vi.stubEnv('LOOM_REVIEW_TELEMETRY_STORE', 'pr');
+    const key = record.idempotencyKey;
+    expect(telemetryRecorded({ repo, pr: 7, idempotencyKey: key })).toBe(false);
+    runner.rows.push({
+      id: 900,
+      issue: 7,
+      body: buildTelemetryBody(record),
+      user: { login: 'maintainer' },
+    });
+    expect(telemetryRecorded({ repo, pr: 7, idempotencyKey: key })).toBe(true);
+    expect(
+      runner.calls.some(({ args }) => args.join(' ').includes('labels=')),
+    ).toBe(false);
+  });
+
+  it('ignores a labeled pull request during store discovery', () => {
+    const runner = fixture();
+    runner.stores.push({
+      number: 12,
+      comments: 3,
+      locked: false,
+      state: 'open',
+      pull_request: {},
+    } as (typeof runner.stores)[number]);
+    expect(metricsStores(repo, 'all').map((store) => store.number)).toEqual([
+      80,
+    ]);
+    expect(activeMetricsStore(repo).number).toBe(80);
+  });
+
   it('warns near capacity', () => {
     const runner = fixture();
     runner.stores[0]!.comments = 2000;

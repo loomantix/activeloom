@@ -129,3 +129,37 @@ def test_gate_reader_is_identical_across_harnesses(harness: str) -> None:
     assert (ROOT / harness / relative).read_bytes() == (
         ROOT / ".claude" / relative
     ).read_bytes()
+
+
+@pytest.mark.parametrize("harness", [".claude", ".codex", ".agents"])
+@pytest.mark.parametrize(
+    "store,enabled", [("issue", True), ("pr", True), ("typo", False)]
+)
+def test_rendered_store_key_keeps_both_gates(
+    tmp_path: Path, harness: str, store: str, enabled: bool
+) -> None:
+    source = ROOT / harness / "skills/critique/scripts"
+    shutil.copyfile(source / "review-telemetry-gates.js", tmp_path / "gates.mjs")
+    (tmp_path / "review-telemetry.json").write_text(
+        json.dumps({"LOOM_REVIEW_TELEMETRY": "on", "LOOM_REVIEW_TELEMETRY_STORE": store})
+    )
+    env = {
+        k: v for k, v in os.environ.items() if not k.startswith("LOOM_REVIEW_TELEMETRY")
+    }
+    result = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import {resolveGates} from './gates.mjs'; console.log(JSON.stringify(resolveGates()))",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    gates = json.loads(result.stdout)
+    assert gates["emission"]["enabled"] is enabled
+    assert gates["extraction"]["enabled"] is enabled
+    assert gates["store"] == (store if enabled else None)
