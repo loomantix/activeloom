@@ -20,6 +20,12 @@ Use `git commit -s` to add the trailer automatically. CI rejects PRs with unsign
 
 The full DCO text is at https://developercertificate.org/. By signing off, you are agreeing to it.
 
+### Maintained bot accounts
+
+A bot cannot certify the DCO, so the check exempts commits from bot accounts the maintainers operate and take responsibility for. The exemption applies only to a commit authored with a listed account's email, in a pull request opened by that account. Any other commit in the same pull request still needs a sign-off.
+
+The list is [`.github/dco-exempt-accounts`](./.github/dco-exempt-accounts), read from the base branch, so a pull request cannot exempt itself. Adding an account is a maintainer decision made in its own reviewed pull request. This is not a route for outside contributors or their tooling: sign off your own commits, including ones an AI assistant helped write.
+
 ## What we accept
 
 **In scope:**

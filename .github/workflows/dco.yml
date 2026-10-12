@@ -22,16 +22,40 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
       - name: Verify all commits are signed off
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
-          base="${{ github.event.pull_request.base.sha }}"
-          head="${{ github.event.pull_request.head.sha }}"
+          # A maintained bot account cannot certify the DCO, so its own commits
+          # are exempt when the base branch lists it in
+          # .github/dco-exempt-accounts ("<login> <commit email>" per line).
+          # The list is read from the base branch so a PR cannot exempt itself,
+          # and keyed on the PR author because a commit email alone is forgeable.
+          exempt_email=""
+          if accounts=$(git show "origin/$BASE_REF:.github/dco-exempt-accounts" 2>/dev/null); then
+            exempt_email=$(awk -v login="$PR_AUTHOR" \
+              'tolower($1) == tolower(login) { print tolower($2); exit }' <<<"$accounts")
+          fi
           missing=()
+          exempt=0
           while read -r sha; do
+            if [ -n "$exempt_email" ]; then
+              author_email=$(git show -s --format='%ae' "$sha" | tr '[:upper:]' '[:lower:]')
+              if [ "$author_email" = "$exempt_email" ]; then
+                exempt=$((exempt + 1))
+                continue
+              fi
+            fi
             if ! git show -s --format='%B' "$sha" | grep -qE '^Signed-off-by: .+ <.+@.+>$'; then
               missing+=("$sha")
             fi
-          done < <(git rev-list --no-merges "$base..$head")
+          done < <(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA")
+          if [ "$exempt" -ne 0 ]; then
+            echo "Exempted $exempt commit(s) authored by maintained bot account $PR_AUTHOR <$exempt_email>."
+          fi
           if [ ${#missing[@]} -ne 0 ]; then
             echo "::error::The following commits are missing a DCO sign-off (Signed-off-by trailer):"
             for sha in "${missing[@]}"; do

@@ -1,0 +1,4 @@
+# Maintained bot accounts exempt from the DCO sign-off check.
+# One per line: <GitHub login> <commit author email>
+# See CONTRIBUTING.md, "Maintained bot accounts".
+navi-lmntx navi@loomantix.com
