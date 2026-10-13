@@ -74,7 +74,14 @@
       ],
       "commands": [
         { "argv": ["node", "tests/review-accessibility-asset.test.js"] },
-        { "argv": ["python3", "-m", "pytest", "tests/test_comment_density_extra.py"] },
+        {
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "tests/test_comment_density_extra.py"
+          ]
+        },
         { "argv": ["node", "--test", "tests/comment-verifier.test.cjs"] }
       ]
     },
