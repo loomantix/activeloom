@@ -178,6 +178,97 @@ def test_required_check_names_are_present_and_ungated() -> None:
     )
 
 
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _commit(repo: Path, message: str, email: str = "dev@example.com") -> None:
+    _git(
+        repo,
+        "-c",
+        "user.name=Dev",
+        "-c",
+        f"user.email={email}",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--allow-empty",
+        "-m",
+        message,
+    )
+
+
+BOT_EMAIL = "bot@example.com"
+SIGNED = "change\n\nSigned-off-by: Dev <dev@example.com>"
+
+
+@pytest.mark.parametrize(
+    ("exempt_list", "pr_author", "commits", "passes"),
+    [
+        ("", "dev", [(SIGNED, "dev@example.com")], True),
+        ("", "dev", [("change", "dev@example.com")], False),
+        ("some-bot bot@example.com\n", "Some-Bot", [("change", BOT_EMAIL)], True),
+        # No list on the base branch: the bot gets no exemption.
+        (None, "some-bot", [("change", BOT_EMAIL)], False),
+        # A forged author email does not exempt someone else's pull request.
+        ("some-bot bot@example.com\n", "dev", [("change", BOT_EMAIL)], False),
+        # A human commit on the bot's pull request still needs a sign-off.
+        ("some-bot bot@example.com\n", "some-bot", [("change", "dev@example.com")], False),
+        (
+            "# comment\nsome-bot bot@example.com\n",
+            "some-bot",
+            [("change", BOT_EMAIL), (SIGNED, "dev@example.com")],
+            True,
+        ),
+    ],
+)
+def test_dco_check_exempts_only_listed_bot_commits(
+    tmp_path: Path,
+    exempt_list: str | None,
+    pr_author: str,
+    commits: list[tuple[str, str]],
+    passes: bool,
+) -> None:
+    """Run the real check script: the exemption needs the base-branch list,
+    the pull request author, and the commit author email to all agree."""
+    steps = _workflow("dco.yml")["jobs"]["dco-check"]["steps"]
+    script = next(step["run"] for step in steps if "Signed-off-by" in step.get("run", ""))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    if exempt_list is not None:
+        (repo / ".github").mkdir()
+        (repo / ".github/dco-exempt-accounts").write_text(exempt_list, encoding="utf-8")
+        _git(repo, "add", ".")
+    _commit(repo, "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base)
+    for message, email in commits:
+        _commit(repo, message, email)
+    # A pull request that adds itself to the list must not benefit from it.
+    (repo / ".github").mkdir(exist_ok=True)
+    (repo / ".github/dco-exempt-accounts").write_text(f"{pr_author} {BOT_EMAIL}\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _commit(repo, SIGNED)
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=repo,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "BASE_REF": "main",
+            "BASE_SHA": base,
+            "HEAD_SHA": _git(repo, "rev-parse", "HEAD"),
+            "PR_AUTHOR": pr_author,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is passes, result.stdout + result.stderr
+
+
 def test_codeql_keeps_its_scheduled_baseline_scan() -> None:
     """The weekly scan is what catches a latent finding no PR touched."""
     schedule = _workflow("codeql.yml")["on"]["schedule"]
