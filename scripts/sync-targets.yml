@@ -783,6 +783,10 @@ harnesses:
         destination: .codex/skills/ship-staging/SKILL.md
         substitutions: []
 
+      - source: .codex/skills/ship-staging/scripts/check-pr-checks.py
+        destination: .codex/skills/ship-staging/scripts/check-pr-checks.py
+        substitutions: []
+
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the
       # project-specific substitution values that `npx activeloom init` refuses
       # to invent, for a human to confirm. Consumers receive it so a teammate
@@ -1220,6 +1224,10 @@ harnesses:
 
       - source: .agents/skills/ship-staging/SKILL.md
         destination: .agents/skills/ship-staging/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/ship-staging/scripts/check-pr-checks.py
+        destination: .agents/skills/ship-staging/scripts/check-pr-checks.py
         substitutions: []
 
       # `onboard` — the agent-side door onto the tiered onboarding. Drafts the

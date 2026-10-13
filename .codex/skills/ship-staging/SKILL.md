@@ -19,7 +19,7 @@ is intentionally narrow: it ships staging-base PRs only.
 - Mark an open draft PR ready before evaluating its merge gates. Stop if the
   ready transition fails or cannot be verified.
 - Stop on merge conflicts, blocked/dirty/unstable merge state, requested
-  changes, failing CI, or required checks still running.
+  changes, failing CI, or checks still running.
 - Resolve the Google Chat webhook at runtime from `GCHAT_DEV_WEBHOOK_URL` or a
   consumer-supplied path in `GCHAT_DEV_WEBHOOK_FILE`. The public skill does not
   define a default secret location.
@@ -95,21 +95,11 @@ is intentionally narrow: it ships staging-base PRs only.
      READY_TRANSITION="marked ready"
    fi
 
-   checks_status=0
-   REQUIRED_CHECKS=$(gh pr checks <pr> --required --json bucket,name,state) || checks_status=$?
-   if [[ "$checks_status" -ne 0 && "$checks_status" -ne 8 ]]; then
-     echo "Could not resolve required checks; refusing to merge" >&2
-     exit 1
-   fi
-   # Hard gate, not just prose: exit code 8 means required checks are still
-   # PENDING (gh reports pending as non-zero but still emits the JSON), so the
-   # bucket rule below must be enforced in code. Refuse unless every required
-   # check is in the `pass` bucket. An empty set is vacuously true here, but a
-   # repo with no required checks returns exit 1 above and never reaches this.
-   if ! jq -e 'all(.[]; .bucket == "pass")' <<<"${REQUIRED_CHECKS:-[]}" >/dev/null; then
-     echo "Required checks are not all green (pending, failing, or skipped); refusing to merge" >&2
-     exit 1
-   fi
+   # A successful lookup with no required checks is valid. The helper still
+   # checks all available CI and refuses lookup errors or changed PR heads.
+   python3 .codex/skills/ship-staging/scripts/check-pr-checks.py \
+     --repo "$CURRENT_REPO" --pr <pr> \
+     --head "$(jq -r '.headRefOid' <<<"$PR_JSON")" || exit 1
    ON_STAGING_LABEL=$(gh label list --search "status: on-staging" --limit 100 \
      --json name --jq 'any(.[]; .name == "status: on-staging")')
    if [[ "$ON_STAGING_LABEL" != "true" ]]; then
@@ -127,10 +117,15 @@ is intentionally narrow: it ships staging-base PRs only.
    - `reviewDecision == "CHANGES_REQUESTED"`
    - any status check conclusion is `FAILURE`, `CANCELLED`, `TIMED_OUT`, or
      `ACTION_REQUIRED`
-   - any item in `REQUIRED_CHECKS` has a `bucket` other than `pass`
+   - the CI helper exits nonzero: required checks must pass; available checks
+     must pass or be skipped/neutral, with no failed, cancelled, or pending checks
 
    `mergeStateStatus` of `CLEAN` or `HAS_HOOKS` is acceptable when checks are
-   otherwise green.
+   otherwise green. No required checks is a valid repository configuration;
+   report `required_count: 0` without requesting a bypass. This is distinct from
+   no available CI evidence, which the helper refuses. A skipped/neutral optional
+   check is acceptable; a skipped required check is not. Authentication, network,
+   malformed-response, and other lookup errors always stop shipment.
 
 5. Draft a Google Chat message. Keep it under 600 characters and at most three
    sentences after the header. Do not include PHI, secrets, internal IPs, commit
