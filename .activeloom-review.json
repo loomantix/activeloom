@@ -67,10 +67,15 @@
         ".agents/skills/**",
         ".claude/skills/**",
         ".codex/skills/**",
-        "tests/review-accessibility-asset.test.js"
+        "prompts/skills/simplify-comments/**",
+        "tests/review-accessibility-asset.test.js",
+        "tests/test_comment_density_extra.py",
+        "tests/comment-verifier.test.cjs"
       ],
       "commands": [
-        { "argv": ["node", "tests/review-accessibility-asset.test.js"] }
+        { "argv": ["node", "tests/review-accessibility-asset.test.js"] },
+        { "argv": ["python3", "-m", "pytest", "tests/test_comment_density_extra.py"] },
+        { "argv": ["node", "--test", "tests/comment-verifier.test.cjs"] }
       ]
     },
     "config": {
