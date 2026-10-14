@@ -19,7 +19,7 @@ a raw reviewer CLI or silently fall back to a conversational auto loop.
 Reviewer model, effort, and engine order come from the user's review profile, a
 file outside every repository that the `review-setup` skill creates and edits.
 Before starting a run, read it with
-`python3 -I .codex/skills/critique/scripts/review-profile.py show --repo <owner/repo>`.
+`python3 -I .claude/skills/review-setup/scripts/review-profile.py show --repo <owner/repo>`.
 When it reports `"configured": false`, run `review-setup` with the user first;
 never start a run on settings the user has not confirmed. Unless the user names a
 plan, read the tier's order from `review-profile.py order --tier <lean|deep> --repo <owner/repo>`.
