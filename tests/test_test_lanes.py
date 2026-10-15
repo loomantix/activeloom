@@ -120,6 +120,36 @@ def test_review_contract_runs_fast_tests_once_for_mapped_and_unmapped_changes(
     assert not any("regression" in " ".join(argv) for argv in commands)
 
 
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["prompts/skills/simplify-comments/scripts/comment-density.py"],
+        [".claude/skills/simplify-comments/scripts/comment_audit.py"],
+        ["tests/test_comment_density_extra.py"],
+        ["tests/comment-verifier.test.cjs"],
+    ],
+)
+def test_review_contract_routes_comment_verifier_regressions_to_skills_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paths: list[str]
+) -> None:
+    module = _load_script("lane_contract_runner", ROOT / ".codex/skills/critique/scripts/review-chain-runner.py")
+    contract = module.parse_validation_contract((ROOT / ".activeloom-review.json").read_bytes())
+    runner = module.Runner(SimpleNamespace(), tmp_path)
+    runner.state = {"base": "b" * 40, "config": {"validation": {
+        "mode": "contract-v1", "contract": contract, "base_environment": {},
+        "policy_revision": "b" * 40, "manifest_sha256": "c" * 64,
+    }}}
+    monkeypatch.setattr(runner, "changed_paths", lambda base, head: paths)
+
+    validation = runner.resolved_validation("a" * 40)
+    commands = [item["argv"] for item in validation["commands"]]
+
+    assert "skills" in validation["gates"]
+    assert "fast" not in validation["gates"]
+    assert ["python3", "-m", "pytest", "tests/test_comment_density_extra.py"] in commands
+    assert ["node", "--test", "tests/comment-verifier.test.cjs"] in commands
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX worker process groups")
 @pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "sigterm"])
 def test_bounded_runner_stops_its_workers(tmp_path: Path, cancel: bool) -> None:
