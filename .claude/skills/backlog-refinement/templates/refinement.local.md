@@ -21,9 +21,9 @@ Title prefixes that record a priority someone already set, highest first and one
 
 <!-- priority-title-prefixes: -->
 
-What refinement does with a verified-stale issue: `recommend` a close for a human, or `close` it itself, after its evidence comment. Choose `close` when reopening a wrongly closed issue is cheap. Keep exactly one marker line.
+What refinement does with a verified-stale issue: `close` it itself once its evidence is validated against the integration branch, after the evidence comment, or `recommend` a close for a human. Keep `close` unless a wrong close is expensive to notice or undo. Keep exactly one marker line.
 
-<!-- stale-action: recommend -->
+<!-- stale-action: close -->
 
 Interview handback confirmation: `ask` shows one combined preview and asks before posting/applying; `auto` skips only that handback question. Both require the user to confirm the interview summary and each offered close. Keep exactly one marker line.
 
