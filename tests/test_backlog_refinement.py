@@ -405,14 +405,14 @@ def test_rubric_reads_every_setting(tmp_path: Path) -> None:
     assert mod.title_priority("Rotate keys [P1]", config) is None
 
 
-def test_rubric_defaults_are_conservative(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_rubric_defaults(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _, config = _load_rubric_config(
         tmp_path,
         "- **Integration branch:** `TODO(backlog): the branch loop PRs target`\n"
         f"<!-- priority-labels: {PRIORITIES} -->\n",
     )
     assert config.integration_branch is None
-    assert config.stale_action == "recommend"
+    assert config.stale_action == "close"
     assert config.rewrite_mode == "edit"
     assert "no Rewrite mode setting" in capsys.readouterr().err
     assert config.title_prefixes == ()
@@ -427,6 +427,11 @@ def test_rubric_ignores_prefixes_that_do_not_match_the_labels(
     )
     assert config.title_prefixes == ()
     assert "one prefix per label" in capsys.readouterr().err
+
+
+def test_rubric_reads_an_explicit_recommend(tmp_path: Path) -> None:
+    _, config = _load_rubric_config(tmp_path, "<!-- stale-action: recommend -->\n")
+    assert config.stale_action == "recommend"
 
 
 def test_rubric_rejects_an_unknown_stale_action(tmp_path: Path) -> None:
@@ -617,6 +622,8 @@ def test_apply_plan_accepts_a_well_formed_plan(apply_mod: ModuleType) -> None:
         _entry(),
         _entry(number=8, verdict="ready", add_labels=["dev: agent", "priority: low"], body="## Goal\n"),
         _entry(number=9, verdict="stale", add_labels=["agent-bail: stale"], close_reason="completed"),
+        _entry(number=11, verdict="stale", add_labels=["agent-bail: stale"], close_reason="completed",
+               evidence=["abc1234"], validated=True),
         _entry(number=10, verdict="refined-only", add_labels=["priority: high"]),
     ]}
     assert apply_mod.validate(plan, REPO_LABELS, PRIORITY_TUPLE) == []
@@ -631,6 +638,10 @@ def test_apply_plan_accepts_a_well_formed_plan(apply_mod: ModuleType) -> None:
         (_entry(verdict="ready", add_labels=["dev: agent"]), "needs the rewritten body"),
         (_entry(add_labels=["agent-bail: epic", "agent-bail: open-decision"]), "exactly one agent-bail"),
         (_entry(verdict="stale", add_labels=["agent-bail: stale"]), "close_reason"),
+        (_entry(verdict="stale", add_labels=["agent-bail: stale"], close_reason="completed", validated=True), "non-empty evidence"),
+        (_entry(verdict="stale", add_labels=["agent-bail: stale"], close_reason="completed", evidence=[" "], validated=True), "non-empty evidence"),
+        (_entry(evidence=["abc1234"], validated=True), "only for a stale verdict"),
+        (_entry(validated="yes"), "true or false"),
         (_entry(verdict="refined-only", add_labels=["needs: grill"]), "only accompanies"),
         (_entry(body="text"), "only for a ready verdict"),
         (_entry(comment="  "), "comment is required"),
@@ -709,20 +720,34 @@ def _config(apply_mod: ModuleType, **overrides: Any) -> Any:
     return apply_mod.RubricConfig(None, (), PRIORITY_TUPLE)._replace(**overrides)
 
 
-def test_apply_plan_closes_stale_only_when_the_repo_opts_in(
+def test_apply_plan_closes_only_validated_stale_entries_by_default(
     apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stale = _entry(verdict="stale", add_labels=["agent-bail: stale"], close_reason="not planned")
+    validated = {**stale, "evidence": ["abc1234 (#12)"], "validated": True}
+
     fake = FakeGh()
     monkeypatch.setattr(apply_mod, "gh", fake)
-    assert "recommended" in apply_mod.apply_entry(stale, _config(apply_mod))
+    assert "not validated" in apply_mod.apply_entry(stale, _config(apply_mod))
     assert "issue close" not in fake.verbs()
 
     fake = FakeGh()
     monkeypatch.setattr(apply_mod, "gh", fake)
-    assert "closed as not planned" in apply_mod.apply_entry(stale, _config(apply_mod, stale_action="close"))
+    assert "closed as not planned" in apply_mod.apply_entry(validated, _config(apply_mod))
     assert fake.verbs()[-1] == "issue close"
     assert fake.calls[-1][-1] == "not planned"
+
+
+def test_apply_plan_recommend_setting_never_auto_closes(
+    apply_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    validated = _entry(verdict="stale", add_labels=["agent-bail: stale"], close_reason="completed",
+                       evidence=["abc1234"], validated=True)
+    fake = FakeGh()
+    monkeypatch.setattr(apply_mod, "gh", fake)
+    note = apply_mod.apply_entry(validated, _config(apply_mod, stale_action="recommend"))
+    assert "stale-action: recommend" in note
+    assert "issue close" not in fake.verbs()
 
 
 def test_apply_plan_suggest_mode_posts_the_body_as_a_comment(

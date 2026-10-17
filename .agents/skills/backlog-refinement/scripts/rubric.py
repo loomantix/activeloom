@@ -54,7 +54,7 @@ class RubricConfig(NamedTuple):
     auto_managed_labels: tuple[str, ...]
     priority_labels: tuple[str, ...]
     title_prefixes: tuple[str, ...] = ()
-    stale_action: str = "recommend"
+    stale_action: str = "close"
     integration_branch: str | None = None
     rewrite_mode: str = "edit"
     grill_handback: str = "ask"
@@ -145,7 +145,7 @@ def load_config(root: str) -> RubricConfig:
         )
         prefixes = ()
     stale = read_marker(STALE_ACTION_MARKER, "stale-action", text, path)
-    stale_action = stale[0] if stale else "recommend"
+    stale_action = stale[0] if stale else "close"
     if stale_action not in STALE_ACTIONS:
         sys.stderr.write(
             f"Unknown stale-action {stale_action!r} in {path}; expected one of "
