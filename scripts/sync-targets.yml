@@ -300,6 +300,49 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
+      # hpromote). The five move together with the shared herdr reference and
+      # the config helper beside hreview, which the other four call. The
+      # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
+      - source: .claude/skills/hreview/SKILL.md
+        destination: .claude/skills/hreview/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/auto-glance/SKILL.md
+        destination: .claude/skills/auto-glance/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hgrill/SKILL.md
+        destination: .claude/skills/hgrill/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/horch/SKILL.md
+        destination: .claude/skills/horch/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hpromote/SKILL.md
+        destination: .claude/skills/hpromote/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hreview/scripts/herd-config.py
+        destination: .claude/skills/hreview/scripts/herd-config.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .claude/skills/hreview/scripts/herd-config.schema.json
+        destination: .claude/skills/hreview/scripts/herd-config.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .claude/skills/hreview/scripts/herd-user.schema.json
+        destination: .claude/skills/hreview/scripts/herd-user.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .claude/references/herdr.md
+        destination: .claude/references/herdr.md
+        substitutions: []
+
       - source: .claude/skills/phone-install/SKILL.md
         destination: .claude/skills/phone-install/SKILL.md
         substitutions: []
@@ -812,6 +855,49 @@ harnesses:
         substitutions: []
         mode: '0755'
 
+      # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
+      # hpromote). The five move together with the shared herdr reference and
+      # the config helper beside hreview, which the other four call. The
+      # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
+      - source: .codex/skills/hreview/SKILL.md
+        destination: .codex/skills/hreview/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/auto-glance/SKILL.md
+        destination: .codex/skills/auto-glance/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hgrill/SKILL.md
+        destination: .codex/skills/hgrill/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/horch/SKILL.md
+        destination: .codex/skills/horch/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hpromote/SKILL.md
+        destination: .codex/skills/hpromote/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hreview/scripts/herd-config.py
+        destination: .codex/skills/hreview/scripts/herd-config.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .codex/skills/hreview/scripts/herd-config.schema.json
+        destination: .codex/skills/hreview/scripts/herd-config.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .codex/skills/hreview/scripts/herd-user.schema.json
+        destination: .codex/skills/hreview/scripts/herd-user.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .codex/references/herdr.md
+        destination: .codex/references/herdr.md
+        substitutions: []
+
       - source: .codex/skills/phone-install/SKILL.md
         destination: .codex/skills/phone-install/SKILL.md
         substitutions: []
@@ -1250,6 +1336,49 @@ harnesses:
         destination: .agents/skills/review-setup/scripts/review-settings.py
         substitutions: []
         mode: '0755'
+
+      # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
+      # hpromote). The five move together with the shared herdr reference and
+      # the config helper beside hreview, which the other four call. The
+      # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
+      - source: .agents/skills/hreview/SKILL.md
+        destination: .agents/skills/hreview/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/auto-glance/SKILL.md
+        destination: .agents/skills/auto-glance/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hgrill/SKILL.md
+        destination: .agents/skills/hgrill/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/horch/SKILL.md
+        destination: .agents/skills/horch/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hpromote/SKILL.md
+        destination: .agents/skills/hpromote/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hreview/scripts/herd-config.py
+        destination: .agents/skills/hreview/scripts/herd-config.py
+        substitutions: []
+        mode: '0755'
+
+      - source: .agents/skills/hreview/scripts/herd-config.schema.json
+        destination: .agents/skills/hreview/scripts/herd-config.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .agents/skills/hreview/scripts/herd-user.schema.json
+        destination: .agents/skills/hreview/scripts/herd-user.schema.json
+        substitutions: []
+        mode: '0644'
+
+      - source: .agents/references/herdr.md
+        destination: .agents/references/herdr.md
+        substitutions: []
 
       - source: .agents/skills/phone-install/SKILL.md
         destination: .agents/skills/phone-install/SKILL.md

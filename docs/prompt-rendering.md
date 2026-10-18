@@ -131,13 +131,14 @@ an unrelated hand-authored skill.
 ## Vendored documents
 
 `VENDORED_DOCUMENTS` in `scripts/render-prompts.py` maps a repo-relative source
-to the path it is copied to under **every** harness root. One entry today:
+to the path it is copied to under **every** harness root:
 
 | Source                                                   | Written to                                 |
 | -------------------------------------------------------- | ------------------------------------------ |
 | `packages/review-ledger/protocol/local-review-ledger.md` | `<root>/references/local-review-ledger.md` |
+| `prompts/references/herdr.md`                            | `<root>/references/herdr.md`               |
 
-The ledger protocol is the engine-neutral contract that
+`herdr.md` is the engine-neutral mechanics reference the herd skills share; it describes every engine, so it carries no harness vocabulary. The ledger protocol is the engine-neutral contract that
 [`packages/review-ledger`](../packages/review-ledger/README.md) implements, so
 the package is the only place it can be authored without the document and the
 code enforcing it drifting apart. A hand-edit to a copy fails `--check` like

@@ -212,4 +212,5 @@ It refuses to merge unless `GCHAT_DEV_WEBHOOK_URL` or `GCHAT_DEV_WEBHOOK_FILE` i
 ## Where to go next
 
 - [Set up for autonomous development](autonomous-development.md) connects these skills into an unattended pipeline, with `agent-loop` implementing the ready queue.
+- [Herd orchestration](herd-orchestration.md) runs these workflows across agents in visible herdr panes: live review chains, automated grills, an orchestrator that ships converged work, and promotions.
 - [Agent entry guide](agent-guide.md) maps every other skill to the task it fits.

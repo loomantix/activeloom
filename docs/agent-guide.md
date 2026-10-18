@@ -53,6 +53,13 @@ Names below identify skills; use the invocation supported by the current harness
 | Clean up or review an existing PR            | `refactorpass`, `critique`, `deepcritique` | Read the review workflow and ledger first; resolve the tier before running                                                          |
 | Automate a local review relay                | `review-chain-runner.py`                   | Requires an authorized plan, clean dedicated worktree, draft PR, reviewers, and a repository validation contract or legacy commands |
 | Handle hosted review comments                | `copilot-review` or `reviewit`             | Only when the task and repository policy permit that hosted workflow                                                                |
+| Run a review chain in visible herdr panes    | `hreview`                                  | Requires herdr and the Codex control surface; same ledger and tier rules as an ordinary chain; never merges                         |
+| Stand a model in for a human glance          | `auto-glance`                              | Only when the repository sets `glance.auto`; never merges or pushes to the PR                                                       |
+| Grill issues across several engines          | `hgrill`                                   | Touches only the chained issues and their children; ends at an assumptions block for a human check                                  |
+| Orchestrate a herdr workspace                | `horch`                                    | Needs a per-push instruction file; ships only to the integration branch, through `ship-staging`                                     |
+| Promote integration to production on herdr   | `hpromote`                                 | Needs a `promotion` section; stops at the human approval and merge                                                                  |
+
+The herd skills (`hreview`, `auto-glance`, `hgrill`, `horch`, `hpromote`) share their mechanics in each root's `references/herdr.md` and read `.activeloom-herd.json` from the integration branch; see [Herd orchestration](herd-orchestration.md).
 
 For repository-owned internal documentation, use `internal-docs` and the
 consumer command/setup contract described in [Internal docs](internal-docs.md).
