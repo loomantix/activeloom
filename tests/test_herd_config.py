@@ -145,6 +145,13 @@ def test_every_error_is_reported_at_once() -> None:
     assert len(caught.value.errors) == 2
 
 
+@pytest.mark.parametrize("field", ["name", "engine", "skill"])
+def test_null_required_production_lane_field_is_rejected(field: str) -> None:
+    lane = {"name": "docs-video", "engine": "codex", "skill": "record", "brief": "docs/brief.md", field: None}
+    with pytest.raises(herd.ConfigError, match=rf"production_lanes\[0\].{field}:"):
+        herd.validate_repo({"schema_version": 1, "production_lanes": [lane]})
+
+
 # --- gate-fix classification ----------------------------------------------------------
 
 

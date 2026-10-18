@@ -227,6 +227,8 @@ It never ships to a production branch and never forces a gate. Anything that sto
 
 What you type: `/hpromote`, or `/hpromote --dry-run` to stop after the risk review. Requires a `promotion` section.
 
+A dry run pins the integration and production SHAs and reports its verdict locally, even when no promotion PR exists. It creates no PR, posts no comments and starts no fixes. On completion it releases its lock, removes its clean review worktree and labels the tab `P<mmdd> ✓ dry-run`; findings stay in the report, and the label does not mean production was deployed or approved.
+
 What appears: a `P<mmdd>` tab. The driver runs your repository's own promotion skill (named in `promotion.skill`), opens or adopts the promotion PR, and starts a **read-only** risk review of the whole diff in a `risk` pane. It verifies every blocker and major finding itself, posts one comment with dispositions, and for each confirmed blocker starts a fix session that opens a PR to the integration branch, gets it reviewed in a `review-<pr>` pane, and ships it through `horch`'s gate. When the integration branch moves, it reviews only the delta.
 
 It stops at `P<mmdd> ⏸ approve`: approving and merging the promotion PR deploys production, and both are yours. After you merge, tell it `merged` (or tell `horch`), and it watches the deploy workflows and runs the post-merge checks. It never rolls back on its own.

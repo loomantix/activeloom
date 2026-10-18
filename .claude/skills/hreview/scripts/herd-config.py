@@ -260,17 +260,17 @@ def validate_repo(config: Any) -> dict[str, Any]:
                 if required not in lane:
                     errors.append(f"{where}.{required}: required")
             name = lane.get("name")
-            if name is not None and (not isinstance(name, str) or not SLUG_RE.match(name)):
+            if not isinstance(name, str) or not SLUG_RE.match(name):
                 errors.append(f"{where}.name: must be a lower-case slug")
             elif name in names:
                 errors.append(f"{where}.name: duplicate lane {name!r}")
-            elif name is not None:
+            else:
                 names.add(name)
             engine = lane.get("engine")
-            if engine is not None and engine not in ENGINES:
+            if engine not in ENGINES:
                 errors.append(f"{where}.engine: unknown engine {engine!r}")
             skill = lane.get("skill")
-            if skill is not None and (not isinstance(skill, str) or not SKILL_RE.match(skill)):
+            if not isinstance(skill, str) or not SKILL_RE.match(skill):
                 errors.append(f"{where}.skill: must be a skill name")
             brief = _relative_path(lane["brief"], f"{where}.brief", errors) if "brief" in lane else None
             lanes.append({"name": name, "engine": engine, "skill": skill, "brief": brief})

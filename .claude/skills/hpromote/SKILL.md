@@ -53,7 +53,7 @@ Nothing else: no closing issues, editing other PRs, filing issues beyond deferre
 1. `test "${HERDR_ENV:-}" = 1`, or stop.
 2. Lock: `python3 -I $C lock --repo <repo> --skill hpromote --key <yyyy-mm-dd>`. Exit 3 means a promotion is already running or blocked: report its tab and stop.
 3. Open a new tab, `P<mmdd>`, with the primary checkout as `--cwd` (never reuse the dispatcher's), start the driver as `p<mmdd>-driver` on this session's engine, and prompt it `run` (plus `--dry-run` if given) through this skill, addressed the way herdr.md's Engines table gives for that engine.
-4. Watch the tab **label** until it reads `P<mmdd> ⏸ approve` (ready for the human), `P<mmdd> ✓` (production verified) or `P<mmdd> ⚠` (blocked). On ⏸ or ⚠, tell the user the PR URL and the one action needed.
+4. Watch the tab **label** until it reads `P<mmdd> ⏸ approve` (ready for the human), `P<mmdd> ✓` (production verified), `P<mmdd> ✓ dry-run` (local risk report complete) or `P<mmdd> ⚠` (blocked). On ⏸ or ⚠, tell the user the PR URL if one exists and the one action needed. On `✓ dry-run`, report the local verdict; no promotion was published or deployed.
 
 ## Driver
 
@@ -67,16 +67,16 @@ The driver's pane on top, with a row below it: `risk` (Phase 3), one `fix-<slug>
 
 Follow the promotion skill's preflight and health phases, with these additions:
 
-- **Adopt an existing PR.** If one is open (`gh pr list --base <production> --head <integration> --state open`), adopt it and go to Phase 3.
+- **Adopt an existing PR.** If one is open (`gh pr list --base <production> --head <integration> --state open`), a normal run adopts it and goes to Phase 3. A dry run uses it only as read-only context and continues through the health checks below and Phase 2's SHA pinning.
 - Run each `promotion.preflight` command in the primary checkout at the integration head. A failure that a PR to the integration branch can fix becomes a Phase 4 blocker; a local environment problem is not a defect, so say which it is.
 - The latest run of each `promotion.deploy_workflows` workflow on the integration head must be `success`. A `cancelled` run superseded by a later green one is normal.
 - Note the deploy surface for the PR body: migrations and their declared bounds, deployment and infrastructure changes, new environment variables or secrets production must carry, feature flags and their production values.
 
 ### Phase 2: open the promotion PR
 
-Follow the promotion skill. Title it `Promote <integration> → <production> — <yyyy-mm-dd>` unless that skill sets a title. In the body: the categorized summary, the deploy surface from Phase 1, preflight results at the head SHA, and an **After merge** checklist naming each `promotion.post_merge` command and any post-merge check that an open issue waits on.
+With `--dry-run`, skip PR creation: pin the remote integration head and production base SHAs, then go to Phase 3. A PR number is optional context. Throughout the dry run, use only the promotion skill's read-only checks; publish no PR, comment or other GitHub mutation and start no fixes.
 
-With `--dry-run`, stop after Phase 3: open no PR and start no fixes.
+Otherwise follow the promotion skill. Title it `Promote <integration> → <production> — <yyyy-mm-dd>` unless that skill sets a title. In the body: the categorized summary, the deploy surface from Phase 1, preflight results at the head SHA, and an **After merge** checklist naming each `promotion.post_merge` command and any post-merge check that an open issue waits on.
 
 ### Phase 3: risk review (read-only)
 
@@ -84,7 +84,7 @@ Each PR in the promotion was reviewed on its own. This pass looks for risk that 
 
 1. Create a detached worktree at the promotion head under the user's `worktree_root`: `git worktree add --detach <root>/<name>-promote-<yyyymmdd> <head>`.
 2. Start the risk engine in the `risk` pane, cwd that worktree, as a **read-only** session (herdr.md, Engines), named `p<mmdd>-risk`. Trust the folder; the driver created it.
-3. Prompt it with the following, filled in:
+3. Prompt it with the following, filled in. In a dry run without a PR, replace `PR #<n>` with `dry run` and use the pinned integration head and production base:
 
    ```text
    Read-only promotion risk review for <repo> PR #<n> (<integration> -> <production>; merging it deploys PRODUCTION). This directory is detached at <head> = <integration> head. Base is origin/<production> (<base>). Do NOT edit files, commit, push, comment on GitHub, or approve/merge anything; report only.
@@ -107,7 +107,9 @@ Each PR in the promotion was reviewed on its own. This pass looks for risk that 
 
    Minors are listed, not fixed, and do not block.
 
-6. Post **one** comment on the promotion PR: the verdict, each finding with its disposition, and a link to each fix PR. When later phases change something, edit that same comment (`gh api -X PATCH`); never post a second one.
+6. With `--dry-run`, report the pinned SHAs, verdict and every finding with its disposition in the driver pane. End the risk session, remove its clean detached worktree, release the dispatch lock, rename the tab `P<mmdd> ✓ dry-run`, notify, and stop. Findings remain reported; this terminal label means the dry run completed, not that the promotion is safe or deployed. A failed review follows Blocks and retains its worktree and lock.
+
+   Otherwise post **one** comment on the promotion PR: the verdict, each finding with its disposition, and a link to each fix PR. When later phases change something, edit that same comment (`gh api -X PATCH`); never post a second one.
 
 ### Phase 4: unblock
 
