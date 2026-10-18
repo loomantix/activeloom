@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "production_lanes": [
+    { "name": "Video", "engine": "codex", "skill": "x", "brief": "/etc/passwd" }
+  ]
+}

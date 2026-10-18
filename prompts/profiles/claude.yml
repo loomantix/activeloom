@@ -73,6 +73,12 @@ values:
     The adversarial code review that once held this name is now `/critique` and
     `/deepcritique`
 
+  # --- herd orchestration ------------------------------------------------------
+  # Appended to the herd skills' notification sentences. Claude Code has a push
+  # notification tool; the other harnesses have none, so their value is empty
+  # and the herdr notification is the whole alert. Leading space is load-bearing.
+  HERD_PUSH: " Also send a `PushNotification` (one line under 200 characters, leading with the action needed) when the user's herd config has `push_notifications` on."
+
 skills:
   issues:
     FM_EXTRAS: "argument-hint: 'verb [args]: <n> | start <n> [--setup-only] | ready | show <n> | claim <n> | close <n> [msg] | link <n> blocks|blocked-by <m> | search <q>'"
@@ -141,6 +147,34 @@ skills:
     FM_EXTRAS: ''
   simplify-comments:
     FM_EXTRAS: ''
+
+  # Herd orchestration skills spawn many sessions, so each is user-invoked here;
+  # DESC_TRIGGER is empty for the same reason as `grill`.
+  hreview:
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: '<pr> [<pr> ...] [--author claude|codex|gemini] [--companion]'
+    DESC_TRIGGER: ''
+  auto-glance:
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: '<pr> [--author claude|codex|gemini]'
+    DESC_TRIGGER: ''
+  hgrill:
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: '<issue> [<issue> ...] | next <k> [--kind grill|product-grill]'
+    DESC_TRIGGER: ''
+  horch:
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: '[<instruction file>]'
+    DESC_TRIGGER: ''
+  hpromote:
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: '[--dry-run] | run [--dry-run] | merged'
+    DESC_TRIGGER: ''
 
 # --- prompt stack ------------------------------------------------------------
 # The review prompt files this harness's telemetry identity is computed over,

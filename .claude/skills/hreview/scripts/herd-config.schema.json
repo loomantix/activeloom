@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/loomantix/activeloom/herd-config.schema.json",
+  "title": ".activeloom-herd.json",
+  "description": "Per-repository configuration for the herdr orchestration skills. Read from the integration branch at the remote, never from a pull request head. Every section is optional; an absent section means disabled or the conservative default. Commands are argv arrays, never shell strings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version"],
+  "$defs": {
+    "text": { "type": "string", "minLength": 1, "pattern": "^[^\\n\\u0000]+$" },
+    "branch": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*//)(?!.*\\.\\.)(?!.*\\.lock$)[A-Za-z0-9._/-]{1,200}(?<!/)$"
+    },
+    "engine": { "enum": ["claude", "codex", "gemini"] },
+    "engines": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/engine" }
+    },
+    "skill": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/text" }
+    },
+    "commands": { "type": "array", "items": { "$ref": "#/$defs/argv" } },
+    "globs": { "type": "array", "items": { "$ref": "#/$defs/text" } }
+  },
+  "properties": {
+    "schema_version": { "const": 1 },
+    "integration_branch": {
+      "$ref": "#/$defs/branch",
+      "description": "Branch converged work ships to. Default: the remote's default branch."
+    },
+    "worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bootstrap": {
+          "$ref": "#/$defs/commands",
+          "description": "Run in a new worktree before any session starts. Default: none."
+        }
+      }
+    },
+    "gate_fix": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Present: the herder may open a test/tooling-only fix PR for a red gate the PR under review did not cause. Absent: a red gate is a block.",
+      "properties": {
+        "product_globs": {
+          "$ref": "#/$defs/globs",
+          "description": "Product code a gate fix must never touch."
+        },
+        "tooling_globs": {
+          "$ref": "#/$defs/globs",
+          "description": "Scripts a gate fix may change."
+        },
+        "test_globs": {
+          "$ref": "#/$defs/globs",
+          "description": "Tests, fixtures and harnesses a gate fix may change."
+        },
+        "off_limits_globs": {
+          "$ref": "#/$defs/globs",
+          "description": "Paths a gate fix must never touch; wins over every other class."
+        },
+        "extra_checks": {
+          "$ref": "#/$defs/commands",
+          "description": "Run in the PR worktree after merging a gate fix, before re-running the pass."
+        }
+      }
+    },
+    "glance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auto": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route glance-sized PRs to auto-glance under horch. Default false: horch alerts the user instead."
+        }
+      }
+    },
+    "ship": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Present: horch ships converged work to the integration branch. Absent: horch alerts that the PR is ready and merges nothing.",
+      "properties": {
+        "on_ship": {
+          "enum": ["label", "close", "none"],
+          "default": "none",
+          "description": "What happens to linked open issues after the merge."
+        },
+        "label": {
+          "oneOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }],
+          "description": "Label added to linked issues; required when on_ship is label."
+        },
+        "checks": {
+          "enum": ["required", "all-runs"],
+          "default": "all-runs",
+          "description": "required: the branch's required checks must pass and must not be empty. all-runs: additionally every workflow run at the head completed green."
+        },
+        "post_ship_checks": {
+          "$ref": "#/$defs/commands",
+          "description": "Run in the primary checkout after a ship."
+        }
+      },
+      "if": {
+        "properties": { "on_ship": { "const": "label" } },
+        "required": ["on_ship"]
+      },
+      "then": {
+        "required": ["label"],
+        "properties": { "label": { "$ref": "#/$defs/text" } }
+      }
+    },
+    "builds": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "engines": {
+          "$ref": "#/$defs/engines",
+          "description": "Engines horch may start builds on. Default: the orchestrator's own engine."
+        }
+      }
+    },
+    "grill": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "engines": {
+          "$ref": "#/$defs/engines",
+          "description": "Grill chain order. Default: claude, codex, gemini."
+        },
+        "hold_label": {
+          "$ref": "#/$defs/text",
+          "default": "agent-bail: grill-review"
+        },
+        "verify_first_label": {
+          "oneOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }],
+          "default": null,
+          "description": "Removed after a chain, which counts as the verification it asked for."
+        },
+        "persona": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 600 },
+            { "type": "null" }
+          ],
+          "default": null,
+          "description": "One line describing the issue owner the driver answers as."
+        }
+      }
+    },
+    "production_lanes": {
+      "type": "array",
+      "description": "Token-heavy production work horch may hand to a named engine and skill.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "engine", "skill", "brief"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+          "engine": { "$ref": "#/$defs/engine" },
+          "skill": { "$ref": "#/$defs/skill" },
+          "brief": {
+            "$ref": "#/$defs/text",
+            "description": "Repository-relative document the lane reads first."
+          }
+        }
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skill", "production_branch"],
+      "description": "Present: hpromote may run. Absent: hpromote refuses.",
+      "properties": {
+        "skill": {
+          "$ref": "#/$defs/skill",
+          "description": "The repository's own promotion skill."
+        },
+        "production_branch": { "$ref": "#/$defs/branch" },
+        "risk_engine": {
+          "oneOf": [{ "$ref": "#/$defs/engine" }, { "type": "null" }],
+          "default": null
+        },
+        "preflight": { "$ref": "#/$defs/commands" },
+        "deploy_workflows": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/text" }
+        },
+        "post_merge": { "$ref": "#/$defs/commands" }
+      }
+    }
+  }
+}

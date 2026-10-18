@@ -82,6 +82,7 @@ VENDORED_DOCUMENTS: dict[str, str] = {
     "packages/review-ledger/protocol/local-review-ledger.md": (
         "references/local-review-ledger.md"
     ),
+    "prompts/references/herdr.md": "references/herdr.md",
 }
 
 RETIRED_DOCUMENTS: frozenset[str] = frozenset()

@@ -1,0 +1,1 @@
+{ "schema_version": 1, "gate_fix": { "tooling_globs": ["../scripts/**"] } }
