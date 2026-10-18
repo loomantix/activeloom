@@ -385,7 +385,8 @@ def read_repo(repo_dir: Path, remote: str, default: str | None, fetch: bool) -> 
         effective = validate_repo({"schema_version": SCHEMA_VERSION})
         effective["integration_branch"] = branch
         return {"source": {"ref": f"{remote}/{branch}", "commit": commit, "present": False}, "config": effective}
-    effective = validate_repo(parse_json(text, f"{remote}/{branch}:{REPO_FILE}"))
+    where = f"{remote}/{branch}:{REPO_FILE}"
+    effective = validate_repo(parse_json(text, where))
     integration = effective["integration_branch"] or branch
     if integration != branch:
         if fetch:
@@ -398,6 +399,8 @@ def read_repo(repo_dir: Path, remote: str, default: str | None, fetch: bool) -> 
         if (effective["integration_branch"] or integration) != integration:
             raise ConfigError([f"{where}: names integration branch {effective['integration_branch']!r}, not {integration!r}"])
         branch = integration
+    if effective["promotion"]["production_branch"] == branch:
+        raise ConfigError([f"{where}: promotion.production_branch: must differ from integration_branch"])
     effective["integration_branch"] = branch
     return {"source": {"ref": f"{remote}/{branch}", "commit": commit, "present": True}, "config": effective}
 

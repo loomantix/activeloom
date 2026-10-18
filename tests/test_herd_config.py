@@ -291,6 +291,18 @@ def test_branches_that_disagree_fail_closed(repos: tuple[Path, Path]) -> None:
         herd.read_repo(work, "origin", "main", fetch=True)
 
 
+def test_production_branch_matching_default_integration_branch_fails_closed(repos: tuple[Path, Path]) -> None:
+    _, work = repos
+    commit_config(
+        work,
+        "main",
+        {"schema_version": 1, "promotion": {"skill": "promote", "production_branch": "main"}},
+        "main",
+    )
+    with pytest.raises(herd.ConfigError, match="must differ from integration_branch"):
+        herd.read_repo(work, "origin", None, fetch=True)
+
+
 def test_invalid_remote_config_is_a_config_error(repos: tuple[Path, Path]) -> None:
     _, work = repos
     commit_config(work, "main", {"schema_version": 1, "glance": {"auto": "yes"}}, "main")
