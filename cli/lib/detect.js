@@ -11,17 +11,34 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 /**
- * Harnesses supported by the CLI, in manifest declaration order.
+ * Harnesses supported by the CLI, in manifest declaration order. Mirrors the
+ * `harnesses:` block of scripts/sync-targets.yml: `home` and `skills` are
+ * relative to the user's home directory, and `skills` is the user-level
+ * skills directory each harness documents.
  */
 const HARNESSES = Object.freeze([
   Object.freeze({
     id: 'claude',
     root: '.claude',
     home: '.claude',
+    skills: '.claude/skills',
     cli: 'claude',
   }),
-  Object.freeze({ id: 'codex', root: '.codex', home: '.codex', cli: 'codex' }),
-  Object.freeze({ id: 'gemini', root: '.agents', home: '.agents', cli: 'agy' }),
+  Object.freeze({
+    id: 'codex',
+    root: '.codex',
+    home: '.codex',
+    skills: '.agents/skills',
+    legacySkills: '.codex/skills',
+    cli: 'codex',
+  }),
+  Object.freeze({
+    id: 'gemini',
+    root: '.agents',
+    home: '.gemini/antigravity-cli',
+    skills: '.gemini/antigravity-cli/skills',
+    cli: 'agy',
+  }),
 ]);
 
 /**

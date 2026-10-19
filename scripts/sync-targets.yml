@@ -22,6 +22,21 @@
 #                    `allowed_destinations` rather than through this value.
 #   `targets`        that harness's target list.
 #
+#   `home`           the harness's per-user directory, relative to `$HOME`.
+#                    Its presence (or `cli` on PATH) means the harness is
+#                    installed on this machine.
+#   `skills`         the user-level skills directory the harness reads,
+#                    relative to `$HOME`, as the harness's own docs give it.
+#   `legacy_skills`  optional: an older user-level skills directory the
+#                    harness still reads. The clone installer prunes and
+#                    reports links into its checkout there, never installs.
+#   `cli`            the harness's executable.
+#
+# The sync engine reads only `root` and `targets`. `home`, `skills`,
+# `legacy_skills`, and `cli` drive `scripts/install-skills.sh`; the CLI's
+# static table in `cli/lib/detect.js` mirrors them, checked by
+# `tests/cli/harness-table.test.js`.
+#
 # Harnesses are processed in declaration order. That only matters for a
 # `create_if_missing` destination shipped by more than one harness
 # (`agent-loop-instructions.md`): the first declared harness bootstraps the
@@ -44,11 +59,14 @@ harnesses:
   # Claude consumer reads.
   claude:
     root: .claude
+    home: .claude
+    skills: .claude/skills
+    cli: claude
     targets:
       # Claude Code skills — checked into consumer repo so teammates without the
-      # global install can still invoke them. Devs who installed via
-      # `scripts/install-skills.sh` will resolve from `~/.claude/skills/` first;
-      # the in-repo copy is the fallback for everyone else and for CI contexts.
+      # global install can still invoke them. Developers who ran
+      # `scripts/install-skills.sh` also have them in `~/.claude/skills/`, where
+      # a same-named personal skill takes precedence over this project copy.
       - source: .claude/skills/internal-docs/SKILL.md
         destination: .claude/skills/internal-docs/SKILL.md
         substitutions: []
@@ -635,11 +653,18 @@ harnesses:
   # the Claude tree expresses as `.claude/agents/` subagents instead.
   codex:
     root: .codex
+    home: .codex
+    # Codex documents `$HOME/.agents/skills` as its user scope and still reads
+    # the older `~/.codex/skills`, without de-duplicating the two.
+    skills: .agents/skills
+    legacy_skills: .codex/skills
+    cli: codex
     targets:
       # Codex skills — checked into consumer repo so teammates without the
-      # global install can still invoke them. Devs who installed via
-      # `scripts/install-skills.sh` will resolve from `~/.codex/skills/` first;
-      # the in-repo copy is the fallback for everyone else and for CI contexts.
+      # global install can still invoke them. Developers who ran
+      # `scripts/install-skills.sh` also have them in `~/.agents/skills/`, Codex's
+      # user scope; Codex lists user and repository skills side by side rather
+      # than letting one shadow the other.
       - source: .codex/skills/internal-docs/SKILL.md
         destination: .codex/skills/internal-docs/SKILL.md
         substitutions: []
@@ -1205,6 +1230,12 @@ harnesses:
   # Gemini, whose harness reads `.agents` rather than a vendor-named root.
   gemini:
     root: .agents
+    # The Antigravity CLI (`agy`). The Antigravity app and IDE read
+    # `~/.gemini/config/skills` instead; install there with a destination
+    # override.
+    home: .gemini/antigravity-cli
+    skills: .gemini/antigravity-cli/skills
+    cli: agy
     targets:
       # Antigravity / Gemini skills
       - source: .agents/skills/internal-docs/SKILL.md

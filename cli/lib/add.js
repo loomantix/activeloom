@@ -110,10 +110,13 @@ const SUPPORT_PATHS = Object.freeze([
   'references',
 ]);
 
-/** Install harness-level files referenced by skills outside their own tree. */
+/**
+ * Install harness-level files referenced by skills outside their own tree.
+ * Skills reach them as `../../<file>`, so they go beside the skills directory.
+ */
 function installSupportFiles(upstreamDir, harness, homeDir, dryRun, force) {
   const sourceRoot = path.join(upstreamDir, harness.root);
-  const destRoot = path.join(homeDir, harness.home);
+  const destRoot = path.dirname(path.join(homeDir, harness.skills));
 
   const install = (src, dest) => {
     let stat;
@@ -182,7 +185,7 @@ async function add({ skills, upstreamDir, facts, harnesses, dryRun, force }) {
   for (const id of chosen.ids) {
     const harness = HARNESSES.find((h) => h.id === id);
     const available = listSkills(upstreamDir, harness.root);
-    const destRoot = path.join(facts.homeDir, harness.home, 'skills');
+    const destRoot = path.join(facts.homeDir, harness.skills);
     if (skills.some((name) => available.includes(name))) {
       installSupportFiles(upstreamDir, harness, facts.homeDir, dryRun, force);
     }

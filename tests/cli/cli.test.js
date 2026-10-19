@@ -312,32 +312,32 @@ test('Tier 0 installs the harness support files used by critique', () => {
       path.join(root, 'references', 'roles', 'code-reviewer.md'),
       '# Reviewer\n',
     );
-    fs.mkdirSync(path.join(home, '.codex', 'references'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.agents', 'references'), { recursive: true });
     fs.writeFileSync(
-      path.join(home, '.codex', 'references', 'consumer-note.md'),
+      path.join(home, '.agents', 'references', 'consumer-note.md'),
       '# Keep me\n',
     );
     addLib.installSupportFiles(
       upstream,
-      { root: '.codex', home: '.codex' },
+      { root: '.codex', skills: '.agents/skills' },
       home,
       false,
       false,
     );
     assert.strictEqual(
-      fs.readFileSync(path.join(home, '.codex', 'REVIEW_WORKFLOW.md'), 'utf8'),
+      fs.readFileSync(path.join(home, '.agents', 'REVIEW_WORKFLOW.md'), 'utf8'),
       '# Workflow\n',
     );
     assert.strictEqual(
       fs.readFileSync(
-        path.join(home, '.codex', 'references', 'roles', 'code-reviewer.md'),
+        path.join(home, '.agents', 'references', 'roles', 'code-reviewer.md'),
         'utf8',
       ),
       '# Reviewer\n',
     );
     assert.strictEqual(
       fs.readFileSync(
-        path.join(home, '.codex', 'references', 'consumer-note.md'),
+        path.join(home, '.agents', 'references', 'consumer-note.md'),
         'utf8',
       ),
       '# Keep me\n',
@@ -351,7 +351,7 @@ test('Tier 0 installs the harness support files used by critique', () => {
     );
     addLib.installSupportFiles(
       upstream,
-      { root: '.claude', home: '.claude' },
+      { root: '.claude', skills: '.claude/skills' },
       home,
       false,
       false,
@@ -391,7 +391,7 @@ test('installSupportFiles rethrows filesystem errors other than ENOENT', () => {
       () =>
         addLib.installSupportFiles(
           upstream,
-          { root: '.codex', home: '.codex' },
+          { root: '.codex', skills: '.agents/skills' },
           home,
           false,
           false,
@@ -426,7 +426,7 @@ test('installSupportFiles ignores ENOENT from lstatSync', () => {
     assert.doesNotThrow(() =>
       addLib.installSupportFiles(
         upstream,
-        { root: '.codex', home: '.codex' },
+        { root: '.codex', skills: '.agents/skills' },
         home,
         false,
         false,
@@ -853,6 +853,54 @@ test('confirmHarnesses gives up after three unusable answers', async () => {
     );
   });
   assert.strictEqual(p.asked.length, 4, 'one confirm + three retries');
+});
+
+test('add installs each harness into its documented user skills directory', async () => {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-up-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'activeloom-home-'));
+  try {
+    for (const root of ['.claude', '.codex', '.agents']) {
+      const skill = path.join(upstream, root, 'skills', 'issues');
+      fs.mkdirSync(skill, { recursive: true });
+      fs.writeFileSync(path.join(skill, 'SKILL.md'), `# ${root}\n`);
+      fs.writeFileSync(path.join(upstream, root, 'REVIEW_WORKFLOW.md'), 'x\n');
+    }
+    const code = await addLib.add({
+      skills: ['issues'],
+      upstreamDir: upstream,
+      facts: facts({ homeDir: home }),
+      harnesses: ['claude', 'codex', 'gemini'],
+      dryRun: false,
+      force: false,
+    });
+    assert.strictEqual(code, 0);
+    const expected = {
+      '.claude': '.claude',
+      '.codex': '.agents',
+      '.agents': path.join('.gemini', 'antigravity-cli'),
+    };
+    for (const [root, parent] of Object.entries(expected)) {
+      assert.strictEqual(
+        fs.readFileSync(
+          path.join(home, parent, 'skills', 'issues', 'SKILL.md'),
+          'utf8',
+        ),
+        `# ${root}\n`,
+        `${root} skills land under ~/${parent}/skills`,
+      );
+      assert.ok(
+        fs.existsSync(path.join(home, parent, 'REVIEW_WORKFLOW.md')),
+        `${root} support files sit beside its skills directory`,
+      );
+    }
+    assert.ok(
+      !fs.existsSync(path.join(home, '.codex', 'skills')),
+      'codex no longer installs into its deprecated ~/.codex/skills',
+    );
+  } finally {
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('add exit code separates an unknown skill from one already installed', async () => {
