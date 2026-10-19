@@ -29,7 +29,7 @@ Everything else is the herder's call. Once invoked, carry each chain to ready or
 
 Run from the repository the PRs belong to.
 
-- `H` = `.codex/skills/critique/scripts/local-review-handoff.py` (run controller: `start-run`, `next-pass`, `finish-run`). It needs the Codex control surface installed, as the review-chain runner does.
+- `H` = `.claude/skills/critique/scripts/local-review-handoff.py` (run controller: `start-run`, `next-pass`, `finish-run`)
 - `L` = `.claude/skills/critique/scripts/review-ledger.js` (`classify-changeset`, `read-roster`, `post-roster`, `verify-coverage`)
 - `P` = `.claude/skills/review-setup/scripts/review-profile.py`
 - `C` = `.claude/skills/hreview/scripts/herd-config.py`

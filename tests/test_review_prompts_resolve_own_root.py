@@ -12,7 +12,7 @@ one copied sentence. This pins the class instead of the instances.
 The exception is deliberate and small: `review-chain-runner.py` drives the
 automatic multi-engine chain and lives only in the Codex control surface, so
 every root names it by its `.codex` path. That is recorded in
-`docs/decisions/0015-run-controller-is-vendored-per-root.md` and is why the
+`docs/decisions/0017-run-controller-is-vendored-per-root.md` and is why the
 allowlist below is a set of paths rather than a blanket opt-out per file.
 """
 
@@ -37,6 +37,13 @@ REVIEW_PROMPTS = (
     "skills/deepcritique/SKILL.md",
     "skills/refactorpass/SKILL.md",
     "skills/reviewit/SKILL.md",
+    # The herd skills drive the same review protocol from herdr panes.
+    "skills/auto-glance/SKILL.md",
+    "skills/hgrill/SKILL.md",
+    "skills/hloop/SKILL.md",
+    "skills/horch/SKILL.md",
+    "skills/hpromote/SKILL.md",
+    "skills/hreview/SKILL.md",
 )
 
 # Executable paths a prompt may name outside its own root, each because exactly
@@ -68,7 +75,7 @@ def test_the_prompt_set_is_actually_present() -> None:
     # Guards the guard: a renamed prompt would otherwise silently empty the
     # parametrization below and the suite would still pass.
     discovered = _prompt_files()
-    assert len(discovered) >= 12, f"expected the review prompt set, found {len(discovered)}"
+    assert len(discovered) >= 30, f"expected the review prompt set, found {len(discovered)}"
 
 
 @pytest.mark.parametrize(
