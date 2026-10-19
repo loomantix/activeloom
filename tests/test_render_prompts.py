@@ -220,6 +220,9 @@ class Harness:
         monkeypatch.setattr(
             render_prompts, "MANIFEST_PATH", root / "prompts/rendered-files.txt"
         )
+        monkeypatch.setattr(
+            render_prompts, "GITATTRIBUTES_PATH", root / ".gitattributes"
+        )
         self.version_path = root / "PROMPT_STACK_VERSION"
         self.version_path.write_text("1.2.3\n", encoding="utf-8")
         monkeypatch.setattr(render_prompts, "VERSION_PATH", self.version_path)
@@ -283,6 +286,10 @@ class Harness:
         self._rp.MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._rp.MANIFEST_PATH.write_text(
             self._rp._manifest_text(written), encoding="utf-8"
+        )
+        self._rp.GITATTRIBUTES_PATH.write_text(
+            self._rp._gitattributes_text(self._rp._read_gitattributes(), written),
+            encoding="utf-8",
         )
 
 
@@ -1536,3 +1543,54 @@ def test_format_markdown_never_formats_a_vendored_document(
     assert len(calls) == 1
     assert str(tmp_path / ".claude/skills/demo/SKILL.md") in calls[0]
     assert str(tmp_path / ".claude/references/local-review-ledger.md") not in calls[0]
+
+
+# Generated-file attributes
+
+
+def test_gitattributes_marks_rendered_markdown_but_not_scripts(cli: Harness) -> None:
+    cli.write_source("demo/scripts/run.py", "X = 1\n")
+    assert cli._rp.main([]) == 0
+    text = (cli.root / ".gitattributes").read_text(encoding="utf-8")
+    assert "/.claude/skills/demo/SKILL.md linguist-generated=true\n" in text
+    assert "/.codex/skills/demo/SKILL.md linguist-generated=true\n" in text
+    assert "run.py" not in text
+
+
+def test_gitattributes_keeps_lines_outside_the_block(cli: Harness) -> None:
+    attributes = cli.root / ".gitattributes"
+    attributes.write_text("*.png binary\n", encoding="utf-8")
+    assert cli._rp.main([]) == 0
+    assert cli._rp.main([]) == 0
+    text = attributes.read_text(encoding="utf-8")
+    assert text.startswith("*.png binary\n")
+    assert text.count(cli._rp.GITATTRIBUTES_BEGIN) == 1
+
+
+def test_check_fails_when_the_gitattributes_block_is_stale(
+    cli: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli._rp.main([]) == 0
+    attributes = cli.root / ".gitattributes"
+    attributes.write_text(
+        attributes.read_text(encoding="utf-8").replace(
+            "/.codex/skills/demo/SKILL.md linguist-generated=true\n", ""
+        ),
+        encoding="utf-8",
+    )
+    assert cli._rp.main(["--check"]) == 1
+    assert "differs:   .gitattributes" in capsys.readouterr().err
+
+
+def test_check_fails_when_the_gitattributes_block_is_missing(cli: Harness) -> None:
+    assert cli._rp.main([]) == 0
+    (cli.root / ".gitattributes").unlink()
+    assert cli._rp.main(["--check"]) == 1
+
+
+def test_a_malformed_gitattributes_block_is_an_error(cli: Harness) -> None:
+    (cli.root / ".gitattributes").write_text(
+        cli._rp.GITATTRIBUTES_BEGIN, encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="malformed render-prompts block"):
+        cli._rp.main([])
