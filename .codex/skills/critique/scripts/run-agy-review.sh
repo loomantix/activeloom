@@ -374,7 +374,7 @@ except (OSError, UnicodeError, json.JSONDecodeError) as error:
 
 status = payload.get("status")
 if exit_code != 0 or status != "SUCCESS":
-    message = payload.get("response") or payload.get("error") or "no error detail"
+    message = payload.get("error") or payload.get("response") or "no error detail"
     raise SystemExit(f"agy review failed (exit {exit_code}, status {status!r}): {message}")
 
 response = payload.get("response")
