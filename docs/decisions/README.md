@@ -31,6 +31,7 @@ presumed accidental.
 | 0014 | [Dependency review tier and hosted review boundaries](0014-dependency-review-tier-and-reviewit-boundaries.md) — dependency updates are Lean, and hosted review is a review-profile setting       |
 | 0015 | [Small changes default to a human glance](0015-small-changes-default-to-human-glance.md) — under 20 lines of code or config stops with a recommendation, and a human asks for the chain          |
 | 0016 | [Review metrics leave the PR conversation](0016-review-metrics-leave-the-pr-conversation.md) — proposed: a locked per-repository issue as the store, pull export as JSONL, no new token scope    |
+| 0017 | [The run controller is vendored per root](0017-run-controller-is-vendored-per-root.md) — one source in `packages/`, a copy in every harness root, no cross-root path                             |
 
 Most records here are parity divergences, and those are the ones
 `parity-allowlist.yml` cites. A record may also fix a vocabulary that several
