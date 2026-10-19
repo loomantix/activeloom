@@ -4,13 +4,14 @@ The herd skills let one agent session drive other agent sessions in visible term
 
 They run on [herdr](https://herdr.dev), a terminal workspace manager for coding agents. Any of the three harnesses (Claude Code, Codex, Gemini/Agy) can drive, and any of them can be driven.
 
-| Skill         | What it does                                                                                                         | Stops for you when                                    |
-| ------------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `hreview`     | Runs the ordinary review chain on a PR, one engine per pane, until it converges or runs out of rounds.               | It converged (merge is yours), or it is blocked       |
-| `auto-glance` | Puts one non-author model in the seat of the human glance for small or docs-only PRs. Opt-in per repository.         | The read found something, or CI is red                |
-| `hgrill`      | Grills an issue on each configured engine in turn, then posts the biggest product calls and assumptions for a check. | Always: the assumptions block waits for your sign-off |
-| `horch`       | Orchestrates a whole workspace: starts chains, builds, grills and promotions in tabs and ships converged work.       | A ship gate fails, a chain blocks, or a call is yours |
-| `hpromote`    | Runs an integration-to-production promotion with a read-only risk review and fix lanes.                              | The promotion PR is ready: approving and merging it   |
+| Skill         | What it does                                                                                                         | Stops for you when                                         |
+| ------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `hreview`     | Runs the ordinary review chain on a PR, one engine per pane, until it converges or runs out of rounds.               | It converged (merge is yours), or it is blocked            |
+| `auto-glance` | Puts one non-author model in the seat of the human glance for small or docs-only PRs. Opt-in per repository.         | The read found something, or CI is red                     |
+| `hgrill`      | Grills an issue on each configured engine in turn, then posts the biggest product calls and assumptions for a check. | Always: the assumptions block waits for your sign-off      |
+| `horch`       | Orchestrates a whole workspace: starts chains, builds, grills and promotions in tabs and ships converged work.       | A ship gate fails, a chain blocks, or a call is yours      |
+| `hloop`       | Runs a batch of agent-ready issues: a build tab per issue, then a review chain, then a ship through `horch`'s gate.  | An issue's design is open, a gate fails, or a chain blocks |
+| `hpromote`    | Runs an integration-to-production promotion with a read-only risk review and fix lanes.                              | The promotion PR is ready: approving and merging it        |
 
 These are orchestration tools, not a second evidence system. Each review pass is the engine's ordinary interactive review, recorded in the PR ledger exactly as if you had run it yourself. Tiers, round caps, convergence and attestations are unchanged; for runner-owned, attested chains keep using the [automatic review chain](workflows.md#the-automatic-review-chain). The design records are loomantix/activeloom#419 (the live review chain) and loomantix/activeloom#422 (these skills).
 
@@ -28,7 +29,7 @@ Check what is installed:
 
 ```bash
 herdr --version
-ls .claude/skills .codex/skills .agents/skills 2>/dev/null | grep -E '^(hreview|auto-glance|hgrill|horch|hpromote)$'
+ls .claude/skills .codex/skills .agents/skills 2>/dev/null | grep -E '^(hreview|auto-glance|hgrill|horch|hloop|hpromote)$'
 python3 -I .codex/skills/hreview/scripts/herd-config.py repo
 ```
 
@@ -217,11 +218,22 @@ It inventories every tab and session in the workspace, checks your instruction f
 - starts an `hreview` chain in a new tab for each PR that is ready to review;
 - starts builds you scheduled on the engines `builds.engines` allows; each ends at a draft PR;
 - routes glance-sized PRs to `auto-glance` (or alerts you when `glance.auto` is off);
-- dispatches `hgrill` and `hpromote` when you ask;
+- dispatches `hgrill`, `hloop` and `hpromote` when you ask;
+- holds: when you ask it to pause, it starts no new work until you lift the hold;
 - hands production-lane work to the configured engine and queues the result for your approval;
 - **ships** each converged chain or clean glance to the integration branch through `ship-staging`, after a fail-closed gate: converged at the exact head with coverage verified (or a clean glance), mergeable, required checks green, and, by default, every CI run at the head green. Shipped tabs stay open with a banner as the record.
 
 It never ships to a production branch and never forces a gate. Anything that stops a ship or a chain marks the tab `⚠`, notifies you, and tells you what failed and what you need to decide. When you end the push it writes a handoff file in its state directory for the next session.
+
+### `hloop <k>` — batch loop
+
+What you type: `/hloop 5` for the top five agent-ready issues, or `/hloop 17 18 21` for named ones; add `--concurrency <c>` to change how many builds run at once (default 3). It runs as the workspace's orchestrator and follows `horch` for everything else.
+
+Before launching it screens the queue and shows you the plan: issues assigned to someone else, excluded by refinement or not yet refined are skipped with a reason; an issue that lists design options with no recorded choice goes to the grill queue; and issues whose bodies name the same files run one after the other, behaviour changes first, so the second PR does not conflict once the first ships.
+
+Each issue then gets a build tab whose session opens a draft PR and starts no review, a fresh `hreview` chain (or `auto-glance` at the glance gate), the PR's own and changed tests run at its head, and a ship through `horch`'s gate. Deferred findings that are confirmed and user-visible become one follow-up issue per PR, labelled so the next batch skips it until it is refined.
+
+To pause after the current work, tell the orchestrator. It writes a `HOLD` line to its state file and starts nothing new until you lift it; running chains finish and converged PRs still ship unless you say otherwise.
 
 ### `hpromote` — promotion
 

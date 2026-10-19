@@ -1,6 +1,6 @@
 # herdr mechanics for the orchestration skills
 
-Shared mechanics for `hreview`, `auto-glance`, `hgrill`, `horch` and `hpromote`. The skills hold the flows; this page holds how to drive herdr from any harness. Design: loomantix/activeloom#419 and loomantix/activeloom#422.
+Shared mechanics for `hreview`, `auto-glance`, `hgrill`, `horch`, `hloop` and `hpromote`. The skills hold the flows; this page holds how to drive herdr from any harness. Design: loomantix/activeloom#419 and loomantix/activeloom#422.
 
 ## Prerequisites
 

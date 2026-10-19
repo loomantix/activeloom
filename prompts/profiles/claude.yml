@@ -170,6 +170,11 @@ skills:
       disable-model-invocation: true
       argument-hint: '[<instruction file>]'
     DESC_TRIGGER: ''
+  hloop:
+    FM_EXTRAS: |-
+      disable-model-invocation: true
+      argument-hint: '<k> | <issue>... [--concurrency <c>]'
+    DESC_TRIGGER: ''
   hpromote:
     FM_EXTRAS: |-
       disable-model-invocation: true

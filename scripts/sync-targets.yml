@@ -301,7 +301,7 @@ harnesses:
         mode: '0755'
 
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
-      # hpromote). The five move together with the shared herdr reference and
+      # hloop, hpromote). The six move together with the shared herdr reference and
       # the config helper beside hreview, which the other four call. The
       # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
       - source: .claude/skills/hreview/SKILL.md
@@ -318,6 +318,10 @@ harnesses:
 
       - source: .claude/skills/horch/SKILL.md
         destination: .claude/skills/horch/SKILL.md
+        substitutions: []
+
+      - source: .claude/skills/hloop/SKILL.md
+        destination: .claude/skills/hloop/SKILL.md
         substitutions: []
 
       - source: .claude/skills/hpromote/SKILL.md
@@ -856,7 +860,7 @@ harnesses:
         mode: '0755'
 
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
-      # hpromote). The five move together with the shared herdr reference and
+      # hloop, hpromote). The six move together with the shared herdr reference and
       # the config helper beside hreview, which the other four call. The
       # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
       - source: .codex/skills/hreview/SKILL.md
@@ -873,6 +877,10 @@ harnesses:
 
       - source: .codex/skills/horch/SKILL.md
         destination: .codex/skills/horch/SKILL.md
+        substitutions: []
+
+      - source: .codex/skills/hloop/SKILL.md
+        destination: .codex/skills/hloop/SKILL.md
         substitutions: []
 
       - source: .codex/skills/hpromote/SKILL.md
@@ -1338,7 +1346,7 @@ harnesses:
         mode: '0755'
 
       # Herd orchestration on herdr (hreview, auto-glance, hgrill, horch,
-      # hpromote). The five move together with the shared herdr reference and
+      # hloop, hpromote). The six move together with the shared herdr reference and
       # the config helper beside hreview, which the other four call. The
       # consumer's `.activeloom-herd.json` is consumer-owned and never synced.
       - source: .agents/skills/hreview/SKILL.md
@@ -1355,6 +1363,10 @@ harnesses:
 
       - source: .agents/skills/horch/SKILL.md
         destination: .agents/skills/horch/SKILL.md
+        substitutions: []
+
+      - source: .agents/skills/hloop/SKILL.md
+        destination: .agents/skills/hloop/SKILL.md
         substitutions: []
 
       - source: .agents/skills/hpromote/SKILL.md
