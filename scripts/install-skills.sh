@@ -187,11 +187,27 @@ if [ -z "$SELECTED" ]; then
   exit 2
 fi
 
+# Resolve existing ancestors physically without creating a destination.
+canonical_dest() {
+  local dir="$1" parent name
+  if [ -d "$dir" ]; then
+    (cd -- "$dir" && pwd -P)
+    return
+  fi
+  name="$(basename -- "$dir")"
+  parent="$(canonical_dest "$(dirname -- "$dir")")"
+  case "$name" in
+    .) printf '%s\n' "$parent" ;;
+    ..) dirname -- "$parent" ;;
+    *) printf '%s/%s\n' "${parent%/}" "$name" ;;
+  esac
+}
+
 # Two harnesses sharing one directory would overwrite each other's skills.
 seen_dests=""
 while IFS=$'\t' read -r id _root _home skills _legacy _cli; do
   case " $SELECTED " in *" $id "*) ;; *) continue ;; esac
-  dest="$(dest_for "$id" "$skills")"
+  dest="$(canonical_dest "$(dest_for "$id" "$skills")")"
   case "$seen_dests" in
     *$'\n'"$dest"$'\n'*)
       echo "❌ two selected harnesses install into $dest — give one a --dest" >&2
@@ -319,7 +335,7 @@ install_harness() {
 while IFS=$'\t' read -r id root _home skills legacy _cli; do
   case " $SELECTED " in *" $id "*) ;; *) continue ;; esac
   src_dir="$UPSTREAM_ROOT/$root/skills"
-  dest="$(dest_for "$id" "$skills")"
+  dest="$(canonical_dest "$(dest_for "$id" "$skills")")"
   echo ""
   echo "$id: $root/skills → $dest"
   if [ ! -d "$src_dir" ]; then

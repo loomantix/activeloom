@@ -230,6 +230,38 @@ def test_two_harnesses_sharing_a_directory_are_refused(upstream: Path, home: Pat
     assert not shared.exists()
 
 
+@pytest.mark.parametrize("alias_kind", ["trailing-slash", "dot", "parent", "symlink", "symlink-parent"])
+@pytest.mark.parametrize("force", [False, True])
+def test_destination_aliases_are_refused_before_writes(
+    upstream: Path, home: Path, tmp_path: Path, alias_kind: str, force: bool
+) -> None:
+    shared = tmp_path / "shared"
+    if alias_kind == "symlink":
+        shared.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(shared, target_is_directory=True)
+        other = str(alias)
+    elif alias_kind == "symlink-parent":
+        alias = tmp_path / "alias"
+        alias.symlink_to(tmp_path, target_is_directory=True)
+        other = str(alias / "shared")
+    elif alias_kind == "parent":
+        other = f"{tmp_path}/unused/../shared"
+    elif alias_kind == "dot":
+        other = f"{shared}/."
+    else:
+        other = f"{shared}/"
+    args = ["--harness", "claude,codex", "--dest", f"claude={shared}", "--dest", f"codex={other}"]
+    if force:
+        args.append("--force")
+    result = run(upstream, home, *args)
+    assert result.returncode == 2, result.stdout
+    assert "give one a --dest" in result.stderr
+    assert not shared.exists() or not any(shared.iterdir())
+    assert not (tmp_path / "unused").exists()
+    assert not any(home.iterdir())
+
+
 @pytest.mark.parametrize(
     "args, message",
     [
