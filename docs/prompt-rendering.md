@@ -88,8 +88,10 @@ text and static partial includes: no helpers, conditionals, variables, dynamic
 names, context overrides, or fallback blocks. Profile vocabulary remains the
 only substitution interface. Templates and partials are covered by skill-content
 lint, and rendered Markdown is formatted and compared by the existing check.
-`.gitattributes` marks the exact composed outputs as generated so GitHub collapses
-their diffs by default; source templates and partials remain visible.
+The render also owns a marked block in `.gitattributes` that marks every
+rendered Markdown file as generated, so GitHub collapses those copies in PR diffs.
+Rendered scripts stay visible, as do sources, templates, and partials. `--check`
+fails when the block drifts from the generated-path inventory.
 
 Because every `{{` is parsed, a few things that are ordinary in prompt prose fail
 composition:
