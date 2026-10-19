@@ -72,7 +72,9 @@ def home(tmp_path: Path) -> Path:
     return path
 
 
-def run(upstream: Path, home: Path, *args: str, env: dict[str, str] | None = None):
+def run(
+    upstream: Path, home: Path, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     full_env = {
         "HOME": str(home),
         # System tools only, so no real harness CLI is detected.
